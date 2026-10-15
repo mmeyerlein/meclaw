@@ -1,4 +1,4 @@
-# `projection@1.1.0`
+# `projection@1.1.1`
 
 One workspace of a [`file-space`](../file-space/README.md) laid out as a directory, a permitted program run in it, and what the program changed taken over into the workspace ([#905](https://github.com/mmeyerlein/meclaw/issues/905)). It is the child hive `./projection` of every file space; the space hands it the projection operations that arrive on its `in_ws`. The hive is sealed (`params.ports: []`). Cells: `store` (store, `write_surface: internal`), `mat` (code: lay out, scan, take over), `run` (code: one program, no shell), `git` (code: git as the exchange format, [#906](https://github.com/mmeyerlein/meclaw/issues/906)).
 

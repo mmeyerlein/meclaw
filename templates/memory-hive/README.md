@@ -1,4 +1,4 @@
-# `memory-hive@3.14.2`
+# `memory-hive@3.14.5`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Sixteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -64,7 +64,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     closed on arrival, so the as-of leg could not see them while keyword and semantic still
     could. The rules state what to DO rather than a run of prohibitions, they are carried on
     every single turn, and their drift lock is
-    `crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs` — one direction now
+    `crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs` — one direction now
     that there is one lane, plus a length bound, because what is in that block is paid for once
     per call. **Since 3.4.0 the hive does not merely SHIP the discipline, it OFFERS it**
     ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): `./schemas` hands the
@@ -104,7 +104,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   fidelity**: only the predicate is canonicalised — subjects, objects, values and proper names
   are copied byte for byte, never translated and never spell-corrected, because a name the model
   "fixes" is a fact destroyed. Pinned by
-  `crates/meclaw-cells/tests/extract_canonicalization.rs` (deterministic) and by the scenarios
+  `crates/meclaw-cells/tests/misc_1/extract_canonicalization.rs` (deterministic) and by the scenarios
   C1 / C2 (model, `--with llm`).
 - **The extracting model closes what it can SEE (statement identity W4, GitHub #13, ruling Q2
   option C)**: a **replacement window** — the OPEN statements of the axes touched most recently,
@@ -172,7 +172,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     written the wrong way round, and the scan of the night takes it back itself — same revert,
     same receipt key in the run's books (`reopenings`), and the closure is not put in front of
     the judge at all, because the round does not buy an opinion about a row it just cleared.
-  Pinned by `crates/meclaw-cells/tests/w4_extract_replaces.rs` (free) and by scenario C14
+  Pinned by `crates/meclaw-cells/tests/misc_9/w4_extract_replaces.rs` (free) and by scenario C14
   (free, the real window with the close pass's answer handed in, both gate halves). The paid
   twin C15 went with the batch lane it drove (#298) — a live model on this lane is measured by
   the conversation-guide harness now, not by a scenario of its own.
@@ -202,14 +202,14 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     ([`inline-contract.md`](inline-contract.md), GH #299), which is the only thing the annotating
     model is handed and which reaches it as this hive's own `sidecar[]` offer since GH #606 —
     pinned there by
-    `crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs`. Next to it
+    `crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs`. Next to it
     [`predicate-core.json`](predicate-core.json) states the fate of the speech-act class and the
     `fact_kind: foresight` each example lands on. No
     speech act is seeded and none ever will be; the subject-matter
     examples there are deliberately seeded with NO cardinality, because a seeded verdict
     outranks the night's own and an over-cap axis of a `multi` relation is answered for good
     (GH #66).
-  Pinned by `crates/meclaw-cells/tests/f6_subject_matter_axis.rs` (free, 8 — the marker from the
+  Pinned by `crates/meclaw-cells/tests/misc_1/f6_subject_matter_axis.rs` (free, 8 — the marker from the
   store column through the bundle to the nightly currency question, plus the seed file). Its
   scenario C22 went with the batch lane (#298): the case's subject was the window SELECTION the
   batch prompt did, and the living half of the issue — a predicate names the subject matter,
@@ -222,7 +222,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   anchors on it, the version chain groups by it — so there is one alias-aware place instead of
   three. Nothing is rewritten and nothing is deleted: dropping an alias row and re-deriving puts
   every fact back on its original spelling. Pinned by
-  `crates/meclaw-cells/tests/p2_canonical_chain.rs`.
+  `crates/meclaw-cells/tests/misc_8/p2_canonical_chain.rs`.
 - **Entity identity in the store (0.2.0 P4, ruling Q5)**: the same mechanism one dimension over.
   `facts.subject` is what was WRITTEN, `facts.canonical_subject` is WHO it is, derived from the
   `subject_aliases` table by the same binding machinery — so the axis the version chain groups by
@@ -235,7 +235,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   them to the nightly GC, which judges with a top-tier model and persists an ordinary
   `set_alias`. Similarity never merges anything by itself — that is the safety net ruling Q2
   asks for, and it is why an unusual place name survives a store that has a similar one in it.
-  Pinned by `crates/meclaw-cells/tests/p4_entity_axis.rs` and the scenario C4 (free).
+  Pinned by `crates/meclaw-cells/tests/misc_8/p4_entity_axis.rs` and the scenario C4 (free).
 - **Statement identity in the store (W2, GitHub #13, ruling Q1)**: the same mechanism a THIRD
   dimension over, and the one that changes what supersedes what. `facts.claim` is what was
   written, `facts.canonical_claim` is WHICH VALUE it is, derived from the `claim_aliases` table by
@@ -244,8 +244,8 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   grouping. The binding is deliberately **not** normalising: byte identity of the claim is the
   day-one canonical value, and merging two wordings of one value is a JUDGED alias (W6, below)
   with the same `claim_rejected_pairs` refusal log the other two dimensions have. Pinned
-  by `crates/meclaw-cells/tests/w2_statement_identity.rs` and
-  `crates/meclaw-cells/tests/w2_statement_chain.rs`, plus the scenarios C9/C10/C11 (free).
+  by `crates/meclaw-cells/tests/misc_8/w2_statement_identity.rs` and
+  `crates/meclaw-cells/tests/misc_8/w2_statement_chain.rs`, plus the scenarios C9/C10/C11 (free).
 - **Judged claim aliases (W6, GitHub #13, ruling Q1 stage 2)**: what fills those two tables. On
   the axes the currency question already shows it, the nightly judge is asked which of the open
   statements are two WORDINGS of one value; a yes becomes one `set_alias` on the claim dimension
@@ -258,7 +258,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   that travels back into the next payload as `known_different` so a refused pair is not retried
   every night, and the revert that has been the same since P2 — one `delete` on the alias row plus
   the next re-derive. The keyword index keeps reading the **written** claim, so recall on the
-  original wording survives a merge. Pinned by `crates/meclaw-cells/tests/w6_claim_aliases.rs`
+  original wording survives a merge. Pinned by `crates/meclaw-cells/tests/misc_9/w6_claim_aliases.rs`
   plus the scenarios C17 (free, the whole yoga form end to end) and C18 (`--with llm`, a real
   judge on a rewording pair and a quantity trap in one payload).
 - **The canonicalisation round (0.2.0 P5, rulings Q1/Q3/Q5)**: the nightly run is the
@@ -280,7 +280,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   same round has already moved. **Never a delete, never an
   edit of a written value**, so the whole round reverts with a `delete` on the alias table plus
   a `canonicalize`. Because it runs BEFORE the arithmetic, an axis merged tonight fires its
-  chain tonight. Pinned by `crates/meclaw-cells/tests/p5_canonical_dream.rs` (free) and the
+  chain tonight. Pinned by `crates/meclaw-cells/tests/misc_8/p5_canonical_dream.rs` (free) and the
   scenarios C5 (free, judgement handed in) / C6 (`--with llm`, real judgement).
   * **A closure across two spellings does not hide the merge it proved (GitHub #73)**: when a
     statement written under spelling A is closed by a statement written under spelling B, A is
@@ -295,7 +295,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     review lane's lookback (`canon_extract_lookback_days`) is the wrong bound for this
     question and stays where it is. The merge is a union, so it can only ever ADD a spelling no
     open row carries; the open side keeps its slots in the entity context and a closed claim
-    fills what is left. Pinned by `crates/meclaw-cells/tests/f10_closed_spelling_identity.rs`
+    fills what is left. Pinned by `crates/meclaw-cells/tests/misc_1/f10_closed_spelling_identity.rs`
     (free) and by C6, where spelling A is closed by spelling B and the next night proposes the
     alias.
 - **The refusal is remembered (0.2.0 P5)**: a NO used to cost the same top-tier call every night,
@@ -362,7 +362,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | Lane | Direction | The edge must carry |
 |---|---|---|
 | `in_episode` | in → `./memory` | one turn to remember — **one message carries one turn and its own provenance**, which is why `speaker` is answerable at all: identity travels per message, so two turns of one session can name two different people (GH #272). `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
-| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Two more keys are read and neither is required**: `session_id` scopes the session read (the tier-0 leg answers with THAT session's episodes; a question naming none reads a session called `default`), and `recall_caller` is a **reply-to token this hive never reads** -- whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how one hive serves several askers and each of them gets ITS answer ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). It has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by `crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs`. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
+| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Two more keys are read and neither is required**: `session_id` scopes the session read (the tier-0 leg answers with THAT session's episodes; a question naming none reads a session called `default`), and `recall_caller` is a **reply-to token this hive never reads** -- whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how one hive serves several askers and each of them gets ITS answer ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). It has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by `crates/meclaw-cells/tests/misc_2/gh173_shipped_hive_contracts.rs`. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
 | `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the annotation itself: the door stamps `store_origin`/`mem_phase` inside. The form comes from [`inline-contract.md`](inline-contract.md), and **since 3.4.0 this hive hands the model-facing copy out itself**, on `sidecar[]` of `in_schemas` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)) — what arrives here is the `memory` SECTION of one ```` ```sidecar ```` block, cut out by the asker's splitter and carried on a message of its own. *That the model writes a ```` ```memory ```` fence of its own is retracted, not quietly reworded*: one fence with one top-level key per section is the frame now, the asking collector owns it, and this hive owns one key of it. *That the front model's composite CARRIES the contract text is retracted with it* (GH #525 put it there, #606 takes it back to the reader) — the collector composes what it was offered. The old `extraction` shape stays readable at the ingress on purpose, so the rewiring goes in two phases ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). The section has TWO parts (#299): `facts`, the delta of world state the turn carried, and `topic`, where the conversation stands — a `topic` with `movement: "start"` or `"end"` writes the topics row next to the facts, `continue` writes none, and a turn that carried nothing still sends `{"memory":{"nothing_new":true,"facts":[],"topic":{"movement":"continue"}}}` rather than nothing at all. The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
 | `in_close_pass` | in → `./memory` | a session that just ended, to be read WHOLE once (GH #300, ruling Q9 of 2026-08-21). **Nothing travels in the body** — the lane names a session and the hive reads its own turns. The context is the same provenance every write lane of this hive demands and is not optional: `set_context: {session_id: …, audience_set: …, channel: …}`; the pass proposes writes, so a pass without them would mint sharpened rows nobody can filter afterwards. The shipped caller already has all three — `talky`'s `./session-keeper → ./collector` close edge promotes exactly this set. Wire `close_report` in the SAME mutation. The pass costs one strong-model call per session — see [What a close pass costs](#what-a-close-pass-costs-measured) |
 | `in_export` | in → `./memory` | `hop.export_to` names the run's directory, relative to the fence this hive's store declares in `params.transfer.base_path`; without it the hive's own name. The store writes `<dir>/memory-hive/seed/<table>.jsonl` for every table of the walk and `export_final.json` last, and the hive says `export_done` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `export_done` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
@@ -1113,6 +1113,10 @@ cell `./entity-glue` writes both tables, deterministically and without a model c
   cell works on those facts only. A subject that is no entity yet is counted; an entity is never counted again and
   a hub's facts are never read. Every edge the new facts evidence is read by its deterministic id and written only
   when it gains evidence. The tick only adds, and it never reopens an edge or an entity the night closed.
+  A tick ends in a message either way: its writes (`ent-written`) or, when it has nothing to write, one store
+  bundle `ent-idle` (a read of the night's marker row by its key), and the cell parks on the store's answer.
+  A reader of the rows waits on that answer in the message log instead of a window
+  ([#1214](https://github.com/mmeyerlein/meclaw/issues/1214)).
 - **At the end of every dream run** (`entity-night`): `./dream-glue` hands the run's window end on route `entity`,
   and the cell takes the delta since the run before (`consolidation_log`): facts recorded since, facts closed since
   (a forget, a retraction), entities a new `subject_aliases` row joined (the absorbed one keeps its row and gets
@@ -1135,7 +1139,8 @@ cell `./entity-glue` writes both tables, deterministically and without a model c
   `kind`, so it keeps every `co-hub` and writes no edge the graph already holds.
 
 Both edges into `./entity-glue` restore the TTL (a **door**, `docs/meclaw-overview.md` § Edge model, GH #929): a
-tick is at most four store bundles and routes nothing back to its sender, but it starts at the tail of the chain
+tick is at most four store bundles (plus the `ent-idle` bundle of a tick without a write) and routes nothing back
+to its sender, but it starts at the tail of the chain
 that wrote the facts. Behind a close pass that tail sat at 47 of 48 routing decisions, and the job took it to 50
 (`gh933_the_close_pass_never_crosses_a_round`, check (f)). The night writes in bundles of at most 500 ops, and
 every write and every backfill page is a step of its own over the counted **round** edge
@@ -1190,7 +1195,7 @@ New in the store: `entities.subject_key`, `entities.valid_until`, `entities.merg
 (the instant the subject met the rule), `entity_edges.relation`, `entity_edges.relation_at`,
 `entity_edges.evidence`, unique indexes on both ids and indexes on `entities.subject_key` and the edge endpoints.
 Pinned in
-`crates/meclaw-cells/tests/gh1057_entities_come_from_the_facts.rs`.
+`crates/meclaw-cells/tests/misc_1/gh1057_entities_come_from_the_facts.rs`.
 
 ## Taking a memory out, putting it into another (#243)
 
@@ -1216,7 +1221,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.14.2` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.14.5` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1243,7 +1248,7 @@ repair the walk owes at the end — `canonicalize`, once per identity dimension.
 a **real, grown** hive, exported to a directory and imported into an empty one, compared row for
 row across all sixteen tables with `audience_set`, `channel` and `speaker` compared as data and
 not as presence. It was run before the porter was touched.
-`crates/meclaw-cells/tests/gh261_a_grown_memory_walks_the_slot.rs` is the public form of it: it
+`crates/meclaw-cells/tests/misc_2/gh261_a_grown_memory_walks_the_slot.rs` is the public form of it: it
 grows its own hive through this hive's own lanes and measures the same equality.
 
 Two substrate properties this path had to work **around** before, and both are gone:
@@ -1480,7 +1485,7 @@ reference carries no files, so the seed set cannot be handed to it directly. The
 reference has to be written out into a derived template that is registered and
 instantiated in one diff — [`examples/memory-import/`](../../examples/memory-import/)
 is that recipe end to end, and
-`crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs` drives it
+`crates/meclaw-cells/tests/misc_4/gh467_a_member_is_born_with_its_history.rs` drives it
 against a colony that never saw the memory written.
 
 ### Limits, stated so nobody meets them as a surprise
@@ -1614,7 +1619,7 @@ nothing at all. The `collector`'s own migration
 ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the pattern: the value lives under `params.<knob>`, is declared in `contract.settings.<knob>`, and the
 script reads it off the stdin document the substrate hands it, with the same number as its own
 fallback literal. A test pins the three copies against each other
-(`crates/meclaw-cells/tests/gh138_memory_hive_params.rs`).
+(`crates/meclaw-cells/tests/misc_2/gh138_memory_hive_params.rs`).
 
 It is worth more than tidiness. An `override_params` entry may only name a key the addressed cell
 carries under `params` ([#294](https://github.com/mmeyerlein/meclaw/issues/294)), so before the
@@ -1623,7 +1628,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.26",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.29",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -2033,7 +2038,7 @@ its ops run in call order over that one connection — so a `select` at the END 
 the `insert`s in front of it, and **of two hops that park concurrently exactly one reads a
 complete set**. That is precisely what `update … set fired=1 where fired=0` plus its
 `rows_affected` used to buy, and it costs no message of its own. Pinned in
-`crates/meclaw-cells/tests/gh418_a_bundle_sees_its_own_writes.rs`; the count is pinned in
+`crates/meclaw-cells/tests/misc_3/gh418_a_bundle_sees_its_own_writes.rs`; the count is pinned in
 `gh418_tier1_is_one_bundle_per_step.rs::a_tier1_recall_costs_six_store_messages`, and the
 conditional seventh in `gh520_from_an_entity_to_a_fact.rs`.
 
@@ -2423,7 +2428,7 @@ them are still true and which was replaced by which. Shape and guard rails:
   from, so clearing the attribution (`update facts set closure_source = '' where closure_source
   = 'judge:<run_id>'`) plus the next re-derive withdraws exactly one night's judgement.
 
-Pinned by `crates/meclaw-cells/tests/w3_judge_closures.rs` (free) and the scenarios C12 (free,
+Pinned by `crates/meclaw-cells/tests/round_2/w3_judge_closures.rs` (free) and the scenarios C12 (free,
 judgement handed in, both gate halves) / C13 (`--with llm`, a real judge on one replacement and
 one enumeration) / C1 (`--with llm`, the closure on a corpus the extractor minted).
 
@@ -2467,7 +2472,7 @@ The coverage is stated in the run receipt, in the same `verdicts` payload the cl
 `pages` names how many over-cap axes the night saw, how many enumerate (answered for good), how
 many still owe a cardinality verdict, and per page what it showed and what it left behind. It is
 written by the ASK rather than by a verdict, so a night whose judge never answered still says
-what it put in front of it. Pinned by `crates/meclaw-cells/tests/f5_bucket_axes.rs` (free, 16
+what it put in front of it. Pinned by `crates/meclaw-cells/tests/misc_1/f5_bucket_axes.rs` (free, 16
 cases) and the scenario C21 (free, four over-cap axes and two rounds).
 
 **The round is a SECOND model call, and the books say so (GitHub #64).** A night that runs the
@@ -2488,7 +2493,7 @@ Three properties keep the number honest:
   backfill leaves the lane *after* the run closes, and its tokens are accounted in the message log
   where GH #9 put them.
 
-Pinned by `crates/meclaw-cells/tests/f3_run_books.rs` (free) and the scenario `C5`.
+Pinned by `crates/meclaw-cells/tests/misc_1/f3_run_books.rs` (free) and the scenario `C5`.
 
 **And the same closing phase sweeps the lane scratch (GH #375).** Its op list is five entries
 long: the supersession the arithmetic already emitted, the belief upserts, the embedding
@@ -2517,7 +2522,7 @@ with a clock, a window and a receipt.
   failed, a window already consolidated) sweeps nothing and the next night does it instead. The
   window is generous enough that a skipped night costs a day of rows, not a lane.
 
-Pinned by `crates/meclaw-cells/tests/gh375_the_night_sweeps_the_scratch.rs` (free).
+Pinned by `crates/meclaw-cells/tests/misc_3/gh375_the_night_sweeps_the_scratch.rs` (free).
 
 **A night describes the questions it HAS (GitHub #69).** The round stays one call carrying every
 question the night asks -- the sections give each other context and splitting them would buy the
@@ -2545,7 +2550,7 @@ are never rendered apart. **The numbering is fixed** — a question is `3.` on e
 asked, so no cross reference between the questions can go stale and a shrunken block describes the
 same five questions the full one does. **A night with all five sections renders byte for byte what
 it rendered before**, which is what lets "same verdicts as before" be pinned without buying a
-model. Pinned by `crates/meclaw-cells/tests/f4_night_questions.rs` (free) and the scenario pair
+model. Pinned by `crates/meclaw-cells/tests/misc_1/f4_night_questions.rs` (free) and the scenario pair
 `C19` (full night, invariance) / `C20` (quiet night).
 
 **Coexistence makes an axis multivalued, for good (P15 O-1 + O-3, guarded since W1).** Two facts
@@ -2600,7 +2605,7 @@ that contradicts the authority. The read path fetches the map as a LEG of the hy
 (`t1-hyd-card`), fired together with the axis page, so the verdict costs an op and not a hop on
 the lane that runs while somebody is waiting. What it decides is still only presentation (W2's
 rule stands: no closure is derived from it), which is exactly why it may be a judgement at all.
-Pinned by `crates/meclaw-cells/tests/w5_judged_cardinality.rs` and the scenario `C16` (free): two
+Pinned by `crates/meclaw-cells/tests/round_2/w5_judged_cardinality.rs` and the scenario `C16` (free): two
 identically built axes, one closure each, and the cardinality verdict as the only difference
 between them.
 

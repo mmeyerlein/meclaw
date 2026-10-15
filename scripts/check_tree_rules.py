@@ -172,7 +172,7 @@ whole point of the migration is that `params.<knob>` +
 `contract.settings.<knob>` + the literal in the script make the same value
 addressable, declared and readable in one place -- `collector@1.2.0` is the
 reference migration (GH #136), pinned by
-`crates/meclaw-cells/tests/w13_collector_params.rs`.
+`crates/meclaw-cells/tests/misc_8/w13_collector_params.rs`.
 
 What the rule reads, and what it deliberately does not:
 

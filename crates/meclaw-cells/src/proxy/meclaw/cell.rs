@@ -71,7 +71,7 @@ pub struct MeclawCell {
     /// GH #1012: `params.peer_retry_deadline_s` in ms.
     deadline_ms: i64,
     /// GH #1015: inbox rows handed on and not yet booked `done`, oldest first.
-    handed: std::collections::VecDeque<(String, std::time::Instant)>,
+    handed: std::collections::VecDeque<(String, tokio::time::Instant)>,
 }
 
 /// GH #1015: how long a handed-on inbox row stays `pending`. The hand-on is an
@@ -686,7 +686,7 @@ impl LongRunningCell for MeclawCell {
                     // than `HAND_ON_SETTLE` (see there). Until then a crash raises
                     // it again, and the colony drops the repeat by its key.
                     if let Some(key) = delivery.inbox_key {
-                        self.handed.push_back((key, std::time::Instant::now()));
+                        self.handed.push_back((key, tokio::time::Instant::now()));
                     }
                     let mut settled = Vec::new();
                     while let Some((_, at)) = self.handed.front()

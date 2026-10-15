@@ -109,9 +109,18 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
     );
 
     let meta = read_json(&root.join("template.json"));
-    assert_eq!(
-        meta["version"], "2.5.26",
-        "a lane an app can use and could not before is the second digit \
+    let version = meta["version"].as_str().expect("a version");
+    // The number is the merge point's (development-rules § 4): a strand never
+    // writes it, so a literal here went red on every cascade that moved the
+    // member (GH #1126; `pre` cascade-dry, GH #1173, on GH #1214). What stays
+    // locked is the history up to the last number this test narrated.
+    let number: Vec<u64> = version
+        .split('.')
+        .map(|d| d.parse().expect("a numeric version digit"))
+        .collect();
+    assert!(
+        number.len() == 3 && number >= vec![2, 5, 27],
+        "{version}: a lane an app can use and could not before is the second digit \
          (docs/development-rules.md § 4). The number is the LEVEL's, not this \
          lane's: it moved on again with member@1.9.0, which wired the channel \
          whose model answers on its own timeline, and 1.9.1 only pins \
@@ -173,10 +182,28 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094); 2.5.24 only pins \
          `memory-hive@3.14.0` (GH #1095); 2.5.25 only pins \
          `memory-hive@3.14.1` (GH #1095); 2.5.26 only pins \
-         `access@2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space@1.4.8`, \
-         `memory-hive@3.14.2` and `telegram-connector@2.2.0` (GH #1096, #1097, #1098, #1099). None of it \
+         `access@2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
+         `memory-hive@3.14.2` and `telegram-connector@2.2.0` (GH #1096, #1097, #1098, #1099); 2.5.27 only pins \
+         `affinity@3.10.3`, `assistant@3.7.16`, `firewall@2.4.2` and \
+         `memory-hive` 3.14.3 (Dev-Tempo cascade, GH #1126). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"
+    );
+    // The floor keeps the history; what keeps every number AFTER it narrated is
+    // the merge point's own record (gh1038), the counterpart of the floor in
+    // gh643: a number the member ships at has its Since sentence, and the README
+    // heads with it. Without these two the floor alone would stay green on a
+    // number nobody wrote down (re-check tv-bn-py B-M1, OR-TV.tv-bn-py.1).
+    let purpose = meta["description"]["purpose"].as_str().expect("a purpose");
+    assert!(
+        purpose.contains(&format!("Since {version} (")),
+        "every number the member ships at has its own sentence in the purpose \
+         (the merge point writes it, gh1038): {version}"
+    );
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("README");
+    assert!(
+        readme.starts_with(&format!("# `member@{version}`")),
+        "the README heads with the version it describes: {version}"
     );
 }
 

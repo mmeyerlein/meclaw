@@ -74,7 +74,7 @@ impl StoreCell {
         };
         let mut legs: Vec<output::BundleLeg> = Vec::with_capacity(calls.len());
         for (leg, (args, call_id)) in calls.into_iter().enumerate() {
-            let op_started = std::time::Instant::now();
+            let op_started = tokio::time::Instant::now();
             // GH #1015 (OR-HV-61): one bundle carries several writes under ONE
             // message id, so each leg books its own key — a replayed bundle
             // skips exactly the legs that already took effect.
@@ -173,7 +173,7 @@ impl StoreCell {
 }
 
 /// Milliseconds since `started` — the same rounding every store reply uses.
-fn elapsed_ms(started: std::time::Instant) -> i64 {
+fn elapsed_ms(started: tokio::time::Instant) -> i64 {
     started.elapsed().as_millis() as i64
 }
 
@@ -312,7 +312,7 @@ struct ReplyCtx<'a> {
     /// The sender the colony stamped, `None` for a source message.
     sender: Option<&'a Path>,
     /// When `handle` started; the bundle's total `duration_ms`.
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 }
 
 /// GH #331 — `operation` names the refused op, or the literal `"error"` when
@@ -325,7 +325,7 @@ async fn emit_invalid_input(
     target: &Path,
     msg: String,
     operation: &str,
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as i64;
     let body = meclaw_core::serde_json::json!({
@@ -432,7 +432,7 @@ async fn emit_write_denied(
     call_id: Option<String>,
     detail: String,
     operation: &str,
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as i64;
     let body = meclaw_core::serde_json::json!({
@@ -460,7 +460,7 @@ async fn emit_query_timeout(
     target: &Path,
     call_id: Option<String>,
     operation: &str,
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as i64;
     let body = meclaw_core::serde_json::json!({
@@ -500,7 +500,7 @@ impl StatefulCell for StoreCell {
         db: &'a mut DbConn,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
-            let started = std::time::Instant::now();
+            let started = tokio::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
             // GH #132: the sender the COLONY stamped (`reply_to`), never a body
             // field — an identity a caller could write into the body is not an

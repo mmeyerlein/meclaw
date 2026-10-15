@@ -22,9 +22,15 @@
 //! - (c) a write that changes only a nested field's target moves the mark inside it
 //!   with the field and changes no mark on the wire.
 //!
+//! One test per engine, each with a colony of its own, so the Chromium run does not wait
+//! for the WebKit one: nextest runs the WebKit test in its group `webkit` (one at a time,
+//! software rendering) and the Chromium test beside it (`.config/nextest.toml`).
+//!
 //! Station `browser:display` (`scripts/gate_plan.py`, `BROWSER_LOCKS`), `#[ignore]`d
 //! everywhere else. No node, no playwright, no engine, no template library or no python
-//! is a `SKIP`, never a red (R2b).
+//! is a `SKIP`, never a red (R2b) -- outside the gate. Inside it the runner sets
+//! `MECLAW_REQUIRE_BROWSERS=1` on a station that books the engine (GH #1161), and no
+//! playwright or an engine that does not start is `NO-ENGINE ...`, exit 1, red.
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
@@ -32,18 +38,15 @@ mod display_colony;
 use std::path::Path;
 use std::time::Duration;
 
-use display_colony::{Boot, PROBE, SCREEN, boot, have_python, library_ships, repo};
+use display_colony::{
+    Boot, Colony, Driver, PROBE, SCREEN, Site, boot, have_python, library_ships, repo,
+};
 use meclaw_core::serde_json::{Value, json};
 
 const DRIVER: &str = "workshop/tools/display-motion-browser.mjs";
-/// The laboratory WebKit runs in on this host, sourced for every run except a Chromium
-/// one (the driver's default engine is WebKit). Sourced for Chromium too, a host without
-/// the laboratory read its `SKIP` line as the Chromium run's own, and the lock proved
-/// nothing there (XB-M review I-1: build02 skipped every Chromium run).
+/// The WebKit laboratory the driver runs in on this host (skip without it).
 const WKENV: &str = "workshop/tools/wkenv.sh";
-/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments.
-const WITH_LAB: &str =
-    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
+// The laboratory and the launch through it are the fixture's (`Colony::drive`).
 /// The window that carries the field.
 const VIEW: &str = "motion";
 /// How many marks one write moves.
@@ -150,24 +153,14 @@ fn write_steps(dir: &Path, engine: &str) {
 }
 
 /// One engine's report, or `None` when this host cannot measure.
-async fn drive(engine: &str, url: &str, api: &str, dir: &Path) -> Option<Value> {
-    let run = tokio::time::timeout(
-        DRIVER_LIMIT,
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(WITH_LAB)
-            .arg("sh")
-            .arg(repo(WKENV))
-            .arg(repo(DRIVER))
-            .arg(url)
-            .arg(dir)
-            .arg("--engine")
-            .arg(engine)
-            .env("MECLAW_DISPLAY_API", api)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
+async fn drive(colony: &Colony, engine: &str, dir: &Path) -> Option<Value> {
+    let with = Driver::default()
+        .script(DRIVER)
+        .arg(dir)
+        .arg("--engine")
+        .arg(engine);
+    let driving = colony.drive(Site::Gh961, "monitor", with);
+    let run = tokio::time::timeout(DRIVER_LIMIT, driving.output()).await;
     let out = match run {
         Err(_) => panic!("{engine}: the motion driver did not finish within {DRIVER_LIMIT:?}"),
         Ok(Err(e)) => {
@@ -206,9 +199,8 @@ fn n(v: &Value, key: &str) -> i64 {
         .unwrap_or_else(|| panic!("{key} is not a number in {v}"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "browser lock: runs in the station browser:display (scripts/gate_plan.py BROWSER_LOCKS)"]
-async fn blocks_glide_in_and_many_marks_move_in_one_pass() {
+/// Boot a colony, open the page in ONE engine and hold (a), (b) and (c) there.
+async fn glide_and_move_in(engine: &str) {
     if !library_ships() || !have_python() {
         println!("SKIP no template library or no python3 in this tree");
         return;
@@ -228,125 +220,134 @@ async fn blocks_glide_in_and_many_marks_move_in_one_pass() {
         ..Boot::default()
     })
     .await;
-    let url = colony.url("monitor");
-    let api = colony.api_url();
     let steps = tempfile::tempdir().expect("a steps directory");
 
-    for engine in ["chromium", "webkit"] {
-        // Every engine starts from the first round, written through the door and waited
-        // for at `web`: what the browser opens is what the pass drew.
-        let tree = colony
-            .put_content(PROBE, VIEW, field("motion", true, (100, 100)))
-            .await;
+    // The engine starts from the first round, written through the door and waited for at
+    // `web`: what the browser opens is what the pass drew.
+    let tree = colony
+        .put_content(PROBE, VIEW, field("motion", true, (100, 100)))
+        .await;
+    assert!(
+        tree.to_string().contains("display-mark"),
+        "the field stands in the tree before the browser opens it: {tree}"
+    );
+    let dir = steps.path().join(engine);
+    write_steps(&dir, engine);
+    let Some(v) = drive(&colony, engine, &dir).await else {
+        colony.shutdown().await;
+        return;
+    };
+
+    // (a) Enter on mount, not on update, not under reduced motion.
+    assert!(
+        n(&v, "enter") >= 1,
+        "{engine}: an inserted card glides in: {v}"
+    );
+    assert_eq!(
+        v["same_node"],
+        json!(true),
+        "{engine}: an update keeps the card's node: {v}"
+    );
+    assert_eq!(
+        n(&v, "reanimated"),
+        0,
+        "{engine}: an update does not glide in again: {v}"
+    );
+    assert_eq!(
+        n(&v, "reduced"),
+        0,
+        "{engine}: reduced motion runs no animation: {v}"
+    );
+
+    // (b) One write, 200 new targets: one frame, 200 transitions, 200 on target.
+    assert_eq!(
+        n(&v, "marks"),
+        MARKS,
+        "{engine}: the field carries every mark: {v}"
+    );
+    assert_eq!(
+        n(&v, "mark_frames"),
+        1,
+        "{engine}: the 200 new targets arrive in ONE diff frame: {v}"
+    );
+    // ... and that frame is the pass's only one: no second, empty diff beside it
+    // (B.3, review D1 M1). Clock ticks change their text and do not count here.
+    assert_eq!(
+        n(&v, "empty_frames"),
+        0,
+        "{engine}: the write sent no empty diff beside the one that moved: {v}"
+    );
+    assert_eq!(
+        n(&v, "moved"),
+        MARKS,
+        "{engine}: every mark got its new target: {v}"
+    );
+    assert_eq!(
+        n(&v, "replaced"),
+        0,
+        "{engine}: the patch moves marks, never re-inserts: {v}"
+    );
+    assert_eq!(
+        n(&v, "transitions"),
+        MARKS,
+        "{engine}: every mark runs a transform transition right after the frame: {v}"
+    );
+    assert_eq!(
+        n(&v, "on_target"),
+        MARKS,
+        "{engine}: every mark ends on its target within 1 px: {v}"
+    );
+
+    // (c) The nested field moves its mark; no mark changes on the wire.
+    assert_eq!(
+        n(&v, "nest_marks"),
+        0,
+        "{engine}: no mark changed for a field's move: {v}"
+    );
+    assert_eq!(
+        n(&v, "nest_fields"),
+        1,
+        "{engine}: one prop pair, on the nested field: {v}"
+    );
+    assert_eq!(
+        n(&v, "nest_empty_frames"),
+        0,
+        "{engine}: the field's move sent no empty diff either: {v}"
+    );
+    assert_eq!(
+        v["nest_transition"],
+        json!(true),
+        "{engine}: the nested field glides: {v}"
+    );
+    assert_eq!(
+        v["nest_on_target"],
+        json!(true),
+        "{engine}: the inner mark is on target: {v}"
+    );
+    let got = &v["nest_delta_px"];
+    let want = &v["nest_expect_px"];
+    for k in 0..2 {
+        let (g, w) = (
+            got[k].as_f64().unwrap_or(f64::NAN),
+            want[k].as_f64().unwrap_or(0.0),
+        );
         assert!(
-            tree.to_string().contains("display-mark"),
-            "the field stands in the tree before the browser opens it: {tree}"
+            (g - w).abs() <= 1.0,
+            "{engine}: the inner mark moved with its field ({g} vs {w} px): {v}"
         );
-        let dir = steps.path().join(engine);
-        write_steps(&dir, engine);
-        let Some(v) = drive(engine, &url, &api, &dir).await else {
-            continue;
-        };
-
-        // (a) Enter on mount, not on update, not under reduced motion.
-        assert!(
-            n(&v, "enter") >= 1,
-            "{engine}: an inserted card glides in: {v}"
-        );
-        assert_eq!(
-            v["same_node"],
-            json!(true),
-            "{engine}: an update keeps the card's node: {v}"
-        );
-        assert_eq!(
-            n(&v, "reanimated"),
-            0,
-            "{engine}: an update does not glide in again: {v}"
-        );
-        assert_eq!(
-            n(&v, "reduced"),
-            0,
-            "{engine}: reduced motion runs no animation: {v}"
-        );
-
-        // (b) One write, 200 new targets: one frame, 200 transitions, 200 on target.
-        assert_eq!(
-            n(&v, "marks"),
-            MARKS,
-            "{engine}: the field carries every mark: {v}"
-        );
-        assert_eq!(
-            n(&v, "mark_frames"),
-            1,
-            "{engine}: the 200 new targets arrive in ONE diff frame: {v}"
-        );
-        // ... and that frame is the pass's only one: no second, empty diff beside it
-        // (B.3, review D1 M1). Clock ticks change their text and do not count here.
-        assert_eq!(
-            n(&v, "empty_frames"),
-            0,
-            "{engine}: the write sent no empty diff beside the one that moved: {v}"
-        );
-        assert_eq!(
-            n(&v, "moved"),
-            MARKS,
-            "{engine}: every mark got its new target: {v}"
-        );
-        assert_eq!(
-            n(&v, "replaced"),
-            0,
-            "{engine}: the patch moves marks, never re-inserts: {v}"
-        );
-        assert_eq!(
-            n(&v, "transitions"),
-            MARKS,
-            "{engine}: every mark runs a transform transition right after the frame: {v}"
-        );
-        assert_eq!(
-            n(&v, "on_target"),
-            MARKS,
-            "{engine}: every mark ends on its target within 1 px: {v}"
-        );
-
-        // (c) The nested field moves its mark; no mark changes on the wire.
-        assert_eq!(
-            n(&v, "nest_marks"),
-            0,
-            "{engine}: no mark changed for a field's move: {v}"
-        );
-        assert_eq!(
-            n(&v, "nest_fields"),
-            1,
-            "{engine}: one prop pair, on the nested field: {v}"
-        );
-        assert_eq!(
-            n(&v, "nest_empty_frames"),
-            0,
-            "{engine}: the field's move sent no empty diff either: {v}"
-        );
-        assert_eq!(
-            v["nest_transition"],
-            json!(true),
-            "{engine}: the nested field glides: {v}"
-        );
-        assert_eq!(
-            v["nest_on_target"],
-            json!(true),
-            "{engine}: the inner mark is on target: {v}"
-        );
-        let got = &v["nest_delta_px"];
-        let want = &v["nest_expect_px"];
-        for k in 0..2 {
-            let (g, w) = (
-                got[k].as_f64().unwrap_or(f64::NAN),
-                want[k].as_f64().unwrap_or(0.0),
-            );
-            assert!(
-                (g - w).abs() <= 1.0,
-                "{engine}: the inner mark moved with its field ({g} vs {w} px): {v}"
-            );
-        }
     }
 
     colony.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "browser lock: runs in the station browser:display (scripts/gate_plan.py BROWSER_LOCKS)"]
+async fn blocks_glide_in_and_many_marks_move_in_one_pass_in_chromium() {
+    glide_and_move_in("chromium").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "browser lock: runs in the station browser:display (scripts/gate_plan.py BROWSER_LOCKS)"]
+async fn blocks_glide_in_and_many_marks_move_in_one_pass_in_webkit() {
+    glide_and_move_in("webkit").await;
 }

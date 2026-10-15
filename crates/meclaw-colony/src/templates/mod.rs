@@ -49,7 +49,7 @@ pub(crate) fn upsert_op(
     template_id: String,
     t: &scanner::ScannedTemplate,
     now: i64,
-    ack: Option<std::sync::mpsc::Sender<()>>,
+    ack: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> ColonyWriteOp {
     ColonyWriteOp::UpsertTemplate {
         template_id,
@@ -107,19 +107,19 @@ async fn apply_scan_result_inner(
             .get(&(s.name.clone(), s.version.clone()))
             .cloned()
             .unwrap_or_else(|| Uuid::now_v7().to_string());
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         send_op_via(
             &writer_tx,
             &queue_depth,
             upsert_op(template_id, s, now, Some(tx)),
         )
         .await;
-        let _ = rx.recv();
+        let _ = rx.await;
     }
     // Remove entries whose (name, version) is not in scanned set.
     for e in existing {
         if !scanned_keys.contains(&(e.name.clone(), e.version.clone())) {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
             send_op_via(
                 &writer_tx,
                 &queue_depth,
@@ -129,7 +129,7 @@ async fn apply_scan_result_inner(
                 },
             )
             .await;
-            let _ = rx.recv();
+            let _ = rx.await;
         }
     }
 }
@@ -287,6 +287,50 @@ mod sync_tests {
         std::fs::write(p.join("template.json"), body).unwrap();
     }
 
+    /// tv-p1a (ADR-0051): a scan waits for the writer's acks on the runtime,
+    /// never by parking a runtime thread. The writer lives on the runtime that
+    /// opened `colony.db`; on a one-thread runtime a parked thread starves it
+    /// and the scan never returns. The watch runs on the test thread, outside
+    /// the runtime under test.
+    #[test]
+    fn a_template_rescan_never_blocks_a_runtime_thread() {
+        let td = TempDir::new().unwrap();
+        make_template(&td, "a", "a", None);
+        make_template(&td, "b@1.0.0", "b", Some("1.0.0"));
+        let root = td.path().join("templates");
+        let db_path = td.path().join("c.db");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let db = crate::ColonyDb::open(&db_path).unwrap();
+                apply_scan_result(&root, &db, 100).await.unwrap();
+                // Second scan: one template gone -> the remove path waits too.
+                std::fs::remove_dir_all(root.join("b@1.0.0")).unwrap();
+                apply_scan_result(&root, &db, 200).await.unwrap();
+                let names: Vec<String> = db
+                    .read_templates()
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.name)
+                    .collect();
+                db.shutdown_async().await;
+                let _ = done_tx.send(names);
+            });
+        });
+        let mark = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG);
+        let names = done_rx.recv_timeout(mark).unwrap_or_else(|_| {
+            panic!(
+                "HANG: a template scan on a one-thread runtime returns (waited {} s)",
+                mark.as_secs()
+            )
+        });
+        assert_eq!(names, vec!["a".to_string()]);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn initial_scan_writes_all_to_db() {
         let td = TempDir::new().unwrap();
@@ -408,7 +452,7 @@ mod sync_tests {
 
         // A second row from a foreign root, written through the production
         // write op — the mixed state a partial restore leaves behind.
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         send_op_via(
             &db.writer_tx,
             &db.queue_depth,
@@ -425,7 +469,7 @@ mod sync_tests {
             },
         )
         .await;
-        let _ = rx.recv();
+        let _ = rx.await;
         assert_eq!(
             db.read_templates().unwrap().len(),
             2,

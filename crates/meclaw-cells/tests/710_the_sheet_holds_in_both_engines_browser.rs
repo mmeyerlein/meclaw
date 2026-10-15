@@ -35,7 +35,7 @@
 //! `webkit`): side by side they starved each other. Every assertion is still made
 //! per proof; nothing below judges across parts.
 //!
-//! **Why SKIP and not RED.** Nothing here is installed by the test. `playwright` is the
+//! **When SKIP and when RED.** Nothing here is installed by the test. `playwright` is the
 //! one npm dependency of `workshop/tools/`, pinned at 1.63.0 and put in place by
 //! `npm ci`; the WebKit bundle needs the laboratory `wkenv.sh` describes, which is an ops
 //! step and not one a proof gets to take (OR-F12). Without the module, without the
@@ -43,11 +43,18 @@
 //! its own and leaves with 3, and this test passes -- the same tool guard every other
 //! browser proof in this tree uses (R2b). A host that cannot measure is not a finding
 //! about the sheet.
+//! Inside the gate the station books the engines and the runner sets
+//! `MECLAW_REQUIRE_BROWSERS=1` (GH #1161): an engine that is absent or does not start is
+//! then `NO-ENGINE ...`, exit 1 and no report, and this test is red. Only a missing
+//! `node` stays a `SKIP` there.
 
 use std::path::Path;
-use std::process::Command;
 
 use meclaw_core::serde_json::Value;
+
+// The Rust marker over the driver's child (orchestrator decision tv-bn-lb.2).
+#[path = "support/browser_run.rs"]
+mod browser_run;
 
 fn repo(rel: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -75,9 +82,14 @@ fn library_ships() -> bool {
 /// asking `compose.py` is the only way to be sure the bytes under test are the bytes that
 /// ship. `os.js` rides along, so the mark's own hook is mounted and B-02's press is a
 /// real gesture rather than an attribute set by hand.
-fn page_parts(dir: &Path) -> Option<()> {
-    let out = Command::new("python3")
-        .arg("-c")
+///
+/// Under the Rust marker like the driver (re-check tv-bn-layout B fix2, M2): a
+/// `compose.py` that never answers (an import lock, a hung file system) ends in `HANG:`
+/// with its stderr after a HANG mark, inside the leash's budget for the page parts --
+/// not in the harness kill, and not on a worker thread blocked by a bare `.output()`.
+async fn page_parts(dir: &Path) -> Option<()> {
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg("-c")
         .arg(
             "import importlib.util, sys\n\
              spec = importlib.util.spec_from_file_location('compose', sys.argv[1])\n\
@@ -89,9 +101,16 @@ fn page_parts(dir: &Path) -> Option<()> {
              open(d + '/os.js', 'w').write(m.OS_CLIENT_JS)",
         )
         .arg(repo(COMPOSE))
-        .arg(dir)
-        .output()
-        .ok()?;
+        .arg(dir);
+    let out = browser_run::run_marked(
+        &mut cmd,
+        "compose.py writing the page parts",
+        meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG),
+        std::time::Duration::ZERO,
+    )
+    .await
+    .unwrap_or_else(|hung| panic!("{hung}"))
+    .ok()?;
     assert!(
         out.status.success(),
         "compose.py did not answer:\n{}",
@@ -107,13 +126,13 @@ fn page_parts(dir: &Path) -> Option<()> {
 /// wrapper sets `LD_LIBRARY_PATH`, so the laboratory has to be in the environment of the
 /// `node` process itself and cannot be handed over afterwards. Where there is no
 /// laboratory, `wkenv.sh` writes its own `SKIP ` line and the guard below reads it.
-fn drive(engine: &str, checks: &[&str], parts: &Path, out_dir: &Path) -> Option<Value> {
+async fn drive(engine: &str, checks: &[&str], parts: &Path, out_dir: &Path) -> Option<Value> {
     if !repo(DRIVER).is_file() || !repo(WKENV).is_file() {
         println!("SKIP the browser driver does not ship in this tree");
         return None;
     }
-    let run = Command::new("sh")
-        .arg("-c")
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
         .arg(WITH_LAB)
         .arg("sh")
         .arg(repo(WKENV))
@@ -132,8 +151,18 @@ fn drive(engine: &str, checks: &[&str], parts: &Path, out_dir: &Path) -> Option<
         // The phone: B-17 is a phone sentence, and the exit with the fewest pixels and
         // the most engine behind it is the one the other nine are hardest on.
         .arg("--profile")
-        .arg("phone")
-        .output();
+        .arg("phone");
+    // Under the Rust marker: a child that outlives the driver's own marker plus what runs
+    // outside it gets SIGTERM, then SIGKILL with its browser, and is reported as HANG
+    // with its stderr tail before the harness kill that prints nothing (M1-R).
+    let run = browser_run::run_marked(
+        &mut cmd,
+        &format!("the driver of the sheet part {checks:?} ({engine})"),
+        browser_run::sheet_run(),
+        browser_run::outside(),
+    )
+    .await
+    .unwrap_or_else(|hung| panic!("{hung}"));
     let out = match run {
         Ok(out) => out,
         Err(e) => {
@@ -212,17 +241,17 @@ fn assert_every_check_holds(engine: &str, report: &Value) {
 /// One engine and one part, end to end: parts out of `compose.py`, the proofs of the
 /// part, every check -- and exactly the checks that were asked for, so a driver that
 /// ignored `--checks` and ran the whole line (or nothing) is red here.
-fn the_sheet_holds_in(engine: &str, checks: &[&str]) {
+async fn the_sheet_holds_in(engine: &str, checks: &[&str]) {
     if !library_ships() {
         println!("SKIP the template library does not ship in this tree");
         return;
     }
     let td = tempfile::TempDir::new().expect("tempdir");
-    if page_parts(td.path()).is_none() {
+    if page_parts(td.path()).await.is_none() {
         println!("SKIP no python3 on this host");
         return;
     }
-    let Some(report) = drive(engine, checks, td.path(), &td.path().join("shots")) else {
+    let Some(report) = drive(engine, checks, td.path(), &td.path().join("shots")).await else {
         return;
     };
     assert_eq!(
@@ -238,6 +267,14 @@ fn the_sheet_holds_in(engine: &str, checks: &[&str]) {
         .map(|c| c.keys().map(String::as_str).collect())
         .unwrap_or_default();
     ran.sort_unstable();
+    // A run the driver ended itself (its run marker `RUN_HANG_MS`, a signal, an error
+    // outside every proof) names why in `failed` -- read before the list of proofs, which
+    // such a run never finished (M-MRG-kalt-cell.rs 10.10.: cut after B-20 at 90 s).
+    assert!(
+        report["failed"].is_null(),
+        "{engine}: the driver ended the run itself -- {} (ran {ran:?})",
+        report["failed"]
+    );
     let mut asked = checks.to_vec();
     asked.sort_unstable();
     assert_eq!(
@@ -253,11 +290,13 @@ fn the_sheet_holds_in(engine: &str, checks: &[&str]) {
 /// inside a part is the order of the line, and every part starts on a fresh page -- the
 /// page the first proof of the whole line used to get.
 ///
-/// The page, the dock, the blur and the tiles stay ONE part: cut after B-18, B-21 ("the
-/// seconds run down", a four-tick deadline) met a fresh WebKit page still busy with its
-/// first software-rendered paint and failed 5 of 10 stress iterations on build01 under
-/// load (2026-10-07, `the seconds do not run down in the browser (D-27)`); on the page
-/// B-02..B-18 already settled -- the page it always had -- it holds.
+/// The page, the dock, the blur and the tiles stay ONE part, so the line keeps its four
+/// engine starts. History: cut after B-18, B-21 ("the seconds run down") failed 5 of 10
+/// stress iterations on a 12-core build host under load (2026-10-07) -- judged then by a probe
+/// interval of its own, later by four scene ticks, and a tick count is no second (the
+/// scene also ticks on every patch and at mount). Since GH #1078 B-21 is decided by the
+/// page's own time on the tile it measured (`countdownWatch`/`countdownSettled`,
+/// `display-browser-lab.mjs`), whichever proofs ran on the page before it.
 const PAGE_AND_TILES: &[&str] = &[
     "B-02", "B-08", "B-09", "B-13", "B-16", "B-17", "B-18", "B-20", "B-21", "B-22", "B-27",
 ];
@@ -273,9 +312,9 @@ macro_rules! cells {
         /// Every cell the macro made, in the order it made them.
         const CELLS: &[(&str, &[&str])] = &[$(($engine, $checks)),+];
         $(
-            #[test]
-            fn $name() {
-                the_sheet_holds_in($engine, $checks);
+            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+            async fn $name() {
+                the_sheet_holds_in($engine, $checks).await;
             }
         )+
     };
@@ -330,4 +369,36 @@ fn the_parts_are_the_sheet_line() {
              add the proof to a part (or a part to the cells! list)"
         );
     }
+}
+
+/// welle-testing tv-bn-layout C2 (TV-F2/F5, class concurrency): B-20 writes the levels
+/// of its three stages by hand, and on a live colony a patch writes them too. C1 (L1,
+/// chromium monitor, `--load 12`, 1 of 21): the plain stage read `two: []` before the
+/// kick and `two: ["none"]` after it -- a modal the proof never wrote stood at level 2,
+/// the canvas behind it blurred as § 6.9 says it must, and the proof called that
+/// "windows blur with neither a modal nor an urgent open". So the proof holds the levels
+/// it wrote (an observer puts back what a patch moves, before the next style read) and
+/// every reading carries the levels it was taken at: a reading of a stage it did not
+/// build is never a verdict about the sheet.
+#[test]
+fn b20_reads_only_the_levels_it_wrote() {
+    if !repo(DRIVER).is_file() {
+        println!("SKIP the browser driver does not ship in this tree");
+        return;
+    }
+    let src = std::fs::read_to_string(repo(DRIVER)).expect("the driver reads");
+    let start = src.find("async function B20(ctx) {").expect("B-20 is gone");
+    let stop = src[start..]
+        .find("async function B21(ctx) {")
+        .expect("B-21 does not follow B-20");
+    let body = &src[start..start + stop];
+    assert!(
+        body.contains("new MutationObserver("),
+        "B-20 does not hold the levels it wrote: a patch of the live colony can move \
+         them between the write and the reading"
+    );
+    assert!(
+        body.contains("not the levels B-20 wrote"),
+        "a reading taken at levels the proof did not write still judges the sheet"
+    );
 }

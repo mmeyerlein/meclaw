@@ -1,0 +1,40 @@
+//! Test harness `file_space` of `meclaw-cells`: one binary, one module per old file.
+//! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
+
+#[path = "../support/file_space_hive.rs"]
+pub mod file_space_hive;
+pub mod gh1085_the_templates_deliver_whole_or_by_budget;
+pub mod gh899_a_file_is_read_by_its_address;
+pub mod gh899_the_twins_parse_one_address;
+pub mod gh900_blocks_cascade_and_merge_are_pure;
+pub mod gh900_every_write_carries_its_base;
+pub mod gh902_a_commit_plan_is_pure;
+pub mod gh902_a_workspace_commits_all_or_nothing;
+pub mod gh903_a_file_knows_itself_from_birth;
+pub mod gh903_sections_cut_a_file;
+pub mod gh906_git_argv_is_built_not_shelled;
+pub mod gh907_an_attachment_is_stored_as_blocks;
+pub mod gh907_an_upload_gets_a_path_and_a_line;
+pub mod gh908_every_file_tool_maps_to_one_op;
+pub mod gh918_two_creates_never_share_a_path;
+pub mod gh944_a_head_move_emits_one_source_changed;
+pub mod gh944_anchors_are_semantic;
+pub mod gh944_outline_links_and_node_reads;
+pub mod gh944_the_scanner_is_not_fooled;
+pub mod gh944_two_extractors_give_the_same_anchors;
+pub mod gh947_a_directory_is_read_with_its_children;
+pub mod gh947_a_directory_summary_is_lazy;
+pub mod gh947_a_lost_ws_remove_deletes_nothing;
+pub mod gh947_a_node_is_written_in_place;
+pub mod gh947_a_stale_node_bundle_spares_the_head;
+pub mod gh947_a_summary_is_described_once;
+pub mod gh947_aggregates_propagate_in_constant_work;
+pub mod gh947_moves_and_copies_keep_one_path;
+pub mod gh947_tags_ride_the_summary;
+pub mod gh947_the_directory_twins_are_one;
+pub mod gh947_the_node_bundle_holds_at_scale;
+pub mod gh952_the_near_scan_is_the_one_unscoped_node_runs_read;
+pub mod gh973_a_count_is_ascii_digits;
+pub mod gh980_projection_tools_hidden_without_a_projection;
+pub mod gh994_a_page_number_on_a_file_without_pages;
+pub mod gh996_inserting_at_the_line_after_the_last_appends;

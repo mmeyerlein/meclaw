@@ -18,10 +18,13 @@ use meclaw_core::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-// Phase 12-Pre: the main channel is a tokio::sync::mpsc::Receiver; the writer
-// thread drains it via blocking_recv() (the canonical bridge for an async sender
-// + a sync receiver in a std::thread). std::sync::mpsc remains only for the
-// phase-11 template ack channels (mpsc_acks: Vec<std::sync::mpsc::Sender<()>>).
+// Phase 12-Pre: the main channel is a bounded tokio::sync::mpsc. ADR-0051
+// (amended 2026-10-12): the writer is an async front (`recv().await`) with one
+// `spawn_blocking` per run of batches (`write_run`: the next op within
+// `WRITER_LINGER` stays in the same task); without a runtime the same batch
+// runs on a thread (`run_writer_on_thread`).
+// Every ack is a tokio oneshot, awaited -- no synchronous wait on the writer
+// inside async code (ADR-0051).
 
 /// Maximum batch size per transaction.
 const BATCH_MAX: usize = 64;
@@ -156,22 +159,31 @@ pub enum ColonyWriteOp {
         /// The cell that consumed it.
         cell_path: String,
     },
-    /// GH #1015: a boot is about to replay these open deliveries — count the
-    /// attempt. `ack` fires after the commit, so the count is durable before
-    /// the first replayed message reaches a cell: a message that kills the
+    /// GH #1015, GH #1200: a handler is about to start on these replayed
+    /// deliveries — count the attempt. `ack` fires after the commit, so the
+    /// count is durable before the handler runs: a message that kills the
     /// process on every attempt still reaches `replay_exhausted`.
     CountReplays {
-        /// The open deliveries this boot replays.
+        /// The replayed deliveries whose handler is about to start.
         ids: Vec<String>,
         /// Fires after the batch holding this op is committed.
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
+    /// GH #1200 (review M-2): the colony is stopping in order — the attempts
+    /// it counted in this life lapse. One entry per count; an id whose
+    /// delivery was finished meanwhile has no open row and changes nothing.
+    /// Enqueued by the teardown ahead of [`ColonyWriteOp::CleanStop`] in the
+    /// writer's FIFO; a process killed during the teardown keeps its counts.
+    ForgiveAttempts {
+        /// The replayed deliveries this life counted, once per count.
+        ids: Vec<String>,
+    },
     /// GH #1015 (review M-2): `true` — the colony is stopping in order (its
-    /// teardown); `false` — a boot took note. The poison counter counts a
-    /// replay only after a life that did NOT end in order, so three ordered
-    /// restarts with a deep backlog never make a healthy delivery
+    /// teardown); `false` — a boot took note. The attempts of a life that
+    /// ended in order lapse ([`ColonyWriteOp::ForgiveAttempts`], ahead of this
+    /// op), so ordered restarts never make a healthy delivery
     /// `replay_exhausted`. Every boot clears it before its first delivery, in
-    /// the writer's FIFO, so a crash later in that life is counted.
+    /// the writer's FIFO; the boot reports it with its replays.
     CleanStop(bool),
     /// Phase 6: insert in_flight row into mutation_log; ack fires after tx.commit().
     MutationLogInsert {
@@ -259,7 +271,7 @@ pub enum ColonyWriteOp {
         /// Optional ack sender; fires after `tx.commit()`.
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
-    /// Phase 11 11-A: insert or update a template row; ack fires synchronously (mpsc).
+    /// Phase 11 11-A: insert or update a template row; ack fires after `tx.commit()`.
     UpsertTemplate {
         /// Template ID (UUID v7).
         template_id: String,
@@ -278,14 +290,14 @@ pub enum ColonyWriteOp {
         /// Unix seconds of the last scan.
         scanned_at: i64,
         /// Optional ack sender; fires synchronously after the SQL execute.
-        ack: Option<std::sync::mpsc::Sender<()>>,
+        ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
     /// Phase 11 11-A: delete a template row by template_id; ack fires synchronously.
     RemoveTemplate {
         /// Template ID (UUID v7).
         template_id: String,
         /// Optional ack sender; fires synchronously after the SQL execute.
-        ack: Option<std::sync::mpsc::Sender<()>>,
+        ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
     /// Insert a single hive-scope row into `hive_scopes`.
     ///
@@ -431,85 +443,247 @@ pub struct MessageLogRow {
     pub created_at: i64,
 }
 
-/// Writer thread loop: blocking `recv()` for the first item,
-/// then a `try_recv()` drain up to `BATCH_MAX` or empty, one transaction.
+/// The `colony.db` writer (ADR-0051): an async front on the runtime that
+/// opened the database, one `spawn_blocking` per run of batches (`write_run`:
+/// a batch that finds a next op within `WRITER_LINGER` stays in the same task).
+///
+/// The front waits for the first op with `recv().await`; the batch -- that op
+/// plus a `try_recv()` drain up to `BATCH_MAX`, one transaction -- commits in
+/// a blocking task, and the connection and the receiver travel into it and
+/// back (no lock, no new atomic). Why not a thread: while a runtime task
+/// awaits an ack that a foreign thread owes, the runtime looks idle, and a
+/// paused clock (`start_paused`) jumps to its next timer -- a running
+/// `spawn_blocking` task holds it still. Why not one long `spawn_blocking`:
+/// it would hold the paused clock still forever. Production and tests run
+/// this same writer on every runtime flavor.
 ///
 /// **FIX 3 — `InitialApply` is always atomic**: the entire bundle (edges + hive_scopes)
 /// is processed in the same transaction. On a crash mid-batch SQLite rolls back.
 ///
 /// **Phase-13.5-A6 follow-up — deterministic shutdown via `ColonyWriteOp::Shutdown`**:
-/// instead of relying on `blocking_recv() == None` (race-prone under load),
 /// `ColonyDb::shutdown` signals through an explicit `Shutdown { ack }` op.
-/// The writer drains the current batch (including any further ops after shutdown),
-/// commits, fires the ack + all op acks, and returns explicitly. FIFO ordering
-/// guarantees that every op enqueued before shutdown is persisted.
+/// The writer drains the current batch, commits, fires all op acks, closes the
+/// connection and only then the shutdown ack -- the ack is the join. FIFO
+/// ordering guarantees that every op enqueued before shutdown is persisted.
 ///
-/// Write errors: `tracing::error!` + `panic!`. The JoinHandle propagates, tests catch it.
-pub(crate) fn run_writer(
+/// Write errors: `tracing::error!` + `panic!` inside the batch; the front
+/// re-raises it in its own task, the receiver drops, every later send fails
+/// loudly and the shutdown panics on the missing ack (GH #1208).
+pub(crate) async fn run_writer(
+    mut rx: tokio::sync::mpsc::Receiver<ColonyWriteOp>,
+    mut conn: rusqlite::Connection,
+    queue_depth: Arc<AtomicI64>,
+    log_seq: Arc<tokio::sync::watch::Sender<u64>>,
+) {
+    while let Some(first) = rx.recv().await {
+        let qd = queue_depth.clone();
+        let seq = log_seq.clone();
+        let batch = tokio::task::spawn_blocking(move || {
+            match write_run(first, &mut rx, &mut conn, &qd, &seq, WRITER_LINGER) {
+                Some(shutdown_ack) => {
+                    drop(conn);
+                    let _ = shutdown_ack.send(());
+                    None
+                }
+                None => Some((rx, conn)),
+            }
+        })
+        .await;
+        match after_batch(batch) {
+            Some((r, c)) => {
+                rx = r;
+                conn = c;
+            }
+            None => return,
+        }
+    }
+}
+
+/// What the writer's blocking task hands back to the async front.
+type BatchEnd = Option<(
+    tokio::sync::mpsc::Receiver<ColonyWriteOp>,
+    rusqlite::Connection,
+)>;
+
+/// The front's decision after a run of batches: the receiver and the
+/// connection to keep writing with, or `None` to end. A panic in the batch is
+/// re-raised with its own payload (GH #1208); a cancelled batch -- the
+/// runtime shuts down under it, or its pool refuses the spawn while it shuts
+/// down -- ends the writer quietly, there is nothing left to own.
+fn after_batch(batch: Result<BatchEnd, tokio::task::JoinError>) -> BatchEnd {
+    match batch {
+        Ok(end) => end,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(_) => None,
+    }
+}
+
+/// One run of the writer's blocking task (ADR-0051, amended 2026-10-12):
+/// batches follow each other as long as the next op comes within `linger`
+/// (production passes `WRITER_LINGER`). Returns on an empty linger or a
+/// closed channel with `None` -- the front then takes the receiver back --
+/// or with the shutdown ack once the shutdown op was seen, unfired, so the
+/// caller closes the connection first. Synchronous, so a pin drives it on a
+/// plain thread with a linger as long as the hang marker. Precondition: a
+/// non-zero `linger` -- a zero one is the hop per batch the amendment
+/// removed; a debug build (every test) panics on the first write instead.
+fn write_run(
+    first: ColonyWriteOp,
+    rx: &mut tokio::sync::mpsc::Receiver<ColonyWriteOp>,
+    conn: &mut rusqlite::Connection,
+    queue_depth: &AtomicI64,
+    log_seq: &tokio::sync::watch::Sender<u64>,
+    linger: std::time::Duration,
+) -> Option<tokio::sync::oneshot::Sender<()>> {
+    debug_assert!(!linger.is_zero(), "ADR-0051: a run lingers after a commit");
+    let mut next = Some(first);
+    while let Some(op) = next {
+        if let Some(shutdown_ack) = write_one_batch(op, rx, conn, queue_depth, log_seq) {
+            return Some(shutdown_ack);
+        }
+        next = next_op_within(rx, linger);
+    }
+    None
+}
+
+/// How long the writer's blocking task waits for the next op after a commit
+/// before it hands the receiver back to the async front (tv-p1a-p).
+///
+/// Measured on one lane, interleaved A/B, 6 rounds each: a hop back to the
+/// front after every batch cost +79 % write latency (log row until the commit
+/// counter moves, p50 157 -> 282 us), +131 % for a durable ack (p50 102 ->
+/// 235 us) and -12 % burst throughput against the thread writer it replaced
+/// -- every op paid a runtime wake plus a blocking-pool hand-off
+/// (`plans/welle-testing-2026-10-11/berichte/tv-p1a-p.md`). Inside the linger
+/// an op costs one unpark, as with the thread writer. The linger parks, it
+/// does not spin. After a commit it holds a paused clock still for at most
+/// this long in real time; a stream of ops spaced closer than this keeps the
+/// run (and the paused clock) going until the stream pauses.
+const WRITER_LINGER: std::time::Duration = std::time::Duration::from_millis(1);
+
+// A zero linger is the hop back to the front after every batch that the
+// amendment removed (+79 % write latency, see above); the value is the
+// measured one, so going below it needs a new A/B. The value actually passed
+// is checked by `write_run`'s precondition.
+const _: () = assert!(WRITER_LINGER.as_micros() >= 1_000);
+
+/// The next op if one is queued or arrives within `linger`: a timed
+/// `blocking_recv` for the writer's blocking task. `None` on an empty linger
+/// or a closed channel -- the front then sees the close on its own `recv`.
+fn next_op_within(
+    rx: &mut tokio::sync::mpsc::Receiver<ColonyWriteOp>,
+    linger: std::time::Duration,
+) -> Option<ColonyWriteOp> {
+    let waker = current_thread_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    if let std::task::Poll::Ready(op) = rx.poll_recv(&mut cx) {
+        return op;
+    }
+    // One park: a send wakes it early; a spurious wake only ends the linger
+    // early, and the front takes over as before. After an empty linger the
+    // `Unpark` waker stays registered until the front's `recv` replaces it; a
+    // send in that gap leaves a park token on this pool thread, so a later
+    // linger on it may end at once -- latency only, no op is lost (the front
+    // polls the queue before it registers).
+    std::thread::park_timeout(linger);
+    match rx.poll_recv(&mut cx) {
+        std::task::Poll::Ready(op) => op,
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// A waker that unparks the calling thread: a send into the writer queue
+/// ends `next_op_within`'s park early (tv-p1a-p).
+fn current_thread_waker() -> std::task::Waker {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    std::task::Waker::from(Arc::new(Unpark(std::thread::current())))
+}
+
+/// The same writer for a caller without a runtime (sync tests and tools):
+/// its own thread, the same batch. There is no paused clock to protect there.
+pub(crate) fn run_writer_on_thread(
     mut rx: tokio::sync::mpsc::Receiver<ColonyWriteOp>,
     mut conn: rusqlite::Connection,
     queue_depth: Arc<AtomicI64>,
     log_seq: Arc<tokio::sync::watch::Sender<u64>>,
 ) {
     while let Some(first) = rx.blocking_recv() {
-        let tx = conn.transaction().expect("begin tx");
-        let mut acks: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
-        let mut mpsc_acks: Vec<std::sync::mpsc::Sender<()>> = Vec::new();
-        let mut shutdown_ack: Option<tokio::sync::oneshot::Sender<()>> = None;
-        let mut count = 0usize;
-
-        // First op: catch the shutdown signal, otherwise apply.
-        match first {
-            ColonyWriteOp::Shutdown { ack } => {
-                shutdown_ack = Some(ack);
-            }
-            op => {
-                apply_or_die(&tx, op, &mut acks, &mut mpsc_acks);
-                count += 1;
-            }
-        }
-
-        // Batch drain: every further op up to BATCH_MAX or an empty channel.
-        // A shutdown inside the batch is caught, but we still process all
-        // preceding ops in THIS batch (FIFO durability).
-        while count < BATCH_MAX && shutdown_ack.is_none() {
-            match rx.try_recv() {
-                Ok(ColonyWriteOp::Shutdown { ack }) => {
-                    shutdown_ack = Some(ack);
-                }
-                Ok(op) => {
-                    apply_or_die(&tx, op, &mut acks, &mut mpsc_acks);
-                    count += 1;
-                }
-                Err(_) => break,
-            }
-        }
-
-        if let Err(e) = tx.commit() {
-            tracing::error!(error = %e, "colony.db writer commit failed");
-            panic!("colony.db writer commit failed: {e}");
-        }
-        // GH #1099: the log moved -- wake every waiting reader. After the
-        // commit, so a woken reader always finds what woke it.
-        log_seq.send_modify(|seq| *seq = seq.wrapping_add(1));
-        // Fire acks AFTER tx.commit() returned — durable ack guarantee.
-        for a in acks {
-            let _ = a.send(());
-        }
-        for a in mpsc_acks {
-            let _ = a.send(());
-        }
-        // Decrement queue_depth by the processed batch.
-        queue_depth.fetch_sub(count as i64, Ordering::Relaxed);
-
-        // Shutdown op seen: fire its ack AFTER all op acks (deterministic
-        // ordering — the durable acks of the preceding ops are producer-visible
-        // before the shutdown caller unblocks the join), then leave the loop.
-        if let Some(ack) = shutdown_ack {
-            let _ = ack.send(());
+        if let Some(shutdown_ack) =
+            write_one_batch(first, &mut rx, &mut conn, &queue_depth, &log_seq)
+        {
+            drop(conn);
+            let _ = shutdown_ack.send(());
             return;
         }
     }
+}
+
+/// One transaction: `first` plus whatever is queued, up to `BATCH_MAX`.
+/// Returns the shutdown ack once the shutdown op was seen -- unfired, so the
+/// caller closes the connection first.
+fn write_one_batch(
+    first: ColonyWriteOp,
+    rx: &mut tokio::sync::mpsc::Receiver<ColonyWriteOp>,
+    conn: &mut rusqlite::Connection,
+    queue_depth: &AtomicI64,
+    log_seq: &tokio::sync::watch::Sender<u64>,
+) -> Option<tokio::sync::oneshot::Sender<()>> {
+    let tx = conn.transaction().expect("begin tx");
+    let mut acks: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
+    let mut shutdown_ack: Option<tokio::sync::oneshot::Sender<()>> = None;
+    let mut count = 0usize;
+
+    // First op: catch the shutdown signal, otherwise apply.
+    match first {
+        ColonyWriteOp::Shutdown { ack } => {
+            shutdown_ack = Some(ack);
+        }
+        op => {
+            apply_or_die(&tx, op, &mut acks);
+            count += 1;
+        }
+    }
+
+    // Batch drain: every further op up to BATCH_MAX or an empty channel.
+    // A shutdown inside the batch is caught, but we still process all
+    // preceding ops in THIS batch (FIFO durability).
+    while count < BATCH_MAX && shutdown_ack.is_none() {
+        match rx.try_recv() {
+            Ok(ColonyWriteOp::Shutdown { ack }) => {
+                shutdown_ack = Some(ack);
+            }
+            Ok(op) => {
+                apply_or_die(&tx, op, &mut acks);
+                count += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    if let Err(e) = tx.commit() {
+        tracing::error!(error = %e, "colony.db writer commit failed");
+        panic!("colony.db writer commit failed: {e}");
+    }
+    // GH #1099: the log moved -- wake every waiting reader. After the
+    // commit, so a woken reader always finds what woke it.
+    log_seq.send_modify(|seq| *seq = seq.wrapping_add(1));
+    // Fire acks AFTER tx.commit() returned — durable ack guarantee.
+    for a in acks {
+        let _ = a.send(());
+    }
+    // Decrement queue_depth by the processed batch.
+    queue_depth.fetch_sub(count as i64, Ordering::Relaxed);
+
+    // Shutdown op seen: its ack goes out AFTER all op acks (deterministic
+    // ordering — the durable acks of the preceding ops are producer-visible
+    // before the shutdown caller unblocks) and after the caller closed the
+    // connection.
+    shutdown_ack
 }
 
 /// One policy point for "a write to `colony.db` failed".
@@ -526,9 +700,8 @@ fn apply_or_die(
     tx: &rusqlite::Transaction<'_>,
     op: ColonyWriteOp,
     acks: &mut Vec<tokio::sync::oneshot::Sender<()>>,
-    mpsc_acks: &mut Vec<std::sync::mpsc::Sender<()>>,
 ) {
-    if let Err(e) = apply_op(tx, op, acks, mpsc_acks) {
+    if let Err(e) = apply_op(tx, op, acks) {
         tracing::error!(error = %e, "colony.db writer op failed");
         panic!("colony.db writer op failed: {e}");
     }
@@ -538,7 +711,6 @@ fn apply_op(
     tx: &rusqlite::Transaction<'_>,
     op: ColonyWriteOp,
     acks: &mut Vec<tokio::sync::oneshot::Sender<()>>,
-    mpsc_acks: &mut Vec<std::sync::mpsc::Sender<()>>,
 ) -> rusqlite::Result<()> {
     let now = now_unix_secs();
     match op {
@@ -662,7 +834,7 @@ fn apply_op(
         ColonyWriteOp::InsertMessageLogOpen(row) => {
             let to_path = row.to_path.clone();
             let id = row.id.clone();
-            apply_op(tx, ColonyWriteOp::InsertMessageLog(row), acks, mpsc_acks)?;
+            apply_op(tx, ColonyWriteOp::InsertMessageLog(row), acks)?;
             if tx.changes() == 0 {
                 return Ok(());
             }
@@ -702,6 +874,15 @@ fn apply_op(
             }
             if let Some(a) = ack {
                 acks.push(a);
+            }
+        }
+        ColonyWriteOp::ForgiveAttempts { ids } => {
+            for id in ids {
+                tx.execute(
+                    "UPDATE delivery_open SET replays = replays - 1 \
+                     WHERE message_id = ? AND replays > 0",
+                    rusqlite::params![id],
+                )?;
             }
         }
         ColonyWriteOp::MutationLogInsert {
@@ -831,7 +1012,7 @@ fn apply_op(
                 ],
             )?;
             if let Some(a) = ack {
-                mpsc_acks.push(a);
+                acks.push(a);
             }
         }
         ColonyWriteOp::RemoveTemplate { template_id, ack } => {
@@ -840,7 +1021,7 @@ fn apply_op(
                 rusqlite::params![template_id],
             )?;
             if let Some(a) = ack {
-                mpsc_acks.push(a);
+                acks.push(a);
             }
         }
         ColonyWriteOp::InsertDeadLetter {
@@ -1052,7 +1233,6 @@ mod tests {
                 ack: None,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1090,11 +1270,280 @@ mod tests {
         assert!(committed_at.is_none(), "reject never commits");
     }
 
+    fn mutation_ids(db: &crate::ColonyDb) -> Vec<String> {
+        let mut st = db
+            .read_conn
+            .prepare("SELECT id FROM mutation_log ORDER BY rowid")
+            .unwrap();
+        st.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// tv-p1a (ADR-0051): a wait on the writer's ack never moves a paused
+    /// clock. The far timer is what tokio's auto-advance would jump to if the
+    /// runtime looked idle while a commit is owed (a writer on its own thread:
+    /// 10-40 ms virtual per commit in the spike, here the whole hour).
+    ///
+    /// The hang marks here run on the paused clock. A writer whose batch sits
+    /// in `spawn_blocking` holds the auto-advance, so a hung batch freezes the
+    /// mark and only the runner kill ends the test (TV-Z7); a stalled front
+    /// (an ack owed with nothing in flight) lets the clock jump and trips the
+    /// mark at once. A mark can only fire after the clock moved, so it names
+    /// the clock reading: it never hides a broken time claim, and on a green
+    /// run it adds a timer that the held auto-advance never reaches (the
+    /// assertion below stays exact).
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_ack_does_not_advance_the_paused_clock() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
+        let mut seq = db.subscribe_log_seq();
+        let far = tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(3600)));
+        let t0 = tokio::time::Instant::now();
+        let mut last = *seq.borrow_and_update();
+        for i in 0..20 {
+            meclaw_testing::deadline::hang_with(
+                "the writer acks the durable insert",
+                db.insert_mutation_log_durable(format!("m{i:02}"), "/".into(), "{}".into(), i),
+                || format!("op {i}; paused clock {:?} past t0", t0.elapsed()),
+            )
+            .await
+            .expect("writer ack");
+            let now = *seq.borrow_and_update();
+            assert!(now > last, "ack {i} came before its commit");
+            last = now;
+        }
+        assert_eq!(
+            t0.elapsed(),
+            std::time::Duration::ZERO,
+            "the paused clock moved while the writer committed"
+        );
+        let expected: Vec<String> = (0..20).map(|i| format!("m{i:02}")).collect();
+        assert_eq!(mutation_ids(&db), expected, "commit order = send order");
+        far.abort();
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
+    }
+
+    fn mutation_op(id: &str) -> ColonyWriteOp {
+        ColonyWriteOp::MutationLogInsert {
+            id: id.into(),
+            scope: "/".into(),
+            payload_json: "{}".into(),
+            created_at: 0,
+            ack: None,
+        }
+    }
+
+    /// tv-p1a-p (helper test for `next_op_within`): an op already queued when
+    /// the writer lingers is taken at once -- the linger never parks over work.
+    #[test]
+    fn a_lingering_writer_takes_a_queued_op_at_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(mutation_op("queued")).unwrap();
+        // A linger as long as the hang marker: a park here would hang the test.
+        match next_op_within(&mut rx, meclaw_testing::deadline::HANG) {
+            Some(ColonyWriteOp::MutationLogInsert { id, .. }) => assert_eq!(id, "queued"),
+            _ => panic!("the queued op was not taken"),
+        }
+    }
+
+    /// tv-p1a-p (helper test for `next_op_within`): an op sent by another
+    /// thread while the writer lingers is taken. The decision -- the same run
+    /// writes it -- is pinned by `a_run_writes_an_op_sent_within_the_linger`.
+    #[test]
+    fn a_lingering_writer_wakes_for_an_op_sent_meanwhile() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let sender = std::thread::spawn(move || {
+            tx.blocking_send(mutation_op("meanwhile")).unwrap();
+            tx
+        });
+        match next_op_within(&mut rx, meclaw_testing::deadline::HANG) {
+            Some(ColonyWriteOp::MutationLogInsert { id, .. }) => assert_eq!(id, "meanwhile"),
+            _ => panic!("the op sent meanwhile was not taken"),
+        }
+        drop(sender.join().unwrap());
+    }
+
+    /// tv-p1a-m P2b (TV-Q5): the linger's waker unparks the thread that
+    /// made it -- the send that wakes a lingering writer. Event-based: the
+    /// thread parks without a timeout and only the waker can end that park;
+    /// the test waits on its done signal under the hang marker (TV-Z3).
+    #[test]
+    fn the_linger_waker_unparks_its_thread() {
+        let (waker_tx, waker_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            waker_tx.send(current_thread_waker()).unwrap();
+            std::thread::park();
+            let _ = done_tx.send(());
+        });
+        let waker = waker_rx.recv().expect("the parking thread sends its waker");
+        waker.wake();
+        let marker = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG);
+        done_rx.recv_timeout(marker).unwrap_or_else(|_| {
+            panic!(
+                "HANG: the woken thread never left its park within {marker:?} \
+                 (last seen: waker received and woken)"
+            )
+        });
+    }
+
+    /// tv-p1a-p: a closed, empty channel ends the linger at once (the front
+    /// then sees the close itself); an open, empty one ends it after the
+    /// linger with nothing.
+    #[test]
+    fn a_lingering_writer_ends_on_close_and_on_an_empty_linger() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ColonyWriteOp>(4);
+        assert!(next_op_within(&mut rx, std::time::Duration::from_nanos(1)).is_none());
+        drop(tx);
+        assert!(next_op_within(&mut rx, meclaw_testing::deadline::HANG).is_none());
+    }
+
+    fn acked_op(id: &str, ack: tokio::sync::oneshot::Sender<()>) -> ColonyWriteOp {
+        ColonyWriteOp::MutationLogInsert {
+            id: id.into(),
+            scope: "/".into(),
+            payload_json: "{}".into(),
+            created_at: 0,
+            ack: Some(ack),
+        }
+    }
+
+    /// tv-p1a-p (ADR-0051, amended 2026-10-12): an op that comes within the
+    /// linger is written by the same run -- no hop back to the async front (a
+    /// hop per batch cost +79 % write latency, the A/B in
+    /// `plans/welle-testing-2026-10-11/berichte/tv-p1a-p.md`). The producer
+    /// sends B only after A's ack, i.e. after A's commit, so B can never ride
+    /// in A's drain: a run of one batch returns before B is written; a zero
+    /// linger fails `write_run`'s precondition. With the linger the run
+    /// writes A and B and ends only on the close. A plain thread, no runtime,
+    /// no clock; the hang marker as linger only bounds a broken run.
+    #[test]
+    fn a_run_writes_an_op_sent_within_the_linger() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut conn = rusqlite::Connection::open(td.path().join("c.db")).unwrap();
+        crate::persist::setup_colony_db(&conn).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (a_ack, a_acked) = tokio::sync::oneshot::channel();
+        let producer = std::thread::spawn(move || {
+            a_acked.blocking_recv().expect("A acked");
+            let (b_ack, b_acked) = tokio::sync::oneshot::channel();
+            tx.blocking_send(acked_op("B", b_ack)).expect("send B");
+            b_acked.blocking_recv().expect("B acked");
+            // Dropping `tx` closes the channel: the run's only way out.
+        });
+        let queue_depth = AtomicI64::new(0);
+        let log_seq = tokio::sync::watch::channel(0_u64).0;
+        let shutdown = write_run(
+            acked_op("A", a_ack),
+            &mut rx,
+            &mut conn,
+            &queue_depth,
+            &log_seq,
+            meclaw_testing::deadline::HANG,
+        );
+        assert!(shutdown.is_none(), "no shutdown op was sent");
+        let ids: Vec<String> = conn
+            .prepare("SELECT id FROM mutation_log ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            ids,
+            ["A", "B"],
+            "the run ended before it wrote B (or B did not arrive within HANG)"
+        );
+        assert_eq!(*log_seq.borrow(), 2, "A and B commit one after the other");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "the run ended before the close"
+        );
+        producer.join().expect("producer");
+    }
+
+    /// tv-p1a Z2 (re-check A-M1, ADR-0051): `write_run`'s precondition holds.
+    /// A zero linger is the hop per batch the amendment removed; a debug
+    /// build (every test) refuses it on the first write. No channel wait: the
+    /// op is passed in, the panic comes before any write.
+    ///
+    /// Debug builds only: the precondition is a `debug_assert!`, so a
+    /// `--release` test run has nothing to panic and this pin would fail
+    /// there for the build profile, not for the code (re-check Z2 H3).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "ADR-0051: a run lingers after a commit")]
+    fn a_run_refuses_a_zero_linger() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persist::setup_colony_db(&conn).unwrap();
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let queue_depth = AtomicI64::new(0);
+        let log_seq = tokio::sync::watch::channel(0_u64).0;
+        let _ = write_run(
+            mlog_op(0),
+            &mut rx,
+            &mut conn,
+            &queue_depth,
+            &log_seq,
+            std::time::Duration::ZERO,
+        );
+    }
+
+    /// tv-p1a (ADR-0051): more ops than one batch, sent before any ack is
+    /// awaited: every ack fires after the commit that carries its op (the row
+    /// is readable from the read connection), and the log keeps send order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_writer_keeps_batch_order_and_acks_after_commit() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
+        let n = BATCH_MAX * 3 + 7;
+        let mut acks = Vec::with_capacity(n);
+        for i in 0..n {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            db.send_op(ColonyWriteOp::MutationLogInsert {
+                id: format!("m{i:04}"),
+                scope: "/".into(),
+                payload_json: "{}".into(),
+                created_at: i as i64,
+                ack: Some(tx),
+            })
+            .await;
+            acks.push(rx);
+        }
+        for (i, rx) in acks.into_iter().enumerate() {
+            meclaw_testing::deadline::hang_with(
+                "the writer acks every op after its commit",
+                rx,
+                || format!("waiting on the ack of op {i} of {n}"),
+            )
+            .await
+            .expect("writer ack");
+            let seen: i64 = db
+                .read_conn
+                .query_row(
+                    "SELECT COUNT(*) FROM mutation_log WHERE id = ?1",
+                    [format!("m{i:04}")],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(seen, 1, "ack {i} fired before its row was committed");
+        }
+        let expected: Vec<String> = (0..n).map(|i| format!("m{i:04}")).collect();
+        assert_eq!(mutation_ids(&db), expected);
+        assert_eq!(db.queue_depth(), 0);
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
+    }
+
     #[tokio::test]
     async fn upsert_template_then_read_back() {
         let td = tempfile::TempDir::new().unwrap();
         let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
-        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         db.send_op(ColonyWriteOp::UpsertTemplate {
             template_id: "t-1".into(),
             name: "echo".into(),
@@ -1107,7 +1556,9 @@ mod tests {
             ack: Some(ack_tx),
         })
         .await;
-        ack_rx.recv().unwrap();
+        meclaw_testing::deadline::hang("the writer acks the template upsert", ack_rx)
+            .await
+            .unwrap();
         let templates = db.read_templates().unwrap();
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, "echo");
@@ -1119,7 +1570,7 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
         for path in ["/tmp/a", "/tmp/b"] {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
             db.send_op(ColonyWriteOp::UpsertTemplate {
                 template_id: "t-1".into(),
                 name: "echo".into(),
@@ -1132,7 +1583,9 @@ mod tests {
                 ack: Some(tx),
             })
             .await;
-            rx.recv().unwrap();
+            meclaw_testing::deadline::hang("the writer acks the template upsert", rx)
+                .await
+                .unwrap();
         }
         let templates = db.read_templates().unwrap();
         assert_eq!(templates.len(), 1, "upsert must replace, not duplicate");
@@ -1143,7 +1596,7 @@ mod tests {
     async fn remove_template_deletes_row() {
         let td = tempfile::TempDir::new().unwrap();
         let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
-        let (tx1, rx1) = std::sync::mpsc::channel();
+        let (tx1, rx1) = tokio::sync::oneshot::channel();
         db.send_op(ColonyWriteOp::UpsertTemplate {
             template_id: "t-1".into(),
             name: "echo".into(),
@@ -1156,14 +1609,18 @@ mod tests {
             ack: Some(tx1),
         })
         .await;
-        rx1.recv().unwrap();
-        let (tx2, rx2) = std::sync::mpsc::channel();
+        meclaw_testing::deadline::hang("the writer acks the template upsert", rx1)
+            .await
+            .unwrap();
+        let (tx2, rx2) = tokio::sync::oneshot::channel();
         db.send_op(ColonyWriteOp::RemoveTemplate {
             template_id: "t-1".into(),
             ack: Some(tx2),
         })
         .await;
-        rx2.recv().unwrap();
+        meclaw_testing::deadline::hang("the writer acks the template removal", rx2)
+            .await
+            .unwrap();
         assert!(db.read_templates().unwrap().is_empty());
     }
 
@@ -1191,17 +1648,9 @@ mod tests {
         .await;
 
         // Test-Timeout-Guard via shutdown analog T13.
-        use std::sync::mpsc::{RecvTimeoutError, channel};
-        let (done_tx, done_rx) = channel();
-        std::thread::spawn(move || {
-            db.shutdown();
-            done_tx.send(()).unwrap();
-        });
-        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(()) => {}
-            Err(RecvTimeoutError::Timeout) => panic!("shutdown hung"),
-            Err(e) => panic!("{e:?}"),
-        }
+        // Liveness gate: the writer runs on this runtime (ADR-0051), so the
+        // shutdown is awaited here under the hang mark, not joined from a thread.
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         #[allow(clippy::type_complexity)]
@@ -1273,7 +1722,6 @@ mod tests {
                 tap: false,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1315,7 +1763,6 @@ mod tests {
                     tap: false,
                 },
                 &mut Vec::new(),
-                &mut Vec::new(),
             )
             .expect("apply_op in test");
             tx.commit().unwrap();
@@ -1350,7 +1797,6 @@ mod tests {
                 updated_at: 100,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1364,7 +1810,6 @@ mod tests {
                 status: "inactive".into(),
                 updated_at: 200,
             },
-            &mut Vec::new(),
             &mut Vec::new(),
         )
         .expect("apply_op in test");
@@ -1406,7 +1851,6 @@ mod tests {
                 updated_at: 100,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1423,7 +1867,6 @@ mod tests {
                     instantiated_at: 1_700_000_000,
                 },
             },
-            &mut Vec::new(),
             &mut Vec::new(),
         )
         .expect("apply_op in test");
@@ -1461,7 +1904,6 @@ mod tests {
                 updated_at: 1,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         apply_op(
@@ -1475,7 +1917,6 @@ mod tests {
                     instantiated_at: 42,
                 },
             },
-            &mut Vec::new(),
             &mut Vec::new(),
         )
         .expect("apply_op in test");
@@ -1510,7 +1951,6 @@ mod tests {
                     updated_at: 1,
                 },
                 &mut Vec::new(),
-                &mut Vec::new(),
             )
             .expect("apply_op in test");
         }
@@ -1530,7 +1970,6 @@ mod tests {
                 },
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         apply_op(
@@ -1544,7 +1983,6 @@ mod tests {
                     instantiated_at: 7,
                 },
             },
-            &mut Vec::new(),
             &mut Vec::new(),
         )
         .expect("apply_op in test");
@@ -1609,7 +2047,6 @@ mod tests {
                 hive_scopes: vec![],
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1647,7 +2084,6 @@ mod tests {
                 created_at: 100,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1677,7 +2113,6 @@ mod tests {
                 created_at: 42,
                 ack: None,
             },
-            &mut Vec::new(),
             &mut Vec::new(),
         )
         .expect("apply_op in test");
@@ -1710,7 +2145,6 @@ mod tests {
                 ack: None,
             },
             &mut Vec::new(),
-            &mut Vec::new(),
         )
         .expect("apply_op in test");
         tx.commit().unwrap();
@@ -1723,7 +2157,6 @@ mod tests {
                 edges: vec![],
                 hive_scopes: vec![Path::new("/h")],
             },
-            &mut Vec::new(),
             &mut Vec::new(),
         )
         .expect("apply_op in test");
@@ -1755,7 +2188,6 @@ mod tests {
     #[tokio::test]
     async fn shutdown_persists_all_prior_writes_and_returns_within_timeout() {
         use crate::persist::ColonyDb;
-        use std::sync::mpsc::{RecvTimeoutError, channel};
 
         let td = tempfile::TempDir::new().unwrap();
         let db_path = td.path().join("c.db");
@@ -1782,17 +2214,9 @@ mod tests {
             .await;
         }
 
-        // Liveness gate: shutdown in a separate std::thread; recv_timeout 30s.
-        let (done_tx, done_rx) = channel();
-        std::thread::spawn(move || {
-            db.shutdown();
-            done_tx.send(()).unwrap();
-        });
-        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(()) => {}
-            Err(RecvTimeoutError::Timeout) => panic!("shutdown hung"),
-            Err(e) => panic!("{e:?}"),
-        }
+        // Liveness gate: the writer runs on this runtime (ADR-0051), so the
+        // shutdown is awaited here under the hang mark, not joined from a thread.
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
 
         // Durability gate: ALL 100 rows readable from a fresh connection.
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -1814,5 +2238,197 @@ mod tests {
                 .unwrap();
             assert_eq!(id, format!("msg-{i}"));
         }
+    }
+
+    fn mlog_op(i: usize) -> ColonyWriteOp {
+        ColonyWriteOp::MutationLogInsert {
+            id: format!("b{i:04}"),
+            scope: "/".into(),
+            payload_json: "{}".into(),
+            created_at: i as i64,
+            ack: None,
+        }
+    }
+
+    fn writer_conn(td: &tempfile::TempDir) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(td.path().join("c.db")).unwrap();
+        crate::persist::setup_colony_db(&conn).unwrap();
+        conn
+    }
+
+    /// tv-p1a-m (TV-Q5): one batch is exactly `BATCH_MAX` ops when more are
+    /// queued -- the first op plus `BATCH_MAX - 1` drained, the rest stays in
+    /// the channel for the next transaction; the batch commits once and gives
+    /// back exactly what it wrote from the queue depth.
+    #[test]
+    fn one_batch_holds_exactly_batch_max_ops() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut conn = writer_conn(&td);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(BATCH_MAX + 1);
+        for i in 1..=BATCH_MAX {
+            tx.try_send(mlog_op(i)).unwrap();
+        }
+        let qd = AtomicI64::new(BATCH_MAX as i64 + 1);
+        let seq = tokio::sync::watch::channel(0_u64).0;
+        let shutdown = write_one_batch(mlog_op(0), &mut rx, &mut conn, &qd, &seq);
+        assert!(shutdown.is_none(), "no shutdown op was sent");
+        assert_eq!(
+            rx.len(),
+            1,
+            "the batch drained more or less than BATCH_MAX - 1"
+        );
+        assert_eq!(qd.load(Ordering::Relaxed), 1, "queue depth after one batch");
+        assert_eq!(*seq.borrow(), 1, "one batch, one commit");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mutation_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, BATCH_MAX as i64);
+    }
+
+    /// tv-p1a-m (TV-Q5, GH #1208): a failed write panics the batch, and the
+    /// async front re-raises that panic in its own task -- it never ends as if
+    /// the channel had closed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_write_panics_the_writer_task() {
+        let td = tempfile::TempDir::new().unwrap();
+        let conn = writer_conn(&td);
+        conn.execute("DROP TABLE mutation_log", []).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let front = tokio::spawn(run_writer(
+            rx,
+            conn,
+            Arc::new(AtomicI64::new(1)),
+            Arc::new(tokio::sync::watch::channel(0_u64).0),
+        ));
+        tx.send(mlog_op(0)).await.unwrap();
+        // A regression that writes fine must end the front on the closed
+        // channel and fail the assertion below, not park it on `recv()`.
+        drop(tx);
+        let end = meclaw_testing::deadline::hang("the writer task ends on its failed write", front)
+            .await
+            .expect_err("the writer task ended without the batch's panic");
+        assert!(
+            end.is_panic(),
+            "the writer task was cancelled, not panicked"
+        );
+        let msg = panic_text(end.into_panic());
+        assert!(
+            msg.starts_with("colony.db writer op failed"),
+            "the front re-raised another panic than the batch's own: {msg}"
+        );
+    }
+
+    /// The text of a panic payload (`panic!` with or without arguments).
+    fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default()
+    }
+
+    /// tv-p1a-m P2b (re-check M1): a cancelled batch ends the writer quietly.
+    /// The runtime's shutdown cancels it, or the blocking pool refuses its
+    /// spawn while it shuts down; the front must not panic on that
+    /// `JoinError` ("`JoinError` reason is not a panic"). Time-free: an
+    /// aborted, never-ready task yields exactly that error.
+    #[tokio::test]
+    async fn a_cancelled_batch_ends_the_writer_quietly() {
+        let h = tokio::spawn(std::future::pending::<BatchEnd>());
+        h.abort();
+        let e = h.await.expect_err("an aborted task ends in a JoinError");
+        assert!(e.is_cancelled(), "the probe error is a cancellation");
+        assert!(
+            after_batch(Err(e)).is_none(),
+            "a cancelled batch must end the writer"
+        );
+    }
+
+    /// tv-p1a-m P2b (re-check M1, TV-Q4): a panicked batch re-raises its own
+    /// payload in the front -- not `None`, not another panic.
+    #[tokio::test]
+    async fn a_panicked_batch_re_raises_its_own_payload() {
+        let e = tokio::spawn(async { panic!("probe batch panic 7f3a") })
+            .await
+            .expect_err("a panicking task ends in a JoinError");
+        let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| after_batch(Err(e))))
+            .expect_err("a panicked batch must re-raise in the front");
+        assert_eq!(panic_text(raised), "probe batch panic 7f3a");
+    }
+
+    /// tv-p1a-m P2b: a batch run that hands the receiver and the connection
+    /// back keeps the writer going with exactly those; one that ends
+    /// (shutdown op) ends it.
+    #[test]
+    fn a_finished_batch_hands_back_or_ends() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<ColonyWriteOp>(1);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE probe_7f3a (x)").unwrap();
+        let (rx, conn) =
+            after_batch(Ok(Some((rx, conn)))).expect("a handed-back batch keeps the writer");
+        assert!(
+            tx.try_send(mlog_op(0)).is_ok() && rx.len() == 1,
+            "the same receiver came back"
+        );
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'probe_7f3a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the same connection came back");
+        assert!(
+            after_batch(Ok(None)).is_none(),
+            "a shutdown batch ends the writer"
+        );
+    }
+
+    /// tv-p1a-m (TV-Q5, GH #1208): the sync `shutdown()` against a writer on
+    /// the runtime returns only after the drain -- every op queued before it
+    /// (several batches' worth) is committed when it returns. An end-to-end
+    /// FIFO check, deterministic on the correct code; the kill of the
+    /// `send_shutdown_op_and_wait_sync` mutants is pinned at that function
+    /// itself (`colony_db::tests::the_sync_shutdown_*`, re-check M2).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_sync_shutdown_returns_after_the_drain() {
+        let td = tempfile::TempDir::new().unwrap();
+        let path = td.path().join("c.db");
+        let db = crate::ColonyDb::open(&path).unwrap();
+        let n = 3 * BATCH_MAX + 7;
+        let sent = std::cell::Cell::new(0_usize);
+        meclaw_testing::deadline::hang_with(
+            "the writer takes every queued op",
+            async {
+                for i in 0..n {
+                    db.send_op(ColonyWriteOp::MutationLogInsert {
+                        id: format!("s{i:04}"),
+                        scope: "/".into(),
+                        payload_json: "{}".into(),
+                        created_at: i as i64,
+                        ack: None,
+                    })
+                    .await;
+                    sent.set(i + 1);
+                }
+            },
+            || format!("{} of {n} ops queued", sent.get()),
+        )
+        .await;
+        meclaw_testing::deadline::hang(
+            "the sync shutdown returns after the drain",
+            tokio::task::spawn_blocking(move || db.shutdown()),
+        )
+        .await
+        .expect("sync shutdown");
+        let conn = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mutation_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, n as i64, "shutdown returned before the drain");
     }
 }

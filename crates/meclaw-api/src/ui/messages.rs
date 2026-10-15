@@ -11,8 +11,8 @@
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
 use crate::handlers::message_log::{DEFAULT_SCAN_BUDGET, MAX_SCAN_BUDGET};
-use crate::ui::layout;
 use crate::ui::message_render::{render_scan_notice, truncate};
+use crate::ui::{count_of, layout};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -227,7 +227,7 @@ pub async fn get_messages_ui(
     let content = html! {
         (render_filter_form(&q))
         (render_scan_notice(reply.scan_budget, reply.scan_truncated))
-        h2 { "Messages (" (reply.entries.len()) ")" }
+        h2 { "Messages (" (count_of(reply.entries.len(), clamp_limit(q.limit))) ")" }
         (render_table(&reply.entries))
         @if let Some(link) = &older_link {
             p { a href=(link) { "Older →" } }

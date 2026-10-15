@@ -118,7 +118,7 @@ operation is broker-only, and `params.broker` is what names the broker.
 ## The two invariants
 
 These are not guidelines. They are the reason this hive is an authority rather than a
-lookup table, and both are pinned in `crates/meclaw-cells/tests/access_template.rs`.
+lookup table, and both are pinned in `crates/meclaw-cells/tests/store_1/access_template.rs`.
 
 ### R-AC-1 -- the requester comes from the EDGE, never from the body
 
@@ -205,7 +205,7 @@ Two rules keep it fixed, and each of them is enough on its own:
 
 This grants nothing that was refused before. It only makes the second question get asked;
 what the answer is, is still whatever the rows say. Pinned in
-`crates/meclaw-cells/tests/gh481_the_broker_answers_the_question_it_was_asked.rs`, over the
+`crates/meclaw-cells/tests/misc_4/gh481_the_broker_answers_the_question_it_was_asked.rs`, over the
 hive's real edges -- driving the script directly cannot see an edge, which is why nothing was
 red for as long as the path existed.
 

@@ -44,7 +44,7 @@ jobs:
           CC_x86_64_unknown_linux_musl: musl-gcc
           AR_x86_64_unknown_linux_musl: ar
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: cargo build --release --target "$TARGET" -p meclaw-cli
+        run: cargo build --release --target "$TARGET" -p meclaw
 
       # Stripping happens BEFORE the gate and the smoke test, so the artifact
       # that is asserted is byte-for-byte the artifact that ships. Debug

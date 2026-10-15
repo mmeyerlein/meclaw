@@ -103,7 +103,7 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
         sink: &'a OutputSink,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
-            let started = std::time::Instant::now();
+            let started = tokio::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
             // GH #1060: a sealed delivery is the slot's, never a search. Only a
@@ -305,7 +305,7 @@ impl WebSearchCell {
         code: &str,
         text: String,
         id: Option<String>,
-        started: std::time::Instant,
+        started: tokio::time::Instant,
     ) {
         let duration_ms = started.elapsed().as_millis() as u64;
         let mut header = Map::new();

@@ -23,8 +23,9 @@
 
 use crate::proxy::telegram::TelegramClient;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 /// GH #515: the refresh interval -- 4 s under Telegram's ~5 s decay, one full
 /// second of margin for a slow round trip.

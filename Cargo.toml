@@ -12,9 +12,49 @@ members = [
 ]
 
 [workspace.package]
-version = "0.63.1"
+version = "0.64.0"
 edition = "2024"
 publish = true
 rust-version = "1.85"
 repository = "https://github.com/mmeyerlein/meclaw"
 license = "MIT OR Apache-2.0"
+
+# One feature set per shared third-party dependency (GH #1168, refs #1166).
+# A `-p` set of the build station that resolves unlike the whole workspace
+# gets its own variant of every shared dependency and of every crate above it.
+# Measured on a lane (two `-p` sets, a target the workspace build had warmed):
+# building the sets' variants took 141.4 s with member-local feature lists and
+# 45.6 s with these, because a set that holds the CLI now resolves like the
+# workspace. A set without the CLI still resolves differently (`log/std` comes
+# in only through the CLI's subscriber, the HTTP client features only through
+# the crates that use the client), so the rebuild after a one-line change
+# stays at about 30 s either way. Each list below is the
+# feature set the workspace build WITH its dev-dependencies (the test targets)
+# already resolves for that package (features other packages switch on, e.g.
+# tokio `io-std`/`signal`/`tracing` through the CLI's console subscriber, are
+# listed too), so that build resolves as before. A build without them does
+# change: the shipped `meclaw` binary (and `cargo build --workspace`) now also
+# compiles reqwest `multipart` with its crates mime_guess and unicase, which
+# only the API tests pulled in before; `cargo tree -p meclaw -e features,no-dev`
+# differs in nothing else (owner decision, GH #1168). hyper-util `server` is
+# named although `server-auto` implies it, because api and cells use it
+# directly. Members inherit with `workspace = true` and add no features of their
+# own; the precheck lock `feature-unity-lock` (scripts/pipeline/locks.py)
+# keeps it that way. The release station `crate-isolation` still checks every
+# member alone. Changing an entry is a Cargo.toml change under AGENTS.md rule 6.
+[workspace.dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["multipart"] }
+clap = { version = "4", features = ["derive"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "io"] }
+hyper = { version = "1", default-features = false, features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+rusqlite = { version = "0.39", features = ["bundled", "functions"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time", "tracing"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+tracing = { version = "0.1", features = ["log"] }
+uuid = { version = "1", features = ["v7", "serde"] }

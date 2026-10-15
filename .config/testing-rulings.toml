@@ -1,0 +1,82 @@
+# Register of owner rulings for the testing rules (VORGABEN § 5.4, B4).
+#
+# An exception comment `testing-ban: allow <ban-id> <OR-id>: <reason>` and a
+# loosening of a reserved file (check `testing-rules`) hold only when the OR-id
+# stands here. Only the owner or the coordinator writes this file, as a commit
+# on master that touches nothing else, message
+# `testing-ruling: <OR-id> (<by>, <date>)`. A strand diff on this file is RED;
+# strands get it by rebase. Strand rulings (`OR-<wave>.<strand>.<n>`) never
+# stand here.
+#
+# Schema, one table per ruling:
+#
+#   [[ruling]]
+#   id = "OR-<id>"
+#   date = "YYYY-MM-DD"
+#   by = "owner" | "coordinator"
+#   text = "<wording of the ruling>"
+#   bans = ["<ban-id>", ...]          # bans the ruling may open
+#   paths = ["<glob>", ...]           # where it may open them
+#   loosens = ["<file>", ...]         # reserved files it may loosen
+#   expires = "YYYY-MM-DD"            # optional; past the date the ruling is RED
+
+[[ruling]]
+id = "OR-TV-2"
+date = "2026-10-11"
+by = "coordinator"
+text = "FLAKY does not count green: a test that fails and passes on rerun is a finding of the wave, reruns only classify it (triage instead of 10x isolation); quarantine only with issue, owner, cause class and expiry. Transition: FLAKY counts green only for tests on the published, shrinking legacy list .config/flaky-legacy.toml, never for new or changed tests."
+bans = []
+paths = []
+loosens = [".config/flaky-legacy.toml"]
+expires = "2026-10-14"
+
+[[ruling]]
+id = "OR-TV-7"
+date = "2026-10-11"
+by = "coordinator"
+text = "Bug fix in the diff-line attribution of scripts/testing_bans.py: a statement counts from its first non-blank character, so the unchanged line right below an added one no longer counts as added. Only added lines are judged, as the rules always meant; no ban, pattern or scope changes."
+bans = []
+paths = []
+loosens = ["scripts/testing_bans.py"]
+expires = "2026-10-14"
+
+[[ruling]]
+id = "OR-TV-8"
+date = "2026-10-12"
+by = "coordinator"
+text = "The ruling env of the check testing-rules accepts several register ids, comma-separated. Each id is checked against this register (unknown or expired is red), and each loosened file must be named under `loosens` by one of the given ids. No ban, pattern or scope changes."
+bans = []
+paths = []
+loosens = ["scripts/testing_bans.py"]
+expires = "2026-10-14"
+
+[[ruling]]
+id = "OR-TV-9"
+date = "2026-10-12"
+by = "coordinator"
+text = "Bug fix in the JavaScript tokenizer of scripts/testing_bans.py (Source): regex literals are recognised, so `//` inside a regex no longer starts a comment. Statement spans and findings follow the source as written; no ban, pattern or scope changes."
+bans = []
+paths = []
+loosens = ["scripts/testing_bans.py"]
+expires = "2026-10-14"
+
+[[ruling]]
+id = "OR-TV-10"
+date = "2026-10-12"
+by = "coordinator"
+text = "Tightening of the clock-bans ratchet in scripts/testing_bans.py: the unwrap budget file becomes reserved, its counts may only sink, and a reason prefix moved from mono: to wall: counts as a loosening. Stricter than before; no ban or pattern is removed and no scope narrows."
+bans = []
+paths = []
+loosens = ["scripts/testing_bans.py"]
+expires = "2026-10-14"
+
+
+[[ruling]]
+id = "OR-TV-11"
+date = "2026-10-13"
+by = "owner"
+text = "New tests are written in the docs/development-rules.md section 11 format. A flake found from here on is fixed by format: a test in the old format is lifted onto the section 11 format as a whole; a test already in that format is always fixed at its cause, never loosened, never given a longer wait, never quarantined in place of the fix. Section 11 gains this paragraph; stricter than before, no rule of the section is removed or narrowed."
+bans = []
+paths = []
+loosens = ["docs/development-rules.md"]
+expires = "2026-10-20"

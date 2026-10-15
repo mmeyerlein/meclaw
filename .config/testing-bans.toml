@@ -1,0 +1,278 @@
+# The testing bans: one entry per ban, graded by the precheck check `test-bans`
+# (`scripts/testing_bans.py`) on ADDED lines of test code only.
+#
+# Binding text: `docs/development-rules.md` § 11; decision: ADR-0050. This file
+# changes in a loosening direction (a ban removed, a scope narrowed, a context
+# or allow path widened, a level lowered from RED to NOTE, a pattern changed)
+# only under an owner ruling from `.config/testing-rulings.toml` named in
+# `MECLAW_TESTING_RULES_RULING` (check `testing-rules`). Tightening is free.
+#
+# Fields:
+#   id           the ban id an exception names (`testing-ban: allow <id> <OR-id>: <reason>`)
+#   rule         the rule of the binding text it enforces
+#   lang         rust | python | js -- the file suffix it reads (.rs | .py | .mjs)
+#   pattern      the regular expression that finds a candidate; some bans refine
+#                it per statement (`testing_bans.REFINE`, named in the explanation)
+#   scope        path globs; `cfg-test:<glob>` = only `#[cfg(test)]` items there
+#   context      exceptions: `start_paused` (inside a test fn with
+#                `start_paused = true`), `tokio_instant` (and the file uses
+#                `tokio::time::Instant`), `allow:<glob>` (a path that may)
+#   level        RED | NOTE
+#   explanation  why the line is wrong
+#   replacement  what to write instead
+
+[[ban]]
+id = "rs-thread-sleep"
+rule = "TV-S2"
+lang = "rust"
+pattern = '\bthread::sleep\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = []
+level = "RED"
+explanation = "a sleep in a test waits for time, not for the event it hopes has happened"
+replacement = "wait for the event (a channel, a sync marker, meclaw_testing::wait) under a deadline:: hang marker"
+
+[[ban]]
+id = "rs-tokio-sleep"
+rule = "TV-S2"
+lang = "rust"
+pattern = '(?<![\w.])(?:tokio::)?time::sleep\s*\(|(?<![\w:.])sleep\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["start_paused", "allow:crates/meclaw-testing/src/wait.rs", "allow:crates/meclaw-testing/src/mock_*.rs", "allow:crates/meclaw-testing/src/mocks/**"]
+level = "RED"
+explanation = "a real-time sleep in a test is a guess at how long the system needs (a bare `sleep(` counts where the file imports tokio's)"
+replacement = "wait for the event; in virtual time (`start_paused = true`) a sleep is exact and allowed"
+
+[[ban]]
+id = "rs-elapsed-verdict"
+rule = "TV-Z1"
+lang = "rust"
+pattern = '\b(?:debug_)?assert(?:_eq|_ne)?!\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["start_paused", "tokio_instant"]
+level = "RED"
+explanation = "an assert on elapsed real time (elapsed(, Instant::now, SystemTime::now, Utc::now, duration_since( in the statement or in a variable of the same fn) judges the machine's load, not the code"
+replacement = "assert in virtual time (`start_paused = true` with tokio::time::Instant) or move the claim to the perf stage"
+
+[[ban]]
+id = "rs-short-deadline"
+rule = "TV-Z3"
+lang = "rust"
+pattern = '\btimeout\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["start_paused"]
+level = "RED"
+explanation = "a timeout( whose first argument is a literal Duration::from_millis( or from_secs(<10) is a budget, not a hang marker"
+replacement = "use a named marker from meclaw_testing::deadline (30 s, scaled, failing with HANG:)"
+
+[[ban]]
+id = "rs-neg-window"
+rule = "TV-A4"
+lang = "rust"
+pattern = '\.is_err\s*\(\s*\)|\.unwrap_err\s*\(\s*\)|\bmatches!\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["start_paused"]
+level = "RED"
+explanation = "a timeout(...).await checked for Err proves absence by waiting out a window"
+replacement = "prove absence by a marker or quiescence (TV-A1/A2), or in virtual time"
+
+[[ban]]
+id = "rs-colony-db"
+rule = "TV-A3"
+lang = "rust"
+pattern = '"[^"]*(?:colony\.db|message_log|mutation_log)[^"]*"'
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["allow:crates/meclaw-testing/src/log_recorder.rs", "allow:crates/meclaw-colony/src/persist/**"]
+level = "RED"
+explanation = "a test reading colony.db or its logs by path or SQL races the log writer"
+replacement = "ask the log through the meclaw-testing log queries (they wait for the writer)"
+
+[[ban]]
+id = "rs-should-panic"
+rule = "TV-Q4"
+lang = "rust"
+pattern = '#\[should_panic\]'
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = []
+level = "RED"
+explanation = "#[should_panic] without `expected` passes on any panic, including the wrong one"
+replacement = "#[should_panic(expected = \"<message>\")] or assert on the Result"
+
+[[ban]]
+id = "rs-alive-tasks"
+rule = "TV-A5"
+lang = "rust"
+pattern = '\bnum_alive_tasks\b'
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = []
+level = "NOTE"
+explanation = "num_alive_tasks counts the runtime's tasks, not the ones the test owns"
+replacement = "await the JoinHandles the test owns, or a quiescence marker"
+
+[[ban]]
+id = "py-time"
+rule = "TV-K1/S2"
+lang = "python"
+pattern = '\btime\.(?:sleep|time|monotonic|perf_counter)\b|\bfrom\s+time\s+import\s+[^\n]*\b(?:sleep|time|monotonic|perf_counter)\b'
+scope = ["scripts/tests/**", "workshop/evals/**"]
+context = ["allow:scripts/tests/kit_time.py", "allow:workshop/evals/engine.py"]
+level = "RED"
+explanation = "a kit test reading the clock or sleeping judges the machine, not the kit"
+replacement = "inject the clock (scripts/tests/kit_time.py) and wait for events"
+
+[[ban]]
+id = "py-wall-verdict"
+rule = "TV-Z1"
+lang = "python"
+pattern = '\bassert(?:Less|Greater)(?:Equal)?\s*\('
+scope = ["scripts/tests/**", "workshop/evals/**"]
+context = []
+level = "RED"
+explanation = "an assertLess/Greater on took/secs/elapsed/monotonic is a wall-clock verdict"
+replacement = "count the work (calls, rows, processes) instead of the seconds"
+
+[[ban]]
+id = "py-raises"
+rule = "TV-Q4"
+lang = "python"
+pattern = '\bassertRaises\s*\(|\bpytest\.raises\s*\('
+scope = ["scripts/tests/**", "workshop/evals/**"]
+context = []
+level = "RED"
+explanation = "assertRaises without a regex (pytest.raises without match=) passes on the wrong error"
+replacement = "assertRaisesRegex(<type>, <regex>) or pytest.raises(<type>, match=<regex>)"
+
+[[ban]]
+id = "js-wait-for-timeout"
+rule = "TV-B1"
+lang = "js"
+pattern = '\bwaitForTimeout\s*\('
+scope = ["workshop/tools/**/*.mjs"]
+context = []
+level = "RED"
+explanation = "waitForTimeout waits for time, not for the page"
+replacement = "await a locator assertion or the page's own event"
+
+[[ban]]
+id = "js-sleep"
+rule = "TV-B1"
+lang = "js"
+pattern = '(?<![\w.])(?:sleep|setTimeout)\s*\('
+scope = ["workshop/tools/**/*.mjs"]
+context = ["allow:workshop/tools/wait.mjs", "allow:workshop/tools/display-lab/**"]
+level = "RED"
+explanation = "a sleep or setTimeout with a value other than 0 is a guess at the page's speed"
+replacement = "await the condition (workshop/tools/wait.mjs) or drive the page clock"
+
+[[ban]]
+id = "js-unawaited"
+rule = "TV-B1"
+lang = "js"
+pattern = '(?<![\w.])(?:ctx\.page|page|locator|frame)\.(?:click|dblclick|fill|type|press|pressSequentially|check|uncheck|hover|focus|tap|goto|reload|selectOption|setInputFiles|setViewportSize|dragTo|evaluate|dispatchEvent|screenshot|waitFor\w*|keyboard\.\w+|mouse\.\w+)\s*\('
+scope = ["workshop/tools/**/*.mjs"]
+context = []
+level = "RED"
+explanation = "a Playwright call on a statement of its own without await races the next line"
+replacement = "await it (or return or assign it)"
+
+[[ban]]
+id = "js-duration-verdict"
+rule = "TV-B2"
+lang = "js"
+pattern = '\b(?:Date|performance)\.now\s*\(\s*\)'
+scope = ["workshop/tools/**/*.mjs"]
+context = ["allow:workshop/tools/display-lab/**"]
+level = "RED"
+explanation = "a Date.now()/performance.now() difference in an if or assert is a wall-clock verdict"
+replacement = "assert on the page's state; durations belong to display-lab, which measures and does not judge"
+
+[[ban]]
+id = "js-racy-api"
+rule = "TV-B3"
+lang = "js"
+pattern = '\b(?:page|locator|frame)\.dispatchEvent\s*\(|\bwaitForNavigation\b|\bnetworkidle\b|\bwaitForSelector\b'
+scope = ["workshop/tools/**/*.mjs"]
+context = []
+level = "RED"
+explanation = "dispatchEvent, waitForNavigation, networkidle and waitForSelector race the page"
+replacement = "a real input through the locator, await expect(locator), page.waitForURL"
+
+[[ban]]
+id = "js-clock-pause-at"
+rule = "TV-Z10"
+lang = "js"
+pattern = '\bpauseAt\b'
+scope = ["workshop/tools/**/*.mjs"]
+context = []
+level = "RED"
+explanation = "pauseAt takes an absolute page time; read from the page's running clock it is behind that clock once the call lands on a loaded host (Cannot fast-forward to the past, GH #1209)"
+replacement = "page.clock.runFor(<ms>), relative to the clock's own position, and the bound read from the page's performance.now()"
+
+[[ban]]
+id = "js-screenshot"
+rule = "TV-B4"
+lang = "js"
+pattern = '\.screenshot\s*\('
+scope = ["workshop/tools/**/*.mjs"]
+context = []
+level = "RED"
+explanation = "a screenshot without scale: \"css\", animations: \"disabled\" and timeout: depends on the device and the frame"
+replacement = ".screenshot({ scale: \"css\", animations: \"disabled\", timeout: <deadline> })"
+
+# V2-A6 (GH #1199): the absence windows and sleeps the bans above did not see --
+# found when a lifted file kept a 300 ms window. Regex only, no refine function.
+
+[[ban]]
+id = "rs-neg-window-ok"
+rule = "TV-A4"
+lang = "rust"
+pattern = '\btimeout\s*\([^;]*?\)\s*\.await\s*\.ok\s*\(\s*\)[^;]*?\.is_none\s*\(|\bif\s+let\s+Ok\s*\([^;{]*?\)\s*=\s*(?:tokio::time::)?timeout\s*\([^;{]*\)\s*\.await\s*\{\s*(?:panic|unreachable)!|\blet\s+Err\s*\(\s*_\s*\)\s*=\s*(?:tokio::time::)?timeout\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["start_paused"]
+level = "RED"
+explanation = "a timeout(...).await read as `.ok()...is_none()`, `if let Ok(..) = timeout(..).await { panic!` or `let Err(_) = timeout(` proves absence by waiting out a window"
+replacement = "prove absence by a marker or quiescence (TV-A1/A2), or in virtual time"
+
+[[ban]]
+id = "rs-std-window"
+rule = "TV-A4"
+lang = "rust"
+pattern = '\b(?:recv_timeout|park_timeout|wait_timeout(?:_while)?)\s*\([^;]*?Duration::from_(?:millis\s*\(\s*(?![1-9](?:_?\d){4,}(?:_?u64)?\s*\)|[1-9](?:_?\d)+(?:_?u64)?\s*\*\s*1_?000(?:_?u64)?\s*\))\d|secs\s*\(\s*\d\s*\))'
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["allow:crates/meclaw-testing/src/wait.rs"]
+level = "RED"
+explanation = "recv_timeout/park_timeout/wait_timeout with a literal Duration under 10 s is a sleep or an absence window in real time"
+replacement = "block on the event under a named marker from meclaw_testing::deadline (30 s, HANG:)"
+
+[[ban]]
+id = "rs-sleep-until"
+rule = "TV-S2"
+lang = "rust"
+pattern = '\bsleep_until\s*\('
+scope = ["crates/*/tests/**", "crates/meclaw-testing/src/**", "cfg-test:crates/*/src/**"]
+context = ["start_paused", "allow:crates/meclaw-testing/src/wait.rs", "allow:crates/meclaw-testing/src/mock_*.rs", "allow:crates/meclaw-testing/src/mocks/**"]
+level = "RED"
+explanation = "sleep_until in real time is a sleep to a guessed instant"
+replacement = "wait for the event; in virtual time (`start_paused = true`) it is exact and allowed"
+
+[[ban]]
+id = "py-short-wait"
+rule = "TV-A4/Z3"
+lang = "python"
+pattern = '\.(?:wait|join|get|result|acquire|poll|recv)\s*\(\s*(?:timeout\s*=\s*)?\d*\.\d+\s*\)|\.(?:wait|join|get|result|acquire|poll|recv)\s*\(\s*timeout\s*=\s*[0-9]\s*\)|\.(?:wait|join|result|poll)\s*\(\s*[0-9]\s*\)|\btimeout\s*=\s*0?\.\d+\s*[,)]'
+scope = ["scripts/tests/**", "workshop/evals/**"]
+context = ["allow:scripts/tests/kit_time.py"]
+level = "RED"
+explanation = "a wait, join or get with a literal timeout under 10 s (or any call with a sub-second timeout=) is a window: it fails under load or proves absence by waiting"
+replacement = "wait for the event under a hang marker (30 s or more) and prove absence by a marker"
+
+[[ban]]
+id = "js-short-timeout"
+rule = "TV-Z3"
+lang = "js"
+pattern = '\btimeout\s*:\s*(?:(?:\d{1,3}|[1-9]_?\d{3})\b(?!\s*\*)|\d\s*\*\s*1_?000\b(?!\s*\*)|1_?000\s*\*\s*\d\b(?!\s*\*))'
+scope = ["workshop/tools/**/*.mjs"]
+context = ["allow:workshop/tools/wait.mjs", "allow:workshop/tools/display-lab/**"]
+level = "RED"
+explanation = "a literal timeout under 10 s on a Playwright wait is a budget or an absence window, not a hang marker"
+replacement = "a named deadline from workshop/tools/wait.mjs (scaled, failing with HANG:)"

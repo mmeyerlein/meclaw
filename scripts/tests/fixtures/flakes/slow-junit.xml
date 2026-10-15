@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="25">
+  <testsuite name="meclaw-cells::gh905_a_workspace_is_materialized_and_adopted" tests="1">
+    <testcase name="a_workspace_is_materialized_and_adopted" classname="meclaw-cells::gh905_a_workspace_is_materialized_and_adopted" time="32.328" />
+  </testsuite>
+  <testsuite name="meclaw-cells::gh906_a_repo_round_trips_through_the_hive" tests="1">
+    <testcase name="a_repo_round_trips_through_the_hive" classname="meclaw-cells::gh906_a_repo_round_trips_through_the_hive" time="45.700" />
+  </testsuite>
+  <testsuite name="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" tests="8">
+    <testcase name="a_round_change_closes_after_the_last_answer_runs_0_to_4" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="33.962" />
+    <testcase name="a_round_change_closes_after_the_last_answer_runs_10_to_14" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="34.044" />
+    <testcase name="a_round_change_closes_after_the_last_answer_runs_15_to_19" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="34.428" />
+    <testcase name="a_round_change_closes_after_the_last_answer_runs_5_to_9" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="34.917" />
+    <testcase name="a_round_change_waits_for_a_late_last_answer_runs_0_to_4" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="36.224" />
+    <testcase name="a_round_change_waits_for_a_late_last_answer_runs_10_to_14" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="37.408" />
+    <testcase name="a_round_change_waits_for_a_late_last_answer_runs_15_to_19" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="37.452" />
+    <testcase name="a_round_change_waits_for_a_late_last_answer_runs_5_to_9" classname="meclaw-cells::gh953_a_round_change_closes_after_the_last_answer" time="41.746" />
+  </testsuite>
+  <testsuite name="meclaw-cells::gh954_two_first_turns_open_one_generation" tests="7">
+    <testcase name="two_first_turns_open_one_generation_runs_0_to_2" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="44.425" />
+    <testcase name="two_first_turns_open_one_generation_runs_12_to_14" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="42.764" />
+    <testcase name="two_first_turns_open_one_generation_runs_15_to_17" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="43.552" />
+    <testcase name="two_first_turns_open_one_generation_runs_18_to_20" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="42.346" />
+    <testcase name="two_first_turns_open_one_generation_runs_3_to_5" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="42.670" />
+    <testcase name="two_first_turns_open_one_generation_runs_6_to_8" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="42.217" />
+    <testcase name="two_first_turns_open_one_generation_runs_9_to_11" classname="meclaw-cells::gh954_two_first_turns_open_one_generation" time="41.612" />
+  </testsuite>
+  <testsuite name="meclaw-cells::gh974_a_person_round_leaves_no_dead_letter" tests="2">
+    <testcase name="a_person_round_leaves_only_declared_dead_letters" classname="meclaw-cells::gh974_a_person_round_leaves_no_dead_letter" time="51.235" />
+    <testcase name="the_ways_own_messages_never_dead_letter" classname="meclaw-cells::gh974_a_person_round_leaves_no_dead_letter" time="46.533" />
+  </testsuite>
+  <testsuite name="meclaw-cells::gh980_the_writer_drives_its_projection" tests="3">
+    <testcase name="exec_cannot_steer_the_view" classname="meclaw-cells::gh980_the_writer_drives_its_projection" time="32.745" />
+    <testcase name="export_after_pull_commits_nothing" classname="meclaw-cells::gh980_the_writer_drives_its_projection" time="33.555" />
+    <testcase name="six_file_export_fits_ttl_64" classname="meclaw-cells::gh980_the_writer_drives_its_projection" time="31.060" />
+  </testsuite>
+  <testsuite name="meclaw-cells::gh975_a_projection_job_fits_the_colony_ttl" tests="1">
+    <testcase name="a_projection_job_of_six_files_fits_ttl_64" classname="meclaw-cells::gh975_a_projection_job_fits_the_colony_ttl" time="44.429" />
+  </testsuite>
+  <testsuite name="meclaw-cli::p9_subcolony_demo" tests="2">
+    <testcase name="a_mutation_scoped_into_the_child_tree_creates_nothing" classname="meclaw-cli::p9_subcolony_demo" time="31.045" />
+    <testcase name="a_path_inside_the_child_tree_is_not_routable_from_the_parent" classname="meclaw-cli::p9_subcolony_demo" time="31.033" />
+  </testsuite>
+</testsuites>

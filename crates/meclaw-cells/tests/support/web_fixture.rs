@@ -1475,7 +1475,7 @@ pub mod log_lab {
         inbox
             .send(meclaw_colony::ColonyMsg::ReadMessages {
                 filter: MessageLogFilter {
-                    limit: 1000,
+                    limit: meclaw_testing::MESSAGES_PAGE,
                     scan_budget: 50_000,
                     ..Default::default()
                 },
@@ -1489,7 +1489,7 @@ pub mod log_lab {
             .expect("ack");
         assert!(!reply.scan_truncated, "the lab outgrew the scan budget");
         assert!(
-            reply.entries.len() < 1000,
+            reply.entries.len() < meclaw_testing::MESSAGES_PAGE,
             "the lab outgrew one page of the log"
         );
         let mut c = LogClasses::default();

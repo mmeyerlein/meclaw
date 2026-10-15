@@ -226,9 +226,62 @@ pub struct Materialized {
     pub slots: Vec<(String, Part)>,
     /// The page title, for the shell's `<title>`.
     pub title: String,
+    /// Where each slot stands, by object id (GH #1180), built with the slot
+    /// list. An update finds the slots it touched here instead of reading
+    /// every other one; a page built without it is scanned.
+    pub index: SlotIndex,
+}
+
+/// The position of every slot of a [`Materialized`] by object id.
+///
+/// Derived data, not part of what a page is: two pages with the same slots
+/// are equal whatever their indexes say. Shared (`Arc`), so a page patched in
+/// place — an update keeps the slot list — keeps its index without a copy.
+#[derive(Clone, Default)]
+pub struct SlotIndex(Arc<HashMap<String, usize>>);
+
+impl SlotIndex {
+    /// The index of `slots`.
+    pub fn of(slots: &[(String, Part)]) -> Self {
+        Self(Arc::new(
+            slots
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| (id.clone(), i))
+                .collect(),
+        ))
+    }
+}
+
+impl PartialEq for SlotIndex {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SlotIndex {}
+
+impl std::fmt::Debug for SlotIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SlotIndex({} ids)", self.0.len())
+    }
 }
 
 impl Materialized {
+    /// Where slot `id` stands: read from the index and checked against the
+    /// list, or — a page built without an index, or one that went stale —
+    /// found by reading the list. `read` counts the slots looked at.
+    fn position(&self, id: &str, read: &mut usize) -> Option<usize> {
+        if let Some(&i) = self.index.0.get(id)
+            && self.slots.get(i).is_some_and(|(held, _)| held == id)
+        {
+            *read += 1;
+            return Some(i);
+        }
+        *read += self.slots.len();
+        self.slots.iter().position(|(held, _)| held == id)
+    }
+
     /// The LiveView packed tree: `{"s": [first, last], "0": <root children>,
     /// "p": shared}`.
     ///
@@ -946,6 +999,8 @@ struct Renderer<'c> {
     components: HashMap<String, Arc<Compiled>>,
     /// Objects rendered so far — the statistic [`rerender`] reports.
     objects: usize,
+    /// Held slots read to find the ones a write named ([`Rerendered::slots_read`]).
+    slots_read: usize,
 }
 
 impl<'c> Renderer<'c> {
@@ -954,6 +1009,7 @@ impl<'c> Renderer<'c> {
             conn,
             components: HashMap::new(),
             objects: 0,
+            slots_read: 0,
         }
     }
 
@@ -1190,6 +1246,7 @@ impl<'c> Renderer<'c> {
 
         Ok(Materialized {
             statics,
+            index: SlotIndex::of(&slots),
             slots,
             title,
         })
@@ -1251,6 +1308,11 @@ pub struct Rerendered {
     /// everything below them; untouched slots are taken from `old` as they
     /// are (GH #1001 T1).
     pub objects: usize,
+    /// Slots of the held page read to find the ones the write named. An
+    /// update finds each named slot by its id, so this is the write's share
+    /// of the slot list and not the page's (GH #1180: a scan of every slot
+    /// made a one-op write grow with the untouched objects beside it).
+    pub slots_read: usize,
 }
 
 /// Re-render after a write: only the slots `touched` names, on their routes.
@@ -1287,6 +1349,7 @@ pub fn rerender(
             pages,
             frames,
             objects: r.objects,
+            slots_read: r.slots_read,
         });
     }
 
@@ -1350,6 +1413,7 @@ pub fn rerender(
         pages,
         frames,
         objects: r.objects,
+        slots_read: r.slots_read,
     })
 }
 
@@ -1440,16 +1504,15 @@ fn in_place(
     if !slot_by_slot(r, &root, page, ids)? {
         return Ok(None);
     }
-    let at: Vec<usize> = page
-        .slots
-        .iter()
-        .enumerate()
-        .filter(|(_, (id, _))| ids.contains(id.as_str()))
-        .map(|(i, _)| i)
-        .collect();
-    if at.len() != ids.len() {
-        return Ok(None);
+    // Each named slot by its id (GH #1180), in slot order like the frame.
+    let mut at = Vec::with_capacity(ids.len());
+    for id in ids {
+        match page.position(id, &mut r.slots_read) {
+            Some(i) => at.push(i),
+            None => return Ok(None),
+        }
     }
+    at.sort_unstable();
     page.title = title;
     let mut shared = SharedStatics::default();
     let mut m = Map::new();
@@ -1504,6 +1567,7 @@ fn incremental(
     statics.push(prev.statics[prev.statics.len() - 1].clone());
     let page = Materialized {
         statics,
+        index: SlotIndex::of(&slots),
         slots,
         title,
     };
@@ -2166,6 +2230,7 @@ mod tests {
                 })
                 .collect(),
             title: "t".into(),
+            ..Default::default()
         }
     }
 
@@ -2210,6 +2275,7 @@ mod tests {
                 })
                 .collect(),
             title: "t".into(),
+            ..Default::default()
         }
     }
 
@@ -2317,6 +2383,7 @@ mod tests {
                 ("b".into(), "y".repeat(bytes - bytes / 2).into()),
             ],
             title: "t".into(),
+            ..Default::default()
         };
         let below = page(CUT_ABOVE_BYTES);
         assert!(!below.is_large());

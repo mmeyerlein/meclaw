@@ -250,8 +250,56 @@ impl DbConn {
         F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
         R: Send + 'static,
     {
+        let (out, fired) = self.call_timed(f).await;
+        if fired {
+            Err(QueryTimeout::Interrupted)
+        } else {
+            Ok(out)
+        }
+    }
+
+    /// Like `call_with_timeout`, but `Interrupted` is SQLite's verdict, not
+    /// the clock's: it means the statement itself ended in `SQLITE_INTERRUPT`.
+    /// A closure that returned `Ok` is `Ok(Ok(_))` even when the timer fired
+    /// while it ran, and any other error comes back as `Ok(Err(_))`.
+    ///
+    /// GH #1181: SQLite checks for an interrupt between opcodes, not during
+    /// the commit at the end of a statement. A write whose commit waits on
+    /// I/O past `query_timeout`, or whose blocking thread is descheduled after
+    /// the statement, has landed although the timer fired while the closure
+    /// ran -- and `call_with_timeout` reports it `Interrupted`. For a read
+    /// that costs a retry. For a write the caller takes a landed write for a
+    /// failed one: under full-suite load the timer completed a one-shot's
+    /// row, withheld its strike as if the mark had failed, and the replanned
+    /// strike found the row `completed` and skipped it -- a lost one-shot.
+    /// Use this for a step whose effect decides what the caller does next.
+    pub async fn call_with_timeout_verdict<F, T>(
+        &mut self,
+        f: F,
+    ) -> Result<rusqlite::Result<T>, QueryTimeout>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (out, _fired) = self.call_timed(f).await;
+        match out {
+            Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) => {
+                Err(QueryTimeout::Interrupted)
+            }
+            out => Ok(out),
+        }
+    }
+
+    /// The run behind `call_with_timeout` and `call_with_timeout_verdict`:
+    /// the closure's result, and whether the timer sent its interrupt while
+    /// the closure still ran.
+    async fn call_timed<F, R>(&mut self, f: F) -> (R, bool)
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
+        R: Send + 'static,
+    {
         let Some(timeout) = self.query_timeout else {
-            return Ok(self.call(f).await);
+            return (self.call(f).await, false);
         };
         // Re-open before the interrupt handle is taken: the handle belongs to
         // the connection this call is about to use.
@@ -318,13 +366,13 @@ impl DbConn {
         // closure marked itself done -- a few instructions, against the
         // whole queue wait before this fix. An interrupt sent to an idle
         // connection is a no-op for the next statement (SQLite clears it
-        // when a statement starts with none running).
+        // when a statement starts with none running). GH #1181: the window is
+        // wider for a write -- SQLite does not check for the interrupt during
+        // the commit that ends a statement, so a commit that outlasts the
+        // clock lands and is still reported here; `call_with_timeout_verdict`
+        // asks the statement instead.
         let fired = phase.load(Acquire) == PHASE_INTERRUPTED;
-        if fired {
-            Err(QueryTimeout::Interrupted)
-        } else {
-            Ok(out)
-        }
+        (out, fired)
     }
 }
 
@@ -475,6 +523,52 @@ mod tests {
             Err(QueryTimeout::Interrupted) => {}
             other => panic!("expected Interrupted, got {other:?}"),
         }
+    }
+
+    /// GH #1181: a write that commits after the clock ran out is `Ok`, and
+    /// only a statement SQLite really interrupted is `Interrupted`. The
+    /// closure's thread is held past the timeout AFTER its statement
+    /// committed -- the descheduled blocking thread of the lab -- so the
+    /// interrupt arrives with no statement left to stop. (A trigger that
+    /// sleeps inside the statement is no such case: SQLite checks the flag
+    /// again at the row loop's next jump and rolls the write back, measured
+    /// red 1/1 in the tb-s10f gate on build03.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_with_timeout_verdict_judges_a_write_by_sqlite_not_by_the_clock() {
+        let timeout = std::time::Duration::from_millis(50);
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (0);")
+            .unwrap();
+        let mut db = DbConn::wrap(conn, Some(timeout));
+        let landed = db
+            .call_with_timeout_verdict(move |c| {
+                let written = c.execute("UPDATE t SET v = 1", []);
+                std::thread::sleep(timeout * 10);
+                written
+            })
+            .await;
+        assert!(
+            matches!(landed, Ok(Ok(1))),
+            "a landed write is Ok: {landed:?}"
+        );
+        let v: i64 = db
+            .call(|c| c.query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap())
+            .await;
+        assert_eq!(v, 1, "the write landed");
+        let cut = db
+            .call_with_timeout_verdict(|c| {
+                c.query_row(
+                    "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM r WHERE x < 100000000)
+                     SELECT COUNT(*) FROM r",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+            })
+            .await;
+        assert!(
+            matches!(cut, Err(QueryTimeout::Interrupted)),
+            "a statement the clock interrupted is Interrupted: {cut:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

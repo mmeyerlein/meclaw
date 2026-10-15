@@ -14,8 +14,7 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::mock_http::MockResponse;
@@ -94,7 +93,7 @@ async fn a_declared_source_is_read_with_the_round() {
     s.wait_drawn("show-notes-hint").await;
 
     // Without `resident_round`: nothing placed, though the body claims `*`.
-    s.c.h.send(answer(&json!("n1/notes"), None)).await;
+    s.c.send(answer(&json!("n1/notes"), None)).await;
     s.turn_in("n2", "my notes again", json!(["agent:g1", "member:alex"]))
         .await;
     s.ask().await.release(sure());
@@ -106,14 +105,15 @@ async fn a_declared_source_is_read_with_the_round() {
     );
 
     // With it: the rows of the round, never the foreign one.
-    s.c.h
-        .send(answer(
-            &json!("n2/notes"),
-            Some(r#"["agent:g1","member:alex"]"#),
-        ))
-        .await;
+    s.c.send(answer(
+        &json!("n2/notes"),
+        Some(r#"["agent:g1","member:alex"]"#),
+    ))
+    .await;
     s.wait_drawn("show-notes-list").await;
     assert_eq!(s.ids("show-notes-list-").await.len(), 2);
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    s.c.settle().await;
     assert!(
         !s.c.tree().await.to_string().contains("theirs"),
         "a row of another round reached the screen"

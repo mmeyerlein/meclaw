@@ -372,6 +372,19 @@ pub enum DeathKind {
 /// spawn traffic is rare relative to `Route`. The size asymmetry is accepted.
 #[allow(clippy::large_enum_variant)]
 pub enum ColonyMsg {
+    /// GH #1208 (TV-A2): answer once the colony has settled — the
+    /// [`crate::drain::is_quiescent`] predicate holds (no ticket, no overflow,
+    /// no mailbox, inbox or output holds a message) AND the message-log writer
+    /// has committed everything sent to it before (a `Fence`). Changes no phase
+    /// and ends nothing; several waiting settles are answered together. Always
+    /// compiled (precedent `set_term_timeout_ms_for_test`): it is the absence
+    /// barrier of `ColonyHandle::quiesce`. A settle still waiting when the colony
+    /// shuts down is answered after the teardown, once the writer is closed —
+    /// a colony that has ended does nothing more.
+    Settle {
+        /// Fires when the colony has settled.
+        ack: oneshot::Sender<()>,
+    },
     /// Register a newly spawned cell under a path.
     Register {
         path: Path,
@@ -571,6 +584,20 @@ pub enum ColonyMsg {
         message_id: Uuid,
         /// The cell that consumed it.
         cell_path: Path,
+    },
+    /// GH #1200: a cell's handler is about to start on a delivery the boot
+    /// replayed (hop flag [`DELIVERY_ATTEMPT_HEADER`]). The colony counts the
+    /// attempt in `delivery_open.replays` and `ack` fires once that count is
+    /// committed — the handler starts only after it, so a message that takes
+    /// the process down in its handler still reaches `replay_exhausted`, and a
+    /// life killed before any handler took the delivery counts nothing. The
+    /// colony keeps the ids it counted in this life; an ordered stop lets
+    /// them lapse.
+    CountAttempt {
+        /// The replayed delivery.
+        message_id: Uuid,
+        /// Fires after the commit of the count; dropped if the writer is gone.
+        ack: oneshot::Sender<()>,
     },
     /// Issue #7: read the per-I/O-task liveness marks (in-memory, no DB).
     /// Answers `GET /health`.
@@ -818,6 +845,17 @@ pub enum ColonyMsg {
         /// The unread remainder, oldest first.
         messages: Vec<Message>,
     },
+    /// GH #1068 (residual, #1209): messages a sender wrote into a dying cell's
+    /// mailbox through a permit it took BEFORE the [`crate::mailbox_rescue`]
+    /// guard closed it, landing AFTER the guard drained it. The guard
+    /// announces the task that waits for them from its `Drop` (before the
+    /// `CellDied`), the task reports each write and its own end, all under one
+    /// ticket. The `CellDied` settles per ticket where later writes go: before
+    /// it they queue behind the rescue; after it they go to the successor the
+    /// death restarted while it still runs, else to the DLQ — never to a newer
+    /// cell at the same path (GH #688). The payload is opaque outside this
+    /// crate.
+    MailboxRescuedLate(crate::mailbox_rescue::LateReport),
     /// GH #850: a cell's overflow drain task reports — messages that left the
     /// overflow (delivered or dead-lettered), a block to spill to `colony.db`,
     /// or a mailbox that closed under it. Sent only by the drain tasks of
@@ -1521,6 +1559,161 @@ fn dead_letter_rescued(
     }
 }
 
+/// GH #1068 (residual, #1209): place what a dying cell's late task reports
+/// (`ColonyMsg::MailboxRescuedLate`).
+///
+/// `Opened` and `Closed` open and end the ticket's record in `late`. Writes go
+/// where the record says (re-check M1, GH #1209):
+/// - the `CellDied` is still to come → behind the rescue in `rescued`; the
+///   `CellDied` arm then delivers them with it to the successor, or
+///   dead-letters them (no successor, or a parked twin's death, GH #688).
+///   A late write's permit was taken before the close, so it also goes ahead
+///   of mail that met the closed mailbox afterwards (held in the ledger);
+/// - the death restarted the cell → to that successor, but only while it is
+///   still the entry registered at the path, `Awake`, not failed and open.
+///   It lands behind whatever was routed to it since the `CellDied` -- the
+///   order across the restart is not restored, and is pinned so;
+/// - anything else → the DLQ (`cell_inactive`): no successor, a successor
+///   that sleeps, failed or was replaced, or a ticket never announced (its
+///   announcement met a full inbox, so its owner cannot be told). A write is
+///   never buffered in a mailbox nobody reads and never reaches a newer cell
+///   at the same path.
+fn place_late_rescue(
+    registry: &HashMap<Path, RegistryEntry>,
+    late: &mut crate::mailbox_rescue::LateRescues,
+    rescued: &mut HashMap<Path, Vec<Message>>,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    report: crate::mailbox_rescue::LateReport,
+) {
+    use crate::mailbox_rescue::{LateEvent, LateRoute};
+    let crate::mailbox_rescue::LateReport {
+        path,
+        ticket,
+        event,
+    } = report;
+    let messages = match event {
+        LateEvent::Opened => {
+            late.opened(ticket, path);
+            return;
+        }
+        LateEvent::Closed => {
+            late.closed(&ticket);
+            return;
+        }
+        LateEvent::Writes(messages) => messages,
+    };
+    let successor = match late.route(&ticket) {
+        Some(LateRoute::AwaitingDeath) => {
+            rescued.entry(path).or_default().extend(messages);
+            return;
+        }
+        Some(LateRoute::Successor(weak)) => running_successor(registry, &path, weak),
+        Some(LateRoute::DeadLetter) => None,
+        None => {
+            tracing::error!(
+                path = %path.as_str(),
+                count = messages.len(),
+                "a late write behind a mailbox rescue whose task was never announced \
+                 — dead-lettering (its owner cannot be told)"
+            );
+            None
+        }
+    };
+    let Some(handle) = successor else {
+        dead_letter_rescued(dead_letters, in_flight, &path, messages);
+        return;
+    };
+    let mut queue: VecDeque<Message> = messages.into();
+    if in_flight.overflow.holds(&path) {
+        if let Err(back) = in_flight
+            .overflow
+            .front(handle, &path, queue.drain(..).collect())
+        {
+            queue.extend(back);
+        }
+    } else {
+        while let Some(msg) = queue.pop_front() {
+            match handle.try_send(msg) {
+                Ok(()) => {}
+                Err(e) => {
+                    match *e {
+                        tokio::sync::mpsc::error::TrySendError::Full(m) => {
+                            queue.push_front(m);
+                            if let Err(back) =
+                                in_flight
+                                    .overflow
+                                    .front(handle, &path, queue.drain(..).collect())
+                            {
+                                queue.extend(back);
+                            }
+                        }
+                        // Closed since the check: the rest goes to the DLQ.
+                        tokio::sync::mpsc::error::TrySendError::Closed(m) => queue.push_front(m),
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if !queue.is_empty() {
+        tracing::error!(
+            path = %path.as_str(),
+            count = queue.len(),
+            "a late write behind a mailbox rescue found no mailbox or overflow to take it \
+             — dead-lettering"
+        );
+        dead_letter_rescued(dead_letters, in_flight, &path, queue);
+    }
+}
+
+/// GH #1209: the handle of the successor a late task's route names, if it is
+/// still the entry registered at `path` and running. Comparing the mailbox,
+/// not the path, is what keeps an old incarnation's write from a newer cell.
+fn running_successor<'a>(
+    registry: &'a HashMap<Path, RegistryEntry>,
+    path: &Path,
+    successor: &tokio::sync::mpsc::WeakSender<Message>,
+) -> Option<&'a ActorHandle> {
+    let entry = registry.get(path)?;
+    let mailbox = successor.upgrade()?;
+    let running = entry.handle.same_mailbox(&mailbox)
+        && matches!(entry.status, CellStatus::Awake)
+        && !entry.failed
+        && !entry.handle.is_closed();
+    running.then_some(&entry.handle)
+}
+
+/// GH #1209: at the `CellDied` call site, after the corridor (or the GH #688
+/// claim) and the rescue's hand-over: late tasks awaiting this death learn
+/// where their later writes go -- the restarted successor's mailbox, or the
+/// DLQ. The sender clone is only downgraded to a weak identity (see
+/// `LateRoute::Successor`); nothing is ever sent through the weak handle
+/// except after `running_successor` matched it against the registry entry.
+fn settle_late_rescue(
+    registry: &HashMap<Path, RegistryEntry>,
+    late: &mut crate::mailbox_rescue::LateRescues,
+    path: &Path,
+    restarted: bool,
+) {
+    let successor = restarted
+        .then(|| registry.get(path).map(|e| e.handle.sender_clone()))
+        .flatten();
+    late.settle(path, successor.as_ref());
+}
+
+/// GH #1209: during the shutdown drain no successor is coming; a late write
+/// goes to the DLQ like the rescue it trails.
+fn dead_letter_late_in_teardown(
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    report: crate::mailbox_rescue::LateReport,
+) {
+    if let crate::mailbox_rescue::LateEvent::Writes(messages) = report.event {
+        dead_letter_rescued(dead_letters, in_flight, &report.path, messages);
+    }
+}
+
 /// GH #18: hand the mailbox rescued from a dying cell to its successor.
 ///
 /// Called at the `CellDied` call-site **after** the byte-frozen
@@ -2050,6 +2243,24 @@ fn build_liveness_reply(
     crate::api_dto::ReadLivenessReply { entries }
 }
 
+/// GH #47 / GH #1208: messages sitting in cell mailboxes, summed over the
+/// registry — the `mailbox_backlog` input of [`crate::drain::is_quiescent`],
+/// shared by the shutdown drain and `ColonyMsg::Settle`. The two send paths
+/// that bypass the router (`deliver_rescued_mailbox`, the post-disconnect
+/// channel swap) take no ticket, so mailbox occupancy is the observation that
+/// catches them. A cell parked `NotYetSpawned` still owns a sender, and what
+/// sits in it is real pending work: it is handled the moment the cell is woken.
+fn mailbox_backlog(registry: &HashMap<Path, RegistryEntry>) -> usize {
+    registry
+        .values()
+        .map(|e| {
+            e.handle
+                .max_capacity()
+                .saturating_sub(e.handle.free_capacity())
+        })
+        .sum()
+}
+
 /// GH #47: the loop's second dimension. Until this existed the corridor and its
 /// call sites had exactly one mode, and a shutdown was a `break`.
 enum LoopPhase {
@@ -2090,6 +2301,7 @@ async fn run_shutdown_teardown(
     dead_letters: &mut VecDeque<DeadLetter>,
     in_flight: &mut crate::drain::DrainLedger,
     rescued_mailboxes: &mut HashMap<Path, Vec<Message>>,
+    counted_this_life: &mut Vec<Uuid>,
     io_liveness: &mut HashMap<Path, Option<std::time::SystemTime>>,
     parked: &mut ParkedSlots,
     slot_table: &SlotTable,
@@ -2109,7 +2321,13 @@ async fn run_shutdown_teardown(
     mutation_pulse: &crate::watchdog::WorkPulse,
     is_reboot: bool,
     ack: oneshot::Sender<()>,
+    mut settles: Vec<oneshot::Sender<()>>,
 ) {
+    // GH #1216: the loop's last word, before anything is torn down. Whatever
+    // ended the loop (drain quiescent, drain cut, no drain), the teardown is
+    // not an iteration of it; an armed supervisor that kept counting would
+    // read its length — and the closed channel at its end — as a wedge.
+    mutation_pulse.stand_down();
     // Phase-5 minimal shutdown (E6):
     // 1. Close inbox — no new sends accepted.
     inbox.close();
@@ -2118,6 +2336,8 @@ async fn run_shutdown_teardown(
         match m {
             ColonyMsg::Shutdown { .. } => {}    // skip nested Shutdown in drain
             ColonyMsg::ShutdownNow { .. } => {} // skip nested ShutdownNow in drain
+            // GH #1208: answered with the shutdown ack below, after the writer closed.
+            ColonyMsg::Settle { ack } => settles.push(ack),
             ColonyMsg::Register {
                 path,
                 sender,
@@ -2287,6 +2507,18 @@ async fn run_shutdown_teardown(
                     .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
                         message_id: message_id.to_string(),
                         cell_path: cell_path.as_str().to_string(),
+                    })
+                    .await;
+            }
+            ColonyMsg::CountAttempt { message_id, ack } => {
+                // A handler still starts during the drain; count it as in
+                // life — it lapses with the others below.
+                counted_this_life.push(message_id);
+                let _ = colony_db
+                    .writer_tx
+                    .send(crate::persist::writer::ColonyWriteOp::CountReplays {
+                        ids: vec![message_id.to_string()],
+                        ack: Some(ack),
                     })
                     .await;
             }
@@ -2719,6 +2951,10 @@ async fn run_shutdown_teardown(
                 // flush below this loop still catches it).
                 dead_letter_rescued(dead_letters, in_flight, &path, messages);
             }
+            ColonyMsg::MailboxRescuedLate(report) => {
+                // GH #1068 (#1209): the same for a write behind the rescue.
+                dead_letter_late_in_teardown(dead_letters, in_flight, report);
+            }
         }
     }
     // GH #18: a rescue whose `CellDied` never arrived (shutdown
@@ -2737,15 +2973,32 @@ async fn run_shutdown_teardown(
     // runs for it. FIFO guarantees these land before the
     // writer's own Shutdown op.
     persist_dead_letters(dead_letters, in_flight, &colony_db.writer_tx).await;
-    // GH #1015 (review M-2): an ordered stop — the next boot does not count
-    // its replays as attempts (a crash never reaches this line).
+    // GH #1200 (review M-2): an ordered stop crashes nothing — the attempts
+    // this life counted lapse, also for a replayed handler the drain cut (a
+    // long model call). A crash never reaches this line, so its counts stay.
+    if !counted_this_life.is_empty() {
+        let _ = colony_db
+            .writer_tx
+            .send(crate::persist::writer::ColonyWriteOp::ForgiveAttempts {
+                ids: counted_this_life
+                    .drain(..)
+                    .map(|id| id.to_string())
+                    .collect(),
+            })
+            .await;
+    }
+    // GH #1015 (review M-2): the ordered-stop record the next boot reports.
     let _ = colony_db
         .writer_tx
         .send(crate::persist::writer::ColonyWriteOp::CleanStop(true))
         .await;
     // 3. Shutdown writer thread (async variant — we are in a Tokio context).
     colony_db.shutdown_async().await;
-    // 4. Ack + break.
+    // 4. Ack + break. GH #1208: the waiting settles first — the colony has
+    // ended and the writer committed everything, nothing more will happen.
+    for settle in settles {
+        let _ = settle.send(());
+    }
     let _ = ack.send(());
 }
 
@@ -2789,6 +3042,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // "which hives declared something" can never come from different moments.
     let mut hive_boundaries: crate::hive_boundary::HiveBoundaryTable = Vec::new();
     let mut slot_table_dirty = true;
+    // GH #1176: whether `hive_boundaries` is the fail-closed table a timed-out
+    // slot rebuild left behind. Only the transitions are logged ("ingress
+    // closed" / "ingress reopened"), so an operator sees when outside ingress
+    // into the hives stopped and when it came back, not one line per pass of a
+    // lasting hang. Pure data in this task.
+    let mut ingress_closed = false;
     // GH #285 (W4 T12): what the `park` slots are holding. Same ownership rule
     // as `slot_table` — colony state in the colony task, no lock — and the same
     // consequence stated once, in `ParkedSlots`: a shutdown discards it.
@@ -2827,15 +3086,37 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         overflow_probe,
     );
     in_flight.hydrate_overflow(&colony_db.read_conn);
+    // GH #1206: the open deliveries the boot replays are read here, from the
+    // same table state the overflow was just hydrated from — before any drain
+    // task runs. Read at the boot apply instead, the exclusion "not in
+    // `mailbox_overflow`" saw a drain task's progress: rows it had already
+    // delivered or dead-lettered were off the table while their delivery was
+    // still open (a delivered row stays open until its handler finishes; a
+    // dead-lettered one closes in a later writer op than its delete), and the
+    // replay handed them out a second time — measured in a full-suite run,
+    // all 16 overflow rows of gh850's `/off` dead-lettered twice, and forced
+    // in `the_boot_never_replays_what_its_overflow_already_delivered` (36
+    // deliveries instead of 20, 5/5). Replayed at the boot apply as before.
+    let mut boot_open = Some(load_open_deliveries(&colony_db.read_conn));
     // GH #47: which of the loop's two modes is running. A `Shutdown` no longer
     // tears down where it is read — it flips this, and the loop head decides.
     let mut phase = LoopPhase::Serving;
+    // GH #1208: the acks of `ColonyMsg::Settle` waiting for quiescence.
+    // Loop-local state, answered at the loop foot (no shared flag, OR-TV-5).
+    let mut settles: Vec<oneshot::Sender<()>> = Vec::new();
     // GH #18: mailboxes rescued from dying cell tasks, keyed by cell path. A
     // `MailboxRescued` always arrives BEFORE the matching `CellDied` (the guard
     // hands over while the task is being dropped, the watcher only speaks once
     // the join handle resolved), so an entry lives here for exactly the span
     // between the two events and is emptied by `deliver_rescued_mailbox`.
     let mut rescued_mailboxes: HashMap<Path, Vec<Message>> = HashMap::new();
+    // GH #1209: announced late tasks of dying mailboxes and where their writes
+    // go (settled at each `CellDied`).
+    let mut late_rescues = crate::mailbox_rescue::LateRescues::default();
+    // GH #1200 (review M-2): the replayed attempts this life counted, once per
+    // count. An ordered stop lets them lapse (`ForgiveAttempts` in the
+    // teardown); a crash never reaches that line, so its counts stay.
+    let mut counted_this_life: Vec<Uuid> = Vec::new();
     // GH #1015: emissions seen per open delivery (sender, consumed message) —
     // the index a follow-up's derived id is built from; the consume mark
     // drops the entry.
@@ -2849,7 +3130,6 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // `/colony…`; their consume mark goes through the inbox, behind the child.
     let mut colony_bound: std::collections::HashSet<(Path, Uuid)> =
         std::collections::HashSet::new();
-    let mut boot_replayed = false;
     // Reboot hydration: classify the boot state, load from DB on a reboot.
     let is_reboot: bool = match colony_db.boot_state() {
         Ok(crate::bootstrap::BootState::FirstBoot) => {
@@ -2932,7 +3212,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         heartbeat_tx.clone(),
         crate::watchdog::WorkItem::new("mutation"),
     )
-    .with_slot(label_slot);
+    .with_slot(label_slot)
+    // GH #1176: the config scans set their read timeout above this budget,
+    // so a hung read is declared stuck before the scan gives up on it.
+    .with_budget(
+        colony_config
+            .watchdog_period()
+            .saturating_mul(colony_config.watchdog_threshold)
+            .saturating_mul(crate::watchdog::WORK_ITEM_BUDGET_FACTOR),
+    );
     // GH #553: the receipt target, resolved once. `None` is the default and the
     // state of every colony that says nothing about receipts — with it nothing
     // is emitted and no mutation behaves differently.
@@ -2972,12 +3260,102 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         // could have changed them. Here rather than at each of those events so
         // one topology change costs one filesystem pass whatever it touched —
         // and it lands before the next message is taken, which is the only
-        // ordering the delivery filter needs.
+        // ordering the delivery filter needs. GH #1176: a scan that times out
+        // (a disk that does not answer) keeps the dirty flag, so a later pass
+        // reads again, and in between the hive boundary fails CLOSED (see the
+        // `Err` arm below).
+        //
+        // GH #1176: one hive-config scan for both tables, off the worker with a
+        // beat per read -- measured 12 ms idle, p50 141 ms / max 608 ms with
+        // twelve colonies on one host, silent on the worker before. After a
+        // committed mutation too: its post-state scan reads only the required
+        // drains, because the outcome hangs on them and on nothing here; read
+        // there, the seal and boundaries made every caller wait for its ack
+        // (+25.6 % median time to ack per mutation, idle, strand tb-s9b run2).
         if slot_table_dirty {
-            slot_table = rebuild_slot_table(&root, &hive_scopes);
-            hive_boundaries =
-                crate::hive_boundary::rebuild_hive_boundaries(&root, hive_scopes.paths());
-            slot_table_dirty = false;
+            let rebuild_pulse =
+                mutation_pulse.with_label(crate::watchdog::WorkItem::new("slot-rebuild"));
+            let paths = hive_scopes.sorted_paths();
+            // GH #1176 re-check (u1 L2 / u2 L2): behind a scan that still
+            // hangs this pass does not wait (the boundary stays closed, the
+            // flag stays up); it would cost every pass the read timeout.
+            let stuck = hive_scopes.scan_gate.still_stuck("slot-rebuild");
+            let rebuilt = if let Some(stuck) = stuck {
+                Err(stuck)
+            } else {
+                crate::mutation::hive_scan::scan_hives(
+                    &mut hive_scopes.scan_gate,
+                    &root,
+                    paths,
+                    &rebuild_pulse,
+                    "slot-rebuild",
+                    |scan| {
+                        let mut unreadable = Vec::new();
+                        let sealed = crate::mutation::port_boundary::collect_sealed_hives_reporting(
+                            scan.root(),
+                            scan.paths(),
+                            &mut unreadable,
+                        );
+                        let slots = slot_table_from_sealed(&sealed);
+                        let boundaries = crate::hive_boundary::boundaries_from_sealed(
+                            scan.root(),
+                            sealed,
+                            &|hive| scan.step(hive),
+                        );
+                        (slots, boundaries, unreadable)
+                    },
+                )
+                .await
+            };
+            match crate::mutation::hive_scan::rebuilt_or_kept(rebuilt, &mut slot_table_dirty) {
+                // GH #1176 (u2 L5): a seal that could not be read (EIO, a
+                // config that does not parse) is a failed rebuild like a timed
+                // out one -- counted as "declares nothing" it reopened the
+                // boundary without that hive's seal. The flag goes back up, so
+                // the next pass reads again; the old slot table stays.
+                Ok((_, _, unreadable)) if !unreadable.is_empty() => {
+                    slot_table_dirty = true;
+                    hive_boundaries = crate::hive_boundary::sealed_shut(hive_scopes.paths());
+                    if !ingress_closed {
+                        ingress_closed = true;
+                        tracing::error!(
+                            root = %root.display(),
+                            unreadable = %unreadable.join("; "),
+                            "ingress closed: slot rebuild could not read a hive config"
+                        );
+                    }
+                }
+                Ok((slots, boundaries, _)) => {
+                    slot_table = slots;
+                    hive_boundaries = boundaries;
+                    if ingress_closed {
+                        ingress_closed = false;
+                        tracing::warn!(
+                            root = %root.display(),
+                            "ingress reopened: slot rebuild succeeded"
+                        );
+                    }
+                }
+                // GH #1176, cell boundaries are hard (owner rule, no exception
+                // by ruling): the read that timed out is the one that would
+                // say which hive sealed itself since the last good rebuild --
+                // a new hive, or one a `replace_nodes` re-sealed under the
+                // same path. The old table cannot vouch for any of them, so
+                // until a rebuild succeeds every hive is sealed with no
+                // declared address, whatever `watchdog_on_trip` says. Pure
+                // data in this task: no lock, no atomics.
+                Err(timeout) => {
+                    hive_boundaries = crate::hive_boundary::sealed_shut(hive_scopes.paths());
+                    if !ingress_closed {
+                        ingress_closed = true;
+                        tracing::error!(
+                            root = %root.display(),
+                            reason = %timeout.message(),
+                            "ingress closed: slot rebuild timed out"
+                        );
+                    }
+                }
+            }
         }
         // GH #285 (W4 T12): release the queue of every `park` slot something is
         // now bound behind. Here rather than inside the mutation apply for two
@@ -3053,6 +3431,24 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 }
             }
         }
+        // GH #1208: waiting settles are answered here, once per iteration and
+        // BEFORE the drain decides, so a settle read during a drain is answered
+        // at the same quiescence that starts the teardown. The fence makes
+        // "quiet" include the message log: every write sent before it is
+        // committed when the acks fire.
+        if !settles.is_empty()
+            && crate::drain::is_quiescent(
+                &in_flight,
+                mailbox_backlog(&registry) + late_rescues.pending(),
+                inbox.len(),
+                outputs_rx.len(),
+            )
+        {
+            fence(&colony_db.writer_tx).await;
+            for ack in settles.drain(..) {
+                let _ = ack.send(());
+            }
+        }
         // GH #47: the drain decides here, once per iteration. The heartbeat
         // interval arm wakes this loop ~10×/s even when nothing else happens, so
         // the check runs at that granularity without a select! arm of its own —
@@ -3064,14 +3460,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
             // mailbox occupancy is the observation that catches them. A cell
             // parked `NotYetSpawned` still owns a sender, and what sits in it is
             // real pending work: it is handled the moment the cell is woken.
-            let backlog: usize = registry
-                .values()
-                .map(|e| {
-                    e.handle
-                        .max_capacity()
-                        .saturating_sub(e.handle.free_capacity())
-                })
-                .sum();
+            // GH #1209 (re-check H1): a late task still open may yet deliver a
+            // write through a permit taken before its cell died; it carries no
+            // ticket, so it counts here like mailbox occupancy.
+            let backlog = mailbox_backlog(&registry) + late_rescues.pending();
             if crate::drain::is_quiescent(&in_flight, backlog, inbox.len(), outputs_rx.len()) {
                 tracing::info!("drain complete — the colony is quiescent");
                 if let Some(ack) = ack.take() {
@@ -3084,6 +3476,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &mut dead_letters,
                         &mut in_flight,
                         &mut rescued_mailboxes,
+                        &mut counted_this_life,
                         &mut io_liveness,
                         &mut parked,
                         &slot_table,
@@ -3103,6 +3496,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &mutation_pulse,
                         is_reboot,
                         ack,
+                        std::mem::take(&mut settles),
                     )
                     .await;
                 }
@@ -3128,6 +3522,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &mut dead_letters,
                         &mut in_flight,
                         &mut rescued_mailboxes,
+                        &mut counted_this_life,
                         &mut io_liveness,
                         &mut parked,
                         &slot_table,
@@ -3147,6 +3542,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &mutation_pulse,
                         is_reboot,
                         ack,
+                        std::mem::take(&mut settles),
                     )
                     .await;
                 }
@@ -3181,6 +3577,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 &mut dead_letters,
                                 &mut in_flight,
                                 &mut rescued_mailboxes,
+                                &mut counted_this_life,
                                 &mut io_liveness,
                                 &mut parked,
                                 &slot_table,
@@ -3200,6 +3597,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 &mutation_pulse,
                                 is_reboot,
                                 ack,
+                                std::mem::take(&mut settles),
                             )
                             .await;
                             break;
@@ -3236,6 +3634,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             &mut dead_letters,
                             &mut in_flight,
                             &mut rescued_mailboxes,
+                            &mut counted_this_life,
                             &mut io_liveness,
                             &mut parked,
                             &slot_table,
@@ -3255,6 +3654,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             &mutation_pulse,
                             is_reboot,
                             ack,
+                            std::mem::take(&mut settles),
                         )
                         .await;
                         break;
@@ -3321,6 +3721,18 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             .send(crate::persist::writer::ColonyWriteOp::MarkConsumed {
                                 message_id: message_id.to_string(),
                                 cell_path: cell_path.as_str().to_string(),
+                            })
+                            .await;
+                    }
+                    // GH #1200: a replayed delivery reached its handler — count
+                    // the attempt; the handler waits for the commit.
+                    ColonyMsg::CountAttempt { message_id, ack } => {
+                        counted_this_life.push(message_id);
+                        let _ = colony_db
+                            .writer_tx
+                            .send(crate::persist::writer::ColonyWriteOp::CountReplays {
+                                ids: vec![message_id.to_string()],
+                                ack: Some(ack),
                             })
                             .await;
                     }
@@ -3442,6 +3854,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 }
                             }
                             deliver_rescued_mailbox(&registry, &mut rescued_mailboxes, &mut dead_letters, &mut in_flight, &died, restarted);
+                            settle_late_rescue(&registry, &mut late_rescues, &died, restarted);
+                        } else {
+                            // GH #688: the claimed death had no successor here.
+                            settle_late_rescue(&registry, &mut late_rescues, &died, false);
                         }
                     }
                     ColonyMsg::DrainDeadLetters { ack } => {
@@ -3524,9 +3940,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // GH #1015: every cell the boot knows is registered and the
                         // overflow from disk is adopted — replay what the log holds
                         // as delivered and no cell finished, before the first route.
-                        if !boot_replayed {
-                            boot_replayed = true;
-                            let loaded = load_open_deliveries(&colony_db.read_conn);
+                        // GH #1206: read at boot start, next to the overflow.
+                        if let Some(loaded) = boot_open.take() {
                             replay_logged = loaded.children.clone();
                             replay_open_deliveries(
                                 loaded,
@@ -3684,6 +4099,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             let _ = ack.send(reply);
                         });
                     }
+                    ColonyMsg::Settle { ack } => settles.push(ack),
                     ColonyMsg::ReadMessages { filter, ack } => {
                         let db_path = colony_db.db_path().to_path_buf();
                         beat(
@@ -3881,6 +4297,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // at this moment `entry.handle` still points at the dead
                         // task's channel.
                         rescued_mailboxes.entry(path).or_default().extend(messages);
+                    }
+                    ColonyMsg::MailboxRescuedLate(report) => {
+                        // GH #1068 (#1209): no `forget` here — after the
+                        // `CellDied` the tickets at this path are the successor's.
+                        place_late_rescue(&registry, &mut late_rescues, &mut rescued_mailboxes, &mut dead_letters, &mut in_flight, report);
                     }
                 }
             }
@@ -4585,6 +5006,13 @@ async fn route_with_log_as(
     blob_inline_max_bytes: usize,
     logged: bool,
 ) -> RouteAction {
+    let mut msg = msg;
+    if !logged {
+        // GH #1200 (review H3): the replay-attempt flag is the boot's own.
+        // Whatever brings it in on a fresh message (an HTTP `hop`, a cell's
+        // emission, an edge's `set_hop`) loses it here, before the log row.
+        msg.headers.hop.remove(DELIVERY_ATTEMPT_HEADER);
+    }
     let message_id = msg.id;
     let dead_before = dead_letters.len();
     let resolved_for_mark = Path::resolve(&sender_path, msg.target.as_str());
@@ -4614,6 +5042,32 @@ async fn route_with_log_as(
             .await;
     }
     action
+}
+
+/// GH #1068 (#1209, re-check fix2 M1): a unit-test seam at the instant
+/// between the wrapper's checks of a cell's mailbox and the delivery into it.
+/// In production the cell's `MailboxGuard` can close the mailbox in exactly
+/// this instant on another worker; a test closes it here, deterministically.
+#[cfg(test)]
+mod delivery_seam {
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static BEFORE_DELIVERY: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Run `hook` once, at the next delivery on this thread.
+    pub(super) fn set(hook: impl FnOnce() + 'static) {
+        BEFORE_DELIVERY.with(|s| *s.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn fire() {
+        if let Some(hook) = BEFORE_DELIVERY.with(|s| s.borrow_mut().take()) {
+            hook();
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4806,13 +5260,18 @@ async fn route_with_log_inner(
     // overflow; its drain task delivers it in order, outside the loop. Above
     // the cell's cap it dead-letters as `mailbox_full` instead. The corridor
     // is not entered on that path and stays byte-frozen and pure.
-    let overflows = pre_routable
-        && registry.get(&resolved_target).is_some_and(|e| {
+    // Re-check fix3 H1: the entry of the decision is the entry of the
+    // delivery -- no second lookup whose `else` could drop the message.
+    let overflow_entry = if pre_routable {
+        registry.get(&resolved_target).filter(|e| {
             in_flight
                 .overflow
                 .must_overflow(&resolved_target, &e.handle)
-        });
-    if overflows {
+        })
+    } else {
+        None
+    };
+    if let Some(entry) = overflow_entry {
         let original_target = msg.target.clone();
         let routed = routed_like_the_corridor(&sender_path, msg);
         if let Some(row) = log_row_opt {
@@ -4822,9 +5281,6 @@ async fn route_with_log_inner(
                 ))
                 .await;
         }
-        let Some(entry) = registry.get(&resolved_target) else {
-            return RouteAction::Done;
-        };
         match in_flight
             .overflow
             .accept(&entry.handle, &resolved_target, routed, &sender_path)
@@ -4844,29 +5300,40 @@ async fn route_with_log_inner(
         return RouteAction::Done;
     }
 
-    // GH #1068: a cell whose task is dying has closed its mailbox (the
-    // `MailboxGuard` closes it, then drains it into `MailboxRescued`), and its
-    // `CellDied` is still on the way. `route()` would send into the closed
-    // mailbox, fail, and drop the message with one warning line -- measured: a
-    // wake message the colony sent right after waking a cell that died of the
-    // message ahead of it, 2 of 20 runs on a build host under load (the
-    // colony's thread lost the CPU between wake and send). So such a message
-    // is built the way `route()` delivers it, logged once, and parked for the
-    // successor; the `CellDied` arm hands it over behind the rescued mailbox,
-    // or dead-letters it with that mailbox when there is no successor. An
-    // `Awake` entry with a closed mailbox is exactly that state: a peaceful
-    // stop or sleep hands the receiver over instead of closing it, and a
-    // failed or parked entry carries a fresh channel. The corridor stays
-    // byte-frozen; this is the wrapper's pre-check beside the overflow's.
-    if pre_routable
-        && let Some(entry) = registry.get(&resolved_target)
-        && entry.handle.is_closed()
-        && matches!(entry.status, CellStatus::Awake)
-        && !entry.failed
-    {
+    // GH #1068 (#1209, re-check fix2 M1): a cell target is delivered HERE,
+    // with `try_send`, and the corridor is not entered for it -- as on the
+    // overflow path above. `route()` delivers with `send().await` and drops a
+    // send that comes back `Err` with one warning line. A dying cell's
+    // `MailboxGuard` closes its mailbox on another worker while its `CellDied`
+    // is still on the way, so a close between any check of the mailbox here
+    // and that send lost the message: measured 2 of 20 runs (the colony's
+    // thread lost the CPU between wake and send) and 2 of 60 under load (the
+    // send yielded on a spent coop budget). `try_send` takes the permit and
+    // writes in one call: the message is in the queue before the close (the
+    // guard rescues it) or it comes back here. Closed -> held for the
+    // successor (the `CellDied` arm hands it over behind the rescued mailbox,
+    // or dead-letters it with that mailbox when there is no successor); full
+    // -> the overflow. Nothing is dropped, and no instant is left in which a
+    // close loses it. The corridor stays byte-frozen and pure.
+    //
+    // GH #47, ruling O1: `pre_routable` is exactly the condition under which
+    // the corridor would take its `Some(entry)` branch and send into a
+    // mailbox. The in-flight ticket is taken in the same synchronous step as
+    // the write, so there is no instant in which the message is in flight and
+    // unaccounted for.
+    if pre_routable && let Some(entry) = registry.get(&resolved_target) {
         let birth = entry.handle.path.clone();
         let original_target = msg.target.clone();
         let routed = routed_like_the_corridor(&sender_path, msg);
+        #[cfg(test)]
+        delivery_seam::fire();
+        let undelivered = match entry.handle.try_send(routed) {
+            Ok(()) => {
+                in_flight.enter(&resolved_target);
+                None
+            }
+            Err(e) => Some(*e),
+        };
         if let Some(row) = log_row_opt {
             let _ = log_tx
                 .send(crate::persist::writer::ColonyWriteOp::InsertMessageLogOpen(
@@ -4874,12 +5341,58 @@ async fn route_with_log_inner(
                 ))
                 .await;
         }
+        let closed = match undelivered {
+            None => return RouteAction::Done,
+            Some(tokio::sync::mpsc::error::TrySendError::Closed(message)) => message,
+            // Re-check fix3: `entry` is the lookup above, held over the whole
+            // branch (nothing else touches the registry here), so there is no
+            // second lookup whose `else` could drop the message (H1). With an
+            // overflow wired, a full mailbox ALWAYS goes there -- never a
+            // re-read of the capacity that could send this loop into
+            // `send().await` after another producer took the slot again
+            // (H2, GH #850: a full mailbox never stops this loop).
+            Some(tokio::sync::mpsc::error::TrySendError::Full(message)) => {
+                if in_flight.overflow.is_wired() {
+                    match in_flight.overflow.accept(
+                        &entry.handle,
+                        &resolved_target,
+                        message,
+                        &sender_path,
+                    ) {
+                        crate::overflow::Accepted::Queued => in_flight.enter(&resolved_target),
+                        crate::overflow::Accepted::Refused(message) => push_dead_letter(
+                            dead_letters,
+                            DeadLetter {
+                                sender_path,
+                                original_target,
+                                resolved_target,
+                                message,
+                                reason: crate::dead_letter::DeadLetterReason::MailboxFull {
+                                    detail: None,
+                                },
+                            },
+                        ),
+                    }
+                    return RouteAction::Done;
+                }
+                // No overflow wired (unit rigs only; `colony_task` always
+                // wires it): wait for the slot as the corridor would, and keep
+                // the message if the mailbox closes meanwhile.
+                match entry.handle.send(message).await {
+                    Ok(()) => {
+                        in_flight.enter(&resolved_target);
+                        return RouteAction::Done;
+                    }
+                    Err(e) => e.0,
+                }
+            }
+        };
         tracing::warn!(
             target = %resolved_target.as_str(),
-            message_id = %routed.id,
+            message_id = %closed.id,
             "delivery met the closed mailbox of a dying cell -- held for its successor"
         );
-        if let Err(message) = in_flight.park_for_successor(&birth, routed) {
+        if let Err(message) = in_flight.park_for_successor(&birth, closed) {
             // Review F4: the overflow's cap holds here too.
             push_dead_letter(
                 dead_letters,
@@ -4895,19 +5408,9 @@ async fn route_with_log_inner(
         return RouteAction::Done;
     }
 
-    // GH #47, ruling O1: `pre_routable` is the wrapper's own pre-check and it is
-    // exactly the condition under which the corridor takes its `Some(entry)`
-    // branch and sends into a mailbox. The ticket is taken HERE, before the send,
-    // so there is no instant in which the message is in flight and unaccounted
-    // for. The corridor itself stays byte-frozen and stays pure.
-    //
-    // Deliberately NOT behind the call and NOT derived from the `RouteAction`:
-    // `RouteAction::Done` covers a delivery, a TTL death and a dead-letter alike,
-    // so it is no delivery signal.
-    if pre_routable {
-        in_flight.enter(&resolved_target);
-    }
-
+    // Everything else -- TTL death, colony endpoints, hive transit, an
+    // unresolved target -- goes through the corridor, which sends nothing on
+    // those branches and so never waits.
     let next = route(registry, hive_scopes, dead_letters, sender_path, msg).await;
 
     if let Some(row) = log_row_opt {
@@ -4934,9 +5437,15 @@ pub const DELIVERY_KEY_MS_HEADER: &str = "delivery_key_ms";
 /// GH #1015: the hop flag an ingress sets on a hand-on it repeats from its own
 /// book at start. Such a hand-on whose id the log already holds is dropped.
 pub const DELIVERY_REPLAY_HEADER: &str = "delivery_replay";
-/// GH #1015: how many boots replay one open delivery before the next one
-/// dead-letters it as `replay_exhausted` instead (a message that takes the
-/// process down on every attempt).
+/// GH #1200: the hop flag the colony sets on a delivery it replays from the
+/// log at boot. The cell task that takes such a delivery has the attempt
+/// counted (`ColonyMsg::CountAttempt`) before its handler starts.
+pub const DELIVERY_ATTEMPT_HEADER: &str = "delivery_attempt";
+/// GH #1015: how many replayed attempts — a handler started on the replayed
+/// delivery in a life that then crashed (an ordered stop lets its counts
+/// lapse, GH #1200) — one open delivery gets before
+/// the next boot dead-letters it as `replay_exhausted` instead (a message that
+/// takes the process down on every attempt).
 pub(crate) const REPLAY_MAX: i64 = 3;
 
 /// FNV-1a over length-separated parts — stable across builds and processes,
@@ -5163,9 +5672,10 @@ pub(crate) fn load_open_deliveries(conn: &rusqlite::Connection) -> OpenDeliverie
 /// mailboxes were the cache the crash took. Each goes straight to its cell
 /// with the budget it was logged with (the route below takes the one hop the
 /// log row already counted, so the cell reads exactly the logged `ttl`), in
-/// log order. The attempt is counted durably first (one commit per boot, none
-/// on a cold start); a delivery past [`REPLAY_MAX`] attempts is the dead
-/// letter `replay_exhausted` instead.
+/// log order, flagged with [`DELIVERY_ATTEMPT_HEADER`] so the cell task that
+/// takes it has the attempt counted before its handler starts (GH #1200); a
+/// delivery past [`REPLAY_MAX`] attempts is the dead letter
+/// `replay_exhausted` instead.
 #[allow(clippy::too_many_arguments)]
 async fn replay_open_deliveries(
     loaded: OpenDeliveries,
@@ -5228,24 +5738,32 @@ async fn replay_open_deliveries(
     if deliver.is_empty() {
         return;
     }
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-    let _ = log_tx
-        .send(crate::persist::writer::ColonyWriteOp::CountReplays {
-            // Review M-2: after an ordered stop nothing crashed — no count.
-            ids: if clean_stop {
-                Vec::new()
-            } else {
-                deliver.iter().map(|(_, m)| m.id.to_string()).collect()
-            },
-            ack: Some(ack_tx),
-        })
-        .await;
-    let _ = ack_rx.await;
+    // GH #1200: no count here. A boot count read every life that died with
+    // the delivery still open as an attempt — also a life SIGKILLed before
+    // any handler took it (a dormant store still waking, a mailbox behind a
+    // backlog). Under full-suite load the gh1043 stream had a healthy
+    // delivery replayed at three such boots, and the fourth dead-lettered it
+    // as `replay_exhausted`: an acknowledged frame never arrived (acked 300,
+    // arrived 299, neither laid nor claimed). The attempt is counted where it
+    // happens instead: the cell task that takes a delivery carrying
+    // `DELIVERY_ATTEMPT_HEADER` asks for the count (`ColonyMsg::CountAttempt`)
+    // and starts the handler after its commit. The rule: an attempt is a
+    // handler start on the replayed delivery in a life that does not end in
+    // order. An ordered stop lets this life's counts lapse (`ForgiveAttempts`
+    // in the teardown), also for a handler the drain cut, so review M-2 holds:
+    // no ordered restart exhausts a healthy delivery. Known limit: a replay
+    // that takes the process down BEFORE a handler starts (e.g. a synchronous
+    // wake in this task aborting) counts nothing and is replayed without bound.
     tracing::warn!(
         count = deliver.len(),
+        clean_stop,
         "replaying deliveries the log holds and no cell finished before the last stop"
     );
     for (cell_path, mut msg) in deliver {
+        msg.headers.hop.insert(
+            DELIVERY_ATTEMPT_HEADER.to_string(),
+            meclaw_core::serde_json::Value::Bool(true),
+        );
         msg.target = Path::new(&cell_path);
         msg.ttl = msg.ttl.saturating_add(1);
         let sender = msg.reply_to.clone().unwrap_or_else(|| Path::new("/"));
@@ -5585,7 +6103,7 @@ fn subtree_inert_respawn() -> crate::RespawnFn {
 ///
 /// This function sits BESIDE `handle_mutation`, never inside it: the single
 /// form has to stay provably unmoved (pinned by
-/// `tests/gh422_the_single_mutation_body_does_not_move.rs`), and a loop woven
+/// `tests/gh_2/gh422_the_single_mutation_body_does_not_move.rs`), and a loop woven
 /// into it could not prove that any more.
 ///
 /// **`reply_to` is `None` for every entry, and that is load-bearing.** A
@@ -6018,7 +6536,7 @@ pub(crate) async fn handle_mutation(
     }
     // The freshly registered classes join the snapshot the remaining operations
     // resolve against, so an `add_nodes` of the SAME diff finds them by name.
-    let templates = if registered.is_empty() {
+    let mut templates = if registered.is_empty() {
         templates
     } else {
         crate::templates::TemplatesRegistry::from_entries(
@@ -6368,6 +6886,60 @@ pub(crate) async fn handle_mutation(
     let rejection = 'validate: {
         let mut rejection = crate::mutation::rejection::MutationRejection::new();
 
+        // GH #1193: the template trees this diff's `add_nodes` name, parsed
+        // ONCE, off the colony worker, before the first stage reads them. Every
+        // later `parse_subtree` of the same tree in this mutation (stages 2-4,
+        // the subtree pre-checks, the contracts of newborn hives, staging)
+        // answers from the snapshot. They were synchronous `std::fs` walks on
+        // the worker with no beat and no timeout (AGENTS.md rules 12/13), up to
+        // four per entry. Same scan machinery as the hive configs (#1176): one
+        // `spawn_blocking`, a beat per `config.json`, a read that does not come
+        // back refuses the diff pre-destructively (`hive_config_timeout`). A
+        // diff without such an entry starts no scan at all.
+        let mut subtree_roots: Vec<std::path::PathBuf> = diff_subst
+            .get("add_nodes")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.get("template").and_then(|v| v.as_str()))
+            .filter_map(|r| templates.resolve(r).ok())
+            .map(|t| t.filesystem_path.clone())
+            .collect();
+        subtree_roots.sort();
+        subtree_roots.dedup();
+        if !subtree_roots.is_empty() {
+            let snapshot = templates.clone();
+            // The label names the file under the template library, not the
+            // host path (it travels into the refusal's violation).
+            let library = templates_root.to_path_buf();
+            let template_scan = crate::mutation::hive_scan::scan_hives(
+                &mut hive_scopes.scan_gate,
+                root,
+                Vec::new(),
+                pulse,
+                "template-scan",
+                move |scan| {
+                    crate::mutation::subtree::read_subtrees(
+                        &subtree_roots,
+                        &snapshot,
+                        &|p: &std::path::Path| {
+                            let shown = p.strip_prefix(&library).unwrap_or(p);
+                            scan.step(&format!("template:{}", shown.display()))
+                        },
+                    )
+                },
+            )
+            .await;
+            let Some(parsed) = crate::mutation::hive_scan::read_or_refuse(
+                template_scan,
+                crate::mutation::rejection::Stage::TemplateResolution,
+                &mut rejection,
+            ) else {
+                break 'validate rejection;
+            };
+            templates.keep_parsed_subtrees(parsed);
+        }
+
         // Stage 2 — template resolution: every reference resolves, including the
         // `ref` chains and the rings they can close. First, because a diff whose
         // template does not exist has nothing later worth measuring.
@@ -6549,19 +7121,87 @@ pub(crate) async fn handle_mutation(
             .map(|p| p.as_str().to_string())
             .chain(hive_scopes.paths().map(|p| p.as_str().to_string()))
             .collect();
-        let template_to_cell_type: Vec<(String, String)> = templates
+        // GH #1176: ONE config scan for the whole validation, off the colony
+        // worker with a beat per read (`mutation::hive_scan`): the cell type of
+        // every template (one `config.json` each), the hives that declared
+        // `params.ports` and the hive contracts (both out of every hive's
+        // `config.json`). They were three synchronous FS passes on the worker:
+        // the hive half measured 31 ms of a ten-edge mutation idle and up to
+        // 2.2 s with twelve colonies on one host. Reading the hive half here and
+        // not after stage 5 costs a refused diff one wasted pass; it saves every
+        // committed diff one. A read that does not come back refuses the diff
+        // (`hive_config_timeout`), pre-destructive.
+        let template_dirs: Vec<(String, std::path::PathBuf)> = templates
             .entries_iter()
-            .filter_map(|t| {
-                let cfg_path = t.filesystem_path.join("config.json");
-                let raw = std::fs::read_to_string(&cfg_path).ok()?;
-                let val: meclaw_core::JsonValue = meclaw_core::serde_json::from_str(&raw).ok()?;
-                let ct = val
-                    .get("cell")
-                    .and_then(|c| c.get("type"))
-                    .and_then(|v| v.as_str())?;
-                Some((t.name.clone(), ct.to_string()))
-            })
+            .map(|t| (t.name.clone(), t.filesystem_path.clone()))
             .collect();
+        let hive_paths = hive_scopes.sorted_paths();
+        let validation_scan = crate::mutation::hive_scan::scan_hives(
+            &mut hive_scopes.scan_gate,
+            root,
+            hive_paths,
+            pulse,
+            "hive-scan",
+            move |scan| {
+                let template_to_cell_type: Vec<(String, String)> = template_dirs
+                    .iter()
+                    .filter_map(|(name, dir)| {
+                        scan.step(&format!("template:{name}"));
+                        let raw = std::fs::read_to_string(dir.join("config.json")).ok()?;
+                        let val: meclaw_core::JsonValue =
+                            meclaw_core::serde_json::from_str(&raw).ok()?;
+                        let ct = val
+                            .get("cell")
+                            .and_then(|c| c.get("type"))
+                            .and_then(|v| v.as_str())?;
+                        Some((name.clone(), ct.to_string()))
+                    })
+                    .collect();
+                let mut unreadable = Vec::new();
+                let sealed = crate::mutation::port_boundary::collect_sealed_hives_reporting(
+                    scan.root(),
+                    scan.paths(),
+                    &mut unreadable,
+                );
+                (
+                    template_to_cell_type,
+                    sealed,
+                    unreadable,
+                    crate::mutation::hive_contract::collect_hive_contracts(
+                        scan.root(),
+                        scan.paths(),
+                    ),
+                )
+            },
+        )
+        .await;
+        let Some((template_to_cell_type, sealed_hives, unreadable_seals, standing_contracts)) =
+            crate::mutation::hive_scan::read_or_refuse(
+                validation_scan,
+                crate::mutation::rejection::Stage::ContractLocality,
+                &mut rejection,
+            )
+        else {
+            break 'validate rejection;
+        };
+        // GH #1176 (re-check tb-s9b M2): a seal that could not be read (EIO, a
+        // `config.json` / `params` that does not parse) counted as "declares
+        // nothing", so an `add_edges` into an undeclared address of that hive
+        // passed the port check and the edge stayed after the disk answered
+        // again. The slot rebuild fails closed on the same reader (u2 L5);
+        // the validation refuses here, before anything is staged. A missing
+        // file still declares nothing.
+        if !unreadable_seals.is_empty() {
+            for why in unreadable_seals {
+                let hive = why.split(':').next().map(str::to_string);
+                rejection.push(crate::mutation::rejection::Violation::from_error(
+                    crate::mutation::rejection::Stage::ContractLocality,
+                    &crate::mutation::MutationError::HiveConfigUnreadable(why),
+                    hive,
+                ));
+            }
+            break 'validate rejection;
+        }
         // Paket-5 T12 (P9 per-node subtree resume): pre-resolve + pre-destructively
         // validate SUBTREE `add_nodes` BEFORE staging. For each add_nodes entry whose
         // template is a subtree (`cells.len() > 1`):
@@ -6802,8 +7442,8 @@ pub(crate) async fn handle_mutation(
         // can decide whether an endpoint resolves at all. The port boundary below
         // consumes the same read — one FS pass, one answer, no chance of the two
         // halves of one declaration disagreeing.
-        let sealed_hives =
-            crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
+        //
+        // GH #1176: read in the one validation scan above, with the contracts.
         let slot_endpoints = crate::mutation::port_boundary::slot_endpoint_addresses(&sealed_hives);
 
         // Stage 5 — both endpoints of every edge exist in the post-state.
@@ -6855,10 +7495,9 @@ pub(crate) async fn handle_mutation(
         // edge that names its lane, and whether it may cross a level is a
         // question about that level's CONTRACT — so the seal and the
         // declaration have to be measured together or a level that opened for
-        // the lane still reports a breach. Same one FS pass, used twice, as
-        // `sealed_hives` above.
-        hive_contracts =
-            crate::mutation::hive_contract::collect_hive_contracts(root, hive_scopes.paths());
+        // the lane still reports a breach. Since GH #1176 they come out of the
+        // same hive-config scan as `sealed_hives` above.
+        hive_contracts = standing_contracts;
         // GH #562: and the contract of every hive this diff gives BIRTH to.
         // A v-lane ends on a level the same mutation instantiates — that is
         // what a grow recipe is, one `add_nodes` and the level's edges beside
@@ -8767,9 +9406,38 @@ pub(crate) async fn handle_mutation(
     // a diff that leaves three declared pairings unmet says all three at once,
     // and each entry carries the declaring hive's own `because` in
     // `Violation::because` as well as inside its prose.
-    let drain_reqs =
-        crate::mutation::required_drains::collect_required_drains(root, hive_scopes.paths());
+    //
+    // GH #1176: the requirements are read out of every hive's `config.json`,
+    // and that scan was the silent stretch of this phase -- 63 ms of a
+    // ten-edge mutation idle, 444 ms p50 / 926 ms max with twelve colonies on
+    // one host, synchronous on the colony worker. Off the worker now, with a
+    // beat per hive; a read that does not come back refuses the diff through
+    // the rollback below (`hive_config_timeout`).
     let mut post_state_rejection = crate::mutation::rejection::MutationRejection::new();
+    //
+    // The pre-state validation scan cannot serve here: the apply above renames
+    // configs in (new hives, swaps, lifts). This scan reads the drains and
+    // nothing else -- the outcome, and with it the caller's ack, hangs on them.
+    // The post-state seal and boundaries are the colony loop's, read by its
+    // slot rebuild after the door, as before the scan moved off the worker.
+    let post_state_paths = hive_scopes.sorted_paths();
+    let post_state_scan = crate::mutation::hive_scan::scan_hives(
+        &mut hive_scopes.scan_gate,
+        root,
+        post_state_paths,
+        &pulse,
+        "post-state",
+        |scan| crate::mutation::required_drains::collect_required_drains(scan.root(), scan.paths()),
+    )
+    .await;
+    // Refused: the rejection carries `hive_config_timeout`, the rollback below
+    // runs on it.
+    let drain_reqs = crate::mutation::hive_scan::read_or_refuse(
+        post_state_scan,
+        crate::mutation::rejection::Stage::RequiredDrains,
+        &mut post_state_rejection,
+    )
+    .unwrap_or_default();
     if !drain_reqs.is_empty() {
         crate::mutation::required_drains::collect_drain_violations(
             &drain_reqs,
@@ -8779,7 +9447,11 @@ pub(crate) async fn handle_mutation(
     }
     if let Some(error_code) = post_state_rejection.error_code() {
         let details = post_state_rejection.render();
-        tracing::warn!(reason = %details, "required drain missing — rejecting mutation");
+        tracing::warn!(
+            reason = %details,
+            "post-state check failed (a required drain is missing, or a hive config read \
+             timed out) — rejecting mutation"
+        );
         for eid in &inserted_edge_ids {
             edges.remove(eid);
         }
@@ -8828,26 +9500,27 @@ pub(crate) async fn handle_mutation(
     // broken lane happened to be found first. `post_state_rejection` is empty
     // here — the drain stage above returned if it was not — so this is a fresh
     // stage, not an append.
-    if !hive_contracts.is_empty() {
-        crate::mutation::hive_contract::collect_lane_doors(
-            &hive_contracts,
-            edges,
-            &mut post_state_rejection,
-        );
-    }
+    //
     // Apps rim (2026-09-05), the third shape of `hive_contract`: a hive born by
     // THIS diff may insist on a lane, and the diff that gives it birth owes it
     // the edge. The list is the one the port boundary already reads (GH
     // #562/#567) — that boundary judges what the diff DRAWS, and so does this.
     // Post-state for the same reason as the two checks above, and appended to
     // the same rejection so one refusal can carry both kinds of finding.
-    if !newborn_contracts.is_empty() {
-        crate::mutation::hive_contract::collect_required_lanes(
-            &newborn_contracts,
-            edges,
-            &mut post_state_rejection,
-        );
-    }
+    //
+    // GH #1176: both checks run route probes through the CEL evaluator, 50-80 ms
+    // of CPU per mutation idle, and ran on the colony worker with no beat. They
+    // stay on the worker (pure CPU on the post-state table: no copy, no hand-off)
+    // and yield and beat at most every `LANE_CHECK_SLICE` (1 ms), between
+    // contracts and lanes -- a contract whose check never ends stays silent.
+    crate::mutation::hive_contract::collect_post_state_lanes_paced(
+        &hive_contracts,
+        &newborn_contracts,
+        edges,
+        &mut post_state_rejection,
+        &mut crate::mutation::hive_contract::LanePacer::new(&pulse),
+    )
+    .await;
     if let Some(error_code) = post_state_rejection.error_code() {
         let details = post_state_rejection.render();
         tracing::warn!(reason = %details, "hive contract broken — rejecting mutation");
@@ -10253,20 +10926,18 @@ pub(crate) async fn handle_mutation(
         // written — measured 2026-09-23, `templates/local/memory-hive@3.4.1/`
         // appeared in the repository during `scenarios:memory`.
         let local = crate::templates::local_root(templates_root, root);
-        for (template_id, kept) in crate::templates::keep::keep_all(&local, &rows, &instantiated) {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = log_tx
-                .send(crate::templates::upsert_op(
-                    template_id,
-                    &kept,
-                    now_edges,
-                    Some(tx),
-                ))
-                .await;
-            // Durable before the verdict goes back: the next mutation reads its
-            // template snapshot from `colony.db`.
-            let _ = rx.recv();
-        }
+        // GH #1172: the copies and the durable repoints are the longest
+        // stretch of a mutation after its last cell -- paced and off the
+        // colony's worker thread inside the helper.
+        crate::templates::keep::keep_after_commit(
+            local,
+            rows,
+            instantiated,
+            log_tx,
+            now_edges,
+            &pulse,
+        )
+        .await;
     }
 
     // GH #682 (OR-P4): the receipt names every child of every lifted node.
@@ -11362,12 +12033,12 @@ type ParkedSlots = HashMap<Path, VecDeque<(Path, Message)>>;
 /// Deliberately the SAME reader the mutation edge check uses
 /// (`collect_sealed_hives` + `slot_unbound_behaviours`): a slot that one rule
 /// finds wireable and another spells differently is a slot that is announced
-/// and then behaves like a typo. Synchronous filesystem work — one
-/// `config.json` per registered hive — which is why it runs on topology change
-/// only and never per message.
-fn rebuild_slot_table(root: &std::path::Path, hive_scopes: &HiveScopeTable) -> SlotTable {
-    let sealed = crate::mutation::port_boundary::collect_sealed_hives(root, hive_scopes.paths());
-    crate::mutation::port_boundary::slot_unbound_behaviours(&sealed)
+/// and then behaves like a typo. The seal is read by the caller -- one
+/// `config.json` per registered hive, in the colony loop's hive-config scan
+/// (GH #1176) -- which is why it runs on topology change only and never per
+/// message.
+fn slot_table_from_sealed(sealed: &[crate::mutation::port_boundary::SealedHive]) -> SlotTable {
+    crate::mutation::port_boundary::slot_unbound_behaviours(sealed)
         .into_iter()
         .map(|(address, unbound)| (Path::new(&address), unbound))
         .collect()
@@ -11772,6 +12443,45 @@ mod tests {
     use meclaw_testing::mocks::FailOnDemandMockCell;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
+
+    /// GH #1208: the quiescence barrier asked of a bare `colony_task` (what
+    /// `ColonyHandle::quiesce` asks of a handle). Absence is read after it,
+    /// never after a time window (AGENTS.md rule 11).
+    async fn settle(inbox_tx: &mpsc::Sender<ColonyMsg>) {
+        let (ack, rx) = oneshot::channel();
+        inbox_tx.send(ColonyMsg::Settle { ack }).await.unwrap();
+        meclaw_testing::deadline::hang("the colony settles", rx)
+            .await
+            .expect("the colony answers its settle");
+    }
+
+    /// The colony's own inbox sender, relayed: every `CellDied` a watcher
+    /// sends is announced on the returned receiver once it stands in the
+    /// colony's inbox. The inbox is one FIFO, so a request sent after the
+    /// announcement is handled after the death -- the death is an event, not
+    /// a wait. The colony takes the relay as its `inbox_self_tx`, which is the
+    /// sender its watchers are spawned with.
+    fn relay_cell_deaths(
+        inbox_tx: mpsc::Sender<ColonyMsg>,
+    ) -> (mpsc::Sender<ColonyMsg>, mpsc::UnboundedReceiver<Path>) {
+        let (relay_tx, mut relay_rx) = mpsc::channel::<ColonyMsg>(64);
+        let (died_tx, died_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(m) = relay_rx.recv().await {
+                let died = match &m {
+                    ColonyMsg::CellDied { path, .. } => Some(path.clone()),
+                    _ => None,
+                };
+                if inbox_tx.send(m).await.is_err() {
+                    break;
+                }
+                if let Some(path) = died {
+                    let _ = died_tx.send(path);
+                }
+            }
+        });
+        (relay_tx, died_rx)
+    }
 
     /// Minimal `ColonyTaskConfig` for builder-field unit tests. Mirrors the
     /// `ColonyTaskConfig::new` call form used by the spawn-tests in this module.
@@ -12203,6 +12913,56 @@ mod tests {
         let (_g_ack_tx, g_death_ack_rx) = tokio::sync::oneshot::channel::<()>();
         handle_stop_wiring_restored(&mut empty, Path::new("/gone"), g_stop_tx, g_death_ack_rx);
         assert!(empty.is_empty());
+    }
+
+    /// tv-p1a-m P2b (TV-Q5, GH #1208): `mailbox_backlog` is the number of
+    /// messages sitting in cell mailboxes, summed over every entry -- the
+    /// quiescence input of the drain and of `ColonyMsg::Settle`. A backlog of
+    /// zero is the quiet state, so the pin fills two mailboxes of different
+    /// sizes and expects the exact sum, then empties one.
+    #[test]
+    fn mailbox_backlog_sums_what_sits_in_every_mailbox() {
+        fn entry(path: &Path, sender: mpsc::Sender<Message>) -> RegistryEntry {
+            RegistryEntry {
+                handle: meclaw_core::ActorHandle::new(path.clone(), sender),
+                respawn: Box::new(|| unreachable!()),
+                wake: None,
+                restart_count: 0,
+                restart_limit: 5,
+                cell_id: uuid::Uuid::now_v7(),
+                cell_type: "stub".into(),
+                status: CellStatus::Awake,
+                eager_on_reconnect: true,
+                active: true,
+                failed: false,
+                dormant: false,
+                stop_tx: None,
+                death_ack_rx: None,
+            }
+        }
+        let mut registry = std::collections::HashMap::<Path, RegistryEntry>::new();
+        assert_eq!(
+            mailbox_backlog(&registry),
+            0,
+            "an empty registry has no backlog"
+        );
+        let (a_tx, _a_rx) = mpsc::channel::<Message>(8);
+        let (b_tx, mut b_rx) = mpsc::channel::<Message>(4);
+        for _ in 0..3 {
+            a_tx.try_send(MessageBuilder::new(Path::new("/a")).build())
+                .unwrap();
+        }
+        b_tx.try_send(MessageBuilder::new(Path::new("/b")).build())
+            .unwrap();
+        registry.insert(Path::new("/a"), entry(&Path::new("/a"), a_tx));
+        registry.insert(Path::new("/b"), entry(&Path::new("/b"), b_tx));
+        assert_eq!(mailbox_backlog(&registry), 4, "3 + 1 queued messages");
+        b_rx.try_recv().unwrap();
+        assert_eq!(
+            mailbox_backlog(&registry),
+            3,
+            "a read message leaves the backlog"
+        );
     }
 
     /// Phase-13.5 Lifecycle-3b Task 4 (4.6): pin the canonical `term_timeout`
@@ -12758,7 +13518,7 @@ mod tests {
     /// `reply_to` and is addressed to the configured target and nowhere else,
     /// so it can neither start a round nor be mistaken for a mutation. The
     /// counted half (`n` mutations plus the boot leave `n + 1` receipts) lives
-    /// in `tests/gh553_a_committed_mutation_leaves_a_receipt.rs`.
+    /// in `tests/gh_3/gh553_a_committed_mutation_leaves_a_receipt.rs`.
     #[test]
     fn a_receipt_is_terminal_and_says_only_the_six_keys() {
         use crate::mutation::{MutationDoorOutcome, MutationOutcome};
@@ -13051,6 +13811,169 @@ mod tests {
         join.await.unwrap();
     }
 
+    /// GH #1216 (K8): the loop says its last word ([`crate::watchdog::Beat::StandDown`])
+    /// once its drain is over, and never inside it. A cell holds one message
+    /// behind a gate, so the drain cannot end until the test opens it; every
+    /// beat the draining loop says meanwhile is read off the wire, and none may
+    /// be the stand-down — a stand-down there would disarm the supervisor while
+    /// a hang in the drain still has to trip it. Events only: the cell's entry,
+    /// three parks of the draining loop, the gate, the ack.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_loop_stands_down_after_its_drain_and_never_inside_it() {
+        use crate::watchdog::Beat;
+        struct GateCell {
+            entered: mpsc::Sender<()>,
+            release: Option<oneshot::Receiver<()>>,
+        }
+        impl meclaw_core::Cell for GateCell {
+            #[allow(clippy::manual_async_fn)]
+            fn handle(
+                &mut self,
+                _msg: Message,
+                _sink: &meclaw_core::OutputSink,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                let entered = self.entered.clone();
+                let release = self.release.take();
+                async move {
+                    let _ = entered.send(()).await;
+                    if let Some(gate) = release {
+                        let _ = gate.await;
+                    }
+                }
+            }
+        }
+
+        let td = tempfile::TempDir::new().unwrap();
+        let (inbox_tx, inbox_rx) = mpsc::channel(64);
+        let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
+        let (hb_tx, mut hb_rx) = mpsc::channel::<Beat>(crate::watchdog::HEARTBEAT_CAPACITY);
+        let db = crate::ColonyDb::open(&td.path().join("c.db")).unwrap();
+        // The drain must end at the gate, never at its budget: one hour.
+        let config = crate::ColonyConfig {
+            shutdown_drain_timeout_ms: 3_600_000,
+            ..crate::ColonyConfig::default()
+        };
+        let join = tokio::spawn(colony_task(
+            ColonyTaskConfig::new(
+                inbox_tx.clone(),
+                inbox_rx,
+                out_tx.clone(),
+                out_rx,
+                db,
+                crate::CellFactoryRegistry::new(),
+                td.path().to_path_buf(),
+                config,
+                None,
+                None,
+            )
+            .with_heartbeat(hb_tx),
+        ));
+
+        let (entered_tx, mut entered_rx) = mpsc::channel(1);
+        let (release_tx, release_rx) = oneshot::channel();
+        let (cell_in_tx, cell_in_rx) = mpsc::channel(8);
+        let cell_join = tokio::spawn(cell_task(
+            Path::new("/gate"),
+            cell_in_rx,
+            out_tx.clone(),
+            GateCell {
+                entered: entered_tx,
+                release: Some(release_rx),
+            },
+            None,
+            None,
+            Some(inbox_tx.clone()),
+        ));
+        let (_peace_tx, peace_rx) = oneshot::channel();
+        let respawn: RespawnFn = Box::new(|| unreachable!("the gate cell never restarts"));
+        let (ack_tx, ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Register {
+                path: Path::new("/gate"),
+                sender: cell_in_tx,
+                join: cell_join,
+                peace_rx,
+                backstop_rx: dropped_backstop_rx(),
+                stop_tx: None,
+                death_ack_rx: None,
+                respawn,
+                wake: None,
+                restart_limit: None,
+                cell_id: Uuid::now_v7(),
+                cell_type: "test-mock".into(),
+                active: true,
+                ack: ack_tx,
+            })
+            .await
+            .unwrap();
+        ack_rx.await.unwrap();
+        inbox_tx
+            .send(ColonyMsg::Route {
+                sender_path: Path::new("/"),
+                msg: MessageBuilder::new(Path::new("/gate")).build(),
+            })
+            .await
+            .unwrap();
+        meclaw_testing::deadline::hang("the gate cell is inside handle()", entered_rx.recv())
+            .await
+            .expect("the gate cell announces its entry");
+
+        let (s_ack_tx, mut s_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Shutdown { ack: s_ack_tx })
+            .await
+            .unwrap();
+        // The loop takes its inbox first (biased select), so by its second park
+        // after the Shutdown was queued it has opened the drain; three for
+        // margin. Every word up to here was said with the drain open or earlier.
+        let mut parks = 0;
+        while parks < 3 {
+            let b = meclaw_testing::deadline::hang("the draining loop keeps beating", hb_rx.recv())
+                .await
+                .expect("the loop is alive while it drains");
+            assert_ne!(
+                b,
+                Beat::StandDown,
+                "the loop stood down INSIDE its drain — a hang there could no longer trip"
+            );
+            if b == Beat::Parked {
+                parks += 1;
+            }
+        }
+        assert!(
+            matches!(
+                s_ack_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
+            "the gate still holds the drain"
+        );
+
+        release_tx.send(()).expect("the gate cell still waits");
+        meclaw_testing::deadline::hang("the shutdown acks after its drain", &mut s_ack_rx)
+            .await
+            .expect("the shutdown ack");
+        meclaw_testing::deadline::hang("the colony task ends", join)
+            .await
+            .expect("the colony task must not panic");
+        let mut after = Vec::new();
+        while let Ok(b) = hb_rx.try_recv() {
+            after.push(b);
+        }
+        let at = after
+            .iter()
+            .position(|b| *b == Beat::StandDown)
+            .unwrap_or_else(|| panic!("the loop must stand down for its teardown: {after:?}"));
+        assert_eq!(
+            after.iter().filter(|b| **b == Beat::StandDown).count(),
+            1,
+            "one last word: {after:?}"
+        );
+        assert!(
+            !after[at + 1..].contains(&Beat::Parked),
+            "no loop iteration after the last word: {after:?}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn colony_routes_external_message_to_registered_cell() {
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
@@ -13166,7 +14089,11 @@ mod tests {
         // dropped the colony inbox would leave every delivery after the restart
         // owed forever, and the shutdown drain would sit out its whole budget.
         let respawn_inbox = inbox_tx.clone();
+        // The restart is the event this test waits for: the colony calls the
+        // respawn while it handles the CellDied the watcher sent.
+        let (restarted_tx, mut restarted_rx) = mpsc::unbounded_channel::<()>();
         let respawn: RespawnFn = Box::new(move || {
+            let _ = restarted_tx.send(());
             let (tx, rx) = mpsc::channel::<Message>(1000);
             let (peace_tx, peace_rx) = tokio::sync::oneshot::channel();
             // Backstop pair (P3-B-restart): sender dropped → never fired → the
@@ -13225,9 +14152,14 @@ mod tests {
             .unwrap();
 
         // Cell taps own_path then panics. Watcher must observe death and
-        // emit a CellDied event into colony's inbox — colony logs + removes.
+        // emit a CellDied event into colony's inbox — colony logs + restarts.
         let _ = tap_rx.recv().await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        meclaw_testing::deadline::hang(
+            "the colony restarts /f after its panic",
+            restarted_rx.recv(),
+        )
+        .await
+        .expect("the respawn announces the restart");
 
         let (s_ack_tx, s_ack_rx) = oneshot::channel();
         inbox_tx
@@ -13254,8 +14186,9 @@ mod tests {
             restart_max_retries: 0,
             ..crate::ColonyConfig::default()
         };
+        let (self_tx, mut died_rx) = relay_cell_deaths(inbox_tx.clone());
         let join = tokio::spawn(colony_task(ColonyTaskConfig::new(
-            inbox_tx.clone(),
+            self_tx,
             inbox_rx,
             out_tx.clone(),
             out_rx,
@@ -13334,27 +14267,30 @@ mod tests {
             .await
             .unwrap();
         let _ = tap_rx.recv().await;
-        // Failure-marker bound: only exhausted when the property is broken.
-        let mut failed = false;
-        for _ in 0..200 {
-            let (r_tx, r_rx) = oneshot::channel();
-            inbox_tx
-                .send(ColonyMsg::ReadRegistry {
-                    path: Some(Path::new("/f")),
-                    path_prefix: None,
-                    cell_type: None,
-                    active: None,
-                    limit: 10,
-                    ack: r_tx,
-                })
-                .await
-                .unwrap();
-            if r_rx.await.unwrap().entries.iter().any(|e| e.failed) {
-                failed = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // The watcher's CellDied stands in the inbox (event); the registry read
+        // sent after it is answered after the colony handled the death.
+        let died = meclaw_testing::deadline::hang("the watcher reports /f's death", died_rx.recv())
+            .await
+            .expect("the death relay stays open while the colony runs");
+        assert_eq!(died.as_str(), "/f");
+        let (r_tx, r_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::ReadRegistry {
+                path: Some(Path::new("/f")),
+                path_prefix: None,
+                cell_type: None,
+                active: None,
+                limit: 10,
+                ack: r_tx,
+            })
+            .await
+            .unwrap();
+        let failed = meclaw_testing::deadline::hang("the colony reads its registry", r_rx)
+            .await
+            .unwrap()
+            .entries
+            .iter()
+            .any(|e| e.failed);
         let (s_ack_tx, s_ack_rx) = oneshot::channel();
         inbox_tx
             .send(ColonyMsg::Shutdown { ack: s_ack_tx })
@@ -13438,7 +14374,14 @@ mod tests {
 
         let (sender, cell_join, peace_rx, _backstop_rx_initial) = (factory)();
         let respawn_arc = factory.clone();
-        let respawn: RespawnFn = Box::new(move || (respawn_arc)());
+        // The restart is the event the second route waits for: the colony calls
+        // the respawn and swaps the sender in the same, await-free corridor.
+        let (restarted_tx, mut restarted_rx) = mpsc::unbounded_channel::<()>();
+        let respawn: RespawnFn = Box::new(move || {
+            let fresh = (respawn_arc)();
+            let _ = restarted_tx.send(());
+            fresh
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel();
         inbox_tx
@@ -13473,8 +14416,13 @@ mod tests {
         let p1 = tap_rx.recv().await.unwrap();
         assert_eq!(p1.as_str(), "/f");
 
-        // Allow watcher → death event → restart
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Watcher → death event → restart, awaited as the restart itself.
+        meclaw_testing::deadline::hang(
+            "the colony restarts /f after its first panic",
+            restarted_rx.recv(),
+        )
+        .await
+        .expect("the respawn announces the restart");
 
         // Second route → fresh cell instance (local counter reset to 1) panics again
         inbox_tx
@@ -13636,23 +14584,30 @@ mod tests {
         // GH #389: an emission raised DURING the bootstrap-apply window (between
         // `BeginInitialApply` and `InitialApply`) must not die as `no_route` — it
         // is held until the edge table stands.
+        use crate::watchdog::{Beat, WorkItem};
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
         let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
         let (tap_tx, mut tap_rx) = mpsc::channel(8);
+        // The loop's beats mark its iterations (`Parked` ends each one). Roomy,
+        // so no beat of the window is dropped while the test reads them.
+        let (hb_tx, mut hb_rx) = mpsc::channel::<Beat>(4096);
         let _td = tempfile::TempDir::new().unwrap();
         let _db = crate::ColonyDb::open(&_td.path().join("c.db")).unwrap();
-        let join = tokio::spawn(colony_task(ColonyTaskConfig::new(
-            inbox_tx.clone(),
-            inbox_rx,
-            out_tx.clone(),
-            out_rx,
-            _db,
-            crate::CellFactoryRegistry::new(),
-            _td.path().to_path_buf(),
-            crate::ColonyConfig::default(),
-            None,
-            None,
-        )));
+        let join = tokio::spawn(colony_task(
+            ColonyTaskConfig::new(
+                inbox_tx.clone(),
+                inbox_rx,
+                out_tx.clone(),
+                out_rx,
+                _db,
+                crate::CellFactoryRegistry::new(),
+                _td.path().to_path_buf(),
+                crate::ColonyConfig::default(),
+                None,
+                None,
+            )
+            .with_heartbeat(hb_tx),
+        ));
 
         // Open the apply window, exactly like `apply_bootstrap_plan` does.
         let (b_ack_tx, b_ack_rx) = oneshot::channel();
@@ -13756,10 +14711,35 @@ mod tests {
             .await
             .unwrap();
 
-        // Hold the window open artificially: before the fix the loop eats the
-        // emission here as `no_route` (no edge match). 100 ms is huge against the
-        // microseconds the parked loop needs to pull it.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Hold the window open for one full loop iteration past a marker:
+        // before the fix the loop eats the emission here as `no_route` (no edge
+        // match). The marker is a log read (its own labelled work item); the
+        // select is biased with the inbox first and the outputs arm before the
+        // interval arm, so with the inbox empty the iteration after the marker's
+        // is the one that pulls a buffered emission whenever the outputs arm
+        // is open. Two `Parked` after the marker's label = that iteration ended.
+        let (m_tx, m_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::ReadMessages {
+                filter: crate::api_dto::MessageLogFilter::default(),
+                ack: m_tx,
+            })
+            .await
+            .unwrap();
+        let marker = Beat::WorkingOn(WorkItem::new("colony-read /colony/messages"));
+        meclaw_testing::deadline::hang("the loop runs one iteration past the marker", async {
+            while hb_rx.recv().await.expect("the colony beats while it runs") != marker {}
+            let mut parked = 0;
+            while parked < 2 {
+                if hb_rx.recv().await.expect("the colony beats while it runs") == Beat::Parked {
+                    parked += 1;
+                }
+            }
+        })
+        .await;
+        meclaw_testing::deadline::hang("the colony answers the marker read", m_rx)
+            .await
+            .unwrap();
 
         // End of apply: the edge /proxy → /relay arrives with the bundle.
         let (ia_ack_tx, ia_ack_rx) = oneshot::channel();
@@ -13783,12 +14763,12 @@ mod tests {
         ia_ack_rx.await.unwrap();
 
         // Positive receipt: /relay receives the turn.
-        let tapped = tokio::time::timeout(std::time::Duration::from_secs(30), tap_rx.recv())
-            .await
-            .expect(
-                "GH #389: the boot-window emission must reach /relay once the edge table stands",
-            )
-            .unwrap();
+        let tapped = meclaw_testing::deadline::hang(
+            "GH #389: the boot-window emission must reach /relay once the edge table stands",
+            tap_rx.recv(),
+        )
+        .await
+        .unwrap();
         assert_eq!(tapped.as_str(), "/relay");
 
         // And the DLQ is empty (nothing died as `no_route` on the way).
@@ -14406,12 +15386,10 @@ mod tests {
     async fn unresolved_target_with_reply_to_set_replies_to_sender() {
         use meclaw_core::{Cell, CellEmission, MessageBuilder, OutputSink, Path};
         use std::future::Future;
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
 
-        // Receiver-Cell at /listener captures the first Message it sees.
-        #[derive(Clone)]
-        struct Capture(Arc<Mutex<Option<meclaw_core::Message>>>);
+        // The listener hands what it receives to the test on a channel: the
+        // arrival is the marker, no window decides it (AGENTS.md rule 11).
+        struct Capture(mpsc::UnboundedSender<meclaw_core::Message>);
         impl Cell for Capture {
             #[allow(clippy::manual_async_fn)]
             fn handle(
@@ -14419,14 +15397,12 @@ mod tests {
                 msg: meclaw_core::Message,
                 _sink: &OutputSink,
             ) -> impl Future<Output = ()> + Send {
-                let slot = self.0.clone();
-                async move {
-                    *slot.lock().await = Some(msg);
-                }
+                let _ = self.0.send(msg);
+                async {}
             }
         }
 
-        let store: Arc<Mutex<Option<meclaw_core::Message>>> = Arc::new(Mutex::new(None));
+        let (store_tx, mut store_rx) = mpsc::unbounded_channel();
 
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
         let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
@@ -14447,7 +15423,7 @@ mod tests {
 
         // Register a Capture-Cell at /listener.
         let (lst_in_tx, lst_in_rx) = mpsc::channel(8);
-        let cap = Capture(store.clone());
+        let cap = Capture(store_tx);
         let lst_join = tokio::spawn(cell_task(
             Path::new("/listener"),
             lst_in_rx,
@@ -14495,14 +15471,17 @@ mod tests {
             .await
             .unwrap();
 
-        // Allow cascade to deliver the error-reply.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let captured = store
-            .lock()
-            .await
-            .clone()
-            .expect("error-reply must reach /listener");
+        let captured =
+            meclaw_testing::deadline::hang("the error-reply reaches /listener", store_rx.recv())
+                .await
+                .expect("error-reply must reach /listener");
+        // After quiescence: the error-reply was the only message /listener saw.
+        settle(&inbox_tx).await;
+        let extra = store_rx.try_recv().ok();
+        assert!(
+            extra.is_none(),
+            "/listener must receive exactly the error-reply; also got {extra:#?}"
+        );
         assert_eq!(captured.target.as_str(), "/listener");
         assert_eq!(
             captured.reply_to, None,
@@ -14548,11 +15527,10 @@ mod tests {
         use meclaw_core::{Cell, CellEmission, Headers, MessageBuilder, OutputSink, Path};
         use meclaw_testing::mocks::EchoMockCell;
         use std::future::Future;
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
 
-        #[derive(Clone)]
-        struct Capture(Arc<Mutex<Option<meclaw_core::Message>>>);
+        // The listener hands what it receives to the test on a channel: the
+        // arrival is the marker, no window decides it (CLAUDE.md rule 11).
+        struct Capture(mpsc::UnboundedSender<meclaw_core::Message>);
         impl Cell for Capture {
             #[allow(clippy::manual_async_fn)]
             fn handle(
@@ -14560,14 +15538,12 @@ mod tests {
                 msg: meclaw_core::Message,
                 _sink: &OutputSink,
             ) -> impl Future<Output = ()> + Send {
-                let slot = self.0.clone();
-                async move {
-                    *slot.lock().await = Some(msg);
-                }
+                let _ = self.0.send(msg);
+                async {}
             }
         }
 
-        let store: Arc<Mutex<Option<meclaw_core::Message>>> = Arc::new(Mutex::new(None));
+        let (store, mut store_rx) = mpsc::unbounded_channel::<meclaw_core::Message>();
 
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
         let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
@@ -14605,7 +15581,7 @@ mod tests {
 
         // /listener: capture cell.
         let (lst_in_tx, lst_in_rx) = mpsc::channel(8);
-        let cap = Capture(store.clone());
+        let cap = Capture(store);
         let lst_join = tokio::spawn(cell_task(
             Path::new("/listener"),
             lst_in_rx,
@@ -14648,13 +15624,10 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-
-        let captured = store
-            .lock()
-            .await
-            .clone()
-            .expect("follow-up must reach /listener");
+        let captured =
+            meclaw_testing::deadline::hang("the follow-up reaches /listener", store_rx.recv())
+                .await
+                .expect("follow-up must reach /listener");
         // "two-compartment decay" is the two-compartment header model's decay rule
         // (tag: header-model-zwei-faecher-done).
         assert!(
@@ -14677,8 +15650,12 @@ mod tests {
             .send(ColonyMsg::Shutdown { ack: s_ack_tx })
             .await
             .unwrap();
-        s_ack_rx.await.unwrap();
-        join.await.unwrap();
+        meclaw_testing::deadline::hang("the colony acks its shutdown", s_ack_rx)
+            .await
+            .unwrap();
+        meclaw_testing::deadline::hang("the colony task ends after its shutdown", join)
+            .await
+            .unwrap();
     }
 
     /// Slice 2 — fan-out context-copy pin: a cell with two matching out-edges
@@ -14691,11 +15668,10 @@ mod tests {
         use meclaw_core::{Cell, CellEmission, Headers, MessageBuilder, OutputSink, Path};
         use meclaw_testing::mocks::EchoMockCell;
         use std::future::Future;
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
 
-        #[derive(Clone)]
-        struct Capture(Arc<Mutex<Option<meclaw_core::Message>>>);
+        // Each sink hands what it receives to the test on a channel of its own:
+        // the arrival is the marker, no window decides it (CLAUDE.md rule 11).
+        struct Capture(mpsc::UnboundedSender<meclaw_core::Message>);
         impl Cell for Capture {
             #[allow(clippy::manual_async_fn)]
             fn handle(
@@ -14703,15 +15679,13 @@ mod tests {
                 msg: meclaw_core::Message,
                 _sink: &OutputSink,
             ) -> impl Future<Output = ()> + Send {
-                let slot = self.0.clone();
-                async move {
-                    *slot.lock().await = Some(msg);
-                }
+                let _ = self.0.send(msg);
+                async {}
             }
         }
 
-        let store_a: Arc<Mutex<Option<meclaw_core::Message>>> = Arc::new(Mutex::new(None));
-        let store_b: Arc<Mutex<Option<meclaw_core::Message>>> = Arc::new(Mutex::new(None));
+        let (store_a, mut rx_a) = mpsc::unbounded_channel::<meclaw_core::Message>();
+        let (store_b, mut rx_b) = mpsc::unbounded_channel::<meclaw_core::Message>();
 
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
         let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
@@ -14750,7 +15724,7 @@ mod tests {
             Path::new("/sink_a"),
             a_in_rx,
             out_tx.clone(),
-            Capture(store_a.clone()),
+            Capture(store_a),
             None,
             None,
             Some(inbox_tx.clone()),
@@ -14762,7 +15736,7 @@ mod tests {
             Path::new("/sink_b"),
             b_in_rx,
             out_tx.clone(),
-            Capture(store_b.clone()),
+            Capture(store_b),
             None,
             None,
             Some(inbox_tx.clone()),
@@ -14823,17 +15797,11 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-
-        let a = store_a
-            .lock()
+        let a = meclaw_testing::deadline::hang("the fan-out branch reaches /sink_a", rx_a.recv())
             .await
-            .clone()
             .expect("fan-out branch must reach /sink_a");
-        let b = store_b
-            .lock()
+        let b = meclaw_testing::deadline::hang("the fan-out branch reaches /sink_b", rx_b.recv())
             .await
-            .clone()
             .expect("fan-out branch must reach /sink_b");
 
         assert_eq!(
@@ -14856,8 +15824,12 @@ mod tests {
             .send(ColonyMsg::Shutdown { ack: s_ack_tx })
             .await
             .unwrap();
-        s_ack_rx.await.unwrap();
-        join.await.unwrap();
+        meclaw_testing::deadline::hang("the colony acks its shutdown", s_ack_rx)
+            .await
+            .unwrap();
+        meclaw_testing::deadline::hang("the colony task ends after its shutdown", join)
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -14895,7 +15867,9 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // The cascade is routed inside the routing loop: after quiescence the
+        // DLQ holds everything this route will ever produce.
+        settle(&inbox_tx).await;
 
         let (ack_tx, ack_rx) = oneshot::channel();
         inbox_tx
@@ -15140,6 +16114,11 @@ mod tests {
         use meclaw_core::{Cell, CellEmission, CellOutput, MessageBuilder, OutputSink, Path};
         use std::future::Future;
 
+        // After the invalid emission the cell pushes one valid sentinel along
+        // its out-edge to /sink. Both travel the one outputs channel in order
+        // and the colony task takes them one after the other, so the sentinel
+        // reaching /sink is the marker that the invalid one was already judged
+        // (CLAUDE.md rule 11: no sleep decides it).
         struct BadEmitter;
         impl Cell for BadEmitter {
             #[allow(clippy::manual_async_fn)]
@@ -15156,9 +16135,29 @@ mod tests {
                             content: json!({"messages": [{"origin": "WRONG_ORIGIN", "type": "text"}]}),
                         })
                         .await;
+                    let _ = sink
+                        .push(CellOutput {
+                            target: Path::new("/sink"),
+                            content: json!({"messages": []}),
+                        })
+                        .await;
                 }
             }
         }
+
+        struct Capture(mpsc::UnboundedSender<meclaw_core::Message>);
+        impl Cell for Capture {
+            #[allow(clippy::manual_async_fn)]
+            fn handle(
+                &mut self,
+                msg: meclaw_core::Message,
+                _sink: &OutputSink,
+            ) -> impl Future<Output = ()> + Send {
+                let _ = self.0.send(msg);
+                async {}
+            }
+        }
+        let (sentinel_tx, mut sentinel_rx) = mpsc::unbounded_channel::<meclaw_core::Message>();
 
         let (inbox_tx, inbox_rx) = mpsc::channel(8);
         let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
@@ -15211,6 +16210,40 @@ mod tests {
             .unwrap();
         ack_rx.await.unwrap();
 
+        let (sink_in_tx, sink_in_rx) = mpsc::channel(8);
+        let sink_join = tokio::spawn(cell_task(
+            Path::new("/sink"),
+            sink_in_rx,
+            out_tx.clone(),
+            Capture(sentinel_tx),
+            None,
+            None,
+            Some(inbox_tx.clone()),
+        ));
+        register_simple_cell(&inbox_tx, Path::new("/sink"), sink_in_tx, sink_join).await;
+        let edge = crate::bootstrap::PlannedEdge {
+            id: Uuid::now_v7(),
+            from: Path::new("/bad"),
+            to: Path::new("/sink"),
+            condition: None,
+            modifier: None,
+            is_default: false,
+            lane: None,
+            tap: false,
+        };
+        let (ia_ack_tx, ia_ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::InitialApply {
+                edges: vec![edge],
+                hive_scopes: vec![],
+                ack: ia_ack_tx,
+            })
+            .await
+            .unwrap();
+        meclaw_testing::deadline::hang("the colony acks the initial apply", ia_ack_rx)
+            .await
+            .unwrap();
+
         inbox_tx
             .send(ColonyMsg::Route {
                 sender_path: Path::new("/"),
@@ -15219,14 +16252,21 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        meclaw_testing::deadline::hang(
+            "the sentinel behind the invalid emission reaches /sink",
+            sentinel_rx.recv(),
+        )
+        .await
+        .expect("the sentinel must reach /sink");
 
         let (ack_tx, ack_rx) = oneshot::channel();
         inbox_tx
             .send(ColonyMsg::DrainDeadLetters { ack: ack_tx })
             .await
             .unwrap();
-        let drained = ack_rx.await.unwrap();
+        let drained = meclaw_testing::deadline::hang("the colony drains its dead letters", ack_rx)
+            .await
+            .unwrap();
         assert_eq!(drained.len(), 1, "exactly one InvalidUbfBody dead-letter");
         assert_eq!(
             drained[0].reason,
@@ -15239,8 +16279,12 @@ mod tests {
             .send(ColonyMsg::Shutdown { ack: s_ack_tx })
             .await
             .unwrap();
-        s_ack_rx.await.unwrap();
-        join.await.unwrap();
+        meclaw_testing::deadline::hang("the colony acks its shutdown", s_ack_rx)
+            .await
+            .unwrap();
+        meclaw_testing::deadline::hang("the colony task ends after its shutdown", join)
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -15278,7 +16322,8 @@ mod tests {
             })
             .await
             .unwrap();
-        ack_rx
+        // TV-Z3: every wait on the colony carries the hang marker.
+        meclaw_testing::deadline::hang("the colony acks the template rescan", ack_rx)
             .await
             .unwrap()
             .expect("GH #440: the rescan must not have aborted");
@@ -15295,8 +16340,12 @@ mod tests {
             .send(ColonyMsg::Shutdown { ack: s_tx })
             .await
             .unwrap();
-        s_rx.await.unwrap();
-        join.await.unwrap();
+        meclaw_testing::deadline::hang("the colony acks its shutdown", s_rx)
+            .await
+            .unwrap();
+        meclaw_testing::deadline::hang("the colony task ends after its shutdown", join)
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -15830,6 +16879,986 @@ mod tests {
         );
     }
 
+    /// GH #1068 (#1209, re-check M1/M2): a test rig for the colony half of the
+    /// late mailbox rescue. It holds exactly the state the colony loop holds
+    /// and drives it the way the loop's arms do: the guard announces a late
+    /// task before the `CellDied` (`announce`), the `CellDied` arm settles
+    /// where later writes go (`settle`), and the late writes arrive (`late`).
+    struct LateRig {
+        registry: HashMap<Path, RegistryEntry>,
+        rescued: HashMap<Path, Vec<Message>>,
+        dead_letters: VecDeque<DeadLetter>,
+        in_flight: crate::drain::DrainLedger,
+        late: crate::mailbox_rescue::LateRescues,
+        ticket: crate::mailbox_rescue::LateTicket,
+    }
+
+    impl LateRig {
+        fn new() -> Self {
+            Self {
+                registry: HashMap::new(),
+                rescued: HashMap::new(),
+                dead_letters: VecDeque::new(),
+                in_flight: crate::drain::DrainLedger::default(),
+                late: crate::mailbox_rescue::LateRescues::default(),
+                ticket: crate::mailbox_rescue::LateTicket::new(),
+            }
+        }
+
+        fn report(
+            &mut self,
+            ticket: crate::mailbox_rescue::LateTicket,
+            path: &Path,
+            event: crate::mailbox_rescue::LateEvent,
+        ) {
+            place_late_rescue(
+                &self.registry,
+                &mut self.late,
+                &mut self.rescued,
+                &mut self.dead_letters,
+                &mut self.in_flight,
+                crate::mailbox_rescue::LateReport {
+                    path: path.clone(),
+                    ticket,
+                    event,
+                },
+            );
+        }
+
+        /// The dying cell's guard spawned its late task (before `CellDied`).
+        fn announce(&mut self, path: &Path) {
+            let ticket = self.ticket.clone();
+            self.report(ticket, path, crate::mailbox_rescue::LateEvent::Opened);
+        }
+
+        /// The `CellDied` arm is done with `path`: `successor` says whether
+        /// the death left one (a restart in place) or not (normal end,
+        /// restart limit spent, or a parked twin's death claimed).
+        fn settle(&mut self, path: &Path, successor: bool) {
+            settle_late_rescue(&self.registry, &mut self.late, path, successor);
+        }
+
+        /// A write through a permit taken before the close landed.
+        fn late(&mut self, path: &Path, messages: Vec<Message>) {
+            let ticket = self.ticket.clone();
+            self.report(
+                ticket,
+                path,
+                crate::mailbox_rescue::LateEvent::Writes(messages),
+            );
+        }
+
+        /// A late write whose task the colony never heard announced.
+        fn late_unannounced(&mut self, path: &Path, messages: Vec<Message>) {
+            let stranger = crate::mailbox_rescue::LateTicket::new();
+            self.report(
+                stranger,
+                path,
+                crate::mailbox_rescue::LateEvent::Writes(messages),
+            );
+        }
+
+        /// The same write arriving while the colony tears down.
+        fn late_in_teardown(&mut self, path: &Path, messages: Vec<Message>) {
+            dead_letter_late_in_teardown(
+                &mut self.dead_letters,
+                &mut self.in_flight,
+                crate::mailbox_rescue::LateReport {
+                    path: path.clone(),
+                    ticket: self.ticket.clone(),
+                    event: crate::mailbox_rescue::LateEvent::Writes(messages),
+                },
+            );
+        }
+
+        fn claim(&mut self, path: &Path) -> bool {
+            claim_parked_death(
+                &mut self.registry,
+                &mut self.rescued,
+                &mut self.dead_letters,
+                &mut self.in_flight,
+                path,
+                DeathKind::Panic,
+            )
+        }
+
+        /// The corridor restarted the cell at `path` on `successor`'s channel
+        /// and the call site handed the rescue over.
+        fn restart_on(&mut self, path: &Path, successor: mpsc::Sender<Message>) {
+            let entry = self.registry.get_mut(path).expect("an entry at the path");
+            entry.handle = ActorHandle::new(path.clone(), successor);
+            entry.status = CellStatus::Awake;
+            deliver_rescued_mailbox(
+                &self.registry,
+                &mut self.rescued,
+                &mut self.dead_letters,
+                &mut self.in_flight,
+                path,
+                true,
+            );
+            self.settle(path, true);
+        }
+
+        fn dead_ids(&self) -> Vec<uuid::Uuid> {
+            self.dead_letters.iter().map(|d| d.message.id).collect()
+        }
+
+        fn all_dead_are_inactive_at(&self, path: &Path) -> bool {
+            self.dead_letters.iter().all(|d| {
+                d.resolved_target == *path
+                    && matches!(d.reason, crate::dead_letter::DeadLetterReason::CellInactive)
+            })
+        }
+    }
+
+    fn drained(rx: &mut mpsc::Receiver<Message>) -> Vec<uuid::Uuid> {
+        let mut ids = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            ids.push(m.id);
+        }
+        ids
+    }
+
+    /// Registers the #688 shape: the NEW child alive at `/x`, the old one
+    /// parked at `/x~1.0.0` with its birth handle and its mailbox closed by
+    /// its own death. Returns the new child's receiver.
+    fn replaced_child(rig: &mut LateRig) -> mpsc::Receiver<Message> {
+        let born = Path::new("/x");
+        let counter = Arc::new(AtomicU32::new(0));
+        let (new_tx, new_rx) = mpsc::channel::<Message>(8);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(ActorHandle::new(born.clone(), new_tx), counter.clone()),
+        );
+        let (old_tx, old_rx) = mpsc::channel::<Message>(8);
+        drop(old_rx);
+        let mut old = awake_entry(ActorHandle::new(born.clone(), old_tx), counter);
+        old.active = false;
+        rig.registry.insert(Path::new("/x~1.0.0"), old);
+        new_rx
+    }
+
+    /// M1 (a), before the `CellDied`: a replace_nodes parked the dying cell,
+    /// its rescue was empty, and a write through an old permit lands. It
+    /// belongs to the OLD incarnation: it waits for the parked twin's death
+    /// and goes to the dead letters with it -- never to the new child at the
+    /// same path (GH #688, CHANGELOG 0.62.0 for #1068).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_of_a_replaced_cell_before_its_death_never_reaches_the_new_child() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let mut new_rx = replaced_child(&mut rig);
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.announce(&born);
+        rig.late(&born, vec![late]);
+        assert!(rig.claim(&born), "the death is the parked twin's");
+        rig.settle(&born, false);
+
+        assert!(drained(&mut new_rx).is_empty(), "the new child got nothing");
+        assert_eq!(
+            rig.dead_ids(),
+            vec![late_id],
+            "the late write is a dead letter"
+        );
+        assert!(rig.all_dead_are_inactive_at(&born));
+    }
+
+    /// M1 (a), after the `CellDied`: the parked twin's death was claimed, and
+    /// only then the late write lands. The path now holds the new child; the
+    /// write is the old incarnation's and goes to the DLQ behind its rescue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_of_a_replaced_cell_after_its_death_never_reaches_the_new_child() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let mut new_rx = replaced_child(&mut rig);
+        let rescued = MessageBuilder::new(born.clone()).build();
+        let late = MessageBuilder::new(born.clone()).build();
+        let ids = vec![rescued.id, late.id];
+        rig.rescued.insert(born.clone(), vec![rescued]);
+
+        rig.announce(&born);
+        assert!(rig.claim(&born));
+        rig.settle(&born, false);
+        rig.late(&born, vec![late]);
+
+        assert!(drained(&mut new_rx).is_empty(), "the new child got nothing");
+        assert_eq!(rig.dead_ids(), ids, "the rescue, then the late write");
+        assert!(rig.all_dead_are_inactive_at(&born));
+    }
+
+    /// M1 (b): the restart limit was spent -- the entry is `failed` and
+    /// parked on a fresh channel nobody reads. A late write after that
+    /// `CellDied` is a dead letter, not a message buffered for no one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_after_a_failed_death_is_a_dead_letter() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (tx, rx) = mpsc::channel::<Message>(8);
+        drop(rx);
+        let mut entry = awake_entry(
+            ActorHandle::new(born.clone(), tx),
+            Arc::new(AtomicU32::new(0)),
+        );
+        entry.failed = true;
+        entry.active = false;
+        park_entry_non_running(&mut entry, &born);
+        rig.registry.insert(born.clone(), entry);
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.announce(&born);
+        rig.settle(&born, false);
+        rig.late(&born, vec![late]);
+
+        assert_eq!(rig.dead_ids(), vec![late_id]);
+        assert!(rig.all_dead_are_inactive_at(&born));
+        let Some(RegistryEntry {
+            status: CellStatus::NotYetSpawned { receiver },
+            ..
+        }) = rig.registry.get_mut(&born)
+        else {
+            panic!("the failed entry stays parked");
+        };
+        assert!(
+            drained(receiver).is_empty(),
+            "nothing buffered for a cell that will not run"
+        );
+    }
+
+    /// M1 (b): the successor went to sleep before the late write landed. The
+    /// colony cannot wake it from here, so the write is a dead letter rather
+    /// than a message in a mailbox no task reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_for_a_sleeping_successor_is_a_dead_letter() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (dead_tx, dead_rx) = mpsc::channel::<Message>(8);
+        drop(dead_rx);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), dead_tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let (succ_tx, succ_rx) = mpsc::channel::<Message>(8);
+        rig.announce(&born);
+        rig.restart_on(&born, succ_tx);
+        rig.registry.get_mut(&born).expect("entry").status =
+            CellStatus::Asleep { receiver: succ_rx };
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.late(&born, vec![late]);
+
+        assert_eq!(rig.dead_ids(), vec![late_id]);
+        let Some(RegistryEntry {
+            status: CellStatus::Asleep { receiver },
+            ..
+        }) = rig.registry.get_mut(&born)
+        else {
+            panic!("the successor still sleeps");
+        };
+        assert!(
+            drained(receiver).is_empty(),
+            "nothing buffered behind a sleeping cell"
+        );
+    }
+
+    /// M2, branch "rescue held": the late write lands before the `CellDied`
+    /// and queues behind the rescue; the restart hands both to the successor,
+    /// in that order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_before_the_death_follows_the_rescue_to_the_successor() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (dead_tx, dead_rx) = mpsc::channel::<Message>(8);
+        drop(dead_rx);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), dead_tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let rescued = MessageBuilder::new(born.clone()).build();
+        let late = MessageBuilder::new(born.clone()).build();
+        let ids = vec![rescued.id, late.id];
+        rig.rescued.insert(born.clone(), vec![rescued]);
+        let (succ_tx, mut succ_rx) = mpsc::channel::<Message>(8);
+
+        rig.announce(&born);
+        rig.late(&born, vec![late]);
+        rig.restart_on(&born, succ_tx);
+
+        assert_eq!(
+            drained(&mut succ_rx),
+            ids,
+            "rescue first, the late write behind it"
+        );
+        assert!(rig.dead_letters.is_empty());
+    }
+
+    /// M2, branch "closed, death pending, empty rescue" and the order against
+    /// mail held for the successor: the late write's permit was taken before
+    /// the close, a held delivery met the closed mailbox after it -- so the
+    /// successor gets the late write first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_before_the_death_goes_ahead_of_mail_that_met_the_closed_mailbox() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (dead_tx, dead_rx) = mpsc::channel::<Message>(8);
+        drop(dead_rx);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), dead_tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let held = MessageBuilder::new(born.clone()).build();
+        let late = MessageBuilder::new(born.clone()).build();
+        let ids = vec![late.id, held.id];
+        rig.in_flight
+            .park_for_successor(&born, held)
+            .expect("far below the cap");
+        let (succ_tx, mut succ_rx) = mpsc::channel::<Message>(8);
+
+        rig.announce(&born);
+        rig.late(&born, vec![late]);
+        rig.restart_on(&born, succ_tx);
+
+        assert_eq!(
+            drained(&mut succ_rx),
+            ids,
+            "the late write, then the held mail"
+        );
+        assert!(rig.dead_letters.is_empty());
+    }
+
+    /// M2, branch "successor" and the documented order after the `CellDied`:
+    /// a late write that lands after the restart goes to the running
+    /// successor, BEHIND whatever was routed to it in between.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_after_the_death_reaches_the_successor_behind_newer_mail() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (dead_tx, dead_rx) = mpsc::channel::<Message>(8);
+        drop(dead_rx);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), dead_tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let (succ_tx, mut succ_rx) = mpsc::channel::<Message>(8);
+        rig.announce(&born);
+        rig.restart_on(&born, succ_tx);
+        let routed = MessageBuilder::new(born.clone()).build();
+        let late = MessageBuilder::new(born.clone()).build();
+        let ids = vec![routed.id, late.id];
+        rig.registry
+            .get(&born)
+            .expect("entry")
+            .handle
+            .try_send(routed)
+            .expect("room");
+
+        rig.late(&born, vec![late]);
+
+        assert_eq!(drained(&mut succ_rx), ids, "newer routed mail stays ahead");
+        assert!(rig.dead_letters.is_empty());
+    }
+
+    /// Re-check fix 1, branch "successor replaced later": the death settled
+    /// the late task on the first successor, which is then itself replaced
+    /// at the same path while its mailbox still lives. The late write
+    /// belongs to the first successor's incarnation, so it never reaches the
+    /// newer cell -- it is a dead letter (the `same_mailbox` condition).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_for_a_successor_replaced_later_never_reaches_the_newer_cell() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (dead_tx, dead_rx) = mpsc::channel::<Message>(8);
+        drop(dead_rx);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), dead_tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let (succ_tx, mut succ_rx) = mpsc::channel::<Message>(8);
+        let first_alive = succ_tx.clone();
+        rig.announce(&born);
+        rig.restart_on(&born, succ_tx);
+        let (newer_tx, mut newer_rx) = mpsc::channel::<Message>(8);
+        let entry = rig.registry.get_mut(&born).expect("entry");
+        entry.handle = ActorHandle::new(born.clone(), newer_tx);
+        entry.status = CellStatus::Awake;
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.late(&born, vec![late]);
+
+        assert_eq!(rig.dead_ids(), vec![late_id]);
+        assert!(rig.all_dead_are_inactive_at(&born));
+        assert!(
+            drained(&mut newer_rx).is_empty(),
+            "the newer cell never gets an older incarnation's write"
+        );
+        assert!(
+            drained(&mut succ_rx).is_empty(),
+            "the replaced successor is not written to either"
+        );
+        drop(first_alive);
+    }
+
+    /// GH #1068 (#1209, Bauer D, 2/60 under load): the colony task's coop
+    /// budget ran out, so the corridor's `send().await` into a mailbox WITH
+    /// room yielded (tokio's semaphore checks the budget before the permits).
+    /// The cell closed its mailbox meanwhile, the send came back `Err`, and
+    /// the corridor dropped the message with one warning line -- neither
+    /// delivered nor dead-lettered. The send into an open mailbox with room
+    /// must complete in the poll that finds the mailbox open.
+    #[tokio::test]
+    async fn a_routed_message_is_never_lost_to_a_close_while_the_colony_yields() {
+        let born = Path::new("/x");
+        let (tx, mut rx) = mpsc::channel::<Message>(8);
+        let mut registry = HashMap::new();
+        registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = VecDeque::new();
+        let mut in_flight = crate::drain::DrainLedger::default();
+        let (log_tx, _log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(8);
+        let msg = MessageBuilder::new(born.clone()).ttl(4).build();
+        let id = msg.id;
+        // Enough ready work to spend the task's whole coop budget.
+        let (spend_tx, mut spend_rx) = mpsc::channel::<u32>(1024);
+        for i in 0..1024 {
+            spend_tx.try_send(i).expect("room");
+        }
+
+        let mut routing = Box::pin(route_with_log(
+            &mut registry,
+            &hive_scopes,
+            &mut dead_letters,
+            &mut in_flight,
+            &log_tx,
+            Path::new("/"),
+            msg,
+            &None,
+            usize::MAX,
+        ));
+        let first = std::future::poll_fn(|cx| {
+            // Spend the budget: a ready `recv` goes Pending only for it.
+            while spend_rx.poll_recv(cx).is_ready() {}
+            std::task::Poll::Ready(std::future::Future::poll(routing.as_mut(), cx).is_ready())
+        })
+        .await;
+        // The cell dies in the gap the yield opened: its guard closes the mailbox.
+        rx.close();
+        if !first {
+            let _ = routing.await;
+        } else {
+            drop(routing);
+        }
+
+        assert_eq!(
+            rx.try_recv().map(|m| m.id).ok(),
+            Some(id),
+            "the message reached the mailbox before the close (dead letters {:?})",
+            dead_letters
+                .iter()
+                .map(|d| d.message.id)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// GH #1068 (#1209, re-check fix2 M1): the wrapper checks the mailbox
+    /// (closed -> held for the successor), and the cell's guard closes it on
+    /// another worker right after that check, before the delivery. The
+    /// delivery then meets a closed mailbox; it must hold the message for the
+    /// successor like the check does -- never drop it with a warning line.
+    /// The seam closes the mailbox in exactly that instant, no load needed.
+    #[tokio::test]
+    async fn a_delivery_that_meets_a_mailbox_closed_after_the_check_holds_the_message() {
+        let born = Path::new("/x");
+        let (tx, rx) = mpsc::channel::<Message>(8);
+        let rx = std::rc::Rc::new(std::cell::RefCell::new(rx));
+        let mut registry = HashMap::new();
+        registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = VecDeque::new();
+        let mut in_flight = crate::drain::DrainLedger::default();
+        let (log_tx, _log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(8);
+        let msg = MessageBuilder::new(born.clone()).ttl(4).build();
+        let id = msg.id;
+        let guard = std::rc::Rc::clone(&rx);
+        delivery_seam::set(move || guard.borrow_mut().close());
+
+        let _ = route_with_log(
+            &mut registry,
+            &hive_scopes,
+            &mut dead_letters,
+            &mut in_flight,
+            &log_tx,
+            Path::new("/"),
+            msg,
+            &None,
+            usize::MAX,
+        )
+        .await;
+
+        assert!(rx.borrow().is_closed(), "the seam closed the mailbox");
+        assert!(
+            rx.borrow_mut().try_recv().is_err(),
+            "nothing reached the mailbox closed before the delivery"
+        );
+        let held: Vec<_> = in_flight
+            .take_parked_for_successor(&born)
+            .iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            held,
+            vec![id],
+            "held for the successor, not dropped (dead letters {:?})",
+            dead_letters
+                .iter()
+                .map(|d| d.message.id)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// Registry, mailbox, messages that filled it, signal once it is full.
+    type FullArmRig = (
+        HashMap<Path, RegistryEntry>,
+        mpsc::Receiver<Message>,
+        std::rc::Rc<std::cell::Cell<usize>>,
+        tokio::sync::oneshot::Receiver<()>,
+    );
+
+    /// The rig of the full-arm pins (#1209, re-check fix3 M1): one awake
+    /// cell with a mailbox of `capacity`, and the seam set to fill that
+    /// mailbox through a cloned sender right before the delivery -- the
+    /// instant in which, in production, another producer (an overflow drain
+    /// task, a late write) takes the last slot after the overflow check.
+    /// Returns the registry, the mailbox, how many messages filled it, and a
+    /// signal sent once the seam has filled it.
+    fn full_arm_rig(born: &Path, capacity: usize) -> FullArmRig {
+        let (tx, rx) = mpsc::channel::<Message>(capacity);
+        let filler = tx.clone();
+        let mut registry = HashMap::new();
+        registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let filled = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let count = std::rc::Rc::clone(&filled);
+        let target = born.clone();
+        let (full_tx, full_rx) = tokio::sync::oneshot::channel();
+        delivery_seam::set(move || {
+            while filler
+                .try_send(MessageBuilder::new(target.clone()).build())
+                .is_ok()
+            {
+                count.set(count.get() + 1);
+            }
+            let _ = full_tx.send(());
+        });
+        (registry, rx, filled, full_rx)
+    }
+
+    /// An overflow wired as `colony_task` wires it, with `cap_messages`
+    /// messages per cell; the drain tasks report into the returned receiver.
+    fn wired_overflow(
+        cap_messages: u64,
+        db_dir: &std::path::Path,
+    ) -> (crate::drain::DrainLedger, mpsc::Receiver<crate::ColonyMsg>) {
+        let (report_tx, report_rx) = mpsc::channel::<crate::ColonyMsg>(64);
+        let mut in_flight = crate::drain::DrainLedger::default();
+        in_flight.overflow = crate::overflow::Overflow::wired(
+            crate::overflow::OverflowConfig::from_colony(&crate::ColonyConfig {
+                mailbox_overflow_cap_messages: cap_messages,
+                ..crate::ColonyConfig::default()
+            }),
+            report_tx,
+            // Read only for a spilled overflow (stage 2); these pins never
+            // spill, so the file is never opened.
+            db_dir.join("never-spilled.sqlite"),
+            None,
+        );
+        (in_flight, report_rx)
+    }
+
+    /// #1209 (re-check fix3 M1), full arm, branch "overflow takes it": the
+    /// mailbox fills between the overflow check and the delivery. With the
+    /// overflow wired the colony loop must not wait on the cell (GH #850):
+    /// the message goes into the overflow with its in-flight ticket, nothing
+    /// is dead-lettered, and the drain task delivers it behind the mail that
+    /// filled the mailbox. Before the wrapper delivered by `try_send`, the
+    /// corridor waited in `send().await` on the full mailbox -- a HANG.
+    #[tokio::test]
+    async fn a_delivery_that_meets_a_mailbox_filled_after_the_check_goes_to_the_overflow() {
+        let born = Path::new("/x");
+        let (mut registry, mut rx, filled, _full) = full_arm_rig(&born, 2);
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut in_flight, _reports) = wired_overflow(100, td.path());
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = VecDeque::new();
+        let (log_tx, _log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(8);
+        let msg = MessageBuilder::new(born.clone()).ttl(4).build();
+        let id = msg.id;
+
+        let _ = meclaw_testing::deadline::hang(
+            "the colony loop must not wait on a mailbox filled after the overflow check",
+            route_with_log(
+                &mut registry,
+                &hive_scopes,
+                &mut dead_letters,
+                &mut in_flight,
+                &log_tx,
+                Path::new("/"),
+                msg,
+                &None,
+                usize::MAX,
+            ),
+        )
+        .await;
+
+        assert_eq!(filled.get(), 2, "the seam filled the mailbox");
+        assert!(
+            dead_letters.is_empty(),
+            "nothing dead-lettered: {:?}",
+            dead_letters
+                .iter()
+                .map(|d| d.message.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            in_flight.overflow.total_pending(),
+            1,
+            "the overflow holds it"
+        );
+        assert_eq!(in_flight.total(), 1, "its in-flight ticket is taken");
+        for _ in 0..filled.get() {
+            assert_ne!(rx.recv().await.map(|m| m.id), Some(id), "filler first");
+        }
+        let delivered = meclaw_testing::deadline::hang(
+            "the overflow drain task delivers the message",
+            rx.recv(),
+        )
+        .await;
+        assert_eq!(
+            delivered.map(|m| m.id),
+            Some(id),
+            "delivered by the overflow"
+        );
+    }
+
+    /// #1209 (re-check fix3 M1), full arm, branch "refused": the cell's
+    /// overflow is at its cap (here 0). The message is a `mailbox_full` dead
+    /// letter with its id -- kept, never dropped -- and no ticket is taken.
+    /// Before: the same HANG in the corridor's `send().await`.
+    #[tokio::test]
+    async fn a_delivery_that_meets_a_full_mailbox_and_a_full_overflow_is_a_mailbox_full_dead_letter()
+     {
+        let born = Path::new("/x");
+        let (mut registry, _rx, filled, _full) = full_arm_rig(&born, 2);
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut in_flight, _reports) = wired_overflow(0, td.path());
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = VecDeque::new();
+        let (log_tx, _log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(8);
+        let msg = MessageBuilder::new(born.clone()).ttl(4).build();
+        let id = msg.id;
+
+        let _ = meclaw_testing::deadline::hang(
+            "the colony loop must not wait on a full mailbox when the overflow refuses",
+            route_with_log(
+                &mut registry,
+                &hive_scopes,
+                &mut dead_letters,
+                &mut in_flight,
+                &log_tx,
+                Path::new("/"),
+                msg,
+                &None,
+                usize::MAX,
+            ),
+        )
+        .await;
+
+        assert_eq!(filled.get(), 2, "the seam filled the mailbox");
+        let dead: Vec<_> = dead_letters
+            .iter()
+            .map(|d| (d.message.id, d.reason.as_code()))
+            .collect();
+        assert_eq!(
+            dead,
+            vec![(id, "mailbox_full")],
+            "one mailbox_full dead letter"
+        );
+        assert_eq!(
+            in_flight.overflow.total_pending(),
+            0,
+            "the overflow refused it"
+        );
+        assert_eq!(
+            in_flight.total(),
+            0,
+            "no in-flight ticket for a dead letter"
+        );
+    }
+
+    /// #1209 (re-check fix3 M1), full arm, branch "no overflow wired" (unit
+    /// rigs of the router): the wrapper waits for the slot as the corridor
+    /// would, and the cell's guard closes the mailbox meanwhile. The message
+    /// is held for the successor, never dropped. Before: the corridor's send
+    /// came back `Err` and dropped it with one warning line.
+    #[tokio::test]
+    async fn a_delivery_waiting_on_a_full_mailbox_that_closes_holds_the_message() {
+        let born = Path::new("/x");
+        let (mut registry, mut rx, filled, full) = full_arm_rig(&born, 2);
+        let mut in_flight = crate::drain::DrainLedger::default();
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = VecDeque::new();
+        let (log_tx, _log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(8);
+        let msg = MessageBuilder::new(born.clone()).ttl(4).build();
+        let id = msg.id;
+        // The guard closes the mailbox once the seam has filled it, that is
+        // while the delivery waits for a slot (no instant earlier).
+        let guard = tokio::spawn(async move {
+            let _ = full.await;
+            rx.close();
+            rx
+        });
+
+        let _ = meclaw_testing::deadline::hang(
+            "the wait on a full mailbox ends when the mailbox closes",
+            route_with_log(
+                &mut registry,
+                &hive_scopes,
+                &mut dead_letters,
+                &mut in_flight,
+                &log_tx,
+                Path::new("/"),
+                msg,
+                &None,
+                usize::MAX,
+            ),
+        )
+        .await;
+
+        let mut rx = meclaw_testing::deadline::hang(
+            "the guard closed the mailbox once the seam filled it",
+            guard,
+        )
+        .await
+        .expect("the guard task");
+        assert_eq!(filled.get(), 2, "the seam filled the mailbox");
+        for _ in 0..filled.get() {
+            assert_ne!(rx.recv().await.map(|m| m.id), Some(id), "only the filler");
+        }
+        assert!(
+            rx.recv().await.is_none(),
+            "nothing else reached the mailbox"
+        );
+        let held: Vec<_> = in_flight
+            .take_parked_for_successor(&born)
+            .iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            held,
+            vec![id],
+            "held for the successor, not dropped (dead letters {:?})",
+            dead_letters
+                .iter()
+                .map(|d| d.message.id)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// #1209 (re-check fix4 M1), full arm, branch "room again after the log
+    /// write": `try_send` meets the full mailbox, and while the wrapper's
+    /// message-log write waits for its channel the cell takes one message,
+    /// so the mailbox has room again when the arm decides. With the overflow
+    /// wired the message still goes into the overflow (GH #850: a re-read of
+    /// the capacity would send this loop into `send().await` whenever
+    /// another producer takes that slot first). The order holds: the drain
+    /// task delivers it behind the filler that was still queued. A re-read
+    /// of the capacity at the arm delivers it directly -- overflow 0.
+    #[tokio::test]
+    async fn a_full_mailbox_with_room_again_after_the_log_write_still_goes_to_the_overflow() {
+        let born = Path::new("/x");
+        let (mut registry, mut rx, filled, full) = full_arm_rig(&born, 2);
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut in_flight, _reports) = wired_overflow(100, td.path());
+        let hive_scopes = HiveScopeTable::new();
+        let mut dead_letters = VecDeque::new();
+        // A message-log channel of one slot, already taken: the wrapper's log
+        // write after `try_send` parks until the guard frees it.
+        let (log_tx, mut log_rx) = mpsc::channel::<crate::persist::writer::ColonyWriteOp>(1);
+        log_tx
+            .try_send(crate::persist::writer::ColonyWriteOp::CleanStop(false))
+            .expect("the log slot is free before the delivery");
+        let msg = MessageBuilder::new(born.clone()).ttl(4).build();
+        let id = msg.id;
+        // Once the seam has filled the mailbox (so `try_send` comes back
+        // `Full`), the guard takes one filler -- room again -- and only then
+        // frees the log slot, so the arm decides with room in the mailbox.
+        let guard = tokio::spawn(async move {
+            let _ = full.await;
+            let first = rx.recv().await.map(|m| m.id);
+            let _ = log_rx.recv().await;
+            (rx, log_rx, first)
+        });
+
+        let _ = meclaw_testing::deadline::hang(
+            "the delivery finishes once the log write goes through",
+            route_with_log(
+                &mut registry,
+                &hive_scopes,
+                &mut dead_letters,
+                &mut in_flight,
+                &log_tx,
+                Path::new("/"),
+                msg,
+                &None,
+                usize::MAX,
+            ),
+        )
+        .await;
+
+        assert_eq!(filled.get(), 2, "the seam filled the mailbox");
+        assert!(
+            dead_letters.is_empty(),
+            "nothing dead-lettered: {:?}",
+            dead_letters
+                .iter()
+                .map(|d| d.message.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            in_flight.overflow.total_pending(),
+            1,
+            "the overflow holds it although the mailbox had room again"
+        );
+        assert_eq!(in_flight.total(), 1, "its in-flight ticket is taken");
+        let (mut rx, mut log_rx, first) = meclaw_testing::deadline::hang(
+            "the guard took one filler and freed the log slot",
+            guard,
+        )
+        .await
+        .expect("the guard task");
+        assert_ne!(first, Some(id), "the guard took a filler");
+        // No wait point here (re-check fix5 H1): once `route_with_log`
+        // returned, its log row and the remaining filler already sit in their
+        // channels. A regression that drops the log write fails red at once
+        // instead of parking on a channel whose sender the test still holds.
+        assert!(
+            matches!(
+                log_rx.try_recv(),
+                Ok(crate::persist::writer::ColonyWriteOp::InsertMessageLogOpen(
+                    _
+                ))
+            ),
+            "the delivery logged its row once the slot was free"
+        );
+        let next = rx.try_recv().map(|m| m.id);
+        assert!(
+            matches!(next, Ok(other) if other != id),
+            "the remaining filler first: {next:?}"
+        );
+        let delivered = meclaw_testing::deadline::hang(
+            "the overflow drain task delivers the message",
+            rx.recv(),
+        )
+        .await;
+        assert_eq!(
+            delivered.map(|m| m.id),
+            Some(id),
+            "delivered by the overflow, behind the filler"
+        );
+    }
+
+    /// M2, branch "no successor": the entry is gone (a normal end removed
+    /// it). The late write is a dead letter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_without_an_entry_is_a_dead_letter() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.announce(&born);
+        rig.settle(&born, false);
+        rig.late(&born, vec![late]);
+
+        assert_eq!(rig.dead_ids(), vec![late_id]);
+        assert!(rig.all_dead_are_inactive_at(&born));
+    }
+
+    /// M1: a late write whose task the colony never heard announced (the
+    /// guard's announcement met a full colony inbox) cannot be told apart
+    /// from an old incarnation's, so it never goes to whatever runs at the
+    /// path -- the DLQ keeps it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unannounced_late_write_is_a_dead_letter_even_with_a_cell_running() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let (tx, mut rx) = mpsc::channel::<Message>(8);
+        rig.registry.insert(
+            born.clone(),
+            awake_entry(
+                ActorHandle::new(born.clone(), tx),
+                Arc::new(AtomicU32::new(0)),
+            ),
+        );
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.late_unannounced(&born, vec![late]);
+
+        assert!(drained(&mut rx).is_empty(), "the running cell got nothing");
+        assert_eq!(rig.dead_ids(), vec![late_id]);
+    }
+
+    /// M2, teardown arm: during the shutdown drain no successor is coming,
+    /// so a late write is a dead letter like the rescue it trails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_write_during_the_teardown_is_a_dead_letter() {
+        let born = Path::new("/x");
+        let mut rig = LateRig::new();
+        let late = MessageBuilder::new(born.clone()).build();
+        let late_id = late.id;
+
+        rig.late_in_teardown(&born, vec![late]);
+
+        assert_eq!(rig.dead_ids(), vec![late_id]);
+        assert!(rig.all_dead_are_inactive_at(&born));
+    }
+
     /// GH #688: everything else is the corridor's death as before — no entry
     /// at the path, no parked twin, a twin that is not parked (`~`-less
     /// key), a parked twin whose mailbox is still open (it is not the one
@@ -15925,8 +17954,11 @@ mod tests {
         let (inbox_tx, mut inbox_rx) = mpsc::channel::<ColonyMsg>(8);
         let (peace_tx, peace_rx) = tokio::sync::oneshot::channel();
         let (_backstop_tx, backstop_rx) = tokio::sync::oneshot::channel::<()>();
+        // The cell runs until the test lets it end -- after the peace was sent,
+        // so the peace precedes the exit as an order, not as a head start.
+        let (end_tx, end_rx) = tokio::sync::oneshot::channel::<()>();
         let cell_join = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = end_rx.await;
         });
         spawn_watcher(
             &inbox_tx,
@@ -15935,9 +17967,21 @@ mod tests {
             peace_rx,
             backstop_rx,
         );
+        // The watcher holds the only other sender: once it is done the inbox
+        // closes, and `None` is the proof that it sent nothing.
+        drop(inbox_tx);
         let _ = peace_tx.send(());
-        let r = tokio::time::timeout(std::time::Duration::from_millis(200), inbox_rx.recv()).await;
-        assert!(r.is_err(), "no CellDied expected after explicit peace");
+        let _ = end_tx.send(());
+        let r = meclaw_testing::deadline::hang(
+            "the watcher ends after the peaceful exit",
+            inbox_rx.recv(),
+        )
+        .await;
+        assert!(
+            r.is_none(),
+            "no CellDied expected after explicit peace: {:?}",
+            r.map(|m| matches!(m, ColonyMsg::CellDied { .. }))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -16226,7 +18270,7 @@ mod gh1015_tests {
     #[test]
     fn a_cold_start_with_nothing_open_costs_one_query() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let db = crate::ColonyDb::open(&dir.path().join("colony.db")).expect("open colony.db");
+        let db = crate::ColonyDb::open(&dir.path().join("c.db")).expect("open the db");
         let t0 = std::time::Instant::now();
         let loaded = load_open_deliveries(&db.read_conn);
         let took = t0.elapsed();

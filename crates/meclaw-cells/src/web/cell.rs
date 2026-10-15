@@ -316,7 +316,12 @@ impl WebCell {
             );
             return;
         };
-        tracing::trace!(path = %self.path, objects = done.objects, "web: re-rendered");
+        tracing::trace!(
+            path = %self.path,
+            objects = done.objects,
+            slots_read = done.slots_read,
+            "web: re-rendered"
+        );
         // A send failure means the listener is gone, which happens during
         // shutdown and is not worth a line in the journal.
         let mut pages = done.pages;
@@ -401,7 +406,7 @@ impl WebCell {
     async fn apply_params_update(
         &mut self,
         update: &Map<String, Value>,
-        started: std::time::Instant,
+        started: tokio::time::Instant,
         reply_target: meclaw_core::Path,
         sink: &OutputSink,
         db: &mut DbConn,
@@ -634,7 +639,7 @@ impl LongRunningCell for WebCell {
         _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
-            let started = std::time::Instant::now();
+            let started = tokio::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
             // The params-update slot (`config.md` § Access), handled FIRST and
@@ -755,7 +760,7 @@ impl LongRunningCell for WebCell {
 
             for (viewers, id) in is_viewers.into_iter().zip(ids) {
                 let (outcome, touched, dur) = if viewers {
-                    let op_started = std::time::Instant::now();
+                    let op_started = tokio::time::Instant::now();
                     // GH #1006: read-only, and not the database's — the
                     // counters live in the I/O half's viewer table, so the
                     // handler asks over the push channel and waits for the

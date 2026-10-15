@@ -1,4 +1,4 @@
-# `affinity@3.10.2`
+# `affinity@3.10.3`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -281,7 +281,7 @@ nothing it can notice. That comparison is safe because `./brief` sets `subscribe
 **every** emission of the answer route -- the tool lane sets it to the empty string rather
 than leaving the key off, so the emptiness is a value and not an absence. Both facts are
 asserted together in `the_two_answer_lanes_are_told_apart_by_the_subscriber_key`
-(`crates/meclaw-cells/tests/affinity_template.rs`), which provokes both lanes in one colony
+(`crates/meclaw-cells/tests/misc_1/affinity_template.rs`), which provokes both lanes in one colony
 and drains each sink until it falls quiet to prove neither saw the other's message.
 
 **A `subscribe` cannot draw its own edge.** Writing an edge is a mutation, and mutation
@@ -506,7 +506,7 @@ The memory hive's writer states its half of this in its own scope note -- it *ne
 an identity*, `context.speaker` arrives already in affinity vocabulary because translating a
 connector's own user id is the talky edge's job (ADR-0002 E8) -- and that is asserted, not
 merely written: `a_present_speaker_is_written_exactly_as_it_arrived`
-(`crates/meclaw-cells/tests/gh272_identity_travels_per_message.rs`) hands the writer a
+(`crates/meclaw-cells/tests/misc_2/gh272_identity_travels_per_message.rs`) hands the writer a
 reference and reads the stored column back unchanged.
 
 ### Who is speaking: one reference per participant (#848)
@@ -679,7 +679,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.10.2` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.10.3` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -1005,7 +1005,7 @@ enters as the seed of a new hive, where the template's default decides, never in
 that names the column (`schema_mismatch`): a missing column without a default, a changed type, a
 column this store does not declare, a header `version` newer than the table's.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.2`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.3`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

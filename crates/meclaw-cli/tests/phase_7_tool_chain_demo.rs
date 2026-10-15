@@ -46,7 +46,7 @@ async fn setup_tool_chain_templates(td: &tempfile::TempDir, h: &meclaw_testing::
         // operator migrating an existing template would. What this test proves
         // is the CONTENT FLOW web_fetch -> file -> bash; the sandbox boundary
         // is proven where it belongs, in
-        // `crates/meclaw-cells/tests/sandbox_isolation.rs`.
+        // `crates/meclaw-cells/tests/code/sandbox_isolation.rs`.
         let params = match *cell_type {
             "bash" => r#"{"sandbox":{"trust":"trusted"},"external_timeout_ms":30000}"#,
             // GH #117: the chain starts at a mock server on 127.0.0.1, which

@@ -142,9 +142,47 @@ pub struct SubtreeTemplate {
 ///   does not hold, or names a malformed `@<version>`.
 /// - [`MutationError::TemplateRefCycle`] if the refs close a ring. The
 ///   resolution stack is the guard, so no depth cap is needed.
+///
+/// GH #1193: a tree the mutation's template scan already parsed off the colony
+/// worker (`read_subtrees`) is answered from the snapshot, without a read.
 pub fn parse_subtree(
     template_root: &std::path::Path,
     templates: &crate::templates::TemplatesRegistry,
+) -> Result<SubtreeTemplate, MutationError> {
+    if let Some(parsed) = templates.parsed_subtree(template_root) {
+        return parsed.clone();
+    }
+    parse_subtree_announced(template_root, templates, &|_: &std::path::Path| {})
+}
+
+/// GH #1193: parse every template tree in `roots` (the templates a mutation's
+/// `add_nodes` name), announcing each `config.json` before it is touched. Run
+/// inside a `mutation::hive_scan` scan, so a read that never returns is a
+/// silent stuck work item and a slow one ends in `hive_config_timeout`; the
+/// result goes into the mutation's snapshot
+/// ([`crate::templates::TemplatesRegistry::keep_parsed_subtrees`]).
+pub(crate) fn read_subtrees(
+    roots: &[std::path::PathBuf],
+    templates: &crate::templates::TemplatesRegistry,
+    announce: &dyn Fn(&std::path::Path),
+) -> Vec<(std::path::PathBuf, Result<SubtreeTemplate, MutationError>)> {
+    roots
+        .iter()
+        .map(|root| {
+            (
+                root.clone(),
+                parse_subtree_announced(root, templates, announce),
+            )
+        })
+        .collect()
+}
+
+/// The walk behind [`parse_subtree`], with `announce` called once per
+/// directory, before its `config.json` and its listing are read.
+fn parse_subtree_announced(
+    template_root: &std::path::Path,
+    templates: &crate::templates::TemplatesRegistry,
+    announce: &dyn Fn(&std::path::Path),
 ) -> Result<SubtreeTemplate, MutationError> {
     let mut cells: Vec<CellNode> = Vec::new();
     let mut hives: Vec<String> = Vec::new();
@@ -160,6 +198,7 @@ pub fn parse_subtree(
         &mut ref_overrides,
         &[],
         templates,
+        announce,
     )?;
 
     Ok(SubtreeTemplate {
@@ -194,8 +233,11 @@ fn collect_cells(
     ref_overrides: &mut HashMap<String, JsonValue>,
     chain: &[(String, Option<String>)],
     templates: &crate::templates::TemplatesRegistry,
+    announce: &dyn Fn(&std::path::Path),
 ) -> Result<(), MutationError> {
     let config_path = dir.join("config.json");
+    // GH #1193: before the stat, the read and the listing of this directory.
+    announce(&config_path);
 
     // If this directory contains a config.json AND is not a seed/ directory,
     // treat it as a cell node.
@@ -244,6 +286,7 @@ fn collect_cells(
                 ref_overrides,
                 chain,
                 templates,
+                announce,
             );
         }
 
@@ -302,6 +345,7 @@ fn collect_cells(
             ref_overrides,
             chain,
             templates,
+            announce,
         )?;
     }
 
@@ -335,6 +379,7 @@ fn expand_ref(
     ref_overrides: &mut HashMap<String, JsonValue>,
     chain: &[(String, Option<String>)],
     templates: &crate::templates::TemplatesRegistry,
+    announce: &dyn Fn(&std::path::Path),
 ) -> Result<(), MutationError> {
     reject_stray_ref_entries(dir)?;
 
@@ -375,6 +420,7 @@ fn expand_ref(
         &mut sub_overrides,
         &sub_chain,
         templates,
+        announce,
     )?;
 
     // This ref speaks AFTER the refs it pulled in: its own `override_params`

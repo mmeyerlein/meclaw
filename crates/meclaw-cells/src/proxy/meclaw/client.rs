@@ -17,7 +17,8 @@
 //! of this client, never a row in `cell.db`.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderName, HeaderValue};

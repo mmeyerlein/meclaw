@@ -88,9 +88,9 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
         h1.send(MessageBuilder::new(Path::new("/a")).build()).await;
     }
     // Counter == 3 in all three cells after 3 inputs.
-    wait_for_cell_db_value(&dir_a, "counter", "3", std::time::Duration::from_secs(10)).await;
-    wait_for_cell_db_value(&dir_b, "counter", "3", std::time::Duration::from_secs(10)).await;
-    wait_for_cell_db_value(&dir_c, "counter", "3", std::time::Duration::from_secs(10)).await;
+    wait_for_cell_db_value(&dir_a, "counter", "3").await;
+    wait_for_cell_db_value(&dir_b, "counter", "3").await;
+    wait_for_cell_db_value(&dir_c, "counter", "3").await;
     h1.shutdown().await;
 
     // ---- Reboot ----
@@ -126,9 +126,9 @@ async fn phase_5_demo_first_boot_to_reboot_restore() {
     for _ in 0..3 {
         h2.send(MessageBuilder::new(Path::new("/a")).build()).await;
     }
-    wait_for_cell_db_value(&dir_a, "counter", "6", std::time::Duration::from_secs(10)).await;
-    wait_for_cell_db_value(&dir_b, "counter", "6", std::time::Duration::from_secs(10)).await;
-    wait_for_cell_db_value(&dir_c, "counter", "6", std::time::Duration::from_secs(10)).await;
+    wait_for_cell_db_value(&dir_a, "counter", "6").await;
+    wait_for_cell_db_value(&dir_b, "counter", "6").await;
+    wait_for_cell_db_value(&dir_c, "counter", "6").await;
     h2.shutdown().await;
 
     // ---- Final assert: counter==6 in all three ----

@@ -1,0 +1,681 @@
+//! meclaw-os -- the `talky` composite in a running colony (GH #112).
+//!
+//! The three sub-templates have their own pins (`session_keeper.rs`,
+//! `collector_window.rs` / `collector_colony.rs`, `dispatcher_split.rs`).
+//! This file asks the only
+//! question the composite adds: is the WIRING between them right? So it boots
+//! the shipped `talky` tree and drives
+//!
+//!   turn -> stamp -> seam -> curator -> brain(mock) -> split -> fake tool -> seam -> answer
+//!
+//! and a close through the write path, where the batch leaves on the write
+//! port as it is (GH #447) and the close costs exactly one inference: the
+//! curator's handover note through its own summarizer, off the hot path, which
+//! the next generation reads as `history.handover` (GH #896).
+//! Since GH #889 the seam hands the round to the brain's curator hive, and the
+//! write batch leaves the composite from that curator instead of the collector.
+//!
+//! Free of a real provider by construction: the `llm` cells (the brain and the
+//! curator's summarizer) talk to the mock OpenAI wire, and every other cell is
+//! a `code`/`store`/`timer` cell that reports what it was given.
+//!
+//! The byte-identity pin over the four sub-unit copies retired with the copies
+//! themselves (GH #277): `talky` references its sub-units now, so there is
+//! nothing left to drift. Its successor is
+//! `meclaw-colony/tests/gh277_composite_instantiation_is_byte_identical.rs`,
+//! test `a_cell_inside_talky_is_stamped_with_its_own_template_and_names_talky_above_it`.
+
+// harness_fold: #[path = "mock_openai.rs"]
+#[allow(unused_imports)]
+use crate::mock_openai; // harness_fold: mod mock_openai;
+
+use meclaw_cells::LlmCellFactory;
+use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
+use meclaw_cells::timer::TimerCellFactory;
+use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
+use meclaw_core::serde_json::{Value, json};
+use meclaw_core::{Body, Message, MessageBuilder, Path};
+use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{ColonyHandle, override_params_on_disk};
+use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+
+// ───────────────────────────────────────────────────────────── the shipped tree
+
+fn templates_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates")
+}
+
+/// The shipped template, copied cell by cell: only `config.json` files travel,
+/// so the tree under test IS the template and nothing else.
+fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
+    let src = &resolve_template_ref(src);
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        if from.is_dir() {
+            copy_cells(&from, &dst.join(entry.file_name()));
+        } else if entry.file_name() == "config.json" {
+            std::fs::copy(&from, dst.join("config.json")).unwrap();
+        }
+    }
+}
+
+/// GH #277: a directory whose `config.json` declares `cell.type: "ref"` is a
+/// REFERENCE, not a cell -- the referenced template's tree belongs in its
+/// place. `talky` names its four sub-units that way, so a tree copied straight
+/// off the library follows the same hop the substrate's staging path follows.
+fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut dir = dir.to_path_buf();
+    for _ in 0..8 {
+        let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
+            return dir;
+        };
+        let Ok(v) = meclaw_core::serde_json::from_str::<Value>(&raw) else {
+            return dir;
+        };
+        if v["cell"]["type"] != "ref" {
+            return dir;
+        }
+        let reference = v["cell"]["template"]
+            .as_str()
+            .expect("a ref cell names a template");
+        let name = reference.split('@').next().unwrap_or_default();
+        dir = templates_root().join(name);
+    }
+    panic!("template ref chain does not terminate at {}", dir.display());
+}
+
+/// The `override_params` of the talky's `curator` marker, applied to the
+/// copied curator cells they name (GH #892).
+fn curator_overrides(root: &std::path::Path) {
+    let marker = templates_root().join("talky/curator/config.json");
+    let raw =
+        std::fs::read_to_string(&marker).unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+    let over = cfg["override_params"]
+        .as_object()
+        .expect("the talky's curator marker carries its overrides");
+    for (cell, params) in over {
+        override_params_on_disk(&root.join("main/talky/curator").join(cell), params);
+    }
+}
+
+fn write(root: &std::path::Path, rel: &str, v: &Value) {
+    let p = root.join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, meclaw_core::serde_json::to_string_pretty(v).unwrap()).unwrap();
+}
+
+fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
+    let p = root.join(rel);
+    let mut v: Value = meclaw_core::serde_json::from_str(&std::fs::read_to_string(&p).unwrap())
+        .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    f(&mut v);
+    std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+/// A fixed schedule id. `${uuid7:*}` is an INSTANTIATION-side substitution, so
+/// a tree written straight to disk carries a real one.
+const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-0000000c1120";
+/// Never during a test run: the shipped default is the real night.
+const NEVER: &str = "0 0 0 1 1 *";
+
+/// The round these turns are spoken in: one person and one agent, in the
+/// affinity vocabulary the audience gate speaks (ADR-0002 E8). Never `["*"]` --
+/// a universal set would let the pin below pass over a path that had lost the
+/// real one.
+const AUDIENCE: &str = r#"["member:alex","agent:scribe"]"#;
+/// The same set as a CEL string literal, for the ingress edge that declares it.
+const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
+
+// ────────────────────────────────────────────────────────── the test-only cells
+
+/// A `code` cell config with the contract the substrate validates against.
+fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
+    let mut hop = json!({"route": {"type": "string", "values": routes, "required": false}});
+    if let Some(extra) = extra_hop.as_object() {
+        for (k, v) in extra {
+            hop[k] = v.clone();
+        }
+    }
+    json!({
+        "cell": {"type": "code"},
+        "params": {"runner": "python3", "script_inline": script, "external_timeout_ms": 10000},
+        "contract": {
+            "version": "1.0.0",
+            "settings": {},
+            "multi_send_capable": true,
+            "emits": {
+                "body": {"messages": {"type": "array", "required": true}},
+                "hop": hop
+            },
+            "consumes": {"body": {"messages": {"type": "array", "required": true}}},
+            "capabilities": ["shell:exec"]
+        },
+        "description": {
+            "purpose": "Test stand-in around the talky composite.",
+            "use_when": "Test fixture only.",
+            "not_in_scope": "Not a template."
+        }
+    })
+}
+
+/// The surface: turns a harness message into the ingress lane. A real parent
+/// promotes the channel here -- so does this one, which is what makes the
+/// keeper mint ONE id per channel.
+const SURFACE: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+d = doc["body"]
+envelope = doc["envelope"]
+hop = ((envelope.get("header") or {}).get("hop") or {})
+route = str(hop.get("route") or "turn")
+sys.stdout.write(json.dumps({"header": {"route": route, "chat_id": "c-42"},
+                             "messages": d.get("messages", [])}))
+"#;
+
+/// The tool the instance wires on `hop.tool_name` -- outside the composite,
+/// exactly as the README says.
+const TOOL: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+d = doc["body"]
+envelope = doc["envelope"]
+hop = ((envelope.get("header") or {}).get("hop") or {})
+sys.stdout.write(json.dumps({
+    "header": {"route": "res", "tool_call_id": hop.get("tool_call_id", "")},
+    "messages": [{"origin": "tool", "type": "tool_result",
+                  "id": hop.get("tool_call_id", ""),
+                  "text": "berlin: 21C"}]}))
+"#;
+
+/// The write target the instance decides on (a day archive stands in here):
+/// it reports the SIZE of the batch it received, and the provenance of the
+/// round the batch was spoken in -- which is what a real consumer of this port
+/// (a `memory-drain`) reads off `context` and refuses a batch without.
+const ARCHIVE: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+d = doc["body"]
+envelope = doc["envelope"]
+hop = ((envelope.get("header") or {}).get("hop") or {})
+ctx = ((envelope.get("header") or {}).get("context") or {})
+msgs = d.get("messages", [])
+sys.stdout.write(json.dumps({"header": {"route": "archived"},
+                             "messages": [{"origin": "assistant", "type": "text",
+                                           "text": "batch|session=%s|turns=%d|rounds=%d|channel=%s|audience=%s" % (
+                                               hop.get("session_id", ""), len(msgs),
+                                               len(d.get("rounds", []) or []),
+                                               ctx.get("channel", ""),
+                                               ctx.get("audience_set", ""))}]}))
+"#;
+
+/// The port wiring a parent draws around the composite: ONE ingress, ONE reply
+/// exit, ONE write exit, ONE error drain -- plus the per-instance tool lanes.
+fn main_config() -> Value {
+    json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
+        // ingress: the surface turn, with the channel promotion the keeper needs
+        {"from": "./surface", "to": "./talky/session-keeper",
+         "condition": "has(hop.route) && hop.route == 'turn'",
+         "modifier": {"set_hop": {"route": "'in_turn'"},
+                      "set_context": {"channel": "hop.chat_id",
+                                      "audience_set": AUDIENCE_CEL}}},
+        // the operator lane of the keeper (a forced sweep). The second operator
+        // lane, `in_prune` with its `prune` report (GH #312), left with GH #889:
+        // the collector keeps no window any more, so there is nothing to prune.
+        {"from": "./surface", "to": "./talky/session-keeper",
+         "condition": "has(hop.route) && hop.route == 'sweep'",
+         "modifier": {"set_hop": {"route": "'in_sweep'"}}},
+        // reply exit
+        {"from": "./talky/collector", "to": "/sink",
+         "condition": "has(hop.route) && hop.route == 'answer' \
+          && !has(hop.round_capped) && !has(hop.degraded)"},
+        // write exit -- the instance decides the target. Taken off the
+        // composite's own path: since GH #889 the batch is written by the
+        // curator (`./curator -> .` on `write`), not by the collector.
+        {"from": "./talky", "to": "./archive",
+         "condition": "has(hop.route) && hop.route == 'write'"},
+        {"from": "./archive", "to": "/park"},
+        // error drain
+        {"from": "./talky/errors", "to": "/park",
+         "condition": "has(hop.route) && hop.route == 'error'"},
+        // the sidecar lane (GH #379, generic since GH #605): one message per
+        // section the splitter cut out of an answer. A real parent distributes
+        // on `hop.section` -- `memory` to whatever keeps this agent's memory,
+        // with `in_remember` set here; the drain stands in for every receiver
+        {"from": "./talky", "to": "/park",
+         "condition": "has(hop.route) && hop.route == 'sidecar'"},
+        // tool lanes: OUTSIDE the composite, keyed on the name
+        {"from": "./talky/dispatcher", "to": "./weather",
+         "condition": "has(hop.tool_name) && hop.tool_name == 'weather'"},
+        {"from": "./weather", "to": "./talky/collector",
+         "condition": "has(hop.route) && hop.route == 'res'",
+         "modifier": {"set_hop": {"route": "'in_tool'"}}}
+    ]}}})
+}
+
+fn build_tree(td: &tempfile::TempDir, base_url: &str) {
+    let root = td.path();
+    std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").unwrap();
+    write(root, "main/config.json", &main_config());
+    write(
+        root,
+        "main/surface/config.json",
+        &code_cell(
+            SURFACE,
+            &["turn", "sweep"],
+            json!({"chat_id": {"type": "string", "required": false}}),
+        ),
+    );
+    write(
+        root,
+        "main/weather/config.json",
+        &code_cell(
+            TOOL,
+            &["res"],
+            json!({"tool_call_id": {"type": "string", "required": false}}),
+        ),
+    );
+    write(
+        root,
+        "main/archive/config.json",
+        &code_cell(ARCHIVE, &["archived"], json!({})),
+    );
+    copy_cells(&templates_root().join("talky"), &root.join("main/talky"));
+    // GH #892: the talky's curator is what its marker's `override_params`
+    // make it -- role `talky` (short ids in the window) and `pass_sections
+    // memory` (the memory section leaves again on `sidecar`, which is the
+    // only way it reaches a parent since the splitter hands it to the
+    // curator). `copy_cells` resolves the reference but not its overrides,
+    // so they are applied here, the way the mutation door applies them to
+    // a staged tree (GH #140).
+    curator_overrides(root);
+
+    // Two patches, both about the clock and the wire rather than about
+    // behaviour: a schedule the test can trigger, and both llm cells pointed at
+    // the mock. The shipped `${ctx.model}` is an INSTANTIATION substitution; a
+    // tree booted from disk carries a literal.
+    patch(root, "main/talky/session-keeper/night/config.json", |v| {
+        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
+        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    });
+    // Every open generation is a candidate the moment the sweep runs. It was a
+    // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a
+    // param of `./close` now, so such a line would be read by NOTHING -- the
+    // sweep would keep the shipped two hours, find no candidate, and this test
+    // would wait for a close that cannot come. Patching the copied config is
+    // what an `override_params` entry does to a staged one.
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        v["params"]["idle_ms"] = json!(0);
+    });
+    // The prune age gate (`prune_after_ms`) was patched open here until
+    // GH #889 removed the knob together with the prune lane.
+    patch(root, "main/talky/brain/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    // GH #889: the talky carries its own curator, and the curator's summarizer
+    // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
+    // substitution a tree booted from disk cannot resolve. It names the mock
+    // here; a run this short never reaches a rebuild, so it is never called.
+    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+}
+
+async fn boot(
+    td: &tempfile::TempDir,
+) -> (
+    ColonyHandle,
+    mpsc::Receiver<Message>,
+    mpsc::Receiver<Message>,
+) {
+    let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            ("store".to_string(), Arc::new(StoreCellFactory)),
+            ("timer".to_string(), Arc::new(TimerCellFactory)),
+            ("llm".to_string(), Arc::new(LlmCellFactory)),
+        ]
+    };
+    let h = ColonyHandle::new_with_factories_at(td, factories());
+    let (sink_tx, sink_rx) = mpsc::channel::<Message>(64);
+    let (park_tx, park_rx) = mpsc::channel::<Message>(64);
+    h.spawn(Path::new("/sink"), move || {
+        CaptureCell::new(sink_tx.clone())
+    })
+    .await;
+    h.spawn(Path::new("/park"), move || {
+        CaptureCell::new(park_tx.clone())
+    })
+    .await;
+    let mut registry = CellFactoryRegistry::new();
+    for (name, f) in factories() {
+        registry.insert(name, f);
+    }
+    bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
+        .await
+        .expect("bootstrap_from_filesystem must succeed");
+    (h, sink_rx, park_rx)
+}
+
+fn turn(text: &str) -> Message {
+    MessageBuilder::new(Path::new("/surface"))
+        .body(Body::Inline(
+            json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
+        ))
+        .ttl(200)
+        .build()
+}
+
+/// An operator lane, addressed by the route the surface stamps on it: `sweep`
+/// for the keeper's forced close (the `prune` lane left with GH #889).
+fn operator(route: &str) -> Message {
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".into(), json!(route));
+    MessageBuilder::new(Path::new("/surface"))
+        .body(Body::Inline(json!({"messages": []})))
+        .hop(hop)
+        .ttl(200)
+        .build()
+}
+
+/// The forced sweep an operator sends: the keeper's `in_sweep` lane.
+fn sweep() -> Message {
+    operator("sweep")
+}
+
+fn body_of(m: &Message) -> &Value {
+    match &m.body {
+        Body::Inline(v) => v,
+        Body::Blob(_) => panic!("inline expected"),
+    }
+}
+
+fn hop_of(m: &Message, key: &str) -> String {
+    m.headers
+        .hop
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn answer_text(m: &Message) -> String {
+    body_of(m)["messages"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
+    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The next message on this drain that travels the named lane. One drain takes
+/// several lanes here (the write batch, the error report, the sidecar), so a
+/// test that wants one of them says which and lets the others pass.
+async fn recv_lane(rx: &mut mpsc::Receiver<Message>, route: &str) -> Option<Message> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while let Ok(Some(m)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        if hop_of(&m, "route") == route {
+            return Some(m);
+        }
+    }
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════ pins
+
+/// The whole point of the composite: one turn runs through keeper, collector,
+/// brain, dispatcher, a tool and back to the seam without a single edge being
+/// wired by hand -- the parent drew four ports and one tool lane, the template
+/// drew the other twenty-two edges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_runs_the_whole_composite_round() {
+    let mock = MockOpenAI::start(vec![
+        canned_tool_calls(vec![("call-1", "weather", r#"{"city":"Berlin"}"#)]),
+        canned_chat_completion("It is 21 degrees in Berlin.", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url);
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(turn("what is the weather in berlin?")).await;
+    let answer = recv_bounded(&mut sink_rx).await.expect("the answer");
+
+    assert_eq!(hop_of(&answer, "route"), "answer");
+    assert_eq!(answer_text(&answer), "It is 21 degrees in Berlin.");
+    // The stamp happened: the answer carries the generation the keeper minted.
+    assert!(
+        hop_of(&answer, "session_id").starts_with("c-42-"),
+        "the session id of the channel rides through: {:?}",
+        answer.headers.hop
+    );
+    // The loopback was taken: iteration 1 means the round re-entered the seam.
+    assert_eq!(hop_of(&answer, "iter"), "1", "the tool round re-entered");
+
+    // Two provider calls, and the second one saw the tool result -- that is the
+    // fan-in, the seam and the loopback in one assertion.
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 2, "one round: ask for the tool, then answer");
+    let second = meclaw_core::serde_json::to_string(reqs[1].messages().expect("wire messages"))
+        .unwrap_or_default();
+    assert!(
+        second.contains("berlin: 21C"),
+        "the tool result reached the brain: {second}"
+    );
+
+    h.shutdown().await;
+}
+
+/// The sidecar seam (GH #379, generic since GH #605): a brain answer that
+/// carries a fenced block leaves the composite as TWO messages -- the prose on
+/// the reply exit with the block taken out, and the section on the `sidecar`
+/// lane, which is the lane a parent distributes on `hop.section`, the `memory`
+/// one into a memory hive's `in_remember` door.
+///
+/// This is the whole of what wave 5.7 changed about the topology, and it is
+/// asserted end to end rather than at the cell: the cut is only worth anything
+/// if the answer half still reaches the person through the dispatcher and the
+/// collector exactly as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
+    let block = "{\"facts\": [{\"subject\": \"user\", \"predicate\": \"lives_in\", \
+                 \"claim\": \"Berlin\", \"fact_kind\": \"world\"}], \
+                 \"topic\": {\"movement\": \"start\", \"name\": \"where the user lives\"}}";
+    let answer_with_block = format!("Notiert, Berlin.\n\n```sidecar\n{{\"memory\": {block}}}\n```");
+    let mock = MockOpenAI::start(vec![canned_chat_completion(&answer_with_block, "stop")]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url);
+    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+
+    h.send(turn("ich wohne in Berlin")).await;
+
+    let answer = recv_bounded(&mut sink_rx).await.expect("the answer");
+    assert_eq!(hop_of(&answer, "route"), "answer");
+    assert_eq!(
+        answer_text(&answer),
+        "Notiert, Berlin.",
+        "the person is handed the prose and never the instrument: {:?}",
+        body_of(&answer)
+    );
+
+    let sidecar = recv_lane(&mut park_rx, "sidecar")
+        .await
+        .expect("the sidecar left the composite on its own lane");
+    assert_eq!(
+        hop_of(&sidecar, "section"),
+        "memory",
+        "the section names itself on the hop, which is what a parent's edge \
+         distributes on: {:?}",
+        body_of(&sidecar)
+    );
+    let carried = &body_of(&sidecar)["payload"];
+    assert_eq!(carried["facts"][0]["claim"], "Berlin");
+    assert_eq!(carried["topic"]["movement"], "start");
+
+    // One provider call: the annotation rode OUT with the answer, it did not
+    // cost a second round. That is the whole reason variant 2 beat the tool call.
+    assert_eq!(mock.recorded_requests().await.len(), 1);
+
+    h.shutdown().await;
+}
+
+/// The close path: the keeper seals the generation, the collector batches it,
+/// and the batch leaves on the write port the parent wired. Since
+/// `talky@4.3.0` (GH #447) the close asks no model on the BRAIN's behalf and
+/// writes no `system.handover` slot behind its back. GH #896 adds exactly one
+/// call off the hot path: the curator's handover note, through the curator's
+/// own summarizer (the one model door of its hive), which the NEXT generation
+/// reads as its `history.handover` leaf -- the note, never the batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_leaves_on_the_write_port_and_costs_one_note_off_the_brain() {
+    const NOTE: &str = "The person said their city is Berlin.";
+    let mock = MockOpenAI::start(vec![
+        canned_chat_completion("Noted.", "stop"),
+        canned_chat_completion(NOTE, "stop"),
+        canned_chat_completion("Still here.", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url);
+    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+
+    h.send(turn("remember: my city is berlin")).await;
+    recv_bounded(&mut sink_rx).await.expect("the answer");
+
+    // KEEPER_IDLE_MS=0 makes every open generation a candidate, so one sweep
+    // closes the session that just spoke.
+    h.send(sweep()).await;
+    let archived = recv_bounded(&mut park_rx).await.expect("the write batch");
+    let text = answer_text(&archived);
+    assert!(
+        text.starts_with("batch|session=c-42-"),
+        "the write exit carries the whole session: {text}"
+    );
+    assert!(
+        text.contains("|turns=2|"),
+        "user turn and answer left as one batch: {text}"
+    );
+
+    // The close asks for one note (30 s failure marker), and it is the
+    // curator's: the handover instructions and the session's words, not a turn.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while mock.recorded_requests().await.len() < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the close asked for no handover note within 30 s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let reqs = mock.recorded_requests().await;
+    let wire = meclaw_core::serde_json::to_string(reqs[1].messages().expect("wire messages"))
+        .unwrap_or_default();
+    assert!(
+        wire.contains("You write the handover note") && wire.contains("my city is berlin"),
+        "the second call is the curator's handover note on the closed session: {wire}"
+    );
+    // Settle generously so a further call would have had every chance to
+    // arrive: nothing else behind the batch asks a provider.
+    for _ in 0..15 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            mock.recorded_requests().await.len(),
+            2,
+            "the close costs the turn's own brain call and ONE note, nothing more"
+        );
+    }
+
+    // The next generation's turn is the third call, and what rides into its
+    // prompt is the note as the curator's leaf -- never the closed batch.
+    h.send(turn("still there?")).await;
+    recv_bounded(&mut sink_rx).await.expect("the second answer");
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(
+        reqs.len(),
+        3,
+        "the second turn is the third provider call -- the close added the note alone"
+    );
+    let msgs = reqs[2].messages().expect("wire messages");
+    let sys_text = msgs
+        .iter()
+        .find(|m| m["role"] == "system")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        sys_text.contains(NOTE),
+        "the new generation starts with the handover note (GH #896): {sys_text}"
+    );
+    assert!(
+        !sys_text.contains("batch|session="),
+        "no batch in the prompt: the closed generation rides into the next one as \
+         its note, not as system state: {sys_text}"
+    );
+
+    h.shutdown().await;
+}
+
+/// GH #273 -- the pin. A generation that the SWEEP closed reaches the write
+/// port with the room and the participant set of the conversation it belonged
+/// to: not those of the sweep, and not empty.
+///
+/// The sweep is a timer firing (or the operator lane that stands in for one
+/// here). It carries no `context` at all -- an `emit_to` message is minted, not
+/// routed -- so everything the write batch says about its round has to come off
+/// the generation row the keeper wrote when the CONVERSATION opened it. The
+/// close request carries both keys on its hop, and the composite's close edge
+/// promotes them into `context`, where a `memory-drain` reads them.
+///
+/// This cannot go green through a default: the room is asserted against the
+/// channel the surface actually stamped (`c-42`), and the participant set
+/// against the two named identities the ingress edge declared. A `["*"]` or an
+/// empty set fails both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_swept_close_reaches_the_write_port_with_the_round_it_belonged_to() {
+    let mock = MockOpenAI::start(vec![
+        canned_chat_completion("Noted.", "stop"),
+        canned_chat_completion("The user lives in Berlin.", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &mock.base_url);
+    let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+
+    h.send(turn("remember: my city is berlin")).await;
+    recv_bounded(&mut sink_rx).await.expect("the answer");
+
+    // KEEPER_IDLE_MS=0 makes the generation that just spoke a candidate, so one
+    // sweep seals it -- and the sweep knows nothing but the row it read.
+    h.send(sweep()).await;
+    let archived = recv_bounded(&mut park_rx).await.expect("the write batch");
+    let text = answer_text(&archived);
+
+    assert!(
+        text.contains("|channel=c-42|"),
+        "the batch names the room the conversation was held in, not the \
+         sweep's: {text}"
+    );
+    assert!(
+        text.contains(&format!("|audience={AUDIENCE}")),
+        "the batch names the round the conversation was spoken to: {text}"
+    );
+    assert!(!text.contains('*'), "and it is never universalised: {text}");
+
+    h.shutdown().await;
+}

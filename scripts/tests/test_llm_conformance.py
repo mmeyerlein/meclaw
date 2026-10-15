@@ -35,6 +35,7 @@ import re
 import sys
 import tempfile
 import unittest
+from scripts.tests import store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TOOL_DIR = REPO / "workshop" / "tools" / "llm-conformance"
@@ -51,6 +52,7 @@ def setUpModule():
     global conformance, fake_provider
     if not TOOL_DIR.is_dir():
         raise unittest.SkipTest("workshop/tools/llm-conformance/ is not in this tree")
+    store_isolation.isolate()
     sys.path.insert(0, str(TOOL_DIR))
     import conformance as _conformance
     import fake_provider as _fake_provider
@@ -392,6 +394,10 @@ class TestM1Findings(ConformanceCase):
         lines = [json.loads(l) for l in
                  next(record.rglob("cost.jsonl")).read_text().splitlines()]
         self.assertLessEqual(sum(l["worst"] for l in lines), 0.05)
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

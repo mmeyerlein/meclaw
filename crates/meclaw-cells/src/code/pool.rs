@@ -166,12 +166,23 @@ mod tests {
     use super::*;
     use crate::code::child::config_for;
     use crate::code::params::{CodeParams, RunnerMode, Script};
+    use meclaw_testing::deadline;
+    use std::collections::BTreeSet;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::unix::pipe;
+
+    /// The A-timeout of every job here (TV-Z9: SUT time by configuration):
+    /// far above the test's own hang mark, so a job that never ends is named
+    /// by that mark (`HANG:`), never cut short by the pool.
+    fn job_wait() -> Duration {
+        Duration::from_millis(deadline::product_wait_ms())
+    }
 
     fn pool(script: &str, mode: RunnerMode, size: usize) -> PoolHandle {
         let p = CodeParams {
             runner: "python3".into(),
             script: Script::Inline(script.into()),
-            external_timeout_ms: Some(5_000),
+            external_timeout_ms: Some(deadline::product_wait_ms()),
             max_concurrency: None,
             sandbox: None,
             runner_mode: mode,
@@ -187,23 +198,122 @@ mod tests {
         }
     }
 
+    fn pid_of(o: &JobOutcome) -> i64 {
+        let out = stdout_of(o);
+        let v: meclaw_core::serde_json::Value = meclaw_core::serde_json::from_str(&out)
+            .unwrap_or_else(|e| panic!("a job answered no pid ({e}): {out}"));
+        v["pid"].as_i64().expect("a numeric pid")
+    }
+
+    /// The job of a rendezvous: announce its own pid on `arrive`, then block
+    /// on `gate` until the test lets it go, then answer the pid.
+    const MEET: &str = "import os,sys,json\n\
+        d = json.load(sys.stdin)['body']\n\
+        a = os.open(d['arrive'], os.O_WRONLY)\n\
+        os.write(a, b'%d\\n' % os.getpid())\n\
+        os.close(a)\n\
+        g = os.open(d['gate'], os.O_RDONLY)\n\
+        os.read(g, 1)\n\
+        os.close(g)\n\
+        sys.stdout.write(json.dumps({'pid': os.getpid()}))\n";
+
+    /// GH #1199 (K9): concurrency as an EVENT, not a stopwatch. Every job of
+    /// [`MEET`] announces itself and then waits on a gate the test opens only
+    /// once `n` distinct processes have announced themselves -- so when the
+    /// gate opens, `n` jobs are running at the same moment, each in its own
+    /// child. A pool that ran them one after the other never gets there, and
+    /// the wait ends at the hang mark (`HANG:`).
+    ///
+    /// Both ends are FIFOs the test holds open read-write, so no `open` ever
+    /// blocks on the other side: a job's announcement never waits for the
+    /// reader, and the bytes the test writes into the gate stay there for a
+    /// job that opens it later.
+    struct Rendezvous {
+        _dir: tempfile::TempDir,
+        arrive_path: std::path::PathBuf,
+        gate_path: std::path::PathBuf,
+        arrive: BufReader<pipe::Receiver>,
+        gate: pipe::Sender,
+    }
+
+    impl Rendezvous {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let arrive_path = dir.path().join("arrive");
+            let gate_path = dir.path().join("gate");
+            for p in [&arrive_path, &gate_path] {
+                let c = std::ffi::CString::new(p.to_str().expect("utf-8 path")).expect("no NUL");
+                // SAFETY: a valid NUL-terminated path; mkfifo touches nothing else.
+                let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+                assert_eq!(rc, 0, "mkfifo {}", p.display());
+            }
+            let arrive = pipe::OpenOptions::new()
+                .read_write(true)
+                .open_receiver(&arrive_path)
+                .expect("open the arrival FIFO");
+            let gate = pipe::OpenOptions::new()
+                .read_write(true)
+                .open_sender(&gate_path)
+                .expect("open the gate FIFO");
+            Self {
+                _dir: dir,
+                arrive_path,
+                gate_path,
+                arrive: BufReader::new(arrive),
+                gate,
+            }
+        }
+
+        /// The stdin document of a [`MEET`] job.
+        fn document(&self) -> String {
+            meclaw_core::serde_json::json!({"body": {
+                "arrive": self.arrive_path.to_str().expect("utf-8 path"),
+                "gate": self.gate_path.to_str().expect("utf-8 path"),
+            }})
+            .to_string()
+        }
+
+        /// Waits until `n` distinct processes are inside a job at once, then
+        /// lets all of them go. Returns their pids.
+        async fn meet(&mut self, n: usize) -> BTreeSet<i64> {
+            let mut here = BTreeSet::new();
+            let arrive = &mut self.arrive;
+            deadline::hang(
+                &format!("{n} jobs run at once, each in its own child"),
+                async {
+                    while here.len() < n {
+                        let mut line = String::new();
+                        arrive.read_line(&mut line).await.expect("read an arrival");
+                        here.insert(line.trim().parse::<i64>().expect("an arrival is a pid"));
+                    }
+                },
+            )
+            .await;
+            self.gate
+                .write_all(&vec![b'.'; n])
+                .await
+                .expect("open the gate");
+            here
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_pool_of_two_runs_two_jobs_at_once_on_two_processes() {
-        let h = pool(
-            "import os,sys,json,time; time.sleep(0.2); sys.stdout.write(json.dumps({'pid':os.getpid()}))",
-            RunnerMode::Warm,
-            2,
+        let h = pool(MEET, RunnerMode::Warm, 2);
+        let mut rv = Rendezvous::new();
+        let doc = rv.document();
+        let (a, b, met) = tokio::join!(
+            h.run(doc.clone(), job_wait()),
+            h.run(doc, job_wait()),
+            rv.meet(2),
         );
-        let t = std::time::Instant::now();
-        let (a, b) = tokio::join!(
-            h.run(r#"{"body":{}}"#.into(), Duration::from_millis(5_000)),
-            h.run(r#"{"body":{}}"#.into(), Duration::from_millis(5_000)),
+        assert_eq!(met.len(), 2, "the two ran together");
+        assert_ne!(pid_of(&a), pid_of(&b), "two children, two pids");
+        assert_eq!(
+            BTreeSet::from([pid_of(&a), pid_of(&b)]),
+            met,
+            "the two answers came from the two processes that met"
         );
-        assert!(
-            t.elapsed() < Duration::from_millis(2_000),
-            "the two ran together"
-        );
-        assert_ne!(stdout_of(&a), stdout_of(&b), "two children, two pids");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -216,11 +326,8 @@ mod tests {
         let mut got = Vec::new();
         for n in 0..5 {
             got.push(stdout_of(
-                &h.run(
-                    format!(r#"{{"body":{{"n":{n}}}}}"#),
-                    Duration::from_millis(5_000),
-                )
-                .await,
+                &h.run(format!(r#"{{"body":{{"n":{n}}}}}"#), job_wait())
+                    .await,
             ));
         }
         assert_eq!(got, vec!["0", "1", "2", "3", "4"]);
@@ -236,14 +343,12 @@ mod tests {
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..12 {
             let h = h.clone();
-            set.spawn(async move {
-                h.run(r#"{"body":{}}"#.into(), Duration::from_millis(5_000))
-                    .await
-            });
+            set.spawn(async move { h.run(r#"{"body":{}}"#.into(), job_wait()).await });
         }
         let mut answers = 0;
         while let Some(r) = set.join_next().await {
-            assert!(matches!(r.unwrap(), JobOutcome::Ran(_)));
+            let out = r.unwrap();
+            assert_eq!(stdout_of(&out), r#"{"ok": true}"#, "every job ran");
             answers += 1;
         }
         assert_eq!(answers, 12, "no job vanished, none was answered twice");
@@ -256,22 +361,20 @@ mod tests {
             RunnerMode::Warm,
             1,
         );
-        let out = h
-            .run(r#"{"body":{}}"#.into(), Duration::from_millis(5_000))
-            .await;
-        let v: meclaw_core::serde_json::Value =
-            meclaw_core::serde_json::from_str(&stdout_of(&out)).unwrap();
-        let pid = v["pid"].as_i64().unwrap() as i32;
+        let out = h.run(r#"{"body":{}}"#.into(), job_wait()).await;
+        let pid = pid_of(&out) as i32;
         drop(h);
         // The broker sees its job channel close, drops the slots, the child
         // tasks end and `kill_on_drop` reaps the processes.
-        for _ in 0..100 {
-            if unsafe { libc::kill(pid, 0) } != 0 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("the warm child outlived its pool");
+        meclaw_testing::wait::until(
+            "the warm child is gone after its pool dropped",
+            || async move {
+                // SAFETY: signal 0 only probes whether the pid still exists.
+                let probe = unsafe { libc::kill(pid, 0) };
+                probe != 0
+            },
+        )
+        .await;
     }
 
     /// GH #429: a serial stream must stay on ONE child, however big the pool.
@@ -285,14 +388,10 @@ mod tests {
             RunnerMode::Warm,
             4,
         );
-        let mut pids = std::collections::BTreeSet::new();
+        let mut pids = BTreeSet::new();
         for _ in 0..12 {
-            let o = h
-                .run(r#"{"body":{}}"#.into(), Duration::from_millis(5_000))
-                .await;
-            let v: meclaw_core::serde_json::Value =
-                meclaw_core::serde_json::from_str(&stdout_of(&o)).unwrap();
-            pids.insert(v["pid"].as_i64().unwrap());
+            let o = h.run(r#"{"body":{}}"#.into(), job_wait()).await;
+            pids.insert(pid_of(&o));
         }
         assert_eq!(
             pids.len(),
@@ -303,32 +402,28 @@ mod tests {
     }
 
     /// The other half of the same rule: a BURST still uses the whole pool, so
-    /// the fix above buys its saving without costing parallelism.
+    /// the fix above buys its saving without costing parallelism. The four
+    /// jobs meet at a [`Rendezvous`]: none of them ends before all four run.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_burst_still_fans_out_across_the_whole_pool() {
-        let h = pool(
-            "import os,sys,json,time; time.sleep(0.3); sys.stdout.write(json.dumps({'pid': os.getpid()}))",
-            RunnerMode::Warm,
-            4,
-        );
+        let h = pool(MEET, RunnerMode::Warm, 4);
+        let mut rv = Rendezvous::new();
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..4 {
             let h = h.clone();
-            set.spawn(async move {
-                h.run(r#"{"body":{}}"#.into(), Duration::from_millis(10_000))
-                    .await
-            });
+            let doc = rv.document();
+            set.spawn(async move { h.run(doc, job_wait()).await });
         }
-        let mut pids = std::collections::BTreeSet::new();
+        let met = rv.meet(4).await;
+        let mut pids = BTreeSet::new();
         while let Some(r) = set.join_next().await {
-            let v: meclaw_core::serde_json::Value =
-                meclaw_core::serde_json::from_str(&stdout_of(&r.unwrap())).unwrap();
-            pids.insert(v["pid"].as_i64().unwrap());
+            pids.insert(pid_of(&r.unwrap()));
         }
         assert_eq!(
             pids.len(),
             4,
             "four concurrent jobs must meet four children"
         );
+        assert_eq!(pids, met, "the four answers came from the four that met");
     }
 }

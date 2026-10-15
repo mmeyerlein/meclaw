@@ -7,7 +7,8 @@
 
 use crate::browser::db::PageRow;
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// The shape of one page, as an output profile describes it.
 #[derive(Debug, Clone, Copy, PartialEq)]

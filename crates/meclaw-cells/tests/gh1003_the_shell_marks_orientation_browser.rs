@@ -12,7 +12,9 @@
 //!
 //! Station `browser:display`, not `tests` (`scripts/gate_plan.py`,
 //! `BROWSER_LOCKS`): `#[ignore]`d everywhere else. No node or no Chromium is a
-//! `SKIP`, never a red (R2b).
+//! `SKIP`, never a red (R2b) -- outside the gate. Inside it the runner sets
+//! `MECLAW_REQUIRE_BROWSERS=1` on a station that books the engine (GH #1161), and a
+//! Chromium that is absent or does not start is `NO-ENGINE ...`, exit 1, red.
 
 #[path = "support/web_fixture.rs"]
 mod web_fixture;

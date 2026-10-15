@@ -9,11 +9,11 @@ siblings get one answer to a question that was theirs.
 
 Memory belongs to the person, not to their agent, so `memory-hive` hangs at the member level.
 Replacing an assistant does not take the history with it, and two assistants of one person read
-one record (`crates/meclaw-cells/tests/gh302_member_holds_the_memory.rs`).
+one record (`crates/meclaw-cells/tests/misc_3/gh302_member_holds_the_memory.rs`).
 
 Screening and channels belong to the person for the same reason. A new generation meets the
 attacker record and the rate window the old one left behind, and one chat account reaches two
-of that person's agents (`crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs`).
+of that person's agents (`crates/meclaw-cells/tests/misc_3/gh454_two_assistants_one_channel.rs`).
 
 The control loop and the authoring path sit at the shell, because one colony has one charter and
 one place a submission lives. A person's own keys are held one level down, by the member whose
@@ -22,7 +22,7 @@ agents authenticate with them (`templates/member/README.md`).
 An organisation shares a name and a boundary and nothing else, so that level owns nothing else.
 `templates/org/template.json` ships no cell at all: one hive, one open container, transit edges
 derived from what the member below accepts and emits
-(`crates/meclaw-cells/tests/gh302_org_is_a_namespace.rs`).
+(`crates/meclaw-cells/tests/misc_3/gh302_org_is_a_namespace.rs`).
 
 The assistant level is the one place that references both halves of a generation, which makes it
 the level that can give each half its own model ([one assistant, two brains](two-brains.md)).

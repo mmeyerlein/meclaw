@@ -864,7 +864,7 @@ unit, plainfile for a local run).
 
 ## Pins
 
-- `crates/meclaw-cells/tests/cogny_template.rs` -- the shipped template in a running
+- `crates/meclaw-cells/tests/misc_1/cogny_template.rs` -- the shipped template in a running
   colony against the mock OpenAI wire: a consult errand enters on the documented ingress,
   the core runs its OWN tool round, and the advice leaves on the return lane under the
   `consult_id` it was given. Since 4.4.0 also the three pins of #528: an `in_schemas`
@@ -876,12 +876,12 @@ unit, plainfile for a local run).
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
   its OWN template and names the composite above it.
-- `crates/meclaw-cells/tests/gh855_an_override_reaches_the_brain_through_its_door.rs` --
+- `crates/meclaw-cells/tests/misc_7/gh855_an_override_reaches_the_brain_through_its_door.rs` --
   the model door of both composites, with the talky half measured end to end at the mock.
-- `crates/meclaw-cells/tests/talky_cogny_advisor.rs` -- the other half: the bilateral
+- `crates/meclaw-cells/tests/misc_8/talky_cogny_advisor.rs` -- the other half: the bilateral
   advisor connection end to end, from a talky's interim answer to the correlated
   follow-up in the channel.
-- `crates/meclaw-cells/tests/gh539_a_core_without_a_channel_says_nothing_in_between.rs`
+- `crates/meclaw-cells/tests/misc_5/gh539_a_core_without_a_channel_says_nothing_in_between.rs`
   -- the interim knob: off, a sentence beside a bundle that is waited for emits nothing on
   the answer lane while the calls travel unchanged; the final answer still leaves, exactly
   once; a sentence beside an async-non-handoff bundle still leaves unmarked (GH #378 is not

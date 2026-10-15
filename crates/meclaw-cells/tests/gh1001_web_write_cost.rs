@@ -7,13 +7,15 @@
 //! page shape in the lab (`support/web_fixture.rs`) through a real cell and
 //! read the `duration_ms` the cell answers with.
 //!
-//! Thresholds carry a factor of two over the target (OR-H4-7): the target of
+//! T2 counts the work of a write (objects rendered, held slots read); its
+//! milliseconds are the perf stage's (`perf_gh1001_write_cost`). The target of
 //! the wave is ≤ 10 ms per write and ≤ 20 ms p95 per 400-leg bundle.
 
 #[path = "support/web_fixture.rs"]
 mod web_fixture;
 
 use meclaw_core::serde_json::json;
+use meclaw_testing::log_recorder;
 use web_fixture::{Lab, Shape, duration_ms, update};
 
 /// The `q`-quantile of `xs` (nearest rank).
@@ -23,63 +25,150 @@ fn quantile(xs: &mut [i64], q: f64) -> i64 {
     xs[rank - 1]
 }
 
-/// p50 of `runs` one-op writes on a page of `figures` figures, and the samples
-/// it was taken from (sorted).
-async fn one_op_p50(figures: usize, runs: usize) -> (i64, Vec<i64>) {
-    let mut lab = Lab::start(Shape::with_figures(figures)).await;
-    // One warm-up write: the first write pays for the statement cache.
-    lab.call(vec![update("fig-0", json!({"x": 1}))]).await;
-    let mut ds = Vec::with_capacity(runs);
-    for i in 0..runs {
-        let id = format!("fig-{}", (i * 7919) % figures);
-        let answer = lab.call(vec![update(&id, json!({"x": i as i64}))]).await;
-        ds.push(duration_ms(&answer));
-    }
-    let p50 = quantile(&mut ds, 0.5);
-    (p50, ds)
+/// One one-op write on `lab` (a page of `figures` figures), its `duration_ms`.
+async fn one_op(lab: &mut Lab, figures: usize, i: usize) -> i64 {
+    let id = format!("fig-{}", (i * 7919) % figures);
+    let answer = lab.call(vec![update(&id, json!({"x": i as i64}))]).await;
+    duration_ms(&answer)
 }
 
-/// The host's 1/5/15-minute load, for the red message only (GH #1056); empty
-/// where `/proc/loadavg` does not exist.
+/// p50 of `runs` one-op writes on a page of `small` and one of `large`
+/// figures, and the sorted samples of each.
+///
+/// GH #1180: the two pools are measured INTERLEAVED, one write each per round
+/// and the order flipped every round, so a load burst of the host lands on
+/// both pools alike. Measured one pool after the other, a burst during the
+/// second pool alone read as growth: under full-suite load (load1 about 26 on
+/// 24 cores) the 4 000 pool's whole sample sat at 4-19 ms while the 1 000 pool
+/// before it read 1-6 ms, and the same test was green in isolation every time.
+async fn paired_p50(small: usize, large: usize, runs: usize) -> ((i64, Vec<i64>), (i64, Vec<i64>)) {
+    let mut lab_s = Lab::start(Shape::with_figures(small)).await;
+    let mut lab_l = Lab::start(Shape::with_figures(large)).await;
+    // One warm-up write each: the first write pays for the statement cache.
+    lab_s.call(vec![update("fig-0", json!({"x": 1}))]).await;
+    lab_l.call(vec![update("fig-0", json!({"x": 1}))]).await;
+    let (mut ds, mut dl) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
+    for i in 0..runs {
+        if i % 2 == 0 {
+            ds.push(one_op(&mut lab_s, small, i).await);
+            dl.push(one_op(&mut lab_l, large, i).await);
+        } else {
+            dl.push(one_op(&mut lab_l, large, i).await);
+            ds.push(one_op(&mut lab_s, small, i).await);
+        }
+    }
+    let ps = quantile(&mut ds, 0.5);
+    let pl = quantile(&mut dl, 0.5);
+    ((ps, ds), (pl, dl))
+}
+
+/// The one-op write lock of T2 in whole milliseconds (target 10), read by
+/// the perf stage only.
+const LOCK_MS: i64 = 20;
+
+/// The work every one-op write of `writes` on `lab` did, as the cell reports
+/// it after each re-render: `(objects rendered, held slots read)` per write.
+///
+/// The cell logs both counts on its `web: re-rendered` line, after the write
+/// and before its answer; the test runs one lab at a time, so the lines after
+/// a write's answer are that write's.
+async fn work_per_write(lab: &mut Lab, figures: usize, writes: usize) -> Vec<(u64, u64)> {
+    let log = log_recorder::global();
+    let rerenders = || log.lines(tracing::Level::TRACE, &["web: re-rendered", "path=/web"]);
+    let mut work = Vec::with_capacity(writes);
+    for i in 0..writes {
+        let before = rerenders().len();
+        one_op(lab, figures, i).await;
+        let lines = rerenders();
+        let [line] = &lines[before..] else {
+            panic!(
+                "one write, one re-render on the pool of {figures}: {:?}",
+                &lines[before..]
+            )
+        };
+        work.push((field(line, "objects"), field(line, "slots_read")));
+    }
+    work
+}
+
+/// The value of ` name=<n>` in a recorded line.
+fn field(line: &str, name: &str) -> u64 {
+    let key = format!(" {name}=");
+    let at = line
+        .find(&key)
+        .unwrap_or_else(|| panic!("the re-render line names `{name}`: {line}"));
+    line[at + key.len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("`{name}` is a count: {line}"))
+}
+
+/// T2. A one-op write costs what it touched, whatever the pool: the same
+/// work on 1 000 figures as on 4 000 -- one object rendered and one held
+/// slot read. Before, a write re-rendered every route (all 4 871 objects of
+/// the lab page; 578 ms on 1 000, 979 ms on 4 000 in this lab), and after
+/// GH #1001 a scan of every held slot still grew with the pool (GH #1180).
+/// Both counts are deterministic where the milliseconds were not (GH #1056,
+/// #1066: 11 of 20 red under load); the milliseconds moved to
+/// [`perf_gh1001_write_cost`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1001_write_cost_does_not_grow_with_untouched_objects() {
+    let _ = log_recorder::global();
+    let mut work = Vec::new();
+    for figures in [1_000, 4_000] {
+        let mut lab = Lab::start(Shape::with_figures(figures)).await;
+        work.push(work_per_write(&mut lab, figures, 5).await);
+    }
+    let [small, large] = &work[..] else {
+        unreachable!("two pools")
+    };
+    assert!(
+        small.iter().all(|w| *w == (1, 1)),
+        "a one-op write on a pool of 1 000 renders one figure and reads one held slot: \
+         (objects, slots_read) per write {small:?}"
+    );
+    assert_eq!(
+        small, large,
+        "the write's work grows with untouched objects: (objects, slots_read) per write \
+         1 000 {small:?} vs 4 000 {large:?}"
+    );
+}
+
+/// The host's 1/5/15-minute load, recorded beside the samples.
 fn host_load() -> String {
     std::fs::read_to_string("/proc/loadavg")
         .map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
         .unwrap_or_default()
 }
 
-/// The one-op write lock of T2 in whole milliseconds (target 10).
-const LOCK_MS: i64 = 20;
-
-/// T2. This lab on the gate host, p50 of a one-op write: 578 ms (1 000) and
-/// 979 ms (4 000) before, 1 ms and 2 ms after. The deployed page measured
-/// 51–66 ms (1 000) and 129–150 ms (4 000) before.
+/// Perf stage of T2 (VORGABEN TV-P2): the p50 of twenty one-op writes per
+/// pool, interleaved (GH #1180), as JSON under `target/perf/`. No verdict on
+/// the numbers here; the wave receipt compares them against the merge-base
+/// binary. Measured before (lab, gate host): 578 ms (1 000) and 979 ms (4 000)
+/// p50; after GH #1001: 1 ms and 2 ms. The lock of the wave is [`LOCK_MS`].
+#[ignore = "perf stage"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn gh1001_write_cost_does_not_grow_with_untouched_objects() {
-    let (small, small_ds) = one_op_p50(1_000, 20).await;
-    let (large, large_ds) = one_op_p50(4_000, 20).await;
-    println!("LAB one-op write p50: pool 1000 = {small} ms, pool 4000 = {large} ms");
-    assert!(
-        large <= LOCK_MS,
-        "a one-op write on a pool of 4 000 costs {large} ms p50 (target 10, lock {LOCK_MS})"
-    );
-    // `duration_ms` is whole milliseconds, so at a few ms a ratio alone reads
-    // 1 ms of jitter as 100 %. The slack is a share of the lock (a quarter of
-    // its 20 ms), not a fixed 3 ms: under full-suite load a strand gate read
-    // 2 ms (1 000) vs 6 ms (4 000) and failed on 3 ms slack while the cell was
-    // fine (isolated 5/5 green). The regression this guards grew with the
-    // pool by hundreds of ms (578 -> 979 ms), far above the slack.
-    let slack = LOCK_MS as f64 / 4.0;
-    // GH #1056: a red run prints every sample of both pools and the host load.
-    // Measured on a 12-core build host: 20 of 20 green at load1 about 40, 13 of
-    // 20 red at load1 about 90 (1-3 ms vs 7-12 ms p50). The next red says
-    // whether the large pool grew as a whole or a few writes sat behind the
-    // scheduler, and at what load.
-    assert!(
-        (large as f64) <= (small as f64 * 1.5).max(small as f64 + slack),
-        "the write cost grows with untouched objects: {small} ms (1 000) vs {large} ms (4 000); \
-         samples 1 000 {small_ds:?}, 4 000 {large_ds:?}; load {}",
-        host_load()
-    );
+async fn perf_gh1001_write_cost() {
+    let ((small, mut small_ds), (large, mut large_ds)) = paired_p50(1_000, 4_000, 20).await;
+    let p95_small = quantile(&mut small_ds, 0.95);
+    let p95_large = quantile(&mut large_ds, 0.95);
+    let report = json!({
+        "test": "perf_gh1001_write_cost",
+        "unit": "ms",
+        "lock_ms": LOCK_MS,
+        "pool_1000": {"p50": small, "p95": p95_small, "samples": small_ds},
+        "pool_4000": {"p50": large, "p95": p95_large, "samples": large_ds},
+        "load": host_load(),
+    });
+    println!("PERF {report}");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .parent()
+        .expect("target/tmp has a parent")
+        .join("perf");
+    std::fs::create_dir_all(&dir).expect("target/perf");
+    std::fs::write(dir.join("perf_gh1001_write_cost.json"), report.to_string())
+        .expect("write the perf report");
 }
 
 /// T3. Before: the deployed page measured 68 ms for 400 figure updates (pool

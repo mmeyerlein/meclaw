@@ -12,9 +12,9 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
+use display_colony::{body_of, calls_of, hop_of};
 use meclaw_core::serde_json::{Value, json};
 use presenter_colony::{Dials, boot, decision, guard, stage_routes, warm};
 
@@ -28,6 +28,13 @@ fn ctx(round: &str, turn: Option<&str>) -> Value {
         c["turn_id"] = json!(t);
     }
     c
+}
+
+/// Whether one patch bundle creates an object whose id carries `needle`.
+fn creates(patch: &[Value], needle: &str) -> bool {
+    patch.iter().any(|c| {
+        c["op"] == "object.create" && c["id"].as_str().is_some_and(|id| id.contains(needle))
+    })
 }
 
 fn hits(titles: &[&str]) -> String {
@@ -73,11 +80,14 @@ async fn a_search_fills_a_window_only_after_a_sure_verdict() {
     s.turn_in("t0", "hello there", json!(["agent:g1", "member:alex"]))
         .await;
     s.decided_on("t0").await;
+    // Re-check tv-bn M7b4 B-M1: the claim is judged once the sentinel's request is released
+    // and the colony settled -- the decide call orders stage, not the screen path behind
+    // it. Its verdict is `none`, so no view may have left stage at all.
+    s.ask().await.release(decision(&[("topic", "none", 0.9)]));
     assert!(
         !stage_routes(&s).await.iter().any(|r| r == "view"),
         "an observation opened a window"
     );
-    s.ask().await.release(decision(&[("topic", "none", 0.9)]));
 
     // (b) A sure `search`: the hint first, while no result is there yet.
     s.turn_in(
@@ -113,6 +123,14 @@ async fn a_search_fills_a_window_only_after_a_sure_verdict() {
         ctx(OTHER, Some("t1")),
     )
     .await;
+    // Re-check tv-bn M7b5 C-M1: "hits of another round were placed" is the block itself,
+    // not only its text. The base judged it after the sentinel's decide call, where the
+    // sentinel's request is held and a settle hangs; here no request is held (t1 was
+    // released), so `drawn` settles, and the colony at rest has handled `f1` completely.
+    assert!(
+        !s.drawn("show-search-results").await,
+        "hits of another round were placed"
+    );
     s.turn_in(
         "t2",
         "and something else",
@@ -120,10 +138,9 @@ async fn a_search_fills_a_window_only_after_a_sure_verdict() {
     )
     .await;
     s.decided_on("t2").await;
-    assert!(
-        !s.drawn("show-search-results").await,
-        "hits of another round were placed"
-    );
+    // The sentinel's request stays held while the generation's own result arrives; the
+    // claim "hits of another round were placed" is judged below, released and settled,
+    // over every row that reached the screen (re-check tv-bn M7b4 B-M1).
 
     // The generation's own result in the turn's round fills the window.
     s.tool_call(
@@ -141,6 +158,7 @@ async fn a_search_fills_a_window_only_after_a_sure_verdict() {
     )
     .await;
     s.wait_drawn("show-search-results").await;
+    s.ask().await.release(decision(&[("topic", "none", 0.9)]));
     let items = s.ids("show-search-results-").await;
     assert_eq!(items.len(), 2, "{items:?}");
     let tree = s.c.tree().await.to_string();
@@ -148,9 +166,45 @@ async fn a_search_fills_a_window_only_after_a_sure_verdict() {
         !tree.contains("Foreign") && !tree.contains("Unasked"),
         "a hit of another round or turn reached the screen"
     );
+    let placed: Vec<String> =
+        s.c.log(None)
+            .await
+            .into_iter()
+            .filter(|r| r.to_path.starts_with(display_colony::SCREEN))
+            .filter_map(|r| r.body_payload)
+            .filter(|b| b.contains("Foreign") || b.contains("Unasked"))
+            .collect();
+    assert!(
+        placed.is_empty(),
+        "hits of another round were placed: {placed:#?}"
+    );
+    // Re-check tv-bn M7b5 C-M1: a block that `f1` opened without its hits and `c1` filled
+    // afterwards passes every claim above (two ids, no foreign text). So every patch at
+    // `web` that creates an object `show-search-results*` descends from the ingress of the
+    // generation's own result `c1` -- not from `f1`, not from `c0`.
+    let web = format!("{}/web", display_colony::SCREEN);
+    let stage = format!("{}/stage", presenter_colony::PRESENTER);
+    let (created, apart) = s
+        .descends_from(
+            |r| {
+                r.to_path == web
+                    && hop_of(r)["route"] == "patch"
+                    && calls_of(r).is_some_and(|c| creates(&c, "show-search-results"))
+            },
+            |r| {
+                r.to_path == stage
+                    && hop_of(r)["route"] == "tool_result"
+                    && body_of(r)["messages"][0]["id"] == "c1"
+            },
+        )
+        .await;
+    assert!(created > 0, "the generation's own result creates the block");
+    assert!(
+        apart.is_empty(),
+        "a block `show-search-results*` was created by another result: {apart:#?}"
+    );
     let row = s.journal_of("t1").await;
     assert_eq!(row["fallback"], json!("none"), "{row}");
     assert_eq!(row["topic"], json!("search"), "{row}");
-    s.ask().await.release(decision(&[("topic", "none", 0.9)]));
     s.c.shutdown().await;
 }

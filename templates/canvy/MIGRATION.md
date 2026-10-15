@@ -1,4 +1,4 @@
-# Migrating a `canvy` instance from 1.x to `canvy@2.4.0`
+# Migrating a `canvy` instance from 1.x to `canvy@2.4.2`
 
 **A 1.x instance is not upgraded in place.** Every address the template offered
 was removed — the server-rendered markup, the `store` cell that held the
@@ -56,7 +56,7 @@ after.
 
 ---
 
-## 1. Instantiate `canvy@2.4.0` beside the old hive
+## 1. Instantiate `canvy@2.4.2` beside the old hive
 
 A mutation, into a running colony. Give the node a name that does not collide
 with the old one and the display a free mount:
@@ -68,7 +68,7 @@ with the old one and the display a free mount:
     "add_nodes": [
       {
         "name": "canvy2",
-        "template": "canvy@2.4.0",
+        "template": "canvy@2.4.2",
         "override_params": {"web": {"mount": "canvy2"}}
       }
     ]
@@ -327,7 +327,7 @@ found the hard way ([#403](https://github.com/mmeyerlein/meclaw/issues/403)).
   ```
 
   That is the guard behaving as designed — it is pinned by
-  `crates/meclaw-colony/tests/phase_13_5_lifecycle_3b_reconnect.rs` — not a
+  `crates/meclaw-colony/tests/phase/phase_13_5_lifecycle_3b_reconnect.rs` — not a
   defect to work around. It does mean step 5 is **one-shot** against a running
   colony: go back, and going forward again needs a restart first.
 - **Undo the migration**: the old `cell.db` still holds the `canvas` table, so
@@ -355,7 +355,7 @@ found the hard way ([#403](https://github.com/mmeyerlein/meclaw/issues/403)).
 
 ## What is pinned
 
-`crates/meclaw-cells/tests/canvy2_position_migration.rs` builds a **synthetic**
+`crates/meclaw-cells/tests/web_1/canvy2_position_migration.rs` builds a **synthetic**
 1.x `canvas` table, runs the shipped `scripts/canvy_export_positions.py` over
 it, and puts the emitted bundle into a real `web` cell that the shipped layout
 has bootstrapped — then reads the migrated coordinates back out of that cell's

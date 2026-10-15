@@ -13,6 +13,7 @@ it claims to carry.
 
 import io
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -20,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+from scripts.tests import store_isolation
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -472,6 +475,170 @@ class RunArtefacts(unittest.TestCase):
         self.assertEqual([], of(pc.run(["scripts/real.py"], repo=root), "run-artefact"))
 
 
+class KdfOffWorker(unittest.TestCase):
+    """GH #1216: the vault's argon2id derivation stays off the runtime worker."""
+
+    CELL = "crates/meclaw-cells/src/vault/cell.rs"
+    CRYPTO = "crates/meclaw-cells/src/vault/crypto.rs"
+    CHANNEL = "crates/meclaw-cells/src/vault/user_channel.rs"
+    CLI = "crates/meclaw-cli/src/lib.rs"
+    VAULT_CLI = "crates/meclaw-cli/src/vault_cli.rs"
+
+    def findings(self, path, text):
+        root = tree(self, {path: text})
+        return of(pc.run([path], repo=root), "kdf-off-worker")
+
+    def test_the_unlock_turned_back_to_an_inline_derive_is_red(self):
+        found = self.findings(self.CELL, (
+            "async fn unlock() {\n"
+            "    let key = MasterKey::derive(&passphrase, &salt).map_err(|e| e.to_string())?;\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CELL + ":2", found[0].message)
+
+    def test_the_unlock_off_the_worker_is_silent(self):
+        self.assertEqual([], self.findings(self.CELL, (
+            "async fn unlock() {\n"
+            "    let key = MasterKey::derive_off_worker(passphrase, salt).await?;\n"
+            "}\n")))
+
+    def test_the_named_sync_sites_are_silent(self):
+        self.assertEqual([], self.findings(self.CHANNEL, (
+            "pub fn add(root: &Path, passphrase: &[u8]) -> Result<i64, String> {\n"
+            "    let k = MasterKey::derive(passphrase, &s)?;\n"
+            "}\n")))
+        self.assertEqual([], self.findings(self.VAULT_CLI, (
+            "pub fn run(root: &Path) -> anyhow::Result<()> {\n"
+            "    let v = user_channel::add(root, c, &n, &s, &p)?;\n"
+            "}\n")))
+
+    def test_a_function_pointer_or_a_bare_naming_is_red(self):
+        found = self.findings(self.CELL, (
+            "async fn unlock() {\n"
+            "    let f = MasterKey::derive;\n"
+            "    f(&p, &s)?;\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CELL + ":2", found[0].message)
+
+    def test_an_alias_of_the_key_type_is_red(self):
+        for text in ("use crate::vault::crypto::MasterKey as Mk;\n"
+                     "async fn unlock() { Mk::derive(&p, &s)?; }\n",
+                     "type Mk = crate::vault::crypto::MasterKey;\n"
+                     "async fn unlock() { Mk::derive(&p, &s)?; }\n"):
+            found = self.findings(self.CELL, text)
+            self.assertEqual(["RED"], levels(found), text)
+            self.assertIn(self.CELL + ":1", found[0].message)
+
+    def test_a_braced_import_of_the_sync_cli_is_red(self):
+        for text in ("use crate::vault_cli::{run, VaultCommand};\n",
+                     "use crate::vault_cli::{\n    VaultCommand,\n    run,\n};\n"):
+            self.assertEqual(["RED"], levels(self.findings(self.CLI, text)), text)
+        self.assertEqual([], self.findings(
+            self.CLI, "use crate::vault_cli::{run_off_worker, VaultCommand};\n"))
+
+    def test_the_crypto_module_is_graded_like_any_other(self):
+        found = self.findings(self.CRYPTO, (
+            "async fn rewrap() {\n"
+            "    let k = MasterKey::derive(p, &s)?;\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+
+    def test_only_add_may_derive_inline_in_the_user_channel(self):
+        found = self.findings(self.CHANNEL, (
+            "pub fn add(passphrase: &[u8]) -> Result<i64, String> {\n"
+            "    let k = MasterKey::derive(passphrase, &s)?;\n"
+            "}\n"
+            "pub async fn put(passphrase: &[u8]) -> Result<i64, String> {\n"
+            "    let k = MasterKey::derive(passphrase, &s)?;\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CHANNEL + ":5", found[0].message)
+
+    def test_the_user_channel_add_outside_the_cli_blocking_half_is_red(self):
+        for path, text in (
+                (self.CLI, "async fn entry() { user_channel::add(r, c, &n, &s, &p)?; }\n"),
+                (self.CLI, "use meclaw_cells::vault::user_channel::{add, status};\n"),
+                (self.VAULT_CLI, "pub async fn put() {\n"
+                                 "    user_channel::add(r, c, &n, &s, &p)?;\n}\n")):
+            self.assertEqual(["RED"], levels(self.findings(path, text)), (path, text))
+
+    def test_an_external_test_module_does_not_hide_the_rest(self):
+        found = self.findings(self.CELL, (
+            "#[cfg(test)]\n"
+            "mod tests;\n"
+            "\n"
+            "async fn unlock() {\n"
+            "    let key = MasterKey::derive(&passphrase, &salt)?;\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CELL + ":5", found[0].message)
+
+    def test_a_new_async_fn_in_the_key_impl_is_red(self):
+        # re-check fix2 H1: inside `impl MasterKey` the type is `Self`.
+        found = self.findings(self.CRYPTO, (
+            "impl MasterKey {\n"
+            "    pub async fn derive_off_worker(p: Vec<u8>, s: Vec<u8>) -> R {\n"
+            "        tokio::task::spawn_blocking(move || Self::derive(&p, &s)).await?\n"
+            "    }\n"
+            "    pub async fn rewrap(&self) { let k = Self::derive(p, &s)?; }\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CRYPTO + ":5", found[0].message)
+        # Another type's own `derive` is not the key derivation.
+        self.assertEqual([], self.findings(
+            self.CELL, "impl Other { async fn f() { Self::derive(); } }\n"))
+
+    def test_a_glob_import_of_the_sync_modules_is_red(self):
+        for path, text in ((self.CLI, "use crate::vault_cli::*;\n"),
+                           (self.CELL, "use crate::vault::user_channel::*;\n")):
+            self.assertEqual(["RED"], levels(self.findings(path, text)), (path, text))
+
+    def test_a_url_in_a_string_hides_no_call(self):
+        found = self.findings(self.CELL, (
+            "async fn unlock() {\n"
+            "    let u = \"http://127.0.0.1/\"; let k = MasterKey::derive(&p, &s)?;\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CELL + ":2", found[0].message)
+
+    def test_an_async_block_inside_a_sync_site_is_red(self):
+        found = self.findings(self.CHANNEL, (
+            "pub fn add(passphrase: &[u8]) -> Result<i64, String> {\n"
+            "    tokio::spawn(async move {\n"
+            "        let k = MasterKey::derive(passphrase, &s);\n"
+            "    });\n"
+            "}\n"))
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn(self.CHANNEL + ":3", found[0].message)
+
+    def test_a_comment_naming_the_derivation_is_silent(self):
+        self.assertEqual([], self.findings(self.CELL, (
+            "/// Unlike `MasterKey::derive(..)`, this stays off the worker.\n"
+            "async fn unlock() {} // not vault_cli::run either\n")))
+
+    def test_a_test_module_may_derive_inline(self):
+        self.assertEqual([], self.findings("crates/meclaw-cells/src/vault/store.rs", (
+            "fn salt() {}\n"
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    fn t() { MasterKey::derive(b\"pw\", &s).unwrap(); }\n"
+            "}\n")))
+
+    def test_the_sync_vault_cli_from_the_async_entry_is_red(self):
+        for call in ("return crate::vault_cli::run(&cli.root, p, c, s, f);\n",
+                     "use crate::vault_cli::run;\n"):
+            self.assertEqual(["RED"], levels(self.findings(self.CLI, call)), call)
+
+    def test_the_vault_cli_off_the_worker_is_silent(self):
+        self.assertEqual([], self.findings(
+            self.CLI, "return crate::vault_cli::run_off_worker(r, p, c, s, f).await;\n"))
+
+    def test_a_test_tree_is_not_graded(self):
+        path = "crates/meclaw-cells/tests/misc/seed.rs"
+        self.assertEqual([], self.findings(path, "MasterKey::derive(b\"pw\", &s).unwrap();\n"))
+
+
 class PlanCap(unittest.TestCase):
     """The 600-line cap of development-rules § 1, as a note on the diff."""
 
@@ -770,15 +937,277 @@ class TheRealTreeIsGreen(unittest.TestCase):
     # rustfmt about every source there is, which would make `gate-selftest`
     # red over a file outside the diff -- the verdict of the `fmt` station,
     # reported by the wrong one. On a diff it grades what the diff carries,
-    # which is the whole point.
+    # which is the whole point. `testing-rules` likewise (tv-bn M7z): it grades
+    # the change against the merge base under an owner ruling
+    # (MECLAW_TESTING_RULES_RULING), a verdict name the kit suite drops
+    # (OR-T12-21, scripts/tests/__init__.py) -- on a branch that touches the
+    # bans it is red here whatever the ruling, the verdict of `pre`/`precheck`.
+    NOT_HERE = ("fmt", "testing-rules")
+
+    @classmethod
+    def graded(cls, findings):
+        """The RED findings this test holds the whole tree to: all but `NOT_HERE`
+        and the one `ALLOWED` finding (pinned by TheWholeTreeExemptsExactlyTwoStations)."""
+        return [f for f in findings
+                if f.level == "RED" and f.check not in cls.NOT_HERE
+                and not any(f.check == c and w in f.message for c, w in cls.ALLOWED)]
+
     def test_the_committed_tree_carries_no_red_finding(self):
         paths = subprocess.run(["git", "-C", str(REPO), "ls-files"],
                                capture_output=True, text=True,
                                check=True).stdout.splitlines()
-        red = [f for f in pc.run(paths, repo=REPO)
-               if f.level == "RED" and f.check != "fmt"
-               and not any(f.check == c and w in f.message for c, w in self.ALLOWED)]
+        red = self.graded(pc.run(paths, repo=REPO))
         self.assertEqual([], red, "\n".join("%s: %s" % (f.check, f.message) for f in red))
+
+
+def station_name(check):
+    """The name a check function reports under: `check_testing_rules` -> `testing-rules`."""
+    return check.__name__[len("check_"):].replace("_", "-")
+
+
+class TheWholeTreeExemptsExactlyTwoStations(unittest.TestCase):
+    """OR-T17-4 (welle-testing tv-bn S1): `TheRealTreeIsGreen` leaves out `fmt` and
+    `testing-rules`, both gradable only on a diff (and `testing-rules` only with an
+    owner ruling), and nothing else. The exemption lives in that one test: every
+    other station stays graded over the whole tree, and `testing-rules` keeps
+    grading the diff it is handed -- no loosening of the station itself."""
+
+    def test_the_exemption_is_fmt_and_testing_rules_and_nothing_else(self):
+        self.assertEqual(("fmt", "testing-rules"), TheRealTreeIsGreen.NOT_HERE)
+
+    def test_both_exempt_stations_still_run_in_the_precheck(self):
+        names = [station_name(c) for c in pc.CHECKS]
+        for name in TheRealTreeIsGreen.NOT_HERE:
+            self.assertIn(name, names, "the exemption names a station the precheck no longer runs")
+
+    def test_a_red_finding_of_every_other_station_stays_red_over_the_whole_tree(self):
+        names = sorted({station_name(c) for c in pc.CHECKS})
+        red = [pc.Finding("RED", n, "a finding") for n in names]
+        kept = {f.check for f in TheRealTreeIsGreen.graded(red)}
+        self.assertEqual(set(names) - {"fmt", "testing-rules"}, kept)
+
+    def test_the_testing_rules_station_still_grades_a_diff(self):
+        class Bans:
+            @staticmethod
+            def scan(files, repo, base):
+                return iter(())
+
+            @staticmethod
+            def rules(files, repo, base):
+                yield pc.Finding("RED", "testing-rules", "%s added a ban" % files[0])
+
+        root = tree(self, {"crates/x/tests/a.rs": "fn a() {}\n"})
+        with mock.patch.object(pc, "_testing_bans", lambda: Bans), \
+                mock.patch.object(pc, "_base", lambda repo: "base"):
+            found = [f for f in pc.run(["crates/x/tests/a.rs"], repo=str(root))
+                     if f.check == "testing-rules"]
+        self.assertEqual([("RED", "crates/x/tests/a.rs added a ban")],
+                         [(f.level, f.message) for f in found])
+
+
+WORKFLOW =REPO / ".github" / "workflows" / "ci.yml"
+EXACT = re.compile(r"\d+\.\d+\.\d+")
+
+
+def workflow_job(name):
+    """The text of one job of `.github/workflows/ci.yml` (two-space key under `jobs:`)."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    body = text.split("\njobs:\n", 1)[1]
+    m = re.search(r"(?ms)^  %s:\n(.*?)(?=^  [A-Za-z][\w-]*:\n|\Z)" % re.escape(name), body)
+    if m is None:
+        raise AssertionError("ci.yml has no job %r" % name)
+    return m.group(1)
+
+
+def workflow_env(key):
+    """The workflow-level `env:` value of `key` in ci.yml, unquoted, or None."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    head = text.split("\njobs:\n", 1)[0]
+    m = re.search(r'(?m)^  %s:\s*"?([^"\n]+?)"?\s*$' % re.escape(key), head)
+    return m.group(1) if m else None
+
+
+class PublicCiRunsTheTestingChecks(unittest.TestCase):
+    """tv-bn-ci (#1209, plan S11 § 3): the testing checks of the local gate have
+    the same effect in the public CI. `precheck` never runs there (CI_EXCLUDED:
+    the published tree has no `plans/` and no merge base of its own), so ci plans
+    the two testing checks by themselves: `test-bans-inventory` over the whole
+    tree, and `test-bans` -- `scripts/testing_bans.py`, i.e. the precheck checks
+    `test-bans` and `testing-rules` -- over the diff against the base of a pull
+    request (`origin/main`, which the gate job's full clone carries)."""
+
+    def setUp(self):
+        import gate_plan
+        self.gp = gate_plan
+
+    def names(self, paths, mode):
+        return {s.name: s for s in self.gp.plan(paths, mode, repo=None)}
+
+    def test_ci_counts_the_testing_bans_over_the_tree(self):
+        st = self.names(["README.md"], "ci")
+        self.assertIn("test-bans-inventory", st)
+        self.assertEqual([["python3", "scripts/testing_bans.py", "--inventory", "--check"]],
+                         st["test-bans-inventory"].cmds)
+        self.assertNotIn("test-bans-inventory", self.gp.CI_EXCLUDED)
+        self.assertIn("ci", self.gp.STATION_TRIGGERS["test-bans-inventory"][1])
+
+    def test_ci_grades_the_added_test_lines_of_its_diff(self):
+        paths = ["README.md", "crates/meclaw-core/tests/x.rs", "scripts/tests/test_x.py",
+                 "templates/a/config.json", ".config/flaky-legacy.toml"]
+        st = self.names(paths, "ci")
+        self.assertIn("test-bans", st)
+        self.assertEqual([["python3", "scripts/testing_bans.py", "--files",
+                           ".config/flaky-legacy.toml", "crates/meclaw-core/tests/x.rs",
+                           "scripts/tests/test_x.py"]], st["test-bans"].cmds)
+        self.assertFalse(st["test-bans"].cargo)
+        # everywhere else `precheck` carries both checks; ci never plans precheck
+        for mode in ("strand", "integration", "release"):
+            with self.subTest(mode=mode):
+                self.assertNotIn("test-bans", self.names(paths, mode))
+        self.assertIn("precheck", self.gp.CI_EXCLUDED)
+        self.assertEqual(((), ("ci",)), self.gp.STATION_TRIGGERS["test-bans"])
+        order = self.gp.STATION_ORDER
+        self.assertLess(order.index("test-bans-inventory"), order.index("test-bans"))
+        self.assertLess(order.index("test-bans"), order.index("fmt"))
+
+    def test_the_ci_plan_holds_when_the_importer_took_scripts_off_the_path(self):
+        # The export selftest (`ci_plan_scripts`) puts `scripts/` on sys.path
+        # for its `import gate_plan` and pops it again before it calls
+        # `plan(.., "ci")`; the C station must not import from there late.
+        probe = ("import sys\n"
+                 "sys.path.insert(0, %r)\n"
+                 "try:\n"
+                 "    import gate_plan\n"
+                 "finally:\n"
+                 "    sys.path.pop(0)\n"
+                 "st = {s.name: s for s in gate_plan.plan(['scripts/tests/test_x.py'], 'ci')}\n"
+                 "print(st['test-bans'].cmds[0][-1])\n") % str(SCRIPTS)
+        res = subprocess.run([sys.executable, "-I", "-c", probe], cwd=str(SCRIPTS.parent),
+                             capture_output=True, text=True, check=False)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual("scripts/tests/test_x.py", res.stdout.strip())
+
+    def test_every_file_the_change_reservation_reads_reaches_the_ci_station(self):
+        import testing_bans as tb
+        reserved = [tb.REGISTER_FILE] + [rel for rel, _judge in tb.RESERVED]
+        st = self.names(reserved + ["Cargo.lock"], "ci")
+        self.assertEqual(sorted(reserved), st["test-bans"].cmds[0][3:])
+
+    def test_the_gate_job_installs_the_pinned_ruff_and_fetches_the_base(self):
+        job = workflow_job("gate")
+        # merge_base() finds `origin/main` only in a full clone; a shallow one
+        # leaves the change reservation without a base (RED, see below)
+        self.assertRegex(job, r"(?m)^\s+fetch-depth: 0\s*$")
+        self.assertIn("ruff==${{ env.RUFF_VERSION }}", job)
+        self.assertRegex(job, r"(?m)^\s+- run: scripts/gate\.sh ci\s*$")
+        for key in ("RUFF_VERSION", "CARGO_MUTANTS_VERSION"):
+            with self.subTest(key=key):
+                self.assertRegex(workflow_env(key) or "", r"^%s$" % EXACT.pattern)
+
+    def test_the_gate_job_fails_unless_ruff_on_path_is_the_pinned_one(self):
+        # testing_bans looks ruff up by name only (shutil.which); the job
+        # itself proves that the ruff on PATH is the pinned version
+        job = workflow_job("gate")
+        self.assertRegex(job, r'(?m)^\s+test "\$\(ruff --version\)" = "ruff \$\{\{ env\.RUFF_VERSION \}\}"\s*$')
+        self.assertLess(job.index("ruff --version"), job.index("scripts/gate.sh ci"))
+
+    def test_no_workflow_runs_the_mutation_station(self):
+        # TV-Q5: no gate station runs cargo-mutants yet; the workflow only
+        # declares the version, no job installs or runs it
+        for wf in sorted((REPO / ".github" / "workflows").glob("*.yml")):
+            with self.subTest(workflow=wf.name):
+                self.assertNotRegex(wf.read_text(encoding="utf-8"),
+                                    r"(?m)^\s*(?:- )?run:.*cargo[ -]mutants")
+
+
+class TheCiStationOnAPullRequestCheckout(unittest.TestCase):
+    """What `test-bans` sees in the three checkouts the public CI makes."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = pathlib.Path(os.path.realpath(tmp.name))
+        origin = self.tmp / "origin"
+        self.git(None, "init", "-q", "-b", "main", str(origin))
+        for rel in (".config/testing-bans.toml", ".config/testing-rulings.toml",
+                    ".config/flaky-legacy.toml", "ruff.toml"):
+            dest = origin / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / rel, dest)
+        (origin / "README.md").write_text("x\n", encoding="utf-8")
+        self.commit(origin, "base")
+        self.clone = self.tmp / "clone"
+        self.git(None, "clone", "-q", str(origin), str(self.clone))
+        test = self.clone / "scripts" / "tests" / "test_x.py"
+        test.parent.mkdir(parents=True)
+        test.write_text("import time\n\n\ndef test_a():\n    time." + "sleep(1)\n",
+                        encoding="utf-8")
+
+    def git(self, tree, *args):
+        cmd = ["git"] + (["-C", str(tree)] if tree else []) + list(args)
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode:
+            raise AssertionError("%s: %s" % (cmd, res.stderr))
+        return res.stdout
+
+    def commit(self, tree, msg):
+        self.git(tree, "add", "-A")
+        self.git(tree, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", msg)
+
+    def station(self, *files):
+        env = dict(os.environ, MECLAW_GATE_MODE="ci")
+        env.pop("MECLAW_TESTING_RULES_RULING", None)
+        res = subprocess.run([sys.executable, str(SCRIPTS / "testing_bans.py"),
+                              "--repo", str(self.clone), "--files"] + list(files),
+                             capture_output=True, text=True, env=env)
+        return res.returncode, res.stdout
+
+    def pull_request(self):
+        # actions/checkout of a pull request: a detached merge commit, no local
+        # `main`, the base as `origin/main` (full clone)
+        self.git(self.clone, "checkout", "-q", "--detach")
+        self.git(self.clone, "branch", "-q", "-D", "main")
+        self.commit(self.clone, "merge of the pull request")
+
+    def test_a_pull_request_is_graded_against_origin_main(self):
+        self.pull_request()
+        rc, out = self.station("scripts/tests/test_x.py")
+        self.assertEqual(1, rc, out)
+        self.assertRegex(out, r"RED test-bans: .*py-time")
+
+    def test_a_pull_request_that_adds_a_legacy_flake_is_red(self):
+        self.pull_request()
+        legacy = self.clone / ".config" / "flaky-legacy.toml"
+        legacy.write_text(legacy.read_text(encoding="utf-8")
+                          + '\n[[flaky]]\ntest = "c::b::a"\nissue = 1\ncause = "time"\n',
+                          encoding="utf-8")
+        self.commit(self.clone, "legacy entry")
+        rc, out = self.station(".config/flaky-legacy.toml")
+        self.assertEqual(1, rc, out)
+        self.assertRegex(out, r"RED testing-rules: \.config/flaky-legacy\.toml loosened")
+
+    def test_a_shallow_checkout_fails_closed(self):
+        self.pull_request()
+        self.git(self.clone, "remote", "remove", "origin")
+        rc, out = self.station("scripts/tests/test_x.py", ".config/flaky-legacy.toml")
+        self.assertEqual(1, rc, out)
+        self.assertIn("no merge base", out)
+
+    def test_a_push_to_main_grades_nothing_the_release_gate_graded(self):
+        # a push is an export: its strands were graded by their own precheck,
+        # and a loosening it carries came with an owner ruling the CI cannot see
+        self.commit(self.clone, "export")
+        rc, out = self.station("scripts/tests/test_x.py", ".config/flaky-legacy.toml")
+        self.assertEqual(0, rc, out)
+        self.assertNotIn("RED", out)
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

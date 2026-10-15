@@ -39,16 +39,13 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use display_colony::{SCREEN, body_of, copy_tree, hop_of, read_json, repo, write_json};
-use meclaw_colony::{ColonyMsg, MutationOutcome};
-use meclaw_core::Uuid;
+use meclaw_colony::MutationOutcome;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::mock_http::MockResponse;
 use presenter_colony::{Dials, PRESENTER, Stage, boot, decision, guard, warm};
-use tokio::sync::oneshot;
 
 const ROUND: &str = r#"["agent:sam","member:alex"]"#;
 const GENERATION: &str = "sam";
@@ -341,18 +338,8 @@ async fn install_without_the_view(s: &Stage) -> tempfile::TempDir {
         &root.join("file-space").join("config.json"),
         &file_space_double(),
     );
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::RescanTemplates {
-            templates_root: root.to_path_buf(),
-            ack: ack_tx,
-        })
+    s.c.rescan_templates(root)
         .await
-        .expect("the colony is up");
-    ack_rx
-        .await
-        .expect("the scan answers")
         .expect("the template scan succeeds");
 
     // What a wish author holding the tree names: the member's residents (and its
@@ -377,19 +364,7 @@ async fn install_without_the_view(s: &Stage) -> tempfile::TempDir {
         "add_nodes": [{"name": "file-space", "template": "file-space"}],
         "add_edges": road,
     });
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::Mutation {
-            payload: json!({"scope": "/alex", "diff": diff}),
-            reply_to: None,
-            trace_id: Uuid::now_v7(),
-            parent_message_id: Uuid::now_v7(),
-            ack: ack_tx,
-        })
-        .await
-        .expect("the colony is up");
-    let outcome = ack_rx.await.expect("the mutation answers");
+    let outcome = s.c.apply_diff("/alex", diff).await;
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
         "a member without the colony view takes the presenter's road: {outcome:?}"
@@ -427,6 +402,8 @@ async fn a_member_without_the_colony_view_boots_with_the_presenter() {
     })
     .await;
     let stage = format!("{PRESENTER}/stage");
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    s.c.settle().await;
     assert!(
         !s.c.log(Some(&stage)).await.iter().any(|r| {
             let h = hop_of(r);
@@ -480,18 +457,8 @@ async fn install_the_old_residents(s: &Stage) -> tempfile::TempDir {
         );
         nodes.push(json!({"name": node, "template": template}));
     }
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::RescanTemplates {
-            templates_root: root.to_path_buf(),
-            ack: ack_tx,
-        })
+    s.c.rescan_templates(root)
         .await
-        .expect("the colony is up");
-    ack_rx
-        .await
-        .expect("the scan answers")
         .expect("the template scan succeeds");
 
     let road: Vec<Value> = edges_of(&render(None))
@@ -506,19 +473,7 @@ async fn install_the_old_residents(s: &Stage) -> tempfile::TempDir {
         .collect();
     assert!(!road.is_empty(), "the presenter reads residents");
     let diff = json!({"add_nodes": nodes, "add_edges": road});
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::Mutation {
-            payload: json!({"scope": "/alex", "diff": diff}),
-            reply_to: None,
-            trace_id: Uuid::now_v7(),
-            parent_message_id: Uuid::now_v7(),
-            ack: ack_tx,
-        })
-        .await
-        .expect("the colony is up");
-    let outcome = ack_rx.await.expect("the mutation answers");
+    let outcome = s.c.apply_diff("/alex", diff).await;
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
         "a member without the two member apps takes the presenter's road rendered \

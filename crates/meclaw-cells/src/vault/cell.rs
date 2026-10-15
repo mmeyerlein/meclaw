@@ -51,7 +51,7 @@ pub struct VaultCell {
     /// that has just woken is locked, whatever it was before it slept.
     key: Option<MasterKey>,
     /// When the current unlock expires (`params.unlock_ttl_ms`).
-    unlocked_until: Option<std::time::Instant>,
+    unlocked_until: Option<tokio::time::Instant>,
     /// GH #160: the read-only, self-scoped view on this cell's own inbound
     /// edges, handed over at spawn iff the contract declares
     /// `consumes.topology.inbound_edges`. `None` means the vault cannot verify
@@ -81,7 +81,7 @@ impl VaultCell {
     /// outlived by a long-idle vault that nobody asked anything.
     fn unlocked(&mut self) -> bool {
         if let Some(until) = self.unlocked_until
-            && std::time::Instant::now() >= until
+            && tokio::time::Instant::now() >= until
         {
             self.key = None;
             self.unlocked_until = None;
@@ -178,7 +178,7 @@ async fn emit(
     call_id: Option<String>,
     payload: Value,
     error_code: Option<&str>,
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 ) {
     let mut header = json!({ "duration_ms": started.elapsed().as_millis() as i64 });
     if let Some(code) = error_code {
@@ -210,7 +210,7 @@ async fn emit_invalid_input(
     sink: &OutputSink,
     target: &Path,
     detail: String,
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 ) {
     let body = json!({
         "header": {
@@ -249,7 +249,7 @@ impl StatefulCell for VaultCell {
         db: &'a mut DbConn,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
-            let started = std::time::Instant::now();
+            let started = tokio::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
             let vault_path = sink.sender_path().clone();
             // The sender the COLONY stamped. An identity a caller can write
@@ -515,7 +515,11 @@ impl VaultCell {
         };
 
         let salt = db.call(|c| store::salt_or_create(c)).await?;
-        let key = MasterKey::derive(&passphrase, &salt).map_err(|e| e.to_string())?;
+        // GH #1216: argon2id off the runtime worker -- inline it held the colony
+        // task in this worker's LIFO slot past the watchdog window at boot.
+        let key = MasterKey::derive_off_worker(passphrase, salt)
+            .await
+            .map_err(|e| e.to_string())?;
 
         // A wrong passphrase must not silently produce a vault that fails on
         // every later `use`. If anything is stored, prove the key against it now.
@@ -538,7 +542,7 @@ impl VaultCell {
         self.unlocked_until = self
             .params
             .unlock_ttl_ms
-            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+            .map(|ms| tokio::time::Instant::now() + std::time::Duration::from_millis(ms));
 
         // R10 / GH #428: there is no injection here any more. The one path on
         // which a plaintext secret used to leave this cell never worked — the

@@ -20,12 +20,7 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::{Duration, Instant};
-
-use display_colony::{
-    Boot, MARKER, boot, boot_with, have_python, library_ships, patch_json, to_screen,
-};
-use meclaw_core::Body;
+use display_colony::{Boot, boot, boot_growing, have_python, library_ships, to_screen};
 use meclaw_core::serde_json::{Value, json};
 
 const APP: &str = "/alex/apps/place";
@@ -50,41 +45,6 @@ fn view(view_id: &str, content: Value) -> Value {
            "content": content, "components": [], "ttl_ms": 0, "messages": []})
 }
 
-/// The receipts that left the hive, as `(error_code, view_id, detail)`, until `n`
-/// refusals are in hand.
-async fn refusals(colony: &mut display_colony::Colony, n: usize) -> Vec<(String, String, String)> {
-    let deadline = Instant::now() + MARKER;
-    let mut out = Vec::new();
-    loop {
-        while let Ok(m) = colony.egress.try_recv() {
-            if m.headers.hop.get("route").and_then(Value::as_str) != Some("receipt") {
-                continue;
-            }
-            let Body::Inline(body) = &m.body else {
-                continue;
-            };
-            let r = &body["receipt"];
-            if r["error_code"].as_str().unwrap_or("").is_empty() {
-                continue;
-            }
-            out.push((
-                r["error_code"].as_str().unwrap_or("").to_string(),
-                r["view_id"].as_str().unwrap_or("").to_string(),
-                r["detail"].as_str().unwrap_or("").to_string(),
-            ));
-        }
-        if out.len() >= n {
-            return out;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "only {} of {n} refusals left the hive within 30s: {out:?}",
-            out.len()
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
 /// The objects of the folded tree whose component is `component`, as `(id, props)` --
 /// on the main tree only (`view.…`): each configured output carries its own mirror of
 /// the same view (`tv.view.…`, `monitor.view.…`, `phone.view.…`), so one map stands
@@ -106,14 +66,11 @@ async fn a_map_draws_its_tiles_from_the_setting_only() {
         eprintln!("SKIP: the template library is not in this tree");
         return;
     }
-    let mut colony = boot_with(Boot::default(), |root| {
-        patch_json(
-            &root.join("main/alex/channels/display/compose/config.json"),
-            |v| {
-                v["params"]["map_tiles"] = json!(SETTING);
-                v["params"]["map_attribution"] = json!(CREDIT);
-            },
-        );
+    let mut colony = boot_growing(Boot::default(), |tree| {
+        tree.patch_json("main/alex/channels/display/compose/config.json", |v| {
+            v["params"]["map_tiles"] = json!(SETTING);
+            v["params"]["map_attribution"] = json!(CREDIT);
+        });
     })
     .await;
 
@@ -138,7 +95,6 @@ async fn a_map_draws_its_tiles_from_the_setting_only() {
     ];
     for (id, content, _) in &bad {
         colony
-            .h
             .send(to_screen("in_view", APP, view(id, content.clone())))
             .await;
     }
@@ -181,7 +137,7 @@ async fn a_map_draws_its_tiles_from_the_setting_only() {
         "the point's own tile is one of them: {srcs:?}"
     );
 
-    let got = refusals(&mut colony, bad.len()).await;
+    let got = colony.refusals(bad.len()).await;
     let drawn = tree.to_string();
     for (id, _, reason) in &bad {
         let hit = got

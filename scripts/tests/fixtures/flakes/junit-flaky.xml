@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="5" failures="1" errors="0" uuid="00000000-0000-0000-0000-000000000000" timestamp="2026-01-01T00:00:00.000+00:00" time="41.250">
+    <testsuite name="example-cells::gh1_a_window_closes" tests="3" disabled="0" errors="0" failures="1">
+        <testcase name="the_window_closes_on_time" classname="example-cells::gh1_a_window_closes" timestamp="2026-01-01T00:00:00.000+00:00" time="0.500">
+            <failure type="test failure">thread 'the_window_closes_on_time' panicked</failure>
+        </testcase>
+        <testcase name="tests::the_window_reopens" classname="example-cells::gh1_a_window_closes" timestamp="2026-01-01T00:00:00.000+00:00" time="2.250">
+            <flakyFailure type="test failure" message="attempt 1">first attempt failed</flakyFailure>
+        </testcase>
+        <testcase name="a_skipped_case" classname="example-cells::gh1_a_window_closes" timestamp="2026-01-01T00:00:00.000+00:00" time="0.000">
+            <skipped/>
+        </testcase>
+    </testsuite>
+    <testsuite name="example-cells" tests="2" disabled="0" errors="0" failures="0">
+        <testcase name="tests::a_quick_unit" classname="example-cells" timestamp="2026-01-01T00:00:00.000+00:00" time="0.010"/>
+        <testcase name="tests::a_slow_unit" classname="example-cells" timestamp="2026-01-01T00:00:00.000+00:00" time="38.490"/>
+    </testsuite>
+</testsuites>

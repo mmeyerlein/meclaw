@@ -12,11 +12,14 @@ over this wave is not measuring.
 """
 
 import json
+import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from scripts.tests import kit_time, store_isolation
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -627,8 +630,9 @@ class MetricTests(unittest.TestCase):
         row = [l for l in self.verlauf.splitlines() if WAVE in l]
         self.assertEqual(len(row), 1)
         # Date, wave, one cell per metric, breaches: that many cells + 1.
+        spec = wr.load_thresholds()
         self.assertEqual(row[0].count("|"),
-                         len(wr.load_thresholds()["metrics"]) + 4)
+                         len(spec["metrics"]) + len(spec["store_metrics"]) + 4)
 
     def test_verlauf_line_is_idempotent(self):
         run_retro(self, self.root, self.troot)
@@ -1159,7 +1163,7 @@ class HistoryColumnTests(unittest.TestCase):
         wr.main([WAVE, "--root", str(root), "--transcripts", str(troot)])
         lines = (root / "plans" / "retro" / "RETRO.md").read_text(
             encoding="utf-8").splitlines()
-        head = _cells(render.HISTORY_HEAD[-2])
+        head = _cells(wr.history_head()[-2])
         row = dict(zip(head, _cells([l for l in lines if WAVE in l][0])))
         self.assertEqual(row["Q12"], "7,0 Mio / 3,0 h")
         self.assertEqual(row["Q13"], "n/a")
@@ -1175,7 +1179,7 @@ class HistoryColumnTests(unittest.TestCase):
             self.skipTest("plans/retro/RETRO.md not in this tree")
         table = [l for l in committed.read_text(encoding="utf-8").splitlines()
                  if l.startswith("|")]
-        self.assertEqual(table[0], render.HISTORY_HEAD[-2])
+        self.assertEqual(table[0], wr.history_head()[-2])
         width = len(_cells(table[0]))
         for line in table[2:]:
             self.assertEqual(len(_cells(line)), width, line)
@@ -1297,6 +1301,99 @@ class CheckAndReadmeTests(unittest.TestCase):
                          fresh.read_text(encoding="utf-8"))
 
 
+_STORE_ENV = {}
+
+
+def setUpModule():
+    """No test of this module reads the machine's pipeline store: the default
+    store path points into an empty temporary directory."""
+    store_isolation.isolate()
+    tmp = tempfile.mkdtemp()
+    _STORE_ENV["old"] = os.environ.get("MECLAW_PIPELINE_DB")
+    _STORE_ENV["tmp"] = tmp
+    os.environ["MECLAW_PIPELINE_DB"] = str(pathlib.Path(tmp) / "absent.db")
+
+
+def tearDownModule():
+    if _STORE_ENV.get("old") is None:
+        os.environ.pop("MECLAW_PIPELINE_DB", None)
+    else:
+        os.environ["MECLAW_PIPELINE_DB"] = _STORE_ENV["old"]
+    shutil.rmtree(_STORE_ENV.get("tmp", ""), ignore_errors=True)
+    store_isolation.restore()
+
+
+def _store_fixture(case, root):
+    """A throw-away pipeline store with three passes on the fixture wave's day."""
+    from pipeline import events as pevents, store as pstore
+    path = root / "pipeline.db"
+    db = pstore.open(path)
+    case.addCleanup(pstore.close, db)
+
+    def one(run, mode, start, end, lane, crit, stations):
+        pevents.emit(db, "pass_planned", "status",
+                     {"run": run, "mode": mode, "repo": "meclaw", "rev": "c1", "base": "c0",
+                      "stations": [], "reason": {}, "cache_known": 0, "dirty": False},
+                     run=run, at=start)
+        pevents.emit(db, "pass_ended", "status",
+                     {"run": run, "verdict": "GREEN", "secs": lane, "lane_seconds": lane,
+                      "critical_path_s": crit, "rounds": 1, "cache_hits": 0,
+                      "stations": stations}, run=run, at=end)
+
+    one("s1", "strand", "2026-01-01T08:00:00Z", "2026-01-01T09:00:00Z", 5400.0, 2700.0,
+        {"green": 4})
+    one("i1", "integration", "2026-01-01T10:00:00Z", "2026-01-01T10:30:00Z", 1800.0, 900.0,
+        {"green": 1, "cached": 3})
+    return path
+
+
+class StoreColumnTests(unittest.TestCase):
+    """Q14..Q17 come from the pipeline store (W11) and stand right of Q13."""
+
+    def test_wave_retro_has_q14_to_q17(self):
+        spec = wr.load_thresholds()
+        self.assertEqual([m["id"] for m in spec["metrics"]], [f"Q{n}" for n in range(1, 14)])
+        limits = {m["id"]: (m["cmp"], m["threshold"]) for m in spec["store_metrics"]}
+        self.assertEqual(limits, {"Q14": ("<=", 8), "Q15": ("<", 10), "Q16": (">=", 50),
+                                  "Q17": ("<=", 0.6)})
+        root, troot = fixture_wave(self)
+        db = _store_fixture(self, root)
+        self.assertEqual(run_retro(self, root, troot, "--store", str(db)), 0)
+        retro = (root / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(retro.splitlines()), 40)
+        self.assertEqual(wr.metric_row(retro, "Q14")["wert"], "2,0 h")
+        self.assertEqual(wr.metric_row(retro, "Q15")["wert"], "n/a")
+        self.assertEqual(wr.metric_row(retro, "Q16")["wert"], "75 %")
+        self.assertEqual(wr.metric_row(retro, "Q17")["wert"], "0,50")
+        self.assertEqual(wr.metric_row(retro, "Q17")["verdikt"], "OK")
+        history = (root / "plans" / "retro" / "RETRO.md").read_text(encoding="utf-8")
+        self.assertIn("| Q13 | Q14 | Q15 | Q16 | Q17 |", history)
+        head = _cells(wr.history_head()[-2])
+        row = dict(zip(head, _cells([l for l in history.splitlines() if WAVE in l][0])))
+        self.assertEqual((row["Q14"], row["Q16"]), ("2,0 h", "75 %"))
+        self.assertRegex(row[head[-1]], r"^(—|Q\d+( Q\d+)*)$")
+        # an old line gets n/a in the new columns, the breaches stay last
+        old = [l for l in history.splitlines() if l.startswith("| 20")]
+        self.assertTrue(all(len(_cells(l)) == len(head) for l in old))
+        # without a store the four columns are n/a, never a crash
+        root2, troot2 = fixture_wave(self)
+        self.assertEqual(run_retro(self, root2, troot2, "--store",
+                                   str(root2 / "absent.db")), 0)
+        retro2 = (root2 / "plans" / WAVE / "retro.md").read_text(encoding="utf-8")
+        for q in ("Q14", "Q15", "Q16", "Q17"):
+            self.assertEqual(wr.metric_row(retro2, q)["wert"], "n/a")
+        # the README lists them, generated from the same file
+        wr.main(["--readme", "--root", str(root2)])
+        readme = (root2 / "plans" / "retro" / "README.md").read_text(encoding="utf-8")
+        for m in spec["store_metrics"]:
+            self.assertIn(f"| {m['id']} | {m['title']} |", readme)
+        # the committed history carries the columns (private tree only)
+        committed = REPO / "plans" / "retro" / "RETRO.md"
+        if not committed.is_file():
+            self.skipTest("plans/retro/RETRO.md not in this tree")
+        self.assertIn("| Q13 | Q14 | Q15 | Q16 | Q17 |", committed.read_text(encoding="utf-8"))
+
+
 class CliTests(unittest.TestCase):
     def test_the_script_runs_as_a_file_and_exits_zero(self):
         root, troot = fixture_wave(self)
@@ -1304,7 +1401,7 @@ class CliTests(unittest.TestCase):
             [sys.executable, str(SCRIPTS / "wave_retro.py"), WAVE,
              "--root", str(root), "--transcripts", str(troot),
              "--sessions", SESSION],
-            capture_output=True, text=True, timeout=120)
+            capture_output=True, text=True, timeout=4 * kit_time.HANG)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("retro.md", r.stdout)
 

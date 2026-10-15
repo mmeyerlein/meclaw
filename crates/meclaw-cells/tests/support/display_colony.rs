@@ -34,8 +34,26 @@
 //! hops folded into a tree (`tree`), never inside the cell (OR-D11).
 #![allow(dead_code)]
 
+/// The presenter's colony is a CHILD of this module: it reaches the wire the way this
+/// module does, and a test does not (re-check tv-bn M7b5 A-M1/B-M1). A test names it as
+/// `crate::display_colony::presenter_colony`, never through a `#[path]` of its own.
+#[path = "presenter_colony.rs"]
+pub mod presenter_colony;
+
+#[path = "browser_run.rs"]
+pub mod browser_run;
+/// The sealed core (OR-T11-25): `Unsettled`, the settle proof, the one door to the address,
+/// the boot key and the sealed decider, std only and private to this module. Its fields and
+/// constructors are visible to nothing outside it, its `pub(super)` openers to this module
+/// and its children only -- the COMPILER keeps every way around the barrier shut, and the
+/// pin `809_a_restart…::the_sealed_core_refuses_every_way_around_it` compiles it with a
+/// probe of every such way in every run.
+#[path = "sealed.rs"]
+mod sealed;
+pub use sealed::{Named, Unsettled, Why};
+
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use meclaw_cells::LlmCellFactory;
@@ -44,9 +62,12 @@ use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::timer::TimerCellFactory;
 use meclaw_cells::voice::VoiceCellFactory;
 use meclaw_cells::web::WebCellFactory;
-use meclaw_colony::api_dto::{MessageLogDto, MessageLogFilter};
+use meclaw_colony::api_dto::{
+    MessageLogCursor, MessageLogDto, MessageLogFilter, ReadMessagesReply,
+};
 use meclaw_colony::{
-    CellFactory, CellFactoryRegistry, ColonyMsg, SurfaceRegistry, bootstrap_from_filesystem,
+    CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, SurfaceRegistry,
+    bootstrap_from_filesystem,
 };
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
@@ -55,9 +76,17 @@ use meclaw_testing::mock_http::{CapturedRequest, MockResponse, start_mock_server
 use meclaw_testing::{surface_listener, wait_for_mount};
 use tokio::sync::{mpsc, oneshot};
 
-/// The failure-marker window of this repo: generous, robust under parallel cargo load,
-/// never a semantic discriminator (CONTRIBUTING.md, 30 s convention).
-pub const MARKER: Duration = Duration::from_secs(30);
+/// The kit's hang mark as this process scales it (`MECLAW_TEST_TIME_FACTOR`).
+///
+/// Re-check tv-bn M5 M1 (TV-S3, TV-Z3): every wait of this fixture goes through
+/// `meclaw_testing::wait` / `deadline` under this mark and fails with `HANG:`. Five of them
+/// kept a std `Instant` plus the unscaled `MARKER` and failed with "did not hold within
+/// 30s" (probe of fix round M7: `the probe never holds did not hold within 30s; DLQ []`).
+/// Re-check tv-bn M7 M1: the export `MARKER` (an unscaled 30 s) is gone with its last
+/// users (808, gh958, gh964, gh867, 710); they wait through the kit as well.
+fn hang_mark() -> Duration {
+    meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG)
+}
 
 /// The name the screen answers to on the colony's one listener. A `web` cell has had no
 /// port of its own since `web@2.0.0`; the port in every URL is the LISTENER's.
@@ -100,6 +129,49 @@ pub fn have_python() -> bool {
         .arg("--version")
         .output()
         .is_ok()
+}
+
+/// The owner of the code view a lock puts on the screen: the layout cell of a grown
+/// `colony-view` (the owner half of the view's identity).
+pub const COLONY_VIEW: &str = "/alex/apps/colony-view/layout";
+
+/// One emission of the shipped `colony-view` layout over a two-cell snapshot, owned by
+/// [`COLONY_VIEW`]: the code view the display shows by default (`params.code_views`),
+/// whose shell carries its client as an inline script (re-check tv-bn M8, M1). Run from
+/// `templates/colony-view/layout/layout.py`, the source `config.json` carries byte for byte.
+pub fn colony_view_emission() -> Value {
+    use std::io::Write;
+    let doc = json!({
+        "body": {"graph": {
+            "scope": "/os",
+            "nodes": [
+                {"path": "/os/one", "cell_type": "code"},
+                {"path": "/os/two", "cell_type": "store"}
+            ],
+            "edges": [{"from": "/os/one", "to": "/os/two"}]
+        }},
+        "envelope": {"target": COLONY_VIEW}
+    });
+    let mut child = std::process::Command::new("python3")
+        .arg(repo("templates/colony-view/layout/layout.py"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3 starts");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(doc.to_string().as_bytes())
+        .expect("the snapshot reaches the layout");
+    let out = child.wait_with_output().expect("the layout ends");
+    assert!(
+        out.status.success(),
+        "the colony-view layout failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    meclaw_core::serde_json::from_slice(&out.stdout).expect("the layout answers one emission")
 }
 
 pub fn read_json(p: &std::path::Path) -> Value {
@@ -417,21 +489,507 @@ pub fn screens() -> Value {
 }
 
 /// A booted colony and every door a lock needs onto it.
+///
+/// **No raw door.** The handle, the egress, the judge's captures and the surface registry
+/// live in the private `wire`; a test reaches the colony only through the readers below,
+/// which settle before they read, and through [`Unsettled`], which opens only with a named
+/// [`Why`], and to its address only through [`Colony::url`]/[`Colony::api_url`]/
+/// [`Colony::base`] with a named [`Site`].
+///
+/// The guarantee is the compiler, and it is TESTED: the old `compile_fail` block here never
+/// ran (integration-test doctests do not); the pin
+/// `809_a_restart…::the_sealed_core_refuses_every_way_around_it` compiles the sealed core
+/// with a positive control and every way around it in every run of its binary (OR-T11-25,
+/// re-check tv-bn M7b11 A-M1 i/A-M2/A-M3).
 pub struct Colony {
     _td: tempfile::TempDir,
-    pub h: ColonyHandle,
-    pub surfaces: Arc<SurfaceRegistry>,
-    /// The one listener in front of the whole colony.
-    pub port: u16,
+    /// Every raw door onto the colony, behind the module boundary.
+    w: wire::Wire,
+    /// The colony's address: the mount listener and the API port, behind the one door
+    /// (fixture readers against a settle proof, users through a named [`Site`]).
+    door: sealed::Door,
     _listener: tokio::task::JoinHandle<()>,
-    /// The two API routes a browser proof needs, on a port of their own.
-    pub api_port: u16,
     _api: tokio::task::JoinHandle<()>,
-    /// Whatever left `/alex` marked: receipts and events of the screen.
-    pub egress: mpsc::Receiver<Message>,
-    /// Every question the judge cell put to its provider, in arrival order.
-    pub judge_asks: Arc<tokio::sync::Mutex<Vec<CapturedRequest>>>,
     _judge: tokio::task::JoinHandle<()>,
+}
+
+/// The event "the message log moved" (`ColonyHandle::subscribe_log_seq`, GH #1208 TV-A3).
+#[derive(Clone)]
+pub struct LogChanges(tokio::sync::watch::Receiver<u64>);
+
+impl LogChanges {
+    /// Until the log writer commits again.
+    pub async fn changed(&mut self) {
+        self.0
+            .changed()
+            .await
+            .expect("the colony's log writer is alive");
+    }
+
+    /// The writer's commit counter as it stands now -- for a hang's last state.
+    pub fn at(&self) -> Unsettled<u64> {
+        Unsettled::new(*self.0.borrow())
+    }
+}
+
+/// The one place that holds the colony's raw doors (re-check tv-bn M7b5 A-M1/B-M1).
+///
+/// Private to the fixture: the rest of this module and `presenter_colony` reach the colony
+/// through a [`wire::Reader`], built either SETTLED ([`wire::Wire::settled`]) or wrapped
+/// in [`Unsettled`] ([`wire::Wire::unsettled`]); writes and events have their own verbs.
+/// There is no generic inbox send: a `ReadMessages` from outside would be a read past the
+/// readers.
+mod wire {
+    use std::sync::Arc;
+
+    use meclaw_colony::api_dto::{DeadLetterDto, MessageLogDto, MessageLogFilter};
+    use meclaw_colony::{ColonyMsg, MutationOutcome, SurfaceRegistry};
+    use meclaw_core::serde_json::Value;
+    use meclaw_core::{Message, Uuid};
+    use meclaw_testing::ColonyHandle;
+    use meclaw_testing::mock_http::CapturedRequest;
+    use tokio::sync::{mpsc, oneshot};
+
+    use super::sealed::{Settled, barrier};
+    use super::{SCREEN, Unsettled, calls_of, fold, hang_mark, hop_of};
+
+    /// The raw doors. Every field is private, so only this module touches them.
+    pub(super) struct Wire {
+        h: ColonyHandle,
+        egress: tokio::sync::Mutex<mpsc::Receiver<Message>>,
+        judge_asks: Arc<tokio::sync::Mutex<Vec<CapturedRequest>>>,
+        surfaces: Arc<SurfaceRegistry>,
+    }
+
+    impl Wire {
+        pub(super) fn new(
+            h: ColonyHandle,
+            egress: mpsc::Receiver<Message>,
+            judge_asks: Arc<tokio::sync::Mutex<Vec<CapturedRequest>>>,
+            surfaces: Arc<SurfaceRegistry>,
+        ) -> Self {
+            Wire {
+                h,
+                egress: tokio::sync::Mutex::new(egress),
+                judge_asks,
+                surfaces,
+            }
+        }
+
+        /// One message into the colony, sender `/`.
+        pub(super) async fn send(&self, msg: Message) {
+            self.h.send(msg).await;
+        }
+
+        /// The next message that left `/alex` marked: the event itself, `None` once the
+        /// egress closed.
+        pub(super) async fn next_out(&self) -> Option<Message> {
+            self.egress.lock().await.recv().await
+        }
+
+        /// The event "the message log moved".
+        pub(super) fn log_changes(&self) -> super::LogChanges {
+            super::LogChanges(self.h.subscribe_log_seq())
+        }
+
+        /// Shut the colony down.
+        pub(super) async fn shutdown(self) {
+            self.h.shutdown().await;
+        }
+
+        /// `ColonyMsg::RescanTemplates`: the template table filled from `root`.
+        pub(super) async fn rescan_templates(
+            &self,
+            root: std::path::PathBuf,
+        ) -> Result<(), String> {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            self.h
+                .inbox_tx
+                .send(ColonyMsg::RescanTemplates {
+                    templates_root: root,
+                    ack: ack_tx,
+                })
+                .await
+                .expect("the colony is up");
+            ack_rx.await.expect("the scan answers")
+        }
+
+        /// `ColonyMsg::Mutation` of `payload`, under a fresh trace; the outcome comes back.
+        pub(super) async fn mutate(&self, payload: Value) -> MutationOutcome {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            self.h
+                .inbox_tx
+                .send(ColonyMsg::Mutation {
+                    payload,
+                    reply_to: None,
+                    trace_id: Uuid::now_v7(),
+                    parent_message_id: Uuid::now_v7(),
+                    ack: ack_tx,
+                })
+                .await
+                .expect("the colony is up");
+            ack_rx.await.expect("the mutation answers")
+        }
+
+        /// The quiescence barrier (`ColonyMsg::Settle`, GH #1208 TV-A2), and on a hang the
+        /// colony's last state.
+        ///
+        /// **Why not `ColonyHandle::quiesce`.** It waits under `deadline::hang`, whose hang
+        /// says only "HANG: the colony settles (waited 30 s)" -- no dead letter, no hop. And
+        /// not `hang_with` either: its last state is a SYNC closure, and the colony's state
+        /// is read by asking the colony (re-check tv-bn M7b5 B-M2). So the barrier is sent
+        /// here, and a hang reads the dead letters (not draining) and the newest log rows
+        /// asynchronously, each under its own hang mark, before it fails.
+        pub(super) async fn settle(&self) -> Settled {
+            // The proof is minted only by the barrier itself (`sealed::barrier`, re-check
+            // tv-bn M7b12 A-M1): this function holds the hang mark around it, nothing more.
+            match tokio::time::timeout(hang_mark(), barrier::settle(&self.h)).await {
+                Ok(Some(settled)) => settled,
+                Ok(None) => panic!("the colony settles: the colony ended before answering"),
+                Err(_) => {
+                    let state = self.last_state().await;
+                    panic!(
+                        "HANG: the colony settles (waited {} s); last state: {state}",
+                        hang_mark().as_secs()
+                    );
+                }
+            }
+        }
+
+        /// The last state of a colony that did not settle: its dead letters (read, not
+        /// drained) and the newest log rows, oldest of them first.
+        async fn last_state(&self) -> String {
+            const ROWS: usize = 12;
+            let reader = Reader(self);
+            let dlq = meclaw_testing::deadline::hang(
+                "the dead letters answer for the last state",
+                reader.read_dead_letters(),
+            )
+            .await;
+            let rows = meclaw_testing::deadline::hang(
+                "the message log answers for the last state",
+                reader.newest(ROWS),
+            )
+            .await;
+            let lines: Vec<String> = rows
+                .iter()
+                .map(|r| {
+                    let hop = hop_of(r);
+                    format!(
+                        "{} -> {} route={} error_code={}",
+                        r.from_path, r.to_path, hop["route"], hop["error_code"]
+                    )
+                })
+                .collect();
+            let dead: Vec<String> = dlq
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{} -> {} error_code={} trace={}",
+                        d.sender_path, d.resolved_target, d.error_code, d.trace_id
+                    )
+                })
+                .collect();
+            // One read of the queue serves at most `DLQ_READ` letters and has no cursor: a
+            // full read says so instead of standing for the whole queue (K8 class "a page
+            // for the whole", tv-bn M7b16).
+            let more = if dlq.len() >= super::DLQ_READ {
+                format!(" (one read of {}: more letters stand)", super::DLQ_READ)
+            } else {
+                String::new()
+            };
+            format!(
+                "DLQ{more} {dead:?}; the last {} log rows: {lines:#?}",
+                lines.len()
+            )
+        }
+
+        /// Settle, then a reader of the colony at rest.
+        pub(super) async fn settled(&self) -> Reader<'_> {
+            self.settle().await;
+            Reader(self)
+        }
+
+        /// A reader WITHOUT the barrier, opened only with a named [`super::Why`].
+        pub(super) fn unsettled(&self) -> Unsettled<Reader<'_>> {
+            Unsettled::new(Reader(self))
+        }
+    }
+
+    /// The colony's readers. The field is private: only [`Wire`] builds one, settled or
+    /// wrapped in [`Unsettled`].
+    pub(super) struct Reader<'a>(&'a Wire);
+
+    impl Reader<'_> {
+        /// The colony's `message_log` under `to_prefix`, oldest first: the WHOLE of it,
+        /// read page by page like [`Reader::whole_log`] (re-check tv-bn M7b12 C-M2 -- one
+        /// page of 1000 was a window, and a full page read as "nothing more"), every body
+        /// inline ([`super::inline_bodies`], C-M1).
+        pub(super) async fn log(&self, to_prefix: Option<&str>) -> Vec<MessageLogDto> {
+            let mut rows = self
+                .0
+                .h
+                .read_log(MessageLogFilter {
+                    to_path_prefix: to_prefix.map(str::to_string),
+                    ..Default::default()
+                })
+                .await;
+            rows.reverse(); // the reply is newest first; a lock reads a colony forwards
+            super::inline_bodies(&rows);
+            rows
+        }
+
+        /// The WHOLE `message_log`, oldest first, read page by page
+        /// (`ColonyHandle::read_log`): no page cap cuts it.
+        pub(super) async fn whole_log(&self) -> Vec<MessageLogDto> {
+            let mut rows = self.0.h.read_log(MessageLogFilter::default()).await;
+            rows.reverse(); // newest first on the wire
+            super::inline_bodies(&rows);
+            rows
+        }
+
+        /// The newest `n` rows of the log, oldest of them first.
+        async fn newest(&self, n: usize) -> Vec<MessageLogDto> {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            let asked = self
+                .0
+                .h
+                .inbox_tx
+                .send(ColonyMsg::ReadMessages {
+                    filter: MessageLogFilter {
+                        limit: n,
+                        scan_budget: 50_000,
+                        ..Default::default()
+                    },
+                    ack: ack_tx,
+                })
+                .await;
+            if asked.is_err() {
+                return Vec::new();
+            }
+            let mut rows = ack_rx.await.map(|r| r.entries).unwrap_or_default();
+            rows.reverse();
+            rows
+        }
+
+        /// Every row of one trace, oldest first.
+        pub(super) async fn trace(&self, trace_id: &str) -> Vec<MessageLogDto> {
+            // Paged like `log` (re-check tv-bn M7b12 C-M2, same class): no page cap cuts
+            // a long trace.
+            let mut rows = self
+                .0
+                .h
+                .read_log(MessageLogFilter {
+                    trace_id: Some(trace_id.to_string()),
+                    ..Default::default()
+                })
+                .await;
+            rows.reverse(); // newest first on the wire; a hop chain reads forwards
+            super::inline_bodies(&rows);
+            rows
+        }
+
+        /// Every message the screen's `<child>` received so far, oldest first.
+        pub(super) async fn to_child(&self, child: &str) -> Vec<MessageLogDto> {
+            self.log(Some(&format!("{SCREEN}/{child}"))).await
+        }
+
+        /// The store bundles the compose cell sent to `views` so far, as their calls.
+        pub(super) async fn store_bundles(&self) -> Vec<Vec<Value>> {
+            self.to_child("views")
+                .await
+                .iter()
+                .filter_map(calls_of)
+                .collect()
+        }
+
+        /// The patch bundles the compose cell sent to `web` so far, as their calls.
+        pub(super) async fn patches(&self) -> Vec<Vec<Value>> {
+            super::patches_of(&self.to_child("web").await)
+        }
+
+        /// The tree the patches to `web` built so far, folded.
+        pub(super) async fn tree(&self) -> Value {
+            let mut held = meclaw_core::serde_json::Map::new();
+            for calls in self.patches().await {
+                fold(&mut held, &calls);
+            }
+            Value::Object(held)
+        }
+
+        /// How many store bundles put a row of `(owner, view_id)` into the table so far.
+        pub(super) async fn writes_of(&self, owner: &str, view_id: &str) -> usize {
+            self.store_bundles()
+                .await
+                .iter()
+                .filter(|calls| {
+                    calls.iter().any(|c| {
+                        c["operation"] == "insert"
+                            && c["row"]["owner"] == owner
+                            && c["row"]["view_id"] == view_id
+                    })
+                })
+                .count()
+        }
+
+        /// Mark the message log as it stands (`ColonyHandle::log_mark`).
+        pub(super) async fn mark_log(&self) -> meclaw_testing::LogMark {
+            self.0.h.log_mark().await
+        }
+
+        /// The rows matching `filter` committed after `mark`, newest first.
+        pub(super) async fn rows_since(
+            &self,
+            mark: &meclaw_testing::LogMark,
+            filter: MessageLogFilter,
+        ) -> Vec<MessageLogDto> {
+            // A log reader like `log` (re-check tv-bn M7b12 C-M1, sibling found in M7b14):
+            // a body held as a blob is red here too, not a row a lock reads past.
+            let rows = self.0.h.log_since(mark, filter).await;
+            super::inline_bodies(&rows);
+            rows
+        }
+
+        /// Read AND drain the dead-letter queue (`ColonyMsg::DrainDeadLetters`).
+        pub(super) async fn take_dead_letters(&self) -> Vec<meclaw_colony::DeadLetter> {
+            self.0.h.drain_dead_letters().await
+        }
+
+        /// Read the dead-letter queue without draining it (`ColonyMsg::ReadDeadLetters`).
+        pub(super) async fn read_dead_letters(&self) -> Vec<DeadLetterDto> {
+            let (ack, rx) = oneshot::channel();
+            let asked = self
+                .0
+                .h
+                .inbox_tx
+                .send(ColonyMsg::ReadDeadLetters {
+                    since: None,
+                    error_code: None,
+                    limit: super::DLQ_READ,
+                    ack,
+                })
+                .await;
+            if asked.is_err() {
+                return Vec::new();
+            }
+            rx.await.map(|r| r.entries).unwrap_or_default()
+        }
+
+        /// Every message waiting on the egress, drained.
+        pub(super) async fn drain_egress(&self) -> Vec<Message> {
+            let mut egress = self.0.egress.lock().await;
+            let mut out = Vec::new();
+            while let Ok(m) = egress.try_recv() {
+                out.push(m);
+            }
+            out
+        }
+
+        /// Every question the judge cell put to its provider, in arrival order.
+        pub(super) async fn judge_asks(&self) -> Vec<CapturedRequest> {
+            self.0.judge_asks.lock().await.clone()
+        }
+    }
+}
+
+/// One read of the dead-letter queue: the colony's cap (`handle_read_dead_letters` clamps
+/// `limit` to 1..=1000); the queue has no cursor, so a full read is a window.
+const DLQ_READ: usize = meclaw_testing::DEAD_LETTERS_PAGE;
+
+/// The page `GET /colony/messages` asks for and judges by (re-check tv-bn M7b14 B-M3): the
+/// colony's own cap of a `ReadMessages` read (`handle_read_messages` clamps `limit` to
+/// 1..=1000), one constant for the request and its guard.
+pub(crate) const MESSAGES_PAGE: usize = meclaw_testing::MESSAGES_PAGE;
+
+/// The scan budget of one page of the door: the colony's own cap (`handle_read_messages`
+/// clamps `scan_budget` to 1..=50_000); a cut scan is refused by [`next_page`].
+const MESSAGES_SCAN: usize = 50_000;
+
+/// What one reply of a `ReadMessages` read with `limit: page` means for a reader of the
+/// whole log, as a pure function (re-check tv-bn M7b14 B-M3): `Ok(Some(cursor))` -- read
+/// the next page; `Ok(None)` -- this was the last one; `Err` -- the reply stands for a
+/// window, never for the whole: a cut scan, or a full page without a cursor.
+pub(crate) fn next_page(
+    reply: &ReadMessagesReply,
+    page: usize,
+) -> Result<Option<MessageLogCursor>, &'static str> {
+    if reply.scan_truncated {
+        return Err("the log outgrew one scan: a count would read a window");
+    }
+    match &reply.next {
+        Some(cursor) => Ok(Some(cursor.clone())),
+        None if reply.entries.len() >= page => {
+            Err("a full page without a cursor: a count would read a window")
+        }
+        None => Ok(None),
+    }
+}
+
+/// The WHOLE `message_log` through `ColonyMsg::ReadMessages`, newest first, page by page
+/// on the colony's cursor -- the horizon of `ColonyHandle::read_log`, read by the door
+/// `GET /colony/messages` (re-check tv-bn M7b14 B-M3 and the M7b15 find: the colony serves
+/// at most [`MESSAGES_PAGE`] rows a read, so one read of a longer log is a window). Every
+/// reply is judged by [`next_page`]; a window is an error, never a count.
+pub(crate) async fn whole_messages(
+    inbox: &mpsc::Sender<ColonyMsg>,
+) -> Result<Vec<MessageLogDto>, (axum::http::StatusCode, &'static str)> {
+    let mut filter = MessageLogFilter {
+        limit: MESSAGES_PAGE,
+        scan_budget: MESSAGES_SCAN,
+        ..Default::default()
+    };
+    let mut entries = Vec::new();
+    loop {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if inbox
+            .send(ColonyMsg::ReadMessages {
+                filter: filter.clone(),
+                ack: ack_tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, "colony gone"));
+        }
+        let Ok(Ok(reply)) = tokio::time::timeout(hang_mark(), ack_rx).await else {
+            return Err((
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                "the log did not answer",
+            ));
+        };
+        let next = next_page(&reply, MESSAGES_PAGE);
+        entries.extend(reply.entries);
+        match next {
+            Err(why) => return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, why)),
+            Ok(Some(cursor)) => filter.before = Some(cursor),
+            Ok(None) => return Ok(entries),
+        }
+    }
+}
+
+/// The reply of one `ReadMessages` read, for the door's unit pin in 809 (a test file names
+/// the colony's read types only through the fixture).
+pub(crate) type PageReply = ReadMessagesReply;
+
+/// Test data for the door's red line (tv-bn M7b16): `rows` messages routed through the
+/// colony inbox to a hive marker of their own (`/seed`, a hive hop is a logged hop), so the
+/// colony's own writer puts every row into its log; returns their ids once the writer
+/// committed them (`quiesce`). A write of test data, never a read: the read under test
+/// goes through the colony inbox (tv-bn M7b19: no path or SQL into the colony's database,
+/// TV-A3).
+pub(crate) async fn seed_messages(h: &ColonyHandle, rows: usize) -> Vec<String> {
+    h.add_hive_scope(Path::new("/seed")).await;
+    let mut ids = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        let msg = MessageBuilder::new(Path::new("/seed"))
+            .body(Body::Inline(json!({})))
+            .ttl(8)
+            .build();
+        ids.push(msg.id.to_string());
+        h.send(msg).await;
+    }
+    h.quiesce().await;
+    ids
 }
 
 /// The two API routes a browser proof needs, on a listener of their own.
@@ -450,7 +1008,8 @@ pub struct Colony {
 /// the two routes spelled out with the pieces `meclaw-cells` already has. A port of its
 /// own keeps it out of the way of the mount listener, which is the thing under test.
 ///
-/// **What it is not.** No auth, no paging, no filters, no other route. A proof that needs
+/// **What it is not.** No auth, no paging for the caller (the door reads every page
+/// itself), no filters, no other route. A proof that needs
 /// more than these two verbs is a proof about the API, and that has its own tests.
 async fn api_listener(inbox: mpsc::Sender<ColonyMsg>) -> (u16, tokio::task::JoinHandle<()>) {
     use axum::extract::State;
@@ -497,62 +1056,84 @@ async fn api_listener(inbox: mpsc::Sender<ColonyMsg>) -> (u16, tokio::task::Join
     /// `GET /colony/messages`: how many rows the log holds. A proof counts them; it never
     /// reads one.
     ///
-    /// The limit is far above what a run of this fixture produces on purpose. With a
-    /// page-sized one the count SATURATES, and a proof that asks "did the log grow"
-    /// reads the same number before and after -- measured: B-26 failed in WebKit with
-    /// `log_before: 1000, log_after: 1000` once the stage wrote enough.
+    /// The door reads the WHOLE log, page by page on the colony's cursor, the same horizon
+    /// as `ColonyHandle::read_log`. A count of one page saturates: the colony serves at
+    /// most [`MESSAGES_PAGE`] rows a read whatever `limit` asks for (`handle_read_messages`
+    /// clamps it), and a proof that asks "did the log grow" then reads the same number
+    /// before and after -- measured: B-26 failed in WebKit with `log_before: 1000,
+    /// log_after: 1000`. The 100_000 this door asked for before was clamped to that page
+    /// (re-check tv-bn M7b14 B-M3): [`next_page`] judges every reply.
     async fn get_messages(
         State(inbox): State<mpsc::Sender<ColonyMsg>>,
         axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     ) -> axum::response::Response {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        if inbox
-            .send(ColonyMsg::ReadMessages {
-                filter: MessageLogFilter {
-                    limit: 100_000,
-                    scan_budget: 500_000,
-                    ..Default::default()
-                },
-                ack: ack_tx,
-            })
-            .await
-            .is_err()
-        {
-            return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "colony gone").into_response();
-        }
-        match tokio::time::timeout(MARKER, ack_rx).await {
-            Ok(Ok(reply)) => {
-                // `?route=hold` counts only the rows whose hop names that route. A proof
-                // that asks "did my gesture reach the colony" cannot use the whole log:
-                // the clock strikes into it while the browser is looking, and the newest
-                // row is a different one a second later whatever the finger did.
-                let route = q.get("route").cloned();
-                let named = route.as_ref().map(|r| {
-                    let needle = format!("\"route\":\"{r}\"");
-                    reply
-                        .entries
-                        .iter()
-                        .filter(|e| e.headers_json.contains(&needle))
-                        .count()
-                });
-                axum::Json(json!({
-                "messages": reply.entries.len(),
-                "named": named,
-                // The NEWEST row's id, and it is what a proof should compare. A count
-                // saturates -- the log of this colony stops growing at its retention
-                // limit, and a proof that asks "did the log grow" then reads the same
-                // number before and after (measured: B-26 red in WebKit with
-                // `log_before: 1000, log_after: 1000`). A uuid7 only ever moves forward.
-                "newest": reply.entries.first().map(|r| r.id.clone()),
-                "scan_truncated": reply.scan_truncated}))
-                .into_response()
-            }
-            _ => (
-                axum::http::StatusCode::GATEWAY_TIMEOUT,
-                "the log did not answer",
-            )
-                .into_response(),
-        }
+        let entries = match whole_messages(&inbox).await {
+            Ok(entries) => entries,
+            Err((status, why)) => return (status, why).into_response(),
+        };
+        // `?route=hold` counts only the rows whose hop names that route. A proof
+        // that asks "did my gesture reach the colony" cannot use the whole log:
+        // the clock strikes into it while the browser is looking, and the newest
+        // row is a different one a second later whatever the finger did.
+        let route = q.get("route").cloned();
+        let named = route.as_ref().map(|r| {
+            let needle = format!("\"route\":\"{r}\"");
+            entries
+                .iter()
+                .filter(|e| e.headers_json.contains(&needle))
+                .count()
+        });
+        // `?event=tap` counts the GESTURES of that name. A gesture is no route of
+        // its own: the `web` cell sends every one on `event` with its name in
+        // `body.event.name` (`events_into_pass`), so `?route=tap` or
+        // `?route=hold` read 0 whatever the finger did -- measured: the TV-A1
+        // marker of B-01/B-14 read `route:tap=0` for 30 s after the tap, in all
+        // twenty lines of L1 and L3 (welle-tv tv-bn-layout A').
+        // `&for=<oid>` narrows them to the gestures for one window: a TV-A1
+        // marker taps a `for` no other tap carries and waits on ITS line, not
+        // on any tap count that moved (re-check tv-bn-layout A fix1 H1).
+        let event = q.get("event").cloned();
+        let window = q.get("for").cloned();
+        // `&seq=<n>` narrows them to the ONE tap a driver stamped with that seq
+        // (`phx-value-seq`): whether that tap reached the colony at all, which
+        // a count of a window's taps cannot say once the log has cut its front.
+        let seq = q.get("seq").cloned();
+        // One row per gesture: the hop INTO the pass, where a gesture becomes a
+        // message (`events_into_pass`). An event the pass sends on travels the
+        // hives' `event` lanes as further rows -- measured: B-26's one Enter read
+        // `typed` five times while every row was counted (tv-bn M10h).
+        let pass = format!("{SCREEN}/compose");
+        let gestures = event.as_ref().map(|n| {
+            entries
+                .iter()
+                .filter(|e| e.headers_json.contains("\"route\":\"event\""))
+                .filter(|e| e.to_path == pass)
+                .filter(|e| body_of(e)["event"]["name"].as_str() == Some(n.as_str()))
+                .filter(|e| {
+                    window.as_ref().is_none_or(|w| {
+                        body_of(e)["event"]["value"]["for"].as_str() == Some(w.as_str())
+                    })
+                })
+                .filter(|e| {
+                    seq.as_ref().is_none_or(|n| {
+                        let v = &body_of(e)["event"]["value"]["seq"];
+                        v.as_str() == Some(n.as_str())
+                            || v.as_u64().map(|x| x.to_string()).as_deref() == Some(n.as_str())
+                    })
+                })
+                .count()
+        });
+        axum::Json(json!({
+        "messages": entries.len(),
+        "named": named,
+        "gestures": gestures,
+        // The NEWEST row's id, and it is what a proof should compare. A count
+        // saturates -- the log of this colony stops growing at its retention
+        // limit, and a proof that asks "did the log grow" then reads the same
+        // number before and after (measured: B-26 red in WebKit with
+        // `log_before: 1000, log_after: 1000`). A uuid7 only ever moves forward.
+        "newest": entries.first().map(|r| r.id.clone())}))
+        .into_response()
     }
 
     use axum::response::IntoResponse;
@@ -617,12 +1198,52 @@ pub async fn boot_with_voice_echo(opts: Boot) -> Colony {
 /// [`boot`], plus whatever `grow` writes into the tree before the colony boots (GH #959:
 /// the presenter locks put an app hive under `/alex/apps` and rewire the two levels
 /// above it). `grow` gets the colony root; the shipped screen is already in place.
-pub async fn boot_with(opts: Boot, grow: impl FnOnce(&std::path::Path)) -> Colony {
+///
+/// Private (re-check tv-bn M7b9 B-M1): the root is the way to `colony.db` and every
+/// `cell.db` past the wire, so only the fixture and its child `presenter_colony` grow a
+/// tree; a test that needs its own growth gets a verb here, never the root. It takes the
+/// fixture's [`sealed::Key`] (OR-T11-25), so it stays shut even if it were `pub`.
+async fn boot_with(_key: sealed::Key, opts: Boot, grow: impl FnOnce(&std::path::Path)) -> Colony {
     boot_inner(opts, false, Some(Box::new(grow))).await
 }
 
 /// The tree hook of [`boot_with`].
 type Grow<'a> = Box<dyn FnOnce(&std::path::Path) + 'a>;
+
+/// The colony's tree before it boots, as a test may grow it: writes under a path relative
+/// to the root, never the root itself (re-check tv-bn M7b9 B-M1 -- the root would be the
+/// way to `colony.db` and every `cell.db` once the colony runs).
+pub struct Tree<'r>(&'r std::path::Path);
+
+impl Tree<'_> {
+    /// The root joined with `rel`, which stays under the root (no `..`, not absolute).
+    fn under(&self, rel: &str) -> std::path::PathBuf {
+        let rel = std::path::Path::new(rel);
+        assert!(
+            rel.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "a tree path stays under the colony root: {}",
+            rel.display()
+        );
+        self.0.join(rel)
+    }
+
+    /// [`patch_json`] on the file `rel` under the colony root.
+    pub fn patch_json(&self, rel: &str, f: impl FnOnce(&mut Value)) {
+        patch_json(&self.under(rel), f);
+    }
+
+    /// [`copy_tree`] from `src` to `rel` under the colony root.
+    pub fn copy_tree(&self, src: &std::path::Path, rel: &str) {
+        copy_tree(src, &self.under(rel));
+    }
+}
+
+/// [`boot`], plus whatever `grow` writes into the tree before the colony boots, through a
+/// [`Tree`] that never hands out the root (GH #964: a setting of the compose cell).
+pub async fn boot_growing(opts: Boot, grow: impl FnOnce(&Tree<'_>)) -> Colony {
+    boot_with(sealed::Key::new(), opts, move |root| grow(&Tree(root))).await
+}
 
 async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Colony {
     let (judge_addr, judge_join, judge_asks) =
@@ -850,16 +1471,13 @@ async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Col
     }
     let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
     let (api_port, api) = api_listener(h.inbox_tx.clone()).await;
+    // Boot is the last place the handle is held in the open; from here on it is the wire's.
     Colony {
         _td: td,
-        h,
-        surfaces,
-        port: addr.port(),
+        w: wire::Wire::new(h, egress, judge_asks, surfaces),
+        door: sealed::Door::new(addr.port(), api_port),
         _listener: listener,
-        api_port,
         _api: api,
-        egress,
-        judge_asks,
         _judge: judge_join,
     }
 }
@@ -917,7 +1535,7 @@ impl Colony {
                    "messages": []}),
         );
         let trace = msg.trace_id.to_string();
-        self.h.send(msg).await;
+        self.w.send(msg).await;
         trace
     }
 
@@ -927,12 +1545,13 @@ impl Colony {
     /// names this window), the window stands in the tree the `patch` hops built at `web`,
     /// and the colony went quiet -- so the pass that took the write has drawn.
     pub async fn put(&self, owner: &str, view_id: &str, props: Value) -> Value {
+        self.settle().await;
         self.put_ttl(owner, view_id, props, 0).await
     }
 
     /// `put` with a `ttl_ms` on the write (§ 4.34).
     pub async fn put_ttl(&self, owner: &str, view_id: &str, props: Value, ttl_ms: i64) -> Value {
-        let before = self.writes_of(owner, view_id).await;
+        let before = self.w.settled().await.writes_of(owner, view_id).await;
         let trace = self.write_view_ttl(owner, view_id, props, ttl_ms).await;
         self.drawn_after(owner, view_id, before, &trace).await
     }
@@ -940,7 +1559,7 @@ impl Colony {
     /// Tell the app stand-in to act, and WAIT until the pass has drawn the window
     /// `view_id`. An act may write more than one view (§ 9.1); this waits for one of them.
     pub async fn app_put(&self, cmd: Value, view_id: &str) -> Value {
-        let before = self.writes_of(PROBE, view_id).await;
+        let before = self.w.settled().await.writes_of(PROBE, view_id).await;
         let trace = self.app(cmd).await;
         self.drawn_after(PROBE, view_id, before, &trace).await
     }
@@ -948,89 +1567,97 @@ impl Colony {
     /// How many store bundles put a row of `(owner, view_id)` into the table: an `insert`
     /// leg of that row, read where the store took it.
     pub async fn writes_of(&self, owner: &str, view_id: &str) -> usize {
-        self.store_bundles()
-            .await
-            .iter()
-            .filter(|calls| {
-                calls.iter().any(|c| {
-                    c["operation"] == "insert"
-                        && c["row"]["owner"] == owner
-                        && c["row"]["view_id"] == view_id
-                })
-            })
-            .count()
+        self.w.settled().await.writes_of(owner, view_id).await
     }
 
     /// Wait until a write of `(owner, view_id)` beyond the first `before` reached the store
-    /// and its window stands in the tree, then until the colony is quiet.
+    /// and its window stands in the tree, with the colony quiescent in between.
+    ///
+    /// Both waits run under the kit's hang mark (`wait::until_some_with`), and a lost write
+    /// fails with `HANG:` and its account as the last state ([`Self::lost_write`]).
+    /// Re-check tv-bn M7 M2: the caller-chosen window of `try_drawn_after` (3 s for the
+    /// lost-write lock) was sleep as synchronisation and is gone; that lock waits for the
+    /// command's hop and quiescence and reads the account then.
+    ///
+    /// Re-check tv-bn M7b5 B-M2: the account of a hang is read WITHOUT the barrier
+    /// ([`Self::lost_write_now`]). A settle inside the failure path waited a second hang mark
+    /// on the very colony that just did not move, and the account came after 2 x HANG.
+    // no-settle: polls for the write's positive events (Why::Watch), the account of a hang is Why::Report; hands back the tree read at rest
     async fn drawn_after(&self, owner: &str, view_id: &str, before: usize, trace: &str) -> Value {
-        match self
-            .try_drawn_after(owner, view_id, before, trace, MARKER)
-            .await
-        {
-            Ok(tree) => tree,
-            Err(why) => panic!("{why}"),
-        }
-    }
-
-    /// `drawn_after` that hands a lost write back as text instead of panicking.
-    ///
-    /// Each of the two waits -- the write reaching the store, then its window standing in
-    /// the tree -- gets `window`, as `drawn_after` always gave each of them `MARKER`; the
-    /// path that succeeds does exactly what it did before.
-    ///
-    /// **Why the text names a hop.** GH #714: in 1 of 5 rebuilds (1 of 12 once the stand-in
-    /// ran cold) one write of a round never arrived -- no dead letter, every other write of
-    /// the round there -- and the wait said only "never reached the store". The owner asked
-    /// on 17.09. for the stand-in's own message log of that rebuild. So the failure reads the
-    /// write's trace back out of the colony's log (every hop of it, `from_path -> to_path`
-    /// with its `hop.route`, `ttl` and `hop.error_code`) and says which receiver the last
-    /// hop reached, plus the store count and whether the window stands in the tree.
-    pub async fn try_drawn_after(
-        &self,
-        owner: &str,
-        view_id: &str,
-        before: usize,
-        trace: &str,
-        window: Duration,
-    ) -> Result<Value, String> {
         let oid = self.oid(owner, view_id);
-        let deadline = Instant::now() + window;
-        while self.writes_of(owner, view_id).await <= before {
-            if Instant::now() >= deadline {
-                let why = format!(
-                    "the write of {oid} never reached the store within {}s",
-                    window.as_secs()
-                );
-                return Err(self.lost_write(&why, owner, view_id, trace).await);
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        self.settle(Duration::from_millis(300)).await;
-        // `wait_tree`, spelled out: its failure panics, and this one names the hop.
-        let deadline = Instant::now() + window;
-        loop {
-            let tree = self.tree().await;
-            if tree.get(&oid).is_some() {
-                return Ok(tree);
-            }
-            if Instant::now() >= deadline {
-                let why = format!(
-                    "the window {oid} stands on the screen did not hold within {}s",
-                    window.as_secs()
-                );
-                return Err(self.lost_write(&why, owner, view_id, trace).await);
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        meclaw_testing::wait::until_some_with(
+            &format!("the write of {oid} reaches the store"),
+            move || async move {
+                let r = self.w.unsettled().because(Why::Watch);
+                (r.writes_of(owner, view_id).await > before).then_some(())
+            },
+            || async {
+                self.lost_write_now("the write never reached the store", owner, view_id, trace)
+                    .await
+                    .because(Why::Report)
+            },
+        )
+        .await;
+        self.settle().await;
+        let id = oid.as_str();
+        meclaw_testing::wait::until_some_with(
+            &format!("the window {oid} stands on the screen"),
+            move || async move {
+                let tree = self.w.unsettled().because(Why::Watch).tree().await;
+                tree.get(id).is_some().then_some(())
+            },
+            || async {
+                self.lost_write_now("the window is not in the tree", owner, view_id, trace)
+                    .await
+                    .because(Why::Report)
+            },
+        )
+        .await;
+        // Re-check tv-bn M7b4 A-M1: the tree handed back is read at rest, not at the event.
+        self.tree().await
     }
 
     /// The account of a lost write (GH #714): DLQ, the hop chain of its trace, the last hop,
     /// what the store took and whether the window stands in the tree.
-    async fn lost_write(&self, why: &str, owner: &str, view_id: &str, trace: &str) -> String {
+    ///
+    /// **Why it names a hop.** GH #714: in 1 of 5 rebuilds (1 of 12 once the stand-in ran
+    /// cold) one write of a round never arrived -- no dead letter, every other write of the
+    /// round there -- and the wait said only "never reached the store". The owner asked on
+    /// 17.09. for the stand-in's own message log of that rebuild. So the account reads the
+    /// write's trace back out of the colony's log (every hop of it, `from_path -> to_path`
+    /// with its `hop.route`, `ttl` and `hop.error_code`) and says which receiver the last
+    /// hop reached, plus the store count and whether the window stands in the tree.
+    pub async fn lost_write(&self, why: &str, owner: &str, view_id: &str, trace: &str) -> String {
+        let r = self.w.settled().await;
+        self.account_of_write(&r, why, owner, view_id, trace).await
+    }
+
+    /// [`Self::lost_write`] WITHOUT the barrier, for the failure path of a wait: the colony
+    /// that did not move is read as it stands (re-check tv-bn M7b5 B-M2).
+    // no-settle: the account of a hang, read inside the failing wait; the text is a report, never a verdict
+    async fn lost_write_now(
+        &self,
+        why: &str,
+        owner: &str,
+        view_id: &str,
+        trace: &str,
+    ) -> Unsettled<String> {
+        let r = self.w.unsettled().because(Why::Report);
+        Unsettled::new(self.account_of_write(&r, why, owner, view_id, trace).await)
+    }
+
+    /// The account of GH #714, read through `r` -- settled or not is the caller's.
+    async fn account_of_write(
+        &self,
+        r: &wire::Reader<'_>,
+        why: &str,
+        owner: &str,
+        view_id: &str,
+        trace: &str,
+    ) -> String {
         let oid = self.oid(owner, view_id);
-        let dlq = self.h.drain_dead_letters().await;
-        let rows = self.trace(trace).await;
+        let dlq = r.take_dead_letters().await;
+        let rows = r.trace(trace).await;
         let chain: Vec<String> = rows
             .iter()
             .map(|r| {
@@ -1045,19 +1672,62 @@ impl Colony {
             || format!("none (the trace {trace} has no row in the log)"),
             |r| r.to_path.clone(),
         );
-        let writes = self.writes_of(owner, view_id).await;
-        let in_tree = self.tree().await.get(&oid).is_some();
+        let writes = r.writes_of(owner, view_id).await;
+        let in_tree = r.tree().await.get(&oid).is_some();
         format!(
             "{why}; last hop: {last}; store took {writes} write(s) of {oid}; \
              in the tree: {in_tree}; hops of trace {trace}: {chain:#?}; DLQ {dlq:?}"
         )
     }
 
+    /// The receipts that left the hive, as `(error_code, view_id, detail)`, until `n`
+    /// refusals are in hand.
+    ///
+    /// Re-check tv-bn M7 M1 (TV-S3, TV-Z3, TV-F5): gh958 and gh964 each kept a word-for-word
+    /// copy of this wait, polling the egress every 25 ms under a std `Instant` plus the
+    /// unscaled `MARKER` ("within 30s"). One copy now, on the egress itself (`recv`, an
+    /// event), under the kit's hang mark; a hang names the refusals in hand.
+    pub async fn refusals(&mut self, n: usize) -> Vec<(String, String, String)> {
+        let (seen_tx, seen_rx) = tokio::sync::watch::channel(Vec::new());
+        let w = &self.w;
+        let got = async move {
+            let mut out: Vec<(String, String, String)> = Vec::new();
+            while out.len() < n {
+                let Some(m) = w.next_out().await else {
+                    panic!(
+                        "the egress closed with {} of {n} refusals: {out:?}",
+                        out.len()
+                    );
+                };
+                let Some(r) = refusal_of(&m) else {
+                    continue;
+                };
+                out.push(r);
+                seen_tx.send_replace(out.clone());
+            }
+            out
+        };
+        let mut out = meclaw_testing::deadline::hang_with(
+            &format!("{n} refusals leave the hive"),
+            got,
+            move || seen_rx.borrow().clone(),
+        )
+        .await;
+        // Re-check tv-bn M7b4 A-M1: the n in hand are the event; what the lock judges is
+        // every refusal once the colony settled, so one too many is seen, not cut off.
+        for m in self.w.settled().await.drain_egress().await {
+            if let Some(r) = refusal_of(&m) {
+                out.push(r);
+            }
+        }
+        out
+    }
+
     /// Put one window up whose content is a whole component tree, and WAIT until the pass
     /// has drawn it. `put` writes a bare `display-pane` with props; a proof that needs
     /// children in the window (a list, a table, a line of text) names the tree itself.
     pub async fn put_content(&self, owner: &str, view_id: &str, content: Value) -> Value {
-        let before = self.writes_of(owner, view_id).await;
+        let before = self.w.settled().await.writes_of(owner, view_id).await;
         let msg = to_screen(
             "in_view",
             owner,
@@ -1066,13 +1736,34 @@ impl Colony {
                    "messages": []}),
         );
         let trace = msg.trace_id.to_string();
-        self.h.send(msg).await;
+        self.w.send(msg).await;
+        self.drawn_after(owner, view_id, before, &trace).await
+    }
+
+    /// Put up the view an application's code cell emitted, as it emitted it (`view_id`,
+    /// `content` AND `components`), and WAIT until the pass has drawn it. `put_content`
+    /// defines no component; a view that brings its own -- a code view like `colony-view`,
+    /// whose shell carries its client script -- needs them on the same write.
+    pub async fn put_emission(&self, owner: &str, emission: &Value) -> Value {
+        let view_id = emission["view_id"]
+            .as_str()
+            .expect("an emission names its view");
+        let before = self.writes_of(owner, view_id).await;
+        let msg = to_screen(
+            "in_view",
+            owner,
+            json!({"view_id": view_id, "region": emission["region"], "kind": emission["kind"],
+                   "content": emission["content"], "components": emission["components"],
+                   "ttl_ms": 0, "messages": []}),
+        );
+        let trace = msg.trace_id.to_string();
+        self.w.send(msg).await;
         self.drawn_after(owner, view_id, before, &trace).await
     }
 
     /// Take one window down again (§ 4.34).
     pub async fn withdraw(&self, owner: &str, view_id: &str) {
-        self.h
+        self.w
             .send(to_screen(
                 "in_withdraw",
                 owner,
@@ -1093,8 +1784,26 @@ impl Colony {
             .ttl(24)
             .build();
         let trace = msg.trace_id.to_string();
-        self.h.send(msg).await;
+        self.w.send(msg).await;
         trace
+    }
+
+    /// One message into the colony, sender `/`: what a lock writes that no verb above
+    /// names (a resident's answer, a forged lane, a refused block).
+    pub async fn send(&self, msg: Message) {
+        self.w.send(msg).await;
+    }
+
+    /// Fill the template table from `root` (`ColonyMsg::RescanTemplates`); the scan's
+    /// outcome comes back.
+    pub async fn rescan_templates(&self, root: &std::path::Path) -> Result<(), String> {
+        self.w.rescan_templates(root.to_path_buf()).await
+    }
+
+    /// Apply one mutation of `diff` under `scope` (`ColonyMsg::Mutation`, a fresh trace);
+    /// the outcome comes back.
+    pub async fn apply_diff(&self, scope: &str, diff: Value) -> MutationOutcome {
+        self.w.mutate(json!({"scope": scope, "diff": diff})).await
     }
 
     /// The window id of a view in the screen state (§ 2 Id).
@@ -1103,7 +1812,7 @@ impl Colony {
     }
 
     pub async fn shutdown(self) {
-        self.h.shutdown().await;
+        self.w.shutdown().await;
     }
 }
 
@@ -1113,78 +1822,48 @@ impl Colony {
 
 impl Colony {
     /// The colony's `message_log`, oldest first -- the `GET /colony/messages` of a running
-    /// meclaw. `to_prefix` narrows it to one receiver.
+    /// meclaw. `to_prefix` narrows it to one receiver. Read after the colony settled (every
+    /// reader of this fixture is, re-check tv-bn M7b4 A-M1).
     pub async fn log(&self, to_prefix: Option<&str>) -> Vec<MessageLogDto> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.h
-            .inbox_tx
-            .send(ColonyMsg::ReadMessages {
-                filter: MessageLogFilter {
-                    to_path_prefix: to_prefix.map(str::to_string),
-                    limit: 1000,
-                    scan_budget: 50_000,
-                    ..Default::default()
-                },
-                ack: ack_tx,
-            })
-            .await
-            .expect("inbox alive");
-        let reply = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("the log answers within the failure-marker window")
-            .expect("ack delivered");
-        assert!(
-            !reply.scan_truncated,
-            "the message log outgrew the scan budget; the lock would be reading a window"
-        );
-        let mut rows = reply.entries;
-        rows.reverse(); // the reply is newest first; a lock reads a colony forwards
-        rows
+        self.w.settled().await.log(to_prefix).await
     }
 
     /// Every row of one trace, oldest first (`MessageLogFilter.trace_id`, indexed): the hops
     /// one write caused, whoever handled them.
     pub async fn trace(&self, trace_id: &str) -> Vec<MessageLogDto> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.h
-            .inbox_tx
-            .send(ColonyMsg::ReadMessages {
-                filter: MessageLogFilter {
-                    trace_id: Some(trace_id.to_string()),
-                    limit: 1000,
-                    scan_budget: 50_000,
-                    ..Default::default()
-                },
-                ack: ack_tx,
-            })
-            .await
-            .expect("inbox alive");
-        let reply = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("the log answers within the failure-marker window")
-            .expect("ack delivered");
-        let mut rows = reply.entries;
-        rows.reverse(); // newest first on the wire; a hop chain reads forwards
-        rows
+        self.w.settled().await.trace(trace_id).await
+    }
+
+    /// Mark the message log as it stands once the colony settled (`ColonyHandle::log_mark`):
+    /// rows committed later are what [`Self::rows_since`] returns. Not `log_mark`: that is
+    /// the handle's raw reader, a needle of the 809 pin on every receiver (OR-T11-25 G3).
+    pub async fn mark_log(&self) -> meclaw_testing::LogMark {
+        self.w.settled().await.mark_log().await
+    }
+
+    /// The rows matching `filter` committed after `mark`, newest first, read after the
+    /// colony settled (`ColonyHandle::log_since`).
+    pub async fn rows_since(
+        &self,
+        mark: &meclaw_testing::LogMark,
+        filter: MessageLogFilter,
+    ) -> Vec<MessageLogDto> {
+        self.w.settled().await.rows_since(mark, filter).await
     }
 
     /// How many rows the whole log holds. What Q-07 counts.
     pub async fn log_len(&self) -> usize {
-        self.log(None).await.len()
+        self.w.settled().await.log(None).await.len()
     }
 
     /// Every message the screen's `<child>` received, oldest first.
     pub async fn to_child(&self, child: &str) -> Vec<MessageLogDto> {
-        self.log(Some(&format!("{SCREEN}/{child}"))).await
+        self.w.settled().await.to_child(child).await
     }
 
     /// The store bundles the compose cell sent to `views`, as the list of their calls.
     pub async fn store_bundles(&self) -> Vec<Vec<Value>> {
-        self.to_child("views")
-            .await
-            .iter()
-            .filter_map(calls_of)
-            .collect()
+        self.w.settled().await.store_bundles().await
     }
 
     /// The tree the display holds, as the `patch` hops to `web` built it: every patch
@@ -1193,60 +1872,187 @@ impl Colony {
     /// The curator's state is memory since display 2.7.0 and no message carries it, so a
     /// lock reads the screen where it lands -- at `web` -- and never inside the cell.
     pub async fn tree(&self) -> Value {
-        let mut held = meclaw_core::serde_json::Map::new();
-        for calls in self.patches().await {
-            fold(&mut held, &calls);
-        }
-        Value::Object(held)
+        self.w.settled().await.tree().await
     }
 
-    /// Wait until `want` holds of the folded tree, or fail with the last one seen.
-    pub async fn wait_tree(&self, why: &str, want: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + MARKER;
-        loop {
-            let tree = self.tree().await;
-            if want(&tree) {
-                return tree;
+    /// The tree as the pass that first drew the window `oid` left it: the patch bundles
+    /// in log order, folded up to and including the first one that creates `<oid>/c.win`.
+    ///
+    /// GH #1184: what a window's FIRST pass said (`age` is `fresh` in the pass in which it
+    /// appears, § 4.35) is a fact of that pass, not of the moment a lock reads the tree.
+    /// `put` returns once the colony was quiet for 300 ms, and the stroke the first pass
+    /// orders comes one second after it; under suite load the settle outlasted that second,
+    /// the stroke's pass drew `settled`, and the lock read the second pass as the first.
+    /// Bound to the bundle that drew the window, the read no longer races the clock.
+    pub async fn first_drawn(&self, oid: &str) -> Value {
+        let win = format!("{oid}/c.win");
+        let mut held = meclaw_core::serde_json::Map::new();
+        for calls in self.w.settled().await.patches().await {
+            fold(&mut held, &calls);
+            let draws = calls
+                .iter()
+                .any(|c| c["op"] == "object.create" && c["id"] == win.as_str());
+            if draws {
+                return Value::Object(held);
             }
-            if Instant::now() >= deadline {
-                let dlq = self.h.drain_dead_letters().await;
+        }
+        panic!("no patch bundle drew the window {win}");
+    }
+
+    /// Watch the folded tree until `want` holds, or fail with `HANG:` -- a tight watch for an
+    /// event that has to be acted on inside a window, before the colony settles (809: the
+    /// kill has to land inside the fresh second; with the settle `wait_tree` ends on, the
+    /// stroke came first in 4 of 5 runs at CPUQuota 80, tv-bn M7b6 F7). It hands back
+    /// nothing: whatever the caller claims afterwards it reads through a settling reader.
+    // no-settle: a tight watch for a positive event; returns nothing
+    pub async fn watch_tree(&self, why: &str, want: impl Fn(&Value) -> bool) {
+        let want = &want;
+        meclaw_testing::wait::until_some_with(
+            why,
+            move || async move {
+                let tree = self.w.unsettled().because(Why::Watch).tree().await;
+                want(&tree).then_some(())
+            },
+            || async {
+                let r = self.w.unsettled().because(Why::Report);
+                let dlq = r.take_dead_letters().await;
+                format!("DLQ {dlq:?}")
+            },
+        )
+        .await
+    }
+
+    /// Wait until `want` holds of the folded tree, or fail with `HANG:`, the ids of the tree
+    /// read after the mark and the dead letters. What comes back is the tree once the
+    /// colony settled after that (re-check tv-bn M7b4 A-M1: a value read at the event is
+    /// half a pass).
+    // no-settle: polls for a positive event (Why::Watch), its hang text is Why::Report; hands back the tree read at rest
+    pub async fn wait_tree(&self, why: &str, want: impl Fn(&Value) -> bool) -> Value {
+        let want = &want;
+        meclaw_testing::wait::until_some_with(
+            why,
+            move || async move {
+                let tree = self.w.unsettled().because(Why::Watch).tree().await;
+                want(&tree).then_some(())
+            },
+            || async {
+                let r = self.w.unsettled().because(Why::Report);
+                let tree = r.tree().await;
                 let ids: Vec<&String> = tree
                     .as_object()
                     .map(|m| m.keys().collect())
                     .unwrap_or_default();
-                panic!("{why} did not hold within 30s; the tree holds {ids:?}; DLQ {dlq:?}");
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+                let dlq = r.take_dead_letters().await;
+                format!("the tree holds {ids:?}; DLQ {dlq:?}")
+            },
+        )
+        .await;
+        self.tree().await
     }
 
-    /// Wait until `want` holds of whatever it reads off the colony, or fail naming `why`.
+    /// Wait until `want` holds of whatever it reads off the colony, or fail with `HANG:`
+    /// naming `why` and the dead letters.
+    // no-settle: a wait for a positive event; it returns nothing, its closure's reads are the caller's
     pub async fn wait_until(&self, why: &str, want: impl AsyncFn() -> bool) {
-        let deadline = Instant::now() + MARKER;
-        while !want().await {
-            if Instant::now() >= deadline {
-                let dlq = self.h.drain_dead_letters().await;
-                panic!("{why} did not hold within 30s; DLQ {dlq:?}");
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        let want = &want;
+        meclaw_testing::wait::until_some_with(
+            why,
+            move || async move { want().await.then_some(()) },
+            || async {
+                let r = self.w.unsettled().because(Why::Report);
+                let dlq = r.take_dead_letters().await;
+                format!("DLQ {dlq:?}")
+            },
+        )
+        .await
     }
 
     /// How many times the compose cell asked `web` for its tree (`hop.route == "read"`):
     /// once per boot, and once after a refused patch (OR-D7).
     pub async fn reads(&self) -> usize {
-        self.to_child("web")
+        self.w
+            .settled()
+            .await
+            .to_child("web")
             .await
             .iter()
             .filter(|row| hop_of(row)["route"] == "read")
             .count()
     }
 
+    /// The boot behind the `n`-th `read` hop at `web` (1-based, as [`Self::reads`] counts),
+    /// once it is in the log: what woke the cell -- the message the boot's select answers,
+    /// as `(sender -> receiver, route)` -- and the tree `web`
+    /// held before it, the patch bundles in log order folded up to that read.
+    ///
+    /// TV-F2 (tv-bn M7b10): a killed curator boots on whatever reaches it first, and under
+    /// load that was a late reply of the pass before the kill (`views`/`web` -> compose), not
+    /// the stroke; a restart test asks this which message it was, and a count of strokes
+    /// cannot tell a stroke before the kill from one after it.
+    pub async fn boot_read(&self, n: usize) -> Option<(String, String, Value)> {
+        let settled = self.w.settled().await;
+        let mut held = meclaw_core::serde_json::Map::new();
+        let mut seen = 0;
+        let mut parent = None;
+        for row in settled.to_child("web").await {
+            let route = hop_of(&row)["route"].clone();
+            if route == "read" {
+                seen += 1;
+                if seen == n {
+                    parent = Some(row.parent_message_id.clone().unwrap_or_default());
+                    break;
+                }
+            } else if route == "patch"
+                && let Some(calls) = calls_of(&row)
+            {
+                fold(&mut held, &calls);
+            }
+        }
+        // The boot is one select, then one read (`docs/cell-types.md` § code, GH #809): the
+        // read answers the store's reply to the boot's select, and the select answers the
+        // message that woke the cell. Walk the parents back to that select.
+        let rows: std::collections::HashMap<String, MessageLogDto> = settled
+            .log(None)
+            .await
+            .into_iter()
+            .map(|row| (row.id.clone(), row))
+            .collect();
+        let mut at = parent?;
+        let mut woke = None;
+        for _ in 0..rows.len() {
+            let Some(row) = rows.get(&at) else { break };
+            let selects = row.to_path.ends_with("/views")
+                && calls_of(row)
+                    .is_some_and(|calls| calls.iter().any(|c| c["operation"] == "select"));
+            let Some(up) = row.parent_message_id.clone() else {
+                break;
+            };
+            if selects {
+                woke = rows.get(&up);
+                break;
+            }
+            at = up;
+        }
+        let (from, route) = woke.map_or_else(
+            || {
+                (
+                    format!("<no select of a boot above the read {at}>"),
+                    String::new(),
+                )
+            },
+            |row| {
+                let route = hop_of(row)["route"].as_str().unwrap_or("").to_string();
+                (format!("{} -> {}", row.from_path, row.to_path), route)
+            },
+        );
+        Some((from, route, Value::Object(held)))
+    }
+
     /// Every rest row the curator wrote (`owner "display"`, `view_id "screen-rest"`),
     /// oldest first, the content parsed: what outlives the cell's memory (OR-D3).
     pub async fn rest_rows(&self) -> Vec<Value> {
         let mut out = Vec::new();
-        for bundle in self.store_bundles().await {
+        for bundle in self.w.settled().await.store_bundles().await {
             for call in bundle {
                 if call["operation"] == "insert"
                     && call["row"]["owner"] == "display"
@@ -1265,12 +2071,16 @@ impl Colony {
 
     /// The last rest row the curator wrote, or `Null` while it wrote none.
     pub async fn rest(&self) -> Value {
+        self.settle().await;
         self.rest_rows().await.pop().unwrap_or(Value::Null)
     }
 
     /// The `headers_json` of every logged message whose receiver starts with `to_prefix`.
     pub async fn headers(&self, to_prefix: &str) -> Vec<String> {
-        self.log(Some(to_prefix))
+        self.w
+            .settled()
+            .await
+            .log(Some(to_prefix))
             .await
             .into_iter()
             .map(|row| row.headers_json)
@@ -1288,7 +2098,12 @@ impl Colony {
         let mut pids = Vec::new();
         for task in std::fs::read_dir("/proc/self/task").expect("/proc/self/task") {
             let children = task.expect("a task").path().join("children");
-            let text = std::fs::read_to_string(children).unwrap_or_default();
+            // a thread that ended between the listing and the read has no children
+            let text = proc_read(
+                &children.display().to_string(),
+                std::fs::read_to_string(&children),
+            )
+            .unwrap_or_default();
             pids.extend(
                 text.split_whitespace()
                     .filter_map(|p| p.parse::<i32>().ok()),
@@ -1299,7 +2114,9 @@ impl Colony {
         let mut killed = 0;
         let mut dead = Vec::new();
         for pid in pids {
-            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            let path = format!("/proc/{pid}/cmdline");
+            // a child that ended and was reaped since the listing is no harness
+            let cmdline = proc_read(&path, std::fs::read(&path)).unwrap_or_default();
             if !String::from_utf8_lossy(&cmdline).contains("resident runner harness") {
                 continue;
             }
@@ -1313,23 +2130,21 @@ impl Colony {
         // a DYING child fails with it (`script_failed`, exit -1, measured here), and the
         // test is about the next message meeting a DEAD one, which the pool replaces
         // (`gh420_a_resident_child_may_be_killed_mid_stream.rs` waits for the same).
-        let deadline = Instant::now() + MARKER;
+        // Re-check tv-bn M3 H4: the wait is the kit's (`wait::until_with`, the HANG mark),
+        // not a hand-made poll with its own clock; re-check tv-bn M7b9 B-M2: a HANG names
+        // the child's last `/proc/<pid>/stat` (its state letter: hung in the kernel, `D`,
+        // or never reaped).
         for pid in dead {
-            loop {
-                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-                let state = stat
-                    .rsplit(')')
-                    .next()
-                    .and_then(|r| r.split_whitespace().next());
-                if matches!(state, None | Some("Z") | Some("X")) {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "the killed child {pid} never died"
-                );
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let path = format!("/proc/{pid}/stat");
+            meclaw_testing::wait::until_with(
+                &format!("the killed child {pid} died"),
+                || {
+                    let path = path.clone();
+                    async move { proc_stat_dead(&path, std::fs::read_to_string(&path)) }
+                },
+                || format!("{path}: {:?}", std::fs::read_to_string(&path)),
+            )
+            .await;
         }
         eprintln!("kill_compose: {killed} resident child(ren) killed");
         killed
@@ -1337,18 +2152,16 @@ impl Colony {
 
     /// The patch bundles the compose cell sent to the `web` cell, as their calls.
     pub async fn patches(&self) -> Vec<Vec<Value>> {
-        self.to_child("web")
-            .await
-            .iter()
-            .filter(|row| hop_of(row)["route"] == "patch")
-            .filter_map(calls_of)
-            .collect()
+        self.w.settled().await.patches().await
     }
 
     /// The orders that reached the clock, as `(op, schedule_id)`. `op`, `schedule_id` and
     /// `at` are body slots of the `due` emission, not hop keys.
     pub async fn orders(&self) -> Vec<(String, String)> {
-        self.to_child("clock")
+        self.w
+            .settled()
+            .await
+            .to_child("clock")
             .await
             .iter()
             .filter_map(|row| {
@@ -1362,7 +2175,10 @@ impl Colony {
     /// The strikes the clock sent back, as their `schedule_id` (§ 4.34: the moment the
     /// curator ordered, coming back as a pass).
     pub async fn strikes(&self) -> Vec<String> {
-        self.to_child("compose")
+        self.w
+            .settled()
+            .await
+            .to_child("compose")
             .await
             .iter()
             .filter(|row| hop_of(row)["route"] == "in_tick")
@@ -1373,7 +2189,10 @@ impl Colony {
     /// The trace of every strike. A timer emits its strike as a source message, so each
     /// strike opens a trace of its own, and whatever its pass sends carries that trace.
     pub async fn strike_traces(&self) -> Vec<String> {
-        self.to_child("compose")
+        self.w
+            .settled()
+            .await
+            .to_child("compose")
             .await
             .iter()
             .filter(|row| hop_of(row)["route"] == "in_tick")
@@ -1383,7 +2202,10 @@ impl Colony {
 
     /// The trace of every store bundle, in the order of `store_bundles`.
     pub async fn store_bundle_traces(&self) -> Vec<String> {
-        self.to_child("views")
+        self.w
+            .settled()
+            .await
+            .to_child("views")
             .await
             .iter()
             .filter(|row| calls_of(row).is_some())
@@ -1395,7 +2217,10 @@ impl Colony {
     /// gesture becomes a message: the `web` cell sends it, the hive's edge carries it to
     /// `compose`. A gesture that has no wire never shows up here.
     pub async fn events_into_pass(&self) -> Vec<(String, Value)> {
-        self.to_child("compose")
+        self.w
+            .settled()
+            .await
+            .to_child("compose")
             .await
             .iter()
             .filter(|row| hop_of(row)["route"] == "event")
@@ -1412,7 +2237,10 @@ impl Colony {
     /// Every write that arrived at the screen's door, as its `hop.route` -- `in_view`,
     /// `in_withdraw`, `in_notice`. What a lock counts to say "nobody wrote".
     pub async fn writes_taken(&self) -> Vec<String> {
-        self.log(Some(SCREEN))
+        self.w
+            .settled()
+            .await
+            .log(Some(SCREEN))
             .await
             .iter()
             .filter(|row| row.to_path == SCREEN)
@@ -1427,7 +2255,7 @@ impl Colony {
     /// write asks the store back, so there is no answer to read the table out of.
     pub async fn store_rows(&self) -> Vec<Value> {
         let mut table: Vec<Value> = Vec::new();
-        for bundle in self.store_bundles().await {
+        for bundle in self.w.settled().await.store_bundles().await {
             for call in bundle {
                 match call["operation"].as_str().unwrap_or("") {
                     "delete" => {
@@ -1442,10 +2270,11 @@ impl Colony {
         table
     }
 
-    /// Every receipt the screen sent out of the hive, as `(error_code, view_id)`.
-    pub fn receipts(&mut self) -> Vec<(String, String)> {
+    /// Every receipt the screen sent out of the hive, as `(error_code, view_id)`, drained
+    /// once the colony settled.
+    pub async fn receipts(&mut self) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        while let Ok(m) = self.egress.try_recv() {
+        for m in self.w.settled().await.drain_egress().await {
             if m.headers.hop.get("route").and_then(Value::as_str) != Some("receipt") {
                 continue;
             }
@@ -1466,42 +2295,45 @@ impl Colony {
         out
     }
 
+    /// Every message that left the hive since the last drain, drained once the colony
+    /// settled: what a lock counts at the member's door.
+    pub async fn left_the_hive(&mut self) -> Vec<Message> {
+        self.w.settled().await.drain_egress().await
+    }
+
     /// How many questions reached the judge cell.
     pub async fn judge_questions(&self) -> usize {
-        self.to_child("judge").await.len()
+        self.w.settled().await.to_child("judge").await.len()
     }
 
-    /// Wait until the colony has settled: nothing new in the log for `quiet`.
+    /// Every question the judge cell put to its provider, in arrival order, once the
+    /// colony settled.
+    pub async fn judge_asked(&self) -> Vec<CapturedRequest> {
+        self.w.settled().await.judge_asks().await
+    }
+
+    /// The event "the message log moved": a wait on it is a wait on an event, and its
+    /// counter is a hang's last state ([`LogChanges::at`]).
+    pub fn log_changes(&self) -> LogChanges {
+        self.w.log_changes()
+    }
+
+    /// Wait until the colony is quiescent: no delivery, mailbox, output or log write of
+    /// what was sent before is still in flight (`ColonyMsg::Settle`, GH #1208 TV-A2). A
+    /// colony that does not settle within the hang mark fails with `HANG: the colony
+    /// settles` and its last state -- the dead letters and the newest log rows (re-check
+    /// tv-bn M7b5 B-M2).
     ///
     /// A pass is several hops, and a lock that reads after the first of them reads half a
-    /// pass. `quiet` is a settle window and never a semantic discriminator -- what the lock
-    /// then asserts is the same whether the colony took 5 ms or 500.
+    /// pass. Re-check tv-bn M7 M2 (TV-S2, TV-A5): this was a window -- "the newest log row
+    /// stood for `quiet`" -- and a pause under load longer than the window read as rest.
+    /// Quiescence covers what follows from delivered messages; where a timer stroke or an
+    /// ingress drives the movement, the lock awaits that event first (`wait_until`).
     ///
-    /// **The newest row, not the count.** `log` reads a window of 1000 rows, so a count
-    /// SATURATES: from then on two windows compare equal whatever the colony did in
-    /// between, and `settle` returned after the first one. Measured 27.09. (GH #714):
-    /// the stage rebuild of `710_the_colony_holds_in_both_engines_browser` stands at
-    /// 1000 rows after round 6 in all 30 runs. A row id (uuid7) only ever moves forward.
-    pub async fn settle(&self, quiet: Duration) {
-        let deadline = Instant::now() + MARKER;
-        let mut seen = self.newest_row().await;
-        loop {
-            tokio::time::sleep(quiet).await;
-            let now = self.newest_row().await;
-            if now == seen {
-                return;
-            }
-            seen = now;
-            assert!(
-                Instant::now() < deadline,
-                "the colony never went quiet (newest row {seen:?} and still moving)"
-            );
-        }
-    }
-
-    /// The id of the newest row of the log, `None` on an empty one.
-    async fn newest_row(&self) -> Option<String> {
-        self.log(None).await.last().map(|r| r.id.clone())
+    /// It hands back the proof that the colony settled; a test has no use for it (only the
+    /// fixture's readers trade it for the address), a fixture reader does.
+    pub async fn settle(&self) -> sealed::Settled {
+        self.w.settle().await
     }
 }
 
@@ -1512,37 +2344,323 @@ impl Colony {
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-impl Colony {
-    /// The URL of one output, or of the switch when `screen` is empty (§ 6.5).
-    pub fn url(&self, screen: &str) -> String {
-        format!("http://127.0.0.1:{}/{MOUNT}/{screen}", self.port)
+/// One call site of a user that gets something the colony's address opens (OR-T11-25 G2,
+/// re-check tv-bn M7b12 A-M2/A-M3, OR-T12-2): a variant per call site, bound to its file
+/// AND its line at run time ([`Named::admits`] through `#[track_caller]`), so a second
+/// place panics in every process. No site gets the address itself: a driver site gets a
+/// driver the fixture starts ([`Colony::drive`]), the voice site the voice files the
+/// fixture fetches ([`Colony::voice_files`]). A new place is a new variant here, with its
+/// file, its line and its reason -- the `match`es below do not compile without them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Site {
+    /// gh767: the tap driver on the monitor.
+    Gh767Monitor,
+    /// 710 (both engines): the layout driver on the line's exit, with the API.
+    B710,
+    /// gh961: the motion driver on the monitor, with the API.
+    Gh961,
+    /// gh1028: the keep driver on the monitor, with the API.
+    Gh1028,
+    /// gh867 (strict CSP): the CSP driver on the phone.
+    Gh867CspPhone,
+    /// gh867 (inline scripts): the voice test page and its files, fetched by the fixture.
+    Gh867VoiceFiles,
+}
+
+impl Site {
+    /// Every site, in the order of the enum (the 809 pin checks it against the source).
+    pub const ALL: [Site; 6] = [
+        Site::Gh767Monitor,
+        Site::B710,
+        Site::Gh961,
+        Site::Gh1028,
+        Site::Gh867CspPhone,
+        Site::Gh867VoiceFiles,
+    ];
+
+    /// The driver a site starts, `None` for the voice files: how it launches, the name of
+    /// its script (`workshop/tools/display-<name>-browser.mjs`), and whether it gets the API
+    /// (`MECLAW_DISPLAY_API`). The script's path itself stands in the test unit, which names
+    /// it in [`Driver::script`]: the gate finds a browser lock by the driver it names, and a
+    /// shared module naming one would hide its callers (`browser-station-lock`,
+    /// `scripts/gate_plan.py`). [`Colony::drive`] refuses any other script for the site.
+    fn driver(self) -> Option<(Launch, &'static str, bool)> {
+        match self {
+            Site::Gh767Monitor => Some((Launch::Node, "page", false)),
+            Site::B710 => Some((Launch::Lab, "layout", true)),
+            Site::Gh961 => Some((Launch::Lab, "motion", true)),
+            Site::Gh1028 => Some((Launch::Lab, "keep", true)),
+            Site::Gh867CspPhone => Some((Launch::Node, "csp", false)),
+            Site::Gh867VoiceFiles => None,
+        }
+    }
+}
+
+/// Handed to a browser driver: the page reads the colony, the lock reads the page (OR-M7b7-4).
+const TO_THE_DRIVER: &str = "a browser driver the fixture starts: the page reads the colony through its own socket, \
+     and the lock reads only what the page reports (OR-M7b7-4)";
+
+impl sealed::NamedSeal for Site {}
+
+impl Named for Site {
+    fn file(self) -> &'static str {
+        match self {
+            Site::Gh767Monitor => "gh767_the_drivers_tap_reaches_the_curator_browser.rs",
+            Site::B710 => "710_the_colony_holds_in_both_engines_browser.rs",
+            Site::Gh961 => "gh961_motion_by_target_state_browser.rs",
+            Site::Gh1028 => "gh1028_a_new_window_keeps_the_others_in_place_browser.rs",
+            Site::Gh867CspPhone => "gh867_a_display_runs_under_a_strict_csp_browser.rs",
+            Site::Gh867VoiceFiles => "gh867_no_surface_page_carries_unlisted_inline_script.rs",
+        }
     }
 
-    /// Where `POST /messages` and `GET /colony/messages` answer. A DIFFERENT port from
-    /// the mount listener on purpose: the mount listener is the thing under test, and a
-    /// fixture that answered API routes on it would be measuring its own scaffolding.
-    pub fn api_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.api_port)
+    fn line(self) -> u32 {
+        match self {
+            Site::Gh767Monitor => 105,
+            Site::B710 => 242,
+            Site::Gh961 => 162,
+            Site::Gh1028 => 105,
+            Site::Gh867CspPhone => 175,
+            Site::Gh867VoiceFiles => 373,
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Site::Gh767Monitor | Site::B710 | Site::Gh961 | Site::Gh1028 | Site::Gh867CspPhone => {
+                TO_THE_DRIVER
+            }
+            Site::Gh867VoiceFiles => {
+                "the voice test page and its three files as they ship (`/voice`), fetched by the \
+                 fixture: static files of the voice cell, no state of the colony"
+            }
+        }
+    }
+}
+
+/// How a site's driver starts.
+#[derive(Debug, Clone, Copy)]
+enum Launch {
+    /// `node <script> <url> …`.
+    Node,
+    /// Through the WebKit laboratory: `sh -c` with `$1` the laboratory (sourced for every
+    /// run except a Chromium one), the rest the driver and its arguments.
+    Lab,
+}
+
+/// The laboratory WebKit runs in on this host (`Launch::Lab`).
+const WKENV: &str = "workshop/tools/wkenv.sh";
+/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments. Sourced for
+/// Chromium too, a host without the laboratory read its `SKIP` line as the Chromium run's
+/// own (XB-M review I-1).
+const WITH_LAB: &str =
+    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
+
+/// What a test gives the driver of its site: the arguments after the page's URL and the
+/// environment. The colony's address is no part of it -- the fixture puts it in, and the
+/// started command never comes back out (re-check tv-bn M7b12 A-M3, OR-T12-2).
+#[derive(Debug, Default)]
+pub struct Driver {
+    script: Option<&'static str>,
+    args: Vec<std::ffi::OsString>,
+    envs: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+}
+
+impl Driver {
+    /// The site's driver script under the repository, as the test unit names it (the one
+    /// [`Colony::drive`] accepts for the site, nothing else).
+    pub fn script(mut self, path: &'static str) -> Self {
+        self.script = Some(path);
+        self
+    }
+
+    /// One argument after the URL.
+    pub fn arg(mut self, a: impl AsRef<std::ffi::OsStr>) -> Self {
+        self.args.push(a.as_ref().to_os_string());
+        self
+    }
+
+    /// Arguments after the URL.
+    pub fn args<I, A>(mut self, all: I) -> Self
+    where
+        I: IntoIterator<Item = A>,
+        A: AsRef<std::ffi::OsStr>,
+    {
+        self.args
+            .extend(all.into_iter().map(|a| a.as_ref().to_os_string()));
+        self
+    }
+
+    /// One variable of the driver's environment.
+    pub fn env(mut self, k: impl AsRef<std::ffi::OsStr>, v: impl AsRef<std::ffi::OsStr>) -> Self {
+        self.envs
+            .push((k.as_ref().to_os_string(), v.as_ref().to_os_string()));
+        self
+    }
+}
+
+/// A driver the fixture started the command of: it runs, it does not open (the command
+/// is private; its arguments carry the address).
+pub struct Driving(tokio::process::Command);
+
+impl std::fmt::Debug for Driving {
+    /// Not the command: its arguments carry the address.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Driving(..)")
+    }
+}
+
+impl Driving {
+    /// Run the driver to its end (the child is killed when the future is dropped).
+    pub async fn output(mut self) -> std::io::Result<std::process::Output> {
+        self.0.output().await
+    }
+
+    /// Run the driver under the Rust marker of [`browser_run::run_marked`].
+    pub async fn run_marked(
+        mut self,
+        what: &str,
+        run: Duration,
+        outside: Duration,
+    ) -> Result<std::io::Result<std::process::Output>, Box<browser_run::Hung>> {
+        browser_run::run_marked(&mut self.0, what, run, outside).await
+    }
+}
+
+/// The URL of one output under the mount (or of the switch when `screen` is empty, § 6.5).
+fn screen_url(ports: sealed::Ports, screen: &str) -> String {
+    format!("http://127.0.0.1:{}/{MOUNT}/{screen}", ports.port)
+}
+
+/// The voice test page (`""`, i.e. `/voice/`) and the three files beside it.
+const VOICE_FILES: [&str; 4] = ["", "test.js", "test.css", "worklet.js"];
+
+/// GET one shipped file until it answers past `503 starting`: (status, body).
+async fn get_shipped(url: String) -> (u16, String) {
+    let at = url.as_str();
+    meclaw_testing::wait::until_some_with(
+        &format!("{url} answers past `503 starting`"),
+        move || async move {
+            let r = reqwest::get(at).await.ok()?;
+            if r.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                return None;
+            }
+            let status = r.status().as_u16();
+            Some((status, r.text().await.expect("a body")))
+        },
+        move || async move {
+            match reqwest::get(at).await {
+                Ok(r) => format!("it answers {}", r.status()),
+                Err(e) => format!("it does not answer: {e}"),
+            }
+        },
+    )
+    .await
+}
+
+// The bridge from the compile probe to this fixture: the colony's address IS the sealed
+// door, and the presenter's decider the sealed one. Change a type, and this does not compile.
+const _: fn(&Colony) -> &sealed::Door = |c| &c.door;
+
+impl Colony {
+    /// Start the driver of a named call site of a user on one output (§ 6.5: an empty
+    /// `screen` is the switch): its script, the page's URL, then `with`'s arguments and
+    /// environment, and the API where the site gets it. The site is checked against the
+    /// caller's file and line; the address stays in the fixture.
+    #[track_caller]
+    pub fn drive(&self, at: Site, screen: &str, with: Driver) -> Driving {
+        let ports = self.door.hand(at);
+        let Some((launch, name, api)) = at.driver() else {
+            panic!("{at:?} starts no driver");
+        };
+        let script = format!("workshop/tools/display-{name}-browser.mjs");
+        assert!(
+            with.script == Some(script.as_str()),
+            "{at:?} drives `{script}`, the caller names {:?}",
+            with.script
+        );
+        let mut cmd = match launch {
+            Launch::Node => {
+                let mut c = tokio::process::Command::new("node");
+                c.arg(repo(&script));
+                c
+            }
+            Launch::Lab => {
+                let mut c = tokio::process::Command::new("sh");
+                c.arg("-c")
+                    .arg(WITH_LAB)
+                    .arg("sh")
+                    .arg(repo(WKENV))
+                    .arg(repo(&script));
+                c
+            }
+        };
+        cmd.arg(screen_url(ports, screen))
+            .args(with.args)
+            .envs(with.envs);
+        if api {
+            cmd.env(
+                "MECLAW_DISPLAY_API",
+                format!("http://127.0.0.1:{}", ports.api_port),
+            );
+        }
+        // The node process holds a browser. A dropped future does not take a child with
+        // it, so the browser would outlive the test that started it.
+        cmd.kill_on_drop(true);
+        Driving(cmd)
+    }
+
+    /// The voice test page and its three files as they ship (`/voice/`, `test.js`,
+    /// `test.css`, `worklet.js`), for a named call site of a user: (file, status, body),
+    /// the page first as `""`. The fixture GETs them; the address stays in the fixture.
+    #[track_caller]
+    pub fn voice_files(
+        &self,
+        at: Site,
+    ) -> impl std::future::Future<Output = Vec<(&'static str, u16, String)>> + use<> {
+        let ports = self.door.hand(at);
+        assert!(
+            at == Site::Gh867VoiceFiles,
+            "{at:?} is no site of the voice files"
+        );
+        async move {
+            let mut out = Vec::new();
+            for file in VOICE_FILES {
+                let (status, body) =
+                    get_shipped(format!("http://127.0.0.1:{}/voice/{file}", ports.port)).await;
+                out.push((file, status, body));
+            }
+            out
+        }
     }
 
     /// GET one output until it answers, and hand the markup back.
     pub async fn page(&self, screen: &str) -> String {
-        let url = self.url(screen);
-        let deadline = Instant::now() + MARKER;
-        loop {
-            if let Ok(r) = reqwest::get(&url).await
-                && r.status().is_success()
-            {
-                return r.text().await.expect("text");
-            }
-            assert!(Instant::now() < deadline, "{url} never served a page");
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        let at_rest = self.settle().await;
+        let url = screen_url(self.door.settled(at_rest), screen);
+        let at = url.as_str();
+        meclaw_testing::wait::until_some_with(
+            &format!("{url} serves a page"),
+            move || async move {
+                match reqwest::get(at).await {
+                    Ok(r) if r.status().is_success() => Some(r.text().await.expect("text")),
+                    _ => None,
+                }
+            },
+            move || async move {
+                match reqwest::get(at).await {
+                    Ok(r) => format!("it answers {}", r.status()),
+                    Err(e) => format!("it does not answer: {e}"),
+                }
+            },
+        )
+        .await
     }
 
     /// The HTTP status one path under the mount answers with.
     pub async fn status(&self, screen: &str) -> u16 {
-        reqwest::get(self.url(screen))
+        let at_rest = self.settle().await;
+        reqwest::get(screen_url(self.door.settled(at_rest), screen))
             .await
             .expect("the listener answers")
             .status()
@@ -1552,6 +2670,8 @@ impl Colony {
     /// Join the LiveView socket of one output -- the page's OWN socket, the one a gesture
     /// travels on (§ 5.6). What comes back is the socket, ready for `push`.
     pub async fn socket(&self, screen: &str) -> Ws {
+        let at_rest = self.settle().await;
+        let ports = self.door.settled(at_rest);
         let body = self.page(screen).await;
         let marker = "data-phx-session=\"";
         let at = body
@@ -1567,12 +2687,12 @@ impl Colony {
         );
         let (mut ws, _) = tokio_tungstenite::connect_async(format!(
             "ws://127.0.0.1:{}/{MOUNT}/live/websocket",
-            self.port
+            ports.port
         ))
         .await
         .expect("the display accepts a websocket");
         let join = json!(["1", "1", topic, "phx_join",
-                          {"session": token, "url": self.url(screen)}]);
+                          {"session": token, "url": screen_url(ports, screen)}]);
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
             join.to_string().into(),
         ))
@@ -1604,19 +2724,48 @@ pub async fn push(ws: &mut Ws, name: &str, value: Value) {
 }
 
 /// The next TEXT frame off a socket, as JSON.
+///
+/// Re-check tv-bn M7 H6 (TV-Z3): a hang names how many other frames came meanwhile.
 pub async fn next_text(ws: &mut Ws) -> Value {
-    let deadline = Instant::now() + MARKER;
-    loop {
-        let msg = tokio::time::timeout(MARKER, ws.next())
-            .await
-            .expect("the socket answers within the failure-marker window")
-            .expect("the stream stays open")
-            .expect("a frame");
-        if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
-            return meclaw_core::serde_json::from_str(&t).expect("the frame is JSON");
+    let (seen_tx, seen_rx) = tokio::sync::watch::channel(0_usize);
+    let text = async move {
+        loop {
+            let msg = ws
+                .next()
+                .await
+                .expect("the stream stays open")
+                .expect("a frame");
+            if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
+                return meclaw_core::serde_json::from_str(&t).expect("the frame is JSON");
+            }
+            seen_tx.send_modify(|n| *n += 1);
         }
-        assert!(Instant::now() < deadline, "only binary frames came back");
+    };
+    meclaw_testing::deadline::hang_with("the socket sends a text frame", text, move || {
+        format!("{} non-text frame(s) came", *seen_rx.borrow())
+    })
+    .await
+}
+
+/// A refusal receipt that left the hive, as `(error_code, view_id, detail)`; `None` for
+/// any other message and for a receipt without an error.
+fn refusal_of(m: &Message) -> Option<(String, String, String)> {
+    if m.headers.hop.get("route").and_then(Value::as_str) != Some("receipt") {
+        return None;
     }
+    let Body::Inline(body) = &m.body else {
+        return None;
+    };
+    let r = &body["receipt"];
+    let code = r["error_code"].as_str().unwrap_or("");
+    if code.is_empty() {
+        return None;
+    }
+    Some((
+        code.to_string(),
+        r["view_id"].as_str().unwrap_or("").to_string(),
+        r["detail"].as_str().unwrap_or("").to_string(),
+    ))
 }
 
 /// The hop header of one logged message.
@@ -1626,16 +2775,53 @@ pub fn hop_of(row: &MessageLogDto) -> Value {
     headers["hop"].clone()
 }
 
-/// The inline body of one logged message.
+/// Fail closed on a body the log does not hold inline (re-check tv-bn M7b12 C-M1, class
+/// M9): a body over `blob_inline_max_bytes` is logged as `body_kind = "blob"` with the
+/// blob's id as its payload, and every reader of a body (`body_of`, `calls_of`, a raw
+/// `body_payload`) would read nothing there -- an absence claim green on a row it never
+/// read. No reader of the fixture resolves a blob, so such a row is red, with its name.
+pub fn inline_bodies(rows: &[MessageLogDto]) {
+    let blobs: Vec<String> = rows
+        .iter()
+        .filter(|r| r.body_kind != "inline")
+        .map(|r| {
+            format!(
+                "{} {} -> {} ({})",
+                r.id, r.from_path, r.to_path, r.body_kind
+            )
+        })
+        .collect();
+    assert!(
+        blobs.is_empty(),
+        "fail closed: the log holds these bodies as blobs, which no reader of the fixture \
+         resolves: {blobs:#?}"
+    );
+}
+
+/// The patch bundles among `rows` (the rows to `web`), as their calls: a patch row
+/// without calls is no patch the tree folds, a patch row held as a blob is red.
+pub fn patches_of(rows: &[MessageLogDto]) -> Vec<Vec<Value>> {
+    inline_bodies(rows);
+    rows.iter()
+        .filter(|row| hop_of(row)["route"] == "patch")
+        .filter_map(calls_of)
+        .collect()
+}
+
+/// The inline body of one logged message; a body held as a blob is red
+/// ([`inline_bodies`]).
 pub fn body_of(row: &MessageLogDto) -> Value {
+    inline_bodies(std::slice::from_ref(row));
     row.body_payload
         .as_deref()
         .and_then(|raw| meclaw_core::serde_json::from_str(raw).ok())
         .unwrap_or_else(|| json!({}))
 }
 
-/// The `tool_call` turns of one logged message, parsed back into calls.
+/// The `tool_call` turns of one logged message, parsed back into calls; a body held as a
+/// blob is red ([`inline_bodies`]).
 pub fn calls_of(row: &MessageLogDto) -> Option<Vec<Value>> {
+    inline_bodies(std::slice::from_ref(row));
     let body: Value = meclaw_core::serde_json::from_str(row.body_payload.as_deref()?).ok()?;
     let turns = body["messages"].as_array()?;
     let mut out = Vec::new();
@@ -1716,4 +2902,36 @@ pub fn tile(tree: &Value, oid: &str) -> Value {
 /// Whether the window stands on the screen: its wrapper is in the tree (§ 4.11).
 pub fn present(tree: &Value, oid: &str) -> bool {
     tree.get(oid).is_some()
+}
+
+/// One read of a `/proc` file (re-check tv-bn M3 M2): `None` when the task or process
+/// is gone (NotFound, or ESRCH from a process reaped between open and read), the
+/// content otherwise. Any other error is a red assertion that names the path and the
+/// error: an empty read counted as "ended", and the next message then met a dying
+/// child (`script_failed`) -- a red that looked like a flake.
+pub fn proc_read<T>(path: &str, read: std::io::Result<T>) -> Option<T> {
+    match read {
+        Ok(content) => Some(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => None,
+        Err(e) => panic!("{path} could not be read ({e}): a /proc read error is no ended process"),
+    }
+}
+
+/// Whether the process of the `/proc/<pid>/stat` read `read` has died: gone, a zombie
+/// (`Z`) or dead (`X`). A read error other than "gone" and a stat without a state
+/// field are red assertions (re-check tv-bn M3 M2), never "died".
+pub fn proc_stat_dead(path: &str, read: std::io::Result<String>) -> bool {
+    let Some(stat) = proc_read(path, read) else {
+        return true;
+    };
+    match stat
+        .rsplit(')')
+        .next()
+        .and_then(|r| r.split_whitespace().next())
+    {
+        Some("Z") | Some("X") => true,
+        Some(_) => false,
+        None => panic!("{path} carries no state field: {stat:?}"),
+    }
 }

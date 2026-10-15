@@ -1,0 +1,280 @@
+{
+ "packages": [
+  {
+   "dependencies": [
+    {
+     "kind": null,
+     "name": "serde",
+     "req": "1",
+     "source": "registry+sparse"
+    }
+   ],
+   "features": {},
+   "id": "path+file://@ROOT@/crates/meclaw-core#0.1.0",
+   "manifest_path": "@ROOT@/crates/meclaw-core/Cargo.toml",
+   "name": "meclaw-core",
+   "source": null,
+   "targets": [
+    {
+     "crate_types": [
+      "lib"
+     ],
+     "doctest": true,
+     "kind": [
+      "lib"
+     ],
+     "name": "meclaw_core",
+     "src_path": "@ROOT@/crates/meclaw-core/src/lib.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "core_basic",
+     "src_path": "@ROOT@/crates/meclaw-core/tests/core_basic.rs",
+     "test": true
+    }
+   ],
+   "version": "0.1.0"
+  },
+  {
+   "dependencies": [
+    {
+     "features": [],
+     "kind": null,
+     "name": "meclaw-core",
+     "optional": false,
+     "path": "@ROOT@/crates/meclaw-core",
+     "req": "*",
+     "uses_default_features": true
+    },
+    {
+     "features": [],
+     "kind": "dev",
+     "name": "meclaw-testing",
+     "optional": false,
+     "path": "@ROOT@/crates/meclaw-testing",
+     "req": "*",
+     "uses_default_features": true
+    }
+   ],
+   "features": {},
+   "id": "path+file://@ROOT@/crates/meclaw-cells#0.1.0",
+   "manifest_path": "@ROOT@/crates/meclaw-cells/Cargo.toml",
+   "name": "meclaw-cells",
+   "source": null,
+   "targets": [
+    {
+     "crate_types": [
+      "lib"
+     ],
+     "doctest": true,
+     "kind": [
+      "lib"
+     ],
+     "name": "meclaw_cells",
+     "src_path": "@ROOT@/crates/meclaw-cells/src/lib.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "gh1_uses_hive",
+     "src_path": "@ROOT@/crates/meclaw-cells/tests/gh1_uses_hive.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "gh5_reads_doc",
+     "src_path": "@ROOT@/crates/meclaw-cells/tests/gh5_reads_doc.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "mock_openai",
+     "src_path": "@ROOT@/crates/meclaw-cells/tests/mock_openai.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "gh3_llm",
+     "src_path": "@ROOT@/crates/meclaw-cells/tests/gh3_llm.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "710_the_sheet_holds_in_both_engines_browser",
+     "src_path": "@ROOT@/crates/meclaw-cells/tests/710_the_sheet_holds_in_both_engines_browser.rs",
+     "test": true
+    }
+   ],
+   "version": "0.1.0"
+  },
+  {
+   "dependencies": [],
+   "features": {},
+   "id": "path+file://@ROOT@/crates/meclaw-testing#0.1.0",
+   "manifest_path": "@ROOT@/crates/meclaw-testing/Cargo.toml",
+   "name": "meclaw-testing",
+   "source": null,
+   "targets": [
+    {
+     "crate_types": [
+      "lib"
+     ],
+     "doctest": true,
+     "kind": [
+      "lib"
+     ],
+     "name": "meclaw_testing",
+     "src_path": "@ROOT@/crates/meclaw-testing/src/lib.rs",
+     "test": true
+    }
+   ],
+   "version": "0.1.0"
+  },
+  {
+   "dependencies": [
+    {
+     "features": [],
+     "kind": null,
+     "name": "meclaw-cells",
+     "optional": false,
+     "path": "@ROOT@/crates/meclaw-cells",
+     "req": "*",
+     "uses_default_features": true
+    },
+    {
+     "features": [],
+     "kind": null,
+     "name": "meclaw-core",
+     "optional": false,
+     "path": "@ROOT@/crates/meclaw-core",
+     "req": "*",
+     "uses_default_features": true
+    }
+   ],
+   "features": {},
+   "id": "path+file://@ROOT@/crates/meclaw#0.1.0",
+   "manifest_path": "@ROOT@/crates/meclaw/Cargo.toml",
+   "name": "meclaw",
+   "source": null,
+   "targets": [
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "bin"
+     ],
+     "name": "meclaw",
+     "src_path": "@ROOT@/crates/meclaw/src/main.rs",
+     "test": true
+    }
+   ],
+   "version": "0.1.0"
+  },
+  {
+   "dependencies": [],
+   "features": {},
+   "id": "path+file://@ROOT@/crates/meclaw-other#0.1.0",
+   "manifest_path": "@ROOT@/crates/meclaw-other/Cargo.toml",
+   "name": "meclaw-other",
+   "source": null,
+   "targets": [
+    {
+     "crate_types": [
+      "lib"
+     ],
+     "doctest": true,
+     "kind": [
+      "lib"
+     ],
+     "name": "meclaw_other",
+     "src_path": "@ROOT@/crates/meclaw-other/src/lib.rs",
+     "test": true
+    },
+    {
+     "crate_types": [
+      "bin"
+     ],
+     "doctest": false,
+     "kind": [
+      "test"
+     ],
+     "name": "other_t",
+     "src_path": "@ROOT@/crates/meclaw-other/tests/other_t.rs",
+     "test": true
+    }
+   ],
+   "version": "0.1.0"
+  },
+  {
+   "dependencies": [],
+   "features": {},
+   "id": "registry+sparse#serde@1.0.0",
+   "manifest_path": "@HOME@/.cargo/registry/src/index-0/serde-1.0.0/Cargo.toml",
+   "name": "serde",
+   "source": "registry+sparse",
+   "targets": [
+    {
+     "crate_types": [
+      "lib"
+     ],
+     "kind": [
+      "lib"
+     ],
+     "name": "serde",
+     "src_path": "@HOME@/.cargo/registry/src/index-0/serde-1.0.0/src/lib.rs"
+    }
+   ],
+   "version": "1.0.0"
+  }
+ ],
+ "resolve": null,
+ "target_directory": "@ROOT@/target",
+ "version": 1,
+ "workspace_members": [
+  "path+file://@ROOT@/crates/meclaw-core#0.1.0",
+  "path+file://@ROOT@/crates/meclaw-cells#0.1.0",
+  "path+file://@ROOT@/crates/meclaw-testing#0.1.0",
+  "path+file://@ROOT@/crates/meclaw#0.1.0",
+  "path+file://@ROOT@/crates/meclaw-other#0.1.0"
+ ],
+ "workspace_root": "@ROOT@"
+}

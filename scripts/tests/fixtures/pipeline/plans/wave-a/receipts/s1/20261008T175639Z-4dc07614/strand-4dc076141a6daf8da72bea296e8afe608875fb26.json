@@ -1,0 +1,119 @@
+{
+  "mode": "strand",
+  "rev": "4dc076141a6daf8da72bea296e8afe608875fb26",
+  "base": "ef30d5e4ad30ec0567411b47823667276c91a572",
+  "dirty": false,
+  "lock_wait_secs": 0,
+  "archive": "/srv/target/runs/x",
+  "plan": [
+    "precheck",
+    "roadmap-anchors",
+    "adr-anchors",
+    "claims",
+    "tree-rules",
+    "corpus-committed",
+    "corpus",
+    "shellcheck",
+    "gate-selftest",
+    "tests",
+    "slow-tests",
+    "export-selftest"
+  ],
+  "started": "2026-10-08T17:56:40+00:00",
+  "finished": "2026-10-08T18:08:56+00:00",
+  "stations": [
+    {
+      "name": "precheck",
+      "scope": "form",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-precheck.log"
+    },
+    {
+      "name": "roadmap-anchors",
+      "scope": "ROADMAP.md",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-roadmap-anchors.log"
+    },
+    {
+      "name": "adr-anchors",
+      "scope": "plans/adr",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-adr-anchors.log"
+    },
+    {
+      "name": "claims",
+      "scope": "claims.tsv",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-claims.log"
+    },
+    {
+      "name": "tree-rules",
+      "scope": "templates+examples",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-tree-rules.log"
+    },
+    {
+      "name": "corpus-committed",
+      "scope": "seed as committed",
+      "secs": 1,
+      "verdict": "NOTE",
+      "log": "/srv/target/wt/x/logs/strand-corpus-committed.log"
+    },
+    {
+      "name": "corpus",
+      "scope": "check+librarian",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-corpus.log"
+    },
+    {
+      "name": "shellcheck",
+      "scope": "scripts/*.sh .github/gates/*.sh plans/meclaw-os/*.sh workshop/tools/display-lab/*.sh",
+      "secs": 5,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-shellcheck.log"
+    },
+    {
+      "name": "gate-selftest",
+      "scope": "unittest",
+      "secs": 227,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-gate-selftest.log"
+    },
+    {
+      "name": "tree-sync",
+      "scope": "full touch: foreign tree /srv/target/wt/y, 1810 files",
+      "secs": 0,
+      "verdict": "NOTE",
+      "log": ""
+    },
+    {
+      "name": "tests",
+      "scope": "binary_id(=meclaw-cells::gh235_every_public_template_has_a_row) + binary_id(=meclaw-cells::gh466_the_seed_gate_is_wired) + binary_id(=meclaw-cli::gh617_a_lane_crosses_a_colony_boundary) + binary_id(=meclaw-cli::gh623_ask_prints_the_answer) - (binary(/_demo$/) + binary(/_demo_/) + binary(/e2e/) + binary(/^workshop_scenario$/) + binary(/^slack_live$/) + binary(/^gpt_live_live$/) + binary(/^harness_real_cli_smoke$/) + binary(/^audit_14_/))",
+      "secs": 494,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-tests.log"
+    },
+    {
+      "name": "slow-tests",
+      "scope": "1/3 of terminate-after",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-slow-tests.log"
+    },
+    {
+      "name": "export-selftest",
+      "scope": "drift-fixtures",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-export-selftest.log"
+    }
+  ],
+  "verdict": "GREEN",
+  "owner_decisions": []
+}

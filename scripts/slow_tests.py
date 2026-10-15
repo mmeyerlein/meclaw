@@ -26,8 +26,11 @@ whose test came in under the mark is printed as `SLOW-DEBT PAID?` -- the issue
 may be done, the line should go.
 
 Exit 0 clean, 1 a test over the mark, 2 no JUnit file, a filter this reader
-does not understand or a debt without an issue -- all RED, never a silent pass:
-a lock that cannot read its input has not looked.
+does not understand or a debt without an issue. Exit 1 is a time, and a time
+moves with the host's load: the gate grades it NOTE in every mode, a perf
+signal and a finding of the wave, never a verdict on the commit (TV-K5, ruling
+K6 2026-10-11). Exit 2 is a form error and RED in every mode, never a silent
+pass: a lock that cannot read its input has not looked.
 
 The profile defaults to `MECLAW_TIER_PROFILE`, the variable `scripts/test-tier.sh`
 reads, else `default`; the file is looked for in nextest's store

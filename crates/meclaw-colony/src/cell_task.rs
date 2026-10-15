@@ -300,6 +300,45 @@ impl Drop for WorkGuard {
     }
 }
 
+/// GH #1200: a delivery the boot replayed from the log (hop flag
+/// `DELIVERY_ATTEMPT_HEADER`) is an attempt only once a handler takes it. The
+/// colony counts it (`ColonyMsg::CountAttempt`) and this waits for the commit,
+/// so the count is durable before the handler runs: a message that takes the
+/// process down in its handler reaches `replay_exhausted` after `REPLAY_MAX`
+/// attempts, and a life killed while the delivery still waited in a mailbox
+/// or behind a waking cell counts nothing. Before, every boot counted every
+/// open delivery; under full-suite load the gh1043 stream had a healthy
+/// delivery dead-lettered after three boots killed before its cell took it
+/// (acked 300, arrived 299). Called after the delivery's `WorkGuard` and
+/// before any `.await` of the handling; an unflagged delivery (the hot path)
+/// returns at once. No colony inbox, or a colony or writer gone (the `ack`
+/// dropped): nothing to wait for.
+pub(crate) async fn count_replayed_attempt(
+    msg: &Message,
+    colony_inbox_tx: &Option<mpsc::Sender<crate::ColonyMsg>>,
+) {
+    let replayed = msg
+        .headers
+        .hop
+        .get(crate::DELIVERY_ATTEMPT_HEADER)
+        .and_then(meclaw_core::serde_json::Value::as_bool)
+        == Some(true);
+    let Some(tx) = colony_inbox_tx.as_ref().filter(|_| replayed) else {
+        return;
+    };
+    let (ack, committed) = tokio::sync::oneshot::channel();
+    if tx
+        .send(crate::ColonyMsg::CountAttempt {
+            message_id: msg.id,
+            ack,
+        })
+        .await
+        .is_ok()
+    {
+        let _ = committed.await;
+    }
+}
+
 /// Generic per-cell task loop. See module doc for the B-Backstop
 /// (`cell.message_timeout`) deferral status.
 ///
@@ -329,6 +368,7 @@ pub async fn cell_task<C: Cell + Send + 'static>(
         // factory runs here behind a real colony.
         let _work =
             WorkGuard::new(own_path.clone(), colony_inbox_tx.clone()).marking(msg.id, &outputs_tx);
+        count_replayed_attempt(&msg, &colony_inbox_tx).await;
         let input_id = msg.id;
         let input_trace = msg.trace_id;
         let input_ttl = msg.ttl;
@@ -520,6 +560,7 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell + 'static>
                 // `continue`, backstop return or panic unwind, all of them.
                 let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone())
                     .marking(msg.id, &outputs_tx);
+                count_replayed_attempt(&msg, &colony_inbox_tx).await;
                 let input_id = msg.id;
                 let input_trace = msg.trace_id;
                 let input_ttl = msg.ttl;
@@ -919,6 +960,7 @@ async fn handler_loop<L: crate::long_running_cell::LongRunningCell>(
                     // GH #47: same ticket discipline as the stateful task.
                     let _work = WorkGuard::new(own_path.clone(), colony_inbox_tx.clone())
                         .marking(msg.id, &outputs_tx);
+                    count_replayed_attempt(&msg, &colony_inbox_tx).await;
                     let sink = meclaw_core::OutputSink::new(
                         outputs_tx.clone(),
                         own_path.clone(),
@@ -968,7 +1010,7 @@ async fn acquire_dispatch_slot(
     if let Ok(permit) = sem.clone().try_acquire_owned() {
         return (permit, None);
     }
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let permit = sem
         .clone()
         .acquire_owned()
@@ -1022,6 +1064,95 @@ async fn acquire_dispatch_slot(
 #[allow(clippy::too_many_arguments)]
 pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'static>(
     own_path: meclaw_core::Path,
+    mailbox: mpsc::Receiver<meclaw_core::Message>,
+    outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
+    cell: std::sync::Arc<F>,
+    max_concurrency: usize,
+    message_timeout: Option<std::time::Duration>,
+    peace_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    stop_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    colony_inbox_tx: Option<mpsc::Sender<crate::ColonyMsg>>,
+    death_ack: Option<tokio::sync::oneshot::Sender<()>>,
+    blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+) {
+    dispatch_stateless(
+        own_path,
+        mailbox,
+        outputs_tx,
+        cell,
+        max_concurrency,
+        message_timeout,
+        peace_tx,
+        stop_rx,
+        colony_inbox_tx,
+        death_ack,
+        blob_store,
+        consumes,
+        false,
+    )
+    .await
+}
+
+/// GH #1082: a stateless dispatcher that answers ONE message and then sleeps.
+///
+/// The one-shot form of [`stateless_dispatcher`], for a cell that must not stay
+/// awake: after the first message's worker has finished (its answer is pushed),
+/// the dispatcher fires `peace_tx` and hands its mailbox back with
+/// `ColonyMsg::Sleep` — the same exit `cell_task_stateful` takes after a
+/// one-shot message (`cell_timeout > 0`) or on an idle elapse. The colony then
+/// parks the entry `Asleep` (or wakes it again at once if a message arrived in
+/// the meantime, `handle_sleep`), and the next message goes through the entry's
+/// `WakeFn` again.
+///
+/// The caller is the degraded `store` (`meclaw-cells` `store::factory`): its
+/// `cell.db` could not be opened at wake, and only a later wake can try the open
+/// again. As a resident dispatcher it stayed `Awake` for the life of the process
+/// and refused every message even after the cause was gone (fd exhaustion in the
+/// lab colony of #1082: 226 `cell.db` × 3 fds plus ~216 pipes against a soft
+/// limit of 1024).
+///
+/// No message is lost: the receiver travels back whole, and a message queued
+/// behind the answered one stays in it. The stop arm is unchanged (disconnect
+/// returns the mailbox via `ColonyMsg::Stopped`).
+#[allow(clippy::too_many_arguments)]
+pub async fn stateless_one_shot_dispatcher<F: crate::stateless_cell::StatelessCell + 'static>(
+    own_path: meclaw_core::Path,
+    mailbox: mpsc::Receiver<meclaw_core::Message>,
+    outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
+    cell: std::sync::Arc<F>,
+    message_timeout: Option<std::time::Duration>,
+    peace_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    stop_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    colony_inbox_tx: mpsc::Sender<crate::ColonyMsg>,
+    death_ack: Option<tokio::sync::oneshot::Sender<()>>,
+    blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+) {
+    dispatch_stateless(
+        own_path,
+        mailbox,
+        outputs_tx,
+        cell,
+        1,
+        message_timeout,
+        peace_tx,
+        stop_rx,
+        Some(colony_inbox_tx),
+        death_ack,
+        blob_store,
+        consumes,
+        true,
+    )
+    .await
+}
+
+/// The loop behind [`stateless_dispatcher`] and [`stateless_one_shot_dispatcher`].
+/// `one_shot` (GH #1082) ends the loop after the first message's worker with a
+/// peaceful `ColonyMsg::Sleep`; everything else is the resident dispatcher.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_stateless<F: crate::stateless_cell::StatelessCell + 'static>(
+    own_path: meclaw_core::Path,
     mut mailbox: mpsc::Receiver<meclaw_core::Message>,
     outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
     cell: std::sync::Arc<F>,
@@ -1033,6 +1164,7 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
     death_ack: Option<tokio::sync::oneshot::Sender<()>>,
     blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+    one_shot: bool,
 ) {
     // No cell.db → the death-ack guard simply fires when this frame is dropped
     // (on any dispatcher exit). Bound here so it lives for the whole loop.
@@ -1104,15 +1236,17 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
         // asynchronously, so that window is a real race, not a theoretical one.
         let work =
             WorkGuard::new(own_path.clone(), colony_inbox_tx.clone()).marking(msg.id, &outputs_tx);
+        let sleep_path = own_path.clone();
         let outputs_tx = outputs_tx.clone();
         let cell = cell.clone();
         let own_path = own_path.clone();
         let worker_blob_store = blob_store.clone();
         let worker_inbox_tx = colony_inbox_tx.clone();
         let worker_consumes = consumes.clone();
-        tokio::spawn(async move {
+        let worker = tokio::spawn(async move {
             let _work = work;
             let mut msg = msg;
+            count_replayed_attempt(&msg, &worker_inbox_tx).await;
             let input_id = msg.id;
             let input_trace = msg.trace_id;
             let input_ttl = msg.ttl;
@@ -1158,6 +1292,24 @@ pub async fn stateless_dispatcher<F: crate::stateless_cell::StatelessCell + 'sta
             }
             drop(permit);
         });
+        if one_shot && let Some(tx) = &colony_inbox_tx {
+            // GH #1082: the answer is out (the worker has pushed it) before the
+            // cell sleeps, so a later wake never overtakes it. A panicking
+            // worker is ephemeral here as in the resident loop.
+            let _ = worker.await;
+            // Peace before the task ends → the watcher sees Ok → no CellDied;
+            // the receiver goes back whole, a queued message included.
+            if let Some(p) = peace_tx.take() {
+                let _ = p.send(());
+            }
+            let _ = tx
+                .send(crate::ColonyMsg::Sleep {
+                    path: sleep_path,
+                    receiver: mailbox,
+                })
+                .await;
+            return;
+        }
     }
 }
 
@@ -3402,5 +3554,195 @@ mod tests {
             Ok(crate::ColonyMsg::WorkDone { path }) => assert_eq!(path.as_str(), "/boom"),
             _ => panic!("a panicking handler must still return its ticket"),
         }
+    }
+
+    /// GH #1082 test cell: tells the test it is inside `handle`, waits for one
+    /// release permit, then answers once.
+    struct GatedAnswer {
+        entered: mpsc::Sender<()>,
+        release: std::sync::Arc<tokio::sync::Semaphore>,
+    }
+    impl crate::stateless_cell::StatelessCell for GatedAnswer {
+        #[allow(clippy::manual_async_fn)]
+        fn handle<'a>(
+            &'a self,
+            _msg: meclaw_core::Message,
+            sink: &'a meclaw_core::OutputSink,
+        ) -> impl std::future::Future<Output = ()> + Send + 'a {
+            async move {
+                let _ = self.entered.send(()).await;
+                let _permit = self.release.acquire().await;
+                let _ = sink
+                    .push(meclaw_core::CellOutput {
+                        target: Path::new("/out"),
+                        content: meclaw_core::JsonValue::Bool(true),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// The parts of a running one-shot dispatcher a GH #1082 test reads.
+    struct OneShotRig {
+        in_tx: mpsc::Sender<Message>,
+        out_rx: mpsc::Receiver<CellEmission>,
+        colony_rx: mpsc::Receiver<crate::ColonyMsg>,
+        entered_rx: mpsc::Receiver<()>,
+        release: std::sync::Arc<tokio::sync::Semaphore>,
+        peace_rx: tokio::sync::oneshot::Receiver<()>,
+        join: tokio::task::JoinHandle<()>,
+        _stop_tx: tokio::sync::oneshot::Sender<()>,
+    }
+
+    fn one_shot_rig() -> OneShotRig {
+        let (in_tx, in_rx) = mpsc::channel::<Message>(8);
+        let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
+        let (colony_tx, colony_rx) = mpsc::channel::<crate::ColonyMsg>(32);
+        let (entered_tx, entered_rx) = mpsc::channel::<()>(8);
+        let (peace_tx, peace_rx) = tokio::sync::oneshot::channel();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let join = tokio::spawn(super::stateless_one_shot_dispatcher(
+            Path::new("/degraded"),
+            in_rx,
+            out_tx,
+            std::sync::Arc::new(GatedAnswer {
+                entered: entered_tx,
+                release: release.clone(),
+            }),
+            None, // message_timeout
+            Some(peace_tx),
+            Some(stop_rx),
+            colony_tx,
+            None, // death ack
+            None, // blob store
+            None, // consumes
+        ));
+        OneShotRig {
+            in_tx,
+            out_rx,
+            colony_rx,
+            entered_rx,
+            release,
+            peace_rx,
+            join,
+            _stop_tx: stop_tx,
+        }
+    }
+
+    /// The next `ColonyMsg::Sleep` of the rig, skipping the `WorkDone` ticket
+    /// that the answered message hands back first.
+    async fn next_sleep(
+        colony_rx: &mut mpsc::Receiver<crate::ColonyMsg>,
+    ) -> (Path, mpsc::Receiver<Message>) {
+        loop {
+            match meclaw_testing::deadline::hang(
+                "the one-shot dispatcher hands its mailbox back with ColonyMsg::Sleep",
+                colony_rx.recv(),
+            )
+            .await
+            {
+                Some(crate::ColonyMsg::Sleep { path, receiver }) => return (path, receiver),
+                Some(crate::ColonyMsg::WorkDone { .. }) => continue,
+                Some(_) => panic!("a one-shot dispatcher sends only WorkDone and Sleep here"),
+                None => panic!("the colony inbox closed before the Sleep"),
+            }
+        }
+    }
+
+    /// GH #1082: the one-shot dispatcher answers its first message, fires peace
+    /// and goes to sleep with `ColonyMsg::Sleep`, handing its mailbox back; the
+    /// dispatcher task ends. This is the exit the degraded store and vault take
+    /// so the next message wakes them and the wake tries the open again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_one_shot_dispatcher_sleeps_after_its_first_answer() {
+        let mut rig = one_shot_rig();
+        let msg = MessageBuilder::new(Path::new("/degraded")).build();
+        let msg_id = msg.id;
+        rig.in_tx.send(msg).await.expect("the mailbox is open");
+        meclaw_testing::deadline::hang("the cell enters handle()", rig.entered_rx.recv())
+            .await
+            .expect("the cell is inside handle()");
+        rig.release.add_permits(1);
+
+        let answer = meclaw_testing::deadline::hang("the answer to the message", rig.out_rx.recv())
+            .await
+            .expect("the cell answers the message");
+        assert_eq!(
+            answer.consumed_mark_id(),
+            None,
+            "the answer comes before its mark"
+        );
+
+        let (path, _receiver) = next_sleep(&mut rig.colony_rx).await;
+        assert_eq!(path.as_str(), "/degraded");
+        meclaw_testing::deadline::hang("peace fires before the task ends", &mut rig.peace_rx)
+            .await
+            .expect("peace is sent, not dropped: the watcher sees no death");
+        meclaw_testing::deadline::hang("the dispatcher task ends after the Sleep", rig.join)
+            .await
+            .expect("the dispatcher returns without a panic");
+        // The task is gone, so every output sender is gone: behind the answer
+        // stands only the consumed mark of that message, then the channel ends.
+        let mark = rig
+            .out_rx
+            .recv()
+            .await
+            .expect("the answered message is marked consumed");
+        assert_eq!(mark.consumed_mark_id(), Some(msg_id));
+        assert!(
+            rig.out_rx.recv().await.is_none(),
+            "a one-shot dispatcher answers exactly one message"
+        );
+    }
+
+    /// GH #1082: a message that waits in the mailbox while the one-shot cell
+    /// answers the first is not handled and not lost: it travels back inside the
+    /// receiver of the `ColonyMsg::Sleep`, where `handle_sleep` finds it and wakes
+    /// the cell again at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_message_waiting_at_the_sleep_travels_back_in_the_receiver() {
+        let mut rig = one_shot_rig();
+        let first = MessageBuilder::new(Path::new("/degraded")).build();
+        let first_id = first.id;
+        let second = MessageBuilder::new(Path::new("/degraded")).build();
+        let second_id = second.id;
+        rig.in_tx.send(first).await.expect("the mailbox is open");
+        meclaw_testing::deadline::hang("the cell enters handle()", rig.entered_rx.recv())
+            .await
+            .expect("the cell is inside handle()");
+        // The first message is inside handle(); the second is queued behind it
+        // before the cell may answer, so it is in the mailbox at the Sleep.
+        rig.in_tx.send(second).await.expect("the mailbox is open");
+        rig.release.add_permits(1);
+
+        let (_path, mut receiver) = next_sleep(&mut rig.colony_rx).await;
+        let waiting = receiver
+            .try_recv()
+            .expect("the queued message is in the receiver the Sleep hands back");
+        assert_eq!(waiting.id, second_id);
+        meclaw_testing::deadline::hang("the dispatcher task ends after the Sleep", rig.join)
+            .await
+            .expect("the dispatcher returns without a panic");
+        let answer = rig
+            .out_rx
+            .recv()
+            .await
+            .expect("the first message is answered");
+        assert_eq!(
+            answer.consumed_mark_id(),
+            None,
+            "the answer comes before its mark"
+        );
+        let mark = rig
+            .out_rx
+            .recv()
+            .await
+            .expect("the first message is marked consumed");
+        assert_eq!(mark.consumed_mark_id(), Some(first_id));
+        assert!(
+            rig.out_rx.recv().await.is_none(),
+            "the queued message is not handled by the sleeping cell"
+        );
     }
 }

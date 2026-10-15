@@ -48,6 +48,21 @@ pub struct ColonyHandle {
     /// auto-offload AND spawned cells' delivery-boundary resolution are live).
     /// Shared into `colony_task`, `spawn()`'s `cell_task`, and `runtime()`.
     blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
+    /// GH #1208 (TV-A3): the writer's commit counter (`log_seq`, GH #1099),
+    /// subscribed before the `ColonyDb` moved into the colony task.
+    log_seq: tokio::sync::watch::Receiver<u64>,
+}
+
+/// GH #1208 (TV-A3): a point in a colony's message log, taken by
+/// [`ColonyHandle::log_mark`]; [`ColonyHandle::log_since`] returns only rows
+/// committed after it.
+#[derive(Debug, Clone)]
+pub struct LogMark {
+    /// The writer's commit counter when the mark was taken (read before the
+    /// rows, so every row after the mark was committed past it).
+    pub seq: u64,
+    /// The ids of every row visible when the mark was taken.
+    ids: std::collections::HashSet<String>,
 }
 
 impl ColonyHandle {
@@ -232,6 +247,7 @@ impl ColonyHandle {
         egress: Option<(mpsc::Sender<meclaw_core::Message>, &'static str)>,
     ) -> Self {
         let db = ColonyDb::open(&dir.join("colony.db")).expect("open colony.db");
+        let log_seq = db.subscribe_log_seq();
         let (inbox_tx, inbox_rx) = mpsc::channel(1000);
         let (outputs_tx, outputs_rx) = mpsc::channel(1000);
         let self_tx = inbox_tx.clone();
@@ -290,6 +306,7 @@ impl ColonyHandle {
             tempdir,
             db_path: dir,
             blob_store,
+            log_seq,
         }
     }
 
@@ -495,6 +512,137 @@ impl ColonyHandle {
             .await
             .expect("colony inbox closed");
         ack_rx.await.expect("drain ack")
+    }
+
+    /// GH #1208 (TV-A1): sync marker. Returns once the colony task has read
+    /// every message sent earlier through this handle's `inbox_tx` (FIFO holds
+    /// per sender, 1:1 — not transitively for what those messages caused). The
+    /// marker is an in-memory read answered in the loop (`ReadInboundEdges`).
+    pub async fn sync(&self) {
+        let (ack, rx) = oneshot::channel();
+        let msg = ColonyMsg::ReadInboundEdges {
+            of: Path::new("/"),
+            ack,
+        };
+        self.ask("the colony read the sync marker", msg, rx).await;
+    }
+
+    /// GH #1208: one request to the colony and its answer, under the
+    /// [`crate::deadline::HANG`] mark. A colony that ended before answering
+    /// fails the test here, in one place.
+    pub(crate) async fn ask<T>(
+        &self,
+        what: &str,
+        msg: ColonyMsg,
+        answer: oneshot::Receiver<T>,
+    ) -> T {
+        let asked = async {
+            self.inbox_tx.send(msg).await.ok()?;
+            answer.await.ok()
+        };
+        match crate::deadline::hang(what, asked).await {
+            Some(answer) => answer,
+            None => panic!("{what}: the colony ended before answering"),
+        }
+    }
+
+    /// GH #1208 (TV-A2): quiescence barrier. Returns once no ticket, overflow,
+    /// mailbox, inbox or output holds work AND the message-log writer committed
+    /// everything sent before (`ColonyMsg::Settle`). Proves absence only for
+    /// messages that follow from ones already delivered — timer cells, I/O
+    /// half-tasks and HTTP ingress are not covered.
+    pub async fn quiesce(&self) {
+        let (ack, rx) = oneshot::channel();
+        self.ask("the colony settles", ColonyMsg::Settle { ack }, rx)
+            .await;
+    }
+
+    /// GH #1208 (TV-A3): a receiver of the writer's commit counter (`log_seq`);
+    /// `changed().await` is the event "the log moved".
+    pub fn subscribe_log_seq(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.log_seq.clone()
+    }
+
+    /// GH #1208 (TV-A3): mark the message log as it stands now. Rows committed
+    /// later are what [`Self::log_since`] returns. Reads through the colony
+    /// (`ReadMessages`), never the database file.
+    pub async fn log_mark(&self) -> LogMark {
+        let seq = *self.log_seq.borrow();
+        let ids = self
+            .read_log(meclaw_colony::api_dto::MessageLogFilter::default())
+            .await
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        LogMark { seq, ids }
+    }
+
+    /// GH #1208 (TV-A3): the rows matching `filter` that were committed after
+    /// `mark`, newest first. A read, not a wait — pair it with [`Self::quiesce`]
+    /// or a `log_seq` event.
+    pub async fn log_since(
+        &self,
+        mark: &LogMark,
+        filter: meclaw_colony::api_dto::MessageLogFilter,
+    ) -> Vec<meclaw_colony::api_dto::MessageLogDto> {
+        self.read_log(filter)
+            .await
+            .into_iter()
+            .filter(|row| !mark.ids.contains(&row.id))
+            .collect()
+    }
+
+    /// K8 (tv-bn M7b18 A-M2): the colony's mutation audit since `since`, oldest first, in
+    /// one read of [`AUDIT_PAGE`] rows (the clamp of `handle_read_mutations_audit`, pinned in
+    /// `one_page_tests`). The read has no cursor: a full read panics
+    /// ([`OnePage::short_of`]) -- it is a window, not the audit.
+    pub async fn mutations_audit(
+        &self,
+        since: Option<i64>,
+    ) -> Vec<meclaw_colony::api_dto::MutationLogDto> {
+        let (ack, rx) = oneshot::channel();
+        let msg = ColonyMsg::ReadMutationsAudit {
+            since,
+            limit: AUDIT_PAGE,
+            ack,
+        };
+        self.ask("the colony answers a mutations-audit read", msg, rx)
+            .await
+            .entries
+            .short_of(AUDIT_PAGE, "the mutations audit")
+    }
+
+    /// GH #1208 (TV-A3): every message-log row matching `filter`, newest first,
+    /// read page by page through `ColonyMsg::ReadMessages` (the colony reads its
+    /// own `colony.db`). Panics on a truncated scan: a silent cut would read as
+    /// "nothing matched".
+    pub async fn read_log(
+        &self,
+        mut filter: meclaw_colony::api_dto::MessageLogFilter,
+    ) -> Vec<meclaw_colony::api_dto::MessageLogDto> {
+        filter.limit = MESSAGES_PAGE;
+        filter.scan_budget = 50_000;
+        let mut rows = Vec::new();
+        loop {
+            let (ack, rx) = oneshot::channel();
+            let msg = ColonyMsg::ReadMessages {
+                filter: filter.clone(),
+                ack,
+            };
+            let reply = self
+                .ask("the colony answers a message-log read", msg, rx)
+                .await;
+            assert!(
+                !reply.scan_truncated,
+                "message-log read truncated at {} rows: narrow the filter",
+                reply.scan_budget
+            );
+            rows.extend(reply.entries);
+            match reply.next {
+                Some(cursor) => filter.before = Some(cursor),
+                None => return rows,
+            }
+        }
     }
 
     /// Register a hive scope marker.
@@ -762,6 +910,75 @@ mod tests {
         h.shutdown().await;
     }
 
+    /// GH #1208 (TV-A3): rows committed before the mark stay out of `log_since`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn log_since_sees_only_rows_after_the_mark() {
+        let h = ColonyHandle::new();
+        h.spawn(Path::new("/echo"), || EchoMockCell::new(Path::new("/echo")))
+            .await;
+        let before = MessageBuilder::new("/echo").build();
+        let before_id = before.id.to_string();
+        h.send(before).await;
+        h.quiesce().await;
+
+        let mark = h.log_mark().await;
+        let after = MessageBuilder::new("/echo").build();
+        let after_id = after.id.to_string();
+        h.send(after).await;
+        h.quiesce().await;
+
+        let since: Vec<String> = h
+            .log_since(&mark, meclaw_colony::api_dto::MessageLogFilter::default())
+            .await
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(since, vec![after_id], "only the row after the mark");
+        let all = h
+            .read_log(meclaw_colony::api_dto::MessageLogFilter::default())
+            .await;
+        assert!(
+            all.iter().any(|row| row.id == before_id),
+            "the row before the mark is in the log, just not after it"
+        );
+        assert!(
+            *h.subscribe_log_seq().borrow() > mark.seq,
+            "the log moved past the mark"
+        );
+        h.shutdown().await;
+    }
+
+    /// GH #1208 (TV-A1): every message sent earlier through the handle's
+    /// sender has been read once `sync` returns — the acks of the earlier
+    /// edge inserts are all there, checked without waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sync_returns_after_every_earlier_inbox_message_was_read() {
+        let h = ColonyHandle::new();
+        let mut acks = Vec::new();
+        for i in 0..64 {
+            let (ack, rx) = oneshot::channel();
+            h.inbox_tx
+                .send(ColonyMsg::AddEdge {
+                    id: meclaw_core::Uuid::now_v7(),
+                    from: Path::new(&format!("/from{i}")),
+                    to: Path::new("/to"),
+                    ack,
+                })
+                .await
+                .expect("colony inbox closed");
+            acks.push(rx);
+        }
+        h.sync().await;
+        for (i, mut rx) in acks.into_iter().enumerate() {
+            assert_eq!(
+                rx.try_recv(),
+                Ok(()),
+                "edge {i} not read before the sync marker"
+            );
+        }
+        h.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn colony_handle_drain_dead_letters_returns_unresolved_misses() {
         let h = ColonyHandle::new();
@@ -824,5 +1041,114 @@ mod tests {
             from, "@external",
             "Source-Message (parent_message_id IS NULL) → @external-Sentinel"
         );
+    }
+}
+
+/// The rows one read of the colony's mutation audit serves (`handle_read_mutations_audit`
+/// clamps `limit` to 1000, oldest first, with no cursor). Pinned to the clamp in
+/// `one_page_tests` (tv-bn M7b18 A-M2): a lowered clamp is red here, not an empty audit.
+pub const AUDIT_PAGE: usize = 1000;
+
+/// The rows one read of the message log serves (`handle_read_messages` clamps
+/// `filter.limit` to 1000, newest first, with a `next` cursor on a full page). Pinned to
+/// the clamp in `one_page_tests`.
+pub const MESSAGES_PAGE: usize = 1000;
+
+/// The letters one read of the dead-letter queue serves (`handle_read_dead_letters`
+/// clamps `limit` to 1000, with no cursor). Pinned to the clamp in `one_page_tests`.
+pub const DEAD_LETTERS_PAGE: usize = 1000;
+
+/// The rows an HTTP read of a colony list serves without `limit` (`clamp_limit` in
+/// `meclaw-api`'s handlers). Pinned to the default in `one_page_tests`.
+pub const API_READ_DEFAULT: usize = 100;
+
+/// K8 class "a reader takes one page for the whole" (tv-bn M7b17): a read without a
+/// cursor -- the mutation audit, the dead-letter queue -- is the whole only while it comes
+/// back short of the rows it asked for. `short_of` says so or panics.
+pub trait OnePage: Sized {
+    /// `self` when it holds fewer than `asked` rows; a full read panics, naming `what`.
+    fn short_of(self, asked: usize, what: &str) -> Self;
+}
+
+impl<T> OnePage for Vec<T> {
+    fn short_of(self, asked: usize, what: &str) -> Self {
+        assert!(
+            self.len() < asked,
+            "{what}: a full read of {asked} rows is a window, not the whole"
+        );
+        self
+    }
+}
+
+#[cfg(test)]
+mod one_page_tests {
+    use super::{API_READ_DEFAULT, AUDIT_PAGE, DEAD_LETTERS_PAGE, MESSAGES_PAGE, OnePage};
+
+    fn source(rel: &str) -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .expect("a colony source reads")
+    }
+
+    /// The `N` of `<expr>.clamp(1, N)` in the body of `fn <handler>(`.
+    fn clamp_of(src: &str, handler: &str, expr: &str) -> usize {
+        let at = src
+            .find(&format!("fn {handler}("))
+            .unwrap_or_else(|| panic!("{handler} stands in colony_dispatch.rs"));
+        let body = &src[at..];
+        let body = &body[..body.find("\n}\n").expect("the handler ends")];
+        let needle = format!("{expr}.clamp(1, ");
+        let from = body
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{handler} clamps {expr}"))
+            + needle.len();
+        let n: String = body[from..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '_')
+            .filter(|c| *c != '_')
+            .collect();
+        n.parse().expect("the clamp is a number")
+    }
+
+    /// tv-bn M7b18 A-M2: each page constant is the colony's clamp (and the API default),
+    /// read from the source -- a mirror without a pin empties every read it bounds when
+    /// the clamp moves.
+    #[test]
+    fn the_pages_are_the_clamps_of_the_colony() {
+        let dispatch = source("../meclaw-colony/src/colony_dispatch.rs");
+        for (handler, expr, page) in [
+            ("handle_read_mutations_audit", "limit", AUDIT_PAGE),
+            ("handle_read_messages", "filter.limit", MESSAGES_PAGE),
+            ("handle_read_dead_letters", "limit", DEAD_LETTERS_PAGE),
+        ] {
+            assert_eq!(clamp_of(&dispatch, handler, expr), page, "{handler}");
+        }
+        let api = source("../meclaw-api/src/handlers/mod.rs");
+        assert!(
+            api.contains(&format!(
+                "limit.unwrap_or({API_READ_DEFAULT}).clamp(1, {MESSAGES_PAGE})"
+            )),
+            "API_READ_DEFAULT is clamp_limit's default"
+        );
+    }
+
+    #[test]
+    fn a_moved_clamp_is_red() {
+        let src = "pub fn handle_read_mutations_audit(\n    limit: usize,\n) -> R {\n    let cap = limit.clamp(1, 500);\n}\n";
+        assert_ne!(
+            clamp_of(src, "handle_read_mutations_audit", "limit"),
+            AUDIT_PAGE
+        );
+    }
+
+    #[test]
+    fn a_read_short_of_the_page_is_the_whole() {
+        let rows = vec![0u8; AUDIT_PAGE - 1];
+        assert_eq!(rows.short_of(AUDIT_PAGE, "audit").len(), AUDIT_PAGE - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "a full read of 1000 rows is a window")]
+    fn a_full_read_is_a_window() {
+        let _ = vec![0u8; AUDIT_PAGE].short_of(AUDIT_PAGE, "audit");
     }
 }

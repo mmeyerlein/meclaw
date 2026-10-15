@@ -75,6 +75,16 @@ pub enum Beat {
     /// — a label changes the diagnosis, never the verdict — and remembers the
     /// last label it saw until the loop parks.
     WorkingOn(WorkItem),
+    /// GH #1216: the loop's last word. An orderly shutdown has ended its
+    /// drain (quiescent, or cut at its budget, or never opened) and the
+    /// teardown begins: closing the writer, joining the cells, the process
+    /// ending. None of that is a loop iteration, so there is nothing left to
+    /// supervise, and the supervisor stands down on hearing it — disarmed by
+    /// this EVENT, never by a timer. Sent once, from the teardown only: a hang
+    /// DURING the drain is still silence on an armed supervisor, and a colony
+    /// task that dies without saying it (panic, abort) still closes its
+    /// channel unannounced and trips as `colony_task_gone`.
+    StandDown,
 }
 
 /// The name of the work item the colony loop declared before it blocked
@@ -191,6 +201,10 @@ pub struct WorkPulse {
     label: WorkItem,
     /// GH #968: where the label goes when `tx` has no room for it.
     slot: Option<LabelSlot>,
+    /// GH #1176: the work-item budget of the supervisor this pulse reports
+    /// to, so an operation timeout under it can be set ABOVE it (a hang is
+    /// declared stuck first). `None` for a pulse with no supervisor.
+    budget: Option<std::time::Duration>,
 }
 
 impl WorkPulse {
@@ -200,6 +214,7 @@ impl WorkPulse {
             tx,
             label,
             slot: None,
+            budget: None,
         }
     }
 
@@ -210,6 +225,18 @@ impl WorkPulse {
         self
     }
 
+    /// GH #1176: the same pulse, knowing the work-item budget of its
+    /// supervisor ([`WatchdogTrip::work_item_budget`]).
+    pub fn with_budget(mut self, budget: std::time::Duration) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// The work-item budget of the supervisor, when the pulse knows it.
+    pub fn budget(&self) -> Option<std::time::Duration> {
+        self.budget
+    }
+
     /// A pulse that reports nowhere — the default for every call site with no
     /// heartbeat wired (tests, `--validate`, the boot growth, which runs before
     /// the supervisor is armed).
@@ -218,6 +245,7 @@ impl WorkPulse {
             tx: None,
             label: WorkItem::new("<unlabelled>"),
             slot: None,
+            budget: None,
         }
     }
 
@@ -243,12 +271,33 @@ impl WorkPulse {
             tx: self.tx.clone(),
             label,
             slot: self.slot.clone(),
+            budget: self.budget,
         }
     }
 
     /// The label this pulse currently reports under.
     pub fn label(&self) -> &WorkItem {
         &self.label
+    }
+
+    /// GH #1216: say [`Beat::StandDown`] — the colony loop's last word, sent
+    /// by the shutdown teardown before it starts. Never blocks the teardown:
+    /// the common case is room in the channel. A full channel (a supervisor
+    /// that has not drained this period, or one not yet armed) gets the word
+    /// from a task of its own that waits for room, so it is never dropped and
+    /// still lands BEHIND every beat already queued; a supervisor that is gone
+    /// makes that task end at once.
+    pub fn stand_down(&self) {
+        let Some(t) = &self.tx else {
+            return;
+        };
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(word)) = t.try_send(Beat::StandDown)
+        {
+            let t = t.clone();
+            tokio::spawn(async move {
+                let _ = t.send(word).await;
+            });
+        }
     }
 }
 
@@ -304,8 +353,40 @@ impl std::fmt::Display for WatchdogOnTrip {
 /// rate for 235 s, then one 499 ms iteration) is exactly that shape.
 ///
 /// A work item that outlives even this bar is a wedge and is fatal again: the
-/// factor bounds the suppression, it does not remove it.
+/// factor bounds the suppression, it does not remove it. The bar is counted in
+/// evaluated supervisor periods ([`WatchdogTrip::budget_periods`]), so a
+/// supervisor that runs late delays it in wall time and never lifts it; the
+/// CPU the host denied the process stretches it by at most
+/// [`WORK_ITEM_DENIAL_FACTOR`] (GH #1216). The same number of periods bounds
+/// the credit a parked loop gets for a late supervisor (tv-br M10o).
+///
+/// The verdict lands at the latest one window after the bar (tv-br M10q-a):
+/// tokio keeps the tick grid for up to 5 ms of delay and the supervisor reads
+/// `now` after the tick, so at the tick edge `silent_for` can lie
+/// milliseconds below the evaluated periods (`silent_for=9999ms`, gh47) and
+/// the trip at the bar still reads `slow_work_item`; the next trip, one
+/// window later, does not. Pinned in
+/// `the_bounds_hold_one_window_late_at_the_tick_edge`.
 pub const WORK_ITEM_BUDGET_FACTOR: u32 = 10;
+
+/// The most a CPU denial may stretch a work item's budget in wall time (GH
+/// #1216, tv-br M10l): the denial deduction leaves at least
+/// `1 / WORK_ITEM_DENIAL_FACTOR` of every silence charged to the item, whatever
+/// the kernel reports as denied. (The lag deduction leaves every evaluated
+/// period charged; the item is charged the smaller of the two remainders.)
+///
+/// The denial is read process-wide (the largest `run_delay` growth of any
+/// thread, [`RunDelays::max_growth_since`]) and cannot be pinned to the item's
+/// own thread -- tokio tasks move between workers. So a deadlock next to a
+/// thread the host keeps off the CPU is credited that thread's denial. Without
+/// this floor a host denying the whole silence would hide a hung item for
+/// ever; with it, an in-flight item is `stuck_work_item` at the latest one
+/// window after `WORK_ITEM_DENIAL_FACTOR × budget_periods` evaluated periods
+/// however late the supervisor runs (tv-br M10o; the window is the tick edge,
+/// see [`WORK_ITEM_BUDGET_FACTOR`]) -- `WORK_ITEM_DENIAL_FACTOR ×
+/// work_item_budget` of silence plus at most one window where it keeps its
+/// schedule.
+pub const WORK_ITEM_DENIAL_FACTOR: u32 = 5;
 
 /// What the independent, work-doing witness had to say about the same window
 /// (GH #165).
@@ -362,6 +443,12 @@ pub struct WatchdogTrip {
     pub period: std::time::Duration,
     /// Wall time since the last observed heartbeat (or since arming, if none).
     pub silent_for: std::time::Duration,
+    /// GH #1172: supervisor periods actually evaluated since the last observed
+    /// heartbeat. Equals `silent_periods` on the first trip of a silence and
+    /// keeps growing across the non-fatal trips that follow it, because the
+    /// silence clock is not reset by a trip (see [`run_watchdog`]). It is what
+    /// [`Self::supervisor_lag`] is measured against.
+    pub observed_periods: u32,
     /// Heartbeats drained since the supervisor was armed.
     pub beats_seen: u64,
     /// `true` when the heartbeat channel is closed: the colony task is GONE
@@ -385,6 +472,14 @@ pub struct WatchdogTrip {
     /// quiet, if it declared one. `None` = a `Working` beat without a name, or a
     /// parked loop — a parked loop is inside nothing.
     pub work_item: Option<WorkItem>,
+    /// GH #1216 (tv-br M10h): CPU the host denied this process inside the
+    /// silence -- the largest growth of any thread's `run_delay` (time spent
+    /// runnable but off the CPU, `/proc/self/task/*/schedstat`; CFS quota
+    /// throttling counts) since the first silent period. Measured by the
+    /// kernel, never inferred from a clock; `ZERO` where there is no procfs.
+    /// The evidence as read; the item is credited at most
+    /// [`Self::denial_deduction`] of it. See [`Self::work_item_silence`].
+    pub cpu_denied: std::time::Duration,
 }
 
 impl WatchdogTrip {
@@ -395,15 +490,85 @@ impl WatchdogTrip {
             .unwrap_or(std::time::Duration::MAX)
     }
 
-    /// How much longer the silence actually lasted than the nominal deadline.
+    /// How much longer the silence lasted than the supervisor periods that were
+    /// actually evaluated inside it: the supervisor's own lateness.
     ///
-    /// Structurally `>= 0`: the supervisor evaluates one period per tick and its
-    /// ticks are at least `period` apart. A lag near zero means the supervisor
-    /// ran on schedule and only the colony went quiet. A lag on the order of the
-    /// window itself means the supervisor's own ticks were late — the process,
-    /// not the colony loop, lost the CPU.
+    /// Structurally `>= 0`. A lag near zero means the supervisor ran on schedule
+    /// and only the colony went quiet. A lag on the order of the window itself
+    /// means the supervisor's own ticks were late — the process, not the colony
+    /// loop, lost the CPU.
+    ///
+    /// GH #1172: measured against [`Self::observed_periods`], not against the
+    /// first window. The silence clock survives non-fatal trips (the escalation
+    /// from `slow_work_item` to `stuck_work_item` is built on that), so the old
+    /// `silent_for - nominal_window` grew by one window on every repeated trip
+    /// of the same item with a punctual supervisor: the lab trip that opened the
+    /// issue said `supervisor_lag=4739ms` for 40 evaluated periods in 5239 ms,
+    /// of which 1239 ms were the supervisor's.
     pub fn supervisor_lag(&self) -> std::time::Duration {
-        self.silent_for.saturating_sub(self.nominal_window())
+        let evaluated = self
+            .period
+            .checked_mul(self.observed_periods)
+            .unwrap_or(std::time::Duration::MAX);
+        self.silent_for.saturating_sub(evaluated)
+    }
+
+    /// The silence charged to the in-flight work item: [`Self::silent_for`]
+    /// minus [`Self::supervisor_lag`], i.e. `min(silent_for, observed_periods ×
+    /// period)`.
+    ///
+    /// GH #1172: what the supervisor sleeps through is not silence of the work
+    /// item — on a host without CPU the item could not have spoken either.
+    ///
+    /// Fail-closed by construction: the lag deduction is bounded per evaluated
+    /// period, so every period the supervisor does evaluate charges one full
+    /// period to the item -- as long as `silent_for` reaches them; at the tick
+    /// edge it lies milliseconds below (see [`WORK_ITEM_BUDGET_FACTOR`]).
+    /// Without a CPU denial a hung item is stuck at the latest one window after
+    /// `work_item_budget / period` evaluated periods however late each of them
+    /// is; a supervisor that lags permanently delays the verdict in wall time
+    /// and can never hide the item. Subtracting a lag derived from the total silence instead
+    /// (the pre-#1172 `supervisor_lag`) would have left every repeated trip at
+    /// one window of charged silence — no item could ever have been stuck.
+    ///
+    /// GH #1216 (tv-br M10h): and minus the CPU the host denied
+    /// ([`Self::denial_deduction`] of [`Self::cpu_denied`]), whichever of the
+    /// two deductions is larger (they overlap: a supervisor that was off the
+    /// CPU is part of the denial). A gap in scheduling is not a hang -- under
+    /// a CPU quota the supervisor and the witness each got their slice on
+    /// time while a 14 s instantiation got a sliver of one core, and the wall
+    /// clock declared it stuck after 5 s (`stuck_work_item supervisor_lag=0ms
+    /// witness=kept`, TV-F7, 4 of 5 runs). The item is charged with the time
+    /// it could have used.
+    ///
+    /// The denial is bounded, not exact: it is read process-wide (the largest
+    /// growth of any thread), so a hung item is credited the denial of every
+    /// other thread too -- a deadlock beside a throttled thread, a spin that
+    /// itself loses `1 − quota` of the CPU. The deduction for the denial is
+    /// therefore capped at `silent_for × (1 − 1/WORK_ITEM_DENIAL_FACTOR)`
+    /// (tv-br M10l). The denial deduction always leaves a fifth of the
+    /// silence charged, the lag deduction every evaluated period, and the item
+    /// is charged the smaller remainder: at least a fifth of the smaller of
+    /// `silent_for` and the evaluated periods (tv-br M10o, M10q-a). A hung item
+    /// is therefore stuck at the latest one window after
+    /// [`WORK_ITEM_DENIAL_FACTOR`] × [`Self::budget_periods`] evaluated
+    /// periods, however much the host denies and however late the supervisor
+    /// runs -- [`WORK_ITEM_DENIAL_FACTOR`] × [`Self::work_item_budget`] of
+    /// silence plus at most one window where the supervisor keeps its schedule
+    /// (the window is the tick edge, see [`WORK_ITEM_BUDGET_FACTOR`]). The
+    /// denial delays the verdict by at most that factor and never hides the
+    /// item.
+    pub fn work_item_silence(&self) -> std::time::Duration {
+        self.silent_for
+            .saturating_sub(self.supervisor_lag().max(self.denial_deduction()))
+    }
+
+    /// The part of [`Self::cpu_denied`] the item is not charged: the denial,
+    /// capped at `silent_for × (1 − 1/WORK_ITEM_DENIAL_FACTOR)` (GH #1216, tv-br
+    /// M10l). See [`WORK_ITEM_DENIAL_FACTOR`].
+    pub fn denial_deduction(&self) -> std::time::Duration {
+        let floor = self.silent_for / WORK_ITEM_DENIAL_FACTOR;
+        self.cpu_denied.min(self.silent_for.saturating_sub(floor))
     }
 
     /// The witness's verdict on this window (GH #165).
@@ -424,9 +589,15 @@ impl WatchdogTrip {
     /// The budget a DECLARED, in-flight work item gets before it counts as stuck:
     /// [`WORK_ITEM_BUDGET_FACTOR`] × the idle window.
     pub fn work_item_budget(&self) -> std::time::Duration {
-        self.nominal_window()
-            .checked_mul(WORK_ITEM_BUDGET_FACTOR)
+        self.period
+            .checked_mul(self.budget_periods())
             .unwrap_or(std::time::Duration::MAX)
+    }
+
+    /// [`Self::work_item_budget`] counted in evaluated supervisor periods:
+    /// `silent_periods × WORK_ITEM_BUDGET_FACTOR` (GH #1216, tv-br M10o).
+    pub fn budget_periods(&self) -> u32 {
+        self.silent_periods.saturating_mul(WORK_ITEM_BUDGET_FACTOR)
     }
 
     /// One word for what was starved, derived from the evidence above.
@@ -441,12 +612,24 @@ impl WatchdogTrip {
     ///   instantiating cells, a migration, an `fsync` on a contended disk.
     /// * `stuck_work_item` (GH #165) — the same declared item outlived even that
     ///   budget. An operation that never returns is a wedge whatever its name.
-    /// * `process_scheduling` — the supervisor's own periods came in at least
-    ///   twice as slow as configured, so the whole process was descheduled and
-    ///   the colony loop is not singled out by this observation.
-    /// * `colony_loop` — every control held: the supervisor kept its schedule, the
-    ///   witness kept finishing work, and the loop was parked with nothing in
-    ///   flight when it stopped answering. This is the only silence that
+    ///   Both compare [`Self::work_item_silence`] (GH #1172), so a supervisor
+    ///   that was itself off the CPU does not push an item over its budget.
+    /// * `process_scheduling` — the supervisor's own ticks fell at least one
+    ///   window behind the periods it evaluated ([`Self::supervisor_lag`]; on the
+    ///   first trip of a silence: periods at least twice as slow as configured),
+    ///   so the whole process was descheduled and the colony loop is not singled
+    ///   out by this observation. GH #1172: on a follow-up trip of the same
+    ///   silence a punctual supervisor no longer reads as late, so a parked
+    ///   silence that outlasts its first trip is `colony_loop`. The lag is
+    ///   summed over the silence and only a beat resets it, so a parked loop
+    ///   is credited it for at most [`Self::budget_periods`] evaluated periods
+    ///   (tv-br M10o): from there on the silence is `colony_loop` however late
+    ///   the supervisor is (unless the witness failed too: `host_runtime`).
+    /// * `colony_loop` — the loop was parked with nothing in flight when it
+    ///   stopped answering, the witness kept finishing work, and the supervisor
+    ///   kept its schedule -- or its lag is no longer credited, because the same
+    ///   silence already lasts [`Self::budget_periods`] evaluated periods
+    ///   (tv-br M10o, M10q-a). This is the only silence that
     ///   implicates the colony. Its limit: a cell that blocks its runtime worker
     ///   synchronously can hold the colony task in that worker's LIFO slot,
     ///   which no other worker may steal, while the witness runs on another
@@ -466,12 +649,29 @@ impl WatchdogTrip {
         } else if self.witness() == HostWitness::Failed {
             "host_runtime"
         } else if self.in_flight_work {
-            if self.silent_for < self.work_item_budget() {
+            // GH #1172: the budget is compared against the silence charged to
+            // the item, never against the supervisor's own lateness.
+            if self.work_item_silence() < self.work_item_budget() {
                 "slow_work_item"
             } else {
                 "stuck_work_item"
             }
-        } else if self.supervisor_lag() >= self.nominal_window() {
+        } else if self.supervisor_lag() >= self.nominal_window()
+            && self.observed_periods < self.budget_periods()
+        {
+            // GH #1216 (tv-br M10i): a parked loop is not granted the CPU
+            // denial. It declared nothing in flight, so it has nothing to do
+            // but answer; and a wall-clock silence a millisecond short of the
+            // window (`silent_for=9999ms`, the beat at the edge of a tick)
+            // must not read as a denial (M10h did, and parked trips went
+            // log-only one window late: gh47, seven unit pins).
+            //
+            // tv-br M10o: and the supervisor's lateness is credited for at
+            // most `budget_periods` evaluated periods, the bar of an item in
+            // flight. The lag is summed over the silence and only a beat
+            // resets it, so without the bound one stall of a window, or a
+            // supervisor late on every tick, kept a real wedge log-only for
+            // ever.
             "process_scheduling"
         } else {
             "colony_loop"
@@ -491,7 +691,12 @@ impl WatchdogTrip {
     /// supervisor's own ticks were late, or in which the loop was demonstrably
     /// inside an operation it had announced, says something about the host or
     /// about one slow operation — and a watchdog that kills on it causes the
-    /// outage it exists to prevent.
+    /// outage it exists to prevent. That holds up to the bounds: a late
+    /// supervisor and an announced operation are credited for at most
+    /// [`Self::budget_periods`] evaluated periods ([`Self::work_item_budget`]
+    /// for the operation, stretched by at most [`WORK_ITEM_DENIAL_FACTOR`] for
+    /// a CPU denial); past them the trip is fatal however late the supervisor
+    /// is (tv-br M10o, M10q-a).
     pub fn is_fatal(&self, policy: WatchdogOnTrip) -> bool {
         if self.colony_task_gone {
             return true;
@@ -516,7 +721,7 @@ impl std::fmt::Display for WatchdogTrip {
              [starved={} silent_for={}ms nominal_window={}ms supervisor_lag={}ms \
              in_flight_work={} work_item_budget={}ms \
              witness={} witness_missed={}/{} \
-             beats_seen={} armed_for={}ms colony_task={} work_item={}]",
+             beats_seen={} armed_for={}ms colony_task={} work_item={} cpu_denied={}ms]",
             self.silent_periods,
             self.period.as_millis(),
             self.starved(),
@@ -541,8 +746,72 @@ impl std::fmt::Display for WatchdogTrip {
                 .as_ref()
                 .map(WorkItem::as_str)
                 .unwrap_or("none"),
+            // GH #1216: appended like GH #439's label, after it.
+            self.cpu_denied.as_millis(),
         )
     }
+}
+
+/// GH #1216 (tv-br M10h): the kernel's `run_delay` of every thread of this
+/// process, in ns -- the time each thread spent runnable but off the CPU
+/// (`/proc/self/task/<tid>/schedstat`, second field; a CFS quota's throttled
+/// time counts, measured on a 20 % scope: 2.40 s of 3.00 s).
+///
+/// This is the evidence the supervisor and the witness cannot give: under a
+/// CPU quota both get their slice on time while the colony's worker waits for
+/// its own. Read only at the edges of a silence, never per period, and from
+/// procfs (memory, no disk): a read cannot block on anything the colony does.
+/// Empty where there is no procfs -- the growth is then zero, the pre-#1216
+/// verdict.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RunDelays(std::collections::BTreeMap<u32, u64>);
+
+impl RunDelays {
+    /// This process's threads, now.
+    pub fn read() -> Self {
+        let mut out = std::collections::BTreeMap::new();
+        let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+            return Self(out);
+        };
+        for entry in dir.flatten() {
+            let Some(tid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
+                continue;
+            };
+            if let Some(ns) = std::fs::read_to_string(entry.path().join("schedstat"))
+                .ok()
+                .as_deref()
+                .and_then(parse_run_delay)
+            {
+                out.insert(tid, ns);
+            }
+        }
+        Self(out)
+    }
+
+    /// From explicit `(tid, run_delay ns)` rows -- a test's or a fixture's.
+    pub fn from_rows(rows: impl IntoIterator<Item = (u32, u64)>) -> Self {
+        Self(rows.into_iter().collect())
+    }
+
+    /// The largest growth of any one thread's `run_delay` since `base`. A
+    /// thread born since counts from zero (all its delay is inside the
+    /// window); one that is gone counts nothing. The MAX, not the sum: the
+    /// threads wait side by side, and the question is how long the host kept
+    /// a runnable thread of this process off the CPU.
+    pub fn max_growth_since(&self, base: &Self) -> std::time::Duration {
+        let ns = self
+            .0
+            .iter()
+            .map(|(tid, now)| now.saturating_sub(base.0.get(tid).copied().unwrap_or(0)))
+            .max()
+            .unwrap_or(0);
+        std::time::Duration::from_nanos(ns)
+    }
+}
+
+/// The `run_delay` (ns) of one `schedstat` line: `<on-cpu> <run_delay> <slices>`.
+pub fn parse_run_delay(line: &str) -> Option<u64> {
+    line.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// Counts consecutive missed heartbeats. After `threshold` misses in a row →
@@ -621,13 +890,14 @@ pub async fn run_liveness_witness(tx: tokio::sync::mpsc::Sender<()>, period: std
 
 /// The witness's fixed work quantum: cheap, deterministic, and impossible for the
 /// optimiser to delete (that is what `black_box` is for — a unit of work that got
-/// compiled away would make the witness a second sleeper).
-fn witness_work_unit() {
+/// compiled away would make the witness a second sleeper). Returns the value only
+/// the full quantum produces, so a test can see that the work ran.
+fn witness_work_unit() -> u64 {
     let mut acc: u64 = 0x9E37_79B9_7F4A_7C15;
     for i in 0..1024u64 {
         acc = acc.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(i) ^ (acc >> 29);
     }
-    let _ = std::hint::black_box(acc);
+    std::hint::black_box(acc)
 }
 
 /// Deep-Audit F3 supervisor loop: every `period`, drain the heartbeat channel and
@@ -699,6 +969,9 @@ pub(crate) struct LastWord {
     pub(crate) phase: Beat,
     pub(crate) label: Option<WorkItem>,
     pub(crate) beats_seen: u64,
+    /// GH #1216: the loop said [`Beat::StandDown`]; the supervisor returns
+    /// without a verdict.
+    pub(crate) stood_down: bool,
 }
 
 /// What one [`LastWord::drain`] found.
@@ -717,6 +990,7 @@ impl LastWord {
             phase: Beat::Parked,
             label: None,
             beats_seen: 0,
+            stood_down: false,
         }
     }
 
@@ -732,6 +1006,7 @@ impl LastWord {
                 self.phase = Beat::Parked;
                 self.label = None;
             }
+            Beat::StandDown => self.stood_down = true,
         }
     }
 
@@ -774,6 +1049,35 @@ impl LastWord {
 /// even when the channel was full. `None` = [`run_watchdog`].
 #[allow(clippy::too_many_arguments)]
 pub async fn run_watchdog_with_label_slot(
+    heartbeat_rx: tokio::sync::mpsc::Receiver<Beat>,
+    trip_tx: tokio::sync::mpsc::Sender<WatchdogTrip>,
+    threshold: u32,
+    period: std::time::Duration,
+    armed_rx: tokio::sync::oneshot::Receiver<()>,
+    on_trip: WatchdogOnTrip,
+    witness_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+    label_slot: Option<LabelSlotReader>,
+) {
+    run_watchdog_reading_denial(
+        heartbeat_rx,
+        trip_tx,
+        threshold,
+        period,
+        armed_rx,
+        on_trip,
+        witness_rx,
+        label_slot,
+        RunDelays::read,
+    )
+    .await
+}
+
+/// [`run_watchdog_with_label_slot`] with the source of the CPU denial named
+/// (GH #1216, tv-br M10i): production reads the kernel ([`RunDelays::read`]);
+/// a pin hands in a host that denies a known amount, the one thing a unit
+/// test cannot make a real kernel do on demand.
+#[allow(clippy::too_many_arguments)]
+async fn run_watchdog_reading_denial(
     mut heartbeat_rx: tokio::sync::mpsc::Receiver<Beat>,
     trip_tx: tokio::sync::mpsc::Sender<WatchdogTrip>,
     threshold: u32,
@@ -782,6 +1086,7 @@ pub async fn run_watchdog_with_label_slot(
     on_trip: WatchdogOnTrip,
     mut witness_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     mut label_slot: Option<LabelSlotReader>,
+    read_denial: impl Fn() -> RunDelays,
 ) {
     // Disarmed until boot says otherwise. `Err` = the arming sender was dropped
     // (the boot never finished) → nothing to guard, exit silently.
@@ -801,7 +1106,13 @@ pub async fn run_watchdog_with_label_slot(
     }
     // Heartbeats buffered during boot prove liveness of a moment that is already
     // past. Drop them so the first evaluated period is a fresh observation.
-    while heartbeat_rx.try_recv().is_ok() {}
+    // GH #1216: all but one — a stand-down is not stale: a colony that shut
+    // down before the supervisor was armed has nothing left to guard.
+    while let Ok(beat) = heartbeat_rx.try_recv() {
+        if beat == Beat::StandDown {
+            return;
+        }
+    }
     let mut wd = Watchdog::new(threshold);
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -819,6 +1130,14 @@ pub async fn run_watchdog_with_label_slot(
     let mut witness_misses: u32 = 0;
     let mut witness_worst: u32 = 0;
     let mut witness_present = witness_rx.is_some();
+    // GH #1172: periods evaluated since the last beat. Reset by a beat only --
+    // like `last_beat_at`, and for the same reason: a non-fatal trip must not
+    // make a silence that continues look fresh.
+    let mut observed_periods: u32 = 0;
+    // GH #1216: every thread's `run_delay`, read at the first silent period of
+    // a silence (a period late, so the deduction errs on the charged side) and
+    // kept, like `last_beat_at`, until a beat ends the silence.
+    let mut denial_base: Option<RunDelays> = None;
     // Stale witness units from before arming prove a moment that is already past,
     // exactly like stale heartbeats.
     if let Some(rx) = witness_rx.as_mut() {
@@ -833,6 +1152,12 @@ pub async fn run_watchdog_with_label_slot(
             received,
             gone: colony_task_gone,
         } = last.drain(&mut heartbeat_rx, label_slot.as_mut());
+        // GH #1216: the teardown has begun; it is not a loop iteration and the
+        // closed channel that ends it is not a death. Stand down before any
+        // verdict on this period.
+        if last.stood_down {
+            return;
+        }
         // GH #165: the witness is evaluated on the SAME tick, before the colony
         // verdict, so the two observers always describe one and the same window.
         let mut witness_received = false;
@@ -861,15 +1186,29 @@ pub async fn run_watchdog_with_label_slot(
         let now = tokio::time::Instant::now();
         if received {
             last_beat_at = now;
+            observed_periods = 0;
+            denial_base = None;
             // A beat opens a fresh window; only the witness run still in progress
             // carries over into it.
             witness_worst = witness_misses;
+        } else {
+            observed_periods = observed_periods.saturating_add(1);
+            if denial_base.is_none() {
+                denial_base = Some(read_denial());
+            }
         }
         if wd.tick(received) == WatchdogAction::Stop {
+            let silent_for = now.saturating_duration_since(last_beat_at);
+            let cpu_denied = denial_base
+                .as_ref()
+                .map(|base| read_denial().max_growth_since(base))
+                .unwrap_or_default()
+                .min(silent_for);
             let trip = WatchdogTrip {
                 silent_periods: threshold,
                 period,
-                silent_for: now.saturating_duration_since(last_beat_at),
+                silent_for,
+                observed_periods,
                 beats_seen: last.beats_seen,
                 colony_task_gone,
                 armed_for: now.saturating_duration_since(armed_at),
@@ -877,6 +1216,7 @@ pub async fn run_watchdog_with_label_slot(
                 witness_present,
                 witness_worst_misses: witness_worst,
                 work_item: last.label.clone(),
+                cpu_denied,
             };
             let fatal = trip.is_fatal(on_trip);
             // `try_send`: the caller drains this channel; a full one means it has
@@ -1003,9 +1343,13 @@ mod tests {
             WatchdogOnTrip::Exit,
             None,
         ));
-        let res = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv()).await;
+        let res = meclaw_testing::deadline::hang(
+            "watchdog must report a trip when heartbeats cease",
+            trip_rx.recv(),
+        )
+        .await;
         assert!(
-            matches!(res, Ok(Some(_))),
+            res.is_some(),
             "watchdog must report a trip when heartbeats cease, got {res:?}"
         );
         drop(hb_tx);
@@ -1013,28 +1357,53 @@ mod tests {
 
     /// Supervisor plumbing: while heartbeats keep flowing, `run_watchdog` never
     /// fires the stop signal.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // tv-br M10x: virtual time (AGENTS.md rule 11, time logic). On the wall
+    // clock the 5 ms beats raced the 50 ms silence window: a CPU quota that
+    // stalls the sender for one window trips a healthy colony (the same window
+    // went red in `the_supervisor_carries_the_last_declared_label_into_the_trip`,
+    // CPUQuota 80 %, M10w). In virtual time every beat lands half way between
+    // two ticks, so each period hears two of them, and the trip after the last
+    // one is the positive receipt that the supervisor was watching all along.
+    #[tokio::test(start_paused = true)]
     async fn supervisor_does_not_stop_while_heartbeats_flow() {
+        let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
         tokio::spawn(run_watchdog(
             hb_rx,
             trip_tx,
             5,
-            Duration::from_millis(10),
+            period,
             armed(),
             WatchdogOnTrip::Exit,
             None,
         ));
-        // Emit heartbeats faster than the period for well over `threshold` periods.
+        // Past the arming drain (the supervisor arms and drains at 0 ms, on the
+        // first yield), and off the tick instants: beats at 2.5 ms + n × 5 ms.
+        tokio::time::sleep(period / 4).await;
+        // Heartbeats twice per period for eight times `threshold` periods.
         for _ in 0..40 {
-            let _ = hb_tx.try_send(Beat::Parked);
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            hb_tx
+                .try_send(Beat::Parked)
+                .expect("two beats per period fit the channel");
+            tokio::time::sleep(period / 2).await;
         }
         assert!(
             trip_rx.try_recv().is_err(),
             "watchdog must NOT trip while heartbeats flow"
         );
+        // The last beat (197.5 ms) is heard at the 200 ms tick; five silent
+        // periods later, and not one earlier, the same supervisor trips.
+        let trip = meclaw_testing::deadline::hang(
+            "the supervisor must trip once the beats stop",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("a trip");
+        assert_eq!(trip.beats_seen, 40, "every beat was heard: {trip}");
+        assert_eq!(trip.silent_for, period * 5, "{trip}");
+        assert_eq!(trip.armed_for, period * 25, "{trip}");
+        drop(hb_tx);
     }
 
     /// Issue #6, defect 1: a boot may take arbitrarily long and emits no
@@ -1045,7 +1414,12 @@ mod tests {
     /// `5 × 10 ms = 50 ms`, and the simulated boot is 500 ms of total silence —
     /// ten times the deadline. A watchdog armed at spawn time (the pre-fix
     /// behaviour) would have tripped ten times over.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // welle-val2 v2-fix-b (#1199): virtual time (AGENTS.md rule 11, time logic).
+    // In real time "no trip" was read after a 500 ms window -- absence over a
+    // window, which a supervisor descheduled past the window would pass for the
+    // wrong reason. On the paused clock every wait point is a tokio timer or
+    // channel, the 500 ms are exact, and the absence is the fact at that instant.
+    #[tokio::test(start_paused = true)]
     async fn an_unarmed_watchdog_cannot_trip_during_a_slow_boot() {
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
@@ -1072,7 +1446,9 @@ mod tests {
     /// Issue #6, defect 1 (the other half): arming is what starts the count, so a
     /// colony that goes silent AFTER boot is still detected. Positive receipt —
     /// the stop signal must actually arrive.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // welle-val2 v2-fix-b (#1199): virtual time like its other half above; the
+    // 100 ms boot is a step of the paused clock, not a sleep before a read.
+    #[tokio::test(start_paused = true)]
     async fn arming_after_boot_starts_the_count_and_a_silent_colony_stops() {
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
@@ -1088,9 +1464,13 @@ mod tests {
         ));
         tokio::time::sleep(Duration::from_millis(100)).await;
         arm_tx.send(()).expect("watchdog task alive");
-        let res = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv()).await;
+        let res = meclaw_testing::deadline::hang(
+            "an armed watchdog must trip on colony silence",
+            trip_rx.recv(),
+        )
+        .await;
         assert!(
-            matches!(res, Ok(Some(_))),
+            res.is_some(),
             "an armed watchdog must trip on colony silence, got {res:?}"
         );
         drop(hb_tx);
@@ -1119,9 +1499,13 @@ mod tests {
             None,
         ));
         arm_tx.send(()).expect("watchdog task alive");
-        let res = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv()).await;
+        let res = meclaw_testing::deadline::hang(
+            "buffered boot heartbeats must not keep a dead colony alive",
+            trip_rx.recv(),
+        )
+        .await;
         assert!(
-            matches!(res, Ok(Some(_))),
+            res.is_some(),
             "buffered boot heartbeats must not keep a dead colony alive, got {res:?}"
         );
         drop(hb_tx);
@@ -1138,6 +1522,7 @@ mod tests {
     fn starved_separates_a_late_supervisor_from_a_quiet_colony() {
         let base = WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(520),
             beats_seen: 400,
@@ -1147,6 +1532,7 @@ mod tests {
             witness_present: false,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         assert_eq!(base.nominal_window(), Duration::from_millis(500));
         assert_eq!(base.supervisor_lag(), Duration::from_millis(20));
@@ -1175,6 +1561,7 @@ mod tests {
     fn the_trip_line_keeps_its_prefix_and_names_the_evidence() {
         let trip = WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(3100),
             beats_seen: 417,
@@ -1184,6 +1571,7 @@ mod tests {
             witness_present: false,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         let line = format!("{trip}");
         assert!(
@@ -1213,6 +1601,7 @@ mod tests {
     fn a_trip_in_flight() -> WatchdogTrip {
         WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(900),
             beats_seen: 12,
@@ -1222,6 +1611,7 @@ mod tests {
             witness_present: true,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         }
     }
 
@@ -1232,6 +1622,7 @@ mod tests {
         let label = "mutation 0198 scope=/os op=add_nodes[3/7] template=memory-hive cell=/os/mem";
         let trip = WatchdogTrip {
             work_item: Some(WorkItem::new(label)),
+            cpu_denied: std::time::Duration::ZERO,
             ..a_trip_in_flight()
         };
         let line = format!("{trip}");
@@ -1257,33 +1648,39 @@ mod tests {
 
     /// GH #439: the supervisor keeps the LAST label the loop declared, and it
     /// judges a labelled beat exactly as it judges a bare `Working` one.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // tv-br M10x: virtual time (AGENTS.md rule 11, time logic). On the wall
+    // clock twelve 5 ms beats raced the arming drain and a 50 ms silence
+    // window; under CPUQuota 80 % the sender stalled past the window and the
+    // trip came without a label (build04, M10w: `left: None`). In virtual time
+    // the order is fixed: the supervisor arms and drains at 0 ms, the ONE
+    // labelled beat lands at 5 ms, the 10 ms tick hears it, and five silent
+    // periods trip at 60 ms.
+    #[tokio::test(start_paused = true)]
     async fn the_supervisor_carries_the_last_declared_label_into_the_trip() {
+        let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
         tokio::spawn(run_watchdog(
             hb_rx,
             trip_tx,
             5,
-            Duration::from_millis(10),
+            period,
             armed(),
             WatchdogOnTrip::LogOnly,
             None,
         ));
-        // A short stretch of labelled beats, then silence. Not ONE beat: the
-        // supervisor DISCARDS everything buffered before it arms (a beat from
-        // before arming proves a moment that is already past), and a single
-        // beat racing that drain is a flake, not a test.
-        for _ in 0..12 {
-            let _ = hb_tx.try_send(Beat::WorkingOn(WorkItem::new(
+        // Past the arming drain: a beat buffered before it would be discarded
+        // as stale (it proves a moment that is already past).
+        tokio::time::sleep(period / 2).await;
+        hb_tx
+            .try_send(Beat::WorkingOn(WorkItem::new(
                 "mutation 42 op=add_nodes[1/1]",
-            )));
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must trip on silence")
-            .expect("a trip");
+            )))
+            .expect("the supervisor must be listening");
+        let trip =
+            meclaw_testing::deadline::hang("the supervisor must trip on silence", trip_rx.recv())
+                .await
+                .expect("a trip");
         assert_eq!(
             trip.work_item.as_ref().map(WorkItem::as_str),
             Some("mutation 42 op=add_nodes[1/1]"),
@@ -1298,40 +1695,56 @@ mod tests {
             "colony_loop",
             "a declared item is never judged as a parked loop: {trip}"
         );
+        // Exact in virtual time: one beat heard at 10 ms, five silent periods.
+        assert_eq!(trip.beats_seen, 1, "{trip}");
+        assert_eq!(trip.silent_for, period * 5, "{trip}");
+        assert_eq!(trip.armed_for, period * 6, "{trip}");
         drop(hb_tx);
     }
 
     /// A `Parked` beat clears the label: a parked loop is inside nothing, and a
     /// stale name would be worse evidence than none.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // tv-br M10o: virtual time (AGENTS.md rule 11, time logic). In real time a
+    // CPU quota delayed the supervisor's ticks and the beats, and the verdict
+    // followed the scheduler (CPUQuota 80 %, 3 runs: 11 red in five pins).
+    // tv-br M10x: the twelve-beat stretch that raced the arming drain is gone;
+    // in virtual time one labelled beat (5 ms, heard at 10 ms) and one `Parked`
+    // (15 ms, heard at 20 ms) say the same, and `beats_seen` proves both words
+    // were heard, so the cleared label is not the default of a deaf supervisor.
+    #[tokio::test(start_paused = true)]
     async fn parking_clears_the_declared_label() {
+        let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
         tokio::spawn(run_watchdog(
             hb_rx,
             trip_tx,
             5,
-            Duration::from_millis(10),
+            period,
             armed(),
             WatchdogOnTrip::LogOnly,
             None,
         ));
         // Same reason as above: beat past the arming drain, and END on `Parked`.
-        for _ in 0..12 {
-            let _ = hb_tx.try_send(Beat::WorkingOn(WorkItem::new("mutation 42")));
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        let _ = hb_tx.try_send(Beat::Parked);
-        tokio::time::sleep(Duration::from_millis(15)).await;
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must trip on silence")
-            .expect("a trip");
+        tokio::time::sleep(period / 2).await;
+        hb_tx
+            .try_send(Beat::WorkingOn(WorkItem::new("mutation 42")))
+            .expect("the supervisor must be listening");
+        tokio::time::sleep(period).await;
+        hb_tx
+            .try_send(Beat::Parked)
+            .expect("the supervisor must be listening");
+        let trip =
+            meclaw_testing::deadline::hang("the supervisor must trip on silence", trip_rx.recv())
+                .await
+                .expect("a trip");
         assert_eq!(
             trip.work_item, None,
             "a parked loop must not carry the name of a finished item: {trip}"
         );
         assert!(!trip.in_flight_work);
+        assert_eq!(trip.beats_seen, 2, "both words were heard: {trip}");
+        assert_eq!(trip.silent_for, period * 5, "{trip}");
         drop(hb_tx);
     }
 
@@ -1388,6 +1801,7 @@ mod tests {
     fn a_gone_colony_task_is_fatal_under_every_policy() {
         let silent = WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(520),
             beats_seen: 1,
@@ -1397,6 +1811,7 @@ mod tests {
             witness_present: false,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         assert!(silent.is_fatal(WatchdogOnTrip::Exit));
         assert!(!silent.is_fatal(WatchdogOnTrip::LogOnly));
@@ -1429,12 +1844,12 @@ mod tests {
             None,
         ));
         for n in 1..=2 {
-            let res = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv()).await;
-            let trip = res
-                .unwrap_or_else(|_| panic!("trip {n} must arrive under log-only"))
-                .unwrap_or_else(|| {
-                    panic!("trip {n}: the supervisor returned instead of reporting")
-                });
+            let trip =
+                meclaw_testing::deadline::hang("a trip must arrive under log-only", trip_rx.recv())
+                    .await
+                    .unwrap_or_else(|| {
+                        panic!("trip {n}: the supervisor returned instead of reporting")
+                    });
             assert!(
                 !trip.colony_task_gone,
                 "the heartbeat channel is open, so this must be a silence trip: {trip:?}"
@@ -1446,7 +1861,17 @@ mod tests {
     /// The other half: under `log-only`, a colony task that is GONE still ends
     /// the supervisor. The receipt is that the reported trip says so AND that the
     /// supervisor stops (the trip channel closes behind it).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // welle-val2 v2-kit (#1199): virtual time (AGENTS.md rule 11, time logic).
+    // In real time on two workers the supervisor ran from the spawn on while the
+    // test thread still had to reach `drop(hb_tx)`; a test thread descheduled
+    // for three periods (30 ms) under load let a SILENCE trip of a still-open
+    // channel arrive first (release gate 0.64.0). That trip was right -- the
+    // channel was open for all three periods -- so the race was the test's, not
+    // the supervisor's. On the paused clock the supervisor is spawned but not
+    // polled before the test yields, so the channel is closed before its first
+    // tick, every wait point on the path is a tokio timer or channel, and the
+    // order is the same on every host.
+    #[tokio::test(start_paused = true)]
     async fn log_only_still_reports_a_gone_colony_task_as_fatal() {
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(8);
@@ -1459,18 +1884,19 @@ mod tests {
             WatchdogOnTrip::LogOnly,
             None,
         ));
-        drop(hb_tx); // the colony task is gone
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
+        drop(hb_tx); // the colony task is gone, before the supervisor's first tick
+        let trip = meclaw_testing::deadline::hang("a gone colony must be reported", trip_rx.recv())
             .await
-            .expect("a gone colony must be reported")
             .expect("the supervisor must report before it returns");
         assert!(trip.colony_task_gone, "was: {trip:?}");
         assert_eq!(trip.starved(), "colony_task_gone");
         assert!(trip.is_fatal(WatchdogOnTrip::LogOnly));
         // The supervisor returned → its sender dropped → the channel is closed.
-        let after = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must stop, not keep reporting");
+        let after = meclaw_testing::deadline::hang(
+            "the supervisor must stop, not keep reporting",
+            trip_rx.recv(),
+        )
+        .await;
         assert!(
             after.is_none(),
             "a gone colony must end the supervisor under log-only too, got {after:?}"
@@ -1478,21 +1904,16 @@ mod tests {
     }
     // ------------------------------------------------------------- GH #165
 
-    /// A witness that keeps the same schedule, for the tests that are about the
-    /// colony rather than the host. Feeds far faster than the supervisor period,
-    /// so a missed witness period would require the feeder itself to stall for a
-    /// whole period — which is the very condition the test would want to know
-    /// about anyway.
-    fn healthy_witness(period: Duration) -> tokio::sync::mpsc::Receiver<()> {
+    /// A witness that never misses, for the tests that are about the colony
+    /// rather than the host. It keeps its channel full: every supervisor tick
+    /// drains it and the feeder refills it at once (the `send` waits for room,
+    /// no clock), so a missed witness period would require the feeder itself to
+    /// stall for a whole period — which is the very condition the test would
+    /// want to know about anyway. OR-V2.v2-fix-b.G.1: no sleep, the same feeder
+    /// serves the virtual-time and the real-time tests.
+    fn healthy_witness() -> tokio::sync::mpsc::Receiver<()> {
         let (tx, rx) = tokio::sync::mpsc::channel::<()>(64);
-        tokio::spawn(async move {
-            loop {
-                if tx.send(()).await.is_err() {
-                    return;
-                }
-                tokio::time::sleep(period / 5).await;
-            }
-        });
+        tokio::spawn(async move { while tx.send(()).await.is_ok() {} });
         rx
     }
 
@@ -1505,7 +1926,10 @@ mod tests {
     /// * the pre-#165 detector, which is exactly a trip with no witness wired,
     ///   calls this silence `colony_loop` and ENDS THE PROCESS;
     /// * the corroborated detector calls it `host_runtime` and does not.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // tv-br M10o: virtual time (AGENTS.md rule 11, time logic). In real time a
+    // CPU quota delayed the supervisor's ticks and the beats, and the verdict
+    // followed the scheduler (CPUQuota 80 %, 3 runs: 11 red in five pins).
+    #[tokio::test(start_paused = true)]
     async fn a_starved_host_no_longer_reads_as_a_wedged_colony() {
         // Held for the whole test: an open channel with nothing on it is a
         // witness that is failing, not a witness that is gone.
@@ -1522,10 +1946,12 @@ mod tests {
             Some(witness_rx),
         ));
 
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must still report the silence")
-            .expect("a suppressed trip is still a reported trip");
+        let trip = meclaw_testing::deadline::hang(
+            "the supervisor must still report the silence",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("a suppressed trip is still a reported trip");
 
         assert!(
             !trip.colony_task_gone,
@@ -1545,6 +1971,7 @@ mod tests {
             witness_present: false,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
             ..trip
         };
         assert_eq!(pre_165.starved(), "colony_loop");
@@ -1556,10 +1983,12 @@ mod tests {
 
         // And it keeps supervising: a second trip must arrive, so a wedge that
         // merely coincided with a bad moment is not lost.
-        let second = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must keep supervising after a suppressed trip")
-            .expect("the supervisor must not have returned");
+        let second = meclaw_testing::deadline::hang(
+            "the supervisor must keep supervising after a suppressed trip",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("the supervisor must not have returned");
         assert!(!second.is_fatal(WatchdogOnTrip::Exit));
     }
 
@@ -1570,7 +1999,10 @@ mod tests {
     /// and it still ends the process under `exit`. The positive receipt for
     /// "ends the process" is that the supervisor RETURNS — its sender drops and
     /// the trip channel closes behind it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    // tv-br M10o: virtual time (AGENTS.md rule 11, time logic). In real time a
+    // CPU quota delayed the supervisor's ticks and the beats, and the verdict
+    // followed the scheduler (CPUQuota 80 %, 3 runs: 11 red in five pins).
+    #[tokio::test(start_paused = true)]
     async fn a_wedged_colony_is_still_fatal_while_the_witness_keeps_working() {
         let period = Duration::from_millis(20);
         // Open, and permanently silent: the colony loop stopped iterating.
@@ -1583,13 +2015,15 @@ mod tests {
             period,
             armed(),
             WatchdogOnTrip::Exit,
-            Some(healthy_witness(period)),
+            Some(healthy_witness()),
         ));
 
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("a wedged colony must still be detected")
-            .expect("the supervisor must report before it returns");
+        let trip = meclaw_testing::deadline::hang(
+            "a wedged colony must still be detected",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("the supervisor must report before it returns");
         assert_eq!(trip.witness(), HostWitness::Kept, "was: {trip:?}");
         assert_eq!(trip.starved(), "colony_loop", "was: {trip:?}");
         assert!(
@@ -1597,9 +2031,11 @@ mod tests {
             "a corroborated wedge must still end the process: {trip:?}"
         );
 
-        let after = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must stop on a fatal trip, not keep reporting");
+        let after = meclaw_testing::deadline::hang(
+            "the supervisor must stop on a fatal trip, not keep reporting",
+            trip_rx.recv(),
+        )
+        .await;
         assert!(
             after.is_none(),
             "a fatal trip must end the supervisor, got {after:?}"
@@ -1609,7 +2045,10 @@ mod tests {
     /// The real supervisor with the real [`run_liveness_witness`] task: the
     /// witness is not a test fixture, it actually completes work units on a live
     /// runtime, and a wedged colony next to it is still fatal.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    // tv-br M10o: virtual time (AGENTS.md rule 11, time logic). In real time a
+    // CPU quota delayed the supervisor's ticks and the beats, and the verdict
+    // followed the scheduler (CPUQuota 80 %, 3 runs: 11 red in five pins).
+    #[tokio::test(start_paused = true)]
     async fn the_production_witness_corroborates_a_real_wedge() {
         let period = Duration::from_millis(20);
         let (_hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
@@ -1626,10 +2065,12 @@ mod tests {
             Some(w_rx),
         ));
 
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("a wedged colony must still be detected")
-            .expect("the supervisor must report before it returns");
+        let trip = meclaw_testing::deadline::hang(
+            "a wedged colony must still be detected",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("the supervisor must report before it returns");
         assert_eq!(trip.witness(), HostWitness::Kept, "was: {trip:?}");
         assert!(trip.is_fatal(WatchdogOnTrip::Exit), "was: {trip:?}");
     }
@@ -1644,6 +2085,7 @@ mod tests {
         // supervisor dead on time.
         let base = WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(499),
             beats_seen: 2380,
@@ -1653,6 +2095,7 @@ mod tests {
             witness_present: true,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         assert_eq!(base.supervisor_lag(), Duration::ZERO);
         assert_eq!(base.witness(), HostWitness::Kept);
@@ -1664,6 +2107,7 @@ mod tests {
         let starved = WatchdogTrip {
             witness_worst_misses: 5,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
             ..base
         };
         assert_eq!(starved.supervisor_lag(), Duration::ZERO);
@@ -1676,6 +2120,7 @@ mod tests {
         let brief = WatchdogTrip {
             witness_worst_misses: 4,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
             ..base
         };
         assert_eq!(brief.witness(), HostWitness::Kept);
@@ -1688,6 +2133,7 @@ mod tests {
     fn an_absent_witness_changes_no_verdict_and_says_so() {
         let t = WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(520),
             beats_seen: 7,
@@ -1697,6 +2143,7 @@ mod tests {
             witness_present: false,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         assert_eq!(t.witness(), HostWitness::Absent);
         assert_eq!(t.starved(), "colony_loop");
@@ -1709,7 +2156,10 @@ mod tests {
     /// become evidence that the host was healthy. The receipt: the trip says
     /// `absent`, and it is fatal again (the pre-#165 verdict), rather than being
     /// suppressed forever by a witness that will never report again.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // tv-br M10o: virtual time (AGENTS.md rule 11, time logic). In real time a
+    // CPU quota delayed the supervisor's ticks and the beats, and the verdict
+    // followed the scheduler (CPUQuota 80 %, 3 runs: 11 red in five pins).
+    #[tokio::test(start_paused = true)]
     async fn a_dead_witness_degrades_to_absent_and_never_to_healthy() {
         let (_hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (witness_tx, witness_rx) = tokio::sync::mpsc::channel::<()>(8);
@@ -1724,27 +2174,31 @@ mod tests {
             WatchdogOnTrip::Exit,
             Some(witness_rx),
         ));
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the silence must still be reported")
-            .expect("the supervisor must report before it returns");
+        let trip =
+            meclaw_testing::deadline::hang("the silence must still be reported", trip_rx.recv())
+                .await
+                .expect("the supervisor must report before it returns");
         assert_eq!(trip.witness(), HostWitness::Absent, "was: {trip:?}");
         assert_eq!(trip.starved(), "colony_loop");
         assert!(trip.is_fatal(WatchdogOnTrip::Exit));
     }
 
-    /// The witness's work unit is real work: it must not be a value the compiler
-    /// can fold away, or the witness would be a second sleeper and the whole
-    /// corroboration would be worthless. Cheap enough to call in a test loop.
+    /// The witness's work unit is real work: a unit that skipped its quantum
+    /// would make the witness a second sleeper and the whole corroboration
+    /// worthless. Proven by its result, the value only all 1024 steps of the
+    /// recurrence produce — never by the wall clock (OR-V2.v2-fix-b.G.2).
     #[test]
     fn the_witness_work_unit_actually_runs() {
-        let t0 = std::time::Instant::now();
-        for _ in 0..1000 {
-            witness_work_unit();
+        let seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut acc = seed;
+        for i in 0..1024u64 {
+            acc = acc.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(i) ^ (acc >> 29);
         }
-        assert!(
-            t0.elapsed() > Duration::ZERO,
-            "a work unit that costs nothing measurable is not work"
+        assert_ne!(acc, seed, "the quantum moves its accumulator");
+        assert_eq!(
+            witness_work_unit(),
+            acc,
+            "the work unit ran every step of its quantum"
         );
     }
     /// GH #165, the reported incident, reconstructed from its own record: a
@@ -1760,6 +2214,7 @@ mod tests {
     fn a_declared_work_item_is_slow_and_not_a_wedge() {
         let incident = WatchdogTrip {
             silent_periods: 5,
+            observed_periods: 5,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(499),
             beats_seen: 2380,
@@ -1769,6 +2224,7 @@ mod tests {
             witness_present: true,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         assert_eq!(incident.supervisor_lag(), Duration::ZERO);
         assert_eq!(incident.work_item_budget(), Duration::from_secs(5));
@@ -1798,6 +2254,9 @@ mod tests {
     fn a_work_item_that_outlives_its_budget_is_fatal_again() {
         let base = WatchdogTrip {
             silent_periods: 5,
+            // GH #1172: a silence of 4.999 s at a punctual 100 ms supervisor is
+            // 49 evaluated periods, not the five of the first window.
+            observed_periods: 49,
             period: Duration::from_millis(100),
             silent_for: Duration::from_millis(4_999),
             beats_seen: 2380,
@@ -1807,12 +2266,14 @@ mod tests {
             witness_present: true,
             witness_worst_misses: 0,
             work_item: None,
+            cpu_denied: std::time::Duration::ZERO,
         };
         assert_eq!(base.starved(), "slow_work_item");
         assert!(!base.is_fatal(WatchdogOnTrip::Exit));
 
         let stuck = WatchdogTrip {
             silent_for: Duration::from_millis(5_000),
+            observed_periods: 50,
             ..base
         };
         assert_eq!(stuck.starved(), "stuck_work_item");
@@ -1832,7 +2293,13 @@ mod tests {
     ///
     /// 5 × 10 ms window, 500 ms budget: the whole escalation runs in well under a
     /// second and generates no load.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    // tv-br M10x: virtual time (AGENTS.md rule 11, time logic). On the wall
+    // clock `sleep(period)` raced the arming drain (a drained `Working` leaves
+    // the supervisor assuming `Parked`, which is `colony_loop` at once) and the
+    // verdicts followed the scheduler. In virtual time the drain is at 0 ms,
+    // the beat lands at 5 ms, and the escalation is exact: slow every window
+    // until the charged silence crosses the budget.
+    #[tokio::test(start_paused = true)]
     async fn a_silent_work_item_escalates_from_slow_to_stuck() {
         let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
@@ -1844,45 +2311,56 @@ mod tests {
             period,
             armed(),
             WatchdogOnTrip::Exit,
-            Some(healthy_witness(period)),
+            Some(healthy_witness()),
         ));
         // After arming: the supervisor discards beats buffered from before it was
         // armed (they describe a moment already past), and that discards their
         // phase with them — a supervisor that has heard nothing assumes `Parked`,
         // which is the verdict that grants no grace.
-        tokio::time::sleep(period).await;
+        tokio::time::sleep(period / 2).await;
         // The loop's last word: it entered a work item. Then nothing, ever.
         hb_tx
             .try_send(Beat::Working)
             .expect("the supervisor must be listening");
 
-        let mut saw_slow = false;
-        loop {
-            let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-                .await
-                .expect("the escalation must finish inside the failure marker");
-            let Some(trip) = trip else {
-                panic!("the supervisor returned without ever reporting a fatal trip");
-            };
-            if trip.is_fatal(WatchdogOnTrip::Exit) {
-                assert_eq!(trip.starved(), "stuck_work_item", "was: {trip:?}");
-                assert!(
-                    trip.silent_for >= trip.work_item_budget(),
-                    "a stuck item must have outlived its budget: {trip:?}"
-                );
-                break;
-            }
-            assert_eq!(trip.starved(), "slow_work_item", "was: {trip:?}");
-            saw_slow = true;
-        }
+        let saw_slow = std::cell::Cell::new(false);
+        let last_trip = std::cell::RefCell::new(None::<String>);
+        // GH #1172: one deadline for the whole escalation, not one per trip --
+        // a supervisor that never escalates still reports a slow trip every
+        // window, and a per-trip marker would let it spin until nextest kills it.
+        meclaw_testing::deadline::hang_with(
+            "the escalation must finish inside the failure marker",
+            async {
+                loop {
+                    let Some(trip) = trip_rx.recv().await else {
+                        panic!("the supervisor returned without ever reporting a fatal trip");
+                    };
+                    if trip.is_fatal(WatchdogOnTrip::Exit) {
+                        assert_eq!(trip.starved(), "stuck_work_item", "was: {trip:?}");
+                        assert!(
+                            trip.silent_for >= trip.work_item_budget(),
+                            "a stuck item must have outlived its budget: {trip:?}"
+                        );
+                        break;
+                    }
+                    assert_eq!(trip.starved(), "slow_work_item", "was: {trip:?}");
+                    saw_slow.set(true);
+                    *last_trip.borrow_mut() = Some(trip.to_string());
+                }
+            },
+            || (saw_slow.get(), last_trip.borrow().clone()),
+        )
+        .await;
         assert!(
-            saw_slow,
+            saw_slow.get(),
             "the budget must have bought the work item at least one window of grace"
         );
         // Fatal means the supervisor is done.
-        let after = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("the supervisor must stop after a fatal trip");
+        let after = meclaw_testing::deadline::hang(
+            "the supervisor must stop after a fatal trip",
+            trip_rx.recv(),
+        )
+        .await;
         assert!(after.is_none(), "got {after:?}");
         drop(hb_tx);
     }
@@ -1891,7 +2369,13 @@ mod tests {
     /// flight, so its silence has nothing to hide behind. Same silence duration
     /// as the slow-work-item case above, opposite verdict — the phase is doing
     /// the work, not the clock.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    ///
+    /// GH #1216 (tv-br M10i): in virtual time. The claim is the verdict of a
+    /// punctual supervisor; on the wall clock under a CPU quota of 80 % the
+    /// supervisor itself ran 67 ms late on a 50 ms window (`silent_for` 117 ms,
+    /// 3 of 3 runs) and rightly said `process_scheduling` -- the host, not the
+    /// verdict, was under test.
+    #[tokio::test(start_paused = true)]
     async fn a_parked_loop_that_stops_answering_is_fatal_at_the_idle_bar() {
         let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
@@ -1903,7 +2387,7 @@ mod tests {
             period,
             armed(),
             WatchdogOnTrip::Exit,
-            Some(healthy_witness(period)),
+            Some(healthy_witness()),
         ));
         tokio::time::sleep(period).await;
         // Entered a work item, finished it, parked: the loop is idle and quiet.
@@ -1914,12 +2398,18 @@ mod tests {
             .try_send(Beat::Parked)
             .expect("the supervisor must be listening");
 
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
-            .await
-            .expect("a parked loop that stops answering must be detected")
-            .expect("the supervisor must report before it returns");
+        let trip = meclaw_testing::deadline::hang(
+            "a parked loop that stops answering must be detected",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("the supervisor must report before it returns");
         assert!(!trip.in_flight_work, "was: {trip:?}");
         assert_eq!(trip.starved(), "colony_loop", "was: {trip:?}");
+        // Exact in virtual time: the bar is `threshold × period` = 5 × 10 ms
+        // after the tick that heard the beats, not anything up to the budget.
+        assert_eq!(trip.silent_for, Duration::from_millis(50), "was: {trip:?}");
+        assert_eq!(trip.silent_for, trip.nominal_window(), "was: {trip:?}");
         assert!(
             trip.silent_for < trip.work_item_budget(),
             "the idle bar must fire long before the work-item budget: {trip:?}"
@@ -1931,31 +2421,43 @@ mod tests {
     /// The phase is a claim about the LAST thing the loop said, not about the
     /// first: a loop that entered a work item, finished it and parked must not
     /// keep the work item's budget.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // tv-br M10x: virtual time (AGENTS.md rule 11, time logic). On the wall
+    // clock a 10 ms sleep was the only thing between the two beats and the
+    // arming drain; a late supervisor drained them as stale and the verdict
+    // `Parked` came from a deaf supervisor, not from the last word. Here the
+    // drain is at 0 ms, both beats land at 5 ms, and `beats_seen` proves the
+    // 10 ms tick heard both.
+    #[tokio::test(start_paused = true)]
     async fn the_last_phase_in_a_period_is_the_one_that_counts() {
+        let period = Duration::from_millis(10);
         let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
         let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(8);
         tokio::spawn(run_watchdog(
             hb_rx,
             trip_tx,
             5,
-            Duration::from_millis(10),
+            period,
             armed(),
             WatchdogOnTrip::Exit,
             None,
         ));
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(period / 2).await;
         // Both phases inside one supervisor period, in loop order.
-        let _ = hb_tx.try_send(Beat::Working);
-        let _ = hb_tx.try_send(Beat::Parked);
-        let trip = tokio::time::timeout(Duration::from_secs(30), trip_rx.recv())
+        hb_tx
+            .try_send(Beat::Working)
+            .expect("the supervisor must be listening");
+        hb_tx
+            .try_send(Beat::Parked)
+            .expect("the supervisor must be listening");
+        let trip = meclaw_testing::deadline::hang("a trip must arrive", trip_rx.recv())
             .await
-            .expect("a trip must arrive")
             .expect("the supervisor must report");
         assert!(
             !trip.in_flight_work,
             "the loop's last word was `Parked`: {trip:?}"
         );
+        assert_eq!(trip.beats_seen, 2, "both words were heard: {trip}");
+        assert_eq!(trip.silent_for, period * 5, "{trip}");
         drop(hb_tx);
     }
 
@@ -2028,6 +2530,1002 @@ mod tests {
             "the shipped capacity must carry a burst of {BURST_EVENTS} events \
              ({} beats) so the supervisor reads the phase the loop is in",
             BURST_EVENTS * 3
+        );
+    }
+
+    /// GH #1172 -- a trip of an in-flight work item, as the supervisor builds it
+    /// at the 100 ms default period with the shipped threshold of five.
+    fn in_flight(silent_ms: u64, observed_periods: u32) -> WatchdogTrip {
+        WatchdogTrip {
+            silent_periods: 5,
+            observed_periods,
+            period: Duration::from_millis(100),
+            silent_for: Duration::from_millis(silent_ms),
+            beats_seen: 994,
+            colony_task_gone: false,
+            armed_for: Duration::from_millis(61_263),
+            in_flight_work: true,
+            witness_present: true,
+            witness_worst_misses: 0,
+            work_item: Some(WorkItem::new("mutation scope=/os/orgs")),
+            cpu_denied: std::time::Duration::ZERO,
+        }
+    }
+
+    /// GH #1172, the rule: what the supervisor sleeps through is not silence of
+    /// the work item. One window of five periods that took 5239 ms because the
+    /// supervisor itself was 4739 ms late: the item was observed silent for
+    /// 500 ms, so it is slow -- not stuck, and not fatal. The budget is the
+    /// shipped 5 s either way.
+    #[test]
+    fn a_supervisor_stall_is_not_charged_to_the_work_item() {
+        let stalled = in_flight(5_239, 5);
+        assert_eq!(stalled.work_item_budget(), Duration::from_secs(5));
+        assert_eq!(stalled.supervisor_lag(), Duration::from_millis(4_739));
+        assert_eq!(stalled.work_item_silence(), Duration::from_millis(500));
+        assert_eq!(stalled.starved(), "slow_work_item", "was: {stalled}");
+        assert!(
+            !stalled.is_fatal(WatchdogOnTrip::Exit),
+            "a supervisor that lost the CPU must not end the process on behalf \
+             of the item it was not watching: {stalled}"
+        );
+    }
+
+    /// GH #1172, the measurement: the lag is the silence beyond the periods the
+    /// supervisor ACTUALLY evaluated, not beyond the first window. The record
+    /// is the lab trip that motivated the issue -- `silent_for=5239ms` on the
+    /// eighth consecutive trip of one mutation (the first came at 1009 ms), so
+    /// 40 evaluated periods. The old derivation called 4739 ms of that "lag",
+    /// which is the escalation itself: subtracting it would leave every
+    /// repeated trip at one window of silence and no item could ever be stuck.
+    #[test]
+    fn the_lag_is_measured_against_the_periods_actually_evaluated() {
+        let record = in_flight(5_239, 40);
+        assert_eq!(record.supervisor_lag(), Duration::from_millis(1_239));
+        assert_eq!(record.work_item_silence(), Duration::from_millis(4_000));
+        assert_eq!(record.starved(), "slow_work_item", "was: {record}");
+        assert!(!record.is_fatal(WatchdogOnTrip::Exit));
+
+        // Two windows later the same item is still silent: 50 evaluated periods
+        // are the budget, whatever the wall clock says.
+        let later = in_flight(6_520, 50);
+        assert_eq!(later.work_item_silence(), Duration::from_secs(5));
+        assert_eq!(later.starved(), "stuck_work_item", "was: {later}");
+        assert!(later.is_fatal(WatchdogOnTrip::Exit));
+    }
+
+    /// GH #1172, adversarial: the deduction must never hide a hung item. Every
+    /// supervisor tick here is late -- the runtime is blocked for 40 ms between
+    /// 1 ms windows in which timers can fire, against a 10 ms period -- and the
+    /// item declared `Working` and never spoke again. Each evaluated period
+    /// still charges one full period of silence, so the item is stuck after
+    /// `budget / period` ticks however late each one is (nothing is denied here;
+    /// at the tick edge one window later, pinned in
+    /// `the_bounds_hold_one_window_late_at_the_tick_edge`); a supervisor that lags
+    /// permanently delays the verdict in wall time and never prevents it.
+    ///
+    /// Virtual time (AGENTS.md rule 11, time logic; welle-val2 v2-fix-b, #1199):
+    /// the starved host is the paused clock jumping four periods at once
+    /// (`tokio::time::advance`), so no timer can fire inside the jump and every
+    /// tick lands late by construction -- the same lateness the blocking
+    /// `std::thread::sleep` built in real time, without guessing at the host.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_work_item_is_stuck_even_when_every_supervisor_tick_is_late() {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(64);
+        tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            armed(),
+            WatchdogOnTrip::Exit,
+            None,
+        ));
+        tokio::time::sleep(period).await;
+        hb_tx
+            .try_send(Beat::Working)
+            .expect("the supervisor must be listening");
+        // The starved host: the clock moves four periods while nothing runs,
+        // then a 1 ms window opens in which timers can fire.
+        tokio::spawn(async {
+            loop {
+                tokio::time::advance(Duration::from_millis(40)).await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+
+        // One deadline for the whole wait (see the escalation test above).
+        let last_trip = std::cell::RefCell::new(None::<String>);
+        let fatal = meclaw_testing::deadline::hang_with(
+            "a hung item must be declared stuck inside the failure marker",
+            async {
+                loop {
+                    let Some(trip) = trip_rx.recv().await else {
+                        panic!("the supervisor returned without a fatal trip");
+                    };
+                    if trip.is_fatal(WatchdogOnTrip::Exit) {
+                        break trip;
+                    }
+                    assert_eq!(trip.starved(), "slow_work_item", "was: {trip}");
+                    *last_trip.borrow_mut() = Some(trip.to_string());
+                }
+            },
+            || last_trip.borrow().clone(),
+        )
+        .await;
+        assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+        assert!(
+            fatal.supervisor_lag() >= fatal.nominal_window(),
+            "the supervisor must really have been late, and measured so: {fatal}"
+        );
+        assert!(
+            fatal.work_item_silence() >= fatal.work_item_budget(),
+            "stuck means the charged silence crossed the budget: {fatal}"
+        );
+        drop(hb_tx);
+    }
+
+    /// GH #1172, the side effect on a parked loop, pinned: a silence with
+    /// nothing in flight that outlasts a `host_runtime` trip ends the process
+    /// under `exit` once the witness has recovered and the supervisor is on
+    /// time -- as `colony_loop`, where before #1172 it was `process_scheduling`
+    /// and logged only. The old lag (`silent_for - nominal_window`) grew by one
+    /// window on every repeated trip of the same silence, so a punctual
+    /// supervisor looked late on every follow-up and hid exactly this case.
+    /// Fail-closed and intended; the first trip of a silence reads as before.
+    #[test]
+    fn a_parked_silence_after_a_host_runtime_trip_is_a_fatal_colony_loop() {
+        let parked =
+            |silent_ms: u64, observed_periods: u32, witness_worst_misses: u32| WatchdogTrip {
+                silent_periods: 5,
+                observed_periods,
+                period: Duration::from_millis(100),
+                silent_for: Duration::from_millis(silent_ms),
+                beats_seen: 994,
+                colony_task_gone: false,
+                armed_for: Duration::from_millis(61_263),
+                in_flight_work: false,
+                witness_present: true,
+                witness_worst_misses,
+                work_item: None,
+                cpu_denied: std::time::Duration::ZERO,
+            };
+
+        // First window: the witness failed with the loop -- the host, not fatal.
+        let first = parked(520, 5, 5);
+        assert_eq!(first.starved(), "host_runtime", "was: {first}");
+        assert!(!first.is_fatal(WatchdogOnTrip::Exit));
+
+        // Next window: the witness recovered, the supervisor stayed punctual
+        // (10 periods in 1030 ms), the loop is still silent.
+        let follow_up = parked(1_030, 10, 0);
+        assert!(
+            follow_up
+                .silent_for
+                .saturating_sub(follow_up.nominal_window())
+                >= follow_up.nominal_window(),
+            "pre-#1172 this follow-up read as process_scheduling: {follow_up}"
+        );
+        assert_eq!(follow_up.supervisor_lag(), Duration::from_millis(30));
+        assert_eq!(follow_up.starved(), "colony_loop", "was: {follow_up}");
+        assert!(follow_up.is_fatal(WatchdogOnTrip::Exit));
+        assert!(!follow_up.is_fatal(WatchdogOnTrip::LogOnly));
+
+        // A supervisor that really fell a window behind inside the follow-up
+        // is still the process, not the loop.
+        let late = parked(1_600, 10, 0);
+        assert_eq!(late.starved(), "process_scheduling", "was: {late}");
+        assert!(!late.is_fatal(WatchdogOnTrip::Exit));
+    }
+
+    /// GH #1216 (tv-br M10h), the red of TV-F7: a 14 s instantiation under a
+    /// CPU quota, 5000 ms silent with `supervisor_lag=0ms` and `witness=kept`
+    /// -- the supervisor and the witness each got their slice on time, the
+    /// colony's worker did not. The kernel measured 4 s of that silence as
+    /// denied: the item was charged 1 s, it is slow, not stuck. The control
+    /// (`denied` zero: no denial read) is the pre-#1216 verdict, unchanged.
+    #[test]
+    fn a_silence_the_host_denied_is_not_a_stuck_work_item() {
+        let hung = in_flight(5_000, 50);
+        assert_eq!(hung.starved(), "stuck_work_item", "control: {hung}");
+        assert!(hung.is_fatal(WatchdogOnTrip::Exit));
+
+        let denied = WatchdogTrip {
+            cpu_denied: Duration::from_millis(4_000),
+            ..in_flight(5_000, 50)
+        };
+        assert_eq!(denied.work_item_silence(), Duration::from_millis(1_000));
+        assert_eq!(denied.starved(), "slow_work_item", "was: {denied}");
+        assert!(!denied.is_fatal(WatchdogOnTrip::Exit));
+        assert!(
+            denied.to_string().ends_with(" cpu_denied=4000ms]"),
+            "the trip line carries the denial: {denied}"
+        );
+    }
+
+    /// GH #1216: fail-closed. The denial delays the verdict and never hides
+    /// the item: 12 s silent with 6 s denied is 6 s charged, over the budget.
+    /// The larger of the two deductions counts, never their sum (a supervisor
+    /// off the CPU is part of the same denial).
+    #[test]
+    fn a_partly_denied_silence_still_ends_stuck() {
+        let t = WatchdogTrip {
+            cpu_denied: Duration::from_millis(6_000),
+            ..in_flight(12_000, 120)
+        };
+        assert_eq!(t.work_item_silence(), Duration::from_millis(6_000));
+        assert_eq!(t.starved(), "stuck_work_item", "was: {t}");
+        assert!(t.is_fatal(WatchdogOnTrip::Exit));
+
+        let both = WatchdogTrip {
+            cpu_denied: Duration::from_millis(3_000),
+            ..in_flight(9_000, 40)
+        };
+        assert_eq!(both.supervisor_lag(), Duration::from_millis(5_000));
+        assert_eq!(both.work_item_silence(), Duration::from_millis(4_000));
+    }
+
+    /// GH #1216 (tv-br M10i): a parked loop is judged without the denial. It
+    /// declared nothing in flight, so the idle bar stays a wall-clock bar: a
+    /// wedge is `colony_loop` with or without a denial, and the beat at the
+    /// edge of a tick (`silent_for` a millisecond short of the window, gh47's
+    /// `9999ms` and the `499ms` of the incident shape) is no denial either.
+    #[test]
+    fn a_parked_silence_is_judged_without_the_denial() {
+        let parked = |silent_ms: u64, cpu_denied_ms: u64| WatchdogTrip {
+            silent_periods: 5,
+            observed_periods: 5,
+            period: Duration::from_millis(100),
+            silent_for: Duration::from_millis(silent_ms),
+            beats_seen: 994,
+            colony_task_gone: false,
+            armed_for: Duration::from_millis(61_263),
+            in_flight_work: false,
+            witness_present: true,
+            witness_worst_misses: 0,
+            work_item: None,
+            cpu_denied: Duration::from_millis(cpu_denied_ms),
+        };
+        for (silent_ms, denied_ms) in [(500, 0), (499, 0), (500, 300), (499, 499)] {
+            let t = parked(silent_ms, denied_ms);
+            assert_eq!(t.starved(), "colony_loop", "was: {t}");
+            assert!(t.is_fatal(WatchdogOnTrip::Exit), "was: {t}");
+        }
+    }
+
+    /// GH #1216 (tv-br M10o, A-M1): the lag credit of a PARKED loop is
+    /// bounded like the item's. `supervisor_lag` is summed over the silence and
+    /// reset only by a beat, so one stall of a window -- or a supervisor that is
+    /// late on every tick -- kept a real wedge `process_scheduling` (log-only)
+    /// for ever. A parked loop is credited the supervisor's lateness for at most
+    /// [`WatchdogTrip::budget_periods`] evaluated periods (100 ms × 5: 50), the
+    /// bar at which an in-flight item without a denial is stuck; from there on
+    /// the silence is `colony_loop` and fatal, however late the supervisor is.
+    #[test]
+    fn a_parked_wedge_is_fatal_after_the_budget_periods_however_late_the_supervisor() {
+        let parked = |silent_ms: u64, observed_periods: u32| WatchdogTrip {
+            in_flight_work: false,
+            work_item: None,
+            ..in_flight(silent_ms, observed_periods)
+        };
+        let t = parked(500, 5);
+        assert_eq!(t.budget_periods(), 50);
+        assert_eq!(
+            t.period * t.budget_periods(),
+            t.work_item_budget(),
+            "one source: the parked bar is the item's budget in periods"
+        );
+        // One stall of more than a window, then a punctual supervisor: the lag
+        // stays at 600 ms for the rest of the silence.
+        for (silent_ms, observed, verdict) in [
+            (1_600, 10, "process_scheduling"),
+            (5_500, 49, "process_scheduling"),
+            (5_600, 50, "colony_loop"),
+            (60_600, 600, "colony_loop"),
+            // Late on every tick: four periods behind per period evaluated.
+            (2_000, 5, "process_scheduling"),
+            (19_600, 49, "process_scheduling"),
+            (20_000, 50, "colony_loop"),
+            (u64::from(u32::MAX), 50, "colony_loop"),
+        ] {
+            let t = parked(silent_ms, observed);
+            assert!(t.supervisor_lag() >= t.nominal_window(), "late: {t}");
+            assert_eq!(t.starved(), verdict, "was: {t}");
+            assert_eq!(
+                t.is_fatal(WatchdogOnTrip::Exit),
+                verdict == "colony_loop",
+                "was: {t}"
+            );
+        }
+    }
+
+    /// GH #1216 (tv-br M10o, A-M1) end to end: a parked loop that stops
+    /// answering while every supervisor tick is late -- the runtime spins for
+    /// 40 ms between yields in which timers can fire, against a 10 ms
+    /// period. Every trip before the bar is `process_scheduling`
+    /// (log-only); the trip at [`WatchdogTrip::budget_periods`] evaluated
+    /// periods is `colony_loop` and ends the supervisor. Before M10o the wedge
+    /// stayed log-only for ever and this test ran into the hang marker.
+    ///
+    /// `current_thread` on purpose, as in the in-flight twin above: one
+    /// thread is the starved host, the spin is the starvation.
+    #[tokio::test]
+    async fn a_parked_wedge_is_fatal_even_when_every_supervisor_tick_is_late() {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(64);
+        // Stale boot beats fill the channel; room again is the event that the
+        // armed supervisor drained them (see `supervise`), so the parked word
+        // after it is heard.
+        for _ in 0..8 {
+            hb_tx
+                .try_send(Beat::Parked)
+                .expect("room before the supervisor runs");
+        }
+        tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            armed(),
+            WatchdogOnTrip::Exit,
+            None,
+        ));
+        // Room for all eight is the event that the armed supervisor drained
+        // them: `reserve_many` wakes on it, the permits go back at once. A
+        // 10 ms poll here ate into the supervisor's 50 ms bar before the next
+        // word (CPUQuota 80 %: the supervisor ended before it,
+        // OR-V2.v2-fix-b.G2.1).
+        drop(
+            meclaw_testing::deadline::hang(
+                "the armed supervisor drains the stale beats",
+                hb_tx.reserve_many(8),
+            )
+            .await
+            .expect("the supervisor must be listening"),
+        );
+        hb_tx
+            .try_send(Beat::Parked)
+            .expect("the supervisor must be listening");
+        // The starved host: the only thread spins four periods at a time and
+        // then yields once, which lets the timer driver fire the late tick.
+        tokio::spawn(async {
+            loop {
+                let until = tokio::time::Instant::now() + Duration::from_millis(40);
+                while tokio::time::Instant::now() < until {
+                    std::hint::spin_loop();
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let last_trip = std::cell::RefCell::new(None::<String>);
+        let fatal = meclaw_testing::deadline::hang_with(
+            "a parked wedge must end the supervisor inside the failure marker",
+            async {
+                loop {
+                    let Some(trip) = trip_rx.recv().await else {
+                        panic!("the supervisor returned without a fatal trip");
+                    };
+                    if trip.is_fatal(WatchdogOnTrip::Exit) {
+                        break trip;
+                    }
+                    assert_eq!(trip.starved(), "process_scheduling", "was: {trip}");
+                    *last_trip.borrow_mut() = Some(trip.to_string());
+                }
+            },
+            || last_trip.borrow().clone(),
+        )
+        .await;
+        assert_eq!(fatal.starved(), "colony_loop", "was: {fatal}");
+        assert_eq!(
+            fatal.observed_periods,
+            fatal.budget_periods(),
+            "was: {fatal}"
+        );
+        assert!(
+            fatal.supervisor_lag() >= fatal.nominal_window(),
+            "the supervisor must really have been late, and measured so: {fatal}"
+        );
+        drop(hb_tx);
+    }
+
+    /// GH #1216 (tv-br M10o, A-M2): the in-flight bound without the assumption
+    /// of a punctual supervisor. The lag deduction leaves every evaluated
+    /// period charged, the denial deduction a fifth of the silence, so the
+    /// item is charged at least a fifth of the evaluated periods and is stuck
+    /// after at most `WORK_ITEM_DENIAL_FACTOR × budget_periods` of them (100 ms
+    /// × 5: 250), however late the supervisor and however much the host denies.
+    /// The raster starts at a silence of the evaluated periods; the tick edge
+    /// below it (one window later) is
+    /// `the_bounds_hold_one_window_late_at_the_tick_edge`.
+    #[test]
+    fn an_item_is_stuck_after_the_denial_factor_times_the_budget_periods() {
+        let bar = in_flight(500, 5).budget_periods() * WORK_ITEM_DENIAL_FACTOR;
+        assert_eq!(bar, 250);
+        for observed in [5u32, 50, 245, 250, 600] {
+            let evaluated = Duration::from_millis(100) * observed;
+            for stretch in [1u32, 2, 5, 40] {
+                let silent = evaluated * stretch;
+                for denied in [Duration::ZERO, silent / 2, silent] {
+                    let t = WatchdogTrip {
+                        cpu_denied: denied,
+                        ..in_flight(silent.as_millis() as u64, observed)
+                    };
+                    assert!(
+                        t.work_item_silence() >= evaluated / WORK_ITEM_DENIAL_FACTOR,
+                        "charged less than a fifth of the evaluated periods: {t}"
+                    );
+                    if observed >= bar {
+                        assert_eq!(t.starved(), "stuck_work_item", "was: {t}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// tv-br M10q-a (re-check R, K1): the bounds at the tick edge. tokio keeps
+    /// the tick grid for up to 5 ms of delay and the supervisor reads `now`
+    /// after the tick, so `silent_for` can lie a millisecond below the
+    /// evaluated periods (`silent_for=9999ms`, gh47). There the trip AT the
+    /// bound is still `slow_work_item` -- without a denial at 50 evaluated
+    /// periods, with the whole silence denied (s = 1) at 250 -- and the next
+    /// trip, one window (5 periods) later, is `stuck_work_item`: the documented
+    /// bound is "at the latest one window after", not "after". A code variant
+    /// charging `max(silent_for, evaluated)` would turn the first half red.
+    #[test]
+    fn the_bounds_hold_one_window_late_at_the_tick_edge() {
+        let probe = in_flight(0, 0);
+        let (budget, window) = (probe.budget_periods(), probe.silent_periods);
+        assert_eq!((budget, window), (50, 5));
+        let edge = |observed: u32, denied_all: bool| {
+            let silent = Duration::from_millis(100) * observed - Duration::from_millis(1);
+            WatchdogTrip {
+                cpu_denied: if denied_all { silent } else { Duration::ZERO },
+                ..in_flight(silent.as_millis() as u64, observed)
+            }
+        };
+        for (bar, denied_all) in [(budget, false), (budget * WORK_ITEM_DENIAL_FACTOR, true)] {
+            let at = edge(bar, denied_all);
+            assert!(
+                at.work_item_silence() < at.work_item_budget(),
+                "the edge charges less than the budget: {at}"
+            );
+            assert_eq!(at.starved(), "slow_work_item", "at the bound: {at}");
+            let next = edge(bar + window, denied_all);
+            assert_eq!(
+                next.starved(),
+                "stuck_work_item",
+                "one window later: {next}"
+            );
+            assert!(next.is_fatal(WatchdogOnTrip::Exit));
+        }
+    }
+
+    /// GH #1216 (tv-br M10i): without a denial nothing changed. Every trip with
+    /// `cpu_denied` zero charges the item exactly the pre-#1216 silence
+    /// (`silent_for − supervisor_lag`) and gets the verdict that follows from
+    /// it -- the host without a quota and with a free CPU sees the old watchdog.
+    /// The one change to that verdict is not a denial: since tv-br M10o a
+    /// parked loop is credited the supervisor's lateness for at most
+    /// `budget_periods` evaluated periods.
+    #[test]
+    fn without_a_denial_every_verdict_is_the_pre_1216_one() {
+        for silent_ms in [0u64, 499, 500, 4_999, 5_000, 9_000, 12_000, 60_000] {
+            for observed in [0u32, 1, 5, 40, 50, 120, 600] {
+                for in_flight_work in [false, true] {
+                    let t = WatchdogTrip {
+                        in_flight_work,
+                        ..in_flight(silent_ms, observed)
+                    };
+                    let charged = t.silent_for.saturating_sub(t.supervisor_lag());
+                    assert_eq!(t.work_item_silence(), charged, "was: {t}");
+                    let old = if !in_flight_work {
+                        // tv-br M10o: the parked lag credit ends at the budget
+                        // periods (pinned in `a_parked_wedge_is_fatal_…`).
+                        if t.supervisor_lag() >= t.nominal_window()
+                            && t.observed_periods < t.budget_periods()
+                        {
+                            "process_scheduling"
+                        } else {
+                            "colony_loop"
+                        }
+                    } else if charged < t.work_item_budget() {
+                        "slow_work_item"
+                    } else {
+                        "stuck_work_item"
+                    };
+                    assert_eq!(t.starved(), old, "was: {t}");
+                }
+            }
+        }
+    }
+
+    /// GH #1216 (tv-br M10i): the supervisor end to end with a declared work
+    /// item that never pulses again, under several hosts. `denied(share)` is a
+    /// host that keeps `share` of every nanosecond off the CPU, one thread,
+    /// read through the same seam production reads the kernel through -- on
+    /// the tokio clock, so the same host serves a virtual-time pin.
+    fn denied(share: f64) -> impl Fn() -> RunDelays {
+        let since = tokio::time::Instant::now();
+        move || {
+            let ns = since.elapsed().as_nanos() as f64 * share;
+            RunDelays::from_rows([(1, ns as u64)])
+        }
+    }
+
+    /// Runs the supervisor (10 ms × 5, budget 500 ms) over an item that entered
+    /// work and then went silent, and hands back every trip up to the first
+    /// fatal one, or up to `until` of silence when none is fatal.
+    /// [`meclaw_testing::deadline::HANG`] is the hang marker, never a verdict.
+    async fn trips_of_a_silent_item(
+        read_denial: impl Fn() -> RunDelays + Send + 'static,
+        until: Duration,
+    ) -> Vec<WatchdogTrip> {
+        let (hb_tx, mut trip_rx) = supervise(read_denial).await;
+        hb_tx
+            .try_send(Beat::Working)
+            .expect("the supervisor must be listening");
+        let trips = std::cell::RefCell::new(Vec::<WatchdogTrip>::new());
+        meclaw_testing::deadline::hang_with(
+            "the supervisor neither escalated nor reached the bar",
+            async {
+                while let Some(trip) = trip_rx.recv().await {
+                    let done = trip.is_fatal(WatchdogOnTrip::Exit) || trip.silent_for >= until;
+                    trips.borrow_mut().push(trip);
+                    if done {
+                        break;
+                    }
+                }
+            },
+            || trips.borrow().last().map(|t| t.to_string()),
+        )
+        .await;
+        drop(hb_tx);
+        trips.into_inner()
+    }
+
+    /// The armed supervisor (10 ms × 5, budget 500 ms, a healthy witness) over
+    /// `read_denial`, its stale boot beats drained: the next word it is sent
+    /// is heard.
+    async fn supervise(
+        read_denial: impl Fn() -> RunDelays + Send + 'static,
+    ) -> (
+        tokio::sync::mpsc::Sender<Beat>,
+        tokio::sync::mpsc::Receiver<WatchdogTrip>,
+    ) {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(64);
+        // Beats from before arming are discarded (they describe a moment
+        // already past). Fill the channel with them: room again is the event
+        // that the armed supervisor drained them, and the next word is heard.
+        for _ in 0..8 {
+            hb_tx
+                .try_send(Beat::Parked)
+                .expect("room before the supervisor runs");
+        }
+        tokio::spawn(run_watchdog_reading_denial(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            armed(),
+            WatchdogOnTrip::Exit,
+            Some(healthy_witness()),
+            None,
+            read_denial,
+        ));
+        // Room for all eight is the event that the armed supervisor drained
+        // them: `reserve_many` wakes on it, the permits go back at once. A
+        // 10 ms poll here ate into the supervisor's 50 ms bar before the next
+        // word (CPUQuota 80 %: the supervisor ended before it,
+        // OR-V2.v2-fix-b.G2.1).
+        drop(
+            meclaw_testing::deadline::hang(
+                "the armed supervisor drains the stale beats",
+                hb_tx.reserve_many(8),
+            )
+            .await
+            .expect("the supervisor must be listening"),
+        );
+        (hb_tx, trip_rx)
+    }
+
+    /// GH #1216 (tv-br M10l), the deadlock beside a host that denies the whole
+    /// silence (s = 1). The denial is read process-wide, so a hung item is
+    /// credited every other thread's denial; before the cap it was never
+    /// stuck. The cap ends it exactly at `WORK_ITEM_DENIAL_FACTOR ×
+    /// work_item_budget` of silence (10 ms × 5, budget 500 ms: 2500 ms), and
+    /// every trip before that is `slow_work_item`, log-only. Virtual time:
+    /// every wait point is a tokio timer or channel and the denial comes
+    /// through the seam, so the bar is exact.
+    #[tokio::test(start_paused = true)]
+    async fn a_host_that_denies_the_whole_silence_ends_the_item_at_the_cap() {
+        let trips = trips_of_a_silent_item(denied(1.0), Duration::MAX).await;
+        let (fatal, before) = trips.split_last().expect("at least one trip");
+        for t in before {
+            assert_eq!(t.starved(), "slow_work_item", "was: {t}");
+            assert!(!t.is_fatal(WatchdogOnTrip::Exit), "was: {t}");
+        }
+        assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+        assert!(fatal.is_fatal(WatchdogOnTrip::Exit), "was: {fatal}");
+        assert_eq!(
+            fatal.silent_for,
+            fatal.work_item_budget() * WORK_ITEM_DENIAL_FACTOR,
+            "was: {fatal}"
+        );
+        assert_eq!(fatal.work_item_silence(), fatal.work_item_budget());
+        assert!(
+            fatal.cpu_denied > fatal.denial_deduction(),
+            "the cap, not the denial, ended the item: {fatal}"
+        );
+    }
+
+    /// GH #1216 (tv-br M10l), the cap as arithmetic: whatever the kernel
+    /// reports as denied, a fifth of the silence is charged. A fully denied
+    /// silence one millisecond short of five budgets is slow; at five budgets
+    /// it is stuck. Under the cap the denial still counts in full (TV-F7's
+    /// 4 s of 5 s).
+    #[test]
+    fn a_denial_is_credited_at_most_four_fifths_of_the_silence() {
+        let full = |silent_ms: u64| WatchdogTrip {
+            cpu_denied: Duration::from_millis(silent_ms),
+            ..in_flight(silent_ms, (silent_ms / 100) as u32)
+        };
+        let short = full(24_999);
+        assert_eq!(short.denial_deduction(), Duration::from_micros(19_999_200));
+        assert_eq!(short.work_item_silence(), Duration::from_micros(4_999_800));
+        assert_eq!(short.starved(), "slow_work_item", "was: {short}");
+        let at_cap = full(25_000);
+        assert_eq!(
+            at_cap.work_item_budget() * WORK_ITEM_DENIAL_FACTOR,
+            at_cap.silent_for
+        );
+        assert_eq!(at_cap.work_item_silence(), at_cap.work_item_budget());
+        assert_eq!(at_cap.starved(), "stuck_work_item", "was: {at_cap}");
+        assert!(at_cap.is_fatal(WatchdogOnTrip::Exit));
+        let under = WatchdogTrip {
+            cpu_denied: Duration::from_millis(4_000),
+            ..in_flight(5_000, 50)
+        };
+        assert_eq!(under.denial_deduction(), Duration::from_millis(4_000));
+    }
+
+    /// GH #1216 (tv-br M10l), the reset: a beat ends a silence and the denial
+    /// measured in it. A first silence the host denies in full (s = 1), then a
+    /// `Working` beat, then a second silence the host denies nothing: the
+    /// second is charged exactly as without a quota -- `cpu_denied` zero and
+    /// `stuck_work_item` at the budget, 500 ms. Without the reset of the
+    /// denial's base the second silence would be credited the first one's
+    /// denial. Virtual time, as above.
+    #[tokio::test(start_paused = true)]
+    async fn a_beat_ends_the_denial_of_the_silence_before_it() {
+        let since = tokio::time::Instant::now();
+        let frozen_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+        let freeze = std::sync::Arc::clone(&frozen_at);
+        let (hb_tx, mut trip_rx) = supervise(move || {
+            let ns = (since.elapsed().as_nanos() as u64)
+                .min(frozen_at.load(std::sync::atomic::Ordering::SeqCst));
+            RunDelays::from_rows([(1, ns)])
+        })
+        .await;
+        hb_tx
+            .try_send(Beat::Working)
+            .expect("the supervisor must be listening");
+        let first = meclaw_testing::deadline::hang("the first silence trips", trip_rx.recv())
+            .await
+            .expect("the supervisor must report");
+        assert_eq!(first.starved(), "slow_work_item", "was: {first}");
+        assert!(first.cpu_denied > Duration::ZERO, "was: {first}");
+
+        // From here on the host denies nothing; the item enters work again.
+        freeze.store(
+            since.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        hb_tx
+            .try_send(Beat::Working)
+            .expect("the supervisor must be listening");
+        let fatal = meclaw_testing::deadline::hang("the second silence ends stuck", async {
+            loop {
+                let t = trip_rx.recv().await.expect("the supervisor must report");
+                if t.is_fatal(WatchdogOnTrip::Exit) {
+                    break t;
+                }
+            }
+        })
+        .await;
+        assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+        assert_eq!(fatal.cpu_denied, Duration::ZERO, "was: {fatal}");
+        assert_eq!(fatal.silent_for, fatal.work_item_budget(), "was: {fatal}");
+        drop(hb_tx);
+    }
+
+    /// GH #1216 (tv-br M10i), fail-closed under a throttle: a host that denies
+    /// half the silence delays the verdict and never hides a hung item -- the
+    /// charge keeps growing and the item ends `stuck_work_item` once its half
+    /// has outlived the budget.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_host_that_denies_half_the_silence_still_ends_a_hung_item() {
+        let trips = trips_of_a_silent_item(denied(0.5), Duration::MAX).await;
+        let fatal = trips.last().expect("at least one trip");
+        assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+        assert!(fatal.is_fatal(WatchdogOnTrip::Exit));
+        assert!(
+            fatal.work_item_silence() >= fatal.work_item_budget(),
+            "the charged half outlived the budget: {fatal}"
+        );
+        assert!(fatal.cpu_denied > Duration::ZERO, "was: {fatal}");
+    }
+
+    /// GH #1216 (tv-br M10i), the two real hangs on the real kernel reading.
+    /// Blocked (a deadlock: the item waits and asks for no CPU itself) and
+    /// spinning (the item burns a core and makes no progress). On a free CPU
+    /// the process is denied next to nothing and both end `stuck_work_item`
+    /// as before #1216; under a quota the reading credits them the process's
+    /// denial and the cap ([`WORK_ITEM_DENIAL_FACTOR`]) still ends them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_blocked_and_a_spinning_item_still_end_stuck_on_a_free_cpu() {
+        let blocked = trips_of_a_silent_item(RunDelays::read, Duration::MAX).await;
+        let fatal = blocked.last().expect("at least one trip");
+        assert_eq!(fatal.starved(), "stuck_work_item", "blocked: {fatal}");
+        assert!(fatal.is_fatal(WatchdogOnTrip::Exit));
+
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let spinner = std::thread::spawn(move || {
+            let mut x: u64 = 0;
+            while matches!(
+                stop_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ) {
+                x = std::hint::black_box(x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1));
+            }
+            x
+        });
+        let spun = trips_of_a_silent_item(RunDelays::read, Duration::MAX).await;
+        drop(stop_tx);
+        let _ = spinner.join();
+        let fatal = spun.last().expect("at least one trip");
+        assert_eq!(fatal.starved(), "stuck_work_item", "spinning: {fatal}");
+        assert!(fatal.is_fatal(WatchdogOnTrip::Exit));
+    }
+
+    /// The real kernel's reading plus one thread the host keeps entirely off
+    /// the CPU (s = 1): the shape of M1, a hang beside a starved neighbour
+    /// whose denial the process-wide reading credits to the item.
+    fn with_a_fully_denied_neighbour() -> impl Fn() -> RunDelays {
+        let neighbour = denied(1.0);
+        move || {
+            let mut rows = RunDelays::read();
+            for (_, ns) in neighbour().0 {
+                rows.0.insert(u32::MAX, ns);
+            }
+            rows
+        }
+    }
+
+    /// GH #1216 (tv-br M10l), the two real hangs beside a fully denied
+    /// thread: blocked and spinning, on the real kernel's reading, with a
+    /// neighbour the host denies the whole silence. Before the cap both were
+    /// never stuck; with it both end `stuck_work_item`, and it is the cap that
+    /// ends them. Runs unchanged under a CPU quota (the Abnahme runs it at
+    /// 80 %).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_blocked_and_a_spinning_item_end_stuck_beside_a_fully_denied_thread() {
+        let blocked = trips_of_a_silent_item(with_a_fully_denied_neighbour(), Duration::MAX).await;
+        let fatal = blocked.last().expect("at least one trip");
+        assert_eq!(fatal.starved(), "stuck_work_item", "blocked: {fatal}");
+        assert!(fatal.is_fatal(WatchdogOnTrip::Exit));
+        assert!(
+            fatal.cpu_denied > fatal.denial_deduction(),
+            "blocked: the cap, not the denial, ended the item: {fatal}"
+        );
+
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let spinner = std::thread::spawn(move || {
+            let mut x: u64 = 0;
+            while matches!(
+                stop_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ) {
+                x = std::hint::black_box(x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1));
+            }
+            x
+        });
+        let spun = trips_of_a_silent_item(with_a_fully_denied_neighbour(), Duration::MAX).await;
+        drop(stop_tx);
+        let _ = spinner.join();
+        let fatal = spun.last().expect("at least one trip");
+        assert_eq!(fatal.starved(), "stuck_work_item", "spinning: {fatal}");
+        assert!(fatal.is_fatal(WatchdogOnTrip::Exit));
+        assert!(
+            fatal.cpu_denied > fatal.denial_deduction(),
+            "spinning: the cap, not the denial, ended the item: {fatal}"
+        );
+    }
+
+    /// GH #1216: the reading. `schedstat` is `<on-cpu> <run_delay> <slices>`;
+    /// the growth is the largest of any thread, a new thread counts from zero,
+    /// a gone one not at all.
+    #[test]
+    fn run_delays_grow_per_thread_and_the_largest_counts() {
+        assert_eq!(parse_run_delay("600123 2400456 77\n"), Some(2_400_456));
+        assert_eq!(parse_run_delay("garbage"), None);
+        let base = RunDelays::from_rows([(1, 1_000_000), (2, 5_000_000), (3, 9)]);
+        let now = RunDelays::from_rows([(1, 301_000_000), (2, 6_000_000), (4, 50_000_000)]);
+        assert_eq!(now.max_growth_since(&base), Duration::from_millis(300));
+        assert_eq!(base.max_growth_since(&base), Duration::ZERO);
+    }
+
+    /// GH #1216: on Linux the reading sees this process's own threads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_delays_read_this_process() {
+        assert!(
+            !RunDelays::read().0.is_empty(),
+            "procfs names at least the thread that reads it"
+        );
+    }
+
+    // GH #1216 (K8): the supervisor is disarmed by the loop's last word, never
+    // by a timer. Virtual time, 10 ms periods, threshold 5: a window of 50 ms.
+    // The colony's word lands at 7.5 ms, off the tick instants; the supervisor
+    // hears it at the 10 ms tick and returns there, with no verdict, although
+    // the channel closes right behind the word — the exact shape of a teardown
+    // whose closing task would otherwise read as `colony_task_gone`.
+    #[tokio::test(start_paused = true)]
+    async fn a_stand_down_disarms_the_supervisor_for_the_teardown() {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
+        let start = tokio::time::Instant::now();
+        let supervisor = tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            armed(),
+            WatchdogOnTrip::Exit,
+            None,
+        ));
+        tokio::time::sleep(period / 4).await;
+        hb_tx.try_send(Beat::Working).expect("room");
+        tokio::time::sleep(period / 2).await;
+        hb_tx.try_send(Beat::Parked).expect("room");
+        hb_tx.try_send(Beat::StandDown).expect("room");
+        drop(hb_tx);
+        meclaw_testing::deadline::hang("the supervisor stands down", supervisor)
+            .await
+            .expect("the supervisor must end normally");
+        assert_eq!(
+            start.elapsed(),
+            period,
+            "the supervisor stands down at the first tick after the word"
+        );
+        assert!(
+            trip_rx.recv().await.is_none(),
+            "a stand-down is not a death: no trip, the trip channel simply closes"
+        );
+    }
+
+    // GH #1216 (K8, the other side): a hang INSIDE the drain is silence on an
+    // armed supervisor — the loop has not said its last word yet, so it is
+    // judged exactly as before, and a stand-down that comes after the trip
+    // changes nothing about it. Parked silence: the loop failed to come back
+    // from its wait, the fatal verdict, five periods after the last beat.
+    #[tokio::test(start_paused = true)]
+    async fn a_hang_inside_the_drain_still_trips() {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
+        let supervisor = tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            armed(),
+            WatchdogOnTrip::Exit,
+            None,
+        ));
+        tokio::time::sleep(period / 4).await;
+        hb_tx.try_send(Beat::Working).expect("room");
+        tokio::time::sleep(period / 2).await;
+        hb_tx.try_send(Beat::Parked).expect("room");
+        let trip = meclaw_testing::deadline::hang(
+            "a loop hung inside its drain must trip",
+            trip_rx.recv(),
+        )
+        .await
+        .expect("a trip, not a stand-down");
+        assert!(!trip.colony_task_gone, "the task is alive, hung: {trip}");
+        assert_eq!(trip.starved(), "colony_loop", "{trip}");
+        assert_eq!(trip.beats_seen, 2, "{trip}");
+        assert_eq!(trip.silent_for, period * 5, "{trip}");
+        assert!(trip.is_fatal(WatchdogOnTrip::Exit), "{trip}");
+        // The verdict is final: the supervisor ended at its fatal trip, so the
+        // loop's late stand-down finds nobody listening and the trip stands
+        // alone -- no second word, no retraction.
+        meclaw_testing::deadline::hang("the supervisor ends at its fatal trip", supervisor)
+            .await
+            .expect("the supervisor must end normally");
+        assert!(
+            matches!(
+                hb_tx.try_send(Beat::StandDown),
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_))
+            ),
+            "a stand-down after the trip reaches no supervisor"
+        );
+        drop(hb_tx);
+        assert!(
+            trip_rx.recv().await.is_none(),
+            "the fatal trip is the supervisor's last word"
+        );
+    }
+
+    // GH #1216: a colony that shut down before boot had finished stood down
+    // before the supervisor was armed. The arming drain throws away stale
+    // beats, but not that word — an armed supervisor would otherwise judge the
+    // closed channel of a colony that ended in order as a death.
+    #[tokio::test(start_paused = true)]
+    async fn a_stand_down_before_arming_keeps_the_supervisor_disarmed() {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(8);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
+        let (arm_tx, arm_rx) = tokio::sync::oneshot::channel::<()>();
+        let supervisor = tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            arm_rx,
+            WatchdogOnTrip::Exit,
+            None,
+        ));
+        hb_tx.try_send(Beat::Working).expect("room");
+        hb_tx.try_send(Beat::StandDown).expect("room");
+        drop(hb_tx);
+        arm_tx
+            .send(())
+            .expect("the supervisor waits for its arming");
+        meclaw_testing::deadline::hang("the supervisor never arms", supervisor)
+            .await
+            .expect("the supervisor must end normally");
+        assert!(
+            trip_rx.recv().await.is_none(),
+            "a colony that stood down before arming is not a death"
+        );
+    }
+
+    // GH #1216: the word is never dropped. A full channel (the supervisor has
+    // not drained this period) gets it from a task of its own, BEHIND every
+    // queued beat, and the supervisor still stands down instead of reading
+    // the closed channel as a death.
+    #[tokio::test(start_paused = true)]
+    async fn a_stand_down_into_a_full_channel_still_arrives() {
+        let period = Duration::from_millis(10);
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel::<Beat>(2);
+        let (trip_tx, mut trip_rx) = tokio::sync::mpsc::channel::<WatchdogTrip>(4);
+        let supervisor = tokio::spawn(run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            period,
+            armed(),
+            WatchdogOnTrip::Exit,
+            None,
+        ));
+        tokio::time::sleep(period / 4).await;
+        while hb_tx.try_send(Beat::Parked).is_ok() {}
+        WorkPulse::new(Some(hb_tx.clone()), WorkItem::new("teardown")).stand_down();
+        drop(hb_tx);
+        meclaw_testing::deadline::hang("the supervisor stands down", supervisor)
+            .await
+            .expect("the supervisor must end normally");
+        assert!(
+            trip_rx.recv().await.is_none(),
+            "the word that met a full channel was delivered, not dropped"
         );
     }
 }

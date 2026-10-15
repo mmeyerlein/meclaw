@@ -7,30 +7,28 @@ description = "CLI/daemon library for MeClaw — install the `meclaw` crate for 
 repository = "https://github.com/mmeyerlein/meclaw"
 license.workspace = true
 
-[[bin]]
-name = "meclaw"
-path = "src/main.rs"
-
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-tracing = "0.1"
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "fmt"] }
 tracing-appender = "0.2"
 console-subscriber = "0.4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v7"] }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
 # GH #623: `meclaw ask` is an HTTP client of the colony's own two routes. The
 # crate was already this crate's dev-dependency with these exact features; the
 # command moves it across, it does not add a dependency to the workspace.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-meclaw-api = { path = "../meclaw-api", version = "0.63.1" }
-meclaw-cells = { path = "../meclaw-cells", version = "0.63.1" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.63.1" }
-meclaw-core = { path = "../meclaw-core", version = "0.63.1" }
+reqwest = { workspace = true }
+meclaw-api = { path = "../meclaw-api", version = "0.64.0" }
+meclaw-cells = { path = "../meclaw-cells", version = "0.64.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.64.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.64.0" }
 
 [dev-dependencies]
-tempfile = "3"
-rusqlite = { version = "0.39", features = ["bundled"] }
+# Paused tokio clock for the time-logic test class (OR-TV-1/OR-TV-4); dev-only, never in a release build.
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+rusqlite = { workspace = true }
 meclaw-testing = { path = "../meclaw-testing" }

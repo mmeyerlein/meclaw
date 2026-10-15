@@ -68,7 +68,7 @@ detect_target() {
             say ""
             say "Build it from source instead -- you need a Rust toolchain (https://rustup.rs):"
             say ""
-            say "    cargo install --git https://github.com/${REPO} meclaw-cli"
+            say "    cargo install --git https://github.com/${REPO} meclaw"
             say ""
             say "If you want a prebuilt binary for $os/$arch, say so in an issue:"
             say "    https://github.com/${REPO}/issues"

@@ -17,10 +17,17 @@
 //!   message. The requester learns nothing.
 //!
 //! So the degraded cell answers every message with an error message naming the
-//! defect. `error_code` stays inside the closed `store` set of
-//! `docs/cell-types.md` § store (`sql_error` — the database layer is what
-//! failed); no new code is invented for a failure mode that is, from the
-//! caller's side, "the database is unusable".
+//! defect, under its own `error_code`, `store_degraded` (`docs/cell-types.md`
+//! § store). GH #1082 replaced the earlier `sql_error`: in a lab colony that had
+//! run out of file descriptors (226 `cell.db` × 3 fds plus ~216 pipes against a
+//! soft limit of 1024) every store refused with `sql_error`, and readers of the
+//! message log went looking for a schema fault. The cause is that the database
+//! could not be OPENED, and the code has to say so.
+//!
+//! Since the same issue the cell is one-shot (`build_stateless_one_shot_task`):
+//! it answers one message and sleeps, so the next message wakes the store again
+//! and the wake retries the open — the degraded state lasts as long as its
+//! cause, not as long as the process.
 //!
 //! Spec note: `cell-types.md` § store classifies internal errors (DB corruption,
 //! spawn failure) as "cell crash + restart". That is exactly what the wake path
@@ -37,7 +44,7 @@ use meclaw_core::{Body, CellOutput, Message, OutputSink};
 ///
 /// Stateless by construction — there is no state to hold, and the stateless
 /// dispatcher needs no `DbConn`, which is precisely what is missing. Every
-/// message is answered with `finish_reason: "error"`, `error_code: "sql_error"`,
+/// message is answered with `finish_reason: "error"`, `error_code: "store_degraded"`,
 /// an `operation` naming the refused op (see [`refused_operation`]) and a text
 /// naming the wake defect.
 pub struct DegradedStoreCell {
@@ -147,7 +154,7 @@ impl StatelessCell for DegradedStoreCell {
             let body = json!({
                 "header": {
                     "finish_reason": "error",
-                    "error_code": "sql_error",
+                    "error_code": "store_degraded",
                     "operation": refused_operation(&msg),
                 },
                 "messages": [{
@@ -203,7 +210,7 @@ mod tests {
         let em = rx.recv().await.expect("the degraded cell answers");
         assert_eq!(em.target, Path::new("/sink"), "the reply goes to reply_to");
         assert_eq!(em.content["header"]["finish_reason"], "error");
-        assert_eq!(em.content["header"]["error_code"], "sql_error");
+        assert_eq!(em.content["header"]["error_code"], "store_degraded");
         assert_eq!(em.content["messages"][0]["id"], "call_7");
         assert!(
             em.content["messages"][0]["text"]

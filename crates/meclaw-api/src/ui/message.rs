@@ -12,9 +12,9 @@
 
 use crate::ColonyHandle;
 use crate::handlers::message_log::DEFAULT_SCAN_BUDGET;
-use crate::ui::layout;
 use crate::ui::message_render::{pretty_json, render_headers_split};
 use crate::ui::messages::format_ts;
+use crate::ui::{count_of, layout};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -118,7 +118,7 @@ pub async fn get_message_ui(
         @if let Some(section) = &blob_section { (section) }
         h2 { "Pivots" }
         (render_pivots(&msg))
-        h2 { "Children (" (children.len()) ")" }
+        h2 { "Children (" (count_of(children.len(), CHILDREN_LIMIT)) ")" }
         (render_children(&msg, &children))
     };
     (

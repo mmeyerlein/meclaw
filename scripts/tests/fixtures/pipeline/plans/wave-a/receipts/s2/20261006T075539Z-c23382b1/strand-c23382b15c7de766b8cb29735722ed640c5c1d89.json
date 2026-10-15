@@ -1,0 +1,183 @@
+{
+  "mode": "strand",
+  "rev": "c23382b15c7de766b8cb29735722ed640c5c1d89",
+  "base": "58686e432ce8a089eaab27ef50dde40c6080155d",
+  "dirty": false,
+  "lock_wait_secs": 0,
+  "archive": "/srv/target/runs/x",
+  "plan": [
+    "precheck",
+    "roadmap-anchors",
+    "adr-anchors",
+    "claims",
+    "tree-rules",
+    "corpus-committed",
+    "corpus",
+    "catalogue",
+    "llm-conformance",
+    "fmt",
+    "clippy",
+    "unwrap-budget",
+    "tests",
+    "deny",
+    "scenarios:memory",
+    "scenarios:builder",
+    "scenarios:display",
+    "browser:display",
+    "recall-harness",
+    "persona-receipt"
+  ],
+  "started": "2026-10-06T07:55:39+00:00",
+  "finished": "2026-10-06T08:27:35+00:00",
+  "stations": [
+    {
+      "name": "precheck",
+      "scope": "form",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-precheck.log"
+    },
+    {
+      "name": "roadmap-anchors",
+      "scope": "ROADMAP.md",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-roadmap-anchors.log"
+    },
+    {
+      "name": "adr-anchors",
+      "scope": "plans/adr",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-adr-anchors.log"
+    },
+    {
+      "name": "claims",
+      "scope": "claims.tsv",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-claims.log"
+    },
+    {
+      "name": "tree-rules",
+      "scope": "templates+examples",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-tree-rules.log"
+    },
+    {
+      "name": "corpus-committed",
+      "scope": "seed as committed",
+      "secs": 1,
+      "verdict": "NOTE",
+      "log": "/srv/target/wt/x/logs/strand-corpus-committed.log"
+    },
+    {
+      "name": "corpus",
+      "scope": "regenerate+check+librarian",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-corpus.log"
+    },
+    {
+      "name": "catalogue",
+      "scope": "templates/README.md",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-catalogue.log"
+    },
+    {
+      "name": "llm-conformance",
+      "scope": "unittest",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-llm-conformance.log"
+    },
+    {
+      "name": "tree-sync",
+      "scope": "51 files touched, target last built from /srv/target/wt/x@ba9140b",
+      "secs": 0,
+      "verdict": "NOTE",
+      "log": ""
+    },
+    {
+      "name": "fmt",
+      "scope": "workspace",
+      "secs": 12,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-fmt.log"
+    },
+    {
+      "name": "clippy",
+      "scope": "workspace",
+      "secs": 134,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-clippy.log"
+    },
+    {
+      "name": "unwrap-budget",
+      "scope": "workspace",
+      "secs": 34,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-unwrap-budget.log"
+    },
+    {
+      "name": "tests",
+      "scope": "all() - (binary(/_demo$/) + binary(/_demo_/) + binary(/e2e/) + binary(/^workshop_scenario$/) + binary(/^slack_live$/) + binary(/^gpt_live_live$/) + binary(/^harness_real_cli_smoke$/) + binary(/^audit_14_/))",
+      "secs": 1039,
+      "verdict": "RED",
+      "log": "/srv/target/wt/x/logs/strand-tests.log"
+    },
+    {
+      "name": "deny",
+      "scope": "bans licenses sources",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-deny.log"
+    },
+    {
+      "name": "scenarios:memory",
+      "scope": "46 cases",
+      "secs": 348,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-scenarios:memory.log"
+    },
+    {
+      "name": "scenarios:builder",
+      "scope": "18 cases",
+      "secs": 98,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-scenarios:builder.log"
+    },
+    {
+      "name": "scenarios:display",
+      "scope": "116 scenarios",
+      "secs": 135,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-scenarios:display.log"
+    },
+    {
+      "name": "browser:display",
+      "scope": "sheet",
+      "secs": 94,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-browser:display.log"
+    },
+    {
+      "name": "recall-harness",
+      "scope": "tier-1+answers",
+      "secs": 10,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/strand-recall-harness.log"
+    },
+    {
+      "name": "persona-receipt",
+      "scope": "fingerprint",
+      "secs": 0,
+      "verdict": "NOTE",
+      "log": "/srv/target/wt/x/logs/strand-persona-receipt.log"
+    }
+  ],
+  "verdict": "RED",
+  "owner_decisions": []
+}

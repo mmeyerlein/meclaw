@@ -1,0 +1,505 @@
+//! GH #643 — the display carries a microphone, on the shipped bytes (E14,
+//! since 2.3.0 E36: the OS mark is the button).
+//!
+//! The whole template boots: the compose cell out of `params.script_inline`, the
+//! store beside it, and a real `web` cell serving the page under its mount. One
+//! `in_view` is enough to make the screen publish, and what this file reads is
+//! the page a browser would get.
+//!
+//! Three things have to be on it, and none of them is a screenshot: the hook the
+//! LiveView boot looks for, the mount the button will join, and the topic prefix
+//! the client builds its channel name from. Everything the button then DOES is
+//! measured where it can be measured — over the socket in
+//! `gh643_audio_in_the_display_window.rs`, and in a real browser in the file
+//! beside it.
+//!
+//! The mount is asserted against a NON-default name. Checking for `voice` would
+//! pass a compose cell that never read its params at all, because the module
+//! default is that same word — so this screen is given `voice_mount: "phone"` and
+//! the page has to carry it.
+//!
+//! Guarded like every template-reading test (GH #49): a tree without the library
+//! is skipped, never judged.
+
+use meclaw_cells::LlmCellFactory;
+use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
+use meclaw_cells::timer::TimerCellFactory;
+use meclaw_cells::web::WebCellFactory;
+use meclaw_colony::{CellFactory, CellFactoryRegistry, ColonyMsg, bootstrap_from_filesystem};
+use meclaw_core::serde_json::{Value, json};
+use meclaw_core::{Body, MessageBuilder, Path};
+use meclaw_testing::ColonyHandle;
+use meclaw_testing::{surface_listener, wait_for_mount};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// The failure-marker window (30 s convention), never a budget.
+const MARKER: Duration = Duration::from_secs(30);
+
+/// Every template this file reads, spelled out so the export's R2b check sees
+/// the names (GH #9).
+const NEEDED: [&str; 2] = ["templates/display", "templates/web"];
+
+fn repo(rel: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel)
+}
+
+fn library_ships() -> bool {
+    NEEDED
+        .iter()
+        .all(|rel| repo(rel).join("template.json").is_file())
+}
+
+fn have_python() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+fn read_json(p: &std::path::Path) -> Value {
+    let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+fn write_json(p: &std::path::Path, v: &Value) {
+    std::fs::create_dir_all(p.parent().expect("a parent")).expect("dirs");
+    std::fs::write(
+        p,
+        meclaw_core::serde_json::to_string_pretty(v).expect("json"),
+    )
+    .expect("write");
+}
+
+fn patch(p: &std::path::Path, f: impl FnOnce(&mut Value)) {
+    let mut v = read_json(p);
+    f(&mut v);
+    write_json(p, &v);
+}
+
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).expect("dirs");
+    for entry in std::fs::read_dir(src).expect("read_dir") {
+        let entry = entry.expect("entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy");
+        }
+    }
+}
+
+fn factories(
+    surfaces: &Arc<meclaw_colony::SurfaceRegistry>,
+) -> Vec<(String, Arc<dyn CellFactory>)> {
+    vec![
+        (
+            "code".to_string(),
+            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+        ),
+        ("store".to_string(), Arc::new(StoreCellFactory)),
+        ("timer".to_string(), Arc::new(TimerCellFactory)),
+        ("llm".to_string(), Arc::new(LlmCellFactory)),
+        (
+            "web".to_string(),
+            Arc::new(WebCellFactory::new(Arc::clone(surfaces))),
+        ),
+    ]
+}
+
+/// GET the screen's route until it answers with a page carrying `wanted`.
+async fn wait_for_page(port: u16, wanted: &str) -> String {
+    let url = format!("http://127.0.0.1:{port}/{SCREEN_MOUNT}/");
+    let deadline = Instant::now() + MARKER;
+    let mut last = String::new();
+    loop {
+        if let Ok(r) = reqwest::get(&url).await {
+            let status = r.status();
+            last = r.text().await.unwrap_or_default();
+            if status.is_success() && last.contains(wanted) {
+                return last;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the screen never served a page carrying {wanted:?}; last body was:\n{last}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The mount this screen is pointed at: deliberately not the default.
+const MOUNT: &str = "phone";
+
+/// The name the screen itself answers to on the colony's one listener. Not the
+/// same word as `MOUNT` above, and deliberately so: the screen's own name and
+/// the name of the voice cell it speaks to are two different things.
+const SCREEN_MOUNT: &str = "display";
+
+/// The shipped screen, and the page it publishes when somebody writes on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_page_carries_the_hook_the_mount_and_the_topic() {
+    if !library_ships() || !have_python() {
+        return;
+    }
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let root = td.path();
+    let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
+
+    write_json(&root.join("colony.json"), &json!({"schema_version": 1}));
+    write_json(
+        &root.join("main/config.json"),
+        &json!({
+            "cell": {"type": "hive"},
+            "params": {"graph": {"edges": [
+                {"from": ".", "to": "./screen",
+                 "condition": "has(hop.route) && hop.route == 'in_view'"}
+            ]}}
+        }),
+    );
+    copy_tree(&repo("templates/display"), &root.join("main/screen"));
+    // The display refs `web@2.3.0`, so the template it grows from has to be on
+    // disk before the boot resolves the ref (GH #424).
+    copy_tree(&repo("templates/web"), &root.join("templates/web"));
+    patch(&root.join("main/screen/web/config.json"), |v| {
+        v["override_params"][""]["mount"] = json!(SCREEN_MOUNT)
+    });
+    // The one new mechanism of the task, pointed somewhere else on purpose: a
+    // screen may be wired to a `voice` cell that was mounted under another name.
+    patch(&root.join("main/screen/compose/config.json"), |v| {
+        v["params"]["voice_mount"] = json!(MOUNT)
+    });
+
+    let h = ColonyHandle::new_with_factories_at(&td, factories(&surfaces));
+    let mut registry = CellFactoryRegistry::new();
+    for (name, f) in factories(&surfaces) {
+        registry.insert(name, f);
+    }
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    h.inbox_tx
+        .send(ColonyMsg::RescanTemplates {
+            templates_root: root.join("templates"),
+            ack: ack_tx,
+        })
+        .await
+        .expect("rescan sent");
+    ack_rx
+        .await
+        .expect("rescan acked")
+        .expect("the template table fills");
+    bootstrap_from_filesystem(root, &registry, &h.runtime())
+        .await
+        .expect("the screen boots");
+
+    // One view, so the screen has something to publish. The microphone does not
+    // depend on it — it hangs under the root — but a page does.
+    let mut hop = meclaw_core::serde_json::Map::new();
+    hop.insert("route".to_string(), json!("in_view"));
+    h.send(
+        MessageBuilder::new(Path::new("/screen"))
+            .hop(hop)
+            .reply_to(Path::new("/somebody"))
+            .body(Body::Inline(json!({
+                "messages": [],
+                "view_id": "hello",
+                "kind": "prose",
+                "content": {"title": "Hello", "body": "the screen is up"}
+            })))
+            .build(),
+    )
+    .await;
+
+    // Waited for the VIEW and not for the button, though the button is what this
+    // test is about: the screen publishes as its bundle is applied, so a `GET`
+    // between two legs of one bundle can see the microphone without the view that
+    // made it publish. The view is the last object written, so waiting for it
+    // waits for the whole page. (Measured under a loaded gate runner: the other
+    // order is a flake.)
+    wait_for_mount(&surfaces, SCREEN_MOUNT).await;
+    let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
+    let page = wait_for_page(addr.port(), "the screen is up").await;
+    assert!(
+        page.contains("phx-hook=\"DisplayMic\""),
+        "the hook the LiveView boot looks for is on the page:\n{page}"
+    );
+    assert!(
+        page.contains(&format!("data-mount=\"{MOUNT}\"")),
+        "the button names the mount the compose cell was CONFIGURED with, which \
+         is the only thing that proves the param is read at all:\n{page}"
+    );
+    assert!(
+        !page.contains("data-mount=\"voice\""),
+        "and not the module default it would fall back to:\n{page}"
+    );
+    assert!(
+        page.contains("voice:"),
+        "the client builds its topic from the call and this prefix:\n{page}"
+    );
+    assert!(
+        page.contains("SurfaceHooks"),
+        "the hook has to be on `window.SurfaceHooks` before the socket boot \
+         reads it, which is why the script rides in the dead render:\n{page}"
+    );
+    assert!(
+        page.contains("hold to talk"),
+        "a person has to be able to tell what the button is for -- since 2.3.0 \
+         it is the OS mark's `aria-label`, the mark itself is a glyph:\n{page}"
+    );
+
+    // GH #658 — the three states the button owes a person, on the shipped
+    // bytes. Each one is a moment that used to pass in silence, and silence on
+    // a screen is indistinguishable from a screen that is broken.
+    assert!(
+        page.contains("asking for the microphone"),
+        "the permission prompt opens INSIDE the gesture, so the page has to say \
+         that it is waiting for an answer:\n{page}"
+    );
+    assert!(
+        page.contains("press again"),
+        "a press that ended before the permission arrived is a press that did \
+         nothing, and the person is the only one who can repeat it:\n{page}"
+    );
+    // Since M10h (OR-T10-24) the close handler also ends a take running into
+    // the close, and its word comes from `WORDS` (the words pin bans the
+    // literal), so the three facts are pinned on the handler's own body.
+    let on_close = page
+        .split_once("function onClose(c) {")
+        .and_then(|(_, rest)| rest.split_once("\n      }"))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("the hook has a close handler:\n{page}"));
+    assert!(
+        on_close.contains("st.code = c.code; joined = false;")
+            && on_close.contains("phase(\"\"); say(WORDS.closed + \" \" + c.code);"),
+        "a close ends the CALL: the hook notes it and lets the next press join \
+         a new one:\n{on_close}"
+    );
+    assert!(
+        !on_close.contains("btn.disabled"),
+        "and the close handler must not be what kills the button — that is the \
+         one-minute fuse a screen nobody spoke into used to run into:\n{on_close}"
+    );
+    assert!(
+        page.contains("if (!joined && !(await join()))"),
+        "the rejoin hangs on the press, not on a timer — and it waits for the \
+         join to be acknowledged before the hold goes out: a text push is \
+         buffered until then and a raw binary push is not, so audio sent in \
+         that window is dropped or arrives ahead of its own hold:\n{page}"
+    );
+    // GH #643 asked for this with `btn.disabled = true`. Welle F took that
+    // away on purpose (R-23-4): the mark carries TWO gestures, and the dock
+    // toggle is display, not speech -- a disabled button emits no pointer
+    // events at all, so a refused CHANNEL silently killed the one way a phone
+    // has to reach its tiles. The promise itself is unchanged and is now kept
+    // where it belongs, in the speech half alone.
+    assert!(
+        page.contains("refuseFrom((e && e.reason) || \"refused\")"),
+        "a refused join is answered by the speech half, which records the \
+         refusal and says it:\n{page}"
+    );
+    assert!(
+        page.contains("if (audio && !refused) join();"),
+        "a REFUSED join stays final: that answer is about this screen and this \
+         mount, and pressing again cannot open a new call. And an output whose \
+         profile carries no `audio` never joins at all (display-hive.md § 6.4: \
+         the client sends nothing to the channel `voice`):\n{page}"
+    );
+    assert!(
+        !page.contains("btn.disabled = true"),
+        "and it stays final WITHOUT disabling the mark -- a disabled button \
+         emits no pointer events, which would take the dock toggle down with \
+         the channel (R-23-4: the dock is display and hangs on no voice \
+         cell):\n{page}"
+    );
+    // Since M10h the words come from `WORDS` and a frame leaves only while the
+    // channel can push (OR-T10-24: `canPush` is the socket's link AND this
+    // channel's answered join -- stricter than `joined`, never looser).
+    assert!(
+        page.contains("listening: \"listening\\u2026\"")
+            && page.contains("say(WORDS.listening); phase(\"listening\");"),
+        "and the waiting sentence goes when the hold begins — a screen that \
+         still says it is asking for a microphone it already has is the same \
+         lie as one that said nothing:\n{page}"
+    );
+    assert!(
+        page.contains("function sendAudio(ab) { if (!pushable()) { unsent(); return; }")
+            && page
+                .contains("function pushable() { return linked() && !!chan && chan.canPush(); }"),
+        "and no frame leaves for a topic this page is not on:\n{page}"
+    );
+    listener.abort();
+    h.shutdown().await;
+}
+
+/// The version the screen ships as, and the sentence that says what changed.
+#[test]
+fn the_template_says_it_carries_a_microphone() {
+    if !library_ships() {
+        return;
+    }
+    let template = read_json(&repo("templates/display/template.json"));
+    // The number is the merge point's (development-rules § 4): a strand never
+    // writes it, so a literal here went red on every cascade that moved the
+    // screen (GH #1126, #1169). What stays locked is the history up to the
+    // last number this test narrated, and that the number shipped now is the
+    // one the purpose tells a sentence for and the README heads with.
+    let version = template["version"].as_str().expect("a version");
+    let number: Vec<u64> = version
+        .split('.')
+        .map(|d| d.parse().expect("a numeric version digit"))
+        .collect();
+    assert!(
+        number.len() == 3 && number >= vec![2, 10, 8],
+        "{version}: the screen shipped the microphone at 1.2.0 — a new component is a \
+         minor version — moved to 2.0.0 when its own port went with \
+         `web@2.0.0`, to 2.0.1 for what the button says while it waits \
+         (GH #658), which is a repair, to 2.1.0 for the design language, \
+         the catalogue and `params.font_base` (GH #669, #670, #672), which a \
+         caller can name — a minor version again — to 2.2.0 for the \
+         hints a caller may say about a window (GH #679), to 2.2.1 for \
+         a hold that no longer releases itself (GH #684), a repair, and to \
+         2.2.2 for a `touched` hint the screen believes and a button that \
+         is a fixed point (GH #689), a repair again, and to 2.2.3 for a \
+         clock order that is no longer removed and re-added under one id \
+         (GH #690), a repair, and 2.3.0 for the dock: a layer of tiles of \
+         one size beside the canvas, an OS mark that replaces the \
+         microphone capsule, a screen profile the renderer reads, and a \
+         client that runs the seconds and the zoom (GH #694, #695) -- new \
+         abilities, a minor version -- and to 2.3.1 and 2.3.2 for an OS \
+         mark that reads as »OS«, the ring open to the right and the S on \
+         its rim, repairs, and to 2.3.3 for a release that drains before \
+         it lets go (GH #698), a repair, and to 2.4.0 for four levels and \
+         two ladders, a tap that is a touch and a window that may say how \
+         long it lingers (GH #702), and to 2.5.0 for the curator that is \
+         the reference model of the description: one state row, the two events \
+         `tap` and `hold`, and a rendering per named output (GH #707) -- \
+         new abilities both times, a minor version -- and to 2.5.1 for a \
+         curator that runs one message at a time (GH #765), a repair, and to \
+         2.6.0 because a patch now leaves only after the state row landed \
+         (GH #765, way A): what a browser is told is what the store agreed to, \
+         which changes when every screen draws and is therefore the SECOND digit, \
+         and to 2.7.0 because the curator keeps its state in memory and the store \
+         only the app rows and one rest row (GH #809): a promise withdrawn and a new \
+         one given, the SECOND digit again, and to 2.8.0 because the screen runs \
+         behind a strict Content-Security-Policy and publishes the policy it needs in \
+         `csp.json` (GH #867): a promise it never gave, the SECOND digit, and to \
+         2.8.1 because `./judge` declares every hop key the `llm` cell writes \
+         (GH #890), a repair, and to 2.9.0 because the catalogue is one file the \
+         door checks every view against and gains a card, steps and a working \
+         status (GH #958): a caller can name what it could not before, the \
+         SECOND digit, and to 2.10.0 because the catalogue gains a map with its \
+         tiles, a field and a mark, and blocks slide in from their target state \
+         (GH #961, GH #964): a caller can name what it could not before, the \
+         SECOND digit again, and to 2.10.1 because `./judge` declares the hop key \
+         `dropped` the `llm` cell writes (GH #993), a repair, and to 2.10.2 for \
+         the hop key `unverified` (GH #999), a repair, and to 2.10.3 because it \
+         refs the `web` whose page travels in parts (GH #1001), only the pin, and to 2.10.4 for the window \
+         order and the drifting light (GH #1028, #1029), a repair, and to \
+         2.10.5 for a judge without the old 600-token cap (GH #1037), a repair, and \
+         2.10.6 for a judge whose key comes as a sealed vault grant (GH #801), a repair, and \
+         2.10.7 for a judge that may ask for that key under emits validation (GH #1094), a repair, and \
+         2.10.8 for the Dev-Tempo cascade (GH #1126), a repair -- and every \
+         number after that is the merge point's"
+    );
+    let purpose = template["description"]["purpose"]
+        .as_str()
+        .expect("a purpose");
+    assert!(
+        purpose.contains(&format!("Since {version} (")),
+        "every number the screen ships at has its own sentence in the purpose \
+         (the merge point writes it, gh1038): {version}"
+    );
+    assert!(
+        purpose.contains("Since 1.2.0") && purpose.contains("voice_mount"),
+        "the purpose says what a caller has to configure for the button to \
+         reach anything: {purpose}"
+    );
+    // Since 2.5.0 the README is the public rendering of the display-hive description,
+    // so it is read for the sections that description leads — not for headings of its
+    // own.
+    let readme = std::fs::read_to_string(repo("templates/display/README.md")).expect("README");
+    assert!(
+        readme.starts_with(&format!("# `display@{version}`")),
+        "the README heads with the version it describes: {version}"
+    );
+    assert!(
+        readme.contains("## Gestures"),
+        "and says what a person can do with their hands -- which is where the mark and \
+         its hold live"
+    );
+    assert!(
+        readme.contains("## Outputs and profiles"),
+        "and what an output is, since what the mark binds hangs on the profile"
+    );
+}
+
+/// A hold must survive the button moving under the pointer (seen on a fresh screen, 2026-09-11).
+///
+/// On a fresh screen the state line under the button was empty; the first press
+/// wrote into it, the block grew upward, the button slid out from under the
+/// pointer and `pointerleave` used to let go (GH #684). The press captures the
+/// pointer now, and a hidden page releases. Since 2.3.0 the state is said for a
+/// screen reader and not drawn at all, so nothing beside the mark can grow.
+#[test]
+fn the_hold_is_not_released_by_the_pointer_leaving() {
+    if !library_ships() {
+        return;
+    }
+    // The client script lives in a Python string, so every JS quote is `\"`
+    // on disk; read it the way the browser gets it.
+    let src = std::fs::read_to_string(repo("templates/display/compose/compose.py"))
+        .expect("compose.py")
+        .replace("\\\"", "\"");
+    assert!(
+        !src.contains("\"pointerleave\""),
+        "the button still lets go on pointerleave"
+    );
+    assert!(
+        src.contains("setPointerCapture"),
+        "the press does not capture the pointer"
+    );
+    assert!(
+        src.contains("\"lostpointercapture\""),
+        "a lost capture does not release"
+    );
+    assert!(
+        src.contains("\"visibilitychange\""),
+        "a hidden page does not release"
+    );
+    let sheet =
+        std::fs::read_to_string(repo("templates/display/compose/display-dna.css")).expect("sheet");
+    assert!(
+        sheet.contains(".display-os-state {"),
+        "the state is still said, for a reader who cannot see the light"
+    );
+}
+
+/// The source and the runtime copy of it are the same bytes.
+///
+/// `gh609_a_standing_view_keeps_its_place.rs` pins this too. It is repeated here
+/// because this strand is the one that regenerates the copy, and a strand that
+/// forgets to would otherwise ship a screen whose page has no microphone on it
+/// while `compose.py` says it does.
+#[test]
+fn the_shipped_script_is_the_file_beside_it() {
+    if !library_ships() {
+        return;
+    }
+    let src =
+        std::fs::read_to_string(repo("templates/display/compose/compose.py")).expect("compose.py");
+    let cfg = read_json(&repo("templates/display/compose/config.json"));
+    assert_eq!(
+        cfg["params"]["script_inline"].as_str().expect("inline"),
+        src,
+        "script_inline has drifted from compose.py"
+    );
+    assert_eq!(
+        cfg["params"]["voice_mount"], "voice",
+        "the mount the button joins is a param of the compose cell, so one \
+         screen can be pointed at another colony's voice cell"
+    );
+}

@@ -282,7 +282,7 @@ winner's edge answers the same key.
 
 ## Pins
 
-`crates/meclaw-cells/tests/receptionist.rs` -- nine script pins on the shipped
+`crates/meclaw-cells/tests/misc_8/receptionist.rs` -- nine script pins on the shipped
 `script_inline` (the ledger question, the hand-through, the one mutation and its
 four edges, the channel key, the terminal verdict, the unwired port) plus two
 colony pins against the mock OpenAI wire: two channels get two talkys from one
@@ -291,7 +291,7 @@ positively through the mutation audit, not through the registry, because a
 second `add_nodes` would be REJECTED and leave the registry looking identical),
 and a burst on a cold channel never forks it.
 
-`crates/meclaw-cells/tests/gh274_a_receptionist_built_talky_closes_tagged.rs` --
+`crates/meclaw-cells/tests/misc_2/gh274_a_receptionist_built_talky_closes_tagged.rs` --
 the whole path in one run: the reception builds a talky, the keeper's own night
 timer (wound down to a second) sweeps the day shut, and the episode rows land in
 a memory hive carrying the round the conversation was spoken in. The edge the

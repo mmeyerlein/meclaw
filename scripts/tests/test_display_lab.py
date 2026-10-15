@@ -35,6 +35,7 @@ import sys
 import time
 import unittest
 import urllib.parse
+from scripts.tests import kit_time, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "display_lab_patches.json"
@@ -49,6 +50,7 @@ def setUpModule():
     # library that was never shipped.
     if not LAB.is_dir():
         raise unittest.SkipTest("workshop/tools/display-lab/ is not in this tree")
+    store_isolation.isolate()
 
 # The tools the library owes, with the interpreter each one is run by.
 TOOLS = {
@@ -197,7 +199,7 @@ class PortIsMandatoryTest(unittest.TestCase):
             [TOOLS[name], str(path)] + args,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=4 * kit_time.HANG,
             cwd=str(REPO),
         )
 
@@ -315,7 +317,7 @@ class FakeColony:
     def __exit__(self, *exc):
         self.server.shutdown()
         self.server.server_close()
-        self.thread.join(timeout=10)
+        self.thread.join(timeout=kit_time.HANG)
 
 
 def patch_row(fixture, n, calls, route="patch", to="web"):
@@ -379,7 +381,7 @@ class RunlineChatStateTest(unittest.TestCase):
                  "--port", str(colony.port), "--mount", "screen",
                  "--root", "/nonexistent", "--member", fixture["member"],
                  "--out-dir", tmp, "--line", "m1", "--steps", steps or self.TYPING],
-                capture_output=True, text=True, timeout=180,
+                capture_output=True, text=True, timeout=6 * kit_time.HANG,
             )
         self.assertEqual(0, done.returncode, done.stderr[-600:])
         return done.stdout
@@ -435,7 +437,7 @@ class RunlineChatStateTest(unittest.TestCase):
                 ["bash", str(LAB / "runline.sh"), "--dry-run", "--port", str(colony.port),
                  "--mount", "screen", "--root", "/nonexistent", "--member",
                  self.fixture["member"], "--out-dir", tmp, "--steps", '[{"at":0,"do":"press"}]'],
-                capture_output=True, text=True, timeout=180)
+                capture_output=True, text=True, timeout=6 * kit_time.HANG)
             self.assertEqual(0, done.returncode, done.stderr[-600:])
             self.assertEqual([], colony.requests)
 
@@ -449,7 +451,7 @@ class PatchFoldTest(unittest.TestCase):
         done = subprocess.run(
             ["node", "--input-type=module", "-e",
              "import * as p from %s;\n%s" % (json.dumps((LAB / "patches.mjs").as_uri()), script)],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=2 * kit_time.HANG)
         self.assertEqual(0, done.returncode, done.stderr[-600:])
         return json.loads(done.stdout)
 
@@ -524,7 +526,7 @@ class TapCountTest(unittest.TestCase):
             "console.log(JSON.stringify(t.tapsOf(%s, bodyOf)));"
             % (json.dumps((LAB / "tap.mjs").as_uri()), json.dumps(blobs or {}), json.dumps(rows)))
         done = subprocess.run(["node", "--input-type=module", "-e", script],
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
         self.assertEqual(0, done.returncode, done.stderr[-600:])
         return json.loads(done.stdout)
 
@@ -580,7 +582,7 @@ class HeadersTest(unittest.TestCase):
 
     def run_tool(self, args):
         return subprocess.run(["python3", str(LAB / "headers.py")] + args,
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
 
     @staticmethod
     def hdr(size, extra=""):
@@ -660,7 +662,7 @@ class CallerTemplateTest(unittest.TestCase):
             planted.write_text(template.replace("@LAB@", str(LAB)).replace("@DB@", str(path)),
                                encoding="utf-8")
             done = subprocess.run(["python3", str(planted), "--last", "10"],
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=2 * kit_time.HANG)
         self.assertEqual(0, done.returncode, done.stderr[-600:])
         self.assertIn("display_views_hits 0", done.stdout)
 
@@ -771,17 +773,19 @@ class QueueTest(unittest.TestCase):
     def run_queue(self, lock):
         return subprocess.run(
             ["bash", str(LAB / "runline.sh"), "--queue", "--lock", str(lock)],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=4 * kit_time.HANG,
         )
 
-    def until(self, lock, mark, tries=100):
-        """The queue reading once `mark` shows up in it, or `None`."""
-        for _ in range(tries):
-            out = self.run_queue(lock).stdout
-            if mark in out:
-                return out
-            time.sleep(0.1)
-        return None
+    def until(self, lock, mark):
+        """The queue reading once `mark` shows up in it; past HANG a `HANG:`
+        line (`kit_time.until`, re-check tv-bn M7j B-M1: an own poll of
+        100 x 0.1 s, unscaled and silent)."""
+        last = []
+
+        def seen():
+            last[:] = [self.run_queue(lock).stdout]
+            return last[0] if mark in last[0] else None
+        return kit_time.until("the queue shows %r" % mark, seen, state=lambda: last[0] if last else None)
 
     def test_queue_needs_no_port(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -803,14 +807,14 @@ class QueueTest(unittest.TestCase):
             lock.touch()
             # Own session: `flock` execs `sleep`, and killing only the parent
             # would leave the fd -- and the lock -- with the orphan.
-            holder = subprocess.Popen(["flock", str(lock), "sleep", "30"],
+            holder = subprocess.Popen(["flock", str(lock), "sleep", "infinity"],   # held until killed
                                       start_new_session=True)
             waiter = None
             try:
                 # The waiter starts only once the holder really holds: started
                 # together, either of them may win the lock first.
                 self.assertTrue(self.until(lock, "holder"), "the holder never took it")
-                waiter = subprocess.Popen(["flock", "-w", "30", str(lock), "true"])
+                waiter = subprocess.Popen(["flock", "-w", str(int(kit_time.HANG)), str(lock), "true"])
                 out = self.until(lock, "wait 1") or self.run_queue(lock).stdout
                 self.assertIn("holder", out)
                 self.assertIn("wait 1", out)
@@ -819,9 +823,9 @@ class QueueTest(unittest.TestCase):
                 self.assertRegex(out, r"wait 1\s+pid \d+\s+age \d+s")
             finally:
                 os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
-                holder.wait(timeout=10)
+                holder.wait(timeout=kit_time.HANG)
                 if waiter is not None:
-                    waiter.wait(timeout=30)
+                    waiter.wait(timeout=kit_time.HANG)
 
 
 class WorkerStallsTest(unittest.TestCase):
@@ -875,7 +879,7 @@ class WorkerStallsTest(unittest.TestCase):
                 ["python3", str(LAB / "worker_stalls.py"), "--pid", str(self.PID),
                  "--proc-root", tmp, "--minutes", "1", "--no-align",
                  "--window-before", "0", "--window-after", "0.05"],
-                capture_output=True, text=True, timeout=60)
+                capture_output=True, text=True, timeout=2 * kit_time.HANG)
             after = sorted((p, p.read_bytes()) for p in pathlib.Path(tmp).rglob("*") if p.is_file())
         self.assertEqual(0, done.returncode, done.stderr[-600:])
         self.assertEqual(before, after, "a reader writes nothing into /proc")
@@ -970,7 +974,7 @@ class WorkerStallsTest(unittest.TestCase):
             journal.write_text("".join(t + "\n" for t in trips))
             done = subprocess.run(["python3", str(LAB / "worker_stalls.py"), "--report",
                                    str(jsonl), "--journal", str(journal)],
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=2 * kit_time.HANG)
         self.assertEqual(0, done.returncode, done.stderr[-600:])
         return done.stdout
 
@@ -997,7 +1001,7 @@ class WorkerStallsTest(unittest.TestCase):
 
     def test_report_without_journal_exits_two(self):
         done = subprocess.run(["python3", str(LAB / "worker_stalls.py"), "--report", "x.jsonl"],
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
         self.assertEqual(2, done.returncode)
         self.assertIn("--journal", done.stderr)
 
@@ -1139,7 +1143,7 @@ class IdentityProbeTest(unittest.TestCase):
         if birth:
             args += ["--birth", str(self.BIRTH)]
         before = self.snapshot(root)
-        done = subprocess.run(args + list(extra), capture_output=True, text=True, timeout=60)
+        done = subprocess.run(args + list(extra), capture_output=True, text=True, timeout=2 * kit_time.HANG)
         self.assertEqual(before, self.snapshot(root), "a reader writes nothing")
         self.assertNotIn(self.SECRET, done.stdout + done.stderr, "no slot text leaves the tool")
         return done
@@ -1287,7 +1291,7 @@ class SidecarQuoteTest(unittest.TestCase):
             db = self.make_db(tmp, turns)
             done = subprocess.run(["python3", str(LAB / "sidecar_quote.py"), "--db", str(db),
                                    "--brain", self.BRAIN] + list(extra),
-                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+                                  capture_output=True, text=True, timeout=2 * kit_time.HANG, cwd=str(REPO))
         return done.returncode, done.stdout.strip().splitlines()
 
     def mixed(self, block_in_history=True):
@@ -1468,7 +1472,7 @@ class FactYieldTest(unittest.TestCase):
             db = self.make_db(tmp, rows)
             done = subprocess.run(["python3", str(LAB / "fact_yield.py"), "--db", str(db)]
                                   + list(extra),
-                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+                                  capture_output=True, text=True, timeout=2 * kit_time.HANG, cwd=str(REPO))
         return done.returncode, done.stdout.strip().splitlines(), done.stdout
 
     def test_the_blocks_that_reached_the_lane_are_counted(self):
@@ -1529,7 +1533,7 @@ class FactYieldTest(unittest.TestCase):
             conn.commit()
             conn.close()
             done = subprocess.run(["python3", str(LAB / "fact_yield.py"), "--db", str(db)],
-                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+                                  capture_output=True, text=True, timeout=2 * kit_time.HANG, cwd=str(REPO))
         lines = done.stdout.strip().splitlines()
         self.assertEqual(1, done.returncode, lines)
         self.assertIn("h1 unreadable (headers not JSON)", lines)
@@ -1619,9 +1623,1105 @@ class FactYieldTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             missing = pathlib.Path(tmp) / "no.db"
             done = subprocess.run(["python3", str(LAB / "fact_yield.py"), "--db", str(missing)],
-                                  capture_output=True, text=True, timeout=60, cwd=str(REPO))
+                                  capture_output=True, text=True, timeout=2 * kit_time.HANG, cwd=str(REPO))
             self.assertEqual(2, done.returncode, done.stderr)
             self.assertFalse(missing.exists())
+
+
+class StillShotTest(unittest.TestCase):
+    """`stillShot` in `display-browser-lab.mjs` holds the page's running animations
+    for the evidence screenshot and plays them on afterwards. Measured on a lane under
+    CPUQuota=80 % (TV-F7): the infinite `display-light-drift` kept WebKit at 1-2
+    frames a second and the shot ran into Playwright's 30 s mark (gh703 5/5 red);
+    paused, the same shot took 4.5 s. A fake page drives it here: no browser."""
+
+    FAKE = r"""
+const log = [];
+const anim = (name, state) => ({ name, playState: state,
+  pause() { log.push("pause " + name); this.playState = "paused"; },
+  play() { log.push("play " + name); this.playState = "running"; } });
+const anims = [anim("drift", "running"), anim("done", "finished"), anim("held", "paused")];
+globalThis.document = { getAnimations: () => anims };
+const page = (fail) => ({
+  evaluateHandle: async (fn) => { const v = fn(); return {
+    evaluate: async (g) => g(v), dispose: async () => log.push("dispose") }; },
+  on: () => {},
+  screenshot: async (o) => {
+    log.push("shot " + o.path + " " + o.scale + " " + o.animations + " " + o.caret + " " + typeof o.timeout
+      + " running=" + anims.filter((a) => a.playState === "running").length);
+    if (fail) throw new Error("boom");
+  },
+});
+"""
+
+    def node(self, script):
+        uri = json.dumps((REPO / "workshop" / "tools" / "display-browser-lab.mjs").as_uri())
+        done = subprocess.run(
+            ["node", "--input-type=module", "-e",
+             "import { stillShot, laboratory } from %s;\n%s\n%s" % (uri, self.FAKE, script)],
+            capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    def test_the_shot_is_taken_with_the_animations_held(self):
+        log = self.node('await stillShot(page(false), { path: "a.jpg" });'
+                        "console.log(JSON.stringify(log));")
+        self.assertEqual(["pause drift", "shot a.jpg css disabled hide number running=0", "play drift", "dispose"], log)
+
+    def test_a_failed_shot_still_plays_them_on_and_says_why(self):
+        got = self.node('let why = ""; try { await stillShot(page(true), { path: "b.jpg" }); }'
+                        " catch (e) { why = e.message; }"
+                        "console.log(JSON.stringify({ log, why }));")
+        self.assertEqual("boom", got["why"])
+        self.assertEqual(["pause drift", "shot b.jpg css disabled hide number running=0", "play drift", "dispose"], got["log"])
+
+    # Re-check tv-bn-drv2-fix1 H1: Playwright's `animations: "disabled"` FINISHES a
+    # finite animation the pause held (it only skips `playbackRate === 0`), and a
+    # `play()` on a finished animation rewinds it and runs it again -- an entrance
+    # that had landed would start over after every evidence shot. Only what is
+    # still paused after the shot is played on.
+    def test_an_animation_the_shot_finished_is_not_started_again(self):
+        log = self.node('anims.push(anim("enter", "running")); const p = page(false);'
+                        " const shoot = p.screenshot;"
+                        ' p.screenshot = async (o) => { await shoot(o); anims[3].playState = "finished"; };'
+                        ' await stillShot(p, { path: "d.jpg" }); console.log(JSON.stringify(log));')
+        self.assertEqual(["pause drift", "pause enter", "shot d.jpg css disabled hide number running=0",
+                          "play drift", "dispose"], log)
+
+    # Re-check tv-bn-drv2-fix1 M (TV-B4): the shot answers whether it was taken, so
+    # a driver can write a missing picture into its receipt as an annotation by
+    # name instead of losing it -- the LOG line stays beside the run's output.
+    def test_a_failed_evidence_shot_is_an_annotation_never_a_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = self.node("const lab = laboratory({ page: page(true), outDir: %s, runMs: %d });"
+                            'const r = await lab.shot("c");'
+                            " console.log(JSON.stringify({ noise: lab.noise, r })); process.exit(0);"
+                            % (json.dumps(tmp), kit_time.HANG_MS))
+        self.assertEqual(["SHOT c not taken: boom"], got["noise"])
+        self.assertEqual({"taken": False, "why": "boom"}, got["r"])
+
+    def test_a_taken_evidence_shot_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            got = self.node("const lab = laboratory({ page: page(false), outDir: %s, runMs: %d });"
+                            'const r = await lab.shot("e");'
+                            " console.log(JSON.stringify({ noise: lab.noise, r })); process.exit(0);"
+                            % (json.dumps(tmp), kit_time.HANG_MS))
+        self.assertEqual([], got["noise"])
+        self.assertEqual({"taken": True}, got["r"])
+
+
+class TapMarkerOrderTest(unittest.TestCase):
+    """Re-check tv-bn-drv2-fix1 H2: `tap.mjs` closes its reading on a marker sent
+    behind the gesture on the same LiveView channel. Sent at once, it overtook a
+    frame the page's own handler queued behind a timer of the gesture's task (the
+    `pointerdown`/`pointerup` modes), and the probe read "nothing" for a tap that
+    was still coming. `markBehindTheGesture` lets the page's queued tasks and the
+    next frame run first. A fake page drives it here: no browser."""
+
+    def order(self, script, names="markBehindTheGesture, MARKER"):
+        uri = json.dumps((LAB / "tap.mjs").as_uri())
+        done = subprocess.run(
+            ["node", "--input-type=module", "-e",
+             "import { " + names + " } from %s;\n"
+             "const sent = [], wire = [];\n"
+             "globalThis.window = { __lv: { joinRef: '4', topic: 'lv:x',"
+             " ws: { readyState: 1, send: (d) => { wire.push(JSON.parse(d)); sent.push(JSON.parse(d)[3] === 'event'"
+             " ? JSON.parse(d)[4].event : d); } } } };\n%s" % (uri, script)],
+            capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    def test_the_marker_follows_a_frame_queued_behind_the_gesture(self):
+        got = self.order(
+            "setTimeout(() => window.__lv.ws.send(JSON.stringify(['4', '9', 'lv:x', 'event',"
+            " { event: 'tap' }])), 0);\n"
+            "const { ref } = await markBehindTheGesture({ name: MARKER });\n"
+            "console.log(JSON.stringify({ ref, sent }));")
+        self.assertEqual(["tap", "tap-probe-marker"], got["sent"])
+        self.assertEqual("tap-probe-marker", got["ref"])
+
+    # Re-check tv-bn-i-fix3, mutant class: each half of the wait has a page it
+    # is there for. Without a frame clock (node) the two task turns are the
+    # wait: a handler that chains two tasks before its frame is still ahead of
+    # the marker, with either turn gone it is not.
+    def test_the_marker_follows_a_frame_two_tasks_behind_the_gesture(self):
+        got = self.order(
+            "setTimeout(() => setTimeout(() => window.__lv.ws.send(JSON.stringify(['4', '9', 'lv:x',"
+            " 'event', { event: 'tap' }])), 0), 0);\n"
+            "const mark = await markBehindTheGesture({ name: MARKER });\n"
+            "console.log(JSON.stringify({ mark, sent }));")
+        self.assertEqual(["tap", "tap-probe-marker"], got["sent"])
+        # No frame clock: `framed` is null ("no frame to wait for"), never a
+        # verdict either way -- `markerLines` reads only `false` as a HANG.
+        self.assertEqual({"ref": "tap-probe-marker", "framed": None}, got["mark"])
+
+    # A frame clock slower than a task (as in a browser): a frame the page sends
+    # from the frame after next is still ahead of the marker, because the probe
+    # waits two frames, not one.
+    def test_the_marker_follows_a_frame_sent_two_frames_on(self):
+        got = self.order(
+            "const frames = []; let due = false;\n"
+            "globalThis.requestAnimationFrame = (cb) => { frames.push(cb);"
+            " if (!due) { due = true; setTimeout(() => { due = false;"
+            " for (const f of frames.splice(0)) f(); }, 20); } };\n"
+            "requestAnimationFrame(() => requestAnimationFrame(() => window.__lv.ws.send(JSON.stringify(['4', '9',"
+            " 'lv:x', 'event', { event: 'tap' }]))));\n"
+            "const mark = await markBehindTheGesture({ name: MARKER, hangMs: %d });\n"
+            "console.log(JSON.stringify({ mark, sent }));" % kit_time.HANG_MS)
+        self.assertEqual(["tap", "tap-probe-marker"], got["sent"])
+        self.assertEqual({"ref": "tap-probe-marker", "framed": True}, got["mark"])
+
+    def test_without_an_open_channel_there_is_no_marker(self):
+        got = self.order("window.__lv.ws.readyState = 3;\n"
+                         "const { ref } = await markBehindTheGesture({ name: MARKER });\n"
+                         "console.log(JSON.stringify({ ref, sent }));")
+        self.assertEqual({"ref": None, "sent": []}, got)
+
+    # Re-check tv-bn-i M2: the race of two frames against `hangMs` resolved
+    # silently, and the marker overtook a frame without a word (TV-B1: a wait
+    # with a HANG deadline says so when it expires). A fake frame clock that
+    # never fires stands for a compositor that does not draw.
+    def test_a_frame_that_never_comes_is_a_hang_line(self):
+        got = self.order(
+            "globalThis.requestAnimationFrame = () => {};\n"
+            "const mark = await markBehindTheGesture({ name: MARKER, hangMs: %d });\n"
+            "console.log(JSON.stringify({ mark, lines: markerLines(mark, %d), sent }));"
+            % (kit_time.OVER_MS, kit_time.OVER_MS),
+            names="markBehindTheGesture, markerLines, MARKER")
+        self.assertEqual({"ref": "tap-probe-marker", "framed": False}, got["mark"])
+        self.assertEqual(["HANG: no frame within %d ms before the marker" % kit_time.OVER_MS], got["lines"])
+        self.assertEqual(["tap-probe-marker"], got["sent"])
+
+    def test_frames_that_come_are_no_hang_line(self):
+        got = self.order(
+            "globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);\n"
+            "const mark = await markBehindTheGesture({ name: MARKER, hangMs: %d });\n"
+            "console.log(JSON.stringify({ mark, lines: markerLines(mark, %d) }));" % (kit_time.HANG_MS, kit_time.HANG_MS),
+            names="markBehindTheGesture, markerLines, MARKER")
+        self.assertEqual({"ref": "tap-probe-marker", "framed": True}, got["mark"])
+        self.assertEqual([], got["lines"])
+
+    def test_no_channel_is_a_hang_line(self):
+        got = self.order(
+            "window.__lv.ws.readyState = 3;\n"
+            "const mark = await markBehindTheGesture({ name: MARKER });\n"
+            "console.log(JSON.stringify(markerLines(mark, %d)));" % kit_time.OVER_MS,
+            names="markBehindTheGesture, markerLines, MARKER")
+        self.assertEqual(["HANG: no open LiveView channel to send the marker on"], got)
+
+    # Re-check tv-bn-i-fix4 M2: the fake read only the event name, so the
+    # marker's ref slot, its `type` and the no-channel return went unpinned. The
+    # whole frame is the marker's contract: its ref is what `sentSince` leaves
+    # out, so a frame without it counted the marker's reply as the tap's answer.
+    def test_the_marker_frame_is_the_probes_own(self):
+        got = self.order("await markBehindTheGesture({ name: MARKER });\n"
+                         "console.log(JSON.stringify(wire));")
+        self.assertEqual([["4", "tap-probe-marker", "lv:x", "event",
+                           {"type": "click", "event": "tap-probe-marker", "value": {}}]], got)
+
+    # A page that never joined a LiveView channel has no `__lv` at all: no
+    # marker, the channel HANG, and no crash in `page.evaluate`.
+    def test_a_page_that_never_joined_has_no_channel(self):
+        got = self.order(
+            "globalThis.window = {};\n"
+            "const mark = await markBehindTheGesture({ name: MARKER });\n"
+            "console.log(JSON.stringify({ mark, lines: markerLines(mark, %d), sent }));" % kit_time.OVER_MS,
+            names="markBehindTheGesture, markerLines, MARKER")
+        self.assertEqual({"mark": {"ref": None, "framed": None},
+                          "lines": ["HANG: no open LiveView channel to send the marker on"], "sent": []}, got)
+
+    # No frame and no channel: both HANG lines, the frame's one too.
+    def test_a_page_without_frames_or_channel_has_both_hang_lines(self):
+        got = self.order(
+            "globalThis.requestAnimationFrame = () => {};\n"
+            "window.__lv.ws.readyState = 3;\n"
+            "const mark = await markBehindTheGesture({ name: MARKER, hangMs: %d });\n"
+            "console.log(JSON.stringify({ mark, lines: markerLines(mark, %d), sent }));"
+            % (kit_time.OVER_MS, kit_time.OVER_MS),
+            names="markBehindTheGesture, markerLines, MARKER")
+        self.assertEqual({"mark": {"ref": None, "framed": False},
+                          "lines": ["HANG: no open LiveView channel to send the marker on",
+                                    "HANG: no frame within %d ms before the marker" % kit_time.OVER_MS],
+                          "sent": []}, got)
+
+    # Re-check tv-bn-i-fix4 M5: what the page sent and heard decided in `main`
+    # (the `sentOf` filters). `sentSince` is that page function, driven here by
+    # a fake `window`: one frame before the gesture, the tap's event frame, a
+    # heartbeat, the marker's frame, a second event frame; in, one reply before,
+    # the marker's reply, the replies to both event frames. Two frames of the
+    # gesture against one of the marker, so "only the marker's" is no match.
+    def page_counts(self, ref):
+        return self.order(
+            "globalThis.window = { __outMark: 1, __inMark: 1,"
+            " __out: [{ d: '[\"4\",\"1\",\"lv:x\",\"event\",{}]' }, { d: '[\"4\",\"9\",\"lv:x\",\"event\",{}]' },"
+            " { d: '[\"4\",\"11\",\"lv:x\",\"event\",{}]' },"
+            " { d: '[null,\"10\",\"phoenix\",\"heartbeat\",{}]' },"
+            " { d: '[\"4\",\"tap-probe-marker\",\"lv:x\",\"event\",{}]' }],"
+            " __in: [{ d: '[\"4\",\"1\",\"lv:x\",\"phx_reply\",{}]' },"
+            " { d: '[\"4\",\"tap-probe-marker\",\"lv:x\",\"phx_reply\",{}]' },"
+            " { d: '[\"4\",\"9\",\"lv:x\",\"phx_reply\",{}]' }, { d: '[\"4\",\"11\",\"lv:x\",\"phx_reply\",{}]' }] };\n"
+            "console.log(JSON.stringify(sentSince(%s)));" % json.dumps(ref),
+            names="sentSince")
+
+    def test_the_marker_frames_are_not_the_gestures(self):
+        self.assertEqual({"events": 2, "heard": 2}, self.page_counts("tap-probe-marker"))
+
+    def test_without_a_marker_every_frame_since_the_gesture_counts(self):
+        self.assertEqual({"events": 3, "heard": 3}, self.page_counts(None))
+
+    # Re-check tv-bn-i-fix5 H2 (mutant X15): an event frame is one with "event"
+    # in its event slot. A frame that carries "event" only in its payload --
+    # after `[`, before `]`, after `:` -- is none; counted, the settle wait
+    # waited for a tap that never comes (a false HANG, exit 1). Re-check
+    # tv-bn-i-fix6 H3: `,"event",` alone also matched a payload array
+    # (`[1,"event",2]`); the slot is the fourth element of the frame
+    # `[join_ref, ref, topic, event, payload]`, even a whole frame of that shape
+    # inside the payload is none.
+    def test_event_only_in_the_payload_is_no_event_frame(self):
+        got = self.order(
+            "globalThis.window = { __outMark: 0, __inMark: 0, __in: [],"
+            " __out: [{ d: '[\"4\",\"12\",\"lv:x\",\"phx_join\",{\"a\":[\"event\",1],\"b\":[1,\"event\"],"
+            "\"c\":\"event\",\"d\":[1,\"event\",2],\"e\":[null,null,\"t\",\"event\",1]}]' }] };\n"
+            "console.log(JSON.stringify(sentSince('tap-probe-marker')));",
+            names="sentSince")
+        self.assertEqual({"events": 0, "heard": 0}, got)
+
+    # Re-check tv-bn-i-fix6 H3: the slot check reads the frame's shape, not
+    # quotes around a ref. A push without a join ref (`null`) and a frame cut at
+    # 400 characters (the recorder keeps no more, `JSON.parse` would throw) are
+    # still event frames.
+    def test_an_event_frame_with_a_null_join_ref_or_cut_short_counts(self):
+        got = self.order(
+            "globalThis.window = { __outMark: 0, __inMark: 0, __in: [],"
+            " __out: [{ d: '[null,\"5\",\"lv:x\",\"event\",{}]' },"
+            " { d: '[\"4\",null,\"lv:x\",\"event\",{\"value\":\"' + 'x'.repeat(400) }] };\n"
+            "console.log(JSON.stringify(sentSince('tap-probe-marker')));",
+            names="sentSince")
+        self.assertEqual({"events": 2, "heard": 0}, got)
+
+    # Re-check tv-bn-i-fix4 M5: the attribute list and its condition decided in
+    # `main`. `heldAttrs` is that page function, driven by a fake `document`.
+    def test_the_tile_names_the_attributes_that_hold_frames(self):
+        got = self.order(
+            "const tile = (attrs) => ({ hasAttribute: (a) => attrs.includes(a) });\n"
+            "const tiles = { both: tile(['phx-debounce', 'phx-throttle', 'phx-click']),"
+            " throttle: tile(['phx-throttle']), plain: tile(['phx-click']) };\n"
+            "globalThis.document = { querySelector: (sel) => tiles[sel] || null };\n"
+            "console.log(JSON.stringify(['both', 'throttle', 'plain', 'none'].map(heldAttrs)));",
+            names="heldAttrs")
+        self.assertEqual([["phx-debounce", "phx-throttle"], ["phx-throttle"], [], []], got)
+
+
+class MemberPathTest(unittest.TestCase):
+    """Re-check tv-bn-i H2-4b: a second arrival of the tap that goes compose ->
+    member -> compose is not ordered by the marker. `tap.mjs` follows
+    `parent_message_id` from the tap row (the log's causal chain): every hop
+    compose -> member the tap caused waits for its answer at compose, a tap in
+    that answer counts, and a hop without an answer is a `NOTE: member path
+    open`, never a silent whole reading. Fake log rows drive it: no colony.
+
+    Re-check tv-bn-i-fix1 M1: "no hop open" is only a reading once compose has
+    handled the marker -- a row whose `parent_message_id` is the marker row.
+    compose takes the tap before the marker (one task, FIFO from web), so the
+    hops the tap opened are logged by then; before it, a hop compose has not
+    logged yet looks like no hop at all. `handled_marker` stands for that row."""
+
+    COMPOSE = "/org/members/m/channels/display/compose"
+    MEMBER = "/org/members/m/talky/in"
+
+    def row(self, rid, parent, frm, to, event=None):
+        body = {"event": {"name": event, "value": {"for": "view.chat"}}} if event else {"text": "x"}
+        return {"id": "row-%08d" % rid, "parent_message_id": parent and "row-%08d" % parent,
+                "created_at": "2026-10-12T06:20:%02d.000Z" % rid, "from_path": frm, "to_path": to,
+                "headers_json": json.dumps({"hop": {"route": "event"}}),
+                "body_kind": "inline", "body_payload": json.dumps(body)}
+
+    def paths(self, rows, hang_ms=kit_time.HANG_MS):
+        script = (
+            "import * as t from %s;\n"
+            "const bodyOf = (r) => JSON.parse(r.body_payload);\n"
+            "const rows = %s;\n"
+            "const paths = t.memberPathsOf(rows, bodyOf);\n"
+            "console.log(JSON.stringify({ paths, lines: t.memberLines(paths, %d),"
+            " all: t.tapsOf(rows, bodyOf).length }));"
+            % (json.dumps((LAB / "tap.mjs").as_uri()), json.dumps(rows), hang_ms))
+        done = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    def tap(self):
+        return self.row(1, None, "@external", self.COMPOSE, event="tap")
+
+    def handled_marker(self):
+        return [self.row(8, None, "@external", self.COMPOSE, event="tap-probe-marker"),
+                self.row(9, 8, self.COMPOSE, "/org/members/m/channels/display/web")]
+
+    def test_a_second_arrival_through_the_member_counts(self):
+        got = self.paths([self.tap(),
+                          self.row(2, 1, self.COMPOSE, self.MEMBER),
+                          self.row(3, 2, self.MEMBER, self.COMPOSE, event="tap")] + self.handled_marker())
+        self.assertEqual(1, got["paths"]["hops"])
+        self.assertEqual([], got["paths"]["open"])
+        self.assertEqual(["00000003"], [t["id"] for t in got["paths"]["taps"]])
+        self.assertEqual(2, got["all"])
+        self.assertEqual([], got["lines"])
+
+    def test_an_answer_deeper_in_the_member_closes_the_path(self):
+        got = self.paths([self.tap(),
+                          self.row(2, 1, self.COMPOSE, self.MEMBER),
+                          self.row(3, 2, self.MEMBER, "/org/members/m/talky/llm"),
+                          self.row(4, 3, "/org/members/m/talky/llm", self.COMPOSE)] + self.handled_marker())
+        self.assertEqual({"hops": 1, "open": [], "taps": [], "handled": True}, got["paths"])
+        self.assertEqual([], got["lines"])
+
+    # Re-check tv-bn-i-fix1 M2: the end of a hop is the member's answer AT
+    # COMPOSE, not any row below it. A chain compose -> member -> llm that has
+    # not answered compose yet is still open; read as closed, a tap on its way
+    # back would arrive after a whole reading.
+    def test_a_chain_without_an_answer_at_compose_stays_open(self):
+        got = self.paths([self.tap(),
+                          self.row(2, 1, self.COMPOSE, self.MEMBER),
+                          self.row(3, 2, self.MEMBER, "/org/members/m/talky/llm")] + self.handled_marker(),
+                         hang_ms=kit_time.OVER_MS)
+        self.assertEqual(["00000002"], got["paths"]["open"])
+        self.assertEqual(["NOTE: member path open (1 of 1 hop(s) compose -> member without an answer at compose"
+                          " within 1 ms: 00000002); a tap on that path can still arrive"], got["lines"])
+
+    def test_an_open_member_path_is_a_note(self):
+        got = self.paths([self.tap(), self.row(2, 1, self.COMPOSE, self.MEMBER)] + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual(["00000002"], got["paths"]["open"])
+        self.assertEqual(1, len(got["lines"]))
+        self.assertTrue(got["lines"][0].startswith("NOTE: member path open"), got["lines"])
+        self.assertIn("00000002", got["lines"][0])
+
+    def test_the_display_channel_and_foreign_chains_are_no_member_path(self):
+        got = self.paths([self.tap(),
+                          self.row(2, 1, self.COMPOSE, "/org/members/m/channels/display/web"),
+                          self.row(5, None, "@external", self.COMPOSE, event="tap-probe-marker"),
+                          self.row(6, 5, self.COMPOSE, self.MEMBER)])
+        self.assertEqual({"hops": 0, "open": [], "taps": [], "handled": True}, got["paths"])
+        self.assertEqual([], got["lines"])
+
+    # Re-check tv-bn-i-fix1 M1: the marker arrived at compose, but compose has
+    # not handled it -- the hop the tap opens is not logged yet. Read at that
+    # moment, "hops=0 open=0" was a silent whole reading; it is a NOTE.
+    def test_a_marker_compose_has_not_handled_is_a_note(self):
+        got = self.paths([self.tap(),
+                          self.row(8, None, "@external", self.COMPOSE, event="tap-probe-marker")], hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 0, "open": [], "taps": [], "handled": False}, got["paths"])
+        self.assertEqual(["NOTE: member path open (compose has not handled the marker within 1 ms; a hop"
+                          " compose -> member it has not logged yet can still open one)"], got["lines"])
+
+    # Mutant class (fix3): the walk down `parent_message_id` keeps a seen-set,
+    # so a malformed log whose parents form a cycle still ends.
+    def test_a_cyclic_chain_still_ends(self):
+        got = self.paths([self.row(1, 2, "@external", self.COMPOSE, event="tap"),
+                          self.row(2, 1, self.COMPOSE, self.MEMBER)] + self.handled_marker())
+        self.assertEqual({"hops": 1, "open": [], "handled": True},
+                         {k: got["paths"][k] for k in ("hops", "open", "handled")})
+
+    # Re-check tv-bn-i-fix4 M1: no fixture had a row with two children. A fan-out
+    # -- compose answers the tap with a frame to `web` and a hop to the member --
+    # is the normal case; a children map that keeps only one child lost the hop
+    # and read `hops 0` without a NOTE. Both orders of the rows.
+    def test_a_fan_out_keeps_every_child_of_the_tap(self):
+        web = "/org/members/m/channels/display/web"
+        for rows in ([self.row(3, 1, self.COMPOSE, self.MEMBER), self.row(2, 1, self.COMPOSE, web), self.tap()],
+                     [self.tap(), self.row(2, 1, self.COMPOSE, web), self.row(3, 1, self.COMPOSE, self.MEMBER)]):
+            got = self.paths(rows + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+            self.assertEqual({"hops": 1, "open": ["00000003"], "taps": [], "handled": True}, got["paths"])
+            self.assertEqual(["NOTE: member path open (1 of 1 hop(s) compose -> member without an answer at compose"
+                              " within 1 ms: 00000003); a tap on that path can still arrive"], got["lines"])
+
+    # Re-check tv-bn-i-fix5 M1: no fixture had a hop to a cell under another
+    # channel. Where the display hive's exit `.` leads is the parent template's
+    # choice, so compose -> `channels/voice/in` is a member path like any other;
+    # a channel filter wider than `display` (mutant X14) dropped it and read
+    # `hops 0` without a NOTE.
+    def test_a_hop_to_another_channel_is_a_member_path(self):
+        got = self.paths([self.row(2, 1, self.COMPOSE, "/org/members/m/channels/voice/in"), self.tap()]
+                         + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 1, "open": ["00000002"], "taps": [], "handled": True}, got["paths"])
+        self.assertEqual(["NOTE: member path open (1 of 1 hop(s) compose -> member without an answer at compose"
+                          " within 1 ms: 00000002); a tap on that path can still arrive"], got["lines"])
+
+    # Mutation run 3 (I8, REGEX segment): the display channel is `channels/display`,
+    # not every path segment named `display`. A member cell under a hive called
+    # `display` is a member like any other.
+    def test_a_member_under_a_hive_named_display_is_a_member_path(self):
+        got = self.paths([self.tap(), self.row(2, 1, self.COMPOSE, "/org/members/m/display/in")]
+                         + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 1, "open": ["00000002"], "taps": [], "handled": True}, got["paths"])
+
+    # Re-check tv-bn-i-fix5 H2 (mutant X13): compose is the cell `compose`, not
+    # every cell whose name starts with it. A neighbour `composer` neither opens
+    # a hop nor ends one: the answer it gets leaves the hop open.
+    def test_a_neighbour_named_like_compose_is_not_compose(self):
+        composer = "/org/members/m/channels/display/composer"
+        got = self.paths([self.tap(),
+                          self.row(2, 1, self.COMPOSE, self.MEMBER),
+                          self.row(3, 2, self.MEMBER, composer, event="tap"),
+                          self.row(4, 1, composer, "/org/members/m/cogny/in"),
+                          # Mutation run 3 (I8): nor is a `display/compose` outside the channels.
+                          self.row(5, 1, "/org/members/m/display/compose", "/org/members/m/cogny/in")]
+                         + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 1, "open": ["00000002"], "taps": [], "handled": True}, got["paths"])
+
+    # Re-check tv-bn-i-fix6 M1 (mutant Y1, `DISPLAY` without its closing `\/`):
+    # the display hive's exit `.` (templates/display/config.json, `./compose -> .`)
+    # makes the real hop compose -> the hive path `…/channels/display` itself, no
+    # slash after it. That hop leaves the channel; read as display-internal it
+    # was `hops 0` without a NOTE, and a tap coming back through it fell out.
+    def test_the_hop_out_of_the_display_hive_is_a_member_path(self):
+        got = self.paths([self.tap(), self.row(2, 1, self.COMPOSE, "/org/members/m/channels/display")]
+                         + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 1, "open": ["00000002"], "taps": [], "handled": True}, got["paths"])
+        self.assertEqual(["NOTE: member path open (1 of 1 hop(s) compose -> member without an answer at compose"
+                          " within 1 ms: 00000002); a tap on that path can still arrive"], got["lines"])
+
+    # Mutation run 4 (I9, escaped edges; re-check tv-bn-i-fix6 H1, mutant Y2):
+    # `channels` is a whole path segment. A segment that only ends in it
+    # (`subchannels`, or `x-channels`: a word boundary is no segment boundary)
+    # is neither the display channel nor compose: a cell under
+    # `subchannels/display` is a member, a `subchannels/display/compose` neither
+    # opens a hop nor ends one.
+    def test_a_segment_ending_in_channels_is_not_the_display_channel(self):
+        for segment in ("subchannels", "x-channels"):
+            with self.subTest(segment=segment):
+                sub = "/org/members/m/%s/display" % segment
+                got = self.paths([self.tap(),
+                                  self.row(2, 1, self.COMPOSE, sub + "/in"),
+                                  self.row(3, 2, sub + "/in", sub + "/compose", event="tap"),
+                                  self.row(4, 1, sub + "/compose", "/org/members/m/cogny/in")]
+                                 + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+                self.assertEqual({"hops": 1, "open": ["00000002"], "taps": [], "handled": True}, got["paths"])
+
+    # Mechanical mutant class (fix4, L203/L212): with one hop per fixture, hops
+    # and answers keyed by anything but their own id still counted right. Two
+    # members answer the same tap: two hops, two taps back; one of them open.
+    def test_two_hops_count_twice(self):
+        cogny = "/org/members/m/cogny/in"
+        hops = [self.tap(), self.row(2, 1, self.COMPOSE, self.MEMBER), self.row(3, 1, self.COMPOSE, cogny),
+                self.row(4, 2, self.MEMBER, self.COMPOSE, event="tap")]
+        got = self.paths(hops + [self.row(5, 3, cogny, self.COMPOSE, event="tap")] + self.handled_marker())
+        self.assertEqual(2, got["paths"]["hops"])
+        self.assertEqual([], got["paths"]["open"])
+        self.assertEqual(["00000004", "00000005"], [t["id"] for t in got["paths"]["taps"]])
+        got = self.paths(hops + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 2, "open": ["00000003"], "handled": True},
+                         {k: got["paths"][k] for k in ("hops", "open", "handled")})
+        self.assertEqual(["NOTE: member path open (1 of 2 hop(s) compose -> member without an answer at compose"
+                          " within %d ms: 00000003); a tap on that path can still arrive" % kit_time.OVER_MS],
+                         got["lines"])
+
+    # Re-check tv-bn-i-fix4 M3: every fixture had one open hop of one, so the
+    # counts and the separator of the NOTE went unpinned (TV-Q3: the last state).
+    def test_the_open_note_names_how_many_of_how_many_hops_are_open(self):
+        script = ("import { memberLines } from %s;\n"
+                  "console.log(JSON.stringify(memberLines({ hops: 3, open: ['aaaa', 'bbbb'], taps: [],"
+                  " handled: true }, %d)));" % (json.dumps((LAB / "tap.mjs").as_uri()), kit_time.OVER_MS))
+        done = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        self.assertEqual(["NOTE: member path open (2 of 3 hop(s) compose -> member without an answer at compose"
+                          " within %d ms: aaaa bbbb); a tap on that path can still arrive" % kit_time.OVER_MS],
+                         json.loads(done.stdout))
+
+    def test_a_handled_marker_without_a_hop_is_a_whole_reading(self):
+        got = self.paths([self.tap()] + self.handled_marker(), hang_ms=kit_time.OVER_MS)
+        self.assertEqual({"hops": 0, "open": [], "taps": [], "handled": True}, got["paths"])
+        self.assertEqual([], got["lines"])
+
+    # Re-check tv-bn-i-fix2 M1: the wait in `main` ended on "no hop open"
+    # alone in fix1; with `handled` gone from its condition every pin above
+    # stayed green. `awaitMemberPaths` is that wait, driven here by a fake
+    # `read` whose readings come in order (the last one repeats).
+    def wait(self, readings, hang_ms):
+        script = (
+            "import { awaitMemberPaths } from %s;\n"
+            "const readings = %s;\n"
+            "let reads = 0;\n"
+            "const read = async () => readings[Math.min(reads++, readings.length - 1)];\n"
+            "const got = await awaitMemberPaths(read, %d, 0);\n"
+            "console.log(JSON.stringify({ reads, ...got }));"
+            % (json.dumps((LAB / "tap.mjs").as_uri()), json.dumps(readings), hang_ms))
+        done = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    @staticmethod
+    def reading(handled, overflow=0, open=(), fresh=2):
+        return {"member": {"handled": handled, "open": list(open), "hops": len(open), "taps": []},
+                "overflow": overflow, "fresh": fresh}
+
+    def test_the_wait_ends_only_once_compose_has_handled_the_marker(self):
+        got = self.wait([self.reading(False), self.reading(True, fresh=3)], hang_ms=kit_time.HANG_MS)
+        self.assertEqual(2, got["reads"])
+        self.assertEqual([], got["notes"])
+        self.assertEqual(["hangs", "notes", "reading", "reads"], sorted(got))
+        self.assertTrue(got["reading"]["member"]["handled"])
+        # Re-check tv-bn-i-fix4 M6: the wait hands back the reading it judged.
+        self.assertEqual(self.reading(True, fresh=3), got["reading"])
+
+    def test_a_marker_never_handled_ends_the_wait_with_its_note(self):
+        got = self.wait([self.reading(False)], hang_ms=kit_time.OVER_MS)
+        self.assertEqual(["NOTE: member path open (compose has not handled the marker within 1 ms; a hop"
+                          " compose -> member it has not logged yet can still open one)"], got["notes"])
+
+    # Re-check tv-bn-i-fix3 M1: every reading above had `open: []`, so the wait
+    # ending on `handled` alone stayed green. A handled marker with a hop still
+    # waiting for its answer at compose is no whole reading: the wait goes on.
+    def test_the_wait_goes_on_while_a_hop_is_open(self):
+        got = self.wait([self.reading(True, open=["h1"]), self.reading(True)], hang_ms=kit_time.HANG_MS)
+        self.assertEqual(2, got["reads"])
+        self.assertEqual([], got["notes"])
+        self.assertEqual([], got["hangs"])
+        self.assertEqual([], got["reading"]["member"]["open"])
+
+    def test_a_hop_open_at_the_deadline_ends_the_wait_with_its_note(self):
+        got = self.wait([self.reading(True, open=["h1"])], hang_ms=kit_time.OVER_MS)
+        self.assertEqual(["NOTE: member path open (1 of 1 hop(s) compose -> member without an answer at compose"
+                          " within 1 ms: h1); a tap on that path can still arrive"], got["notes"])
+        self.assertEqual([], got["hangs"])
+
+    # Re-check tv-bn-i-fix2 H4: newest rows first (`colony_dispatch.rs`,
+    # `ORDER BY created_at DESC`), so an overflowing window loses the tap row
+    # first and still holds the marker's child -- `hops=0 handled=true`, a
+    # silent whole reading. An overflow ends the wait at once; since fix3 H1 it
+    # is a `HANG:` line that marks the run (exit 1), no longer a NOTE.
+    def test_an_overflowed_window_ends_the_wait_with_its_hang_line(self):
+        got = self.wait([self.reading(True, overflow=300, fresh=7)], hang_ms=kit_time.HANG_MS)
+        self.assertEqual(1, got["reads"])
+        self.assertEqual([overflow_line(300, 7)], got["hangs"])
+        self.assertEqual([], got["notes"])
+        self.assertEqual(self.reading(True, overflow=300, fresh=7), got["reading"])
+
+    # Re-check tv-bn-i-fix4 M6: the reading the deadline judged is handed back.
+    def test_the_wait_hands_back_the_reading_its_deadline_judged(self):
+        got = self.wait([self.reading(True, open=["h1"], fresh=4)], hang_ms=kit_time.OVER_MS)
+        self.assertEqual(self.reading(True, open=["h1"], fresh=4), got["reading"])
+
+    # Re-check tv-bn-i-fix4 H3: the overflow is judged before the deadline. A
+    # deadline already behind (`hangMs` -1) is past at the first check, with no
+    # clock to fake; with the two checks swapped the overflow became a NOTE and
+    # exit 0 (swap mutant survived all 60 tests at b4a1f45b0).
+    def test_an_overflow_past_the_deadline_is_still_a_hang_line(self):
+        got = self.wait([self.reading(True, overflow=300, fresh=7)], hang_ms=kit_time.PAST_MS)
+        self.assertEqual({"reads": 1, "notes": [], "hangs": [overflow_line(300, 7)],
+                          "reading": self.reading(True, overflow=300, fresh=7)}, got)
+
+    def overflowed(self, rows, before, limit):
+        script = (
+            "import { windowOverflowed } from %s;\n"
+            "console.log(JSON.stringify(windowOverflowed(%s, new Set(%s), %d)));"
+            % (json.dumps((LAB / "tap.mjs").as_uri()), json.dumps([{"id": r} for r in rows]),
+               json.dumps(before), limit))
+        done = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    def test_a_window_that_still_holds_a_row_from_before_holds_every_fresh_one(self):
+        self.assertFalse(self.overflowed(["c", "b", "a"], ["a"], 3))
+
+    def test_a_full_window_without_a_row_from_before_overflowed(self):
+        self.assertTrue(self.overflowed(["e", "d", "c"], ["b", "a"], 3))
+
+    def test_a_window_that_lost_every_row_from_before_overflowed(self):
+        self.assertTrue(self.overflowed(["d"], ["b", "a"], 3))
+        # One row from before is enough to lose (mechanical mutant fix4 L251).
+        self.assertTrue(self.overflowed(["c"], ["a"], 3))
+
+    def test_a_log_shorter_than_the_window_is_whole(self):
+        self.assertFalse(self.overflowed(["b", "a"], [], 3))
+        self.assertTrue(self.overflowed(["c", "b", "a"], [], 3))
+
+    # Re-check tv-bn-i-fix3 M2 and fix4 M5: a pin on the call alone let `main`
+    # drop its result, and a pin on its text let a commented-out statement and an
+    # added one through. `main` decides nothing: every decision is a
+    # behaviour-pinned function (`TapReadingTest`, `TapMarkerOrderTest`), the
+    # lines and the exit code included (`verdictOf`). Pinned here, on the source
+    # without comments: each wiring statement exactly once, and how often each
+    # value that carries a verdict is named -- a statement added to empty,
+    # replace or re-read one changes a count.
+    def test_main_waits_through_the_pinned_functions(self):
+        src = (LAB / "tap.mjs").read_text(encoding="utf-8")
+        main = src[src.index("async function main()"):src.index("function startedAsProgram()")]
+        main = re.sub(r"/\*.*?\*/", "", main, flags=re.S)
+        main = re.sub(r"(^|\s)//.*$", "", main, flags=re.M)
+        for statement in (
+            "const limit = windowLimit(flags.limit);",
+            "const api = messagesUrl(base, limit);",
+            "return readingOf((await (await fetch(api)).json()).messages, before, limit, bodyOf);",
+            "const before = await snapIds();",
+            "const mark = await page.evaluate(markBehindTheGesture, { name: MARKER, hangMs: HANG_MS });",
+            "const markerRef = mark.ref;",
+            "const held = await page.evaluate(heldAttrs, tile);",
+            "const sentOf = () => page.evaluate(sentSince, markerRef);",
+            "const after = await readAfterGesture({ sentOf, read: () => newTaps(before), markerRef, hangMs: HANG_MS,"
+            " tickMs: POLL_TICK_MS });",
+            "const verdict = verdictOf({ mark, held, after, hangMs: HANG_MS });",
+            "for (const line of verdict.lines) console.log(line);",
+            "process.exitCode = verdict.exitCode;",
+            "const taps = after.reading;",
+            "console.log(colonyLine(taps));",
+        ):
+            self.assertEqual(1, main.count(statement), statement)
+        for name, n in (("verdict", 3), ("after", 3), ("mark", 3), ("held", 2), ("sentOf", 2), ("markerRef", 5),
+                        ("newTaps", 2), ("limit", 4), ("api", 4), ("before", 4), ("taps", 4), ("hangs", 0), ("notes", 0),
+                        ("awaitMemberPaths", 0), ("awaitSettled", 0), ("exitCode", 2), ("POLL_TICK_MS", 1), ("tickMs", 1)):
+            self.assertEqual(n, len(re.findall(r"\b%s\b" % name, main)), name)
+
+
+def overflow_line(limit, fresh):
+    return ("HANG: log window overflowed (limit %d; last state: fresh=%d, none from before): the rows logged first"
+            " after the gesture can be missing, so this is no whole reading" % (limit, fresh))
+
+
+
+class TapReadingTest(unittest.TestCase):
+    """Re-check tv-bn-i-fix3 M2/H1 and the mutant class behind them: every
+    decision `tap.mjs` takes after the gesture is a function a fake drives here
+    (no browser, no colony) -- the reading of one log window (`readingOf`), the
+    window's real limit (`windowLimit`), the tile's held frames (`heldLines`),
+    the settle wait (`awaitSettled`) and the two waits in order
+    (`readAfterGesture`). An overflowed window is a `HANG:` line (fix3 H1): no
+    whole reading, so the run is marked."""
+
+    def node(self, script):
+        done = subprocess.run(
+            ["node", "--input-type=module", "-e",
+             "import * as t from %s;\n%s" % (json.dumps((LAB / "tap.mjs").as_uri()), script)],
+            capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    COMPOSE = "/org/members/m/channels/display/compose"
+
+    def row(self, rid, parent, event=None, frm="@external", to=COMPOSE):
+        body = {"event": {"name": event, "value": {"for": "view.chat"}}} if event else {"text": "x"}
+        return {"id": "row-%08d" % rid, "parent_message_id": parent and "row-%08d" % parent,
+                "created_at": "2026-10-12T06:20:%02d.000Z" % rid, "from_path": frm, "to_path": to,
+                "headers_json": json.dumps({"hop": {"route": "event"}}),
+                "body_kind": "inline", "body_payload": json.dumps(body)}
+
+    def reading_of(self, rows, before, limit):
+        return self.node(
+            "const bodyOf = (r) => JSON.parse(r.body_payload);\n"
+            "console.log(JSON.stringify(t.readingOf(%s, new Set(%s), %d, bodyOf)));"
+            % (json.dumps(rows), json.dumps(before), limit))
+
+    def test_a_reading_counts_only_the_rows_after_the_gesture(self):
+        rows = [self.row(9, 8, frm=self.COMPOSE, to="/org/members/m/channels/display/web"),
+                self.row(8, None, event="tap-probe-marker"),
+                self.row(3, 2, event="tap", frm="/org/members/m/talky/in"),
+                self.row(2, 1, frm=self.COMPOSE, to="/org/members/m/talky/in"),
+                self.row(1, None, event="tap"),
+                self.row(11, 12, frm=self.COMPOSE, to="/org/members/m/talky/in"),
+                self.row(10, None, event="tap-probe-marker"),
+                self.row(12, None, event="tap")]
+        # Rows 10 to 12 are from before the gesture: an earlier tap with a hop
+        # still open and an earlier marker. None of them counts.
+        got = self.reading_of(rows, ["row-00000010", "row-00000011", "row-00000012"], 300)
+        self.assertEqual(0, got["overflow"])
+        self.assertEqual(5, got["fresh"])
+        self.assertEqual(["00000003", "00000001"], [x["id"] for x in got["taps"]])
+        self.assertEqual(1, got["markers"])
+        self.assertEqual({"hops": 1, "open": [], "handled": True}, {k: got["member"][k] for k in ("hops", "open", "handled")})
+        self.assertEqual(["00000003"], [x["id"] for x in got["member"]["taps"]])
+
+    def test_an_overflowed_reading_names_its_limit(self):
+        got = self.reading_of([self.row(5, None), self.row(4, None)], ["row-00000001"], 2)
+        self.assertEqual(2, got["overflow"])
+        # A log shorter than the window is whole: the guard counts with the
+        # window's own limit (mechanical mutant fix4 L307: limit -> null).
+        got = self.reading_of([self.row(5, None), self.row(4, None)], [], 300)
+        self.assertEqual(0, got["overflow"])
+
+    def test_the_window_limit_is_clamped_like_the_api(self):
+        got = self.node("console.log(JSON.stringify([undefined, '50', 5000, '-5'].map(t.windowLimit)));")
+        self.assertEqual([300, 50, 1000, 1], got)
+
+    def test_a_held_frame_is_a_note(self):
+        got = self.node("console.log(JSON.stringify([t.heldLines(['phx-debounce']), t.heldLines([])]));")
+        self.assertEqual([["NOTE: the tile carries phx-debounce; a frame it holds back can follow the marker"], []], got)
+
+    def drive(self, fn, sents, readings, marker_ref, hang_ms):
+        return self.node(
+            "const sents = %s, readings = %s;\n"
+            "let s = 0, reads = 0;\n"
+            "const sentOf = async () => sents[Math.min(s++, sents.length - 1)];\n"
+            "const read = async () => readings[Math.min(reads++, readings.length - 1)];\n"
+            "const got = %s;\n"
+            "console.log(JSON.stringify({ reads, got }));"
+            % (json.dumps(sents), json.dumps(readings),
+               fn % {"ref": json.dumps(marker_ref), "hang": hang_ms}))
+
+    @staticmethod
+    def seen(taps=0, markers=1, overflow=0, handled=True, open=(), tag=0):
+        # `tag` tells the readings apart: a wait hands back the one it judged.
+        return {"overflow": overflow, "fresh": taps + markers, "taps": [{"id": "t%d" % i} for i in range(taps)],
+                "markers": markers, "tag": tag,
+                "member": {"handled": handled, "open": list(open), "hops": len(open), "taps": []}}
+
+    def settle(self, sents, readings, marker_ref="tap-probe-marker", hang_ms=kit_time.HANG_MS):
+        return self.drive("await t.awaitSettled(sentOf, read, %(ref)s, %(hang)d, 0)",
+                          sents, readings, marker_ref, hang_ms)
+
+    def test_the_settle_wait_waits_for_the_marker(self):
+        got = self.settle([{"events": 0, "heard": 0}], [self.seen(markers=0), self.seen(markers=1, tag=1)])
+        self.assertEqual({"reads": 2, "got": {"hangs": [], "overflow": 0, "reading": self.seen(markers=1, tag=1)}},
+                         got)
+
+    def test_without_a_marker_the_settle_wait_asks_for_none(self):
+        got = self.settle([{"events": 0, "heard": 0}], [self.seen(markers=0)], marker_ref=None)
+        self.assertEqual({"reads": 1, "got": {"hangs": [], "overflow": 0, "reading": self.seen(markers=0)}}, got)
+
+    def test_the_settle_wait_waits_until_every_sent_event_is_logged(self):
+        got = self.settle([{"events": 2, "heard": 1}], [self.seen(taps=1), self.seen(taps=2)])
+        self.assertEqual(2, got["reads"])
+        self.assertEqual([], got["got"]["hangs"])
+
+    def test_the_settle_wait_waits_for_the_answer_of_a_sent_event(self):
+        got = self.settle([{"events": 1, "heard": 0}, {"events": 1, "heard": 1}], [self.seen(taps=1)])
+        self.assertEqual(2, got["reads"])
+        self.assertEqual([], got["got"]["hangs"])
+
+    def test_a_gesture_that_sent_nothing_needs_no_answer(self):
+        got = self.settle([{"events": 0, "heard": 0}], [self.seen(taps=0)])
+        self.assertEqual(1, got["reads"])
+        self.assertEqual([], got["got"]["hangs"])
+
+    def test_a_settle_wait_that_never_settles_is_a_hang_line(self):
+        got = self.settle([{"events": 1, "heard": 0}], [self.seen(taps=0, markers=0, tag=5)], hang_ms=kit_time.OVER_MS)
+        self.assertEqual(['HANG: the gesture never settled (no answer within 1 ms); last state: '
+                          '{"events":1,"heard":0,"logged":0,"marker":0}'], got["got"]["hangs"])
+        self.assertEqual(0, got["got"]["overflow"])
+        self.assertEqual(self.seen(taps=0, markers=0, tag=5), got["got"]["reading"])
+
+    # Re-check tv-bn-i-fix3 H1: an overflow broke the settle loop with a NOTE
+    # and exit 0. It is a `HANG:` line now and ends the wait at once; since fix4
+    # H4 it names its last state (the fresh rows).
+    def test_an_overflow_ends_the_settle_wait_with_its_hang_line(self):
+        reading = self.seen(taps=2, markers=0, overflow=300)
+        got = self.settle([{"events": 1, "heard": 0}], [reading])
+        self.assertEqual({"reads": 1, "got": {"hangs": [overflow_line(300, 2)], "overflow": 300,
+                                              "reading": reading}}, got)
+
+    # Re-check tv-bn-i-fix4 H3: overflow, then success, then the deadline. A
+    # deadline already behind (`hangMs` -1) is past at the first check, with no
+    # clock to fake; either swap survived all 60 tests at b4a1f45b0.
+    def test_an_overflow_past_the_deadline_ends_the_settle_wait_with_its_hang_line(self):
+        reading = self.seen(taps=2, markers=0, overflow=300)
+        got = self.settle([{"events": 1, "heard": 0}], [reading], hang_ms=kit_time.PAST_MS)
+        self.assertEqual({"reads": 1, "got": {"hangs": [overflow_line(300, 2)], "overflow": 300,
+                                              "reading": reading}}, got)
+
+    def test_a_reading_settled_past_the_deadline_is_settled(self):
+        got = self.settle([{"events": 0, "heard": 0}], [self.seen(tag=1)], hang_ms=kit_time.PAST_MS)
+        self.assertEqual({"reads": 1, "got": {"hangs": [], "overflow": 0, "reading": self.seen(tag=1)}}, got)
+
+    def after(self, sents, readings, hang_ms=kit_time.HANG_MS):
+        return self.drive("await t.readAfterGesture({ sentOf, read, markerRef: %(ref)s, hangMs: %(hang)d, tickMs: 0 })",
+                          sents, readings, "tap-probe-marker", hang_ms)
+
+    # Re-check tv-bn-i-fix5 H1: the poll tick. Each wait sleeps `tickMs` between
+    # two reads and never before the first or after the last -- the read rate,
+    # no verdict -- and `main` passes `POLL_TICK_MS` (pinned there). With a tick
+    # dropped, zeroed or lost on the way, a wait polled `/colony/messages`
+    # without a pause until `HANG_MS`, and every verdict stayed the same. A fake
+    # `setTimeout` records each delay and runs at once: no clock is read.
+    def test_both_waits_sleep_one_tick_between_two_reads(self):
+        got = self.node(
+            "const delays = [], run = globalThis.setTimeout;\n"
+            "globalThis.setTimeout = (f, ms, ...a) => { delays.push(ms); return run(f, 0, ...a); };\n"
+            "const readings = %s;\n"
+            "let reads = 0;\n"
+            "const read = async () => readings[Math.min(reads++, readings.length - 1)];\n"
+            "const sentOf = async () => ({ events: 0, heard: 0 });\n"
+            "const after = await t.readAfterGesture({ sentOf, read, markerRef: 'tap-probe-marker',"
+            " hangMs: %d, tickMs: 7 });\n"
+            "const afterReads = reads;\n"
+            "reads = 0;\n"
+            "await t.awaitSettled(sentOf, read, 'tap-probe-marker', %d, 5);\n"
+            "console.log(JSON.stringify({ afterReads, reads, delays, after: after.reading.tag }));"
+            % (json.dumps([self.seen(markers=0, tag=1), self.seen(tag=2), self.seen(open=["h1"], tag=3),
+                           self.seen(tag=4)]), kit_time.HANG_MS, kit_time.HANG_MS))
+        self.assertEqual({"afterReads": 4, "reads": 2, "delays": [7, 7, 5], "after": 4}, got)
+
+    # Mutation run 3 (I8, AWAIT): a tick that is set but not awaited is no pause
+    # -- the delays above stayed right while the wait read on at once. A fake
+    # `setTimeout` that holds the tick back: until it fires, each wait has read
+    # exactly once.
+    def test_a_wait_reads_again_only_once_its_tick_fired(self):
+        got = self.node(
+            "const held = [];\n"
+            "globalThis.setTimeout = (f) => { held.push(f); return 0; };\n"
+            "const turn = () => new Promise((r) => setImmediate(r));\n"
+            "const readings = %s;\n"
+            "const out = [];\n"
+            "for (const wait of ['member', 'settle']) {\n"
+            "  let reads = 0;\n"
+            "  const read = async () => readings[Math.min(reads++, readings.length - 1)];\n"
+            "  const sentOf = async () => ({ events: 0, heard: 0 });\n"
+            "  const done = wait === 'member' ? t.awaitMemberPaths(read, %d, 7)"
+            " : t.awaitSettled(sentOf, read, 'tap-probe-marker', %d, 7);\n"
+            "  await turn(); await turn();\n"
+            "  const before = reads;\n"
+            "  held.splice(0).forEach((f) => f());\n"
+            "  await done;\n"
+            "  out.push([wait, before, reads]);\n"
+            "}\n"
+            "console.log(JSON.stringify(out));"
+            % (json.dumps([self.seen(markers=0, open=["h1"], tag=1), self.seen(tag=2)]), kit_time.HANG_MS,
+               kit_time.HANG_MS))
+        self.assertEqual([["member", 1, 2], ["settle", 1, 2]], got)
+
+    def test_the_poll_tick_is_100_ms(self):
+        self.assertEqual(100, self.node("console.log(JSON.stringify(t.POLL_TICK_MS));"))
+
+    def test_an_overflow_while_settling_skips_the_member_wait(self):
+        got = self.after([{"events": 0, "heard": 0}], [self.seen(overflow=300, tag=1), self.seen(tag=2)])
+        self.assertEqual({"reads": 1, "got": {"hangs": [overflow_line(300, 1)], "notes": [],
+                                              "reading": self.seen(overflow=300, tag=1)}}, got)
+
+    # Re-check tv-bn-i-fix4 M6: `main` read a third time after both waits and
+    # printed that reading, whose overflow nobody judged. The reading it prints
+    # is the last one a wait judged.
+    def test_the_member_wait_follows_the_settle_wait(self):
+        got = self.after([{"events": 0, "heard": 0}],
+                         [self.seen(tag=1), self.seen(open=["h1"], tag=2), self.seen(tag=3), self.seen(tag=4)])
+        self.assertEqual({"reads": 3, "got": {"hangs": [], "notes": [], "reading": self.seen(tag=3)}}, got)
+
+    def test_an_overflow_in_the_member_wait_is_a_hang_line(self):
+        got = self.after([{"events": 0, "heard": 0}], [self.seen(), self.seen(taps=3, overflow=300, tag=2)])
+        self.assertEqual({"reads": 2, "got": {"hangs": [overflow_line(300, 4)], "notes": [],
+                                              "reading": self.seen(taps=3, overflow=300, tag=2)}}, got)
+
+    def test_both_waits_report_what_they_saw(self):
+        got = self.after([{"events": 1, "heard": 0}], [self.seen(taps=0, handled=False)], hang_ms=kit_time.OVER_MS)
+        self.assertEqual(['HANG: the gesture never settled (no answer within 1 ms); last state: '
+                          '{"events":1,"heard":0,"logged":0,"marker":1}'], got["got"]["hangs"])
+        self.assertEqual(["NOTE: member path open (compose has not handled the marker within 1 ms; a hop"
+                          " compose -> member it has not logged yet can still open one)"], got["got"]["notes"])
+
+    # Re-check tv-bn-i-fix4 M4: every reading above had `markers=1`, so a
+    # `readAfterGesture` that dropped the marker's ref stayed green. A marker
+    # that never reaches compose is the settle HANG (`"marker":0`) plus the
+    # compose NOTE -- exit 1, never a NOTE alone with exit 0.
+    def test_a_marker_that_never_arrives_is_a_hang_line(self):
+        got = self.after([{"events": 0, "heard": 0}], [self.seen(markers=0, handled=False)], hang_ms=kit_time.OVER_MS)
+        self.assertEqual(['HANG: the gesture never settled (no answer within 1 ms); last state: '
+                          '{"events":0,"heard":0,"logged":0,"marker":0}'], got["got"]["hangs"])
+        self.assertEqual(["NOTE: member path open (compose has not handled the marker within 1 ms; a hop"
+                          " compose -> member it has not logged yet can still open one)"], got["got"]["notes"])
+
+    # Re-check tv-bn-i-fix4 M5: `main` printed the lines and set the exit code
+    # itself. `verdictOf` is that decision: the HANG lines (marker, then the
+    # waits), then the NOTE lines (held frames, then the member wait); a HANG
+    # is exit 1.
+    def verdict(self, mark, held, after):
+        return self.node("console.log(JSON.stringify(t.verdictOf({ mark: %s, held: %s, after: %s, hangMs: %d })));"
+                         % (json.dumps(mark), json.dumps(held), json.dumps(after), kit_time.OVER_MS))
+
+    def test_the_verdict_prints_hangs_then_notes_and_a_hang_exits_1(self):
+        got = self.verdict({"ref": None, "framed": False}, ["phx-debounce"],
+                           {"hangs": ["HANG: a"], "notes": ["NOTE: b"], "reading": {}})
+        self.assertEqual({"lines": ["HANG: no open LiveView channel to send the marker on",
+                                    "HANG: no frame within 1 ms before the marker", "HANG: a",
+                                    "NOTE: the tile carries phx-debounce; a frame it holds back can follow the marker",
+                                    "NOTE: b"], "exitCode": 1}, got)
+
+    def test_notes_alone_exit_0(self):
+        got = self.verdict({"ref": "tap-probe-marker", "framed": True}, ["phx-throttle"],
+                           {"hangs": [], "notes": ["NOTE: b"], "reading": {}})
+        self.assertEqual({"lines": ["NOTE: the tile carries phx-throttle; a frame it holds back can follow the marker",
+                                    "NOTE: b"], "exitCode": 0}, got)
+
+    def test_a_wait_hang_alone_exits_1(self):
+        got = self.verdict({"ref": "tap-probe-marker", "framed": None}, [], {"hangs": ["HANG: a"], "notes": []})
+        self.assertEqual({"lines": ["HANG: a"], "exitCode": 1}, got)
+
+    # Re-check tv-bn-i-fix4 M5: the window in the URL is the window the overflow
+    # guard counts with.
+    def test_the_messages_url_carries_the_window_limit(self):
+        got = self.node("console.log(JSON.stringify(t.messagesUrl('http://127.0.0.1:1', t.windowLimit('5000'))));")
+        self.assertEqual("http://127.0.0.1:1/colony/messages?limit=1000", got)
+
+    def test_the_colony_line_names_the_reading(self):
+        reading = {"fresh": 7, "taps": [{"id": "a"}, {"id": "b"}], "markers": 1,
+                   "member": {"handled": True, "hops": 3, "open": ["x"], "taps": [{"id": "b"}]}}
+        got = self.node("console.log(JSON.stringify(t.colonyLine(%s)));" % json.dumps(reading))
+        self.assertEqual("colony: fresh=7 taps=2 markers=1 member handled=true hops=3 open=1 taps via member=1", got)
+
+
+class ThrottleLineTest(unittest.TestCase):
+    """Re-check tv-bn-drv2-fix1 § 5 (TV-B7): a driver that brakes its page says so
+    on stderr (`THROTTLE ...`, `workshop/tools/lib/cpu-throttle.mjs`), and every
+    Rust test that runs such a driver captured that stderr and dropped it on a
+    green run -- a braked probe and an unbraked one read the same in the gate log.
+    Each such test prints the line, and nextest shows it when green."""
+
+    TESTS = REPO / "crates" / "meclaw-cells" / "tests"
+
+    def braking_drivers(self):
+        tools = REPO / "workshop" / "tools"
+        for path in sorted(tools.glob("*.mjs")):
+            if "cpu-throttle.mjs" in path.read_text(encoding="utf-8"):
+                yield "workshop/tools/" + path.name
+
+    def callers(self, driver):
+        for path in sorted(self.TESTS.rglob("*.rs")):
+            if driver in path.read_text(encoding="utf-8"):
+                yield path
+
+    def test_every_caller_of_a_braking_driver_prints_its_throttle_line(self):
+        nextest = (REPO / ".config" / "nextest.toml").read_text(encoding="utf-8")
+        loud = [b for b in nextest.split("[[profile.default.overrides]]")[1:]
+                if 'success-output = "immediate-final"' in b.split("[[")[0]]
+        seen = 0
+        for driver in self.braking_drivers():
+            for path in self.callers(driver):
+                seen += 1
+                with self.subTest(driver=driver, test=path.name):
+                    self.assertIn('l.starts_with("THROTTLE ")', path.read_text(encoding="utf-8"))
+                    self.assertTrue(any(path.stem in b for b in loud),
+                                    "%s: its green output is not in the gate log" % path.stem)
+        self.assertGreaterEqual(seen, 3)
+
+
+class CountdownSettledTest(unittest.TestCase):
+    """GH #1078: B-21's question to the page while it watches the countdown
+    (`countdownSettled`, `display-browser-lab.mjs`), driven by a fake page -- no
+    browser. The proof is decided by the page's own evidence: the tile it measured
+    (by `data-for`, never the first tile with the attribute: the product writes
+    `data-end-at="0"` on every tile that counts nothing) and a write of the seconds
+    in a task that began a page second after the label was read (`countdownWatch`
+    stamps every task that changed the dock). A tick count is no second: `updated`
+    ticks on every patch."""
+
+    FAKE = r"""
+const tile = (id, end, label) => ({
+  getAttribute: (n) => (n === "data-for" ? id : n === "data-end-at" ? end : null),
+  querySelector: (s) => (s === '[data-role="remaining"]' && label !== null ? { textContent: label } : null),
+});
+const page = (tiles, scene, watch) => {
+  globalThis.window = globalThis;
+  globalThis.__displayScene = scene;
+  globalThis.__countdownWatch = watch;
+  globalThis.document = {
+    querySelectorAll: (s) => (s === ".display-tile[data-for]" ? tiles : []),
+    querySelector: (s) => (s === ".display-tile[data-end-at]:not([data-end-at=''])"
+      ? tiles.find((t) => t.getAttribute("data-end-at") !== "") || null : null),
+  };
+};
+"""
+
+    # The label `was` and the page time `at0` it was read at; the old question took
+    # `t0`, the scene's tick count at that moment.
+    ARG = {"id": "c1", "was": "01:52", "t0": 6, "at0": 100000}
+    TIMER = 'tile("c1", "1790000180000", "%s")'
+    TILES = '[tile("w1", "0", null), ' + TIMER % "01:52" + ']'
+
+    def ask(self, tiles, ticks, writes):
+        uri = json.dumps((REPO / "workshop" / "tools" / "display-browser-lab.mjs").as_uri())
+        watch = dict(self.ARG, writes=writes)
+        script = ("import { countdownSettled } from %s;\n%s\npage(%s, %s, %s);\n"
+                  "console.log(JSON.stringify(countdownSettled(%s)));"
+                  % (uri, self.FAKE, tiles, json.dumps({"ticks": ticks}), json.dumps(watch),
+                     json.dumps(self.ARG)))
+        done = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    def test_a_tile_that_counts_nothing_ahead_of_it_is_not_read(self):
+        # The product's dock: `data-end-at="0"` on the window tile ahead of the timer.
+        got = self.ask(self.TILES, 6, [])
+        self.assertIs(False, got, "B-21 read a tile without seconds: %r" % (got,))
+
+    def test_four_ticks_inside_one_second_of_the_page_decide_nothing(self):
+        # Four patches (`updated` ticks each) within 400 ms of the reading; the timer is
+        # the only tile, so nothing but the ticks is asked here.
+        writes = [{"at": 100000 + 100 * i, "wrote": True, "label": "01:52"} for i in range(1, 5)]
+        got = self.ask("[%s]" % (self.TIMER % "01:52"), 10, writes)
+        self.assertIs(False, got, "four ticks inside one page second judged: %r" % (got,))
+
+    def test_the_write_that_crossed_the_second_is_not_yet_the_proof(self):
+        # The stamp at +1000 is the END of its task; its clock may have read +999.
+        got = self.ask(self.TILES, 7, [{"at": 101000, "wrote": True, "label": "01:52"}])
+        self.assertIs(False, got, "a write that may have read the old second judged: %r" % (got,))
+
+    def test_a_write_after_a_page_second_with_the_same_label_is_read_as_stuck(self):
+        writes = [{"at": 101000, "wrote": False, "label": "01:52"},
+                  {"at": 101004, "wrote": True, "label": "01:52"}]
+        got = self.ask(self.TILES, 7, writes)
+        self.assertEqual("01:52", got["label"])
+
+    def test_a_moved_label_is_read_at_once(self):
+        tiles = '[tile("w1", "0", null), ' + self.TIMER % "01:51" + ']'
+        got = self.ask(tiles, 7, [{"at": 100300, "wrote": True, "label": "01:51"}])
+        self.assertEqual("01:51", got["label"])
+
+    def test_the_measured_tile_losing_its_seconds_is_read_at_once(self):
+        tiles = '[tile("w1", "0", null), tile("c1", "1790000180000", null)]'
+        got = self.ask(tiles, 6, [])
+        self.assertIsNone(got["label"])
+
+
+class CountdownOpeningTest(unittest.TestCase):
+    """GH #1078, re-check I1: what B-21 makes of its first reading (`countdownWatch`)
+    before it waits (`countdownOpening`, `display-browser-lab.mjs`). A counted tile
+    whose end lies within half a second is RED with a reason of its own -- every line
+    sets the countdown minutes ahead (stage +120 s, colony fixture +10 min), so such an
+    end means a wrong `end_at` (a unit in seconds, a stale value) or a clock that stood
+    until the end passed; an earlier `partial` let both pass without looking at the
+    label."""
+
+    def opening(self, watch):
+        uri = json.dumps((REPO / "workshop" / "tools" / "display-browser-lab.mjs").as_uri())
+        script = ("import { countdownOpening } from %s;\n"
+                  "console.log(JSON.stringify(countdownOpening(%s)));" % (uri, json.dumps(watch)))
+        done = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, done.returncode, done.stderr[-600:])
+        return json.loads(done.stdout)
+
+    def assert_red(self, got):
+        self.assertIsInstance(got, dict, got)
+        self.assertNotIn("partial", got, "an ended countdown passed as partial: %r" % (got,))
+        self.assertIn("end_at is wrong or the clock stood", got.get("why", ""))
+
+    def test_an_end_in_the_past_is_red_with_its_own_reason(self):
+        # `end_at` in seconds read as milliseconds lies in 1970; the label is `00:00`.
+        self.assert_red(self.opening({"scene": True, "was": "00:00", "at0": 1790000000000,
+                                      "left": 1790000180 - 1790000000000}))
+
+    def test_a_clock_that_stood_until_the_end_passed_is_red(self):
+        self.assert_red(self.opening({"scene": True, "was": "00:07", "at0": 1000, "left": -4000}))
+
+    def test_an_end_within_half_a_second_is_red(self):
+        self.assert_red(self.opening({"scene": True, "was": "00:00", "at0": 1000, "left": 500}))
+
+    def test_an_unreadable_end_is_red(self):
+        self.assert_red(self.opening({"scene": True, "was": "01:52", "at0": 1000, "left": None}))
+
+    def test_a_countdown_minutes_ahead_goes_on_to_wait(self):
+        self.assertIsNone(self.opening({"scene": True, "was": "01:52", "at0": 1000, "left": 112000}))
+
+    def test_a_tile_without_seconds_is_red(self):
+        got = self.opening({"scene": True, "was": None, "at0": 1000, "left": 112000})
+        self.assertEqual("the counting tile carries no seconds (D-27)", got.get("why"))
+
+    def test_a_page_without_the_scene_hook_is_not_judged(self):
+        got = self.opening({"scene": False, "was": "01:52", "at0": 1000, "left": 112000})
+        self.assertIn("partial", got)
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,263 @@
+{
+  "mode": "release",
+  "rev": "fab9e80912dc3c3fe68b26c96cfc3c3026dfa90e",
+  "base": "5b31222293f0a7c6491aa2241c5908041fac6750",
+  "dirty": false,
+  "lock_wait_secs": 0,
+  "archive": "/srv/target/runs/x",
+  "plan": [
+    "precheck",
+    "roadmap-anchors",
+    "adr-anchors",
+    "claims",
+    "tree-rules",
+    "corpus-committed",
+    "corpus",
+    "catalogue",
+    "display-lab",
+    "llm-conformance",
+    "guide-selftest",
+    "fmt",
+    "clippy",
+    "unwrap-budget",
+    "corridor",
+    "tests",
+    "slow-tests",
+    "doctests",
+    "deny",
+    "scenarios:memory",
+    "scenarios:builder",
+    "scenarios:display",
+    "browser:display",
+    "recall-harness",
+    "deny-advisories",
+    "persona-cases",
+    "persona-receipt",
+    "export-selftest",
+    "export-tree-tests",
+    "export-audit"
+  ],
+  "started": "2026-10-08T13:56:22+00:00",
+  "finished": "2026-10-08T14:55:55+00:00",
+  "stations": [
+    {
+      "name": "precheck",
+      "scope": "form",
+      "secs": 4,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-precheck.log"
+    },
+    {
+      "name": "roadmap-anchors",
+      "scope": "ROADMAP.md",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-roadmap-anchors.log"
+    },
+    {
+      "name": "adr-anchors",
+      "scope": "plans/adr",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-adr-anchors.log"
+    },
+    {
+      "name": "claims",
+      "scope": "claims.tsv",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-claims.log"
+    },
+    {
+      "name": "tree-rules",
+      "scope": "templates+examples",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-tree-rules.log"
+    },
+    {
+      "name": "corpus-committed",
+      "scope": "seed as committed",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-corpus-committed.log"
+    },
+    {
+      "name": "corpus",
+      "scope": "regenerate+check+librarian",
+      "secs": 3,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-corpus.log"
+    },
+    {
+      "name": "catalogue",
+      "scope": "templates/README.md",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-catalogue.log"
+    },
+    {
+      "name": "display-lab",
+      "scope": "unittest",
+      "secs": 9,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-display-lab.log"
+    },
+    {
+      "name": "llm-conformance",
+      "scope": "unittest",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-llm-conformance.log"
+    },
+    {
+      "name": "guide-selftest",
+      "scope": "unittest",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-guide-selftest.log"
+    },
+    {
+      "name": "tree-sync",
+      "scope": "full touch: foreign tree /srv/target/wt/zk-fix, 1810 files",
+      "secs": 0,
+      "verdict": "NOTE",
+      "log": ""
+    },
+    {
+      "name": "fmt",
+      "scope": "workspace",
+      "secs": 13,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-fmt.log"
+    },
+    {
+      "name": "clippy",
+      "scope": "workspace",
+      "secs": 125,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-clippy.log"
+    },
+    {
+      "name": "unwrap-budget",
+      "scope": "workspace",
+      "secs": 35,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-unwrap-budget.log"
+    },
+    {
+      "name": "corridor",
+      "scope": "colony.rs",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-corridor.log"
+    },
+    {
+      "name": "tests",
+      "scope": "all() - (binary(/_demo$/) + binary(/_demo_/) + binary(/e2e/) + binary(/^workshop_scenario$/) + binary(/^slack_live$/) + binary(/^gpt_live_live$/) + binary(/^harness_real_cli_smoke$/) + binary(/^audit_14_/))",
+      "secs": 1354,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-tests.log"
+    },
+    {
+      "name": "slow-tests",
+      "scope": "1/3 of terminate-after",
+      "secs": 0,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-slow-tests.log"
+    },
+    {
+      "name": "doctests",
+      "scope": "workspace",
+      "secs": 5,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-doctests.log"
+    },
+    {
+      "name": "deny",
+      "scope": "bans licenses sources",
+      "secs": 1,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-deny.log"
+    },
+    {
+      "name": "scenarios:memory",
+      "scope": "46 cases",
+      "secs": 387,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-scenarios:memory.log"
+    },
+    {
+      "name": "scenarios:builder",
+      "scope": "18 cases",
+      "secs": 104,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-scenarios:builder.log"
+    },
+    {
+      "name": "scenarios:display",
+      "scope": "116 scenarios",
+      "secs": 136,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-scenarios:display.log"
+    },
+    {
+      "name": "browser:display",
+      "scope": "sheet+colony",
+      "secs": 531,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-browser:display.log"
+    },
+    {
+      "name": "recall-harness",
+      "scope": "tier-1+answers",
+      "secs": 11,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-recall-harness.log"
+    },
+    {
+      "name": "deny-advisories",
+      "scope": "advisories",
+      "secs": 1,
+      "verdict": "NOTE",
+      "log": "/srv/target/wt/x/logs/release-deny-advisories.log"
+    },
+    {
+      "name": "persona-cases",
+      "scope": "17 cases",
+      "secs": 34,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-persona-cases.log"
+    },
+    {
+      "name": "persona-receipt",
+      "scope": "fingerprint",
+      "secs": 0,
+      "verdict": "NOTE",
+      "log": "/srv/target/wt/x/logs/release-persona-receipt.log"
+    },
+    {
+      "name": "export-selftest",
+      "scope": "drift-fixtures",
+      "secs": 2,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-export-selftest.log"
+    },
+    {
+      "name": "export-tree-tests",
+      "scope": "catalogue tests in the export tree",
+      "secs": 568,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-export-tree-tests.log"
+    },
+    {
+      "name": "export-audit",
+      "scope": "R1-R17",
+      "secs": 242,
+      "verdict": "GREEN",
+      "log": "/srv/target/wt/x/logs/release-export-audit.log"
+    }
+  ],
+  "verdict": "GREEN",
+  "owner_decisions": []
+}

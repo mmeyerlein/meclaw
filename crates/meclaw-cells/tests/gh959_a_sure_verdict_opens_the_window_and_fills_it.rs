@@ -3,17 +3,17 @@
 //! The two times of the plan, as a causal chain at the receiver (`web`), never as a
 //! clock: the window with its hint reaches the screen WHILE the app still holds its data
 //! (no app hop before the first reaction), and with the data the chosen block stands.
-//! Before the decider is released nothing is shown -- proven by a sentinel turn: `stage`
-//! is resident with one child, so the decider's second request means the first turn was
-//! handled completely, and its handling emitted no view.
+//! Before the decider is released nothing is shown -- proven as cause: a sentinel turn
+//! (`stage` is resident with one child, so the decider's second request means the first
+//! turn was handled), then, released and settled, every view of stage descends from a
+//! verdict.
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use meclaw_core::serde_json::json;
-use presenter_colony::{Dials, body, boot, decision, guard, stage_routes, warm};
+use presenter_colony::{Dials, body, boot, decision, guard, warm};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sure_verdict_opens_the_window_and_fills_it() {
@@ -39,15 +39,11 @@ async fn a_sure_verdict_opens_the_window_and_fills_it() {
         "the call carries nothing else"
     );
 
-    // Sentinel: `stage` sends the decide call of a second turn, so the first was handled
-    // -- and no view. The decider is serial, so the second call reaches the stub only
-    // after the first is released.
+    // Sentinel: `stage` sends the decide call of a second turn, so the first was handled.
+    // The decider is serial, so the second call reaches the stub only after the first is
+    // released.
     s.turn("t1b", "and another thing").await;
     s.decided_on("t1b").await;
-    assert!(
-        !stage_routes(&s).await.iter().any(|r| r == "view"),
-        "a view left before the verdict"
-    );
 
     first.release(decision(&[
         ("topic", "sample", 0.9),
@@ -55,6 +51,23 @@ async fn a_sure_verdict_opens_the_window_and_fills_it() {
         ("sample.also", "none", 0.9),
     ]));
     s.ask().await.release(decision(&[("topic", "none", 0.9)]));
+
+    // No view before the verdict, as cause and not as a look under a held request: the
+    // colony never settles while the decider is held (tv-bn M7b6 green run: `HANG: the
+    // colony settles` at the old look, 30 s). Released and settled, every `view` of stage
+    // descends from one of the two verdicts -- a row that reaches neither left before them.
+    let stage = format!("{}/stage", presenter_colony::PRESENTER);
+    let is_view = |r: &meclaw_colony::api_dto::MessageLogDto| {
+        r.from_path == stage && display_colony::hop_of(r)["route"] == "view"
+    };
+    let (views, past_t1) = s.before_the_verdict("t1", is_view).await;
+    let (_, past_t1b) = s.before_the_verdict("t1b", is_view).await;
+    assert!(views >= 1, "the verdict draws: {views} views of stage");
+    let early: Vec<&String> = past_t1.iter().filter(|r| past_t1b.contains(r)).collect();
+    assert!(
+        early.is_empty(),
+        "a view left before the verdict: {early:#?}"
+    );
     let ask = s.out("in_show").await;
     assert_eq!(body(&ask)["op"], json!("data"));
     assert_eq!(body(&ask)["turn_id"], json!("t1"));

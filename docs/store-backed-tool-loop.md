@@ -227,7 +227,7 @@ capability is condensation: fold the old rounds into one summary row and rebuild
 This is topology and needs no new cell type. The reference tree is
 [`tests/fixtures/gh120-compaction-lane`](../tests/fixtures/gh120-compaction-lane/), the loop
 above plus one hive and one edge split, pinned in
-`crates/meclaw-cells/tests/compaction_lane.rs`.
+`crates/meclaw-cells/tests/misc_1/compaction_lane.rs`.
 
 ### The accumulator is an edge, not a cell
 
@@ -363,7 +363,7 @@ burn their own copies and the number above is the cost along the chain that re-e
 planner.
 
 Measured on the checked-in fixture (`tests/fixtures/14b-tool-loop-store`, pinned in
-`crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`): six tool rounds end to end cost 76
+`crates/meclaw-cells/tests/misc_8/tool_loop_ttl_budget.rs`): six tool rounds end to end cost 76
 routing hops. `message_default_ttl` defaults to 64, so the default budget holds five rounds and
 the sixth runs out. Five rounds is not generous for an assistant. "Write the file, read it
 back, fix it, verify, then summarise" is five.
@@ -392,7 +392,7 @@ When it takes a message, colony lifts the follow-up's `ttl` back to `message_def
 loop then only ever has to fit one round into the budget instead of all of them, so
 [`examples/telegram-research`](../examples/telegram-research/) needs no `colony.json` at all:
 six rounds and more run on the substrate default of 64. Pinned in
-`crates/meclaw-cells/tests/tool_loop_ttl_budget.rs`
+`crates/meclaw-cells/tests/misc_8/tool_loop_ttl_budget.rs`
 (`six_tool_rounds_complete_on_the_default_budget_when_the_loopback_edge_restores_ttl`).
 
 The restore resets the budget and never accumulates it, it never lowers a message ingested with

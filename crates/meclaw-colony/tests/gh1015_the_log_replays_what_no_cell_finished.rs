@@ -12,8 +12,8 @@
 //! target cell's own book.
 
 use meclaw_colony::{
-    CellFactoryRegistry, ColonyConfig, ColonyDb, ColonyMsg, ColonyTaskConfig, PlannedEdge,
-    RespawnFn, cell_task, colony_task,
+    CellFactoryRegistry, ColonyConfig, ColonyDb, ColonyMsg, ColonyTaskConfig,
+    DELIVERY_ATTEMPT_HEADER, PlannedEdge, RespawnFn, cell_task, colony_task,
 };
 use meclaw_core::{Body, Cell, CellOutput, Message, MessageBuilder, OutputSink, Path, Uuid};
 use serde_json::json;
@@ -443,30 +443,47 @@ async fn overflow_and_replay_never_deliver_the_same_id_twice() {
     assert_eq!(ids, want, "each id once ({spilled} of them from disk)");
 }
 
-/// Poison lock: a delivery that never finishes is replayed three times, the
-/// fourth boot dead-letters it as `replay_exhausted`; its log row stays.
+/// Takes its delivery, says so, and never finishes: the handler of a poison
+/// message, held still at the moment the process dies.
+struct StartAndHang(mpsc::UnboundedSender<Uuid>);
+impl Cell for StartAndHang {
+    async fn handle(&mut self, msg: Message, _sink: &OutputSink) {
+        let _ = self.0.send(msg.id);
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Poison lock: a delivery whose handler starts and never finishes, in a life
+/// that then crashes, is replayed three times; the boot after the third
+/// replayed attempt dead-letters it as `replay_exhausted`; its log row stays.
+/// GH #1200: every life waits until the handler has the delivery before it
+/// dies — the poison counter counts lives in which the handler ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delivery_that_never_finishes_ends_as_replay_exhausted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("colony.db");
-    let mut b = boot(&db, config("{}")).await;
-    register_hold(&mut b, "/sink", 8).await;
-    initial_apply(&b, Vec::new()).await;
     let m = source("/sink", 0);
     let id = m.id;
-    route(&b, m).await;
-    shutdown(b).await;
-    // Review M-2: the first boot after an ordered stop does not count; the
-    // three lives after it end in a crash and count 1, 2, 3; the fifth boot
-    // dead-letters.
+    // The original delivery starts the handler, and the life stops in order
+    // (drain 0: the hanging handler is left, the log row is committed). Three
+    // replays start it again and crash, one attempt each; the fifth boot
+    // dead-letters without a start.
     for life in 0..5 {
         let mut b = boot(&db, config("{}")).await;
-        register_hold(&mut b, "/sink", 8).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        register_cell(&mut b, "/sink", StartAndHang(tx), 8).await;
         initial_apply(&b, Vec::new()).await;
+        if life == 0 {
+            route(&b, m.clone()).await;
+        }
         if life < 4 {
-            crash(b).await;
-        } else {
+            let started = tokio::time::timeout(MARKER, rx.recv()).await;
+            assert_eq!(started, Ok(Some(id)), "life {life}: the handler has it");
+        }
+        if life == 0 || life == 4 {
             shutdown(b).await;
+        } else {
+            crash(b).await;
         }
     }
     let conn = read(&db);
@@ -488,6 +505,50 @@ async fn a_delivery_that_never_finishes_ends_as_replay_exhausted() {
         )
         .expect("log row");
     assert_eq!(kept, 1, "the log row stays");
+}
+
+/// GH #1200: a life that dies before the handler took its replayed delivery
+/// is no attempt. Under full-suite load the gh1043 stream lost an
+/// acknowledged frame: its delivery was replayed at three boots that were
+/// all killed before the target cell (a dormant store, still waking) took it,
+/// the boot count reached `REPLAY_MAX`, and the next boot dead-lettered a
+/// healthy delivery as `replay_exhausted`. Five lives that each die with the
+/// delivery still in the mailbox; the sixth delivers it, and nothing is a
+/// dead letter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_life_killed_before_the_handler_takes_a_replay_is_no_attempt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("colony.db");
+    let mut b = boot(&db, config("{}")).await;
+    register_hold(&mut b, "/sink", 8).await;
+    initial_apply(&b, Vec::new()).await;
+    let m = source("/sink", 0);
+    let id = m.id;
+    route(&b, m).await;
+    shutdown(b).await;
+    for _ in 0..5 {
+        let mut b = boot(&db, config("{}")).await;
+        register_hold(&mut b, "/sink", 8).await;
+        initial_apply(&b, Vec::new()).await;
+        crash(b).await;
+    }
+    let mut b = boot(&db, config("{}")).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    register_cell(&mut b, "/sink", Recorder(tx), 8).await;
+    initial_apply(&b, Vec::new()).await;
+    let got = tokio::time::timeout(MARKER, rx.recv()).await;
+    shutdown(b).await;
+    let conn = read(&db);
+    let codes: Vec<String> = conn
+        .prepare("SELECT error_code FROM dead_letters")
+        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+        .expect("dead letters");
+    assert_eq!(codes, Vec::<String>::new(), "no dead letter");
+    assert_eq!(
+        got.ok().flatten().map(|(i, _)| i),
+        Some(id),
+        "the sixth life delivers it"
+    );
 }
 
 // ---------------------------------------------------------------- SIGKILL --
@@ -722,38 +783,153 @@ fn a_sigkill_mid_chain_loses_nothing_and_doubles_nothing() {
 
 // ------------------------------------------------------------ fix round 1 --
 
-/// Review M-2: the poison counter counts crashes, not starts. Four ordered
-/// restarts with a delivery no cell ever finishes: it is replayed every time
-/// and never becomes `replay_exhausted`.
+/// A colony whose ordered stop drains briefly: a handler that outlives the
+/// budget (a long model call) is cut by the stop, not finished.
+fn config_short_drain() -> ColonyConfig {
+    let mut c = config("{}");
+    c.shutdown_drain_timeout_ms = 200;
+    c
+}
+
+/// One life of `/sink` = [`StartAndHang`] that waits until the handler has
+/// `id` (or, with `started == false`, until the boot is through) and then
+/// ends — `crashed` or in order.
+async fn hang_life(
+    db: &std::path::Path,
+    cfg: ColonyConfig,
+    first: Option<&Message>,
+    id: Uuid,
+    started: bool,
+    crashed: bool,
+    life: usize,
+) {
+    let mut b = boot(db, cfg).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    register_cell(&mut b, "/sink", StartAndHang(tx), 8).await;
+    initial_apply(&b, Vec::new()).await;
+    if let Some(m) = first {
+        route(&b, m.clone()).await;
+    }
+    if started {
+        let got = tokio::time::timeout(MARKER, rx.recv()).await;
+        assert_eq!(got, Ok(Some(id)), "life {life}: the handler has it");
+    }
+    if crashed {
+        crash(b).await;
+    } else {
+        shutdown(b).await;
+    }
+}
+
+fn replays_of(db: &std::path::Path, id: Uuid) -> Option<i64> {
+    read(db)
+        .query_row(
+            "SELECT replays FROM delivery_open WHERE message_id = ?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+/// Review M-2, GH #1200 fix round: the poison counter counts crashes, never
+/// ordered stops. A replayed handler that outlives the drain of an ordered
+/// stop (a long model call, four restarts during it) is no attempt: every
+/// restart replays the delivery, its handler starts every time, nothing is
+/// counted, and a later life still delivers it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordered_restarts_never_exhaust_a_delivery() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("colony.db");
-    let mut b = boot(&db, config("{}")).await;
-    register_hold(&mut b, "/sink", 8).await;
-    initial_apply(&b, Vec::new()).await;
-    route(&b, source("/sink", 0)).await;
-    shutdown(b).await;
-    for _ in 0..4 {
-        let mut b = boot(&db, config("{}")).await;
-        register_hold(&mut b, "/sink", 8).await;
-        initial_apply(&b, Vec::new()).await;
-        shutdown(b).await;
+    let m = source("/sink", 0);
+    let id = m.id;
+    hang_life(&db, config_short_drain(), Some(&m), id, true, false, 0).await;
+    for life in 1..=4 {
+        hang_life(&db, config_short_drain(), None, id, true, false, life).await;
     }
+    {
+        let conn = read(&db);
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM dead_letters"),
+            0,
+            "no dead letter"
+        );
+    }
+    assert_eq!(replays_of(&db, id), Some(0), "still open, no attempt kept");
+    let mut b = boot(&db, config_drained()).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    register_cell(&mut b, "/sink", Recorder(tx), 8).await;
+    initial_apply(&b, Vec::new()).await;
+    let got = tokio::time::timeout(MARKER, rx.recv()).await;
+    shutdown(b).await;
+    assert_eq!(
+        got.ok().flatten().map(|(i, _)| i),
+        Some(id),
+        "a later life delivers it"
+    );
+}
+
+/// GH #1200 fix round: crash and ordered stop are told apart in one history.
+/// Two lives crash with the handler running (two attempts), three ordered
+/// stops cut the handler after the drain (no attempt — what they counted
+/// lapses, the two crashes stay), a third crash makes three, and the next
+/// boot dead-letters the delivery as `replay_exhausted` without a start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crash_counts_and_an_ordered_stop_does_not() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("colony.db");
+    let m = source("/sink", 0);
+    let id = m.id;
+    hang_life(&db, config_short_drain(), Some(&m), id, true, false, 0).await;
+    for life in 1..=2 {
+        hang_life(&db, config_short_drain(), None, id, true, true, life).await;
+    }
+    assert_eq!(replays_of(&db, id), Some(2), "two crashes, two attempts");
+    for life in 3..=5 {
+        hang_life(&db, config_short_drain(), None, id, true, false, life).await;
+    }
+    assert_eq!(replays_of(&db, id), Some(2), "ordered stops add nothing");
+    hang_life(&db, config_short_drain(), None, id, true, true, 6).await;
+    hang_life(&db, config_short_drain(), None, id, false, false, 7).await;
     let conn = read(&db);
-    assert_eq!(
-        count(&conn, "SELECT count(*) FROM dead_letters"),
-        0,
-        "no dead letter"
-    );
-    assert_eq!(
-        count(
-            &conn,
-            "SELECT count(*) FROM delivery_open WHERE replays = 0"
-        ),
-        1,
-        "still open, no attempt counted"
-    );
+    let codes: Vec<String> = conn
+        .prepare("SELECT error_code FROM dead_letters")
+        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+        .expect("dead letters");
+    assert_eq!(codes, vec!["replay_exhausted".to_string()]);
+}
+
+/// Reports whether its delivery carried the replay-attempt flag, then hangs.
+struct AttemptProbe(mpsc::UnboundedSender<bool>);
+impl Cell for AttemptProbe {
+    async fn handle(&mut self, msg: Message, _sink: &OutputSink) {
+        let _ = self
+            .0
+            .send(msg.headers.hop.contains_key(DELIVERY_ATTEMPT_HEADER));
+        std::future::pending::<()>().await;
+    }
+}
+
+/// GH #1200 review H3: the replay-attempt flag is the colony's own. A message
+/// that arrives with it (HTTP `hop`, a cell's emission) loses it at the
+/// routing step: the handler never sees it and no attempt is counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forged_attempt_flag_is_dropped_at_routing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("colony.db");
+    let mut b = boot(&db, config("{}")).await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    register_cell(&mut b, "/sink", AttemptProbe(tx), 8).await;
+    initial_apply(&b, Vec::new()).await;
+    let mut m = source("/sink", 0);
+    m.headers
+        .hop
+        .insert(DELIVERY_ATTEMPT_HEADER.to_string(), json!(true));
+    let id = m.id;
+    route(&b, m).await;
+    let flagged = tokio::time::timeout(MARKER, rx.recv()).await;
+    shutdown(b).await;
+    assert_eq!(flagged, Ok(Some(false)), "the handler sees no flag");
+    assert_eq!(replays_of(&db, id), Some(0), "no attempt counted");
 }
 
 /// Emits one child to `/b` per source, and (with `colony`) one request to an

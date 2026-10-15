@@ -1,4 +1,4 @@
-# `meclaw-os@2.2.46`
+# `meclaw-os@2.2.58`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -592,7 +592,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.46"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.58"}}
 ```
 
 ```bash
@@ -617,7 +617,7 @@ tree nobody can diff, and the two things that decide whether the colony can ever
 the marker and that edge — are exactly the two a generator gets wrong in silence. So the root
 tree is checked in, beside the example that uses it, and pinned:
 [`examples/meclaw-os/seed-ref/`](../../examples/meclaw-os/seed-ref/) with
-`crates/meclaw-cells/tests/gh465_one_declaration_boots_the_os.rs`. That test is the only proof
+`crates/meclaw-cells/tests/misc_4/gh465_one_declaration_boots_the_os.rs`. That test is the only proof
 stage one may cite.
 
 What stage one does **not** do is grow the organism. A marker names one node; everything under
@@ -676,7 +676,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.46"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.58"}],
           "add_edges": []}}
 ```
 
@@ -698,7 +698,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.30"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.33"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

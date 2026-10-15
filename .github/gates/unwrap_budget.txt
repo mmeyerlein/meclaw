@@ -1,5 +1,9 @@
 # The unwrap/expect ceiling per workspace package (GH #115).
-# Format: <package> <max clippy::unwrap_used + clippy::expect_used hits>
+# Format: <package> <unwrap+expect> <mono> <wall>
+#   unwrap+expect  max clippy::unwrap_used + clippy::expect_used hits
+#   mono / wall    clippy::disallowed_methods hits of the clock bans in
+#                  .github/gates/clock-bans/clippy.toml, by reason prefix
+#                  (tv-p1b, VORGABEN TV-Z8 / § 5.4); mono = std Instant
 # Measured by .github/gates/unwrap_budget.py over the default targets
 # (lib + bins) -- test modules and tests/ are out of scope by design.
 # A number may only ever go DOWN. Re-pin with `unwrap_budget.py --write`
@@ -48,11 +52,17 @@
 # `panic!` with the port and the error, which this ceiling does not count. A pin
 # above the measurement measures nothing.
 
-meclaw 0
-meclaw-api 2
-meclaw-cells 76
-meclaw-cli 0
-meclaw-colony 64
-meclaw-core 3
-meclaw-surface 0
-meclaw-testing 45
+# mono / wall columns (wave testing, tv-p1b, 2026-10-11): production code of
+# meclaw-cells and meclaw-colony reads tokio::time::Instant (50 call sites
+# moved), so their mono is 0. meclaw-testing is test scaffolding: its 13 std
+# Instants are pinned, not debt of production, and may only go down. Wall
+# clocks are allowed and pinned as measured.
+
+meclaw 0 0 0
+meclaw-api 2 0 0
+meclaw-cells 76 0 22
+meclaw-cli 0 0 3
+meclaw-colony 64 0 23
+meclaw-core 3 0 1
+meclaw-surface 0 0 0
+meclaw-testing 45 13 2

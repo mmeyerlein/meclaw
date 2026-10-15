@@ -1,4 +1,4 @@
-# `session-keeper@2.4.0`
+# `session-keeper@2.4.1`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -82,7 +82,7 @@ sealed), and the turn that opens a generation waits for its own insert. The lose
 (`unique_violation`), looks again and runs in the winner's generation. Measured before the claim
 on a real colony: 20 of 20 races opened two generations of one round, and the round's
 conversation left in two closes, with one racing turn whole in neither
-(`crates/meclaw-cells/tests/gh954_two_first_turns_open_one_generation.rs`). Compared is the round
+(`crates/meclaw-cells/tests/member_road/gh954_two_first_turns_open_one_generation.rs`). Compared is the round
 as the door spells it.
 
 The index needs every SEALED row to be distinct too, so every seal stamps its own instant: a
@@ -99,7 +99,7 @@ the smallest `session_id` of each (channel, round, stamp) group, re-stamps every
 `<stamp>~<session_id>` (unique by the id, still sorted right after the instant) and marks the page visited (`owed_turn` ''); a full page asks for the next one in
 the same firing. Open rows are never touched by the heal. Once nothing is left, a firing costs
 one empty select, and the next wake creates the index
-(`crates/meclaw-cells/tests/gh954_old_duplicates_heal_and_the_index_follows.rs`).
+(`crates/meclaw-cells/tests/misc_7/gh954_old_duplicates_heal_and_the_index_follows.rs`).
 
 **A round change closes after the last answer (GH #953).** The `close` a round change sends
 must read a wall that holds the last answer of the generation it ends. That answer reaches the
@@ -123,7 +123,7 @@ and the episode that becomes `turn_write` in ONE emission, so everything that fo
 `turn_write` stands behind that insert in the ledger's FIFO. Only the final answer (origin
 `assistant`) acknowledges; the acknowledgement clears the mark of the turn it answers
 (`context.turn_id`, the channel's id, or `*`; never the empty mark, which would close twice) and, if the generation is sealed, sends its close with the
-room and the round off its row (`crates/meclaw-cells/tests/gh953_a_round_change_closes_after_the_last_answer.rs`).
+room and the round off its row (`crates/meclaw-cells/tests/member_road/gh953_a_round_change_closes_after_the_last_answer.rs`).
 The mark is cleared by exactly one of acknowledgement and night, so the close leaves once.
 
 An answer that never comes does not hold a generation open for ever: the night's firing also
@@ -375,7 +375,7 @@ new one takes, which is exactly what
 [`../../examples/memory-import/build_import.py`](../../examples/memory-import/build_import.py)
 writes with `--after-boot`. Every drain stays a plain route test: that is what the
 plainness rule above is about.
-`crates/meclaw-cells/tests/gh471_a_keeper_carries_its_sessions.rs` drives exactly this
+`crates/meclaw-cells/tests/misc_4/gh471_a_keeper_carries_its_sessions.rs` drives exactly this
 shape and then asks the third question a row count cannot: a turn on the transferred
 channel is stamped with the session the **source** keeper had open. A ledger that arrives
 and is not read is a table, not a session.
@@ -501,7 +501,7 @@ one that is already running — the two are complements, not a choice.
 
 ## Pins
 
-- `crates/meclaw-cells/tests/session_keeper.rs` -- the shipped `script_inline` against real
+- `crates/meclaw-cells/tests/misc_8/session_keeper.rs` -- the shipped `script_inline` against real
   stdin documents (the lookup, the lazy reopen, the idle cut, the guard) plus the cron
   arithmetic of the shipped default, computed rather than asserted.
 - the same file, colony level -- a running colony with a real store and a real timer: three
@@ -510,26 +510,26 @@ one that is already running — the two are complements, not a choice.
 - the same file, the round of a generation (GH #273) -- the row records the set the door
   declared, a running generation never has it rewritten, every seal carries its own, and a
   generation without one says so instead of inventing one.
-- `crates/meclaw-cells/tests/gh273_a_swept_close_reaches_the_memory.rs` -- the whole way:
+- `crates/meclaw-cells/tests/misc_2/gh273_a_swept_close_reaches_the_memory.rs` -- the whole way:
   a conversation, a SWEEP that ends it, the shipped drain, and the episode row that lands
   with the room and the round the conversation was spoken in.
-- `crates/meclaw-cells/tests/gh471_a_keeper_carries_its_sessions.rs` -- two shipped
+- `crates/meclaw-cells/tests/misc_4/gh471_a_keeper_carries_its_sessions.rs` -- two shipped
   keepers in one colony, wired with the single carrying edge: the walk leaves as ONE final
   part, the same document applied twice leaves the same state, and a turn on the
   transferred channel is stamped with the session the source keeper had open.
-- `crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs` -- the four
+- `crates/meclaw-cells/tests/misc_4/gh475_a_member_reaches_the_keeper_it_holds.rs` -- the four
   levels in between: the shipped `talky`, `assistant` and `member` files carry the two
   lanes and the `dump` back out, the member names the generation, and a colony run drives
   one part from the member's own door into the keeper's store and back out again.
-- `crates/meclaw-cells/tests/gh471_the_porters_mirror_their_stores.rs` -- the porter's
+- `crates/meclaw-cells/tests/store_1/gh471_the_porters_mirror_their_stores.rs` -- the porter's
   schema mirror against `sessions/config.json`, column for column, plus the tables that
   stay behind by name and the document format that is this hive's alone. A mirror is the
   thing that rots silently: a column added to the store and not to the walk simply stops
   travelling, and the loss surfaces one colony later as an empty field nobody can trace.
-- `crates/meclaw-cells/tests/gh712_every_keeper_files_its_sessions_under_its_own_node.rs` --
+- `crates/meclaw-cells/tests/misc_6/gh712_every_keeper_files_its_sessions_under_its_own_node.rs` --
   both keepers of one generation walked by one export: two directories under the run, two
   `export_done` naming two paths, and an import that puts each ledger back into the keeper at
   the same node of another generation; a flat pre-2.2.2 export lands in the default talky's.
-- `crates/meclaw-cells/tests/gh712_the_transfer_rim_of_every_talky_is_the_rule.rs` -- the
+- `crates/meclaw-cells/tests/misc_6/gh712_the_transfer_rim_of_every_talky_is_the_rule.rs` -- the
   porter reads its path and carries no hive-name constant, and a faked stdin under
   `talky-chat` writes into `talky-chat/session-keeper`.

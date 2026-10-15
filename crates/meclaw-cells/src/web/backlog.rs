@@ -24,7 +24,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -614,6 +615,18 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tv-p1b (TV-Z8): the meter reads `tokio::time::Instant`, so the age of
+    /// the oldest frame runs on a paused clock -- virtual, no wall-clock wait.
+    #[tokio::test(start_paused = true)]
+    async fn the_oldest_frame_ages_on_the_paused_clock() {
+        let meter = Meter::silent();
+        let at = meter.written_directly(7);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert_eq!(meter.reading().oldest_ms, 5_000);
+        meter.written(at, 7);
+        assert_eq!(meter.reading().oldest_ms, 0);
+    }
 
     fn reporting(cap: usize) -> (Outbox, mpsc::Receiver<Queued>, mpsc::Receiver<WebEvent>) {
         let (tx, rx) = mpsc::channel(cap);

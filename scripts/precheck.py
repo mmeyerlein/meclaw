@@ -50,6 +50,30 @@ station would grade it anyway:
                     so a caller that says nothing measures the server's
                     default (GH #865). The rules are private to the tree that
                     has the evals: `workshop/tools/check_reasoning_effort.py`.
+    test-bans       the testing bans of `.config/testing-bans.toml` on the
+                    ADDED statements of test code (`scripts/testing_bans.py`,
+                    VORGABEN § 5.4, ADR-0050). An exception names an owner
+                    ruling from `.config/testing-rulings.toml`; a used one is
+                    a NOTE `test-ban-exception`. NOTE `no base` without a
+                    merge base, NOTE `ruff missing, regex fallback` while the
+                    Python bans run as regex.
+    testing-rules   the change reservation of the bans (VG § 5.7): a diff
+                    that loosens the ban data, adds to the legacy flaky list,
+                    drops a ruff or clock ban, or changes § 11 of the
+                    development rules, without `MECLAW_TESTING_RULES_RULING`
+                    naming a register entry that covers the file; a strand
+                    diff on the register; in integration or release a register
+                    commit that changes other files.
+    kdf-off-worker  a call in crate code (`crates/*/src/`, test modules
+                    aside) that runs the vault's argon2id derivation on a
+                    runtime worker (GH #1216): `MasterKey::derive` (call or
+                    pointer) or `user_channel::add` outside the sync functions
+                    of `KDF_SYNC_SITES`, an alias of `MasterKey`, or the sync
+                    vault CLI (`vault_cli::run`, braced imports included)
+                    called from the async entry. Inline, the
+                    burst held the colony task in the worker's LIFO slot until
+                    the watchdog ended the process; no behaviour test sees the
+                    call site deterministically, so the form is the lock.
 
 NOTE -- read, do not stop. These are the review findings that repeat, and a
 note before the review is a fix round saved:
@@ -120,7 +144,7 @@ Finding = collections.namedtuple("Finding", "level check message")
 
 # The sheet, its ceiling and the air the Rust lock reserves under it. Both
 # numbers are that lock's
-# (`crates/meclaw-cells/tests/gh669_every_class_the_screen_writes_has_a_rule.rs`):
+# (`crates/meclaw-cells/tests/misc_5/gh669_every_class_the_screen_writes_has_a_rule.rs`):
 # the ceiling has been raised three times, each time once and with a reason,
 # and the air is a floor of its own since wave G -- what is left under the
 # ceiling belongs to the next wave, not to whoever gets there first.
@@ -377,6 +401,28 @@ def _reasoning_effort_rules(repo):
     return module
 
 
+def check_test_bans(files, repo):
+    """The testing bans on the added lines of test code (`scripts/testing_bans.py`)."""
+    yield from _testing_bans().scan(files, repo, base=_base(repo))
+
+
+def check_testing_rules(files, repo):
+    """The change reservation of the testing bans (VORGABEN § 5.7)."""
+    yield from _testing_bans().rules(files, repo, base=_base(repo))
+
+
+def _base(repo):
+    """The merge base the locks grade against; the module's own reader without them."""
+    if _locks is not None:
+        return _locks.merge_base(repo)
+    return _testing_bans().merge_base(repo)
+
+
+def _testing_bans():
+    import testing_bans
+    return testing_bans
+
+
 def check_changelog_mark(files, repo):
     """A release block beside a crate or template change names its issue."""
     if "CHANGELOG.md" not in files:
@@ -553,6 +599,105 @@ def check_plan_cap(files, repo):
                           % (path, lines, PLAN_PART_CAP))
 
 
+# GH #1216: argon2id is a CPU burst of milliseconds idle and seconds under
+# load. On a runtime worker it held the colony task in that worker's LIFO slot
+# past the watchdog window at boot. The async paths reach it only off the
+# worker; these are the call forms that would put it back, each with the files
+# where the sync form is the right one and why.
+_CRATE_SRC = re.compile(r"^crates/[^/]+/src/.+\.rs$")
+# Only an inline test module ends the graded part: `mod tests;` declares a
+# file elsewhere and the production code below it still counts (GH #1216, H4).
+_TEST_MODULE = re.compile(
+    r"^#\[cfg\(test\)\]\s*\n(?:[ \t]*#\[[^\n]*\]\s*\n)*[ \t]*mod\s+\w+\s*\{",
+    re.MULTILINE)
+# A string or char literal first, so a `//` inside one (a URL) is no comment
+# and cannot hide a call later on its line (re-check fix2 H1).
+_LITERAL_OR_COMMENT = re.compile(
+    r'r(#*)"(?:.|\n)*?"\1|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\\n])\'|//[^\n]*')
+_ENCLOSING_FN = re.compile(r"\bfn\s+(\w+)")
+# An async block inside a sync site runs on a runtime worker (re-check fix2 H1).
+_ASYNC_BLOCK = re.compile(r"\basync\s+(?:move\s+)?\{|\basync\s+(?:move\s+)?\|")
+# (pattern, name, {path: {fn: why}}, instead, only these files or None). A
+# sync site is one function in one file, never a whole file: a later
+# `async fn` beside it stays graded, and so does an async block inside it.
+KDF_SYNC_SITES = (
+    # Without the paren: a function pointer (`let f = MasterKey::derive;`)
+    # puts the same call back.
+    (re.compile(r"\bMasterKey::derive\b(?!_)"),
+     "MasterKey::derive",
+     {"crates/meclaw-cells/src/vault/user_channel.rs": {
+          "add": "sync by design; its production caller is the vault CLI's "
+                 "blocking half, reached only through `vault_cli::run_off_worker`"}},
+     "use `MasterKey::derive_off_worker(..).await`",
+     None),
+    # Inside `impl MasterKey` the type is `Self`: a new `async fn` there
+    # calling `Self::derive` puts the burst back (re-check fix2 H1).
+    (re.compile(r"\bSelf::derive\b(?!_)"),
+     "Self::derive",
+     {"crates/meclaw-cells/src/vault/crypto.rs": {
+          "derive_off_worker": "the one road off the worker: `spawn_blocking`"}},
+     "use `Self::derive_off_worker(..).await`",
+     {"crates/meclaw-cells/src/vault/crypto.rs"}),
+    # An alias hides every later call from the pattern above.
+    (re.compile(r"\bMasterKey\s+as\b|\btype\s+\w+\s*=\s*(?:\w+::)*MasterKey\b"),
+     "an alias of MasterKey",
+     {},
+     "name `MasterKey` and call `derive_off_worker(..).await`",
+     None),
+    # A glob import brings in the sync `run`/`add` under a bare name.
+    (re.compile(r"\b(?:vault_cli|user_channel)::\*"),
+     "a glob import of vault_cli or user_channel",
+     {},
+     "import the names one by one and reach the sync half through "
+     "`vault_cli::run_off_worker(..).await`",
+     None),
+    (re.compile(r"\bvault_cli::run\b(?!_)|\bvault_cli::\{[^}]*\brun\b(?!_)"),
+     "vault_cli::run",
+     {},
+     "call `vault_cli::run_off_worker(..).await` from async code",
+     None),
+    # `user_channel::add` derives inline: a second async caller would put the
+    # burst back one hop away.
+    (re.compile(r"\buser_channel::add\b|\buser_channel::\{[^}]*\badd\b"),
+     "user_channel::add",
+     {"crates/meclaw-cli/src/vault_cli.rs": {
+          "run": "the CLI's blocking half, spawned by `run_off_worker`"}},
+     "reach it through `vault_cli::run_off_worker(..).await`",
+     None),
+)
+
+
+def _blank_comments(text):
+    """Line comments out, offsets and line numbers kept; string and char
+    literals stay as they are."""
+    return _LITERAL_OR_COMMENT.sub(
+        lambda m: " " * len(m.group()) if m.group().startswith("//") else m.group(), text)
+
+
+def check_kdf_off_worker(files, repo):
+    """A vault key derivation put back onto a runtime worker (GH #1216)."""
+    for path in files:
+        if not _CRATE_SRC.match(path):
+            continue
+        text = _read(os.path.join(repo, path))
+        if text is None:
+            continue
+        head = _blank_comments(_TEST_MODULE.split(text, maxsplit=1)[0])
+        for pattern, name, sync_sites, instead, only in KDF_SYNC_SITES:
+            if only is not None and path not in only:
+                continue
+            allowed = sync_sites.get(path, {})
+            for m in pattern.finditer(head):
+                fns = list(_ENCLOSING_FN.finditer(head, 0, m.start()))
+                if (fns and fns[-1].group(1) in allowed
+                        and not _ASYNC_BLOCK.search(head, fns[-1].end(), m.start())):
+                    continue
+                line = head.count("\n", 0, m.start()) + 1
+                yield Finding("RED", "kdf-off-worker",
+                              "%s:%d calls %s on a runtime worker (GH #1216: the "
+                              "argon2id burst starves the colony task); %s"
+                              % (path, line, name, instead))
+
 def check_name_pattern(files, repo):
     """R5 on the files that travel, with the export's own two exemptions.
 
@@ -723,10 +868,45 @@ def _tests_reading(repo, path):
     return out
 
 
-CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_files,
-          check_docs_twin, check_reasoning_effort, check_changelog_mark,
-          check_since_sentence, check_since_doc, check_run_artefact,
-          check_plan_cap, check_name_pattern)
+NATIVE_CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_files,
+                 check_docs_twin, check_reasoning_effort, check_test_bans,
+                 check_testing_rules, check_changelog_mark,
+                 check_since_sentence, check_since_doc, check_run_artefact,
+                 check_plan_cap, check_name_pattern, check_kdf_off_worker)
+
+
+def _lock_check(name, fn):
+    """A lock of `scripts/pipeline/locks.py` as a precheck check.
+
+    The lock exists once; `pre` and this station call the same function and
+    print the same line (`locks.render`). The version lock grades a STRAND
+    diff only: the runner exports `MECLAW_GATE_MODE`, and a release or an
+    integration pass carries its bumps on purpose. `MECLAW_ALLOW_BUMP=<reason>`
+    is the coordinator's way through (OR-DT-13). No environment variable
+    grades an unchecked pin of `pin-drift-lock` down (OR-DT.ORCH.19).
+    """
+    def check(files, repo):
+        if _locks is None:
+            return
+        ctx = {"mode": os.environ.get("MECLAW_GATE_MODE", ""),
+               "base": _locks.merge_base(repo),
+               "allow_bump": os.environ.get("MECLAW_ALLOW_BUMP") or None}
+        for f in fn(files, repo, ctx):
+            yield Finding(f.verdict, f.check, _locks.render(f))
+    check.__name__ = "check_" + name.replace("-", "_")
+    return check
+
+
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from pipeline import locks as _locks
+except ImportError:          # pragma: no cover -- a tree without the pipeline package
+    _locks = None
+
+LOCK_CHECKS = tuple(_lock_check(n, f) for n, f in (_locks.LOCKS if _locks else ()))
+
+CHECKS = NATIVE_CHECKS + LOCK_CHECKS
 
 
 def run(paths, repo=None):

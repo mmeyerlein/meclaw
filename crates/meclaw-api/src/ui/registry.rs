@@ -8,7 +8,7 @@
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
-use crate::ui::layout;
+use crate::ui::{count_of, layout};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -56,7 +56,7 @@ pub async fn get_registry_ui(
 
     let content = html! {
         (render_filter_form(&q))
-        h2 { "Cells (" (reply.entries.len()) ")" }
+        h2 { "Cells (" (count_of(reply.entries.len(), clamp_limit(q.limit))) ")" }
         (render_table(&reply.entries))
     };
     (

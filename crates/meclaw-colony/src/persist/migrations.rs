@@ -91,7 +91,17 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), MigrationError> {
     match current {
         v if v == TARGET_SCHEMA_VERSION => Ok(()),
         1..=12 => {
-            let tx = conn.unchecked_transaction()?;
+            // IMMEDIATE, not rusqlite's default DEFERRED: the steps below read
+            // (`table_exists`, `column_exists`) before their first write, and
+            // SQLite never calls the busy handler for a read-to-write upgrade.
+            // A deferred migration racing another writer failed at once with
+            // "database is locked" instead of waiting out the GH #98 busy
+            // budget (pin `a_migration_racing_another_writer_waits_for_the_write_lock`,
+            // red on the deferred form); same class as `schema::bootstrap_ddl`.
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
             // v1→v2: durable-edges CEL columns. `table_exists`-guarded like
             // v4→v5 below: since GH #90 this runs BEFORE the DDL batch, so a
             // sparse old DB may lack the table entirely — the batch then
@@ -334,6 +344,46 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    /// The other writer of the race below: it holds the write lock until the
+    /// migrating connection's busy handler fires once.
+    static OTHER_WRITER: std::sync::Mutex<Option<Connection>> = std::sync::Mutex::new(None);
+
+    /// Busy handler of the migrating connection: the first call proves the
+    /// migration WAITS for the lock, and lets the other writer commit.
+    fn let_the_other_writer_commit(_attempt: i32) -> bool {
+        if let Some(other) = OTHER_WRITER.lock().unwrap().take() {
+            other.execute_batch("COMMIT").unwrap();
+        }
+        true
+    }
+
+    /// GH #1179 / #98, the migration half of the bootstrap fix: `migrate`
+    /// reads (`table_exists`, `column_exists`) before its first `ALTER TABLE`.
+    /// In a DEFERRED transaction that is a read-to-write upgrade, for which
+    /// SQLite never calls the busy handler -- an old `colony.db` booting next
+    /// to another writer failed at once with "database is locked" instead of
+    /// waiting. Deterministic: the busy handler itself releases the other
+    /// writer, so the test passes only if the handler is called at all.
+    #[test]
+    fn a_migration_racing_another_writer_waits_for_the_write_lock() {
+        let td = tempfile::TempDir::new().unwrap();
+        let path = td.path().join("colony.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        open_v1(&conn);
+        let other = Connection::open(&path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        *OTHER_WRITER.lock().unwrap() = Some(other);
+        conn.busy_handler(Some(let_the_other_writer_commit))
+            .unwrap();
+
+        migrate(&conn).expect("the migration waits for the other writer");
+        assert_eq!(
+            super::super::schema::read_schema_version(&conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
     }
 
     /// GH #937 (v11→v12): an OLD edge row keeps every value it had and reads

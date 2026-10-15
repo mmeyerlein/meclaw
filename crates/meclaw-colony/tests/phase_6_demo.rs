@@ -256,6 +256,6 @@ async fn phase_6_demo_validate_reject_writes_rejected_log_row_and_replies_to_rep
 }
 
 // Phase-6 T26 (crash recovery) lives in its own test binary
-// `tests/phase_6_crash_recovery.rs` — the `AFTER_RENAME` static from
+// `tests/phase/phase_6_crash_recovery.rs` — the `AFTER_RENAME` static from
 // `mutation::hook` is binary-local, and setting the hook would block parallel
 // tests in the same binary. Own binary = own static.

@@ -9,9 +9,9 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
+use display_colony::Why;
 use meclaw_core::serde_json::json;
 use presenter_colony::{Dials, boot, decision, guard, stage_routes};
 
@@ -51,7 +51,8 @@ async fn a_late_verdict_changes_nothing() {
     s.install_sample().await;
     s.turn("l1", "show me a sample").await;
     let held = s.ask().await;
-    let row = s.journal_of("l1").await;
+    // The budget ran out while the decider is held: the row is read under that hold.
+    let row = s.journal_of_held(&held, "l1").await.because(Why::Held);
     assert_eq!(row["fallback"], json!("timeout"), "{row}");
     held.release(decision(&[
         ("topic", "sample", 0.9),
@@ -94,5 +95,52 @@ async fn a_presenter_without_topics_asks_nothing() {
         "the turn before any topic reached the decider"
     );
     first.release(decision(&[("topic", "none", 0.9)]));
+    s.c.shutdown().await;
+}
+
+/// Re-check tv-bn M7b5 B-M2: a colony that does not settle within the hang mark fails with
+/// `HANG: the colony settles` AND its last state -- the dead letters and the newest hops.
+/// The barrier of the kit said only how long it waited, and the fixture's own account of a
+/// hang settled again inside the failure (2 x HANG, then no account at all).
+///
+/// The held decider is what keeps the colony from rest: its own timeout is dialled past
+/// twice the scaled hang mark, so the settle runs into the mark while `decide` still waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_colony_that_does_not_settle_names_its_last_state() {
+    use futures_util::FutureExt;
+
+    if !guard("a_colony_that_does_not_settle_names_its_last_state") {
+        return;
+    }
+    let past = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG) * 2;
+    let mut s = boot(Dials {
+        decide_timeout_ms: u64::try_from(past.as_millis()).expect("a timeout in ms"),
+        ..Dials::default()
+    })
+    .await;
+    s.install_sample().await;
+    s.turn("h1", "show me a sample").await;
+    let held = s.ask().await;
+    let hang = std::panic::AssertUnwindSafe(s.c.settle())
+        .catch_unwind()
+        .await
+        .expect_err("a colony whose decider is held does not settle within the hang mark");
+    let text = hang
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| format!("{:?}", hang.downcast_ref::<&str>()));
+    assert!(
+        text.starts_with("HANG: the colony settles (waited "),
+        "the hang is the kit's HANG line: {text}"
+    );
+    assert!(
+        text.contains("; last state: DLQ ["),
+        "the hang names the dead letters as its last state: {text}"
+    );
+    assert!(
+        text.contains("log rows: [") && text.contains(" -> ") && text.contains(" route="),
+        "the hang names the newest hops of the log: {text}"
+    );
+    held.release(decision(&[("topic", "none", 0.9)]));
     s.c.shutdown().await;
 }

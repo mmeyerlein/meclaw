@@ -32,7 +32,7 @@ the process keeps running either way, and `meclaw --apply` hands the same body t
 Which node may knock is itself a fact about the tree. `submit` carries the edge onto
 `/colony/mutations`, the shipped `builder` carries none, and no mutation can draw the missing
 edge, because that address is absent from the endpoints a diff may name
-(`crates/meclaw-cells/tests/gh425_the_builder_cannot_reach_the_mutation_door.rs`).
+(`crates/meclaw-cells/tests/builder/gh425_the_builder_cannot_reach_the_mutation_door.rs`).
 
 ## Where the file idea stops
 

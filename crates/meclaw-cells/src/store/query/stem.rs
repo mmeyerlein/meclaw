@@ -195,7 +195,7 @@ mod tests {
     /// that the fold is symmetric — the query goes through the very same
     /// function, so the name stays findable — and that the stemmer only ever
     /// touches the INDEX; the stored row keeps its bytes (pinned at store level
-    /// in `crates/meclaw-cells/tests/p3_fts_stemming.rs`).
+    /// in `crates/meclaw-cells/tests/misc_8/p3_fts_stemming.rs`).
     #[test]
     fn a_name_that_looks_inflected_folds_symmetrically_and_stays_findable() {
         assert_eq!(stem("elvese"), "elves", "one step, never a loop");

@@ -1,0 +1,28 @@
+{
+  "note": "testing-bans inventory baseline: counts only shrink; written by `scripts/testing_bans.py --inventory --write` at a wave end (R-TV-W8)",
+  "counts": {
+    "js-clock-pause-at": 0,
+    "js-duration-verdict": 3,
+    "js-racy-api": 4,
+    "js-screenshot": 1,
+    "js-short-timeout": 0,
+    "js-sleep": 50,
+    "js-unawaited": 0,
+    "js-wait-for-timeout": 3,
+    "py-raises": 150,
+    "py-short-wait": 0,
+    "py-time": 186,
+    "py-wall-verdict": 0,
+    "rs-alive-tasks": 2,
+    "rs-colony-db": 547,
+    "rs-elapsed-verdict": 302,
+    "rs-neg-window": 93,
+    "rs-neg-window-ok": 7,
+    "rs-short-deadline": 210,
+    "rs-should-panic": 0,
+    "rs-sleep-until": 14,
+    "rs-std-window": 0,
+    "rs-thread-sleep": 61,
+    "rs-tokio-sleep": 539
+  }
+}

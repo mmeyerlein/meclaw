@@ -74,15 +74,15 @@ impl PhaseTimings {
 /// (monotonic clock reads only), single-threaded, no allocation — it must never
 /// be the reason a call gets slower.
 pub(crate) struct PhaseClock {
-    start: std::time::Instant,
-    mark: std::time::Instant,
+    start: tokio::time::Instant,
+    mark: tokio::time::Instant,
     timings: PhaseTimings,
 }
 
 impl PhaseClock {
     /// Start the clock at `handle()` entry.
     pub(crate) fn start() -> Self {
-        let now = std::time::Instant::now();
+        let now = tokio::time::Instant::now();
         Self {
             start: now,
             mark: now,
@@ -92,7 +92,7 @@ impl PhaseClock {
 
     /// Milliseconds since the last mark, and move the mark to now.
     fn lap(&mut self) -> u64 {
-        let now = std::time::Instant::now();
+        let now = tokio::time::Instant::now();
         let ms = u64::try_from((now - self.mark).as_millis()).unwrap_or(u64::MAX);
         self.mark = now;
         ms
@@ -112,7 +112,7 @@ impl PhaseClock {
     /// Record what the provider call cost.
     pub(crate) fn wired(&mut self, wire: WireTimings) {
         self.timings.wire = Some(wire);
-        self.mark = std::time::Instant::now();
+        self.mark = tokio::time::Instant::now();
     }
 
     /// Freeze the total `handle()` duration and hand out the phases.

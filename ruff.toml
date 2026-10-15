@@ -1,0 +1,20 @@
+# The ruff half of the testing bans (`.config/testing-bans.toml`, VORGABEN § 5.4,
+# ADR-0050). ruff is not installed on the lanes yet (R-TV-W7): until it is, the
+# precheck grades the same bans by regex and says so (NOTE `ruff missing, regex
+# fallback`). Once it runs, the precheck filters its findings to the added lines.
+# A ban removed here is a loosening: check `testing-rules`, owner ruling only.
+
+[lint]
+select = ["TID251", "ASYNC251", "RUF100"]
+
+[lint.flake8-tidy-imports.banned-api]
+"time.sleep".msg = "py-time"
+"time.time".msg = "py-time"
+"time.monotonic".msg = "py-time"
+"time.perf_counter".msg = "py-time"
+
+[lint.per-file-ignores]
+# The bans hold for test code only; the kit clock is the one place that reads time.
+"!{scripts/tests/**,workshop/evals/**}" = ["TID251", "ASYNC251"]
+"scripts/tests/kit_time.py" = ["TID251"]
+"workshop/evals/engine.py" = ["TID251"]

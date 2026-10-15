@@ -1702,6 +1702,7 @@ mod tests {
                 statics: vec!["<main>".to_string(), "</main>".to_string()],
                 slots: vec![("n1".to_string(), "<i>one</i>".into())],
                 title: "t".to_string(),
+                ..Default::default()
             },
         );
         Arc::new(m)
@@ -2067,6 +2068,7 @@ mod tests {
                 })
                 .collect(),
             title: "t".to_string(),
+            ..Default::default()
         };
         let whole = big.packed_tree();
         let mut m = PageMap::new();
@@ -2192,7 +2194,15 @@ mod tests {
     /// GH #1099: the resync waits for the viewer's room, not for a clock. The
     /// tree reaches the drained viewer at once; the old retry clock made it
     /// wait out the rest of a 50 ms tick that had just been armed.
-    #[tokio::test]
+    ///
+    /// GH #1219: under a paused clock (TV-Z2), because every wait point here is
+    /// a tokio channel between runtime-internal tasks. The wall-clock form
+    /// (`lag < 25 ms` on `std::time::Instant`) measured the test's own wake-up
+    /// under load: 112 ms red on 11.10. with no retry clock involved. Paused,
+    /// time only moves when every task waits on a timer, so a resync that waits
+    /// for the room leaves the clock standing and one that waits for a tick
+    /// moves it by the tick -- exact, whatever the host load.
+    #[tokio::test(start_paused = true)]
     async fn a_resync_goes_the_moment_the_viewer_has_room() {
         let (_pages_tx, pages_rx) = watch::channel(page_map());
         let viewers = Arc::new(ViewerRegistry::default());
@@ -2225,13 +2235,15 @@ mod tests {
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
-        let t0 = std::time::Instant::now();
+        let t0 = tokio::time::Instant::now();
         let _ = wedged_rx.recv().await.expect("the prefilled frame");
         let got = wedged_rx.recv().await.expect("the tree").msg;
         let lag = t0.elapsed();
-        assert!(
-            lag < std::time::Duration::from_millis(25),
-            "the tree must go when the room appears, not on a retry tick ({lag:?})"
+        assert_eq!(
+            lag,
+            std::time::Duration::ZERO,
+            "expected the tree the moment the room appears, with the paused clock \
+             standing still; it moved {lag:?}, i.e. the resync waited for a timer"
         );
         let ViewerMsg::Frame(f) = got else {
             panic!("a frame, not a close")

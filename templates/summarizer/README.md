@@ -256,14 +256,14 @@ Decisions worth naming:
 
 ## Pins
 
-- `crates/meclaw-cells/tests/summarizer_prep.rs` -- the shipped `script_inline` against
+- `crates/meclaw-cells/tests/misc_8/summarizer_prep.rs` -- the shipped `script_inline` against
   real stdin documents: the recency structure, the honesty sentence, the capped tool
   context, the handover update form, both error paths, the park.
-- `crates/meclaw-cells/tests/summarizer_colony.rs` -- the shipped template in a running
+- `crates/meclaw-cells/tests/misc_8/summarizer_colony.rs` -- the shipped template in a running
   colony against the mock OpenAI wire: one batch in, exactly one `system.handover` update
   out (and the instructions proven ON the wire), a provider 500 that leaves as exactly one
   `summary_error`.
-- `crates/meclaw-cells/tests/gh886_every_llm_cell_declares_hop_model.rs` -- `./writer` declares
+- `crates/meclaw-cells/tests/llm/gh886_every_llm_cell_declares_hop_model.rs` -- `./writer` declares
   `hop.model` in the library's one wording.
-- `crates/meclaw-cells/tests/gh890_every_llm_cell_declares_what_output_writes.rs` -- `./writer`
+- `crates/meclaw-cells/tests/llm/gh890_every_llm_cell_declares_what_output_writes.rs` -- `./writer`
   declares every hop key the `llm` cell writes.

@@ -452,14 +452,43 @@ pub async fn entrypoint(mut cli: Cli) -> anyhow::Result<()> {
         cli.log_stderr,
         cli.log_file,
     )?;
+    raise_open_file_limit();
     run(cli).await
+}
+
+/// GH #1082: lift the soft open-file limit to the hard one before the colony
+/// opens its first `cell.db`, and say so in the log.
+///
+/// A colony holds about three file descriptors per open `cell.db` plus the
+/// pipes of its children; a lab colony with 10 members (226 `cell.db`, ~216
+/// pipes) passed the default soft limit of 1024 and every store that woke after
+/// that started degraded. Runs after the subscriber so the line lands in
+/// `log.jsonl`; a failure is a warning and the start goes on, because a colony
+/// with few cells runs fine on the default limit.
+fn raise_open_file_limit() {
+    match meclaw_cells::rlimit::raise_nofile_soft_limit() {
+        Ok(l) => tracing::info!(
+            old_soft = l.old_soft,
+            new_soft = l.new_soft,
+            hard = l.hard,
+            "open-file limit (RLIMIT_NOFILE): soft {} -> {} (hard {})",
+            l.old_soft,
+            l.new_soft,
+            l.hard
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "open-file limit (RLIMIT_NOFILE) could not be raised to the hard limit; \
+             starting with the inherited soft limit"
+        ),
+    }
 }
 
 /// Run the CLI. Phase 0 reaches this only via `--version`/`--help`,
 /// which clap handles before this is called.
 ///
 /// Phase-12-A: `async fn` — `boot_load_or_scan` has been async since phase 12-A
-/// (the δ bridge `send_op_try` was removed). `main.rs` runs under
+/// (the δ bridge `send_op_try` was removed). `crates/meclaw/src/main.rs` runs under
 /// `#[tokio::main]` (multi_thread, `worker_threads = 4`).
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     run_with_hooks(cli, None, None).await
@@ -642,13 +671,16 @@ pub async fn run_with_hooks_tuned(
         } else {
             crate::vault_cli::VaultCommand::Status
         };
-        return crate::vault_cli::run(
-            &cli.root,
-            cell_path,
+        // GH #1216: the vault CLI blocks (stdin, terminal, SQLite, argon2id)
+        // and runs on the blocking pool, never on this runtime worker.
+        return crate::vault_cli::run_off_worker(
+            cli.root.clone(),
+            cell_path.to_string(),
             command,
-            &cli.vault_key_source,
-            cli.vault_key_file.as_deref(),
-        );
+            cli.vault_key_source.clone(),
+            cli.vault_key_file.clone(),
+        )
+        .await;
     }
 
     // GH #121: the root lease, and it comes FIRST.
@@ -888,7 +920,7 @@ pub async fn run_with_hooks_tuned(
                 // no flag turns this into a non-zero exit. Printed as `note`
                 // rather than `warning` so the difference is visible in the
                 // output too. Pinned by
-                // `tests/phase_16_w1a_validate_strict.rs::an_unguarded_default_is_a_note_not_a_strict_error`
+                // `tests/misc/phase_16_w1a_validate_strict.rs::an_unguarded_default_is_a_note_not_a_strict_error`
                 // — a later reviewer who moves this onto a promoting channel
                 // turns that test red.
                 for advisory in &plan.advisories {
@@ -1476,12 +1508,19 @@ pub async fn run_with_hooks_tuned(
         }
 
         // Step 5.4 — stdin-reader task.
+        //
+        // GH #1216 (OR-T12-14): the blocking read sits on a thread of its own,
+        // never on `tokio::io::stdin()`. Tokio reads stdin with a blocking read
+        // on its blocking pool, that read cannot be cancelled, and dropping the
+        // runtime waits for it: after a SIGTERM drain the process stayed alive
+        // in `pipe_read` until the writer closed its end of the pipe. A plain
+        // thread is not waited for -- the process ends when `main` returns.
+        let stdin_rx = spawn_stdin_line_reader();
         let inbox_for_stdin = inbox_tx.clone();
         let chat_id = uuid::Uuid::now_v7();
         let stdin_handle = tokio::spawn(async move {
-            use tokio::io::AsyncBufReadExt as _;
-            let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut stdin_rx = stdin_rx;
+            while let Some(line) = stdin_rx.recv().await {
                 if line.is_empty() {
                     continue;
                 }
@@ -1694,8 +1733,9 @@ pub async fn run_with_hooks_tuned(
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), colony_join).await;
 
-    // Step 5.6 — Direct-Mode cleanup: abort stdin-reader (it may still be
-    // blocked on stdin if shutdown was signal-triggered), then join the egress
+    // Step 5.6 — Direct-Mode cleanup: abort stdin-reader (it may still wait
+    // for a line if shutdown was signal-triggered; its reader thread stays
+    // blocked in the read and ends with the process), then join the egress
     // writer (it drains once the colony drops the egress_tx → channel closed).
     if let Some(h) = stdin_task_handle {
         h.abort();
@@ -1715,6 +1755,40 @@ pub async fn run_with_hooks_tuned(
     }
 
     Ok(())
+}
+
+/// The lines of this process's stdin, read on a dedicated OS thread (GH #1216,
+/// OR-T12-14). The channel closes at end of input or on the first read error
+/// (invalid UTF-8 included), as `tokio::io::stdin().lines()` did; a reader
+/// whose receiver is gone ends at its next line. The thread is detached on
+/// purpose: unlike a read on tokio's blocking pool it never holds up the
+/// runtime's shutdown, so a signal drain ends the process with stdin open.
+fn spawn_stdin_line_reader() -> tokio::sync::mpsc::Receiver<String> {
+    stdin_line_reader(std::io::stdin())
+}
+
+/// [`spawn_stdin_line_reader`] over any reader (the pins feed a pipe).
+fn stdin_line_reader<R: std::io::Read + Send + 'static>(
+    input: R,
+) -> tokio::sync::mpsc::Receiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let spawned = std::thread::Builder::new()
+        .name("meclaw-stdin".into())
+        .spawn(move || {
+            use std::io::BufRead as _;
+            for line in std::io::BufReader::new(input).lines() {
+                let Ok(line) = line else { break };
+                if tx.blocking_send(line).is_err() {
+                    break; // the colony side is gone
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        // No reader thread: the channel is closed at once, which reads as
+        // end of input -- the same graceful shutdown as an empty stdin.
+        tracing::warn!(error = %e, "stdin reader thread failed to start");
+    }
+    rx
 }
 
 /// Whether a cell's birth params ask for an ENFORCED sandbox (GH #97).
@@ -1740,6 +1814,87 @@ pub fn declares_restricted_sandbox(params: &meclaw_core::JsonValue) -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // ---- GH #1216 (OR-T12-14): the stdin reader never holds the shutdown ----
+
+    /// The reader hands every line over and closes the channel at the end of
+    /// input, which is what the EOF door of Direct-Mode waits for.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_stdin_reader_hands_lines_over_and_closes_at_end_of_input() {
+        use std::io::Write as _;
+        let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut rx = stdin_line_reader(reader);
+        writer.write_all(b"one\ntwo\n").unwrap();
+        drop(writer);
+        let mut got = Vec::new();
+        meclaw_testing::deadline::hang("the reader closes at end of input", async {
+            while let Some(line) = rx.recv().await {
+                got.push(line);
+            }
+        })
+        .await;
+        assert_eq!(got, ["one", "two"]);
+    }
+
+    /// A read error (here: a line that is not UTF-8) ends the input, as the
+    /// tokio reader before it did -- never a silent skip.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_stdin_reader_ends_at_the_first_read_error() {
+        use std::io::Write as _;
+        let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut rx = stdin_line_reader(reader);
+        writer.write_all(b"ok\n\xff\xfe\nafter\n").unwrap();
+        let mut got = Vec::new();
+        meclaw_testing::deadline::hang("the reader stops at the bad line", async {
+            while let Some(line) = rx.recv().await {
+                got.push(line);
+            }
+        })
+        .await;
+        assert_eq!(got, ["ok"], "nothing after the read error");
+        drop(writer);
+    }
+
+    /// THE property: with the writer still open (no end of input, the reader
+    /// blocked in its read), dropping the runtime returns. A read on tokio's
+    /// blocking pool -- `tokio::io::stdin()` -- is waited for by the drop and
+    /// would hang here until the writer closes, which is how a SIGTERM drain
+    /// left `meclaw` alive in `pipe_read` (tv-br M10m repro).
+    #[cfg(unix)]
+    #[test]
+    fn a_blocked_stdin_reader_does_not_hold_the_runtime_shutdown() {
+        use std::io::Write as _;
+        let (mut writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        writer.write_all(b"line-0\n").unwrap();
+        let first = rt.block_on(async {
+            let mut rx = stdin_line_reader(reader);
+            let first = meclaw_testing::deadline::hang("the first line arrives", rx.recv()).await;
+            // the reader now sits in its next read, the writer stays open
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            first
+        });
+        assert_eq!(first.as_deref(), Some("line-0"));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(rt);
+            let _ = done_tx.send(());
+        });
+        let mark = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG);
+        if done_rx.recv_timeout(mark).is_err() {
+            panic!(
+                "HANG: the runtime drops with the stdin writer open (waited {} s)",
+                mark.as_secs()
+            );
+        }
+        drop(writer);
+    }
 
     // ---- GH #97: what counts as a cause for the spawning probes ----
 

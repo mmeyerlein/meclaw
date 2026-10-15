@@ -22,6 +22,7 @@ pub mod orphan_journal;
 pub mod params_overlay;
 pub(crate) mod process;
 pub mod proxy;
+pub mod rlimit;
 pub mod sandbox;
 pub mod sealed;
 pub mod stdio_child;

@@ -1042,23 +1042,28 @@ body::after {
     inset 0 0 0 1px rgba(74, 46, 39, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
     var(--shadow-2);
-  /* The bar breathes like the urgent ring does: one signal, one rhythm. */
+}
+
+/* The bar breathes like the urgent ring does: one signal, one rhythm -- and on
+ * the compositor like it (GH #1209): the wide bar is a layer of its own that
+ * fades by `opacity`, the bar at rest is the one above. Positioned for the
+ * layer; it paints over the padding at the leading edge, where no text is. */
+.display-notification[data-notice="urgent"] { position: relative; }
+
+.display-notification[data-notice="urgent"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 10px 0 0 var(--accent-soft);
+  opacity: 0;
   animation: display-notification-breathe 1000ms ease-in-out infinite;
 }
 
 @keyframes display-notification-breathe {
-  0%, 100% {
-    box-shadow: inset 4px 0 0 var(--accent-soft),
-      inset 0 0 0 1px rgba(74, 46, 39, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9),
-      var(--shadow-2);
-  }
-  50% {
-    box-shadow: inset 10px 0 0 var(--accent-soft),
-      inset 0 0 0 1px rgba(74, 46, 39, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9),
-      var(--shadow-2);
-  }
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
 }
 
 .display-notification[data-notice="urgent"] .display-notification-source { color: var(--accent); }
@@ -1167,21 +1172,29 @@ body::after {
   animation: display-pulse 1.6s var(--ease) infinite;
 }
 
+/* The stroke runs on the compositor (GH #1209): it moved its
+ * `background-position`, which repaints every frame for as long as the status
+ * works. Now the stroke is the 40 % wide gradient itself and moves by
+ * `transform` over the same path: -40 % to 140 % of the free 60 % is -60 % to
+ * 210 % of its own width. At rest it stands where the gradient stood, at the
+ * leading edge; the status clips what runs past its own box, as the old
+ * background did. */
+.display-status[data-kind="working"] { overflow: clip; }
+
 .display-status[data-kind="working"]::after {
   content: "";
   position: absolute;
-  inset-inline: 0;
+  inset-inline-start: 0;
   inset-block-end: 0;
+  inline-size: 40%;
   block-size: 2px;
   background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
-  background-size: 40% 100%;
-  background-repeat: no-repeat;
   animation: display-working 1.8s var(--ease) infinite;
 }
 
 @keyframes display-working {
-  0% { background-position: -40% 0; }
-  100% { background-position: 140% 0; }
+  0% { transform: translateX(-60%); }
+  100% { transform: translateX(210%); }
 }
 
 @keyframes display-pulse {
@@ -1631,20 +1644,60 @@ body::after {
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 4px var(--accent-soft), var(--rim-top), var(--shadow-2);
-  /* Urgent breathes in the WIDTH of its coral ring (ruling, 08.09.): 3px to
-   * 6px and back once a second. No fill, no halo -- the ring is the signal. */
+}
+
+/* Urgent breathes in its coral ring (ruling, 08.09.), once a second -- on the
+ * compositor (GH #1209, ruling K8). The breath animated `box-shadow`, which is
+ * not compositable: every frame repainted the window, and on a tile the glass
+ * under it too. Measured with the display lab's page (13 blurred tiles, monitor):
+ * WebKit 16 fps with it, 58 fps with the breaths paused; under a CPU quota of
+ * 80 % the main thread stood still for up to 7 s. Now the wide ring and its halo
+ * are a layer of their own that fades in and out by `opacity`; the ring the
+ * window wears at rest is the one above, unchanged. `z-index: -1` inside the
+ * isolated window paints it where the inset shadow painted: over the fill, under
+ * the content. */
+:where(.display-pane, .display-panel)[data-rung="urgent"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 7px var(--accent-soft), 0 0 0 5px rgba(232, 102, 79, 0.35);
+  opacity: 0;
   animation: display-urgent-breathe 1000ms ease-in-out infinite;
 }
 
 @keyframes display-urgent-breathe {
-  0%, 100% {
-    box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-2),
-      0 0 0 0 rgba(232, 102, 79, 0);
-  }
-  50% {
-    box-shadow: inset 0 0 0 7px var(--accent-soft), var(--rim-top), var(--shadow-2),
-      0 0 0 5px rgba(232, 102, 79, 0.35);
-  }
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+/* A tile breathes the same ring by `transform` alone, never by fading: no part
+ * of a tile is under the floor (§ 6.11, GH #708). The ring layer stands a
+ * quarter of the tile beyond each edge, where the tile's own `overflow: hidden`
+ * cuts it off, so at rest (scale 1) it paints nothing inside the tile; at the top
+ * of the breath it is drawn in to the tile's own size, the ring on the edge. The
+ * tile is square, so one percentage holds both axes, and the ring with its glow
+ * (13px) stays inside that margin down to the smallest scale (0.8: 16.8px). A
+ * tile's pseudo-elements carry its pin and unread dots, so the breath takes
+ * whichever of the two is free. */
+.display-tile[data-rung="urgent"]:not([data-pinned="1"])::after,
+.display-tile[data-rung="urgent"][data-pinned="1"]:not([data-unread="1"])::before {
+  content: "";
+  position: absolute;
+  inset: -25%;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 9px var(--accent-soft), inset 0 0 4px 9px rgba(232, 102, 79, 0.35);
+  opacity: 1;
+  animation: display-tile-breathe 1000ms ease-in-out infinite;
+}
+
+@keyframes display-tile-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.6667); }
 }
 
 /* ── 7b. Presence follows the rung ──────────────────────────────────────
@@ -1663,6 +1716,13 @@ body::after {
 [data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
   font-size: var(--t-title-2);
   color: var(--accent);
+  animation: display-title-breathe 1000ms ease-in-out infinite;
+}
+
+/* An overlay's one free pseudo-element is its timer stroke, so an urgent overlay
+ * breathes in its title alone (GH #1209): the ink fades on the compositor, and
+ * size and colour stay the overlay's own. */
+.display-overlay[data-rung="urgent"] .display-overlay-title {
   animation: display-title-breathe 1000ms ease-in-out infinite;
 }
 
@@ -1830,15 +1890,74 @@ body::after {
   --elapsed: calc(var(--now, var(--start-at)) - var(--start-at));
 }
 
+/* The last stretch warms up on the compositor (GH #1209): the bar and the digits are
+   each a crossfade of two layers -- the calm one fades out while the warm one fades
+   in, `plus-lighter` inside an isolated group, the mix the colour animation drew
+   (OR-T12-7; pinned at 50/90/97 % and done, every tone, within 8 levels per channel
+   outside the one pixel column at the drain's edge, the edge within 1 px: OR-T12-12/24) --
+   never a colour that changes every frame for the timer's whole length. The calm
+   digits stand at `--fg-primary` in every tone, as the colour animation held them over
+   any author colour (`data-tone` accent or muted); only the warm layer and `done` turn
+   them to the accent. The digits' layers repeat them (`data-digits`, written
+   with the text) and are hidden from assistive technology; the element's own glyphs
+   carry the layout and the text and draw nothing. */
 .display-timer-fill {
-  animation:
-    display-timer-drain calc(var(--total, 0) * 1ms) linear
-      calc(var(--elapsed, 0) * -1ms) both,
-    display-timer-heat calc(var(--total, 0) * 1ms) linear
-      calc(var(--elapsed, 0) * -1ms) both;
+  position: relative;
+  isolation: isolate;
+  background-color: transparent;
+  animation: display-timer-drain calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
+}
+
+.display-timer-fill::before,
+.display-timer-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.display-timer-fill::before {
+  background-color: var(--accent-soft);
+  animation: display-timer-cool calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
+}
+
+.display-timer-fill::after {
+  background-color: var(--accent);
+  opacity: 0;
+  mix-blend-mode: plus-lighter;
+  animation: display-timer-heat calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
 }
 
 .display-timer-remaining {
+  position: relative;
+  isolation: isolate;
+  -webkit-text-fill-color: transparent;
+}
+
+.display-timer-remaining::before,
+.display-timer-remaining::after {
+  content: attr(data-digits);
+  content: attr(data-digits) / "";
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  -webkit-text-fill-color: currentColor;
+  pointer-events: none;
+}
+
+.display-timer-remaining::before {
+  color: var(--fg-primary);
+  animation: display-timer-calm calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
+}
+
+.display-timer-remaining::after {
+  color: var(--accent);
+  opacity: 0;
+  mix-blend-mode: plus-lighter;
   animation: display-timer-alarm calc(var(--total, 0) * 1ms) linear
     calc(var(--elapsed, 0) * -1ms) both;
 }
@@ -1848,15 +1967,26 @@ body::after {
   to { transform: scaleX(0); }
 }
 
-/* The last tenth is the escalation: coral turns to vermilion. */
+/* The last tenth is the escalation: coral turns to vermilion (the coral layer fades
+   out while the vermilion one fades in, on the bar and on the digits). */
+@keyframes display-timer-cool {
+  0%, 82% { opacity: 1; }
+  92%, 100% { opacity: 0; }
+}
+
 @keyframes display-timer-heat {
-  0%, 82% { background-color: var(--accent-soft); }
-  92%, 100% { background-color: var(--accent); }
+  0%, 82% { opacity: 0; }
+  92%, 100% { opacity: 1; }
+}
+
+@keyframes display-timer-calm {
+  0%, 88% { opacity: 1; }
+  96%, 100% { opacity: 0; }
 }
 
 @keyframes display-timer-alarm {
-  0%, 88% { color: var(--fg-primary); }
-  96%, 100% { color: var(--accent); }
+  0%, 88% { opacity: 0; }
+  96%, 100% { opacity: 1; }
 }
 
 .display-timer--done .display-timer-fill {
@@ -1865,7 +1995,10 @@ body::after {
   background-color: var(--accent);
 }
 
-.display-timer--done .display-timer-remaining { animation: none; color: var(--accent); }
+.display-timer--done :is(.display-timer-fill, .display-timer-remaining)::after { animation: none; }
+.display-timer--done .display-timer-fill::before { animation: none; opacity: 0; }
+.display-timer--done .display-timer-remaining::before { animation: none; color: var(--accent); }
+.display-timer--done .display-timer-remaining { color: var(--accent); }
 
 /* Stable identity. The template writes `view-transition-name: <id>` inline,
  * so the sheet only says how a transition moves, never which one. Glass keeps
@@ -2109,6 +2242,9 @@ body::after {
  * the press is the dock, and the dock has nothing to do with a microphone
  * (§ 5.5). Gated by `audio` like the listening state above (§ 6.4). */
 .display-os[data-phase="error"] .display-os-mark { color: var(--fg-tertiary); }
+/* The mark's own word for a lost link (K7, OR-T10-10): dimmed like a refusal, and
+ * its line says `offline` -- the hold reaches nobody until the link is back. */
+.display-os[data-phase="offline"] .display-os-mark { color: var(--fg-tertiary); }
 
 .display-columns[data-inputs~="audio"] .display-os[data-phase="error"] .display-os-mark {
   opacity: var(--mark-dim);
@@ -2340,7 +2476,6 @@ html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-uns
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 3px var(--accent), var(--rim-top), var(--shadow-contact);
-  animation: display-urgent-breathe 1000ms ease-in-out infinite;
 }
 
 /* The same object, just large right now: the tile steps back a little rather
@@ -2387,6 +2522,18 @@ html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-uns
  * where the exit has a hand (OR-F18), so the cursor follows the same word. */
 .display-tile[phx-click] { cursor: pointer; }
 .display-tile[phx-click]:active { transform: scale(0.96); }
+
+/* A screen without a link (K7 12.10., from § 3.2; the scene hook writes
+ * `data-offline` while LiveView reports the channel gone): nothing a finger or a
+ * key does there is sent, now or later (OR-T10-10), so everything that takes
+ * one -- the tiles, an app's buttons and chips, the input line, the mark, a
+ * streamed page -- says
+ * it by losing its colour. Colour and not opacity: § 6.11 keeps every part of a
+ * tile at 0.88 or above (welle-testing tv-bn M10b, M10e). */
+[data-offline="true"] [phx-click],
+[data-offline="true"] [phx-keyup],
+[data-offline="true"] .display-os-mark,
+[data-offline="true"] .display-browser-view { filter: grayscale(1); }
 
 /* A tile that shows a dialogue leads with the bubble and not with the text:
  * the bubble is the word "chat" without a word (F-15). Until 2.3.3 a chat
@@ -2774,6 +2921,12 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-timer-fill,
   .display-progress-fill { background: Highlight; }
 
+  /* The timer's crossfade layers would add Highlight to Highlight: in forced colours
+     the element draws itself, as it did before the layers (GH #1209). */
+  .display-timer-remaining { -webkit-text-fill-color: currentColor; }
+  :is(.display-timer-fill, .display-timer-remaining)::before,
+  :is(.display-timer-fill, .display-timer-remaining)::after { display: none; }
+
   /* The dot, by its TOKEN and not by a colour. Its own rule now names the
    * dock as well (§ 6.8) and weighs a class and five attributes, so no
    * selector written here could beat it -- and `forced-color-adjust: none`
@@ -2830,21 +2983,27 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-status[data-kind="working"]::after,
   .display-step[data-step-state="running"] .display-step-mark { animation: none !important; }
   /* Urgent keeps breathing under reduced motion, only slower: it is the one
-   * animation that carries meaning (ruling, 08.09.). A tile says it too. */
-  :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
-  .display-tile[data-rung="urgent"] {
+   * animation that carries meaning (ruling, 08.09.). A tile says it too. The
+   * breath is the ring's own layer since GH #1209, so the layer is what slows. */
+  :where(.display-pane, .display-panel)[data-rung="urgent"]::after {
     animation: display-urgent-breathe 2000ms ease-in-out infinite !important;
   }
-  [data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
+  .display-tile[data-rung="urgent"]:not([data-pinned="1"])::after,
+  .display-tile[data-rung="urgent"][data-pinned="1"]:not([data-unread="1"])::before {
+    animation: display-tile-breathe 2000ms ease-in-out infinite !important;
+  }
+  [data-rung="urgent"] :is(.display-pane-title, .display-panel-title),
+  .display-overlay[data-rung="urgent"] .display-overlay-title {
     animation: display-title-breathe 2000ms ease-in-out infinite !important;
   }
-  .display-notification[data-notice="urgent"] {
+  .display-notification[data-notice="urgent"]::after {
     animation: display-notification-breathe 2000ms ease-in-out infinite !important;
   }
 
   /* Timer and overlay keep their clocks: they are information, not decoration. */
   .display-timer-fill,
-  .display-timer-remaining {
+  :is(.display-timer-fill, .display-timer-remaining)::before,
+  :is(.display-timer-fill, .display-timer-remaining)::after {
     animation-duration: calc(var(--total, 0) * 1ms) !important;
   }
 

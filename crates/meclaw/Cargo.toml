@@ -12,7 +12,25 @@ name = "meclaw"
 path = "src/main.rs"
 
 [dependencies]
-meclaw-cli = { path = "../meclaw-cli", version = "0.63.1" }
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+meclaw-cli = { path = "../meclaw-cli", version = "0.64.0" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+
+# GH #1168: the integration tests that start the binary live here, so
+# `CARGO_BIN_EXE_meclaw` is the shipped binary and the workspace links it once.
+# These are the dev-dependencies they moved with from meclaw-cli; the
+# third-party ones inherit version and features from [workspace.dependencies]
+# (precheck lock `feature-unity-lock`). None of them reaches the published binary.
+[dev-dependencies]
+# Paused tokio clock for the time-logic test class (OR-TV-1/OR-TV-4); dev-only, never in a release build.
+tokio = { workspace = true, features = ["test-util"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
+meclaw-cells = { path = "../meclaw-cells" }
+meclaw-colony = { path = "../meclaw-colony" }
+meclaw-core = { path = "../meclaw-core" }
+meclaw-testing = { path = "../meclaw-testing" }

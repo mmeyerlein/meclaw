@@ -23,8 +23,9 @@ use meclaw_core::Path;
 use meclaw_core::serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
 /// The longest the cell watches the browser's child chain before it decides.
 ///
@@ -202,7 +203,7 @@ impl Browser {
             .pid()
             .ok_or_else(|| BrowserError::SpawnFailed(PACKAGED_BROWSER.to_string()))?;
         let watch = SANDBOX_WATCH_CAP.min(Duration::from_millis(self.params.external_timeout_ms));
-        let deadline = std::time::Instant::now() + watch;
+        let deadline = tokio::time::Instant::now() + watch;
         let mut last;
         loop {
             match cdp::renderers_are_sandboxed(pid) {
@@ -224,7 +225,7 @@ impl Browser {
                 // every browser some of the time.
                 other => {
                     last = other;
-                    if std::time::Instant::now() >= deadline {
+                    if tokio::time::Instant::now() >= deadline {
                         break;
                     }
                     tokio::time::sleep(SANDBOX_POLL).await;
@@ -1487,7 +1488,7 @@ async fn recv_own(
 /// waits forever, which is what keeps it out of the way of the others.
 async fn sleep_until(at: Option<Instant>) {
     match at {
-        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
 }

@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import tomllib
 import unittest
+from scripts.tests import store_isolation
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 REPO = SCRIPTS.parent
@@ -234,6 +235,14 @@ class SlowLock(unittest.TestCase):
         self.assertTrue(f("a::b", "ayzb"))
         self.assertFalse(f("a::b", "qq"))
         self.assertTrue(f("other", "zz"))   # the `not test(/^q/)` arm
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

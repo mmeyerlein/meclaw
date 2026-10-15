@@ -33,9 +33,7 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::process::Command;
-
-use display_colony::{Boot, PROBE, attr, boot, have_python, library_ships, repo};
+use display_colony::{Boot, Driver, PROBE, Site, attr, boot, have_python, library_ships, repo};
 use meclaw_core::serde_json::json;
 
 const DRIVER: &str = "workshop/tools/display-page-browser.mjs";
@@ -52,10 +50,20 @@ fn field(line: &str, key: &str) -> String {
 async fn the_drivers_tap_puts_the_window_away() {
     if !library_ships() || !have_python() {
         println!("SKIP no template library or no python3 on this host");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: no template library or no python3 on this host"
+        );
         return;
     }
     if !repo(DRIVER).is_file() {
         println!("SKIP the viewer driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the viewer driver does not ship in this tree"
+        );
         return;
     }
 
@@ -89,21 +97,32 @@ async fn the_drivers_tap_puts_the_window_away() {
     // `pane-<view_id>` (`display_colony.rs`, `write_view_ttl`). `monitor` is the exit
     // whose profile carries `pointer`, so it is the one whose tiles are bound at all
     // (§ 6.4).
-    let out = Command::new("node")
-        .arg(repo(DRIVER))
-        .arg(colony.url("monitor"))
+    let with = Driver::default()
+        .script(DRIVER)
         .arg(td.path())
         .args(["--mode", "tap", "--profile", "monitor", "--tap"])
-        .arg(r#".display-tile[data-for="pane-tapped"]"#)
-        .output();
+        .arg(r#".display-tile[data-for="pane-tapped"]"#);
+    let driving = colony.drive(Site::Gh767Monitor, "monitor", with);
+    let out = driving.output().await;
     let Ok(out) = out else {
         println!("SKIP no node on this host");
         colony.shutdown().await;
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: no node on this host"
+        );
         return;
     };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    if out.status.code() == Some(3) || stderr.contains("SKIP") {
+    if out.status.code() == Some(3) || stderr.lines().any(|l| l.starts_with("SKIP ")) {
+        // GH #1161 (OR-TB.S3.39): the gate's station booked this engine and runs with
+        // `MECLAW_REQUIRE_BROWSERS=1`; there a skipped driver is a red test, never a pass.
+        assert!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref() != Ok("1"),
+            "a skip under MECLAW_REQUIRE_BROWSERS=1 is red:\n{stderr}"
+        );
         println!("{stderr}");
         colony.shutdown().await;
         return;
@@ -119,6 +138,14 @@ async fn the_drivers_tap_puts_the_window_away() {
         field(&line, "tapped="),
         "1",
         "a tile for the window stood on the monitor: {line}"
+    );
+    // welle-testing tv-bn M10b (re-check M10, M2): the tap LEFT the page -- the scene
+    // hook's send counter moved by one in the tap's task. A tap the vendored LiveView
+    // dropped read `tapped=1` and ran into the HANG of the wait below.
+    assert_eq!(
+        field(&line, "sent="),
+        "1",
+        "the driver's tap was not sent by the screen: {line}"
     );
     // The screen's own answer FIRST, and read where it lands: the level the pass drew at
     // `web` (GH #809 -- the curator's state is memory, the patches are the screen). This

@@ -154,7 +154,7 @@ its start time: a recycled pid is recognised as recycled and reclaimed, a dead
 holder is reclaimed with a log line that says why, and an unreadable record
 refuses the boot rather than guessing.
 
-Pinned in `crates/meclaw-cli/tests/gh121_root_lease.rs`, which boots real
+Pinned in `crates/meclaw/tests/misc/gh121_root_lease.rs`, which boots real
 daemons and checks each of those cases.
 
 ## Moment 3 -- a hard kill leaves nothing behind
@@ -187,7 +187,7 @@ recycled since is skipped loudly (`pid reuse: recorded start_id …, live proces
 started at …`), so the worst case is a leftover process, never somebody else's.
 There is no pattern matching anywhere in it -- no `pkill`, no name sweep.
 
-Pinned in `crates/meclaw-cells/tests/gh116_orphan_reap.rs`, which hard-kills a
+Pinned in `crates/meclaw-cells/tests/misc_2/gh116_orphan_reap.rs`, which hard-kills a
 real daemon, confirms the child outlived it, and drives the boot reap. Its
 sibling cases point a record at the *test runner itself* with a mutated start
 time: a careless reaper would kill the test binary, and that is exactly what
@@ -220,7 +220,7 @@ Two honest limits:
 
 ## Pinned
 
-`crates/meclaw-cells/tests/hard_shell_example.rs` boots **this** seed and
+`crates/meclaw-cells/tests/misc_8/hard_shell_example.rs` boots **this** seed and
 applies **this** declaration -- the files, not copies of them -- and sends the
 metadata fetch through the whole colony, offline, with no network involved. It
 measures that the seed contains no security configuration (and that the knob
@@ -229,5 +229,5 @@ only templates that ship, and that the refusal arrives as `target_blocked`, on
 its own lane, naming the address and its range, without an `http_status` and
 without a dead letter. Moments 2 and 3 are process-level facts about the daemon
 rather than properties of this tree, and they are pinned where they live --
-`crates/meclaw-cli/tests/gh121_root_lease.rs` and
-`crates/meclaw-cells/tests/gh116_orphan_reap.rs`, both with real processes.
+`crates/meclaw/tests/misc/gh121_root_lease.rs` and
+`crates/meclaw-cells/tests/misc_2/gh116_orphan_reap.rs`, both with real processes.

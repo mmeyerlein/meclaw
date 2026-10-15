@@ -265,8 +265,21 @@ pub(crate) fn keep_all(
     rows: &[TemplateEntry],
     referenced: &[(String, String)],
 ) -> Vec<(String, ScannedTemplate)> {
+    keep_all_with(local, rows, referenced, &|_| {})
+}
+
+/// [`keep_all`], calling `before_step` before each copy is made (GH #1172:
+/// the committed-mutation keep beats the watchdog there, one beat per kept
+/// version).
+pub(crate) fn keep_all_with(
+    local: &Path,
+    rows: &[TemplateEntry],
+    referenced: &[(String, String)],
+    before_step: &dyn Fn(&KeepStep),
+) -> Vec<(String, ScannedTemplate)> {
     let mut out = Vec::new();
     for step in plan_keep(local, rows, referenced) {
+        before_step(&step);
         match execute_keep(&step) {
             Ok(Some(scanned)) => {
                 tracing::info!(
@@ -288,6 +301,73 @@ pub(crate) fn keep_all(
         }
     }
     out
+}
+
+/// GH #811: the keep that follows a committed mutation -- copy every version
+/// it instantiated into `local` and repoint each row, durably, before the
+/// mutation's verdict goes back (the next mutation reads its template snapshot
+/// from `colony.db`). Failures are logged by [`keep_all`] and the mutation
+/// stands.
+pub(crate) async fn keep_after_commit(
+    local: PathBuf,
+    rows: Vec<TemplateEntry>,
+    instantiated: Vec<(String, String)>,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    now: i64,
+    pulse: &crate::watchdog::WorkPulse,
+) {
+    keep_after_commit_paced(local, rows, instantiated, log_tx, now, pulse, |_| {}).await
+}
+
+/// [`keep_after_commit`] with `pace` run inside every copy step -- the seam a
+/// test uses to make a copy as slow as a contended disk makes it.
+async fn keep_after_commit_paced(
+    local: PathBuf,
+    rows: Vec<TemplateEntry>,
+    instantiated: Vec<(String, String)>,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    now: i64,
+    pulse: &crate::watchdog::WorkPulse,
+    pace: impl Fn(&KeepStep) + Send + Sync + 'static,
+) {
+    // GH #1172: the copies are synchronous file work, minutes on a contended
+    // disk for a large build order -- off the colony's worker (AGENTS.md rule
+    // 13), with one beat per kept version under a label that names it. The
+    // beat comes before each copy, so a copy that never returns is still a
+    // silent, stuck work item.
+    let step_pulse = pulse.clone();
+    let copies = tokio::task::spawn_blocking(move || {
+        keep_all_with(&local, &rows, &instantiated, &|step| {
+            step_pulse
+                .with_label(crate::watchdog::WorkItem::new(format!(
+                    "{} op=keep template={}@{}",
+                    step_pulse.label(),
+                    step.name,
+                    step.version
+                )))
+                .tick();
+            pace(step);
+        })
+    })
+    .await;
+    let kept = match copies {
+        Ok(kept) => kept,
+        Err(e) => {
+            tracing::warn!(error = %e, "templates keep: the copy task ended early; no row was repointed");
+            return;
+        }
+    };
+    for (template_id, kept) in kept {
+        pulse.tick();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = log_tx
+            .send(super::upsert_op(template_id, &kept, now, Some(tx)))
+            .await;
+        // Durable before the verdict goes back: the next mutation reads its
+        // template snapshot from `colony.db`. The wait does not beat, because
+        // a writer that never acknowledges is a wedge.
+        let _ = rx.await;
+    }
 }
 
 fn unix_now() -> i64 {
@@ -359,14 +439,14 @@ pub fn keep_referenced_versions(
     async move {
         let now = unix_now();
         for (template_id, scanned) in kept {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
             super::send_op_via(
                 &writer_tx,
                 &queue_depth,
                 super::upsert_op(template_id, &scanned, now, Some(tx)),
             )
             .await;
-            let _ = rx.recv();
+            let _ = rx.await;
         }
     }
 }
@@ -520,5 +600,290 @@ mod tests {
         sweep_interrupted_copies(&local);
         assert!(!local.join(".keep-0190").exists());
         assert!(local.join("a@1.0.0/template.json").is_file());
+    }
+
+    /// GH #1172 -- `n` shipped versions under `lib/`, their rows and the
+    /// `(name, version)` list a committed mutation would have stamped.
+    fn shipped_versions(root: &Path, n: usize) -> (Vec<TemplateEntry>, Vec<(String, String)>) {
+        let mut rows = Vec::new();
+        let mut referenced = Vec::new();
+        for i in 0..n {
+            let name = format!("t{i}");
+            let dir = root.join("lib").join(&name);
+            write(
+                &dir,
+                "template.json",
+                &format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            );
+            write(&dir, "config.json", "{}");
+            rows.push(entry(&format!("id-{i}"), &name, Some("1.0.0"), &dir));
+            referenced.push((name, "1.0.0".to_string()));
+        }
+        (rows, referenced)
+    }
+
+    /// GH #1172 -- the colony writer, reduced to what the keep needs from it:
+    /// every template upsert is acknowledged once it has been taken. A tokio
+    /// task, so the keep's wait for the ack stays on the paused clock.
+    fn acking_writer(
+        mut rx: tokio::sync::mpsc::Receiver<crate::persist::writer::ColonyWriteOp>,
+    ) -> tokio::task::JoinHandle<usize> {
+        tokio::spawn(async move {
+            let mut upserts = 0;
+            while let Some(op) = rx.recv().await {
+                if let crate::persist::writer::ColonyWriteOp::UpsertTemplate { ack, .. } = op {
+                    upserts += 1;
+                    if let Some(ack) = ack {
+                        let _ = ack.send(());
+                    }
+                }
+            }
+            upserts
+        })
+    }
+
+    /// The step of the virtual clock while a copy is held.
+    const STEP: std::time::Duration = std::time::Duration::from_millis(1);
+
+    /// Copies the test holds (welle-val2 v2-fix-b, #1199): the pace of a held
+    /// copy reports its `name@version`, then blocks until the test lets it go
+    /// -- a copy as slow as the test says, never a guessed sleep. Dropping the
+    /// [`Held`] lets every held copy go, so a failed test does not keep the
+    /// runtime's blocking pool.
+    ///
+    /// Virtual time (AGENTS.md rule 11, time logic): the keep waits on one
+    /// `spawn_blocking` and tokio channels, the supervisor on tokio timers and
+    /// channels, and a running blocking task holds the paused clock -- so
+    /// while a copy is held the clock moves only by [`advance_by`] and
+    /// [`run_clock`], tick by tick of the supervisor.
+    struct Held {
+        begun: tokio::sync::mpsc::UnboundedReceiver<String>,
+        release: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    /// A pace that holds every copy `which` names, and the test's side of it.
+    fn hold(
+        which: impl Fn(&KeepStep) -> bool + Send + Sync + 'static,
+    ) -> (impl Fn(&KeepStep) + Send + Sync + 'static, Held) {
+        let (begun_tx, begun) = tokio::sync::mpsc::unbounded_channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = std::sync::Mutex::new(released);
+        let pace = move |step: &KeepStep| {
+            if which(step) {
+                let _ = begun_tx.send(format!("{}@{}", step.name, step.version));
+                // `Err`: the test has let go of every copy.
+                let _ = released.lock().unwrap().recv();
+            }
+        };
+        let held = Held {
+            begun,
+            release: Some(release),
+        };
+        (pace, held)
+    }
+
+    impl Held {
+        /// The next held copy that has begun, driving `keep` meanwhile.
+        async fn begun_under<F: std::future::Future + Unpin>(&mut self, keep: &mut F) -> String {
+            tokio::select! {
+                biased;
+                _ = keep => panic!("the keep ended before the held copy began"),
+                copy = self.begun.recv() => copy.expect("the pace lives as long as the keep"),
+            }
+        }
+
+        /// The next held copy that has begun, for a keep another task drives.
+        async fn begun(&mut self) -> String {
+            self.begun
+                .recv()
+                .await
+                .expect("the keep ended before the held copy began")
+        }
+
+        /// Lets the one copy that is held now go.
+        fn release_one(&self) {
+            if let Some(tx) = &self.release {
+                tx.send(()).expect("a held copy waits for its release");
+            }
+        }
+
+        /// Lets every held copy go, now and from here on.
+        fn release_all(&mut self) {
+            self.release = None;
+        }
+    }
+
+    /// Lets `by` of virtual time pass in [`STEP`]s while `keep` runs beside
+    /// it -- a held copy that takes `by`. The keep must not end meanwhile.
+    async fn advance_by<F: std::future::Future + Unpin>(keep: &mut F, by: std::time::Duration) {
+        let mut ran = std::time::Duration::ZERO;
+        while ran < by {
+            tokio::select! {
+                biased;
+                _ = &mut *keep => panic!("the keep ended while a copy was held"),
+                () = std::future::ready(()) => {}
+            }
+            tokio::time::advance(STEP).await;
+            ran += STEP;
+        }
+    }
+
+    /// Drives `fut` on the paused clock in [`STEP`]s while a copy is held. A
+    /// future still pending after [`meclaw_testing::deadline::HANG`] of
+    /// virtual time is a hang, never a verdict on speed.
+    async fn run_clock<F: std::future::Future>(what: &str, fut: F) -> F::Output {
+        let mut ran = std::time::Duration::ZERO;
+        tokio::pin!(fut);
+        loop {
+            tokio::select! {
+                biased;
+                out = &mut fut => return out,
+                () = std::future::ready(()) => {}
+            }
+            assert!(
+                ran < meclaw_testing::deadline::HANG,
+                "HANG: {what} (virtual {ran:?})"
+            );
+            tokio::time::advance(STEP).await;
+            ran += STEP;
+        }
+    }
+
+    /// GH #1172 -- a watchdog at a 10 ms period with the shipped threshold of
+    /// five: a 50 ms window and a 500 ms work-item budget. The returned pulse
+    /// has already declared the mutation as the work item -- after the
+    /// supervisor armed, because it drops the beats from before its arming.
+    async fn supervised() -> (
+        crate::watchdog::WorkPulse,
+        tokio::sync::mpsc::Receiver<crate::watchdog::WatchdogTrip>,
+    ) {
+        let (hb_tx, hb_rx) = tokio::sync::mpsc::channel(8);
+        let (trip_tx, trip_rx) = tokio::sync::mpsc::channel(1024);
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel();
+        let _ = armed_tx.send(());
+        tokio::spawn(crate::watchdog::run_watchdog(
+            hb_rx,
+            trip_tx,
+            5,
+            std::time::Duration::from_millis(10),
+            armed_rx,
+            crate::watchdog::WatchdogOnTrip::Exit,
+            None,
+        ));
+        let pulse = crate::watchdog::WorkPulse::new(
+            Some(hb_tx),
+            crate::watchdog::WorkItem::new("mutation test scope=/t"),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        pulse.tick();
+        (pulse, trip_rx)
+    }
+
+    /// GH #1172, the defect: the keep after a committed mutation is the longest
+    /// stretch of a mutation after its last cell, and it was silent. 24 versions
+    /// at 40 ms a copy -- a contended disk, each copy shorter than one window --
+    /// are 960 ms of honest work, almost twice the budget. The lab trip that
+    /// opened the issue sat in exactly this stretch: the label still said
+    /// `add_nodes[76/76]` while the `templates keep` lines were logged.
+    ///
+    /// Each copy is held for 40 ms of virtual time ([`Held`]), so the
+    /// supervisor sees exactly that lag, tick by tick.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_keep_after_a_commit_is_not_a_stuck_work_item() {
+        let td = TempDir::new().unwrap();
+        let (rows, referenced) = shipped_versions(td.path(), 24);
+        let local = td.path().join("local");
+        let (log_tx, log_rx) = tokio::sync::mpsc::channel(64);
+        let writer = acking_writer(log_rx);
+        let (pulse, mut trips) = supervised().await;
+        let (pace, mut held) = hold(|_| true);
+
+        {
+            let keep = keep_after_commit_paced(
+                local.clone(),
+                rows,
+                referenced.clone(),
+                &log_tx,
+                0,
+                &pulse,
+                pace,
+            );
+            tokio::pin!(keep);
+            for _ in 0..24 {
+                held.begun_under(&mut keep).await;
+                advance_by(&mut keep, std::time::Duration::from_millis(40)).await;
+                held.release_one();
+            }
+            keep.await;
+        }
+
+        // Everything the supervisor said while the keep ran, read before the
+        // heartbeat is dropped (a closed channel is a gone colony task).
+        while let Ok(trip) = trips.try_recv() {
+            assert!(
+                !trip.is_fatal(crate::watchdog::WatchdogOnTrip::Exit),
+                "a keep that makes progress must not end the process: {trip}"
+            );
+        }
+        drop(log_tx);
+        assert_eq!(writer.await.unwrap(), 24, "every kept row is repointed");
+        for (name, version) in &referenced {
+            assert!(
+                kept_dir(&local, name, version)
+                    .join("template.json")
+                    .is_file()
+            );
+        }
+        drop(pulse);
+    }
+
+    /// GH #1172, the guard: the beats are per kept version, so a copy that
+    /// never returns is still a stuck work item -- fatal under `exit`, and
+    /// charged to the version whose copy hangs.
+    ///
+    /// The copy of `t1` is held until the test has seen the fatal trip, so the
+    /// trip can only come from the silence INSIDE that copy: anything that
+    /// beats while it hangs (a background ticker for the copy task, a beat
+    /// inside the copy) leaves no fatal trip and turns this red -- the wait
+    /// for it ends at the `HANG` marker of the virtual clock. The label pins
+    /// which version was charged.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_copy_in_the_keep_is_still_a_stuck_work_item() {
+        let td = TempDir::new().unwrap();
+        let (rows, referenced) = shipped_versions(td.path(), 4);
+        let (log_tx, log_rx) = tokio::sync::mpsc::channel(64);
+        let writer = acking_writer(log_rx);
+        let (pulse, mut trips) = supervised().await;
+        let local = td.path().join("local");
+        let (pace, mut held) = hold(|step| step.name == "t1");
+
+        let keep = tokio::spawn(async move {
+            keep_after_commit_paced(local, rows, referenced, &log_tx, 0, &pulse, pace).await;
+            pulse
+        });
+
+        assert_eq!(held.begun().await, "t1@1.0.0");
+        let fatal = run_clock("a fatal trip while the copy of t1 hangs", async {
+            loop {
+                let trip = trips
+                    .recv()
+                    .await
+                    .expect("the supervisor returned without a fatal trip");
+                if trip.is_fatal(crate::watchdog::WatchdogOnTrip::Exit) {
+                    return trip;
+                }
+            }
+        })
+        .await;
+        held.release_all();
+        assert_eq!(fatal.starved(), "stuck_work_item", "was: {fatal}");
+        assert_eq!(
+            fatal.work_item.as_ref().map(|w| w.as_str()),
+            Some("mutation test scope=/t op=keep template=t1@1.0.0"),
+            "the trip must be charged to the hung copy of t1: {fatal}"
+        );
+        let pulse = keep.await.unwrap();
+        drop(pulse);
+        assert_eq!(writer.await.unwrap(), 4);
     }
 }

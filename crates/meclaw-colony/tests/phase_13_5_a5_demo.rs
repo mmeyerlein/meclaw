@@ -4,14 +4,14 @@
 //! and (f) are ALREADY proven by existing tests and are NOT duplicated here:
 //!
 //! - (d) activity before/after `add_edges` →
-//!   `tests/phase_13_5_t8b_subtree_apply.rs::add_edges_to_subtree_root_activates_whole_subtree`
+//!   `tests/phase/phase_13_5_t8b_subtree_apply.rs::add_edges_to_subtree_root_activates_whole_subtree`
 //!   plus the inactive-on-instantiation assertion in
 //!   `add_nodes_subtree_registers_all_cells_inactive_with_hive_scope_and_internal_edges`.
 //! - (e) existing-path per-node resume (Paket-5 T12 F4-closure; was the A5
 //!   `subtree_resume_unsupported` reject) →
-//!   `tests/phase_13_5_t8b2_subtree_validation.rs::add_nodes_subtree_at_existing_root_path_resumes_per_node`.
+//!   `tests/phase/phase_13_5_t8b2_subtree_validation.rs::add_nodes_subtree_at_existing_root_path_resumes_per_node`.
 //! - (f) validation reject / no `.staging` leak →
-//!   `tests/phase_13_5_t8b2_subtree_validation.rs::add_nodes_subtree_with_internal_cycle_rejected_before_staging`
+//!   `tests/phase/phase_13_5_t8b2_subtree_validation.rs::add_nodes_subtree_with_internal_cycle_rejected_before_staging`
 //!   (+ `add_nodes_subtree_with_edge_escaping_root_rejected`).
 //!
 //! The demos written HERE:

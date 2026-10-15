@@ -24,6 +24,18 @@ pub struct TemplateEntry {
 #[derive(Debug, Clone, Default)]
 pub struct TemplatesRegistry {
     entries: Vec<TemplateEntry>,
+    /// GH #1193: template subtrees a mutation already parsed OFF the colony
+    /// worker (`mutation::subtree::read_subtrees`), keyed by template root.
+    /// [`crate::mutation::subtree::parse_subtree`] answers from here before it
+    /// touches the filesystem, so the validation stages, the subtree
+    /// pre-checks, the contracts of newborn hives and staging of one mutation
+    /// read each template tree once, in the scan that beats and times out --
+    /// not again, synchronously, on the worker. Filled only on the per-mutation
+    /// snapshot; empty everywhere else (plain data of one actor, no lock).
+    subtrees: std::collections::HashMap<
+        PathBuf,
+        Result<crate::mutation::subtree::SubtreeTemplate, crate::mutation::MutationError>,
+    >,
 }
 
 /// Error returned by [`TemplatesRegistry::resolve`].
@@ -40,7 +52,33 @@ pub enum ResolveError {
 impl TemplatesRegistry {
     /// Construct a registry from a list of entries (e.g. from `ColonyDb::read_templates`).
     pub fn from_entries(entries: Vec<TemplateEntry>) -> Self {
-        Self { entries }
+        Self {
+            entries,
+            subtrees: std::collections::HashMap::new(),
+        }
+    }
+
+    /// GH #1193: the parse of the template tree at `template_root` this
+    /// snapshot already holds, if a scan put it there.
+    pub(crate) fn parsed_subtree(
+        &self,
+        template_root: &std::path::Path,
+    ) -> Option<&Result<crate::mutation::subtree::SubtreeTemplate, crate::mutation::MutationError>>
+    {
+        self.subtrees.get(template_root)
+    }
+
+    /// GH #1193: keep the parses a scan made off the worker, so every later
+    /// [`crate::mutation::subtree::parse_subtree`] of the same tree on this
+    /// snapshot answers from memory.
+    pub(crate) fn keep_parsed_subtrees(
+        &mut self,
+        parsed: Vec<(
+            PathBuf,
+            Result<crate::mutation::subtree::SubtreeTemplate, crate::mutation::MutationError>,
+        )>,
+    ) {
+        self.subtrees.extend(parsed);
     }
 
     /// Number of entries in this registry snapshot.

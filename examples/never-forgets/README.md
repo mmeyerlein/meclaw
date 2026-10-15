@@ -67,7 +67,7 @@ cannot decide which database your life goes into.
 
 Sixteen cells in the registry, three of them checked in -- the hive marker is a
 scope, not a cell. That number is not counted by hand: it is
-`CELLS_AFTER_GROW` in `crates/meclaw-cells/tests/never_forgets_example.rs`,
+`CELLS_AFTER_GROW` in `crates/meclaw-cells/tests/misc_8/never_forgets_example.rs`,
 which boots this seed, applies this `grow.json` and asserts the registry it
 gets. Adding a cell to any of the three templates moves it there first.
 
@@ -373,7 +373,7 @@ the point of writing it down as edges.
 
 ## Pinned
 
-`crates/meclaw-cells/tests/never_forgets_example.rs` boots **this** seed and
+`crates/meclaw-cells/tests/misc_8/never_forgets_example.rs` boots **this** seed and
 applies **this** declaration -- the files, not copies of them -- against a mock
 provider, replays **this** `past.jsonl` and drives the March question through
 the whole tree. It measures what is checked in (six files, no edge in the root

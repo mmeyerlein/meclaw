@@ -131,6 +131,7 @@ impl AttachmentReader {
 mod tests {
     use super::*;
     use meclaw_core::{CompiledConsumes, ConsumesBlock};
+    use meclaw_testing::deadline::HANG;
 
     fn contract_with_consumes(json: serde_json::Value) -> ContractView {
         let block: ConsumesBlock = serde_json::from_value(json).unwrap();
@@ -215,16 +216,17 @@ mod tests {
 
     /// A store read that never answers must cost the cell its own operation
     /// timeout (concept A), NOT `cell.message_timeout` plus a restart
-    /// (concept B). The hang is real: the blob content path is a FIFO with no
-    /// writer, so `open(2)` blocks indefinitely.
+    /// (concept B). The hang is real: the blob content path is a FIFO, and the
+    /// store's read of it blocks until the test lets it go ([`HeldFifo`]).
     ///
-    /// The writer end is opened right after the read returns and before the
-    /// assertion — that releases the blocked `open(2)` so runtime teardown
-    /// (which waits for blocking tasks) cannot hang, whatever the assertion
-    /// does. No timing discriminator is involved: the alternative to the
-    /// 100 ms timeout is "forever".
+    /// Virtual time (AGENTS.md rule 11, time logic; welle-val2 v2-fix-b, #1199):
+    /// every wait of the read is `tokio::fs` (`spawn_blocking`) under one
+    /// `tokio::time::timeout`, and a running blocking task holds the paused
+    /// clock. The clock stands still until the read is known to hang in the
+    /// content -- the store holds the FIFO open -- and only then does
+    /// [`run_clock`] move it: the read ends at exactly its own timeout.
     #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
     async fn read_of_a_hanging_store_hits_the_operation_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let id = Uuid::now_v7();
@@ -245,16 +247,39 @@ mod tests {
             .status()
             .expect("mkfifo runs");
         assert!(mkfifo.success(), "mkfifo failed");
+        let mut held = HeldFifo {
+            path: fifo,
+            writer: None,
+        };
 
         let reader = AttachmentReader {
             store: store(dir.path()),
         };
-        let started = std::time::Instant::now();
-        let result = reader.read(id, Duration::from_millis(100)).await;
-        let elapsed = started.elapsed();
-
-        // Release the blocked open(2) before asserting.
-        drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+        let started = tokio::time::Instant::now();
+        let read = reader.read(id, Duration::from_millis(100));
+        tokio::pin!(read);
+        // Drive the read through the sidecar to the content, on a standing
+        // clock; the hang mark is real time, as only real threads move here.
+        let limit = std::time::Instant::now() + meclaw_testing::deadline::scaled(HANG);
+        while !held.writer_once_read() {
+            tokio::select! {
+                biased;
+                out = &mut read => panic!("the read ended before it opened the content: {out:?}"),
+                () = std::future::ready(()) => {}
+            }
+            assert!(
+                std::time::Instant::now() < limit,
+                "HANG: the store never opened the content FIFO"
+            );
+            tokio::task::yield_now().await;
+        }
+        let result = run_clock(
+            "the operation timeout of a read whose store never answers",
+            read,
+        )
+        .await;
+        let took = started.elapsed();
+        drop(held);
 
         match result {
             Err(AttachmentReadError::Timeout(got, ms)) => {
@@ -263,11 +288,75 @@ mod tests {
             }
             other => panic!("expected an operation timeout, got {other:?}"),
         }
-        assert!(
-            elapsed < Duration::from_secs(20),
-            "the operation timeout must return long before any message_timeout \
-             backstop could apply, took {elapsed:?}"
+        assert_eq!(
+            took,
+            Duration::from_millis(100),
+            "the read costs its own operation timeout, to the millisecond of virtual time"
         );
+    }
+
+    /// `O_NONBLOCK` (no `libc` in this crate): Linux's generic value, and the
+    /// BSDs' and macOS's.
+    #[cfg(target_os = "linux")]
+    const O_NONBLOCK: i32 = 0o4000;
+    #[cfg(all(unix, not(target_os = "linux")))]
+    const O_NONBLOCK: i32 = 0x0004;
+
+    /// The test's end of the content FIFO. A non-blocking writer open succeeds
+    /// only once a reader holds the FIFO open (`ENXIO` before), so it tells the
+    /// test that the store's read has reached the content -- and from then on
+    /// that read hangs in `read(2)` until the writer goes. Dropping the
+    /// [`HeldFifo`] lets the read go (or a reader caught in its `open(2)`), so
+    /// runtime teardown, which waits for blocking tasks, cannot hang, whichever
+    /// way the test ends.
+    #[cfg(unix)]
+    struct HeldFifo {
+        path: std::path::PathBuf,
+        writer: Option<std::fs::File>,
+    }
+
+    #[cfg(unix)]
+    impl HeldFifo {
+        /// `true` once the writer end is open, i.e. a reader has opened the FIFO.
+        fn writer_once_read(&mut self) -> bool {
+            use std::os::unix::fs::OpenOptionsExt;
+            if self.writer.is_none() {
+                self.writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(O_NONBLOCK)
+                    .open(&self.path)
+                    .ok();
+            }
+            self.writer.is_some()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for HeldFifo {
+        fn drop(&mut self) {
+            self.writer_once_read();
+            self.writer = None;
+        }
+    }
+
+    /// Drives `fut` on the paused clock in 1 ms steps: a blocking task the
+    /// future waits on holds auto-advance, so the clock moves only here. A
+    /// future that is still pending after [`meclaw_testing::deadline::HANG`]
+    /// of virtual time is a hang, never a verdict on speed.
+    async fn run_clock<F: std::future::Future>(what: &str, fut: F) -> F::Output {
+        let step = Duration::from_millis(1);
+        let mut ran = Duration::ZERO;
+        tokio::pin!(fut);
+        loop {
+            tokio::select! {
+                biased;
+                out = &mut fut => return out,
+                () = std::future::ready(()) => {}
+            }
+            assert!(ran < HANG, "HANG: {what} (virtual {ran:?})");
+            tokio::time::advance(step).await;
+            ran += step;
+        }
     }
 
     #[tokio::test]

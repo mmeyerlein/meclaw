@@ -54,7 +54,7 @@ use std::sync::Arc;
 /// GH #434: the key set of this registry is kept set-equal to the shipped
 /// catalogue in `docs/cell-types.md` § Overview (minus `hive`, a scope marker
 /// with no factory) by
-/// `crates/meclaw-cli/tests/gh325_the_registry_spawns_what_the_catalogue_lists.rs`.
+/// `crates/meclaw-cli/tests/misc/gh325_the_registry_spawns_what_the_catalogue_lists.rs`.
 /// A new entry here is an undocumented capability until that table grows with
 /// it — in **both** language editions.
 pub fn built_in_factories(surfaces: Arc<SurfaceRegistry>) -> CellFactoryRegistry {

@@ -578,11 +578,31 @@ pub fn v_lane_verdict(
 ///
 /// A hive whose `config.json` is missing, unreadable, or does not parse as
 /// [`crate::config::HiveParams`] contributes nothing: bootstrap already reports
-/// such a tree loudly, and a validation gate must not invent a boundary out of
-/// an unreadable file.
+/// such a tree loudly. The mutation validation and the slot rebuild, which
+/// must not open a boundary out of an unreadable file, read through
+/// [`collect_sealed_hives_reporting`] and fail closed (GH #1176: the
+/// validation refuses with `hive_config_unreadable`, the rebuild keeps every
+/// hive sealed).
 pub fn collect_sealed_hives<'a>(
     root: &std::path::Path,
     hive_paths: impl Iterator<Item = &'a meclaw_core::Path>,
+) -> Vec<SealedHive> {
+    collect_sealed_hives_reporting(root, hive_paths, &mut Vec::new())
+}
+
+/// [`collect_sealed_hives`], and every hive whose seal could not be read
+/// pushed to `unreadable` as `"<hive>: <why>"` -- a read error other than a
+/// missing file (EIO, a directory in its place) or a `config.json` / `params`
+/// that does not parse.
+///
+/// GH #1176 (u2 L5): the slot rebuild used the plain reader, so such a hive
+/// counted as declaring nothing, the rebuild counted as good, and the hive
+/// boundary reopened without that hive's seal. A missing file stays "declares
+/// nothing": a scope without a `config.json` has no seal to lose.
+pub(crate) fn collect_sealed_hives_reporting<'a>(
+    root: &std::path::Path,
+    hive_paths: impl Iterator<Item = &'a meclaw_core::Path>,
+    unreadable: &mut Vec<String>,
 ) -> Vec<SealedHive> {
     let mut out = Vec::new();
     for logical in hive_paths {
@@ -598,19 +618,31 @@ pub fn collect_sealed_hives<'a>(
             None => continue,
         };
         let cfg_path = crate::path_truth::resolve_cell_dir(root, scope, name).join("config.json");
-        let Ok(raw) = std::fs::read_to_string(&cfg_path) else {
-            continue;
+        let raw = match std::fs::read_to_string(&cfg_path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                unreadable.push(format!("{s}: {e}"));
+                continue;
+            }
         };
-        let Ok(val) = meclaw_core::serde_json::from_str::<JsonValue>(&raw) else {
-            continue;
+        let val = match meclaw_core::serde_json::from_str::<JsonValue>(&raw) {
+            Ok(val) => val,
+            Err(e) => {
+                unreadable.push(format!("{s}: {e}"));
+                continue;
+            }
         };
         let params = val.get("params").cloned().unwrap_or(JsonValue::Null);
         if params.is_null() {
             continue;
         }
-        let Ok(hp) = meclaw_core::serde_json::from_value::<crate::config::HiveParams>(params)
-        else {
-            continue;
+        let hp = match meclaw_core::serde_json::from_value::<crate::config::HiveParams>(params) {
+            Ok(hp) => hp,
+            Err(e) => {
+                unreadable.push(format!("{s}: params: {e}"));
+                continue;
+            }
         };
         if let Some(ports) = hp.ports {
             let mut canonical = Vec::with_capacity(ports.len());

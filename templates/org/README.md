@@ -1,4 +1,4 @@
-# `org@2.1.30`
+# `org@2.1.33`
 
 The namespace, and nothing else.
 
@@ -27,7 +27,7 @@ org/
 
 Two `config.json` files, both hives, and **no cell of any type anywhere**. An org that
 grows a cell has stopped being a namespace; that sentence is the level's definition and
-it is a gate, not a preference (`crates/meclaw-cells/tests/gh302_org_is_a_namespace.rs`).
+it is a gate, not a preference (`crates/meclaw-cells/tests/misc_3/gh302_org_is_a_namespace.rs`).
 
 ## The lanes
 
@@ -181,7 +181,7 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@2.1.30`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@2.1.33`, plus the transit
    edges -- one per accepted lane onto the org's own path, and one per emitted lane
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor. The inbound edges carry

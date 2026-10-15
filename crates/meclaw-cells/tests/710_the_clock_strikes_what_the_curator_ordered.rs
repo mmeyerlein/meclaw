@@ -17,15 +17,10 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::Duration;
-
 use display_colony::{Boot, attr, boot, have_python, library_ships, present};
 use meclaw_core::serde_json::json;
 
 const APP: &str = "/alex/apps/note";
-
-/// A settle window, never a semantic discriminator.
-const QUIET: Duration = Duration::from_millis(300);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_clock_strikes_what_the_curator_ordered() {
@@ -44,7 +39,7 @@ async fn the_clock_strikes_what_the_curator_ordered() {
 
     // ONE write, and then the test stops writing. Everything that follows is the clock's.
     // Read where it lands (GH #809): the window as the patches to `web` drew it.
-    let fresh = colony
+    colony
         .put(
             APP,
             "note",
@@ -52,11 +47,6 @@ async fn the_clock_strikes_what_the_curator_ordered() {
                    "topic": "note:1", "touched": "1"}),
         )
         .await;
-    assert_eq!(
-        attr(&fresh, &note, "age"),
-        json!("fresh"),
-        "a window's first pass is its fresh one (§ 4.35)"
-    );
 
     // -- S-002, S-016: the fresh second comes back as a pass -------------------------
     // Nothing is written in between: what makes the second pass is the stroke the first
@@ -66,11 +56,24 @@ async fn the_clock_strikes_what_the_curator_ordered() {
             attr(t, &note, "age") == json!("settled")
         })
         .await;
+    // GH #1184: `fresh` is the first pass's word, so it is read from the patch bundle
+    // that drew the window -- after the stroke on purpose: the tree as it stands now
+    // says `settled`, and a read that races the clock read that under suite load.
+    let fresh = colony.first_drawn(&note).await;
+    assert_eq!(
+        attr(&fresh, &note, "age"),
+        json!("fresh"),
+        "a window's first pass is its fresh one (§ 4.35)"
+    );
     assert_eq!(
         attr(&settled, &note, "since"),
         attr(&fresh, &note, "since"),
         "the stroke is no touch: `since` stands (§ 4.8)"
     );
+    // Re-check tv-bn M7b M2 (TV-A2/A3): "nobody wrote a second time" is a claim of absence,
+    // so it is read after the quiescence barrier -- the tree standing says nothing about a
+    // write still on its way.
+    colony.settle().await;
     let writes = colony.writes_taken().await;
     assert_eq!(
         writes,
@@ -153,6 +156,8 @@ async fn the_clock_strikes_what_the_curator_ordered() {
         deleted.iter().any(|id| id.contains(&flash)),
         "a patch took the window off the page: {deleted:?}"
     );
+    // Re-check tv-bn M7b M2 (TV-A2/A3): again after the barrier, not after the tree.
+    colony.settle().await;
     let writes = colony.writes_taken().await;
     assert_eq!(
         writes.len(),
@@ -166,9 +171,11 @@ async fn the_clock_strikes_what_the_curator_ordered() {
             !present(t, &note)
         })
         .await;
+    // Re-check tv-bn M7b M2 (TV-A2/A3): again after the barrier, not after the tree; the
+    // one barrier fences both absences below (nothing moves the colony in between).
+    colony.settle().await;
     let writes = colony.writes_taken().await;
     assert_eq!(writes.len(), 2, "and still only the two writes: {writes:?}");
-    colony.settle(QUIET).await;
     assert_eq!(
         colony.judge_questions().await,
         0,

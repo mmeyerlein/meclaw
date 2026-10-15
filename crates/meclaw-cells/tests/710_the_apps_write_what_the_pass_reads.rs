@@ -21,12 +21,8 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::Duration;
-
 use display_colony::{Boot, PROBE, attr, boot, have_python, library_ships, present, tile};
 use meclaw_core::serde_json::{Value, json};
-
-const QUIET: Duration = Duration::from_millis(300);
 
 /// The tiles of the default output's dock, bottom first (the highest `ord` stands lowest).
 fn dock(tree: &Value) -> Vec<String> {
@@ -127,11 +123,13 @@ async fn the_apps_write_what_the_pass_reads() {
 
     // -- S-056, S-057, § 9.3: a write without `touched` is no touch, and asks nobody --
     let before_since = attr(&three, &clock, "since");
+    // TV-A2: the baseline of an absence claim is read after quiescence (re-check tv-bn M7b3 H1).
+    colony.settle().await;
     let before_asks = colony.judge_questions().await;
     colony
         .app_put(json!({"do": "minute", "text": "12:01"}), "clock")
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
     let minute = colony.tree().await;
     assert_eq!(
         attr(&minute, &clock, "since"),
@@ -150,7 +148,7 @@ async fn the_apps_write_what_the_pass_reads() {
             "weather",
         )
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
     assert!(
         colony.judge_questions().await > before_asks,
         "a content change is a real event and asks (§ 4.3, § 9.4)"
@@ -265,6 +263,9 @@ async fn three_views_in_one_breath_lose_no_window() {
             oids.iter().all(|oid| present(t, oid))
         })
         .await;
+    // Re-check tv-bn M7b M2 (TV-A2/A3): "three writes" is also "no fourth", a claim of
+    // absence -- read after the quiescence barrier, not after the tree stood.
+    colony.settle().await;
 
     assert_eq!(
         colony.writes_taken().await,
@@ -302,12 +303,22 @@ async fn a_lost_write_names_the_hop_it_stopped_at() {
     }
     let colony = boot(Boot::default()).await;
     let trace = colony.app(json!({"do": "nothing", "at": now_ms()})).await;
-    // Three seconds, not the marker: the write is known not to come, and the window only
-    // decides how long the lock waits before it reads the account.
+    // Re-check tv-bn M7 M2 (TV-S2): the account is read once the command reached the
+    // stand-in and the colony is quiescent -- the event the lock is about -- not after a
+    // 3-s window that only decided when to read.
+    colony
+        .wait_until("the command reaches the stand-in", async || {
+            colony
+                .trace(&trace)
+                .await
+                .iter()
+                .any(|r| r.to_path == PROBE)
+        })
+        .await;
+    colony.settle().await;
     let lost = colony
-        .try_drawn_after(PROBE, "nothing", 0, &trace, Duration::from_secs(3))
-        .await
-        .expect_err("a write the stand-in never made cannot be drawn");
+        .lost_write("a write the stand-in never made", PROBE, "nothing", &trace)
+        .await;
     assert!(
         lost.contains(&format!("last hop: {PROBE};")),
         "the account names the stand-in as the last hop of the command: {lost}"

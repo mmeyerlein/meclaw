@@ -88,15 +88,30 @@ fn field<'a>(line: &'a str, key: &str) -> &'a str {
 fn the_sheet_behaves_in_webkit() {
     if !library_ships() {
         println!("SKIP the template library does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the template library does not ship in this tree"
+        );
         return;
     }
     if !repo(DRIVER).is_file() || !repo(WKENV).is_file() {
         println!("SKIP the webkit driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the webkit driver does not ship in this tree"
+        );
         return;
     }
     let td = tempfile::TempDir::new().expect("tempdir");
     if page_parts(td.path()).is_none() {
         println!("SKIP no python3 on this host");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: no python3 on this host"
+        );
         return;
     }
     let out = match Command::new("sh")
@@ -112,17 +127,33 @@ fn the_sheet_behaves_in_webkit() {
         Ok(out) => out,
         Err(e) => {
             println!("SKIP neither node nor a shell for it on this host: {e}");
+            assert_ne!(
+                std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+                Ok("1"),
+                "SKIP under the switch: neither node nor a shell for it on this host"
+            );
             return;
         }
     };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    // TV-B7 (GH #1210, re-check tv-bn-drv2-fix1 § 5): a braked driver says so on
+    // stderr; printed here, or a braked probe and an unbraked one read the same.
+    for brake in stderr.lines().filter(|l| l.starts_with("THROTTLE ")) {
+        println!("{brake}");
+    }
     // The driver's own SKIP, and only that: it says it on a line of its own
     // and leaves with 3. A plain `contains("SKIP")` would also match the line
     // Playwright prints whenever the laboratory is sourced -- it names
     // `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` -- and a guard that swallows
     // every run inside the laboratory is a proof that cannot fail.
     if out.status.code() == Some(3) || stderr.lines().any(|l| l.starts_with("SKIP ")) {
+        // GH #1161 (OR-TB.S3.39): the gate's station booked this engine and runs with
+        // `MECLAW_REQUIRE_BROWSERS=1`; there a skipped driver is a red test, never a pass.
+        assert!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref() != Ok("1"),
+            "a skip under MECLAW_REQUIRE_BROWSERS=1 is red:\n{stderr}"
+        );
         println!("SKIP webkit: {}", stderr.trim());
         return;
     }

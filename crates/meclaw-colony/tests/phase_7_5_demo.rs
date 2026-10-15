@@ -27,7 +27,6 @@ use meclaw_testing::topologies::phase_3a::CaptureCell;
 use meclaw_testing::wait::{wait_for_cell_db_value, wait_for_spawn_count};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 fn write(dir: &std::path::Path, rel: &str, body: &str) {
@@ -101,7 +100,7 @@ async fn demo_production_bootstrap_spawn_with_restart() {
     // Probe 1: counter 0→1, Sink sieht header.counter=1.
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
-    wait_for_cell_db_value(&persist_dir, "counter", "1", Duration::from_secs(5)).await;
+    wait_for_cell_db_value(&persist_dir, "counter", "1").await;
 
     // Post-wake assert (core proof of the cell_dir substrate): cell.db now lives
     // at the expected path — WakeFn passed the `cell_dir` param through correctly.
@@ -116,9 +115,8 @@ async fn demo_production_bootstrap_spawn_with_restart() {
         1,
         "spawn_count == 1 after first Wake-Pre-Send"
     );
-    let m1 = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    let m1 = meclaw_testing::deadline::hang("the sink receives output 1", sink_rx.recv())
         .await
-        .expect("sink recv 1 timeout")
         .expect("sink channel closed");
     assert_eq!(
         m1.headers.hop["counter"].as_i64().unwrap(),
@@ -129,10 +127,9 @@ async fn demo_production_bootstrap_spawn_with_restart() {
     // Probe 2: counter 1→2, Sink sieht header.counter=2.
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
-    wait_for_cell_db_value(&persist_dir, "counter", "2", Duration::from_secs(5)).await;
-    let m2 = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    wait_for_cell_db_value(&persist_dir, "counter", "2").await;
+    let m2 = meclaw_testing::deadline::hang("the sink receives output 2", sink_rx.recv())
         .await
-        .expect("sink recv 2 timeout")
         .expect("sink channel closed");
     assert_eq!(
         m2.headers.hop["counter"].as_i64().unwrap(),
@@ -146,17 +143,16 @@ async fn demo_production_bootstrap_spawn_with_restart() {
     // build_cell_with_open_db runs again → spawn_count: 1→2.
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
-    wait_for_cell_db_value(&persist_dir, "counter", "3", Duration::from_secs(5)).await;
-    wait_for_spawn_count(&spawn_count, 2, Duration::from_secs(5)).await;
+    wait_for_cell_db_value(&persist_dir, "counter", "3").await;
+    wait_for_spawn_count(&spawn_count, 2).await;
 
     // Probe 4 (post-restart): overlay_from_db loads counter=3, handle increments
     // to 4. The sink sees header.counter=4 (core proof of phase 7.5).
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
-    wait_for_cell_db_value(&persist_dir, "counter", "4", Duration::from_secs(5)).await;
-    let m4 = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    wait_for_cell_db_value(&persist_dir, "counter", "4").await;
+    let m4 = meclaw_testing::deadline::hang("the sink receives output 4", sink_rx.recv())
         .await
-        .expect("sink recv 4 timeout")
         .expect("sink channel closed");
     assert_eq!(
         m4.headers.hop["counter"].as_i64().unwrap(),
@@ -329,7 +325,7 @@ async fn demo_production_mutation_spawn_with_state() {
     // Probe an /persist: counter 0→1, Sink sieht header.counter=1.
     h.send(MessageBuilder::new(Path::new("/persist")).build())
         .await;
-    wait_for_cell_db_value(&persist_dir, "counter", "1", Duration::from_secs(5)).await;
+    wait_for_cell_db_value(&persist_dir, "counter", "1").await;
 
     // Post-wake assert (core proof of T5): cell.db lives at
     // td.path()/main/persist/cell.db. That is only possible if handle_mutation
@@ -346,9 +342,8 @@ async fn demo_production_mutation_spawn_with_state() {
         1,
         "spawn_count == 1 after first Wake-Pre-Send on the mutation-spawned cell"
     );
-    let m = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    let m = meclaw_testing::deadline::hang("the sink receives output 1", sink_rx.recv())
         .await
-        .expect("sink recv timeout")
         .expect("sink channel closed");
     assert_eq!(
         m.headers.hop["counter"].as_i64().unwrap(),

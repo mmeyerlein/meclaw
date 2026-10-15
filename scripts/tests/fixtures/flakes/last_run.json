@@ -1,0 +1,10 @@
+{
+  "results": [
+    {"id": "C1", "name": "a green case", "verdict": "GREEN", "passed": 3, "total": 3},
+    {"id": "C2", "name": "a red case", "verdict": "RED", "passed": 1, "total": 3},
+    {"id": "D4", "name": "another red case", "verdict": "RED", "passed": 0, "total": 2}
+  ],
+  "skipped": ["C9"],
+  "green": 1,
+  "red": 2
+}

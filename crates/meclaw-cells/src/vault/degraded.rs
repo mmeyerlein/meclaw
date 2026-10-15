@@ -5,6 +5,13 @@
 //! broken in some undefined way. Everything it answers says so. There is no
 //! in-memory substitute — a vault that accepts a secret into a database that
 //! vanishes at the next wake is worse than one that refuses.
+//!
+//! Since GH #1082 the cell is one-shot (`build_stateless_one_shot_task`), as
+//! the degraded store is: it answers one message and sleeps, so the next
+//! message wakes the vault again and the wake retries the open. As a resident
+//! dispatcher it stayed awake and refused until the process restarted, long
+//! after the cause (fd exhaustion in the lab colony of #1082) was gone. The
+//! woken vault is locked either way, so the retry gives nothing away.
 
 use meclaw_colony::StatelessCell;
 use meclaw_core::serde_json::json;

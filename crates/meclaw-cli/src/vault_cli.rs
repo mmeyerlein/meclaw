@@ -25,6 +25,29 @@ pub enum VaultCommand {
     Revoke(String),
 }
 
+/// [`run`] on the blocking pool -- the form the async entry calls (GH #1216).
+///
+/// Everything in [`run`] blocks: stdin, the terminal, SQLite, and on `Add` the
+/// argon2id derivation, a CPU burst of milliseconds on an idle host and seconds
+/// on a loaded one. Called inline from `run_with_hooks` it held a runtime
+/// worker for that long. Nothing else runs in this process yet, but a worker is
+/// not the place for it (coding standard: CPU bursts over 1 ms go through
+/// `spawn_blocking`), and `scripts/precheck.py` (`kdf-off-worker`) keeps the
+/// sync call out of crate code.
+pub async fn run_off_worker(
+    root: PathBuf,
+    cell_path: String,
+    command: VaultCommand,
+    key_source: String,
+    key_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        run(&root, &cell_path, command, &key_source, key_file.as_deref())
+    })
+    .await
+    .context("the vault command task ended")?
+}
+
 /// Run a vault command against the vault cell at `cell_path` under `root`.
 pub fn run(
     root: &Path,

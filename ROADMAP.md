@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.63.1, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.64.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,12 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.64.0: the gate runs on a pipeline engine with a build station, a source-closure cache and lane leases, and
+  the integration tests are folded into harness binaries; the workspace builds one `meclaw` binary; `file-space` and
+  `projection` run warm; an orderly shutdown no longer reports a fatal watchdog trip, and the watchdog no longer
+  charges the host's own silence to the colony; a message sent into a dying cell's mailbox is no longer lost, a
+  restart no longer hands an overflow row out twice, and the bootstrap DDL runs in one transaction; the mutation
+  scans and the vault's key derivation leave the runtime worker.
 - v0.63.1: the public test suite passes again after a unit test read a template the export does not ship; the release
   gate's export-tree station now runs the library unit tests that read template files.
 - v0.63.0: no clock ticks over unchanged data: the access sweep, the affinity push and canvy run on events, and the

@@ -126,14 +126,16 @@ impl CellFactory for VaultCellFactory {
                         respawn_consumes.clone(),
                         respawn_bounds.clone(),
                     ),
-                    Err(reason) => meclaw_colony::build_stateless_task(
+                    // GH #1082: one-shot, like the degraded store. A resident dispatcher
+                    // kept the vault awake and refusing until the process restarted; this
+                    // one answers, sleeps, and the next message's wake tries the open again.
+                    Err(reason) => meclaw_colony::build_stateless_one_shot_task(
                         respawn_path.clone(),
                         receiver,
                         respawn_outputs.clone(),
                         Arc::new(DegradedVaultCell::new(reason)),
-                        1,
                         message_timeout,
-                        Some(respawn_inbox_tx.clone()),
+                        respawn_inbox_tx.clone(),
                         respawn_blob.clone(),
                         None,
                     ),
@@ -183,14 +185,16 @@ impl CellFactory for VaultCellFactory {
                     wake_consumes.clone(),
                     wake_bounds.clone(),
                 ),
-                Err(reason) => meclaw_colony::build_stateless_task(
+                // GH #1082: one-shot, like the degraded store. A resident dispatcher
+                // kept the vault awake and refusing until the process restarted; this
+                // one answers, sleeps, and the next message's wake tries the open again.
+                Err(reason) => meclaw_colony::build_stateless_one_shot_task(
                     wake_path.clone(),
                     receiver,
                     wake_outputs.clone(),
                     Arc::new(DegradedVaultCell::new(reason)),
-                    1,
                     message_timeout,
-                    Some(wake_inbox_tx.clone()),
+                    wake_inbox_tx.clone(),
                     wake_blob.clone(),
                     None,
                 ),

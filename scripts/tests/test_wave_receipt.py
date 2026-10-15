@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from scripts.tests import store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "wave_receipt.py"
@@ -212,6 +213,14 @@ class TestTable(WaveReceiptTestCase):
         self.assertEqual(0, res.returncode, res.stderr)
         self.assertIn("lose.md", res.stderr)
         self.assertNotIn("lose", path.read_text())
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,92 @@
+# Harness table of meclaw-cells: which integration-test file folds into which
+# test binary. Read by scripts/harness_fold.py (--plan/--apply/--unfold/--check).
+# Cut by cell type / hive: first by the hive helper a file declares (`uses`,
+# a regex on the tests/-relative helper path), then by the stem (`match`).
+# A stem no rule matches goes to `misc`; a harness above max_files splits into
+# <name>_1.._n. First matching rule wins.
+max_files = 60
+keep = []
+
+[[rule]]
+uses = "^support/presenter_colony\\.rs$"
+harness = "presenter"
+
+[[rule]]
+uses = "^support/display_colony\\.rs$"
+harness = "display"
+
+[[rule]]
+uses = "^support/curator_hive\\.rs$"
+harness = "curator"
+
+[[rule]]
+uses = "^support/file_space_hive\\.rs$"
+harness = "file_space"
+
+[[rule]]
+uses = "^support/(graph_space_|librarian_|projection_hive|objects_hive)"
+harness = "graph_space"
+
+[[rule]]
+uses = "^support/memory_hive_subject\\.rs$"
+harness = "memory"
+
+[[rule]]
+uses = "^support/(duplex_cell|speaker_road)\\.rs$"
+harness = "duplex"
+
+[[rule]]
+uses = "^support/(assemble_cell|organism_assistant)\\.rs$"
+harness = "assemble"
+
+[[rule]]
+uses = "^support/web_fixture\\.rs$"
+harness = "web"
+
+[[rule]]
+uses = "^support/(gh929_|round_race)"
+harness = "member_road"
+
+[[rule]]
+match = "voice|duplex|speaker"
+harness = "voice"
+
+[[rule]]
+match = "mcp|stdio"
+harness = "mcp"
+
+[[rule]]
+match = "proxy|slack|telegram"
+harness = "proxy"
+
+[[rule]]
+match = "web|canvy"
+harness = "web"
+
+[[rule]]
+match = "builder"
+harness = "builder"
+
+[[rule]]
+match = "timer|clock"
+harness = "timer"
+
+[[rule]]
+match = "store|vault|grant|access"
+harness = "store"
+
+[[rule]]
+match = "round|judge|fitness"
+harness = "round"
+
+[[rule]]
+match = "^(phase|p1[0-9]|paket)_"
+harness = "phase"
+
+[[rule]]
+match = "llm|openai|responses"
+harness = "llm"
+
+[[rule]]
+match = "sandbox|code|harness_"
+harness = "code"

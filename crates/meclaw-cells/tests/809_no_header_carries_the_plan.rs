@@ -14,18 +14,13 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::collections::HashMap;
-use std::time::Duration;
-
 use display_colony::{
     Boot, SCREEN, attr, boot, calls_of, have_python, hop_of, library_ships, present, push,
 };
 use meclaw_core::serde_json::json;
+use std::collections::HashMap;
 
 const APP: &str = "/alex/apps/note";
-
-/// A settle window, never a semantic discriminator.
-const QUIET: Duration = Duration::from_millis(300);
 
 /// #809 acceptance 1: the largest header of the screen's hive, and the average.
 const MAX_HEADER: usize = 8192;
@@ -83,7 +78,7 @@ async fn no_header_carries_the_plan_and_a_pass_sends_one_patch() {
             attr(t, &a, "acted") != acted
         })
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
 
     // -- acceptance 1: small headers, no plan in any of them --------------------------
     let headers = colony.headers(SCREEN).await;

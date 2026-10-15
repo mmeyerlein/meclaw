@@ -500,7 +500,7 @@ impl WireTimings {
 }
 
 /// Milliseconds elapsed since `start`, saturated into `u64`.
-fn ms_since(start: std::time::Instant) -> u64 {
+fn ms_since(start: tokio::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -568,7 +568,7 @@ pub async fn call_openai_timed(
     body: &Value,
     timeout: Duration,
 ) -> (Result<Value, WireError>, WireTimings) {
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let request_fut = async {
         let mut req = client.post(url);
         for (name, value) in extra_headers {
@@ -696,7 +696,7 @@ pub async fn call_responses_timed(
     body: &Value,
     timeout: Duration,
 ) -> (Result<String, WireError>, WireTimings) {
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let request_fut = async {
         let mut req = client.post(url);
         for (name, value) in extra_headers {

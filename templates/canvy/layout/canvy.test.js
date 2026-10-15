@@ -1,6 +1,6 @@
 // node templates/canvy/layout/canvy.test.js
 //
-// The client's own suite, run by `crates/meclaw-cells/tests/canvy2_client_geometry.rs`
+// The client's own suite, run by `crates/meclaw-cells/tests/web_1/canvy2_client_geometry.rs`
 // so that `cargo test` executes it. A test file that only exists is a comment:
 // before 2026-08-17 the geometry had 19 green property tests, the hook had none,
 // and a browser found both defects the same afternoon. The 0.12.1 lesson stands

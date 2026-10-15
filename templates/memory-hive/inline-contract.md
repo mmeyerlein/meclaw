@@ -265,31 +265,31 @@ decides what a statement *means* -- that is the close pass's work and the night'
   turns whose annotation never arrived (`pending_extraction`, status `pending`) as its priority
   list, and sharpens what the per-turn pass left rough. Its blocks travel back through
   `extract-glue`, so it is a second *reader*, never a second write path.
-- `crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs` -- the drift lock, one
+- `crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs` -- the drift lock, one
   direction now that there is one lane: the block must state the obligation, name both parts,
   show the `nothing` form the ingress actually parses, carry the core list byte-identical to
   [`predicate-core.json`](predicate-core.json), and stay under its length bound. It replaces
   `f9_inline_contract.rs`, whose two-phrasing premise died with the batch prompt.
-- `crates/meclaw-cells/tests/f8_inline_coverage.rs` and
-  `crates/meclaw-cells/tests/gh298_nothing_is_a_value.rs` -- the coverage half: a turn this
+- `crates/meclaw-cells/tests/misc_1/f8_inline_coverage.rs` and
+  `crates/meclaw-cells/tests/misc_2/gh298_nothing_is_a_value.rs` -- the coverage half: a turn this
   block spoke for is never extracted a second time, and a well-formed "nothing" covers its turn
   while a malformed block does not.
-- `crates/meclaw-cells/tests/gh298_per_turn_annotation.rs` -- the second part of the
+- `crates/meclaw-cells/tests/misc_2/gh298_per_turn_annotation.rs` -- the second part of the
   annotation: the three movements, at most one topic op per block, and the name copied verbatim.
-- `crates/meclaw-cells/tests/w10b_inline_gate.rs` -- the enforced rules above, as the quality
+- `crates/meclaw-cells/tests/misc_8/w10b_inline_gate.rs` -- the enforced rules above, as the quality
   gate the inline lane needs and the invariance gate cannot give it: predicate spread per axis,
   and facts closed on arrival. It still drives the ingress the way the tool form did, on purpose:
   the DOOR did not change with the delivery, and a colony that still sends a `remember` hop is
   still served.
-- `crates/meclaw-cells/tests/gh379_the_splitter_cuts_the_sidecar.rs` -- the other end of the
+- `crates/meclaw-cells/tests/misc_3/gh379_the_splitter_cuts_the_sidecar.rs` -- the other end of the
   sentence: the marker this block tells a model to open with is the marker the splitter looks
   for.
-- `crates/meclaw-cells/tests/gh525_a_grown_brain_carries_the_extraction_contract.rs` -- the
+- `crates/meclaw-cells/tests/misc_5/gh525_a_grown_brain_carries_the_extraction_contract.rs` -- the
   delivery half: the OFFER of `memory-hive/schemas` is byte-identical to the fence above, the
   collector's menu merge composes it into `instructions.sidecar` under its own preamble, a grown
   brain carries it beside an identity pack's charter, no offer leaves an empty slot rather than
   a stale one, and the shipped composites ask for it exactly where the block is cut back out.
-- `crates/meclaw-cells/tests/gh849_each_fact_names_the_peer_who_said_it.rs` -- the `source`
+- `crates/meclaw-cells/tests/misc_7/gh849_each_fact_names_the_peer_who_said_it.rs` -- the `source`
   sentence end to end: two peers in one arrival bind each named fact to its speaker, a name
   that did not speak is dropped and receipted, an unnamed fact between two speakers still waits
   for the close pass, and a one-to-one block parks and binds as before.

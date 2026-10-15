@@ -11,19 +11,23 @@ license.workspace = true
 # `net` (ruling O-639-9): `surfaces::HandedConnection` carries a `tokio::net::TcpStream`
 # in a public field, so the feature belongs in this crate's own manifest -- it was
 # reaching the build through a dev-dependency, which a published crate does not have.
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
-tracing = "0.1"
-meclaw-core = { path = "../meclaw-core", version = "0.63.1" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-rusqlite = { version = "0.39", features = ["bundled"] }
+# Since GH #1168 it comes from `[workspace.dependencies]`, which still lists `net`;
+# cargo writes the inherited entry into the published manifest of this crate.
+tokio = { workspace = true }
+tracing = { workspace = true }
+meclaw-core = { path = "../meclaw-core", version = "0.64.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
 thiserror = "1"
-uuid = { version = "1", features = ["v7"] }
+uuid = { workspace = true }
 cel = "0.13.0"
 
 [dev-dependencies]
+# Paused tokio clock for the time-logic test class (OR-TV-1/OR-TV-4); dev-only, never in a release build.
+tokio = { workspace = true, features = ["test-util"] }
 meclaw-testing = { path = "../meclaw-testing" }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [features]
 test-hooks = []

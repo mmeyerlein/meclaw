@@ -10,8 +10,7 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use meclaw_core::serde_json::{Value, json};
 use presenter_colony::{Dials, body, boot, decision, guard, warm};

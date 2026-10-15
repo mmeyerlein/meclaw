@@ -18,6 +18,10 @@ pub struct HiveScope {
 #[derive(Debug, Default)]
 pub struct HiveScopeTable {
     by_path: HashMap<Path, HiveScope>,
+    /// GH #1176: at most one config scan of this colony in flight. Here
+    /// because every scan reads the hives of this table, and the table is
+    /// state of the colony task (no lock, no atomics).
+    pub(crate) scan_gate: crate::mutation::hive_scan::HiveScanGate,
 }
 
 impl HiveScopeTable {
@@ -48,6 +52,14 @@ impl HiveScopeTable {
     /// Returns `true` if a scope was actually removed.
     pub fn remove(&mut self, path: &Path) -> bool {
         self.by_path.remove(path).is_some()
+    }
+
+    /// GH #1176: the registered paths, sorted -- the list a config scan
+    /// reads, owned so the scan can leave the colony worker with it.
+    pub(crate) fn sorted_paths(&self) -> Vec<Path> {
+        let mut v: Vec<Path> = self.by_path.keys().cloned().collect();
+        v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        v
     }
 
     /// Iterate over the absolute paths of all registered hive scopes.

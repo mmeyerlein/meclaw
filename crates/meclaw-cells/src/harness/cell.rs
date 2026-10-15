@@ -21,8 +21,9 @@ use crate::stdio_child::{ChildCommand, ChildEvent, ChildSpec, ServeConfig};
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink};
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 /// The task currently being run, as far as the handler knows.
 #[derive(Debug)]

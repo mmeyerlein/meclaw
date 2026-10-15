@@ -6,11 +6,12 @@ publish = false
 license.workspace = true
 
 [dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tempfile = { workspace = true }
+# test-util: the paused clock (`start_paused`, OR-TV-1/OR-TV-4); meclaw-testing is a dev-only crate.
+tokio = { workspace = true, features = ["test-util"] }
 meclaw-core = { path = "../meclaw-core" }
 meclaw-colony = { path = "../meclaw-colony" }
-rusqlite = { version = "0.39", features = ["bundled"] }
-tracing = "0.1"
-tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+rusqlite = { workspace = true }
+tracing = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

@@ -1,8 +1,9 @@
 {
   "script-src": [
     "'self'",
-    "'sha256-fGA0EGTVir75OZE4LAo2IW4SBhrBymuKfJR7/Hm67ow='",
-    "'sha256-2fxgtihS11D0R1y/arm+N7TPWMHNswkori2jFcc/1rQ='"
+    "'sha256-gDsvPtR3RsRHPEEiYSd1DqldKQllB4bMSkcr7VXl19A='",
+    "'sha256-6JYEESAMEzV0sHcWtQUyRhQdF36LZ8qmhcB9Y5+dOfs='",
+    "'sha256-oYgfXRuAJjWyiKN0OdOvZQn7ENoVUd/RZDPJFZTPTU0='"
   ],
   "style-src": [
     "'self'",

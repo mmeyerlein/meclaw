@@ -117,3 +117,9 @@ workshop/evals/.exp-*/
 # the link untracked-but-not-ignored -- one `git add -A` away from a foreign
 # tree in a commit.
 /workshop/tools/node_modules
+
+# Wave-close Orga exports (`pipeline wave close`, scripts/pipeline/wave.py) are
+# multi-MB generated artefacts: they land in plans/<wave>/orga-export/ but stay
+# untracked. Small hand-made probes there are tracked with `git add -f`.
+/plans/*/orga-export/*.graph.json
+/plans/*/orga-export/*.runs.json

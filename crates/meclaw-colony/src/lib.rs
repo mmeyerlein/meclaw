@@ -70,13 +70,16 @@ pub use bootstrap_apply::{
 pub use bootstrap_grow::check_growth_overrides;
 pub use build_task::{
     build_long_running_task, build_stateful_task_with_peace, build_stateless_boot_inactive_respawn,
-    build_stateless_task, renotify_stop_wiring,
+    build_stateless_one_shot_task, build_stateless_task, renotify_stop_wiring,
 };
-pub use cell_task::{cell_task, cell_task_long_running, cell_task_stateful, stateless_dispatcher};
+pub use cell_task::{
+    cell_task, cell_task_long_running, cell_task_stateful, stateless_dispatcher,
+    stateless_one_shot_dispatcher,
+};
 pub use colony::{
-    CellStatus, ColonyMsg, ColonyTaskConfig, DELIVERY_KEY_HEADER, DELIVERY_KEY_MS_HEADER,
-    DELIVERY_REPLAY_HEADER, DeathKind, EgressPolicy, NodeContract, RegistryEntry, RespawnFn,
-    colony_task, set_term_timeout_ms_for_test, spawn_watcher,
+    CellStatus, ColonyMsg, ColonyTaskConfig, DELIVERY_ATTEMPT_HEADER, DELIVERY_KEY_HEADER,
+    DELIVERY_KEY_MS_HEADER, DELIVERY_REPLAY_HEADER, DeathKind, EgressPolicy, NodeContract,
+    RegistryEntry, RespawnFn, colony_task, set_term_timeout_ms_for_test, spawn_watcher,
 };
 pub use colony_config::{
     COLONY_CONFIG_SCHEMA_VERSION, ColonyConfig, ConfigError, DEFAULT_MESSAGE_TIMEOUT_MS,
@@ -94,6 +97,7 @@ pub use hive_boundary::{
 pub use hive_scope::{HiveScope, HiveScopeTable};
 pub use io_liveness::IoLivenessMark;
 pub use long_running_cell::LongRunningCell;
+pub use mailbox_rescue::LateReport;
 pub use mutation::{
     ManifestBody, ManifestError, ManifestOutcome, MutationDoorOutcome, MutationError,
     MutationOutcome,

@@ -60,16 +60,13 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use display_colony::{SCREEN, body_of, copy_tree, hop_of, read_json, repo, write_json};
-use meclaw_colony::{ColonyMsg, MutationOutcome};
-use meclaw_core::Uuid;
+use meclaw_colony::MutationOutcome;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::mock_http::MockResponse;
 use presenter_colony::{Dials, PRESENTER, Stage, boot, decision, guard, to_path, warm};
-use tokio::sync::oneshot;
 
 /// The member's round, as the builder's edge stamps it (`agent:<generation>`,
 /// `member:<ctx.member_person>`).
@@ -270,18 +267,8 @@ fn templates_dir() -> tempfile::TempDir {
 /// returned directory holds the templates and lives as long as the test.
 async fn install_residents(s: &Stage) -> tempfile::TempDir {
     let td = templates_dir();
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::RescanTemplates {
-            templates_root: td.path().to_path_buf(),
-            ack: ack_tx,
-        })
+    s.c.rescan_templates(td.path())
         .await
-        .expect("the colony is up");
-    ack_rx
-        .await
-        .expect("the scan answers")
         .expect("the template scan succeeds");
     let diff = json!({
         "add_nodes": [
@@ -291,19 +278,7 @@ async fn install_residents(s: &Stage) -> tempfile::TempDir {
         ],
         "add_edges": resident_road(),
     });
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::Mutation {
-            payload: json!({"scope": "/alex", "diff": diff}),
-            reply_to: None,
-            trace_id: Uuid::now_v7(),
-            parent_message_id: Uuid::now_v7(),
-            ack: ack_tx,
-        })
-        .await
-        .expect("the colony is up");
-    let outcome = ack_rx.await.expect("the mutation answers");
+    let outcome = s.c.apply_diff("/alex", diff).await;
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
         "growing the residents and their rendered road is one ordinary mutation: {outcome:?}"
@@ -314,14 +289,13 @@ async fn install_residents(s: &Stage) -> tempfile::TempDir {
 /// The colony view takes its first snapshot (what the boot receipt does in a colony that
 /// names `mutation_receipts`; this one does not), observed where it lands: the layout.
 async fn snapshot_colony_view(s: &Stage) {
-    s.c.h
-        .send(to_path(
-            VIEW,
-            json!({"route": "in_refresh"}),
-            json!({}),
-            json!({"messages": []}),
-        ))
-        .await;
+    s.c.send(to_path(
+        VIEW,
+        json!({"route": "in_refresh"}),
+        json!({}),
+        json!({"messages": []}),
+    ))
+    .await;
     let layout = format!("{VIEW}/layout");
     s.c.wait_until("the colony view holds a snapshot", || async {
         s.c.log(Some(&layout))
@@ -546,6 +520,8 @@ async fn third_party(name: &str, star_only: bool) {
             at_screen.iter().any(|b| b.contains("/notes/plan.txt")),
             "the member's files reach a screen a third party shares: {at_screen:?}"
         );
+        // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+        s.c.settle().await;
         assert!(
             !s.c.log(Some(SCREEN))
                 .await
@@ -601,6 +577,8 @@ async fn third_party(name: &str, star_only: bool) {
         !at_screen.iter().any(|b| b.contains("show-files")),
         "no trace of the member's topic on a shared screen with the switch on: {at_screen:?}"
     );
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    s.c.settle().await;
     assert!(
         !s.c.log(Some(SCREEN))
             .await
@@ -714,18 +692,35 @@ async fn the_decider_sees_no_person_and_the_names_follow_the_verdict() {
             "the decider's request names a person ({never}): {request}"
         );
     }
-    // While the verdict is held, affinity has not been asked and nothing of it stands.
-    assert!(
-        s.c.log(Some("/alex/affinity")).await.is_empty(),
-        "affinity was read before the verdict"
-    );
-    assert!(
-        !s.c.tree().await.to_string().contains("Jonas"),
-        "a name reached the screen before the verdict"
-    );
-
     held.release(verdict("people", "known"));
     s.wait_drawn("show-people-known").await;
+    // Nothing of affinity before the verdict: released, settled, and every request to
+    // affinity and every row that carries the name traced back to the decider's answer.
+    // Re-check tv-bn M7b4 B-M1: judged while the answer was held, with `ask()` as the
+    // fence, a premature request on the side path stage -> edge -> affinity could still
+    // be on its way; a settle under the hold waited until `decide` gave up (`timeout`,
+    // 25 003 ms). After the release the colony rests, and a premature row is in the log
+    // with no verdict among its ancestors.
+    let (asked_affinity, early) = s
+        .before_the_verdict("t1", |r| r.to_path.starts_with("/alex/affinity"))
+        .await;
+    assert!(asked_affinity > 0, "affinity is asked after the verdict");
+    assert!(
+        early.is_empty(),
+        "affinity was read before the verdict: {early:#?}"
+    );
+    let (named, early) = s
+        .before_the_verdict("t1", |r| {
+            r.body_payload
+                .as_deref()
+                .is_some_and(|b| b.contains("Jonas"))
+        })
+        .await;
+    assert!(named > 0, "the name is in the log after the verdict");
+    assert!(
+        early.is_empty(),
+        "a name reached the screen before the verdict: {early:#?}"
+    );
     assert!(
         s.c.tree().await.to_string().contains("Jonas Berg"),
         "the released name reaches the screen after the verdict"

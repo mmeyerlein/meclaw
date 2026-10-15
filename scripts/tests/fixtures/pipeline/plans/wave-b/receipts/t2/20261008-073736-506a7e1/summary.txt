@@ -1,0 +1,6 @@
+GATE-SUMMARY soul2me 506a7e1 4/5 1813s RED
+branch wave-b/t2 set 0.18 (hand run, not latest)
+unit   GREEN 1797s
+locomo_offline RED 13s
+inline GREEN 0s
+set    GREEN 0s

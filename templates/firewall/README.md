@@ -1,4 +1,4 @@
-# `firewall@2.4.1`
+# `firewall@2.4.2`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -630,7 +630,7 @@ written exactly that file — `<fence>/<dir>/firewall/seed/rules.jsonl` — beca
 `member/firewall` is a `ref` directly beneath the member, so the member's `in_export`
 fans out to this hive's and an import is routed back by `hop.import_hive == 'firewall'`.
 
-Pinned by `crates/meclaw-cells/tests/gh471_the_porters_mirror_their_stores.rs`: it
+Pinned by `crates/meclaw-cells/tests/store_1/gh471_the_porters_mirror_their_stores.rs`: it
 compares the porter's schema mirror against `rules/config.json` column for column and is
 red the moment a column is added to the store and not to the walk.
 

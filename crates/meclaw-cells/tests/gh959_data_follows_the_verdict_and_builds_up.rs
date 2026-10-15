@@ -12,11 +12,10 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use meclaw_core::serde_json::{Value, json};
-use presenter_colony::{Dials, body, boot, decision, guard, stage_routes, warm};
+use presenter_colony::{Dials, body, boot, decision, guard, warm};
 
 fn creates(patch: &[Value], needle: &str) -> bool {
     patch.iter().any(|c| {
@@ -35,19 +34,30 @@ async fn data_follows_the_verdict_and_builds_up() {
 
     s.turn("d1", "show me a sample").await;
     let ask = s.ask().await;
-    assert!(
-        !stage_routes(&s)
-            .await
-            .iter()
-            .any(|r| r == "in_show" || r == "view"),
-        "the turn's output reaches past the decider"
-    );
     ask.release(decision(&[
         ("topic", "sample", 0.9),
         ("sample.lead", "rows", 0.9),
         ("sample.also", "steps", 0.6),
     ]));
     let req = s.out("in_show").await;
+    // Re-check tv-bn M7b4 B-M1: "nothing past the decider" judged under the hold had
+    // `ask()` as its fence, and stage's outputs next to the decide call are not ordered by
+    // it. Released and settled, every `in_show`/`view` of stage descends from the verdict.
+    let stage = format!("{}/stage", presenter_colony::PRESENTER);
+    let (outputs, early) = s
+        .before_the_verdict("d1", |r| {
+            let route = display_colony::hop_of(r)["route"].clone();
+            r.from_path == stage && (route == "in_show" || route == "view")
+        })
+        .await;
+    assert!(
+        outputs >= 2,
+        "the view and the request leave stage: {outputs}"
+    );
+    assert!(
+        early.is_empty(),
+        "the turn's output reaches past the decider: {early:#?}"
+    );
     assert_eq!(
         body(&req)["sets"],
         json!(["brief", "rows", "steps"]),
@@ -55,6 +65,12 @@ async fn data_follows_the_verdict_and_builds_up() {
     );
 
     // One output: the view and the request share the message that caused them.
+    // GH #1221: `s.out` sees `in_show` at the capture, but the message log is
+    // committed by the writer thread behind delivery -- measured 11.10. under
+    // load: the `view` row was there, stage's `in_show` row not yet. The log is
+    // read once the colony settled and the writer committed everything before:
+    // `Colony::log` reads through the fixture's settle proof (quiescence, re-check
+    // tv-bn M7b4 A-M1), the raw handle stays behind the module boundary.
     let rows = s.c.log(None).await;
     let from_stage: Vec<_> = rows
         .iter()
@@ -66,8 +82,15 @@ async fn data_follows_the_verdict_and_builds_up() {
             .find(|r| display_colony::hop_of(r)["route"] == route)
             .and_then(|r| r.parent_message_id.clone())
     };
-    assert!(parent("view").is_some());
-    assert_eq!(parent("view"), parent("in_show"), "two outputs, not one");
+    assert!(
+        parent("view").is_some(),
+        "expected stage's `view` row with a parent in the settled log: {from_stage:#?}"
+    );
+    assert_eq!(
+        parent("view"),
+        parent("in_show"),
+        "two outputs, not one (stage's rows in the settled log: {from_stage:#?})"
+    );
 
     s.data(
         "d1",

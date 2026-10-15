@@ -241,7 +241,7 @@ the key at its first wake and rebuild the table if it finds it missing, carrying
 every row over and collapsing duplicates onto the key. So the whole document
 travels as a seed set, alias families included, and the repair is measured on a
 table whose rows came out of another colony in
-`crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs`.
+`crates/meclaw-cells/tests/misc_4/gh467_a_member_is_born_with_its_history.rs`.
 
 ## What this example is not
 
@@ -254,7 +254,7 @@ table whose rows came out of another colony in
   [#471](https://github.com/mmeyerlein/meclaw/issues/471) that hive has the same
   transfer lane as the other three, and a keeper that receives one CONTINUES the
   conversation the source had open — pinned in
-  `crates/meclaw-cells/tests/gh471_a_keeper_carries_its_sessions.rs`. Since
+  `crates/meclaw-cells/tests/misc_4/gh471_a_keeper_carries_its_sessions.rs`. Since
   [#475](https://github.com/mmeyerlein/meclaw/issues/475) a member's own
   `in_export` reaches it and its own `in_import` carries a part back, so what is
   left is the ORDER: the container that holds generations is empty until one is
@@ -272,7 +272,7 @@ table whose rows came out of another colony in
 
 ## Pinned
 
-`crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs` boots a
+`crates/meclaw-cells/tests/misc_4/gh467_a_member_is_born_with_its_history.rs` boots a
 colony that remembers, has its store write the seed set itself, runs
 `build_import.py` on the result, applies the manifest to a colony that never
 heard any of it, and asks that colony's store the question — the lexical leg of
@@ -280,23 +280,23 @@ a recall — that only a memory it never saw written can answer. It also drives
 step 2 twice, because idempotency is the whole repair procedure for a partial
 transfer.
 
-`crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs` drives the
+`crates/meclaw-cells/tests/misc_4/gh475_a_member_reaches_the_keeper_it_holds.rs` drives the
 fourth holder: a member with one generation is told `in_export` with that generation
 named, the keeper's own store writes `talky/session-keeper/seed/sessions.jsonl` beside the other
 directories,
 `--after-boot` turns it back into one `in_import` message, and the member's own door
 carries it into the keeper's store.
-`crates/meclaw-cells/tests/gh712_every_keeper_files_its_sessions_under_its_own_node.rs`
+`crates/meclaw-cells/tests/misc_6/gh712_every_keeper_files_its_sessions_under_its_own_node.rs`
 drives both keepers of one generation: two directories, two parts, each landing in the
 keeper at the same node of another generation, plus a pre-2.2.2 directory read as the
 default talky's.
 
-`crates/meclaw-cells/tests/gh872_a_seeded_rebirth_pushes_its_first_pack.rs` pins
+`crates/meclaw-cells/tests/misc_7/gh872_a_seeded_rebirth_pushes_its_first_pack.rs` pins
 the reset: a colony's own `./push` delivers once and writes its hash, the export
 carries it, and the store seeded from what `build_import.py` placed sends exactly
 one identity pack to the brain's rim and writes a new `sent_at`.
 
-`crates/meclaw-cells/tests/gh471_a_member_carries_all_of_itself.rs` does the same
+`crates/meclaw-cells/tests/misc_4/gh471_a_member_carries_all_of_itself.rs` does the same
 walk for all three holders at once: one distinctive row is written into each of
 them in colony A, one `in_export` produces three documents, and the member grown
 in colony B arrives with the memory, the record AND the screen. The last claim is

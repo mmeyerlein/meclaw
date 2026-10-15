@@ -1,4 +1,4 @@
-# `talky@6.7.6`
+# `talky@6.7.7`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -71,7 +71,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.7.6` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.7.7` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -692,7 +692,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.7.6",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.7.7",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1265,9 +1265,9 @@ a TEMPLATE kept inside a person's charter is a promise every hand-written charte
 
 The block is short on purpose: it is carried on every single turn, so its length is paid
 for once per call. The file stays the authority -- one drift lock
-(`crates/meclaw-cells/tests/gh299_the_contract_asks_for_both_parts.rs`) holds the block to
+(`crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs`) holds the block to
 what this lane can actually read, a second
-(`crates/meclaw-cells/tests/gh525_a_grown_brain_carries_the_extraction_contract.rs`) holds
+(`crates/meclaw-cells/tests/misc_5/gh525_a_grown_brain_carries_the_extraction_contract.rs`) holds
 the collector's copy byte-identical to it -- and a discipline each persona invents for
 itself is a discipline nothing can hold to account.
 
@@ -1344,7 +1344,7 @@ the brain, so the key has one reader; a subscription or another provider for it 
 
 **Since GH #1097 both numbers come from the timeout chain** (`docs/cell-types.md` § llm): `brain` is born on `openai/gpt-6-luna` (`contract.settings.external_timeout_ms_row`), so `external_timeout_ms` is 1 241 000 (the row's `max_output` 128 000 at its measured `output_tps` 104, plus 10 s for the first token) and `cell.message_timeout` 1 366 000 (that plus the backstop margin of 10 %). The paragraph below is the state before.
 
-**The brain's backstop is 240 000 ms since 5.4.0.** `brain` carries `cell.message_timeout` 240 000 over its `external_timeout_ms` 120 000. It was 180 000; the wider margin lets an instance whose provider needs a longer call -- a local model with `external_timeout_ms` 180 000 -- keep the rule that the backstop outlasts the call it guards (`crates/meclaw-cells/tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`: at least 10 s and 10 % above) without a template of its own.
+**The brain's backstop is 240 000 ms since 5.4.0.** `brain` carries `cell.message_timeout` 240 000 over its `external_timeout_ms` 120 000. It was 180 000; the wider margin lets an instance whose provider needs a longer call -- a local model with `external_timeout_ms` 180 000 -- keep the rule that the backstop outlasts the call it guards (`crates/meclaw-cells/tests/llm/a_shipped_llm_backstop_outlasts_its_own_call.rs`: at least 10 s and 10 % above) without a template of its own.
 
 **The TTL budget.** With `restore_ttl` on the seam the colony default of 64 carries the
 loop: only ONE round has to fit the budget. A tree that removes the restoring edge sizes
@@ -1463,18 +1463,18 @@ unit, plainfile for a local run).
 
 ## Pins
 
-- `crates/meclaw-cells/tests/talky_cogny_advisor.rs` -- the advisor connection end to
+- `crates/meclaw-cells/tests/misc_8/talky_cogny_advisor.rs` -- the advisor connection end to
   end: an interim answer and a consult call out of ONE brain response, a round that
   closes without waiting, the agent core's own tool round, the result home on
   `in_advice`, and the bilateral question-back under one `consult_id`. Plus the pin that
   no idle window ever waits for the core (one-millisecond window, two sweeps, nothing
   swept).
-- `crates/meclaw-cells/tests/gh855_an_override_reaches_the_brain_through_its_door.rs` --
+- `crates/meclaw-cells/tests/misc_7/gh855_an_override_reaches_the_brain_through_its_door.rs` --
   the model door in a running colony: a targeted replacement set at the registry reaches
   this brain through `in_model` with the new model and its prompt block first in the system
   part of the next provider call, clearing it restores the start value, and an edge from
   outside onto `./brain` is still refused.
-- `crates/meclaw-cells/tests/talky_composite.rs` -- the shipped template in a running
+- `crates/meclaw-cells/tests/misc_8/talky_composite.rs` -- the shipped template in a running
   colony against the mock OpenAI wire: one turn through session-keeper, seam, brain,
   dispatcher, a tool and back to the seam (two provider calls, the second one carrying
   the tool result, the answer carrying the minted session id and `iter=1`); a close
@@ -1486,7 +1486,7 @@ unit, plainfile for a local run).
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
   its OWN template and names `talky` above it.
-- `crates/meclaw-cells/tests/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
+- `crates/meclaw-cells/tests/misc_9/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
   that carries this composite and the memory hive's real write path, wired straight
   at the hive's writer port with nothing in between (GH #298 removed the `memory-drain`
   from this path): the turn AND the answer are `episodes` rows before anything closes,
@@ -1503,7 +1503,7 @@ unit, plainfile for a local run).
   behaviour the flip changed: an unreadable block travels IN the answer rather than
   through `inline-reject`, because a parser that could not read the block does not get
   to edit the sentence around it.
-- `crates/meclaw-cells/tests/gh379_the_splitter_cuts_the_sidecar.rs` -- the splitter's own
+- `crates/meclaw-cells/tests/misc_3/gh379_the_splitter_cuts_the_sidecar.rs` -- the splitter's own
   output forms, run through the shipped `params.script_inline` itself: a cut, a
   byte-identical pass-through (no block, and a tool-call round), the flagged
   pass-through a block nobody can read earns, and -- since GH #605 -- one block with three
@@ -1512,7 +1512,7 @@ unit, plainfile for a local run).
   `an_annotated_answer_splits_into_the_reply_and_the_sidecar` is the same thing end to
   end -- the prose reaches the reply exit fence-free and the section leaves on `sidecar`,
   for ONE provider call.
-- `crates/meclaw-cells/tests/gh273_a_swept_close_reaches_the_memory.rs` -- a
+- `crates/meclaw-cells/tests/misc_2/gh273_a_swept_close_reaches_the_memory.rs` -- a
   conversation ended the only way this template ever ends one, by a SWEEP, drained
   through the shipped `memory-drain` into the memory hive's real write path: the episode
   rows land with the room and the round of the CONVERSATION, although the sweep that

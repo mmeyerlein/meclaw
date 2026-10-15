@@ -147,9 +147,10 @@
 //!   #602 it warns about BOTH halves — it used to run only the inward one, so a
 //!   rim edge the mutation path refused was instantiated here in silence.
 
-use crate::edge_table::EdgeTable;
+use crate::edge_table::{Edge, EdgeTable};
 use crate::mutation::MutationError;
 use meclaw_core::{Headers, JsonValue, Path};
+use std::collections::{HashMap, HashSet};
 
 /// One lane of a hive contract, resolved for checking.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,14 +211,59 @@ impl HiveContract {
     }
 }
 
+/// The router's own fan-out of one lane probe from `src`, as the lane-door
+/// check runs it ([`door_exists`], [`exit_exists`]).
+///
+/// GH #1157: one call is one CEL pass over every out-edge of `src`, which is
+/// what this check costs. Under `cfg(test)` every call is counted, so the cost
+/// pin can read how many sources a check asked instead of timing it.
+fn run_probe(
+    edges: &EdgeTable,
+    src: &Path,
+    probe: &Headers,
+) -> Vec<crate::edge_table::EdgeDecision> {
+    #[cfg(test)]
+    PROBE_RUNS.with(|n| n.set(n.get() + 1));
+    crate::edge_table::apply_edges(edges, src, probe)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// GH #1157 — calls of [`run_probe`] on this thread (test builds only).
+    static PROBE_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// GH #1157 — every edge whose `to` is one of the contracted hive paths,
+/// keyed by that path, gathered in ONE pass over the post-state table.
+///
+/// It lives for one call of [`addressed_lane_doors`] and is dropped with it:
+/// nothing is kept between mutations, so it can never disagree with the table
+/// it was read from. It exists so each contract reads its own rim (the edges
+/// out of the hive path come from [`EdgeTable::edges_from`], the edges onto it
+/// from here) instead of the whole colony once per contract and lane.
+fn edges_onto_hives<'a>(
+    contracts: &[HiveContract],
+    edges: &'a EdgeTable,
+) -> HashMap<&'a str, Vec<&'a Edge>> {
+    let hives: HashSet<&str> = contracts.iter().map(|c| c.hive_path.as_str()).collect();
+    let mut onto: HashMap<&'a str, Vec<&'a Edge>> = HashMap::new();
+    for e in edges.iter() {
+        if hives.contains(e.to.as_str()) {
+            onto.entry(e.to.as_str()).or_default().push(e);
+        }
+    }
+    onto
+}
+
 /// True iff anything at all in the colony's topology touches the hive path.
 ///
 /// A hive nobody addresses is an island, and an island's contract is dormant
 /// (see the module note on what is not checked).
-fn hive_path_is_wired(c: &HiveContract, edges: &EdgeTable) -> bool {
-    edges
-        .iter()
-        .any(|e| e.from.as_str() == c.hive_path || e.to.as_str() == c.hive_path)
+///
+/// `onto` is every edge whose `to` is the hive path ([`edges_onto_hives`]);
+/// together with the edges out of it that is every edge that touches it.
+fn hive_path_is_wired(c: &HiveContract, edges: &EdgeTable, onto: &[&Edge]) -> bool {
+    !onto.is_empty() || !edges.edges_from(&Path::new(&c.hive_path)).is_empty()
 }
 
 /// True iff a message arriving at the hive path on `route` reaches a cell
@@ -231,15 +277,19 @@ fn hive_path_is_wired(c: &HiveContract, edges: &EdgeTable) -> bool {
 /// also picks its target by another field of the message (`hop.organ` naming
 /// one of three brains, GH #949) never fires on it, although every message on
 /// that lane that names a target this hive holds walks straight through it.
+///
+/// GH #1157: the door's own word is read first. Both readings are pure, so the
+/// order changes no verdict; it only spares the CEL pass when the text already
+/// answers.
 fn door_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
     let hive = Path::new(&c.hive_path);
-    crate::edge_table::apply_edges(edges, &hive, &HiveContract::probe(route))
+    edges
+        .edges_from(&hive)
         .iter()
-        .any(|d| c.is_interior(d.target.as_str()))
-        || edges
-            .edges_from(&hive)
+        .any(|e| c.is_interior(e.to.as_str()) && door_names_lane(e, route))
+        || run_probe(edges, &hive, &HiveContract::probe(route))
             .iter()
-            .any(|e| c.is_interior(e.to.as_str()) && door_names_lane(e, route))
+            .any(|d| c.is_interior(d.target.as_str()))
 }
 
 /// True iff this edge's condition REQUIRES `hop.route == '<route>'` and adds
@@ -362,22 +412,32 @@ fn door_states_lane(edge: &crate::edge_table::Edge, route: &str) -> bool {
 /// True iff SOME node inside the hive routes `route` back out through the hive
 /// path — the hive has an exit for that lane.
 ///
-/// Every interior source is tried rather than a declared one, because which
-/// cell produces a lane is precisely the fact the contract exists to hide.
+/// Every interior source that owns an edge onto the hive path is tried rather
+/// than a declared one, because which cell produces a lane is precisely the
+/// fact the contract exists to hide.
 ///
 /// Two ways to be an exit, and both have to cross the hive path: an edge that
 /// CARRIES the lane out (the probe), or an edge that CREATES it on the way out
 /// (the modifier, GH #176 — see [`door_states_lane`]). Producing the lane on an
 /// edge that stays inside is not an exit: a caller cannot receive a message
 /// that never crosses the boundary.
-fn exit_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
-    if edges.iter().any(|e| {
-        c.is_interior(e.from.as_str()) && e.to.as_str() == c.hive_path && door_states_lane(e, route)
-    }) {
+///
+/// GH #1157: only the interior sources that OWN an edge onto the hive path are
+/// asked. A decision of [`crate::edge_table::apply_edges`] always targets the
+/// `to` of one of the source's own out-edges, so a source without such an edge
+/// can never land on the hive path — leaving it out changes no verdict. A
+/// source that is asked is asked with ALL its out-edges, because a regular hit
+/// elsewhere suppresses a default edge onto the rim. `onto` is every edge
+/// whose `to` is the hive path ([`edges_onto_hives`]).
+fn exit_exists(c: &HiveContract, route: &str, edges: &EdgeTable, onto: &[&Edge]) -> bool {
+    if onto
+        .iter()
+        .any(|e| c.is_interior(e.from.as_str()) && door_states_lane(e, route))
+    {
         return true;
     }
     let probe = HiveContract::probe(route);
-    let mut sources: Vec<&Path> = edges
+    let mut sources: Vec<&Path> = onto
         .iter()
         .filter(|e| c.is_interior(e.from.as_str()))
         .map(|e| &e.from)
@@ -385,7 +445,7 @@ fn exit_exists(c: &HiveContract, route: &str, edges: &EdgeTable) -> bool {
     sources.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     sources.dedup_by(|a, b| a.as_str() == b.as_str());
     sources.into_iter().any(|src| {
-        crate::edge_table::apply_edges(edges, src, &probe)
+        run_probe(edges, src, &probe)
             .iter()
             .any(|d| d.target.as_str() == c.hive_path)
     })
@@ -545,30 +605,44 @@ fn addressed_required_lanes(
         if c.hive_path == "/" {
             continue;
         }
-        for lane in c.accepts.iter().filter(|l| l.required) {
-            if lane_is_wired_from_outside(c, lane, edges) {
-                continue;
-            }
-            let at = if lane.at.is_empty() {
-                String::new()
-            } else {
-                format!(" onto one of its connect points ({})", lane.at.join(", "))
-            };
-            violations.push((
-                MutationError::HiveContract(format!(
-                    "hive '{hive}' declares the lane '{route}' as required ({because}), but the \
-                     mutation that instantiates it draws no edge delivering that lane{at}. A \
-                     required lane is wired by the same diff that gives the hive birth.",
-                    hive = c.hive_path,
-                    route = lane.route,
-                    because = lane.because,
-                )),
-                c.hive_path.clone(),
-                lane.because.clone(),
-            ));
-        }
+        violations.extend(
+            c.accepts
+                .iter()
+                .filter(|l| l.required)
+                .filter_map(|lane| judge_required_lane(c, lane, edges)),
+        );
     }
     violations
+}
+
+/// One required lane of one newborn hive: the finding, or `None` when
+/// something outside delivers it. The unit [`collect_post_state_lanes_paced`]
+/// may separate from the next.
+fn judge_required_lane(
+    c: &HiveContract,
+    lane: &Lane,
+    edges: &EdgeTable,
+) -> Option<(MutationError, String, String)> {
+    if lane_is_wired_from_outside(c, lane, edges) {
+        return None;
+    }
+    let at = if lane.at.is_empty() {
+        String::new()
+    } else {
+        format!(" onto one of its connect points ({})", lane.at.join(", "))
+    };
+    Some((
+        MutationError::HiveContract(format!(
+            "hive '{hive}' declares the lane '{route}' as required ({because}), but the \
+             mutation that instantiates it draws no edge delivering that lane{at}. A \
+             required lane is wired by the same diff that gives the hive birth.",
+            hive = c.hive_path,
+            route = lane.route,
+            because = lane.because,
+        )),
+        c.hive_path.clone(),
+        lane.because.clone(),
+    ))
 }
 
 /// Apps rim (2026-09-05) — every `required` lane of every hive THIS diff gives
@@ -630,47 +704,197 @@ fn addressed_lane_doors(
     edges: &EdgeTable,
 ) -> Vec<(MutationError, String, String)> {
     let mut violations = Vec::new();
+    let onto_hives = edges_onto_hives(contracts, edges);
     for c in contracts {
-        if !hive_path_is_wired(c, edges) {
+        let onto = onto_of(&onto_hives, c);
+        if !hive_path_is_wired(c, edges, onto) {
             continue;
         }
-        for lane in &c.accepts {
-            if docks_below_the_rim(lane) || door_exists(c, &lane.route, edges) {
-                continue;
-            }
-            violations.push((
-                MutationError::HiveContract(format!(
-                    "hive '{hive}' declares it accepts the lane '{route}' ({because}), but \
-                     nothing routes a message arriving at '{hive}' with hop.route='{route}' to a \
-                     cell inside it. Either the contract names a lane the hive lost, or the door \
-                     edge {{\"from\": \".\"}} is missing.",
-                    hive = c.hive_path,
-                    route = lane.route,
-                    because = lane.because,
-                )),
-                c.hive_path.clone(),
-                lane.because.clone(),
-            ));
-        }
-        for lane in &c.emits {
-            if docks_below_the_rim(lane) || exit_exists(c, &lane.route, edges) {
-                continue;
-            }
-            violations.push((
-                MutationError::HiveContract(format!(
-                    "hive '{hive}' declares it emits the lane '{route}' ({because}), but no cell \
-                     inside it routes a message with hop.route='{route}' back out through \
-                     '{hive}'. A lane a caller cannot receive is not part of an interface.",
-                    hive = c.hive_path,
-                    route = lane.route,
-                    because = lane.because,
-                )),
-                c.hive_path.clone(),
-                lane.because.clone(),
-            ));
-        }
+        violations.extend(c.accepts.iter().filter_map(|l| judge_door(c, l, edges)));
+        violations.extend(c.emits.iter().filter_map(|l| judge_exit(c, l, edges, onto)));
     }
     violations
+}
+
+/// The edges onto `c`'s hive path, out of [`edges_onto_hives`].
+fn onto_of<'m, 'e>(
+    onto_hives: &'m HashMap<&'e str, Vec<&'e Edge>>,
+    c: &HiveContract,
+) -> &'m [&'e Edge] {
+    onto_hives
+        .get(c.hive_path.as_str())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// One accepted lane of one wired hive: the finding when it lost its door.
+fn judge_door(
+    c: &HiveContract,
+    lane: &Lane,
+    edges: &EdgeTable,
+) -> Option<(MutationError, String, String)> {
+    if docks_below_the_rim(lane) || door_exists(c, &lane.route, edges) {
+        return None;
+    }
+    Some((
+        MutationError::HiveContract(format!(
+            "hive '{hive}' declares it accepts the lane '{route}' ({because}), but \
+             nothing routes a message arriving at '{hive}' with hop.route='{route}' to a \
+             cell inside it. Either the contract names a lane the hive lost, or the door \
+             edge {{\"from\": \".\"}} is missing.",
+            hive = c.hive_path,
+            route = lane.route,
+            because = lane.because,
+        )),
+        c.hive_path.clone(),
+        lane.because.clone(),
+    ))
+}
+
+/// One emitted lane of one wired hive: the finding when nothing inside routes
+/// it back out.
+fn judge_exit(
+    c: &HiveContract,
+    lane: &Lane,
+    edges: &EdgeTable,
+    onto: &[&Edge],
+) -> Option<(MutationError, String, String)> {
+    if docks_below_the_rim(lane) || exit_exists(c, &lane.route, edges, onto) {
+        return None;
+    }
+    Some((
+        MutationError::HiveContract(format!(
+            "hive '{hive}' declares it emits the lane '{route}' ({because}), but no cell \
+             inside it routes a message with hop.route='{route}' back out through \
+             '{hive}'. A lane a caller cannot receive is not part of an interface.",
+            hive = c.hive_path,
+            route = lane.route,
+            because = lane.because,
+        )),
+        c.hive_path.clone(),
+        lane.because.clone(),
+    ))
+}
+
+/// GH #1176 — how long a stretch of the post-state lane checks may run on the
+/// colony worker before [`LanePacer`] yields and beats.
+///
+/// AGENTS.md coding standards: a blocking CPU burst over 1 ms yields or moves
+/// off the worker. Measured (strand report tb-s9b, build01, idle): the two
+/// checks took 50-80 ms of one mutation against a 1 200-edge table, and with
+/// twelve colonies on the host the same phase stretched ≈ 15×. A unit (one
+/// contract head or one lane) costs one pass over the edge table, tens of µs
+/// idle, so a fixed count would be right for one table size and too coarse
+/// for the next; a clock read per unit (≈ 25 ns) cuts every stretch at 1 ms
+/// whatever the table and the load. 50-80 ms idle are then 50-80 yields of a
+/// few µs each.
+pub(crate) const LANE_CHECK_SLICE: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// GH #1176 — the pacing of [`collect_post_state_lanes_paced`] on the colony
+/// worker: before a unit, when the current stretch has run [`LANE_CHECK_SLICE`]
+/// (and before the very first unit), it yields to the scheduler and beats the
+/// mutation's pulse under `… op=lane-doors hive=<hive>`, naming the hive whose
+/// unit comes next.
+///
+/// The beat is progress, never a timer: it is given between units only, so a
+/// unit that never ends (a CEL probe that does not come back) leaves the work
+/// item silent and the supervisor declares it stuck, exactly as before. No
+/// operation timeout either -- there is no I/O in the checks (AGENTS.md rule
+/// 12 is about I/O), and a timer cannot interrupt a computation on the worker.
+pub(crate) struct LanePacer<'a> {
+    pulse: &'a crate::watchdog::WorkPulse,
+    since: Option<tokio::time::Instant>,
+    pace: &'a (dyn Fn(&str) + Sync),
+}
+
+impl<'a> LanePacer<'a> {
+    /// A pacer that beats on `pulse`.
+    pub(crate) fn new(pulse: &'a crate::watchdog::WorkPulse) -> Self {
+        Self::with_pace(pulse, &|_| {})
+    }
+
+    /// [`Self::new`] with `pace` run inside every unit -- the seam a test uses
+    /// to make a unit as slow as a loaded host makes it, or to make one hang.
+    pub(crate) fn with_pace(
+        pulse: &'a crate::watchdog::WorkPulse,
+        pace: &'a (dyn Fn(&str) + Sync),
+    ) -> Self {
+        Self {
+            pulse,
+            since: None,
+            pace,
+        }
+    }
+
+    /// Called before every unit, with the hive the unit judges.
+    async fn unit(&mut self, hive: &str) {
+        if self.since.is_none_or(|t| t.elapsed() >= LANE_CHECK_SLICE) {
+            if self.since.is_some() {
+                tokio::task::yield_now().await;
+            }
+            self.pulse
+                .with_label(crate::watchdog::WorkItem::new(format!(
+                    "{} op=lane-doors hive={hive}",
+                    self.pulse.label()
+                )))
+                .tick();
+            self.since = Some(tokio::time::Instant::now());
+        }
+        (self.pace)(hive);
+    }
+}
+
+/// GH #1176 — [`collect_lane_doors`] over `standing` and then
+/// [`collect_required_lanes`] over `newborn`, as the post-state stage runs
+/// them, on the colony worker but paced by `pacer` between units (a contract
+/// head, a lane). Same judges, same order, same verdicts as the two plain
+/// collectors; only the stretches between two yields are bounded.
+pub(crate) async fn collect_post_state_lanes_paced(
+    standing: &[HiveContract],
+    newborn: &[HiveContract],
+    edges: &EdgeTable,
+    into: &mut crate::mutation::rejection::MutationRejection,
+    pacer: &mut LanePacer<'_>,
+) {
+    use crate::mutation::rejection::{Stage, Violation};
+
+    let mut found = Vec::new();
+    if !standing.is_empty() {
+        let onto_hives = edges_onto_hives(standing, edges);
+        for c in standing {
+            pacer.unit(&c.hive_path).await;
+            let onto = onto_of(&onto_hives, c);
+            if !hive_path_is_wired(c, edges, onto) {
+                continue;
+            }
+            for lane in &c.accepts {
+                pacer.unit(&c.hive_path).await;
+                found.extend(judge_door(c, lane, edges));
+            }
+            for lane in &c.emits {
+                pacer.unit(&c.hive_path).await;
+                found.extend(judge_exit(c, lane, edges, onto));
+            }
+        }
+    }
+    for c in newborn {
+        pacer.unit(&c.hive_path).await;
+        if c.hive_path == "/" {
+            continue;
+        }
+        for lane in c.accepts.iter().filter(|l| l.required) {
+            pacer.unit(&c.hive_path).await;
+            found.extend(judge_required_lane(c, lane, edges));
+        }
+    }
+    for (error, address, because) in found {
+        into.push(Violation::from_error_because(
+            Stage::ContractLocality,
+            &error,
+            Some(address),
+            because,
+        ));
+    }
 }
 
 /// The `hop.route` an edge's own modifier STATES, if it states a constant.
@@ -1331,6 +1555,12 @@ pub fn edge_table_from_boot_edges(edges: &[BootEdge]) -> EdgeTable {
     }
     table
 }
+
+#[cfg(test)]
+mod lane_doors_equivalence;
+
+#[cfg(test)]
+mod lane_pacing;
 
 #[cfg(test)]
 mod tests {

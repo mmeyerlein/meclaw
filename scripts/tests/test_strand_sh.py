@@ -20,18 +20,26 @@ What is pinned here is the CONTRACT the wave process leans on:
     person's name or a private host.
 """
 
+import fcntl
+import hashlib
 import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
+import signal
+import sqlite3
 import subprocess
+import socket
 import time
 import sys
 import tempfile
 import time
 import unittest
 import uuid
+from scripts.pipeline import lane
+from scripts.tests import fake_ssh, kit_time, kit_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 STRAND_SH = REPO / "scripts" / "strand.sh"
@@ -39,6 +47,13 @@ GATE_SH = REPO / "scripts" / "gate.sh"
 TIER_SH = REPO / "scripts" / "test-tier.sh"
 GATE_PLAN = REPO / "scripts" / "gate_plan.py"
 LANE_SYNC = REPO / "scripts" / "lane_sync.sh"
+LANE_FP = REPO / "scripts" / "pipeline" / "lane_fingerprint.sh"
+# Since W3 (GH #1117): `gate.sh` is the shell in front of these two, and
+# `strand.sh gate|test|token|lanes` delegate to the pipeline core; since
+# GH #1156 there is no switch back, only `gate ci` keeps the old runner.
+GATE_LEGACY = REPO / "scripts" / "gate_legacy.sh"
+PIPELINE_PY = REPO / "scripts" / "pipeline.py"
+PIPELINE_PKG = REPO / "scripts" / "pipeline"
 
 WAVE_DIR = "welle-x-2026-09-19"
 WAVE = "welle-x"
@@ -114,17 +129,46 @@ def _git(repo, *args):
                           env=env, check=True, capture_output=True, text=True)
 
 
+PRE_STAMP_STUB = """
+
+def stamp_status(repo, now=None):  # test_strand_sh fixture: GREEN, no line
+    return True, ""
+
+
+_pre_main = main
+
+
+def main(argv=None):  # test_strand_sh fixture: the stamp check passes silently
+    args = sys.argv[1:] if argv is None else argv
+    return 0 if "--stamp-check" in args else _pre_main(argv)
+"""
+
+
 def make_repo(root):
     """A one-commit repo with the kit, the gate runner and a plans tree."""
     repo = pathlib.Path(root) / "repo"
     (repo / "scripts" / "tests").mkdir(parents=True, exist_ok=True)
-    for src in (STRAND_SH, GATE_SH, TIER_SH, LANE_SYNC):
+    for src in (STRAND_SH, GATE_SH, GATE_LEGACY, TIER_SH, LANE_SYNC):
         shutil.copy(src, repo / "scripts" / src.name)
         (repo / "scripts" / src.name).chmod(0o755)
+    shutil.copy(PIPELINE_PY, repo / "scripts" / "pipeline.py")
+    shutil.copytree(PIPELINE_PKG, repo / "scripts" / "pipeline",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
+    # `pipeline.py` loads every command module; W4's `pre` imports the precheck.
+    shutil.copy(REPO / "scripts" / "precheck.py", repo / "scripts" / "precheck.py")
+    # W4's pre stamp guards a strand gate from a strand worktree. The trees
+    # here are never pre-checked -- the stamp has its own suites
+    # (test_pipeline_pre, test_pipeline_gate_cli); this copy reports it GREEN.
+    pre_py = repo / "scripts" / "pipeline" / "pre.py"
+    main = '\nif __name__ == "__main__":'
+    pre_py.write_text(pre_py.read_text().replace(main, PRE_STAMP_STUB + main, 1))
     # `scripts/gate.sh` SOURCES this one (GH #802) -- without it the runner in
     # the throw-away repo does not start at all.
-    shutil.copy(REPO / "scripts" / "cargo-target.sh", repo / "scripts" / "cargo-target.sh")
+    kit_tree.library(repo / "scripts", "cargo-target.sh")
+    # The lane fingerprint (W1) -- `lane_sync.sh` sends it to the lane.
+    (repo / "scripts" / "pipeline").mkdir(exist_ok=True)
+    shutil.copy(LANE_FP, repo / "scripts" / "pipeline" / "lane_fingerprint.sh")
     plans = repo / "plans"
     (plans / WAVE_DIR / "berichte").mkdir(parents=True, exist_ok=True)
     (plans / "README.md").write_text(PLANS_README)
@@ -136,6 +180,22 @@ def make_repo(root):
     _git(repo, "commit", "-q", "-m", "first")
     _git(repo, "branch", "-M", "master")
     return repo
+
+
+def install_pipeline(repo):
+    """The pipeline core beside the kit of `repo`, UNTRACKED (W9).
+
+    `close`, `merge` and `revert` hand over to `scripts/pipeline.py`, which
+    loads the whole package -- `pre.py` with `precheck.py` among it. Committed,
+    `pre.py` would reach every strand worktree, and its presence arms the pre
+    stamp of `gate`; untracked in the main tree, the kit finds it (the kit is
+    called from there) and no strand gate sees it.
+    """
+    shutil.copy(REPO / "scripts" / "pipeline.py", repo / "scripts" / "pipeline.py")
+    shutil.copy(REPO / "scripts" / "precheck.py", repo / "scripts" / "precheck.py")
+    for src in (REPO / "scripts" / "pipeline").iterdir():
+        if src.suffix in (".py", ".json"):
+            shutil.copy(src, repo / "scripts" / "pipeline" / src.name)
 
 
 # The host's own token file -- the one a running wave arms. No case may ever
@@ -157,9 +217,15 @@ def kit_env(repo, extra_env=None):
     env.update(GIT_ENV)
     env.pop("CARGO_TARGET_DIR", None)
     for var in ("MECLAW_STRAND_TOKEN_SKIP", "CI", "MECLAW_CARGO_LOCK_HELD",
-                "MECLAW_STRAND_NOW", "MECLAW_TIER_DRY", "MECLAW_GATE_LANE_RECEIPT"):
+                "MECLAW_STRAND_NOW", "MECLAW_TIER_DRY", "MECLAW_GATE_LANE_RECEIPT",
+                "MECLAW_LANES_CALLER"):
         env.pop(var, None)
     env["MECLAW_STRAND_TOKENS"] = str(repo.parent / "tokens")
+    # The store of the pipeline core: SET like the token file, never the
+    # host's. No way back to the old path (GH #1156): a switch inherited from
+    # a developer shell goes.
+    env["MECLAW_PIPELINE_DB"] = str(repo.parent / "pipeline.db")
+    env.pop("MECLAW_GATE_LEGACY", None)
     env["MECLAW_GATE_LOCK"] = str(repo.parent / "cargo.lock")
     # ... and so is the host file of the build lanes (GH #934): the owner's
     # real one names real machines.
@@ -170,19 +236,28 @@ def kit_env(repo, extra_env=None):
     # than 60 G free -- the runner wiped the fake target and refused, and the
     # gate-on-a-host cases were red on the lane alone (OR-S3-96).
     env.setdefault("MECLAW_GATE_LANE_MIN_FREE_G", "0")
+    # ... and the floor of lane_sync.sh (60 G): on a build host the temp
+    # directory of the fake lane has less free (W1 gate on a build host).
+    env.setdefault("MECLAW_LANE_FLOOR_G", "0")
+    # The idle-off timer of a lane (dev-tempo W2) is a real `systemd-run`
+    # timer on this machine: no case arms one unless it says so.
+    env.setdefault("MECLAW_IDLE_OFF_H", "0")
+    for var in ("MECLAW_HYGIENE", "MECLAW_LANE_EXPECTED_G"):
+        env.pop(var, None)
     if extra_env:
         env.update(extra_env)
-    return env
+    # `None` removes a variable.
+    return {k: v for k, v in env.items() if v is not None}
 
 
-def run_strand(repo, *args, cwd=None, extra_env=None, timeout_s=120):
+def run_strand(repo, *args, cwd=None, extra_env=None, timeout_s=4 * kit_time.HANG):
     return subprocess.run(
         [str(repo / "scripts" / "strand.sh")] + list(args),
         cwd=str(cwd or repo), env=kit_env(repo, extra_env),
         capture_output=True, text=True, timeout=timeout_s)
 
 
-def run_tier(repo, tree, extra_env=None, timeout_s=120):
+def run_tier(repo, tree, extra_env=None, timeout_s=4 * kit_time.HANG):
     """`scripts/test-tier.sh t0` of a tree in dry mode: it locks, checks and
     prints the nextest argv, and never compiles anything."""
     env = kit_env(repo, extra_env)
@@ -223,6 +298,10 @@ class StrandShTestCase(unittest.TestCase):
         return self.repo.parent / ("%s-wt-%s" % (self.repo.name, name))
 
     def report(self, name):
+        """The report `new` writes: in the strand's worktree (#1148)."""
+        return self.worktree(name) / "plans" / WAVE_DIR / "berichte" / ("%s.md" % name)
+
+    def main_report(self, name):
         return self.repo / "plans" / WAVE_DIR / "berichte" / ("%s.md" % name)
 
 
@@ -242,6 +321,21 @@ class TestNew(StrandShTestCase):
         self.assertRegex(head["basis"], r"^[0-9a-f]{7,40}$")
         self.assertIn("gate", head)
         self.assertIn("commits", head)
+        # #1148: report and strand file in the worktree, the main tree untouched.
+        self.assertFalse(self.main_report("kit").exists())
+        self.assertFalse((self.repo / "plans" / WAVE_DIR / "straenge" / "kit.json").exists())
+        self.assertTrue((self.worktree("kit") / "plans" / WAVE_DIR / "straenge"
+                         / "kit.json").is_file())
+        # Z-I 2c (2): the scaffold carries the section the merge asks for.
+        self.assertRegex(self.report("kit").read_text(), r"(?m)^## Review$")
+        # GH #1196: the field merge asks for, as a placeholder that does not pass.
+        text = self.report("kit").read_text()
+        self.assertRegex(text, r"(?m)^Outsourced findings: <")
+        from scripts.pipeline import merge
+        self.assertFalse(merge.outsourced_findings_ok(text))
+        self.assertTrue(merge.outsourced_findings_ok(
+            text.replace(re.search(r"(?m)^Outsourced findings: .*$", text).group(0),
+                         "Outsourced findings: none")))
 
     def test_new_prompt_points_at_the_rules_and_repeats_none_of_them(self):
         res = run_strand(self.repo, "new", "kit", "--issue", "756")
@@ -252,6 +346,33 @@ class TestNew(StrandShTestCase):
             self.assertNotIn(word, res.stdout,
                              "the prompt repeats the rule %r:\n%s"
                              % (word, res.stdout))
+
+    def test_new_prompt_carries_the_reading_budget_line_without_graphify(self):
+        """BUILD-PREAMBLE point 12 of the dev-tempo wave: the orientation line
+        is printed by the kit; the graphify sentence is not (W6 adds it)."""
+        res = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertEqual(0, res.returncode, res.stderr)
+        lines = [ln for ln in res.stdout.splitlines() if ln.startswith("Orientierung:")]
+        self.assertEqual(1, len(lines), res.stdout)
+        self.assertTrue(lines[0].startswith("Orientierung: dein Plan-Teil"), lines[0])
+        self.assertNotIn("V0-vertraege", res.stdout)
+        self.assertIn("nie `grep -r` ueber `crates/` ohne Pfadfilter.", res.stdout)
+        self.assertNotIn("graphify", res.stdout)
+        # C-M4: the contracts file is named only in a wave that has one
+        parts = self.repo / "plans" / WAVE_DIR / "plan-parts"
+        parts.mkdir(parents=True, exist_ok=True)
+        (parts / "V0-vertraege.md").write_text("# V0\n")
+        res = run_strand(self.repo, "new", "kit2", "--issue", "757")
+        self.assertEqual(0, res.returncode, res.stderr)
+        lines = [ln for ln in res.stdout.splitlines() if ln.startswith("Orientierung:")]
+        self.assertIn("`plan-parts/V0-vertraege.md`, dein Plan-Teil", lines[0])
+
+    def test_new_graphify_adds_the_one_question_line(self):
+        res = run_strand(self.repo, "new", "kit", "--issue", "756", "--graphify")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("query|path|explain '<question>'", res.stdout)
+        plain = run_strand(self.repo, "new", "kit2", "--issue", "756")
+        self.assertNotIn("query|path|explain", plain.stdout)
 
     def test_new_takes_the_order_from_the_plan_section(self):
         plan = self.repo / "plan.md"
@@ -274,12 +395,93 @@ class TestNew(StrandShTestCase):
         self.assertNotIn("echo prepare", res.stdout)
         self.assertNotIn("Not this one.", res.stdout)
 
+    def test_new_writes_the_strand_file_and_keeps_an_existing_one(self):
+        """W9: the strand declares the KIND of its change; the merge point
+        assigns the numbers (dev rules section 4)."""
+        res = run_strand(self.repo, "new", "kit", "--issue", "756",
+                         "--issue", "#755")
+        self.assertEqual(0, res.returncode, res.stderr)
+        sfile = self.worktree("kit") / "plans" / WAVE_DIR / "straenge" / "kit.json"
+        self.assertEqual({"strand": "kit", "issue": [756, 755], "title": "",
+                          "kind": {}}, json.loads(sfile.read_text()))
+        self.assertIn("straenge/kit.json", res.stdout)
+        self.assertIn("## Versionsart", self.report("kit").read_text())
+        one = self.repo / "plans" / WAVE_DIR / "straenge" / "solo.json"
+        one.parent.mkdir(parents=True, exist_ok=True)
+        one.write_text('{"strand": "solo", "issue": 1, "title": "kept", '
+                       '"kind": {"t": "feature"}}\n')
+        res = run_strand(self.repo, "new", "solo", "--issue", "757")
+        self.assertEqual(0, res.returncode, res.stderr)
+        # The orchestrator's file in the main tree travels into the worktree.
+        mine = self.worktree("solo") / "plans" / WAVE_DIR / "straenge" / "solo.json"
+        self.assertEqual("kept", json.loads(mine.read_text())["title"])
+        self.assertEqual("kept", json.loads(one.read_text())["title"])
+        res = run_strand(self.repo, "new", "duo", "--issue", "758")
+        self.assertEqual(0, res.returncode, res.stderr)
+        duo = self.worktree("duo") / "plans" / WAVE_DIR / "straenge" / "duo.json"
+        self.assertEqual(758, json.loads(duo.read_text())["issue"])
+
     def test_new_refuses_an_existing_strand(self):
         self.assertEqual(0, run_strand(self.repo, "new", "kit", "--issue",
                                        "756").returncode)
         res = run_strand(self.repo, "new", "kit", "--issue", "756")
         self.assertNotEqual(0, res.returncode)
         self.assertIn("kit", res.stderr)
+
+    def _side_commit(self, author):
+        _git(self.repo, "checkout", "-q", "-b", "side")
+        (self.repo / "side.txt").write_text("side\n")
+        _git(self.repo, "add", "side.txt")
+        env = dict(kit_env(self.repo), GIT_AUTHOR_NAME=author[0], GIT_AUTHOR_EMAIL=author[1])
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-m", "side"],
+                       env=env, check=True, capture_output=True)
+        sha = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        _git(self.repo, "checkout", "-q", "master")
+        return sha
+
+    def test_new_refuses_a_base_with_foreign_commits(self):
+        # GH #1167 (g): a base other than the master tip carries no commit
+        # that is not the owner's -- it would land under the owner's name.
+        owner = {"MECLAW_OWNER": "strand test <strand@example.invalid>"}
+        sha = self._side_commit(("someone", "x@example.invalid"))
+        res = run_strand(self.repo, "new", "kit", "--issue", "756", "--base", "side",
+                         extra_env=owner)
+        self.assertNotEqual(0, res.returncode, res.stdout)
+        self.assertIn(sha[:9], res.stderr)
+        self.assertFalse(self.worktree("kit").exists())
+
+    def test_new_takes_an_own_base(self):
+        owner = {"MECLAW_OWNER": "strand test <strand@example.invalid>"}
+        self._side_commit(("strand test", "strand@example.invalid"))
+        res = run_strand(self.repo, "new", "kit", "--issue", "756", "--base", "side",
+                         extra_env=owner)
+        self.assertEqual(0, res.returncode, res.stderr)
+
+
+class TestMergeAndRevert(StrandShTestCase):
+    """`merge` and `revert` are the pipeline core's (W9): the kit hands the
+    arguments through and passes the exit on unchanged."""
+
+    def setUp(self):
+        super().setUp()
+        install_pipeline(self.repo)
+
+    def test_merge_and_revert_hand_over_to_the_pipeline(self):
+        for sub in ("merge", "revert"):
+            res = run_strand(self.repo, sub, "--help")
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertIn("usage: pipeline %s" % sub, res.stdout)
+
+    def test_merge_passes_the_usage_exit_through(self):
+        res = run_strand(self.repo, "merge")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("--strand", res.stderr)
+
+    def test_the_kit_names_merge_and_revert(self):
+        res = run_strand(self.repo, "nosuch")
+        self.assertEqual(2, res.returncode)
+        self.assertIn("merge|revert", res.stderr)
+        self.assertIn("strand.sh merge", run_strand(self.repo, "--help").stdout)
 
 
 BUILT_README = """# Plans
@@ -345,7 +547,7 @@ class TestWaveDetection(StrandShTestCase):
         (self.repo / "plans" / "README.md").write_text(OTHER_README)
         plan = pathlib.Path(self._tmp.name) / "plan.tsv"
         plan.write_text(PLAN_GREEN)
-        res = run_strand(self.repo, "gate", cwd=self.worktree("kit"),
+        res = run_strand(self.repo, "gate", "ci", cwd=self.worktree("kit"),
                          extra_env={"MECLAW_GATE_PLAN": str(plan)})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertTrue(
@@ -370,7 +572,7 @@ class TestWaveDetection(StrandShTestCase):
         (self.repo / "plans" / "README.md").write_text(SAME_PREFIX_README)
         plan = pathlib.Path(self._tmp.name) / "plan.tsv"
         plan.write_text(PLAN_GREEN)
-        return run_strand(self.repo, "gate", cwd=self.worktree("kit"),
+        return run_strand(self.repo, "gate", "ci", cwd=self.worktree("kit"),
                           extra_env={"MECLAW_GATE_PLAN": str(plan)})
 
     def test_two_waves_of_one_prefix_the_one_with_the_strands_report_wins(self):
@@ -393,6 +595,60 @@ class TestWaveDetection(StrandShTestCase):
         res = run_strand(self.repo, "new", "kit", "--issue", "756")
         self.assertEqual(0, res.returncode, res.stderr)
         self.assertIn("strand: wave %s" % WAVE_DIR, res.stderr)
+
+    # --- welle-validierung-2 3b (GH #1199): section Live knows the running wave ---
+
+    def _live(self, *rows):
+        for d in (OTHER_WAVE_DIR, SAME_PREFIX_WAVE_DIR):
+            (self.repo / "plans" / d / "berichte").mkdir(parents=True, exist_ok=True)
+        (self.repo / "plans" / "README.md").write_text(
+            "# Plans\n\n## Live\n\n| Path | What it is |\n|---|---|\n"
+            + "".join("| `%s/` | %s |\n" % r for r in rows) + "\n## Archive\n")
+
+    def test_the_running_row_names_the_wave_below_a_built_top_row(self):
+        self._live((OTHER_WAVE_DIR, "**Built 2026-10-12:** over."),
+                   (WAVE_DIR, "**Running since 2026-10-14:** the wave under test."))
+        res = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: wave %s (Running row" % WAVE_DIR, res.stderr)
+        self.assertTrue(self.report("kit").exists(), res.stderr)
+
+    def test_two_running_rows_stop_and_name_both(self):
+        self._live((OTHER_WAVE_DIR, "**Running since 2026-10-14:** one."),
+                   (WAVE_DIR, "**Running since 2026-10-13:** the other."))
+        res = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertNotEqual(0, res.returncode, res.stdout)
+        for d in (OTHER_WAVE_DIR, WAVE_DIR, "--wave <directory>"):   # c23 M-4: English
+            self.assertIn(d, res.stderr)
+        self.assertFalse(self.report("kit").exists(), "it guessed one of two running waves")
+
+    def test_a_row_the_core_does_not_read_as_running_is_none_for_the_kit(self):
+        """Re-check v2-kit c23 M-5: one reader of the Running row. A date the
+        core's `wave.RUNNING` refuses (it would never turn the row Built) is no
+        Running row for `wave_dir` either -- the kit asks `pipeline wave running`."""
+        self._live((OTHER_WAVE_DIR, "**Running since 14.10.2026:** a hand-written row."),
+                   (WAVE_DIR, "**Running since 2026-10-14:** the wave under test."))
+        res = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: wave %s (Running row" % WAVE_DIR, res.stderr)
+        self.assertTrue(self.report("kit").exists(), res.stderr)
+
+    def test_wave_open_commits_the_running_row_the_kit_then_finds(self):
+        self._live((OTHER_WAVE_DIR, "**Built 2026-10-12:** over."))
+        _git(self.repo, "add", "plans")
+        _git(self.repo, "commit", "-q", "-m", "live")
+        before = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertNotEqual(0, before.returncode, before.stdout)     # the stop of today
+        res = run_strand(self.repo, "wave", "open", WAVE_DIR, "--title", "The wave under test.")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("", _git(self.repo, "status", "--porcelain", "--", "plans/README.md").stdout)
+        top = [ln for ln in (self.repo / "plans" / "README.md").read_text().splitlines()
+               if ln.startswith("| `")][0]
+        self.assertRegex(top, r"^\| `%s/` \| \*\*Running since \d{4}-\d{2}-\d{2}:\*\* "
+                              r"The wave under test\. \|$" % re.escape(WAVE_DIR))
+        res = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: wave %s (Running row" % WAVE_DIR, res.stderr)
 
 
 PLAN_GREEN = (
@@ -460,7 +716,7 @@ class TestGate(StrandShTestCase):
                       if d.is_dir() and not d.is_symlink())
 
     def run_in_tree(self, plan, *args):
-        return run_strand(self.repo, "gate", *args, cwd=self.tree,
+        return run_strand(self.repo, "gate", "ci", *args, cwd=self.tree,
                           extra_env={"MECLAW_GATE_PLAN": str(plan)})
 
     def test_gate_prints_one_summary_line_and_nothing_else(self):
@@ -476,7 +732,7 @@ class TestGate(StrandShTestCase):
         res = self.run_in_tree(self.plan_file(PLAN_GREEN))
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         arc = self.archive()
-        self.assertTrue((arc / "last-strand.json").is_file(),
+        self.assertTrue((arc / "last-ci.json").is_file(),
                         "no receipt in %s" % arc)
         self.assertTrue((arc / "logs").is_dir(), "no logs in %s" % arc)
         self.assertTrue((arc / "run.log").is_file(), "no run log in %s" % arc)
@@ -531,7 +787,7 @@ class TestGate(StrandShTestCase):
                         "echo 'GATE-SUMMARY strand deadbeef 1/1 0s GREEN'\n"
                         % marker)
         stub.chmod(0o755)
-        res = run_strand(self.repo, "gate", cwd=self.tree)
+        res = run_strand(self.repo, "gate", "ci", cwd=self.tree)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertTrue(marker.exists(),
                         "the runner of the main tree ran, not this tree's")
@@ -549,7 +805,7 @@ class TestGate(StrandShTestCase):
         latest = self.archive().resolve()
         res = run_strand(self.repo, "gate", "--help", cwd=self.tree)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("gate options pass through to scripts/gate.sh", res.stdout)
+        self.assertIn("gate options pass through to scripts/pipeline.py gate", res.stdout)
         self.assertEqual(before, self.runs(), "--help made a run directory")
         self.assertEqual(latest, self.archive().resolve(), "--help moved latest")
 
@@ -573,31 +829,11 @@ class TestGate(StrandShTestCase):
         # The full run is still on disk -- it just is not in the answer.
         self.assertIn("GATE ok ", (self.archive() / "run.log").read_text())
 
-    def test_gate_passes_an_ask_through_as_four(self):
-        """A question for the owner is exit 4, never 3 (no token) and never 0.
-
-        Runs the REAL runner of the tree: the ASK verdict, exit 4 and the
-        question block come from its persona-receipt arm.
-        """
-        (self.tree / "change.txt").write_text("a change\n")
-        _git(self.tree, "add", "change.txt")
-        _git(self.tree, "commit", "-q", "-m", "a change")
-        res = self.run_in_tree(self.plan_file(PLAN_ASK), "integration",
-                               "--base", "HEAD~1")
-        self.assertEqual(4, res.returncode, res.stdout + res.stderr)
-        lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
-        self.assertTrue(any(re.match(r"^GATE persona-receipt \[.*\] \d+s ASK", ln)
-                            for ln in lines), res.stdout)
-        summaries = [ln for ln in lines if SUMMARY_LINE.match(ln)]
-        self.assertEqual(1, len(summaries), res.stdout)
-        self.assertEqual("ASK", SUMMARY_LINE.match(summaries[0]).group("verdict"))
-        self.assertIn('--decide persona-receipt=without:"', res.stdout)
-
     def test_gate_prints_the_question_block_of_an_ask_run(self):
         """The kit's half of the contract, without the runner's arm: the ASK
         station line, the summary and the question block from the run log."""
         ask_stub(self.tree)
-        res = run_strand(self.repo, "gate", "integration", cwd=self.tree)
+        res = run_strand(self.repo, "gate", "ci", cwd=self.tree)
         self.assertEqual(4, res.returncode, res.stdout + res.stderr)
         lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
         self.assertTrue(lines[0].startswith("GATE persona-receipt "), res.stdout)
@@ -610,6 +846,7 @@ class TestGate(StrandShTestCase):
 class TestReportAndClose(StrandShTestCase):
     def setUp(self):
         super().setUp()
+        install_pipeline(self.repo)
         res = run_strand(self.repo, "new", "kit", "--issue", "756",
                          "--issue", "755")
         self.assertEqual(0, res.returncode, res.stderr)
@@ -629,9 +866,31 @@ class TestReportAndClose(StrandShTestCase):
         return _git(self.tree, "rev-parse", "--short=8", "HEAD").stdout.strip()
 
     def gate(self, plan_text):
-        return run_strand(self.repo, "gate", cwd=self.tree,
-                          extra_env={"MECLAW_GATE_PLAN":
-                                     str(self.plan_file(plan_text))})
+        """A gate run whose archive `report` and `close` read as a STRAND run.
+
+        The strand gate is the pipeline's (its archive layout is pinned in
+        test_pipeline_gate_cli); since GH #1156 the kit reaches the old runner
+        with `ci` only, which writes the same layout with mode `ci`. The run is
+        relabelled `strand` -- receipt and summary line -- so these cases keep
+        pinning what report and close do with an archive."""
+        res = run_strand(self.repo, "gate", "ci", cwd=self.tree,
+                         extra_env={"MECLAW_GATE_PLAN": str(self.plan_file(plan_text))})
+        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        run = (root / "latest").resolve() if (root / "latest").exists() else None
+        if run is not None and run.is_dir():
+            for path in run.glob("*.json"):
+                try:
+                    doc = json.loads(path.read_text())
+                except ValueError:
+                    continue
+                if isinstance(doc, dict) and doc.get("mode") == "ci":
+                    doc["mode"] = "strand"
+                    (run / "last-strand.json").write_text(json.dumps(doc))
+            summary = run / "summary.txt"
+            if summary.exists():
+                summary.write_text(summary.read_text().replace("GATE-SUMMARY ci ",
+                                                               "GATE-SUMMARY strand "))
+        return res
 
     def test_report_fills_gate_and_commits_from_the_archive(self):
         sha = self.commit()
@@ -642,6 +901,57 @@ class TestReportAndClose(StrandShTestCase):
         self.assertIn("GATE-SUMMARY", head["gate"])
         self.assertIn("GREEN", head["gate"])
         self.assertEqual("[%s]" % sha, head["commits"])
+
+    def test_report_from_a_strand_tree_fills_the_report_in_that_tree(self):
+        # Z-A (E-DT-W0.a): the report lives in the strand's worktree; `report`
+        # read the main tree's copy, and strands copied and deleted files in
+        # the main tree to feed it (stall 05:06-07:53 on a permission dialog).
+        sha = self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        # Since #1148 `new` writes it there; the main tree never has one.
+        mine = self.tree / "plans" / WAVE_DIR / "berichte" / "kit.md"
+        self.assertFalse(self.main_report("kit").exists())
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        head = header_block(mine)
+        self.assertIn("GATE-SUMMARY", head["gate"])
+        self.assertEqual("[%s]" % sha, head["commits"])
+        self.assertFalse(self.main_report("kit").exists())
+        # Review Z-A R3 M2: close reads the same copy (it handed the main
+        # tree's path to `merge.py close`, which refused `no_report`).
+        res = run_strand(self.repo, "close", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("gh issue close", res.stdout)
+
+    def test_report_from_the_main_tree_fills_the_worktree_copy(self):
+        # GH #1167 (e): a stale copy in the main tree never wins over the
+        # strand's worktree -- `report` never writes the main tree while the
+        # strand has a worktree (its untracked copy stops the fast-forward).
+        sha = self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        stale = self.main_report("kit")
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text(self.report("kit").read_text())
+        before = stale.read_text()
+        res = run_strand(self.repo, "report", "--strand", "kit")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("[%s]" % sha, header_block(self.report("kit"))["commits"])
+        self.assertEqual(before, stale.read_text())
+
+    def test_report_from_another_strands_tree_fills_the_named_strands_copy(self):
+        # Re-check H2 m8: a copy of kit's report in ANOTHER strand's tree
+        # (a rebase brought it along) is not kit's report.
+        sha = self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "new", "other", "--issue", "757")
+        self.assertEqual(0, res.returncode, res.stderr)
+        foreign = self.worktree("other") / "plans" / WAVE_DIR / "berichte" / "kit.md"
+        foreign.write_text(self.report("kit").read_text())
+        before = foreign.read_text()
+        res = run_strand(self.repo, "report", "--strand", "kit", cwd=self.worktree("other"))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("[%s]" % sha, header_block(self.report("kit"))["commits"])
+        self.assertEqual(before, foreign.read_text())
 
     def test_report_takes_the_gate_line_of_the_newest_run(self):
         self.commit()
@@ -671,6 +981,110 @@ class TestReportAndClose(StrandShTestCase):
         self.assertEqual(1, res.returncode, res.stdout)
         self.assertIn("RED", res.stderr)
 
+    def test_report_refuses_without_a_fresh_pre_green_stamp_on_the_head(self):
+        # Convergence A (owner, 13.10.): the done-definition's (a) -- pre
+        # GREEN on the own head -- is checked by `report`, not trusted. The
+        # strand tree here carries the REAL stamp check (the fixture's copy
+        # passes every check), committed like any kit update.
+        real = (PIPELINE_PKG / "pre.py").read_text()
+        (self.tree / "scripts" / "pipeline" / "pre.py").write_text(real)
+        _git(self.tree, "add", "scripts/pipeline/pre.py")
+        _git(self.tree, "commit", "-q", "-m", "welle-x P1 (#756): the real stamp check")
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no fresh pre-GREEN stamp", res.stderr)
+        self.assertIn("no stamp", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", header_block(self.report("kit")).get("gate", ""))
+        # From the main tree the strand's worktree copy is the one filled:
+        # the same check.
+        res = run_strand(self.repo, "report", "--strand", "kit")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        if str(REPO) not in sys.path:
+            sys.path.insert(0, str(REPO))
+        from scripts.pipeline import pre
+
+        def stamp(verdict="GREEN"):
+            pre.write_stamp(str(self.tree), {
+                "tree_hash": pre.tree_hash(str(self.tree)), "verdict": verdict,
+                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "lane_half": False, "reasons": [],
+                "head": _git(self.tree, "rev-parse", "HEAD").stdout.strip()})
+        stamp("RED")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("was RED", res.stderr)
+        stamp()
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GATE-SUMMARY", header_block(self.report("kit"))["gate"])
+        # A code commit after the stamp: the head is no longer the graded one.
+        self.commit("scripts/kit_change.txt", "another change\n")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("tree changed since", res.stderr)
+
+    def lane_summary(self, verdict, with_summary=True):
+        """The newest run's summary.txt in the lane gate's layout (W3):
+        station lines, GATE-SUMMARY, then GATE-LANE as the LAST line."""
+        # Z16: derived from the writer (receipt.summary_lines without its
+        # GATE-PLAN head), not typed by hand -- a drifting writer turns it red
+        root = str(pathlib.Path(__file__).resolve().parents[2])
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from scripts.pipeline import receipt
+        doc = {"mode": "strand", "rev": "abc1234def", "secs": 9, "verdict": verdict,
+               "stations": [{"name": "fmt", "scope": "rust", "secs": 1, "verdict": verdict}],
+               "lane": "build02", "critical_path_s": 7, "lane_seconds": 9, "rounds": [{}]}
+        lines = receipt.summary_lines(doc)[1:]
+        self.assertEqual(lines[-1], "GATE-LANE build02 crit=7 lane_s=9 rounds=1")
+        self.assertTrue(lines[1].startswith("GATE-SUMMARY strand abc1234 "), lines)
+        if not with_summary:
+            lines = [ln for ln in lines if not ln.startswith("GATE-SUMMARY ")]
+        latest = (self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+                  / "latest" / "summary.txt")
+        latest.write_text("\n".join(lines) + "\n")
+        return lines
+
+    def test_report_reads_the_summary_line_before_a_trailing_lane_line(self):
+        """Z12: GATE-LANE after GATE-SUMMARY is no verdict."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        lines = self.lane_summary("GREEN")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual('"%s"' % lines[1],
+                         header_block(self.report("kit"))["gate"])
+
+    def test_report_keeps_a_red_summary_red_behind_a_lane_line(self):
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        lines = self.lane_summary("RED")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertIn("the gate is RED", res.stderr)
+        self.assertEqual('"%s"' % lines[1],
+                         header_block(self.report("kit"))["gate"])
+
+    def test_report_refuses_a_summary_file_without_a_summary_line(self):
+        """Fail closed: an earlier GREEN header must not survive for close."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        self.assertEqual(0, run_strand(self.repo, "report",
+                                       cwd=self.tree).returncode)
+        self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
+        self.lane_summary("GREEN", with_summary=False)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertIn("no GATE-SUMMARY line", res.stderr)
+        gate = header_block(self.report("kit"))["gate"]
+        self.assertNotIn("GREEN", gate)
+        self.assertIn("no GATE-SUMMARY", gate)
+        res = run_strand(self.repo, "close", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertNotIn("gh issue close", res.stdout)
+
     def test_report_refuses_an_ask_gate(self):
         """ASK is no green: a question for the owner is still open."""
         self.commit()
@@ -682,17 +1096,17 @@ class TestReportAndClose(StrandShTestCase):
         self.assertIn("not GREEN", res.stderr)
 
     def test_close_refuses_an_ask_gate(self):
+        """Close reads the gate line of the newest STRAND receipt in the
+        archive (GH #1107), not the head block: an ASK there closes nothing."""
         self.commit()
         self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
         self.assertEqual(0, run_strand(self.repo, "report",
                                        cwd=self.tree).returncode)
-        path = self.report("kit")
-        text = path.read_text()
-        gate = header_block(path)["gate"]
-        path.write_text(text.replace(
-            "gate: %s" % gate,
-            'gate: "GATE-SUMMARY integration abc1234 0/0 1s ASK"', 1))
-        self.assertIn("ASK", header_block(path)["gate"])
+        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        summary = (root / "latest").resolve() / "summary.txt"
+        text = summary.read_text()
+        self.assertIn(" GREEN", text)
+        summary.write_text(text.replace(" GREEN", " ASK"))
         res = run_strand(self.repo, "close", cwd=self.tree)
         self.assertNotEqual(0, res.returncode, res.stdout)
         self.assertIn("ASK", res.stderr)
@@ -822,6 +1236,10 @@ class TestReportAndClose(StrandShTestCase):
         self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
         self.assertEqual(0, run_strand(self.repo, "report",
                                        cwd=self.tree).returncode)
+        # #1148: the strand commits its report on the branch; the merge
+        # brings it into the main tree.
+        _git(self.tree, "add", "plans")
+        _git(self.tree, "commit", "-q", "-m", "welle-x P1 (#756): Bericht")
         _git(self.repo, "merge", "--no-ff", "-m",
              "Merge branch '%s/kit'" % WAVE, "%s/kit" % WAVE)
         _git(self.repo, "worktree", "remove", "--force", str(self.tree))
@@ -832,6 +1250,25 @@ class TestReportAndClose(StrandShTestCase):
         self.assertIn("scripts/kit_change.txt", res.stdout)
         self.assertNotIn("other/foreign.txt", res.stdout)
         self.assertIn("Merged as ", res.stdout)
+
+    def test_close_refuses_a_head_block_with_commits_of_master(self):
+        """GH #1107: a head block written before a rebase named commits that
+        master already had -- the comment listed fifty commits of other
+        strands. Close refuses and asks for `report` again."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        self.assertEqual(0, run_strand(self.repo, "report",
+                                       cwd=self.tree).returncode)
+        first = _git(self.repo, "rev-list", "--max-parents=0", "--abbrev-commit",
+                     "--abbrev=8", "master").stdout.strip()
+        path = self.report("kit")
+        commits = header_block(path)["commits"]
+        path.write_text(path.read_text().replace(
+            "commits: %s" % commits, "commits: [%s, %s]" % (first, commits.strip("[]")), 1))
+        res = run_strand(self.repo, "close", cwd=self.tree)
+        self.assertNotEqual(0, res.returncode, res.stdout)
+        self.assertIn("report again", res.stderr)
+        self.assertNotIn("gh issue close", res.stdout)
 
     def test_close_does_not_run_gh_without_do(self):
         self.commit()
@@ -858,6 +1295,12 @@ class TokenTestCase(StrandShTestCase):
 
     Nothing here reaches the host's file: `kit_env` SETS the path for every
     call, and `test_no_case_touches_the_hosts_token_file` proves it.
+
+    Since GH #1156 every token verb is the store's (`pipeline.py lanes`): the
+    cases that pinned the old token file went with it, their semantics are
+    the cases of `test_pipeline_lanes_cli.py` (carried over from TestToken,
+    TestTokenLanes, TestTokenGuards and TestLanesStatus). What stays here is
+    what the kit itself adds on top of the store.
     """
 
     T0 = 1_800_000_000
@@ -901,7 +1344,7 @@ class TokenTestCase(StrandShTestCase):
         return path
 
     def gate(self, cwd=None, *args):
-        return run_strand(self.repo, "gate", *args, cwd=cwd or self.tree,
+        return run_strand(self.repo, "gate", "ci", *args, cwd=cwd or self.tree,
                           extra_env={"MECLAW_GATE_PLAN": str(self.plan_file())})
 
 
@@ -914,6 +1357,7 @@ class TestToken(TokenTestCase):
     wait. The token is the limit, written down where every tree reads it.
     """
 
+
     def test_an_unarmed_host_needs_no_token(self):
         res = self.gate()
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
@@ -924,133 +1368,15 @@ class TestToken(TokenTestCase):
         self.assertNotIn("token", res.stderr)
         self.assertFalse((self.repo.parent / "tokens").exists())
 
-    def test_take_grants_up_to_max_and_queues_the_rest(self):
-        self.arm("--max", "2")
-        self.assertEqual(0, self.take("welle-x/a").returncode)
-        self.assertEqual(0, self.take("welle-x/b").returncode)
-        res = self.take("welle-x/c")
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("all 2 cargo tokens are held", res.stderr)
-        self.assertIn("welle-x/c is #1 in the queue", res.stderr)
-        self.assertIn("End your turn", res.stderr)
-        self.assertEqual(["welle-x/a", "welle-x/b"], self.holders())
-        self.assertEqual(["welle-x/c"], self.waiting())
-
-    def test_release_names_the_next_in_the_queue(self):
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.take("welle-x/b", minutes=2)
-        res = self.token("release", "--strand", "welle-x/a", minutes=23)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("strand: cargo token released by welle-x/a after 23 min "
-                      "-- 0/1 held; next in the queue: welle-x/b (waiting 21 min)",
-                      res.stderr)
-        self.assertIn("(released by master)", res.stderr)
-        self.assertIn("\trelease-by\t", self.log())
-
-    def test_the_queue_is_first_come_first_served(self):
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.assertEqual(3, self.take("welle-x/b").returncode)
-        self.assertEqual(3, self.take("welle-x/c").returncode)
-        self.token("release", "--strand", "welle-x/a")
-        res = self.take("welle-x/c")
-        self.assertEqual(3, res.returncode, "a later strand overtook the queue")
-        self.assertIn("welle-x/c is #2 in the queue", res.stderr)
-        self.assertEqual(0, self.take("welle-x/b").returncode)
-        self.assertEqual(["welle-x/b"], self.holders())
-
-    def test_concurrent_takes_never_exceed_max(self):
-        """Eight takes at once against three tokens: exactly three win."""
-        self.arm("--max", "3")
-        env = kit_env(self.repo, {"MECLAW_STRAND_NOW": str(self.T0)})
-        procs = [subprocess.Popen(
-            [str(self.repo / "scripts" / "strand.sh"), "token", "take",
-             "--strand", "welle-x/s%d" % i],
-            cwd=str(self.repo), env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE) for i in range(8)]
-        codes = sorted(p.wait(timeout=120) for p in procs)
-        for p in procs:
-            p.stdout.close()
-            p.stderr.close()
-        self.assertEqual([0, 0, 0, 3, 3, 3, 3, 3], codes)
-        self.assertEqual(3, len(self.holders()))
-        self.assertEqual(5, len(self.waiting()))
-
-    def test_a_stale_holder_is_reclaimed(self):
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        res = self.take("welle-x/b", minutes=91)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("reclaimed the cargo token of welle-x/a -- last seen 91 min "
-                      "ago, no live process (ttl 90 min)", res.stderr)
-        self.assertEqual(["welle-x/b"], self.holders())
-        self.assertIn("\tstale\twelle-x/a", self.log())
-
-    def test_a_holder_with_a_live_process_is_not_stale(self):
-        """A gate that runs longer than the TTL keeps its token."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        res = self.token("check", "--strand", "welle-x/a", "--pid",
-                         str(os.getpid()))
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual(3, self.take("welle-x/b", minutes=120).returncode)
-        self.assertEqual(["welle-x/a"], self.holders())
-
-    def test_a_holder_whose_worktree_is_gone_is_stale(self):
-        self.arm("--max", "1")
-        res = self.take(None, cwd=self.tree)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual(["%s/kit" % WAVE], self.holders())
-        _git(self.repo, "worktree", "remove", "--force", str(self.tree))
-        res = self.take("welle-x/b")
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("its worktree is gone", res.stderr)
-
-    def test_a_dead_waiter_does_not_block_the_queue(self):
-        """A waiter nobody wakes any more held place 1 for everybody behind
-        it (review rev-1 I3): waiters expire like holders."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.assertEqual(3, self.take("welle-x/w").returncode)
-        self.token("check", "--strand", "welle-x/a", minutes=94)
-        self.token("release", "--strand", "welle-x/a", minutes=95)
-        res = self.take("welle-x/c", minutes=95)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual([], self.waiting())
-        self.assertIn("\tstale-wait\twelle-x/w", self.log())
-
-    def test_a_waiter_with_a_live_worktree_never_expires(self):
-        """A strand that waits in its own worktree is alive as long as the
-        tree is: the TTL is for waiters queued from outside (review I1). With
-        three tokens for eight strands a wait over 90 min is the normal case,
-        and the drop landed at another strand's `take`, unseen by the one
-        that lost its place."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
-        res = self.take(None, cwd=self.tree)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("%s/kit is #1 in the queue" % WAVE, res.stderr)
-        self.assertEqual(3, self.take("welle-x/x", minutes=10).returncode)
-        res = self.take("welle-x/x", minutes=95)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertNotIn("dropped", res.stderr)
-        self.assertEqual(["%s/kit" % WAVE, "welle-x/x"], self.waiting())
-        res = self.token("release", "--strand", "welle-x/a", minutes=96)
-        self.assertIn("next in the queue: %s/kit" % WAVE, res.stderr)
-        res = self.take(None, cwd=self.tree, minutes=97)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual(["%s/kit" % WAVE], self.holders())
-
     def test_an_unarmed_host_gets_no_lock_file(self):
-        """Unarmed is without a trace: no verb but `init` creates a file."""
-        for args in (("take", "--strand", "welle-x/a"),
-                     ("release", "--strand", "welle-x/a"),
-                     ("check", "--strand", "welle-x/a", "--pid", "0"),
-                     ("who",), ("off",)):
+        """Unarmed is without a trace: no verb but `init` creates a file --
+        `take` refuses (exit 2, Z11-M1), every other verb passes."""
+        for want, args in ((2, ("take", "--strand", "welle-x/a")),
+                           (0, ("release", "--strand", "welle-x/a")),
+                           (0, ("check", "--strand", "welle-x/a", "--pid", "0")),
+                           (0, ("who",)), (0, ("off",))):
             res = self.token(*args)
-            self.assertEqual(0, res.returncode, "%s: %s" % (args, res.stderr))
+            self.assertEqual(want, res.returncode, "%s: %s" % (args, res.stderr))
         self.assertEqual([], sorted(p.name for p in self.repo.parent.iterdir()
                                     if p.name.startswith("tokens")))
 
@@ -1063,215 +1389,14 @@ class TestToken(TokenTestCase):
             res = self.token("check", "--strand", "%s/kit" % WAVE, "--pid", str(pid))
             self.assertEqual(0, res.returncode, res.stderr)
 
-    def test_a_single_test_beside_a_running_gate_keeps_the_gates_pid(self):
-        """A tier started beside a background gate wrote its own pid over the
-        gate's; after the tier the entry named a dead process, and a gate
-        running on past the TTL lost its token (review M2)."""
-        gate = os.getpid()
-        for order in ("tier after the gate", "gate after the tier"):
-            with self.subTest(order=order):
-                tier = subprocess.Popen([sys.executable, "-c",
-                                         "import time; time.sleep(120)"])
-                try:
-                    pair = (gate, tier.pid) if order.startswith("tier") else (tier.pid, gate)
-                    self._gate_and_tier(*pair)
-                finally:
-                    tier.kill()
-                    tier.wait()
-                res = self.take("welle-x/b", minutes=120)
-                self.assertEqual(3, res.returncode, res.stderr)
-                self.assertEqual(["%s/kit" % WAVE], self.holders())
-
-    def test_the_heartbeat_after_a_foreign_release_logs_no_refusal(self):
-        """The orchestrator released the token while the gate ran; the
-        heartbeat after the run is no refusal of anything (review M3)."""
-        self.arm()
-        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
-        # The one station of this gate is the release, from the side.
-        release = "%s token release --strand %s/kit" % (
-            self.repo / "scripts" / "strand.sh", WAVE)
-        plan = self.plan_file("released\tscope-rel\t0\t%s\t\n" % release,
-                              name="release.tsv")
-        res = run_strand(self.repo, "gate", cwd=self.tree,
-                         extra_env={"MECLAW_GATE_PLAN": str(plan)})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertEqual([], self.holders())
-        self.assertNotIn("\trefused\t", self.log())
-
-    def test_init_refuses_over_waiters_without_force(self):
-        """A re-init in the middle of a wave emptied the queue without a word
-        (review M6)."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.take("welle-x/b")
-        self.token("release", "--strand", "welle-x/a")
-        res = self.token("init")
-        self.assertEqual(2, res.returncode, res.stderr)
-        self.assertIn("welle-x/b", res.stderr)
-        self.assertIn("--force", res.stderr)
-        self.assertEqual(["welle-x/b"], self.waiting())
-
-    def test_off_refuses_over_waiters_without_force(self):
-        """`off` dropped the queue without a word -- the counterpart of the
-        re-init of review M6 (review fix round 1, m3)."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.take("welle-x/b")
-        self.token("release", "--strand", "welle-x/a")
-        res = self.token("off")
-        self.assertEqual(2, res.returncode, res.stderr)
-        self.assertIn("welle-x/b waits in the queue", res.stderr)
-        self.assertIn("--force", res.stderr)
-        self.assertEqual(["welle-x/b"], self.waiting())
-        res = self.token("off", "--force")
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertFalse((self.repo.parent / "tokens").exists())
-        self.assertIn("\toff --force\t", self.log())
-
-    def test_off_names_holders_and_waiters_together(self):
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.take("welle-x/b")
-        res = self.token("off")
-        self.assertEqual(2, res.returncode, res.stderr)
-        self.assertIn("welle-x/a holds a cargo token", res.stderr)
-        self.assertIn("welle-x/b waits in the queue", res.stderr)
-        self.assertEqual(["welle-x/a"], self.holders())
-
-    def test_who_marks_a_waiter_beyond_the_ttl_and_keeps_it(self):
-        """A builder that dies while it waits leaves its tree standing, and
-        its entry blocks everybody behind it until `release --strand` (the
-        other side of review I1). `who` says so after the TTL -- a hint only,
-        the entry stays (review fix round 1, m1)."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
-        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
-        res = self.token("who", minutes=90)
-        self.assertNotIn("beyond the ttl", res.stdout)
-        res = self.token("who", minutes=95)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("#1 %s/kit  waiting 95 min  waiting beyond the ttl" % WAVE,
-                      res.stdout)
-        self.assertNotIn("STALE", res.stdout)
-        self.assertEqual(["%s/kit" % WAVE], self.waiting())
-
     def utc(self, minutes):
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.T0 + 60 * minutes))
-
-    def test_a_waiter_beyond_the_ttl_that_does_not_take_its_token_drops_out(self):
-        """GH #1053: a standing tree is no proof that its builder still
-        polls. A waiter beyond the TTL that leaves an offered token untaken
-        for one poll period leaves the queue with an event line, and the one
-        behind it gets the token -- before, the queue stood still until the
-        orchestrator dropped it by hand."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
-        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
-        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
-        self.token("release", "--strand", "welle-x/a", minutes=100)
-        res = self.token("who", minutes=101)
-        self.assertIn("#1 %s/kit  waiting 101 min  waiting beyond the ttl  offered a token at %s"
-                      % (WAVE, self.utc(100)), res.stdout)
-        res = self.take("welle-x/x", minutes=111)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("dropped %s/kit from the queue -- waiter past ttl, did not take" % WAVE,
-                      res.stderr)
-        self.assertEqual(["welle-x/x"], self.holders())
-        self.assertEqual([], self.waiting())
-        self.assertRegex(self.log(), r"\tdropped\t%s/kit\t[^\t]*\twaiter past ttl, did not take"
-                         % re.escape(WAVE))
-
-    def test_a_waiter_whose_worktree_is_gone_leaves_the_queue(self):
-        """The one automatic exit of a waiter with a tree (review I1): the
-        tree is gone, the entry goes at the next `take`, and the one behind
-        it moves up (review fix round 1, m2a)."""
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
-        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
-        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
-        _git(self.repo, "worktree", "remove", "--force", str(self.tree))
-        res = self.take("welle-x/x", minutes=300)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("dropped %s/kit from the queue -- its worktree is gone" % WAVE,
-                      res.stderr)
-        self.assertIn("welle-x/x is #1 in the queue", res.stderr)
-        self.assertEqual(["welle-x/x"], self.waiting())
-        self.assertIn("\tstale-wait\t%s/kit" % WAVE, self.log())
 
     def _old_form(self, holders):
         """A token file of the first form: one `pid` per holder."""
         (self.repo.parent / "tokens").write_text(json.dumps({
             "max": 3, "ttl_min": 90, "armed": "2027-01-15T08:00:00Z",
             "holders": holders, "waiting": []}))
-
-    def test_load_turns_the_old_pid_field_into_the_list(self):
-        """The first form of the file kept one `pid` per holder; `load` reads
-        it as `pids` (review fix round 1, m2b)."""
-        self.arm()
-        dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait()
-        old = lambda s, pid: {"strand": s, "since": self.T0, "seen": self.T0,
-                              "pid": pid, "tree": ""}
-        self._old_form([old("welle-x/live", os.getpid()),
-                        old("welle-x/dead", dead.pid),
-                        old("welle-x/none", None)])
-        res = self.token("check", "--strand", "welle-x/none", minutes=120)
-        self.assertEqual(0, res.returncode, res.stderr)
-        res = self.take("welle-x/c", minutes=120)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("reclaimed the cargo token of welle-x/dead -- last seen "
-                      "120 min ago, no live process", res.stderr)
-        by = {h["strand"]: h for h in self.state()["holders"]}
-        self.assertEqual(["welle-x/live", "welle-x/none", "welle-x/c"], list(by))
-        self.assertEqual([os.getpid()], by["welle-x/live"]["pids"])
-        self.assertEqual([], by["welle-x/none"]["pids"])
-        self.assertNotIn("pid", by["welle-x/live"])
-
-    def test_load_refuses_a_broken_old_pid_field(self):
-        for name, holder in (
-                ("a pid that is no number", {"strand": "welle-x/a", "since": 0,
-                                             "seen": 0, "pid": "abc"}),
-                ("pids that are no list", {"strand": "welle-x/a", "since": 0,
-                                           "seen": 0, "pids": 5}),
-                ("a holder that is a string", "welle-x/a")):
-            with self.subTest(form=name):
-                self.arm("--force")
-                self._old_form([holder])
-                before = (self.repo.parent / "tokens").read_text()
-                res = self.take("welle-x/b")
-                self.assertEqual(2, res.returncode, res.stderr)
-                self.assertIn("is broken", res.stderr)
-                self.assertEqual(before, (self.repo.parent / "tokens").read_text())
-
-    def test_release_also_leaves_the_queue(self):
-        self.arm("--max", "1")
-        self.take("welle-x/a")
-        self.take("welle-x/b")
-        res = self.token("release", "--strand", "welle-x/b")
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual([], self.waiting())
-        self.assertEqual(["welle-x/a"], self.holders())
-
-    def test_the_skip_variable_is_logged(self):
-        self.arm()
-        res = self.token("check", cwd=self.tree,
-                         env={"MECLAW_STRAND_TOKEN_SKIP": "a review reruns one test"})
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("strand: token check skipped for %s/kit: a review reruns "
-                      "one test" % WAVE, res.stderr)
-        self.assertIn("\tskip\t%s/kit" % WAVE, self.log())
-
-    def test_init_refuses_over_holders_without_force(self):
-        self.arm()
-        self.take("welle-x/a")
-        res = self.token("init")
-        self.assertEqual(2, res.returncode, res.stderr)
-        self.assertEqual(["welle-x/a"], self.holders())
-        self.assertEqual(0, self.token("init", "--force").returncode)
-        self.assertEqual([], self.holders())
 
     def test_who_names_holders_the_queue_and_the_last_events(self):
         self.arm("--max", "1")
@@ -1283,42 +1408,6 @@ class TestToken(TokenTestCase):
         self.assertIn("12 min", res.stdout)
         self.assertIn("#1 welle-x/b", res.stdout)
         self.assertIn("wait", res.stdout)
-
-    def test_a_broken_token_file_is_never_rewritten_in_silence(self):
-        self.arm()
-        (self.repo.parent / "tokens").write_text("{not json")
-        res = self.take("welle-x/a")
-        self.assertEqual(2, res.returncode, res.stderr)
-        self.assertIn(str(self.repo.parent / "tokens"), res.stderr)
-        self.assertEqual("{not json", (self.repo.parent / "tokens").read_text())
-
-    def test_off_disarms_and_keeps_the_log(self):
-        self.arm()
-        self.assertEqual(0, self.token("off").returncode)
-        self.assertFalse((self.repo.parent / "tokens").exists())
-        self.assertIn("\toff\t", self.log())
-        res = self.take("welle-x/a")
-        self.assertEqual(0, res.returncode)
-        self.assertIn("not armed", res.stderr)
-
-    def test_no_case_touches_the_hosts_token_file(self):
-        """Every verb, through the same environment as every other case, and
-        not a trace of it in the host's file or log."""
-        probe = "hostprobe-%s/probe" % uuid.uuid4().hex[:12]
-        self.arm()
-        for args in (("take", "--strand", probe),
-                     ("check", "--strand", probe, "--pid", "0"),
-                     ("who",),
-                     ("release", "--strand", probe),
-                     ("off",)):
-            res = self.token(*args)
-            self.assertEqual(0, res.returncode, "%s: %s" % (args, res.stderr))
-        self.assertIn(probe, self.log())
-        for host in (HOST_TOKENS, pathlib.Path(str(HOST_TOKENS) + ".log")):
-            if host.is_file():
-                self.assertNotIn(probe, host.read_text(errors="replace"),
-                                 "a test reached %s" % host)
-
 
 LANES_FILE = """# name  ssh target  [bmc]
 north  builder@north.example.invalid  bmc-north.example.invalid
@@ -1340,77 +1429,63 @@ class TestTokenLanes(TokenTestCase):
         super().setUp()
         (self.repo.parent / "lanes").write_text(LANES_FILE)
 
-    def test_take_hands_out_lanes_in_the_order_of_init(self):
-        self.arm("--lanes", "south,north")
-        res = self.take("welle-x/a")
+    def test_pre_on_another_lane_than_the_held_one_refuses_at_once(self):
+        # Kit find (a), 09.10.: `take` without --lane held one lane, the chain
+        # then ran pre and gate with --host on another -- the gate's admission
+        # refused only after pre. The mismatch is loud before pre starts.
+        self.arm("--lanes", "north,south")
+        res = self.token("take", "--lane", "north", cwd=self.tree)
         self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual("lane south", res.stdout.strip())
-        res = self.take("welle-x/b")
-        self.assertEqual("lane north", res.stdout.strip())
-        res = self.take("welle-x/c")
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("welle-x/c is #1 in the queue", res.stderr)
-        self.assertEqual(["south", "north"],
-                         [h["lane"] for h in self.state()["holders"]])
+        res = run_strand(self.repo, "pre", "--host", "south", cwd=self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("holds lane north, not south", res.stderr)
+
+    def test_pre_with_a_holder_checks_the_lane_of_that_lease(self):
+        # Review Z-A2 R3 M2: pre knew no --holder, so it compared the second
+        # lease's --host with the main lease's lane.
+        new = {"MECLAW_GATE_LEGACY": None}    # --holder is the store's (the old path has none)
+        self.assertEqual(0, self.token("init", "--lanes", "north,south", env=new).returncode)
+        self.assertEqual(0, self.token("take", "--lane", "north", cwd=self.tree, env=new).returncode)
+        res = self.token("take", "--lane", "south", "--holder", "sat", cwd=self.tree, env=new)
+        self.assertEqual(0, res.returncode, res.stderr)
+        res = run_strand(self.repo, "pre", "--host", "north", "--holder", "sat", cwd=self.tree,
+                         extra_env=dict(new, MECLAW_STRAND_NOW=str(self.T0)))
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("holds lane south, not north", res.stderr)
+
+    def test_pre_refuses_an_empty_or_malformed_holder(self):
+        # Re-check Z-A M-b: `--holder ""` took the main lease in silence, and
+        # `--holder 'bad!'` lost the rc 2 of `token lane` (pre ran without a lane).
+        new = {"MECLAW_GATE_LEGACY": None}
+        for bad in ("", "bad!", "x" * 33):
+            res = run_strand(self.repo, "pre", "--holder", bad, cwd=self.tree,
+                             extra_env=dict(new, MECLAW_STRAND_NOW=str(self.T0)))
+            self.assertEqual(2, res.returncode, (bad, res.stdout + res.stderr))
+            self.assertIn("--holder takes a short suffix", res.stderr)
+
+    def test_token_refuses_the_old_strand_colon_form(self):
+        # Kit find tv-br M5 (M7d2): `--strand <s>:<n>` was the key of the second
+        # lease by accident -- the same name a `test` pushed as a ref. It is
+        # `--strand <s> --holder <n>` (GH #1146); the old form takes nothing.
+        new = {"MECLAW_GATE_LEGACY": None}
+        self.assertEqual(0, self.token("init", "--lanes", "north,south", env=new).returncode)
+        for verb in ("take", "release", "check", "lane"):
+            res = self.token(verb, "--strand", "t1:sat", cwd=self.tree, env=new)
+            self.assertEqual(2, res.returncode, (verb, res.stdout + res.stderr))
+            self.assertIn("--strand t1 --holder sat", res.stderr)
+        who = self.token("who", cwd=self.tree, env=new)
+        self.assertNotIn("t1", who.stdout)
 
     # A waiter is an entry in a file: nothing in it takes the lane that comes
     # free, and a builder that ended its turn waited 115 min beside a free
     # lane until the orchestrator dropped it. `take --wait` blocks until the
     # take succeeds -- started in the background, its exit wakes the builder.
-    def test_take_wait_blocks_until_the_lane_is_free(self):
-        self.arm("--lanes", "north")
-        self.assertEqual(0, self.take("welle-x/a").returncode)
-        env = kit_env(self.repo, {"MECLAW_STRAND_NOW": str(self.T0),
-                                  "MECLAW_TOKEN_WAIT_SECS": "0.2"})
-        proc = subprocess.Popen([str(self.repo / "scripts" / "strand.sh"), "token", "take",
-                                 "--strand", "welle-x/b", "--wait"], cwd=str(self.repo),
-                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            for _ in range(100):
-                if "welle-x/b" in self.waiting():
-                    break
-                time.sleep(0.1)
-            self.assertIsNone(proc.poll(), "take --wait returned while the lane was held")
-            self.assertEqual(0, self.token("release", "--strand", "welle-x/a").returncode)
-            out, err = proc.communicate(timeout=30)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-        self.assertEqual(0, proc.returncode, out + err)
-        self.assertEqual("lane north", out.strip().splitlines()[-1])
-        self.assertEqual(["welle-x/b"], self.holders())
 
     def test_take_wait_passes_other_refusals_through(self):
         self.arm("--lanes", "north")
         res = self.token("take", "--strand", "welle-x/b", "--lane", "nowhere", "--wait")
         self.assertNotEqual(0, res.returncode)
         self.assertNotEqual(3, res.returncode)
-
-    def test_take_wait_names_a_later_refusal(self):
-        # review N4: the retries ran with `2>/dev/null`; a refusal after the
-        # first round (the lane gone after `init --force`) came back as a
-        # bare exit 2.
-        self.arm("--lanes", "north,south")
-        self.assertEqual(0, self.take_lane("welle-x/a", "north").returncode)
-        env = kit_env(self.repo, {"MECLAW_STRAND_NOW": str(self.T0),
-                                  "MECLAW_TOKEN_WAIT_SECS": "0.2"})
-        proc = subprocess.Popen([str(self.repo / "scripts" / "strand.sh"), "token", "take",
-                                 "--strand", "welle-x/b", "--lane", "north", "--wait"],
-                                cwd=str(self.repo), env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
-        try:
-            for _ in range(100):
-                if "welle-x/b" in self.waiting():
-                    break
-                time.sleep(0.1)
-            self.assertIsNone(proc.poll(), "take --wait returned while the lane was held")
-            self.assertEqual(0, self.token("init", "--force", "--lanes", "south").returncode)
-            out, err = proc.communicate(timeout=30)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-        self.assertNotIn(proc.returncode, (0, 3), out + err)
-        self.assertIn("no lane north", err)
 
     def test_a_released_lane_goes_to_the_next(self):
         self.arm("--lanes", "north,south")
@@ -1480,37 +1555,8 @@ class TestTokenLanes(TokenTestCase):
         res = self.token("init", "--lanes", "north,north")
         self.assertEqual(2, res.returncode)
 
-    def test_max_alone_is_the_old_token(self):
-        self.arm("--max", "2")
-        res = self.take("welle-x/a")
-        self.assertEqual("", res.stdout.strip())
-        self.assertNotIn("lane", self.state()["holders"][0])
-        self.assertNotIn("lanes", self.state())
-
     def take_lane(self, strand, lane, minutes=0):
         return self.token("take", "--strand", strand, "--lane", lane, minutes=minutes)
-
-    def test_take_with_a_lane_takes_that_lane(self):
-        # A strand that needs one host (a browser lab lives on one lane only)
-        # names it; the first free lane is not that host (OR-DP-83).
-        self.arm("--lanes", "south,north")
-        res = self.take_lane("welle-x/a", "north")
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual("lane north", res.stdout.strip())
-        self.assertIn("lane north", self.log())
-        res = self.take("welle-x/b")
-        self.assertEqual("lane south", res.stdout.strip())
-
-    def test_a_named_lane_that_is_held_queues(self):
-        self.arm("--lanes", "south,north")
-        self.take("welle-x/a")
-        res = self.take_lane("welle-x/b", "south")
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("lane south is held by welle-x/a", res.stderr)
-        self.assertIn("welle-x/b is #1 in the queue", res.stderr)
-        self.assertEqual("south", self.state()["waiting"][0]["lane"])
-        # the free lane is not handed out instead
-        self.assertEqual(["welle-x/a"], self.holders())
 
     def test_release_names_the_waiter_the_freed_lane_goes_to(self):
         # N review I-2: the head of the queue waits for a lane that stays held; the
@@ -1557,63 +1603,6 @@ class TestTokenLanes(TokenTestCase):
                                              time.gmtime(self.T0 + 6000))), res.stdout)
         self.assertNotIn("offered", res.stdout.split("#2", 1)[1].splitlines()[0])
 
-    def test_an_offered_lane_stands_for_one_poll_period(self):
-        self._past_ttl_waiter_before_a_free_lane()
-        res = self.take("welle-x/x", minutes=109)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertNotIn("dropped", res.stderr)
-        self.assertEqual(["%s/kit" % WAVE, "welle-x/x"], self.waiting())
-
-    def test_a_waiter_beyond_the_ttl_that_does_not_take_its_lane_drops_out(self):
-        """Measured 2026-10-07 00:12: two waiters 96-115 min beyond the TTL
-        in standing trees never took build04; the `take` of the third left
-        them standing and the lane stood empty for about 30 min."""
-        self._past_ttl_waiter_before_a_free_lane()
-        res = self.take("welle-x/x", minutes=110)
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertEqual("lane south", res.stdout.strip())
-        self.assertIn("dropped %s/kit from the queue -- waiter past ttl, did not take lane south"
-                      % WAVE, res.stderr)
-        self.assertEqual([], self.waiting())
-        self.assertIn("\tdropped\t%s/kit\t" % WAVE, self.log())
-        # the dropped strand comes back at the end of the queue
-        res = self.take(None, cwd=self.tree, minutes=111)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("%s/kit is #1 in the queue" % WAVE, res.stderr)
-
-    def test_the_next_waiter_gets_the_lane_offered_in_turn(self):
-        """The drop hands the lane on: the next waiter gets its own poll
-        period, it is not dropped in the same breath."""
-        self.arm("--lanes", "south")
-        self.take("welle-x/a")
-        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
-        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
-        self.assertEqual(3, self.take("welle-x/x", minutes=30).returncode)
-        self.assertEqual(3, self.take("welle-x/y", minutes=31).returncode)
-        self.token("release", "--strand", "welle-x/a", minutes=100)
-        res = self.take("welle-x/y", minutes=110)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertIn("dropped %s/kit" % WAVE, res.stderr)
-        self.assertNotIn("dropped welle-x/x", res.stderr)
-        self.assertIn("welle-x/y is #2 in the queue", res.stderr)
-        self.assertEqual(["welle-x/x", "welle-x/y"], self.waiting())
-        self.assertEqual({"lane": "south", "at": self.T0 + 110 * 60},
-                         self.state()["waiting"][0]["offered"])
-
-    def test_a_waiter_within_the_ttl_keeps_an_offered_lane(self):
-        """Within the TTL an untaken offer is the normal case -- the builder
-        is woken by the orchestrator, and that can take a while."""
-        self.arm("--lanes", "south")
-        self.take("welle-x/a")
-        self.token("check", "--strand", "welle-x/a", "--pid", str(os.getpid()))
-        self.assertEqual(3, self.take(None, cwd=self.tree).returncode)
-        self.assertEqual(3, self.take("welle-x/x", minutes=1).returncode)
-        self.token("release", "--strand", "welle-x/a", minutes=10)
-        res = self.take("welle-x/x", minutes=60)
-        self.assertEqual(3, res.returncode, res.stderr)
-        self.assertNotIn("dropped", res.stderr)
-        self.assertEqual(["%s/kit" % WAVE, "welle-x/x"], self.waiting())
-
     def test_a_named_waiter_keeps_its_lane_against_a_later_take(self):
         self.arm("--lanes", "south,north")
         self.take("welle-x/a")
@@ -1642,13 +1631,6 @@ class TestTokenLanes(TokenTestCase):
         self.take_lane("welle-x/b", "south")
         self.assertRegex(self.token("who").stdout, r"#1 welle-x/b\s+for lane south")
 
-    def test_an_unknown_lane_to_take_refuses(self):
-        self.arm("--lanes", "south,north")
-        res = self.take_lane("welle-x/a", "west")
-        self.assertEqual(2, res.returncode)
-        self.assertIn("no lane west", res.stderr)
-        self.assertEqual([], self.holders())
-
     def test_a_held_other_lane_is_not_swapped(self):
         self.arm("--lanes", "south,north")
         self.take("welle-x/a")
@@ -1676,7 +1658,7 @@ class TestTokenLanes(TokenTestCase):
 # runs the remote command HERE -- so `git push`, `rsync` and the remote run
 # all go through the code paths of a real host, against a directory of this
 # test. A host whose name says `unreachable` answers like a dead one.
-FAKE_SSH = """#!/usr/bin/env bash
+FAKE_SSH_TEMPLATE = """#!/usr/bin/env bash
 while [ $# -gt 0 ]; do
     case "$1" in
         -o|-p|-l|-i|-E|-F) shift 2 ;;
@@ -1690,10 +1672,28 @@ case "$host" in
     *unreachable*) echo "ssh: connect to host $host: Connection timed out" >&2; exit 255 ;;
 esac
 # A real ssh does not carry the caller's environment: the golden switches
-# (GH #1051) and a secret beside them reach the host only on the command line.
-unset GH277_WRITE_GOLDEN MECLAW_GH935_BLESS FAKE_SECRET_API_KEY
+# (GH #1051), the verdict's names and a secret beside them reach the host only
+# on the command line -- the names of the one rule (fake_ssh.py, GH #1209).
+# @fake-ssh: strip the transported names@
+# The identity query of `lane_sync.sh coverage` (W6 review I2): the fake host
+# runs on this machine, so it answers with FAKE_SSH_IDENTITY when a test gives
+# one (a different machine); without it the real identity comes back.
+case "$*" in
+    *machine-id*) [ -n "${FAKE_SSH_IDENTITY:-}" ] && { printf '%b\\n' "$FAKE_SSH_IDENTITY"; exit 0; } ;;
+esac
+# A hold whose connection drops (re-check ZC M-neu-1): with FAKE_SSH_HOLD_DROP
+# naming a fifo, ssh ends with 255 once a line arrives there; the far side
+# lives on until its stdin closes, as a remote holder does.
+case "$*" in
+    *"exec cat >/dev/null"*) if [ -n "${FAKE_SSH_HOLD_DROP:-}" ]; then
+        bash -c "$*" <&0 & read -r _ <"$FAKE_SSH_HOLD_DROP"; exit 255; fi
+        # Re-check 2686990c8 M: a hold that lives to EOF and only then ends
+        # with 255 -- the `wait` branch of the release, not the reaped one.
+        if [ -n "${FAKE_SSH_HOLD_EOF_255:-}" ]; then bash -c "$*" <&0; exit 255; fi ;;
+esac
 exec bash -c "$*"
 """
+FAKE_SSH = fake_ssh.script(FAKE_SSH_TEMPLATE)
 
 HOST_LANES = """north  builder@north.example.invalid
 south  builder@south.example.invalid
@@ -1740,6 +1740,10 @@ FAKE_CARGO = """#!/usr/bin/env bash
 # every word on its own, a filterset with blanks or `|` stays one (review N6)
 printf 'words %s\\n' "$(printf '<%s>' "$@")" >>"$FAKE_CARGO_LOG"
 printf 'cargo %s\\n' "$*" >>"$FAKE_CARGO_LOG"
+# W1: the environment a lane run hands cargo, and a run that only a kill ends
+printf 'jobs %s threads %s incr %s nice %s\\n' "${CARGO_BUILD_JOBS:-}" "${NEXTEST_TEST_THREADS:-}" \
+    "${CARGO_INCREMENTAL:-}" "$(nice)" >>"$FAKE_CARGO_LOG.env"
+[ -z "${FAKE_CARGO_HOLD:-}" ] || exec tail -f /dev/null
 # GH #1051: a golden writer, run in the host's tree. It rewrites a golden and,
 # beside it, a tracked file that is no golden -- only the first may come back.
 if [ "${GH277_WRITE_GOLDEN:-}" = 1 ]; then
@@ -1801,20 +1805,233 @@ exit "${FAKE_CARGO_RC:-0}"
 # directory sits on (tmpfs before the disk was put in, ext4 after).
 FAKE_DF = """#!/usr/bin/env bash
 echo "Type Avail"
-echo "${FAKE_DF_FSTYPE:-tmpfs} 373G"
+echo "$(cat @FSTYPE@ 2>/dev/null || echo tmpfs) 373G"
 """
 
 
-@unittest.skipUnless(shutil.which("rsync"), "the lane overlay needs rsync")
-class TestGateHost(TokenTestCase):
-    """`strand.sh gate --host <lane>` (GH #934): the gate on a build host.
 
-    The commit travels by `git push` into a bare repository on the host, the
-    uncommitted rest (staged or not, against HEAD) by an rsync overlay --
-    never a file whose name says secret, never a gitignored one; a tracked
-    secret refuses the gate -- and the archive comes back to the wave as if
-    the run had been local.
-    """
+
+class TestLanesStatus(TokenTestCase):
+    LEGACY = None   # GH #1156: no old path left; the switch reaches nothing
+
+    def test_one_line_per_lane(self):
+        tmp = pathlib.Path(self._tmp.name)
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        b = tmp / "bin"; b.mkdir()
+        fake_ssh.install(b, FAKE_SSH_TEMPLATE)
+        store_isolation.write_lane_fakes(b)
+        (tmp / "remote").mkdir()
+        res = run_strand(self.repo, "lanes", "status", extra_env={
+            "MECLAW_GATE_LEGACY": self.LEGACY,
+            "PATH": "%s:%s" % (b, os.environ["PATH"]),
+            "MECLAW_LANE_ROOT": str(tmp / "remote"),
+            "FAKE_SSH_LOG": str(tmp / "ssh.log")})
+        self.assertEqual(0, res.returncode, res.stderr)
+        lines = res.stdout.splitlines()
+        self.assertEqual(3, len(lines), res.stdout)
+        self.assertRegex(lines[0], r"^north\s+reachable\s+fs \S+\s+free \d+G\s+bare none\s")
+        self.assertRegex(lines[2], r"^ghost\s+unreachable\s+state off$")
+
+    def test_lanes_status_of_one_lane_goes_through_the_host_file(self):
+        # GH #1144: the disk probe of one lane is `lanes status <lane>` -- the
+        # target of the host file, never a hand-made `ssh <alias> df`.
+        tmp = pathlib.Path(self._tmp.name)
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        b = tmp / "bin"; b.mkdir()
+        fake_ssh.install(b, FAKE_SSH_TEMPLATE)
+        store_isolation.write_lane_fakes(b)
+        (tmp / "remote").mkdir()
+        env = {"MECLAW_GATE_LEGACY": self.LEGACY,
+               "PATH": "%s:%s" % (b, os.environ["PATH"]),
+               "MECLAW_LANE_ROOT": str(tmp / "remote"),
+               "FAKE_SSH_LOG": str(tmp / "ssh.log")}
+        res = run_strand(self.repo, "lanes", "status", "north", extra_env=env)
+        self.assertEqual(0, res.returncode, res.stderr)
+        lines = res.stdout.splitlines()
+        self.assertEqual(1, len(lines), res.stdout)
+        self.assertRegex(lines[0], r"^north\s+reachable\s+fs \S+\s+free \d+G")
+        res = run_strand(self.repo, "lanes", "status", "nope", extra_env=env)
+        self.assertEqual(2, res.returncode, res.stdout)
+        self.assertIn("nope", res.stderr)
+        # Review Zb R2 M6: the one lane named is unreachable -- its space is
+        # unknown, no success (the line still says so).
+        res = run_strand(self.repo, "lanes", "status", "ghost", extra_env=env)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"^ghost\s+unreachable")
+
+    def test_lanes_status_names_the_target_filesystem(self):
+        tmp = pathlib.Path(self._tmp.name)
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        b = tmp / "bin"; b.mkdir()
+        fake_ssh.install(b, FAKE_SSH_TEMPLATE)
+        store_isolation.write_lane_fakes(b)
+        fstype_file = tmp / "df-fstype"   # the host's state: a file, the host runs under `env -i`
+        (b / "df").write_text(FAKE_DF.replace("@FSTYPE@", shlex.quote(str(fstype_file)))); (b / "df").chmod(0o755)
+        (tmp / "remote").mkdir()
+        for fstype in ("tmpfs", "ext4"):
+            with self.subTest(fs=fstype):
+                fstype_file.write_text(fstype)
+                res = run_strand(self.repo, "lanes", "status", extra_env={
+                    "MECLAW_GATE_LEGACY": self.LEGACY,
+                    "PATH": "%s:%s" % (b, os.environ["PATH"]),
+                    "MECLAW_LANE_ROOT": str(tmp / "remote"),
+                    "FAKE_SSH_LOG": str(tmp / "ssh.log")})
+                self.assertEqual(0, res.returncode, res.stderr)
+                self.assertRegex(res.stdout.splitlines()[0],
+                                 r"^north\s+reachable\s+fs %s\s+free 373G\s+bare none\s" % fstype)
+
+
+    def test_lanes_status_shows_inventory(self):
+        tmp = pathlib.Path(self._tmp.name)
+        remote = tmp / "remote"
+        deps = remote / "target" / "debug" / "deps"
+        deps.mkdir(parents=True)
+        for name in ("lane_cells-0123456789abcdef", "lane_cells-fedcba9876543210",
+                     "lane_other-00112233445566aa"):
+            (deps / name).write_text("#!/bin/sh\n"); (deps / name).chmod(0o755)
+        (deps / "liblane_cells-0123456789abcdef.rlib").write_text("lib\n")
+        for t in ("a", "b"):
+            (remote / "wt" / t).mkdir(parents=True)
+        (self.repo.parent / "lanes").write_text(
+            HOST_LANES.replace("north  builder@north.example.invalid",
+                               "north  builder@north.example.invalid  slots=3")
+            + "here  local  %s  class=egon  watch=guarded.service\n" % (tmp / "local"))
+        b = tmp / "bin"; b.mkdir()
+        fake_ssh.install(b, FAKE_SSH_TEMPLATE)
+        store_isolation.write_lane_fakes(b)
+        # The machine running the test is not the lane: on build02 its user
+        # had no linger, the real `loginctl` said so, and hygiene's tail
+        # grew a `linger no` this line never shows (W3 gate 09.10.,
+        # 20261009T020350Z). This host's answer stands behind the lane fake.
+        host = tmp / "host-bin"; host.mkdir()
+        (host / "loginctl").write_text("#!/bin/sh\necho no\n"); (host / "loginctl").chmod(0o755)
+        res = run_strand(self.repo, "lanes", "status", extra_env={
+            "PATH": "%s:%s:%s" % (b, host, os.environ["PATH"]),
+            "MECLAW_LANE_ROOT": str(remote),
+            "FAKE_SSH_LOG": str(tmp / "ssh.log")})
+        self.assertEqual(0, res.returncode, res.stderr)
+        lines = res.stdout.splitlines()
+        self.assertRegex(lines[0], r"^north\s+reachable\s+fs \S+\s+free \d+G\s+bare none\s+deps \d+G\s+"
+                                   r"incr \d+G\s+gen 3/2\s+wt 2\s+slots 3\s+sccache \S+\s+"
+                                   r"fp [0-9a-f]{8}\s+state (idle|busy)"
+                                   # W2's hygiene tail, where `hygiene.py` is in the kit
+                                   r"(\s+trees \d+\s+generations \d+\s+zombies \d+\s+stray \d+)?$")
+        here = next(l for l in lines if l.startswith("here"))
+        self.assertRegex(here, r"^here\s+reachable\s.*\sslots 1\s")
+
+
+class TestLanesStatusPipeline(TestLanesStatus):
+    """The same two cases through `pipeline.py lanes status`."""
+    LEGACY = None
+
+    def test_lanes_release_reaches_the_pipeline_verb(self):
+        # Z-I (#1126): `lanes release` is `pipeline.py lanes release-run`; a
+        # run the throw-away store does not know is refused, nothing probed.
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        sqlite3.connect(str(self.repo.parent / "pipeline.db")).close()
+        res = run_strand(self.repo, "lanes", "release", "north", "--run", "run-abc123",
+                         extra_env={"MECLAW_GATE_LEGACY": self.LEGACY})
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no workpackage carries the run run-abc123", res.stderr)
+
+    def test_lanes_browsers_reaches_the_transport_with_the_ssh_target(self):
+        # GH #1161: `lanes browsers <lane> ...` is `lane_sync.sh browsers <ssh-target> ...`
+        # with the target from the host file; an unknown lane is refused, nothing called.
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        log = self.repo.parent / "sync.log"
+        stub = self.repo / "scripts" / "lane_sync.sh"
+        stub.write_text('#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %s\nexit 7\n' % log)
+        stub.chmod(0o755)
+        # Re-Check S3 Teil 2 m-2: after every check or install the store learns the
+        # lane's fingerprint again (`pipeline.py lanes fingerprint <lane>`), so a lane
+        # refused for an engine is bookable once the engine starts
+        plog = self.repo.parent / "pipeline.log"
+        (self.repo / "scripts" / "pipeline.py").write_text(
+            "import sys\nopen(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n" % str(plog))
+        res = run_strand(self.repo, "lanes", "browsers", "north", "check", "webkit")
+        self.assertEqual(7, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["browsers builder@north.example.invalid check webkit"],
+                         log.read_text().splitlines())
+        self.assertEqual(["lanes fingerprint north"], plog.read_text().splitlines())
+        res = run_strand(self.repo, "lanes", "fingerprint", "north")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["lanes fingerprint north"] * 2, plog.read_text().splitlines())
+        res = run_strand(self.repo, "lanes", "browsers", "nowhere", "check")
+        self.assertNotEqual(0, res.returncode)
+        self.assertIn("no lane nowhere", res.stderr)
+        self.assertEqual(1, len(log.read_text().splitlines()))
+
+    def test_lanes_browsers_never_installs_on_the_owners_machine(self):
+        # Re-check tb-s3 h2 M-1: `install` runs apt as root on the lane. The owner's
+        # machine (`class=egon`) and this machine (`local`) are refused before any call,
+        # the way idle-off skips them; `check` reads only and stays allowed.
+        (self.repo.parent / "lanes").write_text(
+            HOST_LANES + "here  local  /srv/x\n"
+            "egon  builder@egon.example.invalid  class=egon\n")
+        log = self.repo.parent / "sync.log"
+        stub = self.repo / "scripts" / "lane_sync.sh"
+        stub.write_text('#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$*" "${MECLAW_LANE_CLASS:-}"'
+                        ' >> %s\nexit 0\n' % log)
+        stub.chmod(0o755)
+        for lane, why in (("here", "transport local"), ("egon", "class egon")):
+            with self.subTest(lane=lane):
+                res = run_strand(self.repo, "lanes", "browsers", lane, "install", "webkit")
+                self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+                self.assertIn("never installs on %s (%s)" % (lane, why), res.stderr)
+                self.assertFalse(log.exists(), "the transport was called")
+        res = run_strand(self.repo, "lanes", "browsers", "egon", "check")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        # the class reaches the transport, its own refusal is the second line;
+        # the fingerprint after the recipe reads the stations' words from the
+        # same transport (`env test`, read only, the class with it: M7s A-M2),
+        # and nothing else is called
+        self.assertEqual(["browsers builder@egon.example.invalid check|egon", "env test|egon"],
+                         log.read_text().splitlines())
+        res = run_strand(self.repo, "lanes", "browsers", "north", "install")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["browsers builder@north.example.invalid install|", "env test|"],
+                         log.read_text().splitlines()[2:])
+
+
+# A stand-in for `scripts/pipeline/hygiene.py` (W2 of the dev-tempo wave):
+# the kit's side of the hygiene is the command line it builds and where the
+# script runs, not what the script does -- that has its own tests
+# (`test_pipeline_hygiene.py`). The stub logs its argv as one JSON line
+# (`argv0` is `-` when the script came over stdin, its path when a timer could
+# call it), prints what the kit reads, and exits with FAKE_HYGIENE_RC_<CMD>.
+HYGIENE_STUB = r'''import json, os, sys
+args = sys.argv[1:]
+KNOBS = "@KNOBS@"   # the host's state, set by the test (no name of the caller reaches a host)
+
+
+def knob(name, default):
+    path = os.path.join(KNOBS, name)
+    return open(path).read() if os.path.exists(path) else default
+
+
+with open(os.path.join(KNOBS, "..", "hygiene.log"), "a") as f:
+    f.write(json.dumps({"argv0": sys.argv[0], "args": args}) + "\n")
+cmd = args[0] if args else ""
+if cmd == "status":
+    print(knob("FAKE_HYGIENE_STATUS", "{}"))
+elif cmd == "bench" and args[1:2] == ["new"]:
+    print("bench note on stdout")
+    print("/lane/bench/" + args[2])
+else:
+    print(json.dumps({"event": "hygiene_checked", "kind": "note", "data": {"verdict": "ok"}}))
+sys.exit(int(knob("FAKE_HYGIENE_RC_" + cmd.upper().replace("-", "_"), "0")))
+'''
+
+HYGIENE_STATUS = json.dumps({
+    "runner": "north", "state": "free", "free_g": 373, "trees": 2, "ws": 0,
+    "bench": 1, "load1": 0.2, "zombies": 0, "reserve_hits": 0,
+    "generations": 1, "sccache_g": 3, "fingerprint_short": "x",
+    "linger": False, "stray_targets": 1})
+
+
+class HygieneTestCase(TokenTestCase):
+    """The shell side of the lane hygiene (dev-tempo W2): what the kit and
+    the transport hand to `hygiene.py`, and where."""
 
     def setUp(self):
         super().setUp()
@@ -1822,878 +2039,536 @@ class TestGateHost(TokenTestCase):
         (self.repo.parent / "lanes").write_text(HOST_LANES)
         self.bin = tmp / "bin"
         self.bin.mkdir()
-        (self.bin / "ssh").write_text(FAKE_SSH)
-        (self.bin / "ssh").chmod(0o755)
-        (self.bin / "rsync").write_text(FAKE_RSYNC % shutil.which("rsync"))
+        fake_ssh.install(self.bin, FAKE_SSH_TEMPLATE)
+        store_isolation.write_lane_fakes(self.bin)
+        (self.bin / "rsync").write_text(FAKE_RSYNC % (shutil.which("rsync") or "false"))
         (self.bin / "rsync").chmod(0o755)
+        # the narrow point checks the local rsync of a remote way like ssh (OR-T10-25)
+        fake_ssh.register_tool(self.bin / "rsync")
         self.remote = tmp / "remote"
+        self.remote.mkdir()
         self.ssh_log = tmp / "ssh.log"
         self.ssh_log.write_text("")
-        # The tree: a commit, a change, a new file, a deletion and the files
-        # that must never leave this machine.
-        t = self.tree
-        (t / ".gitignore").write_text("ignored.txt\n")
-        (t / "gone.txt").write_text("to be deleted\n")
-        (t / "scripts" / "kit_change.txt").write_text("committed\n")
-        _git(t, "add", ".gitignore", "gone.txt", "scripts/kit_change.txt")
-        _git(t, "commit", "-q", "-m", "a strand commit")
-        (t / "README.md").write_text("changed, not committed\n")
-        (t / "notes").mkdir()
-        (t / "notes" / "new.txt").write_text("untracked\n")
-        (t / "gone.txt").unlink()
-        (t / ".env").write_text("NEVER=sent\n")
-        (t / ".env.local").write_text("NEVER=sent\n")
-        (t / "vault.env").write_text("NEVER=sent\n")
-        (t / "notes" / "vault-pass.txt").write_text("never sent\n")
-        (t / "ignored.txt").write_text("never sent\n")
+        self.hyg_log = tmp / "hygiene.log"
+        self.hyg_log.write_text("")
+        # the stub runs on the host under the narrow point's `env -i`
+        # (orchestrator OR-T10-2): its knobs are files, never the caller's env
+        self.knobs = tmp / "knobs"
+        self.knobs.mkdir()
+        stub = HYGIENE_STUB.replace("@KNOBS@", str(self.knobs))
+        # The kit (`strand.sh` of the main tree) and the transport (the
+        # strand tree's own `lane_sync.sh`) each read the script beside them.
+        for root in (self.repo, self.tree):
+            (root / "scripts" / "pipeline").mkdir(parents=True, exist_ok=True)
+            (root / "scripts" / "pipeline" / "hygiene.py").write_text(stub)
 
-    def host_gate(self, plan, *args, skip="lane-test", env=None):
-        # A gate on a host binds to a held token or names a skip reason
-        # (review M3); the cases that arm lanes pass `skip=None`.
-        extra = {"MECLAW_GATE_PLAN": str(self.plan_file(plan)),
-                 "PATH": "%s:%s" % (self.bin, os.environ["PATH"]),
-                 "MECLAW_LANE_ROOT": str(self.remote),
-                 "FAKE_SSH_LOG": str(self.ssh_log)}
-        if skip:
-            extra["MECLAW_STRAND_TOKEN_SKIP"] = skip
-        extra.update(env or {})
-        return run_strand(self.repo, "gate", *args, cwd=self.tree, extra_env=extra)
+    def env(self, **extra):
+        env = {"PATH": "%s:%s" % (self.bin, os.environ["PATH"]),
+               "MECLAW_LANE_ROOT": str(self.remote),
+               "FAKE_SSH_LOG": str(self.ssh_log)}
+        for old in self.knobs.iterdir():
+            old.unlink()
+        for name, value in extra.items():
+            if name.startswith("FAKE_HYGIENE_"):
+                (self.knobs / name).write_text(value)
+            else:
+                env[name] = value
+        return env
 
-    def receipts(self):
-        return self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+    def kit(self, *args, **extra):
+        return run_strand(self.repo, *args, extra_env=self.env(**extra))
 
-    def commit(self, files):
-        for rel, text in files.items():
-            path = self.tree / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-        _git(self.tree, "add", "-f", *files)
-        _git(self.tree, "commit", "-q", "-m", "more")
-
-    def wt(self):
-        return self.remote / "wt" / "kit"
+    def calls(self):
+        return [json.loads(l) for l in self.hyg_log.read_text().splitlines()]
 
     def lanes_with(self, text):
         (self.repo.parent / "lanes").write_text(text)
 
-    def gate_call(self):
-        # The remote command line of the gate run, as the fake ssh logged it.
-        return next(l for l in self.ssh_log.read_text().splitlines() if "scripts/gate.sh" in l)
 
-    def test_a_lane_without_threads_runs_at_full_width(self):
-        res = self.host_gate(PLAN_HOST, "--host", "north")
+class TestBench(HygieneTestCase):
+    def test_bench_new_on_a_lane_installs_the_kit_copy_and_prints_the_path(self):
+        res = self.kit("bench", "new", "cmp", "--ttl", "3", "--lane", "north")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertNotIn("CARGO_BUILD_JOBS", self.gate_call())
-        self.assertNotIn("NEXTEST_TEST_THREADS", self.gate_call())
+        self.assertEqual("/lane/bench/cmp", res.stdout.splitlines()[-1])
+        [call] = self.calls()
+        self.assertEqual(["bench", "new", "cmp", "--ttl", "3", "--root", str(self.remote)],
+                         call["args"])
+        # A timer needs a path to call: the script was written under the lane
+        # root, named by its content, and run from there.
+        # (the stub carries its knob directory in the body, see setUp)
+        body = (self.repo / "scripts" / "pipeline" / "hygiene.py").read_text()
+        sha = hashlib.sha256(body.encode()).hexdigest()[:8]
+        kit = self.remote / "kit" / sha / "hygiene.py"
+        self.assertEqual(str(kit), call["argv0"])
+        self.assertEqual(body, kit.read_text())
+        self.assertIn("builder@north.example.invalid", self.ssh_log.read_text())
 
-    def test_threads_in_the_host_file_cap_the_gate_on_that_lane(self):
-        self.lanes_with(HOST_LANES.replace("north  builder@north.example.invalid",
-                                           "north  builder@north.example.invalid  bmc-n.example.invalid  threads=7"))
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("NEXTEST_TEST_THREADS=7 CARGO_BUILD_JOBS=7 scripts/gate.sh", self.gate_call())
-
-    def test_the_cap_stands_without_a_bmc_word_and_binds_to_its_own_lane(self):
-        self.lanes_with(HOST_LANES.replace("south  builder@south.example.invalid",
-                                           "south  builder@south.example.invalid  threads=5"))
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertNotIn("CARGO_BUILD_JOBS", self.gate_call())   # north has no cap
-        self.ssh_log.write_text("")
-        res = self.host_gate(PLAN_HOST, "--host", "south")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("NEXTEST_TEST_THREADS=5 CARGO_BUILD_JOBS=5 scripts/gate.sh", self.gate_call())
-
-    def test_a_threads_word_that_is_no_number_is_no_cap(self):
-        for word in ("threads=abc", "threads=0", "threads=", "threads=-3"):
-            self.lanes_with(HOST_LANES.replace("north  builder@north.example.invalid",
-                                               "north  builder@north.example.invalid  " + word))
-            self.ssh_log.write_text("")
-            res = self.host_gate(PLAN_HOST, "--host", "north")
-            self.assertEqual(0, res.returncode, word + res.stdout + res.stderr)
-            self.assertNotIn("CARGO_BUILD_JOBS", self.gate_call(), word)
-
-    def test_strand_test_takes_the_cap_of_the_held_lane(self):
-        env = self.fake_cargo()
-        self.lanes_with(HOST_LANES.replace("north  builder@north.example.invalid",
-                                           "north  builder@north.example.invalid  threads=6"))
-        self.arm("--lanes", "north,south")
-        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
-        res = self.strand_test("binary(~gh1_x)", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("NEXTEST_TEST_THREADS=6 CARGO_BUILD_JOBS=6 scripts/test-tier.sh filter",
-                      self.ssh_log.read_text())
-
-    def test_strand_test_without_a_cap_runs_at_nproc(self):
-        env = self.fake_cargo()
-        self.arm("--lanes", "north,south")
-        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
-        res = self.strand_test("binary(~gh1_x)", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        log = self.ssh_log.read_text()
-        self.assertIn("NEXTEST_TEST_THREADS=$(nproc) scripts/test-tier.sh filter", log)
-        self.assertNotIn("CARGO_BUILD_JOBS", log)
-
-    def test_the_gate_runs_on_the_host_and_comes_back_green(self):
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        lines = [l for l in res.stdout.splitlines() if l.strip()]
-        sha = _git(self.tree, "rev-parse", "--short=8", "HEAD").stdout.strip()
-        self.assertRegex(lines[0], r"^strand: lane north \(north\.example\.invalid\) rev %s "
-                                   r"overlay [0-9a-f]{16}$" % sha)
-        self.assertTrue(SUMMARY_LINE.match(lines[-1]), lines[-1])
-        self.assertIn("GREEN", lines[-1])
-        # The run happened THERE, at full width.
-        self.assertIn("(lane)", (self.wt().parent.parent / "runs" / "kit" / "logs"
-                                 / "strand-build.log").read_text())
-
-    def test_the_archive_comes_back_to_the_wave(self):
-        self.host_gate(PLAN_HOST, "--host", "north")
-        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
-        self.assertTrue((latest / "run.log").is_file())
-        self.assertTrue((latest / "summary.txt").is_file())
-        self.assertTrue((latest / "last-strand.json").is_file())
-        self.assertTrue((latest / "logs" / "strand-ok.log").is_file())
-        receipt = json.loads((latest / "last-strand.json").read_text())
-        base = _git(self.tree, "merge-base", "master", "HEAD").stdout.strip()
-        self.assertEqual(base, receipt["base"])
-
-    def test_the_host_tree_is_the_local_tree_without_the_secrets(self):
-        self.host_gate(PLAN_HOST, "--host", "north")
-        wt = self.wt()
-        self.assertEqual("committed\n", (wt / "scripts" / "kit_change.txt").read_text())
-        self.assertEqual("changed, not committed\n", (wt / "README.md").read_text())
-        self.assertEqual("untracked\n", (wt / "notes" / "new.txt").read_text())
-        self.assertFalse((wt / "gone.txt").exists())
-        for never in (".env.local", "vault.env", "notes/vault-pass.txt",
-                      "ignored.txt"):
-            with self.subTest(path=never):
-                self.assertFalse((wt / never).exists())
-        self.assertNotIn("NEVER=sent", self.ssh_log.read_text())
-        # The `.env` there is the secret-free lane env, never this tree's (GH #942).
-        lane_env = subprocess.run([sys.executable, str(self.tree / "scripts" / "gate_plan.py"),
-                                   "--print", "lane-env"], capture_output=True, text=True,
-                                  check=True).stdout
-        self.assertEqual(lane_env, (wt / ".env").read_text())
-        self.assertNotIn("NEVER", (wt / ".env").read_text())
-
-    def test_a_second_run_takes_the_new_state(self):
-        self.host_gate(PLAN_HOST, "--host", "north")
-        (self.tree / "notes" / "new.txt").unlink()
-        (self.tree / "README.md").write_text("second state\n")
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertFalse((self.wt() / "notes" / "new.txt").exists())
-        self.assertEqual("second state\n", (self.wt() / "README.md").read_text())
-
-    def test_the_held_lane_is_the_host_without_host(self):
-        self.arm("--lanes", "south,north")
-        self.assertEqual("lane south", self.take(None, cwd=self.tree).stdout.strip())
-        res = self.host_gate(PLAN_HOST, skip=None)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(res.stdout.startswith("strand: lane south "), res.stdout)
-
-    def test_a_host_other_than_the_held_lane_is_refused(self):
-        self.arm("--lanes", "south,north")
-        self.take(None, cwd=self.tree)
-        res = self.host_gate(PLAN_HOST, "--host", "north", skip=None)
-        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
-        self.assertIn("holds lane south, not north", res.stderr)
-        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
-
-    def test_an_unreachable_host_is_exit_two_without_latest(self):
-        self.arm("--lanes", "ghost")
-        self.take(None, cwd=self.tree)
-        res = self.host_gate(PLAN_HOST, skip=None)
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("strand: lane ghost unreachable", res.stderr)
-        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
-        self.assertEqual(["welle-x/kit"], self.holders())
-
-    def test_an_unknown_lane_is_refused(self):
-        res = self.host_gate(PLAN_HOST, "--host", "west")
-        self.assertEqual(2, res.returncode)
-        self.assertIn("west", res.stderr)
-
-    def test_a_red_station_is_passed_through(self):
-        res = self.host_gate(PLAN_HOST_RED, "--host", "north")
-        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout, r"(?m)^GATE bad \[scope-bad\] \d+s RED")
-        self.assertRegex(res.stdout, r"(?m)^GATE-SUMMARY .* RED$")
-
-    def test_env_stations_run_on_the_lane_with_one_summary(self):
-        res = self.host_gate(PLAN_HOST_ENV % "test -f .env", "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        sums = [l for l in res.stdout.splitlines() if l.startswith("GATE-SUMMARY ")]
-        self.assertEqual(1, len(sums), res.stdout)
-        self.assertTrue(sums[0].endswith(" GREEN"), sums)
-        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
-        self.assertRegex((latest / "run.log").read_text(),
-                         r"(?m)^GATE scenarios:memory \[1 case\] \d+s GREEN")
-        self.assertFalse((latest / "run-local.log").exists())
-
-    def test_node_and_ref_stations_run_on_the_lane(self):
-        _git(self.repo, "branch", "github-main", "master")
-        res = self.host_gate(PLAN_HOST_LOCAL, "--host", "north",
-                             env={"MECLAW_GATE_NODE": "sh"})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
-        remote = (latest / "run.log").read_text()
-        self.assertRegex(remote, r"(?m)^GATE display-lab \[unittest\] \d+s GREEN")
-        self.assertRegex(remote, r"(?m)^GATE export-audit \[R1-R17 dry\] \d+s GREEN")
-        self.assertFalse((latest / "run-local.log").exists())
-
-    def test_a_red_env_station_on_the_lane_makes_the_gate_red(self):
-        res = self.host_gate(PLAN_HOST_ENV % "false", "--host", "north")
-        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout, r"(?m)^GATE scenarios:memory \[1 case\] \d+s RED")
-        latest = self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest"
-        self.assertIn(" RED", (latest / "summary.txt").read_text())
-
-    def test_gate_on_host_pushes_the_export_ref(self):
-        _git(self.repo, "branch", "github-main", "master")
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        bare = self.remote / "meclaw.git"
-        there = subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "github-main"],
-                               capture_output=True, text=True).stdout.strip()
-        here = _git(self.repo, "rev-parse", "github-main").stdout.strip()
-        self.assertEqual(here, there)
-        # ... and the host's worktree sees it, like the audit will.
-        seen = subprocess.run(["git", "-C", str(self.wt()), "rev-parse", "github-main"],
-                              capture_output=True, text=True).stdout.strip()
-        self.assertEqual(here, seen)
-
-    def test_without_the_export_ref_the_push_still_goes(self):
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-
-    # OR-BC.L.4: the export audit on the host calls `git ls-remote origin main`,
-    # so the bare repository gets this tree's `origin` -- but only a plain
-    # https URL. A URL with credentials would put a token on the host, an ssh
-    # URL would need a key the host does not have (Review L, Important 2).
-    def origin_on_host(self, url):
-        _git(self.repo, "remote", "add", "origin", url)
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        got = subprocess.run(["git", "--git-dir", str(self.remote / "meclaw.git"),
-                              "config", "--get", "remote.origin.url"],
-                             capture_output=True, text=True).stdout.strip()
-        return got
-
-    def test_an_origin_with_credentials_is_not_set_on_the_host(self):
-        self.assertEqual("", self.origin_on_host("https://user:tok3n@git.example.invalid/x.git"))
-        self.assertNotIn("tok3n", self.ssh_log.read_text())
-
-    def test_an_ssh_origin_is_not_set_on_the_host(self):
-        self.assertEqual("", self.origin_on_host("git@git.example.invalid:x/y.git"))
-        self.assertNotIn("git.example.invalid", self.ssh_log.read_text())
-
-    def test_a_plain_https_origin_is_set_on_the_host(self):
-        url = "https://git.example.invalid/x/y.git"
-        self.assertEqual(url, self.origin_on_host(url))
-
-    def test_gate_on_host_pushes_master_too(self):
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        there = subprocess.run(["git", "--git-dir", str(self.remote / "meclaw.git"),
-                                "rev-parse", "refs/heads/master"],
-                               capture_output=True, text=True).stdout.strip()
-        self.assertEqual(_git(self.repo, "rev-parse", "master").stdout.strip(), there)
-
-    # --- `strand.sh test` (GH #942): a single test on the held lane.
-
-    def fake_cargo(self):
-        (self.bin / "cargo").write_text(FAKE_CARGO)
-        (self.bin / "cargo").chmod(0o755)
-        home = pathlib.Path(self._tmp.name) / "home"
-        home.mkdir(exist_ok=True)
-        self.cargo_log = pathlib.Path(self._tmp.name) / "cargo.log"
-        return {"HOME": str(home), "FAKE_CARGO_LOG": str(self.cargo_log)}
-
-    def strand_test(self, *args, skip=None, env=None):
-        extra = {"PATH": "%s:%s" % (self.bin, os.environ["PATH"]),
-                 "MECLAW_LANE_ROOT": str(self.remote),
-                 "FAKE_SSH_LOG": str(self.ssh_log)}
-        if skip:
-            extra["MECLAW_STRAND_TOKEN_SKIP"] = skip
-        extra.update(env or {})
-        return run_strand(self.repo, "test", *args, cwd=self.tree, extra_env=extra)
-
-    def test_strand_test_runs_the_filter_on_the_held_lane(self):
-        env = self.fake_cargo()
-        self.arm("--lanes", "north,south")
-        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
-        res = self.strand_test("binary(~gh1_x)", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        # Push and overlay: the host's tree is this tree.
-        self.assertEqual("changed, not committed\n", (self.wt() / "README.md").read_text())
-        # The filter ran THERE, through the tier script.
-        self.assertIn("-E binary(~gh1_x)", self.cargo_log.read_text())
-        self.assertRegex(self.ssh_log.read_text(), r"scripts/test-tier\.sh filter")
-        # The full log lies here, and the last line is the verdict.
-        logs = sorted((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").glob("test-*/test.log"))
-        self.assertEqual(1, len(logs))
-        self.assertIn("3 tests run: 3 passed", logs[0].read_text())
-        last = res.stdout.strip().splitlines()[-1]
-        self.assertRegex(last, r"^TEST \[binary\(~gh1_x\)\] 3/3 \d+s GREEN$")
-        # A test run is no gate run: `latest` is not moved.
-        self.assertFalse((self.receipts() / "latest").exists())
-
-    def test_a_lane_tree_gets_the_browser_drivers_of_the_lane(self):
-        # OR-DP-83: the browser lab of a lane lived in ONE worktree; every
-        # other strand's fresh tree had no `workshop/tools/node_modules`, and
-        # its browser proofs skipped. The first tree that has it seeds a lane
-        # cache, every tree of the lane links it.
-        env = self.fake_cargo()
-        self.commit({"workshop/tools/driver.mjs": "// a driver\n"})
-        seed = self.remote / "wt" / "lab" / "workshop" / "tools" / "node_modules"
-        (seed / "playwright").mkdir(parents=True)
-        (seed / "playwright" / "index.js").write_text("// the package\n")
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        nm = self.wt() / "workshop" / "tools" / "node_modules"
-        self.assertTrue(nm.is_symlink(), res.stdout + res.stderr)
-        self.assertEqual("// the package\n", (nm / "playwright" / "index.js").read_text())
-        self.assertNotIn("no playwright", res.stdout + res.stderr)
-        # the cache stands on its own: the seed may go, a second run links again
-        shutil.rmtree(self.remote / "wt" / "lab")
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue((nm / "playwright" / "index.js").is_file())
-
-    def test_a_seed_never_lands_inside_a_cache_that_stands(self):
-        # N review m-2: two pushes on one host may both find the cache absent and
-        # both copy the seed; the second `mv` into the cache the first one moved in
-        # put the copy INSIDE it. The second push meets a cache that stands here.
-        env = self.fake_cargo()
-        self.commit({"workshop/tools/driver.mjs": "// a driver\n"})
-        seed = self.remote / "wt" / "lab" / "workshop" / "tools" / "node_modules"
-        (seed / "playwright").mkdir(parents=True)
-        cache = self.remote / "cache" / "workshop-tools" / "node_modules"
-        cache.mkdir(parents=True)
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertEqual([], sorted(p.name for p in cache.iterdir()))
-        self.assertEqual([], [p.name for p in cache.parent.iterdir() if p.name != "node_modules"])
-
-    def test_a_lane_without_browser_drivers_says_so(self):
-        env = self.fake_cargo()
-        self.commit({"workshop/tools/driver.mjs": "// a driver\n"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("lane north has no playwright for this tree", res.stdout)
-        # the verdict stays the last line
-        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[")
-
-    def test_strand_test_passes_the_remote_exit_through(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_RC": "100", "FAKE_CARGO_PASSED": "2"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1],
-                         r"^TEST \[binary\(~gh1_x\)\] 2/3 \d+s RED$")
-
-    # GH #1050: every nextest argument reaches nextest -- after the filterset,
-    # before it, behind `--` -- and a test run keeps going after a failure.
-    def cargo_argv(self):
-        return self.cargo_log.read_text().splitlines()[-2]
-
-    def test_nextest_args_after_the_filterset_reach_nextest(self):
-        env = self.fake_cargo()
-        res = self.strand_test("binary(~gh1_x)", "--no-fail-fast", "--run-ignored", "only",
-                               "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith(
-            "-E binary(~gh1_x) --no-fail-fast --run-ignored only"), self.cargo_argv())
-
-    def test_nextest_args_before_the_filterset_are_no_filterset(self):
-        env = self.fake_cargo()
-        res = self.strand_test("--no-fail-fast", "--run-ignored", "only", "binary(~gh1_x)",
-                               "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith(
-            "-E binary(~gh1_x) --no-fail-fast --run-ignored only"), self.cargo_argv())
-        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[binary\(~gh1_x\)\] 3/3 ")
-
-    def test_args_behind_a_double_dash_reach_nextest(self):
-        env = self.fake_cargo()
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", "--", "--retries", "2",
-                               skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith("-E binary(~gh1_x) --retries 2 --no-fail-fast"),
-                        self.cargo_argv())
-
-    def test_a_test_run_keeps_going_after_a_failure_unless_asked(self):
-        env = self.fake_cargo()
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith("-E binary(~gh1_x) --no-fail-fast"),
-                        self.cargo_argv())
-        for asked in (["--fail-fast"], ["--max-fail", "2"], ["--max-fail=2"]):
-            with self.subTest(asked=asked):
-                res = self.strand_test("binary(~gh1_x)", *asked, "--host", "north",
-                                       skip="lane-test", env=env)
+    def test_bench_collect_and_list_pipe_the_script(self):
+        for args, want in ((("bench", "collect", "cmp", "--lane", "south"),
+                            ["bench", "collect", "cmp"]),
+                           (("bench", "list", "--lane", "south"), ["bench", "list"])):
+            with self.subTest(args=args):
+                self.hyg_log.write_text("")
+                res = self.kit(*args)
                 self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-                self.assertNotIn("--no-fail-fast", self.cargo_argv())
+                [call] = self.calls()
+                self.assertEqual("-", call["argv0"])
+                self.assertEqual(want + ["--root", str(self.remote)], call["args"])
+        self.assertFalse((self.remote / "kit").exists())
 
-    def test_a_red_run_names_every_failing_test(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_RC": "100", "FAKE_CARGO_PASSED": "1",
-                    "FAKE_CARGO_FAILS": "first_case second_case third_case",
-                    "FAKE_CARGO_TAIL": "40"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
-        for name in ("first_case", "second_case", "third_case"):
-            with self.subTest(name=name):
-                self.assertIn("FAIL meclaw-cells::gh1_x %s" % name, res.stdout)
-
-    # GH #1051: a golden switch travels on the command line, the goldens the
-    # run wrote come back, nothing else does, and no secret travels.
-    def test_a_golden_switch_reaches_the_lane_and_the_goldens_come_back(self):
-        env = self.fake_cargo()
-        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
-        (self.tree / "README.md").write_text("changed, not committed\n")
-        env.update({"GH277_WRITE_GOLDEN": "1", "FAKE_SECRET_API_KEY": "sk-never-sent"})
-        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
+    def test_bench_without_a_lane_runs_here(self):
+        res = self.kit("bench", "list")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("GH277_WRITE_GOLDEN=1", self.ssh_log.read_text())
-        self.assertEqual("rewritten on the lane\n", (self.tree / "plans" / "composition-reference"
-                                                     / "golden" / "talky.manifest").read_text())
-        self.assertEqual("new golden\n",
-                         (self.tree / "crates/x/tests/fixtures/gh1_new.json").read_text())
-        self.assertIn("golden back: plans/composition-reference/golden/talky.manifest", res.stdout)
-        self.assertIn("golden back: crates/x/tests/fixtures/gh1_new.json", res.stdout)
-        # not a golden: stays as it is here
-        self.assertEqual("changed, not committed\n", (self.tree / "README.md").read_text())
-        self.assertNotIn("golden back: README.md", res.stdout)
-        self.assertNotIn("sk-never-sent", self.ssh_log.read_text())
-        self.assertIn("env unset", self.cargo_log.read_text())
-        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[")
-
-    def test_a_golden_whose_name_sha256sum_escapes_comes_back(self):
-        # review N5: `cut -c67-` cut a name with a backslash one column off
-        env = self.fake_cargo()
-        env.update({"GH277_WRITE_GOLDEN": "1"})
-        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertEqual("odd name\n",
-                         (self.tree / "crates/x/tests/fixtures/gh1 odd\\name.json").read_text())
-        self.assertIn("golden back: crates/x/tests/fixtures/gh1 odd\\name.json", res.stdout)
-
-    def test_the_bless_switch_travels_and_its_golden_comes_back(self):
-        env = self.fake_cargo()
-        env.update({"MECLAW_GH935_BLESS": "1"})
-        res = self.strand_test("binary(~gh935_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("MECLAW_GH935_BLESS=1", self.ssh_log.read_text())
-        self.assertEqual("blessed\n",
-                         (self.tree / "crates/x/tests/golden/gh935.txt").read_text())
-        self.assertIn("golden back: crates/x/tests/golden/gh935.txt", res.stdout)
-
-    def test_a_failed_golden_fetch_exits_2_and_says_so(self):
-        env = self.fake_cargo()
-        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
-        env.update({"GH277_WRITE_GOLDEN": "1", "FAKE_RSYNC_FAIL": str(self.tree) + "/"})
-        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("golden fetch failed", res.stdout)
-        self.assertEqual("the old golden\n", (self.tree / "plans" / "composition-reference"
-                                              / "golden" / "talky.manifest").read_text())
-        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[.*RED$")
-
-    def test_a_golden_changed_here_but_not_on_the_lane_stays(self):
-        env = self.fake_cargo()
-        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n",
-                     "plans/composition-reference/golden/other.manifest": "committed\n"})
-        other = self.tree / "plans" / "composition-reference" / "golden" / "other.manifest"
-        other.write_text("changed here, not committed\n")
-        env.update({"GH277_WRITE_GOLDEN": "1"})
-        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertEqual("changed here, not committed\n", other.read_text())
-        self.assertNotIn("other.manifest", res.stdout)
-
-    def test_a_golden_changed_here_during_the_run_is_kept_and_named(self):
-        # The lane's copy would overwrite an edit made here while it ran: it
-        # stays, the line names it, the run exits 2.
-        env = self.fake_cargo()
-        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
-        talky = self.tree / "plans" / "composition-reference" / "golden" / "talky.manifest"
-        env.update({"GH277_WRITE_GOLDEN": "1", "FAKE_LOCAL_TOUCH": str(talky)})
-        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertEqual("edited here during the run\n", talky.read_text())
-        self.assertIn("golden conflict: plans/composition-reference/golden/talky.manifest",
-                      res.stdout)
-        # the others still come back
-        self.assertIn("golden back: crates/x/tests/fixtures/gh1_new.json", res.stdout)
-
-    def test_value_options_before_the_filterset_take_their_value(self):
-        # review N2: `test -p meclaw-cells '<expr>'` made the package the filter
-        env = self.fake_cargo()
-        res = self.strand_test("-p", "meclaw-cells", "--no-tests", "fail", "binary(~gh1_x)",
-                               "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith(
-            "-E binary(~gh1_x) -p meclaw-cells --no-tests fail --no-fail-fast"), self.cargo_argv())
-        self.assertRegex(res.stdout.strip().splitlines()[-1], r"^TEST \[binary\(~gh1_x\)\] 3/3 ")
-
-    def test_no_fail_fast_goes_before_the_test_binary_args(self):
-        # review N3: behind a second `--` the words belong to the test binary
-        env = self.fake_cargo()
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", "--", "--retries", "2",
-                               "--", "--exact", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith(
-            "-E binary(~gh1_x) --retries 2 --no-fail-fast -- --exact"), self.cargo_argv())
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", "--", "--", "--fail-fast",
-                               skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertTrue(self.cargo_argv().endswith(
-            "-E binary(~gh1_x) --no-fail-fast -- --fail-fast"), self.cargo_argv())
-
-    def test_a_filterset_with_blanks_and_a_bar_stays_one_word(self):
-        env = self.fake_cargo()
-        expr = "binary(~gh1_x) | test(=a b)"
-        res = self.strand_test(expr, "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        words = [l for l in self.cargo_log.read_text().splitlines() if l.startswith("words ")][-1]
-        self.assertIn("<-E><%s>" % expr, words)
-
-    def test_without_a_golden_switch_nothing_comes_back(self):
-        env = self.fake_cargo()
-        self.commit({"plans/composition-reference/golden/talky.manifest": "the old golden\n"})
-        res = self.strand_test("binary(~gh277_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertNotIn("WRITE_GOLDEN", self.ssh_log.read_text())
-        self.assertNotIn("golden back", res.stdout)
-
-    # GH #997: a run in which no test ran is no proof. The filter named a
-    # helper module, matched no test, and the line read `0/0 ... GREEN`.
-    NO_MATCH_LINE = r"^TEST \[binary\(~helpers\)\] 0/0 \d+s RED \(no tests matched\)$"
-
-    def assert_no_match(self, env):
-        res = self.strand_test("binary(~helpers)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(6, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1], self.NO_MATCH_LINE)
-
-    def test_a_test_run_with_zero_tests_is_red(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_TOTAL": "0", "FAKE_CARGO_PASSED": "0"})
-        self.assert_no_match(env)
-
-    def test_a_test_run_without_a_summary_is_red(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_NO_SUMMARY": "1"})
-        self.assert_no_match(env)
-
-    def test_a_refused_filter_is_no_tests_matched(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_NO_SUMMARY": "1", "FAKE_CARGO_RC": "94",
-                    "FAKE_CARGO_ERR": "error: failed to parse filterset"})
-        self.assert_no_match(env)
-
-    # K1 fix round 2: a test that prints the refusal text is no refusal.
-    def test_a_failing_run_printing_the_refusal_text_keeps_100(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_TOTAL": "3", "FAKE_CARGO_PASSED": "2", "FAKE_CARGO_RC": "100",
-                    "FAKE_CARGO_ERR": "error: failed to parse filterset"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(100, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1],
-                         r"^TEST \[binary\(~gh1_x\)\] 2/3 \d+s RED$")
-
-    def test_a_green_run_printing_the_refusal_text_stays_green(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_ERR": "error: operator didn't match any binary IDs"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1],
-                         r"^TEST \[binary\(~gh1_x\)\] 3/3 \d+s GREEN$")
-
-    def test_a_build_failure_keeps_its_own_exit(self):
-        # No summary, but cargo said why: the remote exit stands, and the
-        # reason `no tests matched` would be a lie.
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_NO_SUMMARY": "1", "FAKE_CARGO_RC": "101"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertEqual(101, res.returncode, res.stdout + res.stderr)
-        last = res.stdout.strip().splitlines()[-1]
-        self.assertRegex(last, r"^TEST \[binary\(~gh1_x\)\] 0/0 \d+s RED$")
-
-    # GH #1086: `--stress-count 5` printed `75/75 GREEN` and exit 0 while 3
-    # of 5 iterations had FAIL lines -- the line read the LAST iteration's
-    # test count, and the exit was 0. A series is graded by its iterations.
-    def test_a_stress_series_with_a_red_iteration_is_red(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_STRESS": "0 1 1 1 0"})
-        res = self.strand_test("binary(~gh1_x)", "--stress-count", "5", "--host", "north",
-                               skip="lane-test", env=env)
-        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1],
-                         r"^TEST \[binary\(~gh1_x\)\] 12/15 \d+s RED \(3/5 iterations red\)$")
-        # red in three iterations, named once (review M2)
-        self.assertEqual(1, res.stdout.count("FAIL meclaw-cells::gh1_x a_case"), res.stdout)
-
-    # Review M1: an iteration red only by `timed out` or `exec failed` --
-    # no `failed` count of its own -- is a red iteration too. Without the
-    # closing summary (a lane cut off) the iteration lines are all there is.
-    def test_a_stress_iteration_red_only_by_timeout_or_exec_failure_is_red(self):
-        for kind in ("timed out", "exec failed"):
-            with self.subTest(kind=kind):
-                env = self.fake_cargo()
-                env.update({"FAKE_CARGO_STRESS": "0 1 0", "FAKE_CARGO_STRESS_KIND": kind,
-                            "FAKE_CARGO_STRESS_NO_SUMMARY": "1", "FAKE_CARGO_RC": "0"})
-                res = self.strand_test("binary(~gh1_x)", "--host", "north",
-                                       skip="lane-test", env=env)
-                self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
-                self.assertRegex(res.stdout.strip().splitlines()[-1],
-                                 r"RED \(1/3 iterations red\)$")
-
-    def test_a_stress_series_red_only_in_the_log_is_red_even_on_exit_zero(self):
-        # The exit of the lane is not trusted alone: the measured run of GH
-        # #1086 came back 0. Grading reads the iteration lines too.
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_STRESS": "1 0", "FAKE_CARGO_RC": "0"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1], r"RED \(1/2 iterations red\)$")
-        self.assertIn("FAIL meclaw-cells::gh1_x a_case", res.stdout)
-
-    def test_a_cut_short_stress_series_is_red(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_STRESS": "0 0 0", "FAKE_CARGO_STRESS_RAN": "2"})
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", skip="lane-test", env=env)
-        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1],
-                         r"RED \(0/3 iterations red, 2/3 ran\)$")
-
-    def test_a_green_stress_series_stays_green(self):
-        env = self.fake_cargo()
-        env.update({"FAKE_CARGO_STRESS": "0 0 0 0 0"})
-        res = self.strand_test("binary(~gh1_x)", "--stress-count", "5", "--host", "north",
-                               skip="lane-test", env=env)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout.strip().splitlines()[-1],
-                         r"^TEST \[binary\(~gh1_x\)\] 15/15 \d+s GREEN \(5/5 iterations green\)$")
-
-    def test_strand_test_without_a_token_is_exit_three(self):
-        env = self.fake_cargo()
-        res = self.strand_test("binary(~gh1_x)", "--host", "north", env=env)
-        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        [call] = self.calls()
+        self.assertEqual(str(self.repo / "scripts" / "pipeline" / "hygiene.py"), call["argv0"])
+        self.assertEqual(["bench", "list", "--root", str(self.remote)], call["args"])
         self.assertEqual("", self.ssh_log.read_text())
+
+    def test_bench_refuses_a_wrong_call(self):
+        for args in (("bench", "new", "cmp"),                      # no TTL
+                     ("bench", "new", "cmp", "--ttl", "soon"),
+                     ("bench", "new", "../x", "--ttl", "1"),
+                     ("bench", "collect", "cmp", "--ttl", "1"),
+                     ("bench", "collect"),
+                     ("bench", "drop", "cmp"),
+                     ("bench", "list", "--lane", "nowhere")):
+            with self.subTest(args=args):
+                res = self.kit(*args)
+                self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([], self.calls())
+
+    def test_bench_on_an_unreachable_lane_says_so(self):
+        res = self.kit("bench", "list", "--lane", "ghost")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("lane ghost unreachable", res.stderr)
+
+
+class TestLanesHygiene(HygieneTestCase):
+
+    def test_lanes_status_keeps_the_old_line_without_a_status_word(self):
+        res = self.kit("lanes", "status", FAKE_HYGIENE_STATUS="not json", FAKE_HYGIENE_RC_STATUS="1")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertRegex(res.stdout.splitlines()[0],
+                         r"^north\s+reachable\s+fs \S+\s+free \d+G\s+bare none\s+deps .*\s+state \w+$")
+
+    IDLE_LANES = ("north  builder@north.example.invalid  threads=8\n"
+                  "home   builder@home.example.invalid  class=egon\n"
+                  "box    local\n"
+                  "south  builder@south.example.invalid  bmc-s.example.invalid\n")
+
+    def test_idle_off_arms_every_lane_but_egon_and_local(self):
+        self.lanes_with(self.IDLE_LANES)
+        res = self.kit("lanes", "idle-off", "--after", "1.5")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^home\s+skipped \(class egon\)$")
+        self.assertRegex(res.stdout, r"(?m)^box\s+skipped \(transport local\)$")
+        calls = self.calls()
+        self.assertEqual(["north", "south"], [c["args"][c["args"].index("--lane") + 1] for c in calls])
+        args = calls[0]["args"]
+        self.assertEqual(["idle-off", "arm", "--lane", "north", "--after", "1.5",
+                          "--lanes-file", str(self.repo.parent / "lanes")], args[:8])
+        self.assertEqual(9, len(args), args)
+        self.assertTrue(args[8].startswith("--holder-cmd="), args)
+        # It runs HERE, on the owner's machine: no ssh.
+        self.assertEqual("", self.ssh_log.read_text())
+
+    def holder(self, lane):
+        """The holder command the timer of `lane` runs, run now."""
+        self.hyg_log.write_text("")
+        res = self.kit("lanes", "idle-off", "--lane", lane)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        [call] = self.calls()
+        argv = shlex.split(call["args"][-1][len("--holder-cmd="):])
+        # The main tree's kit, the token and host file of the call.
+        self.assertIn(str(self.repo / "scripts" / "strand.sh"), argv)
+        self.assertIn("MECLAW_STRAND_TOKENS=%s" % (self.repo.parent / "tokens"), argv)
+        res = subprocess.run(argv, capture_output=True, text=True, cwd=str(self._tmp.name),
+                             env=kit_env(self.repo))
+        self.assertEqual(0, res.returncode, res.stderr)
+        return res.stdout
+
+    def test_the_holder_check_names_only_a_held_lane(self):
+        # Unarmed: nobody holds anything -- the host may go off.
+        self.assertEqual("", self.holder("north"))
+        # Armed with lanes: `who` lists every lane; only a HELD one counts.
         self.arm("--lanes", "north,south")
-        res = self.strand_test("binary(~gh1_x)", env=env)
-        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
-        self.assertEqual("", self.ssh_log.read_text())
-
-    def test_strand_test_without_a_filter_is_exit_two(self):
-        res = self.strand_test(skip="lane-test")
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-
-    def test_strand_test_on_an_unreachable_lane_is_exit_two(self):
-        res = self.strand_test("binary(~gh1_x)", "--host", "ghost", skip="lane-test")
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("strand: lane ghost unreachable", res.stderr)
-
-    def test_without_host_and_lane_the_gate_stays_local(self):
-        res = self.host_gate(PLAN_HOST)
+        self.assertEqual("", self.holder("north"))
+        res = self.token("take", "--lane", "north", cwd=self.tree)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertNotIn("strand: lane", res.stdout)
-        self.assertEqual("", self.ssh_log.read_text())
+        self.assertEqual("held north\n", self.holder("south"))
 
-    # --- fix round 1 (OR-S3-64): the host gates exactly the local tree, and
-    # no secret leaves this machine.
+    def test_a_failing_holder_check_keeps_the_host_on(self):
+        self.arm("--lanes", "north,south")
+        # the store is the one source (GH #1156): an unreadable one fails `who`
+        (self.repo.parent / "pipeline.db").write_text("{ broken")
+        self.assertRegex(self.holder("south"), r"^held south \(token who failed")
 
-    def test_staged_changes_additions_deletions_and_renames_travel(self):
-        # Review I1: `ls-files -m/-d` compare against the index, so a staged
-        # change stayed old on the host, a staged new file was missing and a
-        # `git rm` stayed.
-        self.commit({"src/a.txt": "old a\n", "src/b.txt": "b\n", "src/c.txt": "c\n"})
-        (self.tree / "src" / "a.txt").write_text("staged a\n")
-        (self.tree / "src" / "n.txt").write_text("staged new\n")
-        _git(self.tree, "add", "src/a.txt", "src/n.txt")
-        _git(self.tree, "rm", "-q", "src/b.txt")
-        _git(self.tree, "mv", "src/c.txt", "src/moved.txt")
-        res = self.host_gate(PLAN_HOST, "--host", "north")
+    def test_the_timer_calls_the_main_trees_script(self):
+        # A strand's worktree goes at `strand close`; a timer armed from its
+        # kit must not point into it. The main tree's script when it has
+        # one, else the kit's own (before the hygiene is merged).
+        self.lanes_with(self.IDLE_LANES)
+        own = self.tree / "scripts" / "strand.sh"
+        self.assertTrue(own.exists())
+        for main_has_it, want in ((True, self.repo), (False, self.tree)):
+            with self.subTest(main_has_it=main_has_it):
+                if not main_has_it:
+                    (self.repo / "scripts" / "pipeline" / "hygiene.py").unlink()
+                self.hyg_log.write_text("")
+                res = subprocess.run([str(own), "lanes", "idle-off", "--lane", "south"],
+                                     cwd=str(self.tree), env=kit_env(self.repo, self.env()),
+                                     capture_output=True, text=True, timeout=4 * kit_time.HANG)
+                self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+                [call] = self.calls()
+                self.assertEqual(str(want / "scripts" / "pipeline" / "hygiene.py"),
+                                 call["argv0"])
+
+    def test_idle_off_for_one_lane_and_its_refusals(self):
+        self.lanes_with(self.IDLE_LANES)
+        # without `--after`: MECLAW_IDLE_OFF_H when it arms, else 2 h
+        res = self.kit("lanes", "idle-off", "--lane", "south")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        wt = self.wt()
-        self.assertEqual("staged a\n", (wt / "src" / "a.txt").read_text())
-        self.assertEqual("staged new\n", (wt / "src" / "n.txt").read_text())
-        self.assertFalse((wt / "src" / "b.txt").exists())
-        self.assertFalse((wt / "src" / "c.txt").exists())
-        self.assertEqual("c\n", (wt / "src" / "moved.txt").read_text())
-
-    def test_tracked_files_under_vault_and_env_paths_travel(self):
-        # Review I2: the exclusion matched any path COMPONENT `vault*`/`.env*`
-        # and kept tracked source at its committed state on the host.
-        self.commit({"crates/x/src/vault/mod.rs": "old\n",
-                     "templates/vault/a.json": "{}\n",
-                     "examples/vault-pilot/b.txt": "old\n",
-                     ".env.example": "KEY=\n"})
-        (self.tree / "crates/x/src/vault/mod.rs").write_text("new\n")
-        (self.tree / "examples/vault-pilot/b.txt").write_text("new\n")
-        (self.tree / "examples/vault-pilot/c.txt").write_text("untracked\n")
-        (self.tree / ".env.example").write_text("KEY=\nOTHER=\n")
-        _git(self.tree, "rm", "-q", "templates/vault/a.json")
-        res = self.host_gate(PLAN_HOST, "--host", "north")
+        res = self.kit("lanes", "idle-off", "--lane", "south", MECLAW_IDLE_OFF_H="3")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        wt = self.wt()
-        self.assertEqual("new\n", (wt / "crates/x/src/vault/mod.rs").read_text())
-        self.assertEqual("new\n", (wt / "examples/vault-pilot/b.txt").read_text())
-        self.assertEqual("untracked\n", (wt / "examples/vault-pilot/c.txt").read_text())
-        self.assertEqual("KEY=\nOTHER=\n", (wt / ".env.example").read_text())
-        self.assertFalse((wt / "templates/vault/a.json").exists())
-        for never in (".env.local", "vault.env", "notes/vault-pass.txt"):
-            with self.subTest(path=never):
-                self.assertFalse((wt / never).exists())
-        # The `.env` there is the lane's own, secret-free (GH #942).
-        self.assertNotIn("NEVER", (wt / ".env").read_text())
-
-    def assert_refused(self, res, path):
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn(path, res.stderr)
-        self.assertNotIn("GREEN", res.stdout)
-        self.assertFalse(self.receipts().exists())
-        self.assertNotIn("receive-pack", self.ssh_log.read_text())
-        self.assertNotIn("NEVER=sent", self.ssh_log.read_text())
-
-    def test_a_staged_secret_is_refused_with_its_path(self):
-        (self.tree / "config").mkdir()
-        (self.tree / "config" / ".env.prod").write_text("NEVER=sent\n")
-        _git(self.tree, "add", "-f", "config/.env.prod")
-        self.assert_refused(self.host_gate(PLAN_HOST, "--host", "north"), "config/.env.prod")
-
-    def test_a_changed_tracked_secret_is_refused_with_its_path(self):
-        self.commit({"deploy/vault-pass.txt": "placeholder\n"})
-        (self.tree / "deploy" / "vault-pass.txt").write_text("NEVER=sent\n")
-        self.assert_refused(self.host_gate(PLAN_HOST, "--host", "north"), "deploy/vault-pass.txt")
-
-    def test_a_committed_secret_is_refused_before_the_push(self):
-        # The commit travels by `git push`: a secret in it would leave by
-        # that road, not by the overlay.
-        self.commit({".cargo/credentials.toml": "NEVER=sent\n"})
-        self.assert_refused(self.host_gate(PLAN_HOST, "--host", "north"), ".cargo/credentials.toml")
-
-    def test_the_overlay_hash_is_the_same_on_both_sides(self):
-        res = subprocess.run([str(self.repo / "scripts" / "lane_sync.sh"), "digest"],
-                             cwd=str(self.tree), env=kit_env(self.repo),
-                             capture_output=True, text=True)
-        self.assertEqual(0, res.returncode, res.stderr)
-        local = res.stdout.strip()
-        self.assertRegex(local, r"^[0-9a-f]{16}$")
-        gate = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, gate.returncode, gate.stdout + gate.stderr)
-        self.assertTrue(gate.stdout.splitlines()[0].endswith(" overlay " + local), gate.stdout)
-
-    def test_a_file_changed_since_the_last_sync_is_never_older_than_the_lane_build(self):
-        # GH #1071: the overlay carried the local mtime. A file edited while
-        # the lane still compiled the previous sync arrived OLDER than the
-        # artefacts of that build, and cargo kept the stale binary -- a lane
-        # run tested code that was no longer the code under test. Measured
-        # 07.10.: three edited test files, a green/red verdict on old code.
-        readme = self.tree / "README.md"
-        old = time.time() - 1000
-        os.utime(readme, (old, old))
-        self.assertEqual(0, self.host_gate(PLAN_HOST, "--host", "north").returncode)
-        # The lane builds now; the edit lands with a time from before it.
-        built = time.time()
-        readme.write_text("edited during the lane build\n")
-        os.utime(readme, (old + 10, old + 10))
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        there = self.wt() / "README.md"
-        self.assertEqual("edited during the lane build\n", there.read_text())
-        self.assertGreaterEqual(there.stat().st_mtime, built - 1,
-                                "the changed file looks older than the lane's last build")
-
-    def test_an_unchanged_overlay_file_keeps_its_time_on_the_lane(self):
-        # GH #1071, the other half: a file whose content the lane already had
-        # is not stamped new -- it keeps the carried local time, never newer
-        # than what the lane last built, so an unchanged tree rebuilds nothing.
-        readme = self.tree / "README.md"
-        old = time.time() - 1000
-        os.utime(readme, (old, old))
-        self.assertEqual(0, self.host_gate(PLAN_HOST, "--host", "north").returncode)
-        there = self.wt() / "README.md"
-        first = there.stat().st_mtime
-        res = self.host_gate(PLAN_HOST, "--host", "north")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertLessEqual(there.stat().st_mtime, first,
-                             "an unchanged overlay file was stamped new: every run rebuilds")
-        self.assertAlmostEqual(readme.stat().st_mtime, there.stat().st_mtime, delta=1)
-
-    def test_a_host_tree_that_differs_is_refused(self):
-        res = self.host_gate(PLAN_HOST, "--host", "north", env={"FAKE_RSYNC_DROP": "1"})
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("overlay", res.stderr)
-        self.assertNotIn("GATE-SUMMARY", res.stdout)
-        self.assertFalse((self.receipts() / "latest").exists())
-
-    def test_a_receipt_that_does_not_come_back_is_not_green(self):
-        # Review M5: the acceptance wants receipt and logs HERE.
-        res = self.host_gate(PLAN_HOST, "--host", "north", env={"FAKE_RSYNC_FAIL": "/runs/kit"})
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("did not come back", res.stderr)
-        self.assertFalse((self.receipts() / "latest" / "summary.txt").exists())
-
-    def test_a_host_gate_without_a_held_token_names_a_reason(self):
-        # Review M3: unarmed, a gate on a host bound to nothing.
-        res = self.host_gate(PLAN_HOST, "--host", "north", skip=None)
-        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
-        self.assertIn("MECLAW_STRAND_TOKEN_SKIP", res.stderr)
-        self.assertEqual("", self.ssh_log.read_text())
-
-    def test_a_held_anonymous_token_binds_a_host_gate(self):
-        self.arm("--max", "1")
-        self.take(None, cwd=self.tree)
-        res = self.host_gate(PLAN_HOST, "--host", "north", skip=None)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-
-    def test_the_exclusion_list_is_pinned(self):
-        res = subprocess.run([str(self.repo / "scripts" / "lane_sync.sh"), "files"],
-                             cwd=str(self.tree), env=kit_env(self.repo),
-                             capture_output=True, text=True)
-        self.assertEqual(0, res.returncode, res.stderr)
-        sent = sorted(res.stdout.split("\0")[:-1])
-        self.assertEqual(["README.md", "notes/new.txt"], sent)
+        self.assertEqual([["--lane", "south", "--after", "2"], ["--lane", "south", "--after", "3"]],
+                         [c["args"][2:6] for c in self.calls()])
+        self.hyg_log.write_text("")
+        for args in (("--lane", "nowhere"), ("--after", "0"), ("--after", "x"), ("--now",)):
+            with self.subTest(args=args):
+                res = self.kit("lanes", "idle-off", *args)
+                self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        res = self.kit("lanes", "idle-off", "--lane", "south", FAKE_HYGIENE_RC_IDLE_OFF="2")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"^south\s+NOT armed \(exit 2\)$")
 
 
-class TestLanesStatus(TokenTestCase):
-    def test_one_line_per_lane(self):
+
+
+# The hygiene on ssh stdin, as `lane_sync.sh hygiene` starts it: in the kit's one
+# Python (lane.PYTHON; the shell literal is pinned against it). A bare "python3 -"
+# here was a second spelling that the M7s switch to `-I` left behind -- the
+# positive asserts went red, the negative ones (refused before any check) went
+# vacuous (re-check tv-bn M7t K2).
+HYGIENE_STDIN = " ".join(lane.PYTHON) + " - "
+
+# The host part runs on the lane under the narrow point's `env -i` (orchestrator
+# OR-T10-2): the caller's environment never reaches it, so where it writes is
+# part of its body (@COVLOG@, filled in by the test), never a variable.
+COVERAGE_HOST_STUB = r'''#!/usr/bin/env bash
+printf '%s\n' "$PWD" "$@" >"@COVLOG@"
+echo '{"complete": true}' >"${1%/*}/coverage.json"
+'''
+
+
+@unittest.skipUnless(shutil.which("rsync"), "the lane overlay needs rsync")
+class TestLaneCoverage(HygieneTestCase):
+    """`lane_sync.sh coverage` (W6 review I1/I2): the instrumented run goes
+    through the lane engine -- push, the hygiene check with its own tree and
+    target, the fail-closed floor, the host part, the sweep -- in the layout
+    element `coverage/{tree,target}`, never on the owner's machine."""
+
+    def setUp(self):
+        super().setUp()
         tmp = pathlib.Path(self._tmp.name)
-        (self.repo.parent / "lanes").write_text(HOST_LANES)
-        b = tmp / "bin"; b.mkdir()
-        (b / "ssh").write_text(FAKE_SSH); (b / "ssh").chmod(0o755)
-        (tmp / "remote").mkdir()
-        res = run_strand(self.repo, "lanes", "status", extra_env={
-            "PATH": "%s:%s" % (b, os.environ["PATH"]),
-            "MECLAW_LANE_ROOT": str(tmp / "remote"),
-            "FAKE_SSH_LOG": str(tmp / "ssh.log")})
-        self.assertEqual(0, res.returncode, res.stderr)
-        lines = res.stdout.splitlines()
-        self.assertEqual(3, len(lines), res.stdout)
-        self.assertRegex(lines[0], r"^north\s+reachable\s+fs \S+\s+free \d+G\s+bare none$")
-        self.assertRegex(lines[2], r"^ghost\s+unreachable$")
+        self.cov_log = tmp / "coverage-host.log"
+        host = self.tree / "scripts" / "pipeline" / "coverage_host.sh"
+        host.write_text(self.host_stub())
+        host.chmod(0o755)
+        self.dfbin = tmp / "df-bin"
+        self.dfbin.mkdir()
 
-    def test_lanes_status_names_the_target_filesystem(self):
-        tmp = pathlib.Path(self._tmp.name)
-        (self.repo.parent / "lanes").write_text(HOST_LANES)
-        b = tmp / "bin"; b.mkdir()
-        (b / "ssh").write_text(FAKE_SSH); (b / "ssh").chmod(0o755)
-        (b / "df").write_text(FAKE_DF); (b / "df").chmod(0o755)
-        (tmp / "remote").mkdir()
-        for fstype in ("tmpfs", "ext4"):
-            with self.subTest(fs=fstype):
-                res = run_strand(self.repo, "lanes", "status", extra_env={
-                    "PATH": "%s:%s" % (b, os.environ["PATH"]),
-                    "MECLAW_LANE_ROOT": str(tmp / "remote"),
-                    "FAKE_SSH_LOG": str(tmp / "ssh.log"),
-                    "FAKE_DF_FSTYPE": fstype})
-                self.assertEqual(0, res.returncode, res.stderr)
-                self.assertRegex(res.stdout.splitlines()[0],
-                                 r"^north\s+reachable\s+fs %s\s+free 373G\s+bare none$" % fstype)
+    def host_stub(self, tail="", **paths):
+        """The host stub with its paths in the body: @COVLOG@ and any
+        @NAME@ given in `paths` (the host's state is files, not the env)."""
+        body = COVERAGE_HOST_STUB + tail
+        for name, value in dict(paths, COVLOG=self.cov_log).items():
+            body = body.replace("@%s@" % name, str(value))
+        return body
+
+    def coverage(self, target="builder@north.example.invalid", free_g=999, pre_path=None,
+                 out_dir=None, scope=None, **extra):
+        (self.dfbin / "df").write_text('#!/usr/bin/env bash\necho "Avail"\necho "%dG"\n' % free_g)
+        (self.dfbin / "df").chmod(0o755)
+        env = dict(os.environ)
+        path = "%s:%s:%s" % (self.dfbin, self.bin, os.environ["PATH"])
+        if pre_path:
+            path = "%s:%s" % (pre_path, path)
+        env.update(self.env(PATH=path,
+                            MECLAW_LANE_FLOOR_G="7",
+                            MECLAW_LANE_NAME="north", **extra))
+        env.setdefault("FAKE_SSH_IDENTITY",
+                       "MID=0123456789abcdef0123456789abcdef\\nHOST=north-lane")
+        if env["FAKE_SSH_IDENTITY"] == "":
+            del env["FAKE_SSH_IDENTITY"]
+        return subprocess.run([str(self.tree / "scripts" / "lane_sync.sh"), "coverage",
+                               target, "dt-w6", "600"] + ([out_dir] if out_dir else [])
+                              + ([scope] if scope else []),
+                              cwd=self.tree, env=env,
+                              capture_output=True, text=True, timeout=4 * kit_time.HANG)
+
+    def test_the_browser_scope_reaches_the_host_part(self):
+        # welle-tb S1b (#1165): the probe of the browser locks alone; `full`
+        # keeps the host call as it was (the test above), anything else refused
+        out = pathlib.Path(self._tmp.name) / "out"
+        res = self.coverage(out_dir=str(out), scope="browser")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        _cwd, *host_args = self.cov_log.read_text().splitlines()
+        sha = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual([str(self.remote / "coverage" / "target"), "600", sha, "browser"],
+                         host_args)
+        self.cov_log.unlink()
+        bad = self.coverage(out_dir=str(out), scope="nightly")
+        self.assertNotEqual(0, bad.returncode)
+        self.assertFalse(self.cov_log.exists())
+
+    def test_the_verdict_names_travel_to_the_host_part(self):
+        # GH #1210 (tv-bn M5): ssh carries no environment; a coverage run ran its
+        # proofs without MECLAW_REQUIRE_BROWSERS -- a driver SKIP (no engine)
+        # left a hole in the map instead of a red run. The names of
+        # lane_sync.sh VERDICT_ENV travel as words, nothing else.
+        # the other names empty: a pre or gate runs this module under its own
+        # MECLAW_GATE_MODE / MECLAW_TESTING_RULES_RULING, which would travel too
+        blank = {n: "" for n in lane.verdict_env()}
+        res = self.coverage(**dict(blank, MECLAW_REQUIRE_BROWSERS="1",
+                                   MECLAW_SOME_KEY="never-sent"))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        line = next(l for l in self.ssh_log.read_text().splitlines() if "coverage_host.sh" in l)
+        self.assertIn("MECLAW_REQUIRE_BROWSERS=1 scripts/pipeline/coverage_host.sh", line)
+        self.assertNotIn("never-sent", line)
+
+    def test_a_coverage_run_requires_the_browsers_unless_told_otherwise(self):
+        # GH #1209 (re-check tv-bn M7 M4): the coverage run had the switch only
+        # when its caller set it -- a driver SKIP (no engine) left a hole in the
+        # map. Unset, it goes as `1`; an opt-out is kept and named as a NOTE.
+        blank = {n: "" for n in lane.verdict_env() if n != "MECLAW_REQUIRE_BROWSERS"}
+        saved = os.environ.pop("MECLAW_REQUIRE_BROWSERS", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "MECLAW_REQUIRE_BROWSERS", saved)
+        res = self.coverage(**blank)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        line = next(l for l in self.ssh_log.read_text().splitlines() if "coverage_host.sh" in l)
+        self.assertIn("MECLAW_REQUIRE_BROWSERS=1 scripts/pipeline/coverage_host.sh", line)
+        self.assertNotIn("opt-out", res.stderr)
+        self.ssh_log.unlink()
+        res = self.coverage(MECLAW_REQUIRE_BROWSERS="0", **blank)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        line = next(l for l in self.ssh_log.read_text().splitlines() if "coverage_host.sh" in l)
+        self.assertIn("MECLAW_REQUIRE_BROWSERS=0 scripts/pipeline/coverage_host.sh", line)
+
+    def test_a_browsers_opt_out_is_in_the_coverage_receipt(self):
+        # Re-check tv-bn M7c M1: the opt-out stood only on stderr -- the map
+        # (coverage.json, the receipt `pipeline coverage build` keeps and
+        # journals) read like a full run, the hole of a SKIPped driver unnamed.
+        blank = {n: "" for n in lane.verdict_env() if n != "MECLAW_REQUIRE_BROWSERS"}
+        out = pathlib.Path(self._tmp.name) / "out"
+        for given, want in (("0", "0"), ("1", None)):
+            with self.subTest(given=given):
+                res = self.coverage(out_dir=str(out), MECLAW_REQUIRE_BROWSERS=given, **blank)
+                self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+                cov = json.loads((out / "coverage.json").read_text())
+                self.assertEqual(want, cov.get("browsers_opt_out"), cov)
+
+    def test_the_coverage_run_goes_through_check_floor_host_part_and_sweep(self):
+        res = self.coverage()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        lines = self.ssh_log.read_text().splitlines()
+        check = next(i for i, l in enumerate(lines) if HYGIENE_STDIN + "check" in l)
+        host = next(i for i, l in enumerate(lines) if "coverage_host.sh" in l)
+        collect = next(i for i, l in enumerate(lines) if HYGIENE_STDIN + "collect" in l)
+        self.assertLess(check, host)
+        self.assertLess(host, collect)
+        tree = self.remote / "coverage" / "tree"
+        target = self.remote / "coverage" / "target"
+        args = [c for c in self.calls() if c["argv0"] == "-"][0]["args"]
+        self.assertEqual(str(tree), args[args.index("--own-tree") + 1])
+        self.assertEqual(str(target), args[args.index("--own-target") + 1])
+        cwd, *host_args = self.cov_log.read_text().splitlines()
+        self.assertEqual(str(tree), cwd)
+        sha = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual([str(target), "600", sha], host_args)
+        self.assertTrue((self.remote / "coverage" / "coverage.json").is_file())
+
+    def test_below_the_floor_the_coverage_run_never_builds(self):
+        res = self.coverage(free_g=1)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertFalse(self.cov_log.exists())
+
+    def test_the_owner_machine_and_an_egon_lane_are_refused(self):
+        for target, extra in (("local", {}),
+                              ("builder@north.example.invalid", {"MECLAW_LANE_CLASS": "egon"})):
+            with self.subTest(target=target):
+                res = self.coverage(target=target, **extra)
+                self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+                self.assertIn("refused", res.stderr)
+                self.assertEqual("", self.ssh_log.read_text())
+                self.assertFalse(self.cov_log.exists())
+
+
+    def test_a_lane_that_is_this_machine_is_refused_by_identity(self):
+        """I2 rest: the label says build lane, the host is this machine -- the
+        machine-id or the host name gives it away, exit 5 before any build."""
+        here_id = pathlib.Path("/etc/machine-id").read_text().strip() \
+            if pathlib.Path("/etc/machine-id").is_file() else ""
+        here_name = socket.gethostname()
+        cases = {"same machine (real identity)": "",
+                 "same host name": "MID=ffffffffffffffffffffffffffffffff\\nHOST="
+                                   + here_name.upper(),
+                 "unreadable identity": "\\n"}
+        if here_id:
+            cases["same machine-id"] = "MID=" + here_id + "\\nHOST=somewhere-else"
+        for name, ident in cases.items():
+            with self.subTest(name):
+                self.cov_log.unlink(missing_ok=True)
+                self.ssh_log.write_text("")
+                res = self.coverage(FAKE_SSH_IDENTITY=ident)
+                self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+                self.assertIn("refused", res.stderr)
+                self.assertFalse(self.cov_log.exists())
+                self.assertNotIn(HYGIENE_STDIN + "check", self.ssh_log.read_text())
+
+    def assert_refused_before_any_build(self, res):
+        self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+        self.assertIn("refused", res.stderr)
+        self.assertFalse(self.cov_log.exists())
+        self.assertNotIn(HYGIENE_STDIN + "check", self.ssh_log.read_text())
+
+    def test_an_unreadable_own_identity_is_refused(self):
+        """W6 review M1 (a): with this side's machine-id or host name empty no
+        comparison can prove the target is another machine -- exit 5, never
+        open (fail-closed). `cat` and `hostname` are faked through PATH; the
+        fake `cat` hands every other file to the next `cat` on PATH."""
+        idbin = pathlib.Path(self._tmp.name) / "id-bin"
+        idbin.mkdir()
+        fake_cat = ('#!/usr/bin/env bash\n'
+                    'for a; do [ "$a" = /etc/machine-id ] && exit 0; done\n'
+                    'exec "$(type -P -a cat | sed -n 2p)" "$@"\n')
+        fake_hostname = '#!/usr/bin/env bash\nexit 0\n'
+        for name, fakes in (("empty machine-id", {"cat": fake_cat}),
+                            ("empty host name", {"hostname": fake_hostname}),
+                            ("both empty", {"cat": fake_cat, "hostname": fake_hostname})):
+            with self.subTest(name):
+                for f in idbin.iterdir():
+                    f.unlink()
+                for tool, body in fakes.items():
+                    (idbin / tool).write_text(body)
+                    (idbin / tool).chmod(0o755)
+                self.cov_log.unlink(missing_ok=True)
+                self.ssh_log.write_text("")
+                res = self.coverage(pre_path=str(idbin))
+                self.assert_refused_before_any_build(res)
+                self.assertIn("this machine cannot be read", res.stderr)
+                # GH #1133 N2: this side refuses before anything reaches the lane.
+                self.assertEqual("", self.ssh_log.read_text())
+
+    def test_a_polluted_target_identity_is_refused(self):
+        """W6 review M1 (b): the target must answer with exactly one
+        non-empty machine-id line and one non-empty host name line. A banner
+        from the login shell, two ids, a glued line or a blank id is not a
+        proof of another machine -- exit 5."""
+        mid = "MID=0123456789abcdef0123456789abcdef"
+        cases = {"banner before the id": "Welcome to north\\n" + mid + "\\nHOST=north-lane",
+                 "banner glued to the id": "Welcome" + mid + "\\nHOST=north-lane",
+                 "two ids": mid + "\\nMID=ffffffffffffffffffffffffffffffff\\nHOST=north-lane",
+                 "line after the host name": mid + "\\nHOST=north-lane\\nbye",
+                 "empty machine-id": "MID=\\nHOST=north-lane",
+                 "empty host name": mid + "\\nHOST=",
+                 "blank inside the id": "MID=0123 4567\\nHOST=north-lane",
+                 "unprefixed lines": "0123456789abcdef0123456789abcdef\\nnorth-lane"}
+        for name, ident in cases.items():
+            with self.subTest(name):
+                self.cov_log.unlink(missing_ok=True)
+                self.ssh_log.write_text("")
+                res = self.coverage(FAKE_SSH_IDENTITY=ident)
+                self.assert_refused_before_any_build(res)
+                # GH #1133 N1: the exact line, naming the target.
+                self.assertIn("lane_sync: refused -- the identity of "
+                              "builder@north.example.invalid cannot be read", res.stderr)
+
+    def test_the_tree_lock_is_held_from_push_through_the_map_fetch(self):
+        """GH #1133 M4: coverage/tree.lock is held over the host part and the
+        fetch of the map (as a gate holds from push to fetch), released after."""
+        host = self.tree / "scripts" / "pipeline" / "coverage_host.sh"
+        host.write_text(self.host_stub('flock -n "$PWD.lock" true && echo free >>"@COVLOG@"'
+                                       ' || echo held >>"@COVLOG@"\n'))
+        _git(self.tree, "commit", "-qam", "host stub with a lock probe")
+        out = pathlib.Path(self._tmp.name) / "map"
+        res = self.coverage(out_dir=str(out))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("held", self.cov_log.read_text().splitlines()[-1])
+        self.assertEqual({"complete": True}, json.loads((out / "coverage.json").read_text()))
+        lock = self.remote / "coverage" / "tree.lock"
+        self.assertEqual(0, subprocess.run(["flock", "-n", str(lock), "true"]).returncode)
+
+    def test_a_hold_that_ends_with_255_at_eof_fails_the_run_and_says_so(self):
+        """Re-check 2686990c8 M: the hold lives until the release closes its
+        stdin and only then ends with 255, so bash has not reaped it and
+        `wait` reports the 255. The run is red, the warning stands, and the
+        hygiene collect still runs after the host part."""
+        out = pathlib.Path(self._tmp.name) / "map"
+        res = self.coverage(out_dir=str(out), FAKE_SSH_HOLD_EOF_255="1")
+        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotEqual(255, res.returncode, res.stdout + res.stderr)
+        self.assertIn("ended before the run did", res.stderr)
+        lines = self.ssh_log.read_text().splitlines()
+        host = next(i for i, l in enumerate(lines) if "coverage_host.sh" in l)
+        collect = [i for i, l in enumerate(lines) if HYGIENE_STDIN + "collect" in l]
+        self.assertTrue(collect and collect[-1] > host, "hygiene_after did not run after the host part")
+
+    def test_a_hold_that_drops_mid_run_fails_the_run_and_says_so(self):
+        """Re-check ZC M-neu-1: bash reaps a coproc that ended early and drops
+        its variables; under `set -u` the release must not die on them.
+        Re-check 8d26c0ec4 I-1: the map then came back without the tree lock,
+        so the run is not green (exit != 0, whether bash reaped the hold or
+        `wait` reports its 255); the hygiene collect still runs after it."""
+        fifo = pathlib.Path(self._tmp.name) / "hold-drop"
+        os.mkfifo(fifo)
+        host = self.tree / "scripts" / "pipeline" / "coverage_host.sh"
+        host.write_text(self.host_stub('echo drop >"@DROP@"\n', DROP=fifo))
+        _git(self.tree, "commit", "-qam", "host stub that drops the hold")
+        out = pathlib.Path(self._tmp.name) / "map"
+        res = self.coverage(out_dir=str(out), FAKE_SSH_HOLD_DROP=str(fifo))
+        self.assertNotEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotEqual(255, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("unbound variable", res.stderr)
+        self.assertIn("ended before the run did", res.stderr)
+        lines = self.ssh_log.read_text().splitlines()
+        host = next(i for i, l in enumerate(lines) if "coverage_host.sh" in l)
+        collect = [i for i, l in enumerate(lines) if HYGIENE_STDIN + "collect" in l]
+        self.assertTrue(collect and collect[-1] > host, "hygiene_after did not run after the host part")
+
+    def test_an_exported_coverage_switch_moves_no_other_verb(self):
+        """GH #1133 M3: the coverage layout is the verb's own; a caller's
+        MECLAW_LANE_COVERAGE=1 leaves paths/run/test/guard/hold where they were."""
+        env = dict(os.environ)
+        env.update(self.env(PATH="%s:%s" % (self.bin, os.environ["PATH"]),
+                            MECLAW_LANE_NAME="north"))
+        plain = subprocess.run([str(self.tree / "scripts" / "lane_sync.sh"), "paths", "dt-w6"],
+                               cwd=self.tree, env=env, capture_output=True, text=True,
+                               timeout=2 * kit_time.HANG)
+        env["MECLAW_LANE_COVERAGE"] = "1"
+        res = subprocess.run([str(self.tree / "scripts" / "lane_sync.sh"), "paths", "dt-w6"],
+                             cwd=self.tree, env=env, capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(plain.stdout, res.stdout)
+        self.assertNotIn("/coverage/", res.stdout)
+
+    def test_an_unreachable_lane_is_exit_2_not_a_refusal(self):
+        """GH #1133 M2: ssh rc 255 on the identity probe is an unreachable
+        lane (exit 2); only an answer that is no clean identity refuses (5)."""
+        res = self.coverage(target="builder@unreachable.example.invalid")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("lane_sync: builder@unreachable.example.invalid is unreachable", res.stderr)
+        self.assertNotIn("refused", res.stderr)
+        self.assertFalse(self.cov_log.exists())
+
+    def test_a_clean_different_identity_goes_on(self):
+        """W6 review M1 (c): both sides clean and different -- the run goes on
+        to the hygiene check."""
+        res = self.coverage(
+            FAKE_SSH_IDENTITY="MID=0123456789abcdef0123456789abcdef\\nHOST=north-lane")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("refused", res.stderr)
+        self.assertIn(HYGIENE_STDIN + "check", self.ssh_log.read_text())
 
 
 class TestTokenGuards(TokenTestCase):
@@ -2708,24 +2583,80 @@ class TestTokenGuards(TokenTestCase):
         self.assertEqual("", res.stdout)
         self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
 
-    def test_gate_runs_with_a_token_and_prints_one_summary_line(self):
-        self.arm()
-        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
-        res = self.gate()
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        lines = [l for l in res.stdout.splitlines() if l.strip()]
-        self.assertEqual(1, len(lines), res.stdout)
-        self.assertTrue(SUMMARY_LINE.match(lines[0]), lines[0])
-        # The heartbeat after the run: seen is fresh, and the pid of the
-        # finished gate is gone from the entry.
-        self.assertEqual([], self.state()["holders"][0]["pids"])
-
     def test_tier_refuses_without_a_token(self):
         self.arm()
         res = run_tier(self.repo, self.tree)
         self.assertEqual(3, res.returncode, res.stdout + res.stderr)
         self.assertIn(REFUSED, res.stderr)
         self.assertNotIn("tier-dry:", res.stdout)
+
+    def test_k9_the_tier_says_seen_after_its_run(self):
+        # K9 (welle-validierung-2): a long holder without a closing heartbeat
+        # left `seen` at its start, and the idle reclaim (15 min) read a run
+        # that had just ended as "idle". The tier checks in with its pid before
+        # the run and says `seen` once more after it, as `strand.sh gate` does.
+        calls = self.repo.parent / "strand-calls"
+        stub = self.tree / "scripts" / "strand.sh"
+        stub.write_text("#!/bin/sh\necho \"$*\" >> %s\n" % calls)
+        stub.chmod(0o755)
+        res = run_tier(self.repo, self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("tier-dry:", res.stdout)
+        lines = calls.read_text().splitlines()
+        self.assertEqual(2, len(lines), lines)
+        self.assertRegex(lines[0], r"^token check --pid [1-9][0-9]*$")
+        self.assertEqual("token check --pid 0", lines[1])
+
+    def test_k9_an_aborted_tier_says_seen_all_the_same(self):
+        # Re-check v2-fix-b M4: `seen` after the run sat on the straight path
+        # only -- a tier stopped by a signal (^C, kill) left it at its start,
+        # and the dead process no longer guarded the lane. The tier is held
+        # on the cargo lock with the token checked in, its process group gets
+        # the signal (as ^C sends it): the kit hears `seen` exactly once, and
+        # the tier still dies of that signal. The signal goes out once `flock`
+        # runs -- it says so itself (a wrapper on PATH) -- so the tier waits on
+        # a child that dies of it, as it waits on nextest in a real run.
+        calls = self.repo.parent / "strand-calls"
+        stub = self.tree / "scripts" / "strand.sh"
+        stub.write_text("#!/bin/sh\necho \"$*\" >> %s\n" % calls)
+        stub.chmod(0o755)
+        real_flock = shutil.which("flock")
+        self.assertIsNotNone(real_flock)
+        wrap = self.repo.parent / "flock-bin"
+        wrap.mkdir()
+        (wrap / "flock").write_text("#!/bin/sh\necho '=== flock waits'\nexec %s \"$@\"\n"
+                                    % shlex.quote(real_flock))
+        (wrap / "flock").chmod(0o755)
+        env = kit_env(self.repo, {"PATH": "%s:%s" % (wrap, os.environ["PATH"])})
+        env["MECLAW_TIER_DRY"] = "1"
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(sig=sig.name), open(self.repo.parent / "cargo.lock", "w") as lock:
+                calls.unlink(missing_ok=True)
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                proc = subprocess.Popen([str(self.tree / "scripts" / "test-tier.sh"), "t0"],
+                                        cwd=str(self.tree), env=env, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True,
+                                        start_new_session=True)
+                try:
+                    # the token is checked in before `flock` runs; the lock is ours
+                    for line in proc.stdout:
+                        if line.startswith("=== flock waits"):
+                            break
+                    else:
+                        self.fail("the tier never reached the cargo lock")
+                    os.killpg(proc.pid, sig)
+                    out, err = proc.communicate(timeout=4 * kit_time.HANG)
+                finally:
+                    if proc.poll() is None:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                        proc.communicate()
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                self.assertEqual(-sig, proc.returncode, out + err)
+                self.assertNotIn("tier-dry:", out)
+                lines = calls.read_text().splitlines()
+                self.assertEqual(2, len(lines), lines)
+                self.assertRegex(lines[0], r"^token check --pid [1-9][0-9]*$")
+                self.assertEqual("token check --pid 0", lines[1])
 
     def test_tier_inside_the_gate_needs_no_token(self):
         self.arm()
@@ -2748,54 +2679,98 @@ class TestTokenGuards(TokenTestCase):
         extra.update(env or {})
         return subprocess.run([str(self.tree / "scripts" / "gate.sh")] + list(args),
                               cwd=str(self.tree), env=kit_env(self.repo, extra),
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=4 * kit_time.HANG)
 
-    def test_lanes_mode_refuses_local_cargo(self):
+    def test_lanes_mode_on_the_store_refuses_local_cargo(self):
+        # C-C1: `lanes init --lanes` arms the store (`lease_pools`) and writes
+        # no token file -- the tier on this machine is refused all the same.
         (self.repo.parent / "lanes").write_text(HOST_LANES)
-        self.arm("--lanes", "north,south")
-        self.assertEqual("lane north", self.take(None, cwd=self.tree).stdout.strip())
-        # The tier, every form, and a gate with a cargo station: exit 3.
+        res = self.token("init", "--lanes", "north,south", env={"MECLAW_GATE_LEGACY": None})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((self.repo.parent / "tokens").exists(), "the store writes no token file")
         res = run_tier(self.repo, self.tree)
         self.assertEqual(3, res.returncode, res.stdout + res.stderr)
         self.assertIn(self.LANES_REFUSED, res.stderr)
         self.assertNotIn("tier-dry:", res.stdout)
-        res = self.run_gate_sh("strand")
+
+    # Re-check pd-legacy M-2: the refusal in `gate_legacy.sh` guards the one
+    # mode left there, `ci`, outside the CI runner as well. Its pins went with
+    # the old path; these drive `gate.sh ci` on a store armed with lanes.
+    LANES_CI_NOTE = "lanes armed on this host, cargo runs here under CI"
+
+    def arm_the_store(self):
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        res = self.token("init", "--lanes", "north,south", env={"MECLAW_GATE_LEGACY": None})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    def test_a_local_ci_gate_with_cargo_is_refused_while_the_lanes_are_armed(self):
+        self.arm_the_store()
+        res = self.run_gate_sh("ci", env={"CI": ""})
         self.assertEqual(3, res.returncode, res.stdout + res.stderr)
         self.assertIn(self.LANES_REFUSED, res.stderr)
         self.assertNotIn("GATE-SUMMARY", res.stdout)
-        # `--only clippy` is cargo, too.
-        res = self.run_gate_sh("strand", "--only", "clippy")
-        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
-        # A plan builds nothing, a scripts-only plan runs no cargo, and a run
-        # on a lane is the lane's business.
-        self.assertEqual(0, self.run_gate_sh("strand", "--plan-only").returncode)
-        res = self.run_gate_sh("strand", plan=PLAN_GREEN)
+        # A plan without cargo is no business of the lanes.
+        res = self.run_gate_sh("ci", plan=PLAN_GREEN, env={"CI": ""})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        res = self.run_gate_sh("strand", "--only", "ok")
+
+    def test_the_ci_runner_passes_the_lanes_refusal_with_a_note(self):
+        self.arm_the_store()
+        res = self.run_gate_sh("ci", env={"CI": "true"})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        res = self.run_gate_sh("strand", "--lane", "--base", "master")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        # The way out names its reason, and the receipt carries it.
-        res = self.run_gate_sh("strand", env={"MECLAW_LANE_LOCAL_OK": "owner said so"})
+        self.assertRegex(res.stdout,
+                         r"(?m)^GATE lanes-ci \[.*\] 0s NOTE %s$" % re.escape(self.LANES_CI_NOTE))
+
+    def test_the_way_out_of_the_lanes_refusal_names_its_reason(self):
+        self.arm_the_store()
+        res = self.run_gate_sh("ci", env={"CI": "", "MECLAW_LANE_LOCAL_OK": "owner said so"})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertRegex(res.stdout, r"(?m)^GATE lane-local-ok \[.*\] 0s NOTE owner said so$")
-        res = run_tier(self.repo, self.tree, {"MECLAW_LANE_LOCAL_OK": "owner said so"})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("tier-dry:", res.stdout)
+
+    def test_a_ci_gate_on_an_unarmed_host_says_nothing_of_lanes(self):
+        for ci in ("", "true"):
+            with self.subTest(CI=ci):
+                res = self.run_gate_sh("ci", env={"CI": ci})
+                self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+                self.assertNotIn(self.LANES_REFUSED, res.stderr)
+                self.assertNotIn("lanes-ci", res.stdout)
+
+    def test_tier_reuse_by_hand_is_no_way_past_the_lanes(self):
+        # Delta C M-neu-3: MECLAW_TIER_REUSE set by hand ran test binaries on
+        # this machine; only the gate's own reuse (MECLAW_TIER_LANE) passes.
+        (self.repo.parent / "lanes").write_text(HOST_LANES)
+        self.arm("--lanes", "north,south")
+        reuse = str(self.tree / "reuse")
+        res = run_tier(self.repo, self.tree, {"MECLAW_TIER_REUSE": reuse})
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(self.LANES_REFUSED, res.stderr)
+        res = run_tier(self.repo, self.tree, {"MECLAW_TIER_REUSE": reuse, "MECLAW_TIER_LANE": "1"})
+        self.assertNotIn(self.LANES_REFUSED, res.stderr)
+
+    def test_a_store_the_probe_cannot_read_counts_as_armed(self):
+        # Delta C M-neu-4: fail-closed -- a broken store or lanes column
+        # refuses local cargo; a store without the lease tables does not.
+        bad = self.repo.parent / "broken.db"
+        bad.write_bytes(b"not a database at all" * 100)
+        res = run_tier(self.repo, self.tree, {"MECLAW_PIPELINE_DB": str(bad)})
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(self.LANES_REFUSED, res.stderr)
+        odd = self.repo.parent / "odd.db"
+        db = sqlite3.connect(str(odd))
+        db.execute("CREATE TABLE lease_pools (pool TEXT, lanes TEXT, armed TEXT)")
+        db.execute("INSERT INTO lease_pools VALUES ('cargo', '{not json', 'now')")
+        db.commit()
+        db.close()
+        res = run_tier(self.repo, self.tree, {"MECLAW_PIPELINE_DB": str(odd)})
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn(self.LANES_REFUSED, res.stderr)
+        empty = self.repo.parent / "empty.db"
+        sqlite3.connect(str(empty)).close()
+        res = run_tier(self.repo, self.tree, {"MECLAW_PIPELINE_DB": str(empty)})
+        self.assertNotIn(self.LANES_REFUSED, res.stderr)
 
     # Review L Minor 1: the exception is the CI runner (`$CI`), like the tier,
     # not the mode `ci` -- a local `gate.sh ci` with a cargo station is local
     # cargo all the same.
-    def test_a_local_ci_mode_gate_is_refused_but_ci_runs(self):
-        (self.repo.parent / "lanes").write_text(HOST_LANES)
-        self.arm("--lanes", "north,south")
-        self.take(None, cwd=self.tree)
-        res = self.run_gate_sh("ci", env={"CI": ""})
-        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
-        self.assertIn(self.LANES_REFUSED, res.stderr)
-        res = self.run_gate_sh("strand", env={"CI": "true"})
-        self.assertNotIn(self.LANES_REFUSED, res.stderr)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
     # C1 finding (L Nit): `CI` still passes the lanes refusal -- a CI job runs
     # on its own machine and has no armed token file -- but a `CI=1` typed on
@@ -2803,38 +2778,16 @@ class TestTokenGuards(TokenTestCase):
     # the gate, a NOTE line from the tier.
     LANES_CI_NOTE = "lanes armed on this host, cargo runs here under CI"
 
-    def test_ci_passes_the_lanes_refusal_with_a_note(self):
-        (self.repo.parent / "lanes").write_text(HOST_LANES)
-        self.arm("--lanes", "north,south")
-        self.take(None, cwd=self.tree)
-        res = self.run_gate_sh("strand", env={"CI": "true"})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertRegex(res.stdout,
-                         r"(?m)^GATE lanes-ci \[.*\] 0s NOTE %s$" % re.escape(self.LANES_CI_NOTE))
-        res = run_tier(self.repo, self.tree, {"CI": "true"})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("tier-dry:", res.stdout)
-        self.assertIn("=== NOTE " + self.LANES_CI_NOTE, res.stdout)
-
-    def test_ci_on_an_unarmed_host_says_nothing(self):
-        self.arm("--max", "1")
-        self.take(None, cwd=self.tree)
-        res = self.run_gate_sh("strand", env={"CI": "true"})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertNotIn("lanes-ci", res.stdout)
-        res = run_tier(self.repo, self.tree, {"CI": "true"})
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertNotIn(self.LANES_CI_NOTE, res.stdout)
-
     # C1 finding (L M-2): "are the lanes armed" had two writers, one in the
     # runner and one in the tier, word for word. One rule with two writers is
     # not a rule (the GH #802 lesson behind `scripts/cargo-target.sh`), so the
-    # probe lives there and both scripts read it.
+    # probe lives there and both scripts read it. Since W3 (#1117) the runner
+    # body is gate_legacy.sh; gate.sh is a shell around it.
     def test_the_lanes_probe_has_one_source(self):
         lib = (REPO / "scripts" / "cargo-target.sh").read_text()
         self.assertTrue(re.search(r"(?m)^meclaw_lanes_active\(\) \{", lib),
                         "scripts/cargo-target.sh defines no meclaw_lanes_active()")
-        for script in (GATE_SH, TIER_SH):
+        for script in (GATE_LEGACY, TIER_SH):
             with self.subTest(script=script.name):
                 text = script.read_text()
                 self.assertFalse(re.search(r"(?m)^\s*lanes_active\(\) \{", text),
@@ -2857,7 +2810,7 @@ class TestTokenGuards(TokenTestCase):
                 ["bash", "-c", '. "$1"; meclaw_lanes_active "$2"', "probe",
                  str(REPO / "scripts" / "cargo-target.sh"),
                  str(self.repo.parent / "cargo.lock")],
-                env=env, capture_output=True, text=True, timeout=30).returncode
+                env=env, capture_output=True, text=True, timeout=kit_time.HANG).returncode
 
         self.assertEqual(0, probe(json.dumps({"lanes": ["north", "south"]})))
         self.assertEqual(1, probe(json.dumps({"lanes": []})))
@@ -2872,29 +2825,8 @@ class TestTokenGuards(TokenTestCase):
         res = subprocess.run(
             ["bash", "-c", '. "$1"; meclaw_lanes_active "$2"', "probe",
              str(REPO / "scripts" / "cargo-target.sh"), str(self.repo.parent / "beside.lock")],
-            env=env, capture_output=True, text=True, timeout=30)
+            env=env, capture_output=True, text=True, timeout=kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stderr)
-
-    def test_a_cargo_token_without_lanes_keeps_local_cargo(self):
-        self.arm("--max", "1")
-        self.take(None, cwd=self.tree)
-        res = run_tier(self.repo, self.tree)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        res = self.run_gate_sh("strand")
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-
-    def test_a_broken_token_file_is_exit_2_at_the_gate_and_the_tier(self):
-        """A broken file is a call to look at it, not a missing token: the
-        gate passes the exit of `token check` on like the tier (review M4)."""
-        self.arm()
-        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
-        (self.repo.parent / "tokens").write_text("{not json")
-        res = self.gate()
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
-        self.assertIn("is broken", res.stderr)
-        self.assertFalse((self.repo / "plans" / WAVE_DIR / "receipts" / "kit").exists())
-        res = run_tier(self.repo, self.tree)
-        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
 
     def test_the_main_tree_needs_no_token(self):
         self.arm()
@@ -2904,18 +2836,273 @@ class TestTokenGuards(TokenTestCase):
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertIn("tier-dry:", res.stdout)
 
-    def test_report_releases_the_token(self):
-        self.arm()
-        self.assertEqual(0, self.take(None, cwd=self.tree).returncode)
-        target = self.tree / "scripts" / "kit_change.txt"
-        target.write_text("a change\n")
+# A stand-in for `scripts/pipeline.py`: it writes its argv, the caller and the
+# store it was handed as one JSON line to `$STUB_RECORD`. As `gate` it opens a
+# run directory under `--archive` with a `latest` pointer, as the core does,
+# and prints a red run; as anything else it says one word.
+PIPELINE_STUB = """import json, os, sys
+argv = sys.argv[1:]
+with open(os.environ["STUB_RECORD"], "a") as f:
+    f.write(json.dumps({"argv": argv,
+                        "caller": os.environ.get("MECLAW_LANES_CALLER"),
+                        "wave_env": os.environ.get("MECLAW_GATE_WAVE"),
+                        "db": os.environ.get("MECLAW_PIPELINE_DB")}) + "\\n")
+if argv[:1] == ["gate"] and "--archive" in argv:
+    root = argv[argv.index("--archive") + 1]
+    run = os.path.join(root, "20261008T000000Z-deadbeef")
+    os.makedirs(run, exist_ok=True)
+    if not os.path.lexists(os.path.join(root, "latest")):
+        os.symlink("20261008T000000Z-deadbeef", os.path.join(root, "latest"))
+    print("gate: receipts = somewhere")
+    print("GATE precheck [form] 1s GREEN")
+    print("GATE tests [unit] 3s RED 1 test failed")
+    print("GATE-SUMMARY strand abc1234 1/2 4s RED")
+    print("GATE-LANE b1 crit=3 lane_s=4 rounds=1")
+    sys.exit(1)
+print("stub " + " ".join(argv))
+sys.exit(int(os.environ.get("STUB_EXIT") or 0))
+"""
+
+# GH #1156: `kit_env` sets no switch any more; kept so the cases read as before.
+NO_LEGACY = {"MECLAW_GATE_LEGACY": None}
+
+
+class TestDelegation(TokenTestCase):
+    """`strand.sh gate|test|token|lanes` delegate to the pipeline core (W3, GH #1117).
+
+    The token semantics on the store are pinned in `test_pipeline_lanes_cli.py`;
+    here: that the kit reaches the core with the right words, that the output
+    and the exit are the core's, that `test-tier.sh` (which asks `strand.sh
+    token check`) now asks the store, and that `MECLAW_GATE_LEGACY=1` takes
+    no old path any more (GH #1156).
+    """
+
+    def tok(self, *args, cwd=None, minutes=0, env=None):
+        extra = dict(NO_LEGACY)
+        extra.update(env or {})
+        return self.token(*args, cwd=cwd, minutes=minutes, env=extra)
+
+    def db(self):
+        return self.repo.parent / "pipeline.db"
+
+    def store_rows(self, waiting=False):
+        import sqlite3
+        db = sqlite3.connect(str(self.db()))
+        try:
+            return [r[0] for r in db.execute(
+                "SELECT holder FROM lease_entries WHERE resource IS %s NULL ORDER BY seq"
+                % ("" if waiting else "NOT"))]
+        finally:
+            db.close()
+
+    def stub(self):
+        """The stub in both places the kit looks: next to the kit (token,
+        test, lanes) and in the strand's tree (behind its `gate.sh`)."""
+        for scripts in (self.repo / "scripts", self.tree / "scripts"):
+            (scripts / "pipeline.py").write_text(PIPELINE_STUB)
+        record = pathlib.Path(self._tmp.name) / "stub.jsonl"
+        return record
+
+    def calls(self, record):
+        if not record.exists():
+            return []
+        return [json.loads(ln) for ln in record.read_text().splitlines()]
+
+    def test_token_runs_on_the_store_word_for_word(self):
+        res = self.tok("init", "--max", "1")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertTrue(self.db().exists())
+        self.assertFalse((self.repo.parent / "tokens").exists(), "the old token file")
+        res = self.tok("take", cwd=self.tree, minutes=1)
+        self.assertEqual(0, res.returncode, res.stderr)
+        res = self.tok("take", "--strand", "welle-x/other", minutes=2)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertIn("welle-x/other is #1 in the queue", res.stderr)
+        self.assertEqual(["welle-x/kit"], self.store_rows())
+        self.assertEqual(["welle-x/other"], self.store_rows(waiting=True))
+        # the kit's words and exit ARE the core's
+        kit = self.tok("who", minutes=3)
+        direct = subprocess.run(
+            ["python3", str(self.repo / "scripts" / "pipeline.py"), "lanes", "who"],
+            cwd=str(self.repo), capture_output=True, text=True,
+            env=kit_env(self.repo, dict(NO_LEGACY, MECLAW_STRAND_NOW=str(self.T0 + 180))))
+        self.assertEqual((direct.returncode, direct.stdout, direct.stderr),
+                         (kit.returncode, kit.stdout, kit.stderr))
+        self.assertIn("welle-x/kit", kit.stdout)
+        res = self.tok("release", cwd=self.tree, minutes=4)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual([], self.store_rows())
+
+    def test_a_strand_with_a_wave_directory_becomes_the_key(self):
+        self.assertEqual(0, self.tok("init", "--max", "2").returncode)
+        res = self.tok("take", "--strand", "a", "--wave", WAVE_DIR)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["%s/a" % WAVE], self.store_rows())
+        res = self.tok("take", "--strand", "b", "--wave", "no-such-wave")
+        self.assertEqual(2, res.returncode, res.stderr)
+        self.assertEqual(["%s/a" % WAVE], self.store_rows())
+
+    def test_the_tier_asks_the_store_and_the_skip_variable_counts(self):
+        # unarmed: nothing to ask, and nothing is created
+        res = run_tier(self.repo, self.tree, extra_env=NO_LEGACY)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse(self.db().exists())
+        # armed, the one token held elsewhere: refused with exit 3
+        self.assertEqual(0, self.tok("init", "--max", "1").returncode)
+        self.assertEqual(0, self.tok("take", "--strand", "welle-x/other").returncode)
+        res = run_tier(self.repo, self.tree, extra_env=NO_LEGACY)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no cargo token for welle-x/kit", res.stderr)
+        res = run_tier(self.repo, self.tree, extra_env=dict(
+            NO_LEGACY, MECLAW_STRAND_TOKEN_SKIP="one-off from the orchestrator"))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("one-off from the orchestrator", res.stderr)
+
+    def test_take_on_an_unarmed_store_refuses_through_the_kit(self):
+        # Z11: the kit passes the refusal on -- no "not armed" with exit 0.
+        res = self.tok("take", cwd=self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand.sh token init --lanes", res.stderr)
+
+    def test_the_caller_and_the_store_travel_to_the_core(self):
+        record = self.stub()
+        env = {"STUB_RECORD": str(record), "STUB_EXIT": "3"}
+        res = self.tok("check", "--pid", "123", "--lane", "b1", cwd=self.tree, env=env)
+        self.assertEqual(3, res.returncode, res.stderr)
+        self.assertEqual("stub lanes check --pid 123 --lane b1\n", res.stdout)
+        (call,) = self.calls(record)
+        self.assertEqual(["lanes", "check", "--pid", "123", "--lane", "b1"], call["argv"])
+        self.assertRegex(call["caller"], r"^[0-9]+$")
+        self.assertNotEqual("123", call["caller"])
+        self.assertEqual(str(self.db()), call["db"])
+
+    def test_gate_goes_to_the_core_with_strand_wave_and_archive(self):
+        record = self.stub()
+        res = run_strand(self.repo, "gate", "--host", "b1", "--no-pre", "--reason", "a b",
+                         cwd=self.tree, extra_env=dict(NO_LEGACY, STUB_RECORD=str(record)))
+        self.assertEqual(1, res.returncode, res.stderr)
+        archive = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        (call,) = self.calls(record)
+        self.assertEqual(["gate", "--mode", "strand", "--strand", "kit", "--wave", WAVE,
+                          "--host", "b1", "--no-pre", "--reason", "a b",
+                          "--archive", str(archive)], call["argv"])
+        # what the caller sees: the red station, the summary, the lane line
+        self.assertEqual(["GATE tests [unit] 3s RED 1 test failed",
+                          "GATE-SUMMARY strand abc1234 1/2 4s RED",
+                          "GATE-LANE b1 crit=3 lane_s=4 rounds=1"], res.stdout.splitlines())
+        latest = archive / "latest"
+        self.assertEqual("GATE-SUMMARY strand abc1234 1/2 4s RED\n",
+                         (latest / "summary.txt").read_text())
+        self.assertIn("gate: receipts = somewhere", (latest / "run.log").read_text())
+
+    def test_gate_plan_only_names_the_wave_like_the_run(self):
+        """re-check m-N3/m-N2: `--plan-only` passes the wave as the run does,
+        and the integration narrows from the directory with its date."""
+        record = self.stub()
+        for extra in (("--plan-only",), ("--no-pre", "--reason", "r")):
+            run_strand(self.repo, "gate", "integration", *extra, cwd=self.tree,
+                       extra_env=dict(NO_LEGACY, STUB_RECORD=str(record), MECLAW_GATE_WAVE=""))
+            call = self.calls(record)[-1]
+            argv = call["argv"]
+            self.assertIn("--wave", argv, (extra, argv))
+            self.assertEqual(WAVE, argv[argv.index("--wave") + 1], extra)
+            self.assertEqual(WAVE_DIR, call["wave_env"], extra)
+        # a wave named by hand still wins
+        run_strand(self.repo, "gate", "integration", "--plan-only", cwd=self.tree,
+                   extra_env=dict(NO_LEGACY, STUB_RECORD=str(record), MECLAW_GATE_WAVE="welle-h"))
+        self.assertEqual("welle-h", self.calls(record)[-1]["wave_env"])
+
+    def test_a_pre_w3_tree_gates_on_its_own_runner(self):
+        # C-M1: a tree without `gate_legacy.sh` beside its `gate.sh` is older
+        # than W3 -- its `gate.sh` is the old runner, which knows no `--strand`.
+        record = self.stub()
+        scripts = self.tree / "scripts"
+        (scripts / "gate_legacy.sh").unlink()
+        (scripts / "gate.sh").write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do [ \"$a\" = --strand ] && { echo \"unknown argument\" >&2; exit 2; }; done\n"
+            "echo \"GATE-SUMMARY $1 old 1/1 0s GREEN\"\n")
+        res = run_strand(self.repo, "gate", cwd=self.tree,
+                         extra_env=dict(NO_LEGACY, STUB_RECORD=str(record)))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GATE-SUMMARY strand old 1/1 0s GREEN", res.stdout)
+        # the old runner asks the store for the token (GH #1156), the core gates nothing
+        self.assertEqual([], [c for c in self.calls(record) if c["argv"][:1] != ["lanes"]])
+
+    def test_report_on_an_unarmed_store_says_nothing_about_tokens(self):
+        # C-M3: the store exists (an earlier gate or lanes run) and its pool
+        # is not armed -- `report` has no token to give back and stays quiet.
+        self.assertEqual(0, self.tok("init", "--max", "1").returncode)
+        self.assertEqual(0, self.tok("off").returncode)
+        self.assertTrue(self.db().exists())
+        (self.tree / "scripts" / "kit_change.txt").write_text("a change\n")
         _git(self.tree, "add", "scripts/kit_change.txt")
         _git(self.tree, "commit", "-q", "-m", "welle-x kit (#861): eine Änderung")
         self.assertEqual(0, self.gate().returncode)
-        res = run_strand(self.repo, "report", cwd=self.tree)
+        res = run_strand(self.repo, "report", cwd=self.tree, extra_env=NO_LEGACY)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        self.assertIn("strand: cargo token released by %s/kit" % WAVE, res.stderr)
-        self.assertEqual([], self.holders())
+        self.assertNotIn("not armed", res.stderr)
+
+    def test_report_passes_a_held_release_on(self):
+        # Re-check tv-kit fix11 M1: `report` threw the exit 3 of its `token
+        # release` away and ended 0 -- the lane stayed held (a stale-but-busy
+        # note, a live run) and nobody saw it. The report is written; the exit
+        # says the lease is still there.
+        (self.tree / "scripts" / "kit_change.txt").write_text("a change\n")
+        _git(self.tree, "add", "scripts/kit_change.txt")
+        _git(self.tree, "commit", "-q", "-m", "welle-x kit (#861): eine Änderung")
+        self.assertEqual(0, self.gate().returncode)
+        self.assertEqual(0, self.tok("init", "--max", "1").returncode)
+        record = self.stub()
+        res = run_strand(self.repo, "report", cwd=self.tree,
+                         extra_env=dict(NO_LEGACY, STUB_RECORD=str(record), STUB_EXIT="3"))
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertIn("header block complete, gate green", res.stdout)
+        self.assertEqual([["lanes", "release", "--strand", "welle-x/kit"]],
+                         [c["argv"] for c in self.calls(record)])
+        self.assertIn("the lease of welle-x/kit stays", res.stderr)
+
+    def test_gate_shows_aborted_stations(self):
+        # C-M2: a station a watchdog stopped is shown like a red one.
+        (self.tree / "scripts" / "gate.sh").write_text(
+            "#!/bin/sh\n"
+            "echo 'GATE precheck [form] 1s GREEN'\n"
+            "echo 'GATE tests [unit] 3s ABORTED watchdog'\n"
+            "echo 'GATE-SUMMARY strand abc1234 1/2 4s ABORTED'\n"
+            "exit 2\n")
+        res = run_strand(self.repo, "gate", cwd=self.tree, extra_env=NO_LEGACY)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("GATE tests [unit] 3s ABORTED watchdog", res.stdout.splitlines()[0])
+
+    def test_gate_plan_only_and_ci_and_legacy(self):
+        record = self.stub()
+        env = dict(NO_LEGACY, STUB_RECORD=str(record))
+        res = run_strand(self.repo, "gate", "integration", "--plan-only", "--base", "x",
+                         cwd=self.tree, extra_env=env)
+        self.assertEqual(0, res.returncode, res.stderr)
+        # the plan names the wave as the run does (re-check m-N3)
+        self.assertEqual(["gate", "--mode", "integration", "--wave", WAVE, "--plan-only",
+                          "--base", "x"], self.calls(record)[-1]["argv"])
+        # `ci` never reaches the core
+        n = len(self.calls(record))
+        res = run_strand(self.repo, "gate", "ci", "--plan-only", cwd=self.tree,
+                         extra_env=dict(env, MECLAW_GATE_PLAN=str(self.plan_file())))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(n, len(self.calls(record)))
+        # ... and the old switch no longer keeps a strand gate away from it (GH #1156)
+        res = run_strand(self.repo, "gate", "--plan-only", cwd=self.tree,
+                         extra_env=dict(env, MECLAW_GATE_LEGACY="1"))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["gate", "--mode", "strand", "--wave", WAVE, "--plan-only"],
+                         self.calls(record)[-1]["argv"])
+
+    def test_test_goes_to_the_core_with_every_argument(self):
+        record = self.stub()
+        args = ["binary(~gh123)", "--host", "b1", "-p", "meclaw-cells", "--", "--nocapture"]
+        res = run_strand(self.repo, "test", *args, cwd=self.tree,
+                         extra_env=dict(NO_LEGACY, STUB_RECORD=str(record), STUB_EXIT="6"))
+        self.assertEqual(6, res.returncode, res.stderr)
+        self.assertEqual(["test"] + args, self.calls(record)[-1]["argv"])
 
 
 class TestPreamble(unittest.TestCase):
@@ -2937,6 +3124,10 @@ class TestPreamble(unittest.TestCase):
         "Runner-Hygiene last_run.json": ("last_run.json",),
         "Unter-Agenten im Vordergrund": ("run_in_background: false",),
         "Token per Kit": ("strand.sh token",),
+        # re-check ZC: OR-DT.store-migrations, the hash runs over the raw text
+        "Store-Migrationen nur additiv": ("Migrationen nur additiv", "Rohtext", "kein DROP/RENAME"),
+        # Review I1 of Z-D: the chain writes its own PID, the probe proves it.
+        "Warte-Kette schreibt ihre PID selbst": ("echo $$ >", "ps -o sid= -p"),
     }
 
     def setUp(self):
@@ -2944,12 +3135,54 @@ class TestPreamble(unittest.TestCase):
             self.skipTest("plans/ is not part of the public tree")
         self.text = self.PREAMBLE.read_text()
 
+    def test_the_pass_close_frees_only_an_admission_lease(self):
+        # Re-check Z-A M-c: on the standard way (`token take`, then gate) the
+        # close of the pass only clears the run; a second `release` frees it.
+        self.assertNotIn("der Close des Passes gibt sie frei,", self.text)
+        self.assertIn("gibt ein erneutes `release` sie frei", self.text)
+
     def test_every_machine_rule_stands_in_the_canonical_file(self):
         for rule, phrases in self.RULES.items():
             for phrase in phrases:
                 self.assertTrue(phrase in self.text,
                                 "%s: the rule %r is gone -- no line says %r"
                                 % (self.PREAMBLE.name, rule, phrase))
+
+    def test_the_chain_pid_rule_does_not_point_at_the_setsid_child(self):
+        """Without job control `setsid bash -c '...' &` does not fork, `$!`
+        is already the chain and its child is the first link; with it `$!`
+        is the dead starter. "Report the child of setsid" is right in one
+        shell and wrong in the other (review Z-D I1)."""
+        self.assertNotIn("das Kind des setsid", self.text)
+
+    def test_the_chain_pid_recipe_never_reads_a_stale_pidfile(self):
+        """`... &` and then `cat <pidfile>` finds it empty, missing, or with the
+        PID of an earlier run (re-check Z-D 714a5f0ba: old PID in 8-14 of 20
+        runs), and `tail --pid` returns at once. The recipe removes the file
+        first, reads it in the NEXT command, and reads again when it is empty.
+        A failed probe is no reason to read again (re-check Z-D f2d534b65):
+        the PID in the file is the chain's, the chain has ended or never ran,
+        so the log says why."""
+        rm = self.text.find("rm -f <pidfile>")
+        start = self.text.find("setsid bash -c 'echo $$ > <pidfile>;")
+        self.assertTrue(0 <= rm < start, "the pidfile is not removed before the chain starts")
+        self.assertIn("im NÄCHSTEN Kommando", self.text)
+        self.assertIn("pidfile leer → erneut lesen", self.text)
+        self.assertIn("Probe falsch → Log lesen", self.text)
+        self.assertNotIn("oder Probe falsch → erneut lesen", self.text)
+        self.assertNotIn("2>&1 &`, dann `cat <pidfile>`", self.text)
+
+    def test_the_integration_pass_has_one_entry_that_names_its_strand(self):
+        """On master `strand.sh gate integration` without `--strand` dies
+        ("cannot tell the strand from the branch -- pass --strand"), and
+        `gate.sh integration` is the shell behind the one entry, not the entry
+        (re-check Z-D 714a5f0ba M2). Every rule file says the same command."""
+        for rel in ("AGENTS.md", "plans/PREAMBLE.md", "docs/development-rules.md"):
+            text = " ".join((REPO / rel).read_text(encoding="utf-8").split())
+            self.assertNotIn("gate.sh integration", text, rel)
+            for m in re.finditer(r"strand\.sh gate integration", text):
+                self.assertTrue(text[m.end():m.end() + 40].lstrip(" `").startswith("--strand"),
+                                "%s: %r has no --strand" % (rel, text[m.start():m.end() + 40]))
 
 
 class TestPublicHygiene(unittest.TestCase):
@@ -2962,6 +3195,7 @@ class TestPublicHygiene(unittest.TestCase):
     """
 
     FILES = (STRAND_SH, LANE_SYNC,
+             REPO / "scripts" / "pipeline" / "hygiene.py",
              REPO / "scripts" / "wave_receipt.py",
              pathlib.Path(__file__).resolve(),
              REPO / "scripts" / "tests" / "test_wave_receipt.py")
@@ -2989,6 +3223,14 @@ class TestPublicHygiene(unittest.TestCase):
         for path in self.FILES:
             self.assertIsNone(self.ADD_ALL.search(path.read_text()),
                               "%s stages the whole tree" % path.name)
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

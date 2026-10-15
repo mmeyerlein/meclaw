@@ -24,7 +24,10 @@
 //! Hives are not actors here either: this is pure data plus one pure predicate.
 //! The table is rebuilt on topology change, next to the slot table and from the
 //! same reader (`mutation::port_boundary::collect_sealed_hives`), so seal
-//! membership cannot drift between mutation time and delivery time.
+//! membership does not drift between mutation time and delivery time. When the
+//! rebuild's read times out (GH #1176), the boundary fails closed: until a
+//! later pass reads again, every hive stands sealed with no declared address
+//! ([`sealed_shut`]).
 
 use meclaw_core::Path;
 
@@ -111,7 +114,7 @@ pub fn boundary_refusal(
 ///
 /// Synchronous filesystem work — one `config.json` per sealed hive — which is
 /// why it runs on topology change only, exactly like
-/// [`crate::rebuild_slot_table`]'s reader. The seal itself comes from
+/// the colony loop's slot-table reader. The seal itself comes from
 /// [`crate::mutation::port_boundary::collect_sealed_hives`], so the delivery
 /// filter and the mutation gate always agree about WHICH hives declared a
 /// boundary.
@@ -121,9 +124,41 @@ pub fn rebuild_hive_boundaries<'a>(
     hive_paths: impl Iterator<Item = &'a Path>,
 ) -> HiveBoundaryTable {
     let sealed = crate::mutation::port_boundary::collect_sealed_hives(root, hive_paths);
+    boundaries_from_sealed(root, sealed, &|_| {})
+}
+
+/// The table that stands while the slot rebuild's read has timed out
+/// (GH #1176, fail-closed): every hive sealed, nothing declared. The read that
+/// did not come back is the one that would say which hive sealed itself since
+/// the last good rebuild -- a new hive, or one re-sealed in place -- so none
+/// of the old declarations is vouched for. Every address strictly inside a
+/// hive is refused from outside; a hive path no enclosing hive holds stays an
+/// address (hive transit).
+#[must_use]
+pub(crate) fn sealed_shut<'a>(hive_paths: impl Iterator<Item = &'a Path>) -> HiveBoundaryTable {
+    hive_paths
+        .map(|p| HiveBoundary {
+            path: p.as_str().to_string(),
+            ports: Vec::new(),
+            connect_points: Vec::new(),
+        })
+        .collect()
+}
+
+/// The boundaries of hives whose seal is already read: each one's connect
+/// points, read out of its `config.json`, with `step` announced before each
+/// read (GH #1176: the colony loop runs this in its hive-config scan, off the
+/// worker, with a beat per read).
+#[must_use]
+pub(crate) fn boundaries_from_sealed(
+    root: &std::path::Path,
+    sealed: Vec<crate::mutation::port_boundary::SealedHive>,
+    step: &dyn Fn(&str),
+) -> HiveBoundaryTable {
     sealed
         .into_iter()
         .map(|h| {
+            step(&h.path);
             let connect_points = crate::mutation::port_boundary::lane_connect_points(root, &h.path);
             HiveBoundary {
                 path: h.path,
@@ -212,6 +247,34 @@ mod tests {
         assert_eq!(
             boundary_refusal(&t, &Path::new("/outer/inner/c"), None),
             Some("/outer/inner".to_string())
+        );
+    }
+
+    /// GH #1176: the table a timed-out or unreadable slot rebuild leaves
+    /// behind refuses every address inside any hive, the root included.
+    #[test]
+    fn a_shut_table_refuses_every_interior_address_and_keeps_the_hive_path() {
+        let hives = [Path::new("/"), Path::new("/vault")];
+        let shut = sealed_shut(hives.iter());
+        assert_eq!(
+            boundary_refusal(&shut, &Path::new("/vault/secret"), Some("in")),
+            Some("/vault".to_string()),
+            "the deepest closed hive refuses, lane or not"
+        );
+        assert_eq!(
+            boundary_refusal(&shut, &Path::new("/caller"), None),
+            Some("/".to_string())
+        );
+        assert_eq!(
+            boundary_refusal(&shut, &Path::new("/vault"), None),
+            Some("/".to_string()),
+            "an enclosing closed hive holds the inner hive path too"
+        );
+        let inner_only = [Path::new("/vault")];
+        assert_eq!(
+            boundary_refusal(&sealed_shut(inner_only.iter()), &Path::new("/vault"), None),
+            None,
+            "the hive path itself is not inside its own boundary"
         );
     }
 

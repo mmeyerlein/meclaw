@@ -293,6 +293,52 @@ pub fn build_stateless_task<F: crate::stateless_cell::StatelessCell + 'static>(
     (cell_join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
 }
 
+/// GH #1082: [`build_stateless_task`] for a cell that answers ONE message and
+/// then sleeps ([`crate::cell_task::stateless_one_shot_dispatcher`]).
+///
+/// Same return shape and the same peace/stop/death-ack wiring as
+/// [`build_stateless_task`], one worker. The colony inbox is required, because
+/// the sleep hands the mailbox back through it (`ColonyMsg::Sleep`); the entry
+/// needs a `WakeFn` for the next message to wake it — the degraded `store` has
+/// its factory's, which tries the `cell.db` open again.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn build_stateless_one_shot_task<F: crate::stateless_cell::StatelessCell + 'static>(
+    own_path: meclaw_core::Path,
+    mailbox: mpsc::Receiver<meclaw_core::Message>,
+    outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
+    cell: std::sync::Arc<F>,
+    message_timeout: Option<std::time::Duration>,
+    colony_inbox_tx: mpsc::Sender<crate::ColonyMsg>,
+    blob_store: Option<std::sync::Arc<crate::DiskBlobStore>>,
+    consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
+) -> (
+    JoinHandle<()>,
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+) {
+    let (peace_tx, peace_rx) = oneshot::channel();
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let (death_ack_tx, death_ack_rx) = oneshot::channel();
+    // No task-level backstop, as in `build_stateless_task`: the sender drops.
+    let (_backstop_tx, backstop_rx) = oneshot::channel();
+    let cell_join = tokio::spawn(crate::cell_task::stateless_one_shot_dispatcher(
+        own_path,
+        mailbox,
+        outputs_tx,
+        cell,
+        message_timeout,
+        Some(peace_tx),
+        Some(stop_rx),
+        colony_inbox_tx,
+        Some(death_ack_tx),
+        blob_store,
+        consumes,
+    ));
+    (cell_join, peace_rx, stop_tx, death_ack_rx, backstop_rx)
+}
+
 /// **Paket-8 (I1-Trichter):** build ONLY the `RespawnFn` for a boot-inactive
 /// **eager stateless** cell — WITHOUT spawning the initial task (boot-gating: no
 /// task runs at boot for an inactive cell). Mirrors the LR

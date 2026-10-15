@@ -1,8 +1,12 @@
-//! Paket-7 F3 — store error_codes demo (f): the SEVEN SQL-side `store`
+//! Paket-7 F3 — store error_codes demo (f): the EIGHT SQL-side `store`
 //! `error_code` values (docs/cell-types.md § store) are accounted for. Six of
 //! them are REAL-triggered through the store cell + ops in this file, and each
-//! asserted; the seventh, `unique_violation` (GH #915), needs a declared
-//! `unique` index and is triggered in `gh915_a_store_filters_on_a_json_path.rs`.
+//! asserted; `unique_violation` (GH #915) needs a declared `unique` index and
+//! is triggered in `gh915_a_store_filters_on_a_json_path.rs`; `store_degraded`
+//! (GH #1082) needs a database file SQLite cannot open and is triggered in the
+//! unit tests of `src/store/ops.rs` (`an_unopenable_database_file_is_store_degraded`)
+//! and `src/store/degraded.rs`, and at wake/restart in `store_wake_failure_modes`
+//! and `store_respawn_failure_modes`.
 //!
 //! Spec-code → trigger table (each row is exercised by a `#[test]` below):
 //!
@@ -15,6 +19,7 @@
 //! | `sql_error`            | a malformed table name → generic SQLITE_ERROR        | classify backstop            |
 //! | `query_timeout`        | a long SELECT interrupted by the query_timeout knob  | DbConn InterruptHandle       |
 //! | `unique_violation`     | INSERT a duplicate into a declared `unique` index    | gh915 test file              |
+//! | `store_degraded`       | `cell.db` cannot be opened (SQLITE_CANTOPEN)         | ops.rs / degraded.rs units   |
 //!
 //! The five SQL codes flow through `StoreCell::handle` end-to-end (real
 //! `tool_call` message → real ops → real rusqlite error → classified
@@ -323,14 +328,58 @@ async fn store_code_query_timeout() {
     assert_eq!(em.content["header"]["finish_reason"], "error");
 }
 
-// ── Spec-vs-code coverage table (assert all seven are accounted for) ─────────
+// ── Spec-vs-code coverage table (assert all eight are accounted for) ─────────
+
+/// The repository root this test file lives in (two levels above the crate).
+fn repo_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The English edition of the cell catalogue under `root`. Privately
+/// `docs/cell-types.md` is the German edition and the English one is
+/// `docs/cell-types.en.md`; the export (DOCS_MAP) ships the English bytes under
+/// the plain name and no `.en.md`. So the `.en.md` is read only where it is a
+/// file, else the plain name (gh682 form) -- an unguarded read panicked with
+/// NotFound in the public CI, which runs this `_demo` binary (review bb35efd67
+/// I2, the 0.26.0 / gh325 class).
+fn english_cell_types(root: &std::path::Path) -> std::path::PathBuf {
+    let english = root.join("docs/cell-types.en.md");
+    if english.is_file() {
+        english
+    } else {
+        root.join("docs/cell-types.md")
+    }
+}
+
+/// The codes of family 1 ("SQL level gives a regular `tool_result` turn")
+/// in the English cell catalogue § store, read from the parenthesis that
+/// lists them.
+fn documented_family_one_codes(root: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let doc_path = english_cell_types(root);
+    let doc = std::fs::read_to_string(&doc_path)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", doc_path.display()));
+    let line = doc
+        .lines()
+        .find(|l| l.starts_with("1. SQL level gives a regular `tool_result` turn"))
+        .expect("cell-types.en.md § store carries the family-1 line");
+    let open = line.find('(').expect("family-1 line opens its code list");
+    let close = line[open..]
+        .find(", GH #915")
+        .map(|i| open + i)
+        .expect("family-1 code list ends before the GH #915 note");
+    line[open + 1..close]
+        .split('/')
+        .map(|c| c.trim().trim_matches('`').trim_matches('"').to_string())
+        .collect()
+}
 
 #[test]
-fn all_seven_store_codes_are_accounted_for() {
+fn all_eight_store_codes_are_accounted_for() {
     // This is the machine-checkable form of the doc-table at the top: every
     // spec error_code (docs/cell-types.md § store) has a real-trigger test,
-    // above or, for `unique_violation`, in the GH #915 test file.
-    const SPEC_CODES: [&str; 7] = [
+    // above, in the GH #915 test file (`unique_violation`), or in the store
+    // unit tests and wake/respawn pins (`store_degraded`, GH #1082).
+    const SPEC_CODES: [&str; 8] = [
         "sql_error",
         "constraint_violation",
         "query_timeout",
@@ -338,12 +387,40 @@ fn all_seven_store_codes_are_accounted_for() {
         "unknown_table",
         "unknown_column",
         "unique_violation",
+        "store_degraded",
     ];
-    // Six map to a `#[test]` in this file (named store_code_*), the seventh to
-    // the GH #915 file. The mapping is exhaustive: 7 spec codes ↔ 7 trigger tests.
+    // The table is exhaustive against the doc, not only against itself: the
+    // family-1 list of cell-types.en.md plus `query_timeout` (the cell's
+    // timeout arm, family 2 in the doc) is exactly this set. GH #1082 added
+    // `store_degraded` to the doc while this list still said seven.
+    let mut expected = documented_family_one_codes(&repo_root());
+    expected.insert("query_timeout".to_string());
+    let listed: std::collections::BTreeSet<String> =
+        SPEC_CODES.iter().map(|c| c.to_string()).collect();
     assert_eq!(
-        SPEC_CODES.len(),
-        7,
-        "store declares exactly seven SQL-side error_codes"
+        listed, expected,
+        "the SQL-side store codes of this file are the documented ones"
+    );
+}
+
+#[test]
+fn the_public_clone_reads_the_family_one_list_under_the_plain_name() {
+    // The export (DOCS_MAP) ships the English catalogue as docs/cell-types.md
+    // and no docs/cell-types.en.md; the public CI runs this `_demo` binary
+    // (test-tier.sh t2). Review bb35efd67 I2: an unguarded .en.md read
+    // panics there with NotFound (the 0.26.0 / gh325 class). This builds the
+    // public layout in a temp dir from the English bytes this tree carries and
+    // asserts the same family-1 list comes out of it.
+    let public = tempfile::tempdir().expect("temp dir for the public layout");
+    std::fs::create_dir_all(public.path().join("docs")).expect("docs/ in the public layout");
+    std::fs::copy(
+        english_cell_types(&repo_root()),
+        public.path().join("docs/cell-types.md"),
+    )
+    .expect("English catalogue copied under the plain name");
+    assert_eq!(
+        documented_family_one_codes(public.path()),
+        documented_family_one_codes(&repo_root()),
+        "the public clone reads the same family-1 list as the private tree"
     );
 }

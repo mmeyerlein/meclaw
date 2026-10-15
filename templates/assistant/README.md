@@ -1,4 +1,4 @@
-# `assistant@3.7.15`
+# `assistant@3.7.16`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and ninety-seven edges.
@@ -138,7 +138,7 @@ files under its own path (`<run>/talky/session-keeper`, `<run>/talky-chat/sessio
 and names that path on `export_done`; the member (since 1.9.3) routes every part whose address ends in
 `/session-keeper` into its generations. An export that names a generation therefore says
 `export_done` once PER KEEPER. A third talky gets its rim by the same rule —
-`crates/meclaw-cells/tests/gh712_the_transfer_rim_of_every_talky_is_the_rule.rs` renders it
+`crates/meclaw-cells/tests/misc_6/gh712_the_transfer_rim_of_every_talky_is_the_rule.rs` renders it
 for a node the template does not have and holds the template's own talkys to it.
 
 **What the SENDER draws.** A connect point is a permission, not an edge: `in_pack`,
@@ -246,7 +246,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.7.6` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.7.7` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out -- three since [#895](https://github.com/mmeyerlein/meclaw/issues/895), when the recipe drew the typed surface's road too |
 | `brief` | the brief of a turn about its counterpart, for the member's `affinity`: raised by a surface's collector when its `brief_slots` is set and the turn carries `context.counterpart`, leaving on a v-lane with `context.brief_surface` stamped. The member stamps the asker. Since 2.9.0 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `error` | a normalised failure from anything inside this generation — the surface or the reasoning core. A **channel's** failure is no longer among them: since #454 the connector stands in the member's `channels` container and its failures leave beside this lane, one level up |
@@ -325,14 +325,14 @@ The mechanism is a reply-to token that changes compartment on the way home.
 Why it has to arrive on the hop rather than stay in context: the template gate
 probes a door with a bare `hop.route` and an **empty** context compartment, so a
 door guarded on context alone can never fire under it and is condemned
-(`crates/meclaw-cells/tests/gh173_shipped_hive_contracts.rs`). The inward
+(`crates/meclaw-cells/tests/misc_2/gh173_shipped_hive_contracts.rs`). The inward
 carve-out of W7-R1 (GH #286) is written for exactly this shape — a door reading a
 hop key the probe cannot carry.
 
 It is the arrangement this level already uses one door over: `context.tool_caller`
 is what tells the surface's and the core's tool results apart on their way back
 from `./tools`. The round trip is proven end to end, in both directions and twice
-at once, in `crates/meclaw-cells/tests/gh532_two_askers_one_hive.rs`.
+at once, in `crates/meclaw-cells/tests/assemble/gh532_two_askers_one_hive.rs`.
 
 **Nothing an instance wires changes.** The container's `in_bundle` edge, this
 level's `recall` exit and every shipped grow recipe keep working byte for byte,
@@ -378,7 +378,7 @@ turn, on the very edge the tool call already travels. Worth stating because sinc
 [#533](https://github.com/mmeyerlein/meclaw/issues/533) a refusal comes back to
 the collector as `in_bundle`: a missing key would be a silently short bundle, not
 an error, so the path is asserted rather than assumed
-(`crates/meclaw-colony/tests/gh535_the_surface_carries_its_ambient_memory_leg.rs`).
+(`crates/meclaw-colony/tests/gh_3/gh535_the_surface_carries_its_ambient_memory_leg.rs`).
 
 ### The third leg of a turn: the brief (#834, since 2.9.0)
 
@@ -444,7 +444,7 @@ it carries the sections out undivided and the member decides which door each one
 goes through ([`../member/README.md`](../member/README.md) § *What transits
 `./apps`*).
 
-`crates/meclaw-cells/tests/gh302_assistant_wires_channels_once.rs` reads
+`crates/meclaw-cells/tests/misc_2/gh302_assistant_wires_channels_once.rs` reads
 `templates/talky/config.json`, `templates/cogny/config.json` and
 `templates/member/config.json` off the tree and fails until this level moves with
 them; `§ the_boundary_matches_the_member_this_level_is_instantiated_into` is the
@@ -495,7 +495,7 @@ three pieces of it touch this level, which declares two and draws none.
   an app heard their results nameless.
 
 `context.run_id` survives every edge of a tool round: no `delete_context` list
-of this level names it (`crates/meclaw-cells/tests/gh981_run_id_survives_the_tool_path.rs`).
+of this level names it (`crates/meclaw-cells/tests/misc_8/gh981_run_id_survives_the_tool_path.rs`).
 
 ## Two edges to the tool surface, and neither names a tool
 
@@ -788,7 +788,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.15",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.16",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
@@ -1062,7 +1062,7 @@ pass-through edges are struck, and thirty-three edges become **twenty-nine**.
 What delivers instead is one v-lane per asker per direction, drawn by the
 mutation that instantiates the generation. The reply-to token, the core's guarded
 door and the surface default are unchanged and moved one level up with the edges
-that carry them (`crates/meclaw-cells/tests/gh532_two_askers_one_hive.rs` keeps
+that carry them (`crates/meclaw-cells/tests/assemble/gh532_two_askers_one_hive.rs` keeps
 measuring them there). What is NOT the same as #561 is the level above: the
 member declares the very same two lanes and names no connect point below
 `./assistants`, so it stays a **mandatory hop** — a v-lane that would carry a

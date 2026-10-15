@@ -131,6 +131,14 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
     // The client's own press ring, for the length of one movement (§ 5.7).
     ("data-zoomed", "the pressed tile, drawn by the scene hook"),
+    // Not a selector: `attr(data-digits)` is the text of the timer's warm layer,
+    // which repeats the digits and fades in by opacity instead of repainting the
+    // colour of the digits every frame (GH #1209). The template writes it beside
+    // the digits, the scene hook's tick rewrites both together.
+    (
+        "data-digits",
+        "the timer's remaining digits, repeated for its alarm layer (GH #1209)",
+    ),
     // The hook's word about its OWN channel, and the reason it puts beside the
     // address. `data-page-state` above says what the CELL is doing and belongs
     // to the curator; two writers on that one attribute made a sleeping page
@@ -143,6 +151,16 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "data-keys",
         "the page whose hidden field holds the focus, drawn by the scene hook (§ 7.9)",
+    ),
+    // The screen's OWN link, not screen state: the curator never writes it and
+    // § 3.2 keeps meaning out of the browser. The scene hook sets it while
+    // LiveView reports the channel gone, because a tap there is neither sent
+    // nor drawn (K7, welle-testing tv-bn M10b) and the tiles must say so.
+    (
+        "data-offline",
+        "true while the screen's own LiveView channel is gone, drawn by the scene hook: \
+         no input is sent, so everything that takes a finger or a key loses its colour \
+         (K7, OR-T10-10)",
     ),
     // A notification says its own class; `data-level` is the drawing level of
     // a WINDOW since 2.5.0, and one word says one thing (§ 2).
@@ -290,4 +308,120 @@ fn the_templates_write_what_the_sheet_reads() {
         !shell.contains("data-screen="),
         "SHELL_TEMPLATE still writes `data-screen` (§ 2: one screen, many exits)"
     );
+}
+
+/// welle-tv tv-bn-layout A (re-check A-M1): the pass that answered a tap says so on
+/// the windows it acted on. `data-acted` grows on every touch of a window -- an app
+/// write, a co-close, step 5 -- so a driver waiting for "a bigger stamp" returned on
+/// the pass of an EARLIER tap: B-07 green before its tenth tap was answered, the
+/// co-close judged the modal without its stamp. A tap may carry `phx-value-seq`; the
+/// pass renders it back as `data-tap-seq` on the tapped window and on every modal it
+/// co-closed (§ 5.3), never on a tap it refused, and never into the rest row. Test
+/// observability like `ringed`: absent unless a tap carried one.
+#[test]
+fn the_pass_renders_the_seq_of_the_tap_it_answered() {
+    if !library_ships() {
+        eprintln!("SKIP: the display library is not in this tree");
+        return;
+    }
+    let out = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import importlib.util, json, sys\n\
+             spec = importlib.util.spec_from_file_location('compose', sys.argv[1])\n\
+             m = importlib.util.module_from_spec(spec)\n\
+             spec.loader.exec_module(m)\n\
+             m.read_knobs({})\n\
+             st = m.empty_state({'default_screen': 'tv'}, m.DEFAULT_SCREENS)\n\
+             w = lambda st, oid, h, now: m.run_pass(st, {'kind': 'app_write', 'oid': oid, 'view': h}, now)\n\
+             st = w(st, 'view.a.canvas', {'view_id': 'canvas', 'region': 'main', 'layer': 'canvas'}, 1000)\n\
+             st = w(st, 'view.a.chat', {'view_id': 'chat', 'region': 'main', 'topic': 'chat', 'layer': 'modal'}, 2000)\n\
+             plain = m.window_attrs(st['views']['view.a.chat'], 2000)\n\
+             ev = m.tap_event({'for': 'view.a.chat', 'seq': '7'}, 'view.a.chat')\n\
+             st = m.run_pass(st, ev, 3000); m.stamp_tap_seq(st, ev)\n\
+             level = st['views']['view.a.chat']['curator'].get('level')\n\
+             ev = m.tap_event({'for': 'view.a.canvas', 'seq': '9'}, 'view.a.canvas')\n\
+             st = m.run_pass(st, ev, 4000); m.stamp_tap_seq(st, ev)\n\
+             seqs = {o: m.window_attrs(v, 4000).get('tapseq') for o, v in st['views'].items()}\n\
+             ev = m.tap_event({'for': 'view.a.absent', 'seq': '11'}, 'view.a.absent')\n\
+             st = m.run_pass(st, ev, 5000); m.stamp_tap_seq(st, ev)\n\
+             after = {o: m.window_attrs(v, 5000).get('tapseq') for o, v in st['views'].items()}\n\
+             st = w(st, 'view.b.chat', {'view_id': 'chat', 'region': 'main', 'topic': 'chat', 'layer': 'modal'}, 5500)\n\
+             ev = m.tap_event({'for': 'view.b.chat', 'seq': '13'}, 'view.b.chat')\n\
+             st = m.run_pass(st, ev, 6000); m.stamp_tap_seq(st, ev)\n\
+             b = st['views'].get('view.b.chat')\n\
+             held = {'held': b is not None, 'present': bool(b and b['curator'].get('present')),\n\
+                     'refused': ['view.b.chat', 'tap', 'no tile'] in [list(r) for r in st['pass'].get('refused', [])],\n\
+                     'seq': b and m.window_attrs(b, 6000).get('tapseq')}\n\
+             want = {}\n\
+             m.add_tree(want, 'view.a.app', {'component': 'display-pane', 'props': {'pane_id': 'p', 'tapseq': '42'}}, 0, {}, attrs={}, region='main')\n\
+             app = any('tapseq' in (n.get('props') or {}) for n in want.values())\n\
+             print(json.dumps({'plain': 'tapseq' in plain, 'level': level, 'seqs': seqs, 'app': app,\n\
+                               'refused': after, 'held': held, 'junk': m.tap_event({'seq': 'x'}, 'view.a.chat'),\n\
+                               'rest': 'tap_seq' in json.dumps(m.rest_content(st, []))}))",
+        )
+        .arg(repo(COMPOSE))
+        .output();
+    let Ok(out) = out else {
+        eprintln!("SKIP: no python3 on this host");
+        return;
+    };
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "compose.py did not answer:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: meclaw_core::serde_json::Value =
+        meclaw_core::serde_json::from_str(said.trim()).expect("one JSON line");
+    assert_eq!(
+        v["plain"], false,
+        "a window nobody tapped with a seq wears one: {v}"
+    );
+    assert_eq!(v["level"], 2, "the chat did not open as a modal: {v}");
+    assert_eq!(
+        v["seqs"]["view.a.canvas"], "9",
+        "the tapped window does not carry its tap's seq: {v}"
+    );
+    assert_eq!(
+        v["seqs"]["view.a.chat"], "9",
+        "the modal the tap co-closed does not carry the tap's seq (§ 5.3): {v}"
+    );
+    assert_eq!(
+        v["refused"], v["seqs"],
+        "a tap the pass refused (no tile) moved a window's seq: {v}"
+    );
+    // A refused tap on a window the state HOLDS (re-check A fix1 H2): a second app's
+    // chat is a topic duplicate, held but not present, so its tile is gone and the pass
+    // refuses the tap -- the `refused` branch of `stamp_tap_seq`, which the absent
+    // window above never reached (`views.get(o) is None` answered for it).
+    assert!(
+        v["held"]["held"] == true && v["held"]["present"] == false && v["held"]["refused"] == true,
+        "the duplicate chat is no refused tap on a window the state holds: {v}"
+    );
+    assert!(
+        v["held"]["seq"].is_null(),
+        "a tap the pass refused on a window it holds moved that window's seq: {v}"
+    );
+    assert!(
+        v["junk"].get("seq").is_none(),
+        "a seq that is no number rode along: {v}"
+    );
+    assert_eq!(v["rest"], false, "the seq reached the rest row: {v}");
+    assert_eq!(
+        v["app"], false,
+        "an application's own `tapseq` reaches the window: the seq is the screen's answer to a tap, no word of the contract: {v}"
+    );
+    for name in [
+        "PANE_TEMPLATE",
+        "PANEL_TEMPLATE",
+        "OVERLAY_TEMPLATE",
+        "PROSE_TEMPLATE",
+    ] {
+        assert!(
+            template(&read(COMPOSE), name)
+                .contains("{{#if tapseq}} data-tap-seq=\"{{tapseq}}\"{{/if}}"),
+            "{name} does not render the seq back"
+        );
+    }
 }

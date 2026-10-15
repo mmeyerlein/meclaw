@@ -24,20 +24,25 @@ use meclaw_cells::voice::params::VoiceParams;
 use meclaw_cells::voice::providers::build_duplex;
 use meclaw_cells::voice::providers::echo::EchoStt;
 use meclaw_colony::io_liveness::IoLivenessMark;
-use meclaw_colony::{DbConn, LongRunningCell, SurfaceRegistry};
+use meclaw_colony::{DbConn, Link, LinkFrame, LinkRequest, LongRunningCell, SurfaceRegistry};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{
     Body, CellEmission, Headers, Message, MessageBuilder, OriginSink, OutputSink, Path, Uuid,
 };
-use meclaw_testing::surface_listener;
 use meclaw_testing::voice_client::VoiceClient;
+use meclaw_testing::{deadline, surface_listener, wait};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
-/// The repo's failure-marker window: generous, never a discriminator.
-pub const MARKER: Duration = Duration::from_secs(30);
+/// The hang mark the harness's tests pass to the client's waits: the repo's
+/// `HANG` convention scaled by `MECLAW_TEST_TIME_FACTOR` (TV-Z3), never a
+/// verdict. The helper's own waits use the same mark and say `HANG:` when
+/// they run out.
+pub fn marker() -> Duration {
+    deadline::scaled(deadline::HANG)
+}
 
 /// The mount every cell in this strand registers.
 pub const MOUNT: &str = "voice";
@@ -412,6 +417,9 @@ pub struct Live {
     pub renewed_starts: Arc<AtomicUsize>,
     /// Every message the cell handed to the colony as a dead letter (GH #1016).
     pub dead_letters: mpsc::Receiver<meclaw_colony::ColonyMsg>,
+    /// The registry the cell mounted on: its entry carries the second door,
+    /// the in-process link ([`Live::link`]).
+    pub surfaces: Arc<SurfaceRegistry>,
     handler: tokio::task::JoinHandle<()>,
     io: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
@@ -913,13 +921,17 @@ async fn boot_core(
     });
 
     let (addr, listener) = surface_listener(Arc::clone(&surfaces)).await;
-    tokio::time::timeout(MARKER, async {
-        while surfaces.table().await.is_empty() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the cell registers its mount within the failure marker");
+    // The registry has no event for a mount, so this is a condition poll
+    // and goes through the kit (TV-S1 (3), TV-S3): scaled hang mark, `HANG:`
+    // with the condition when it runs out, no hand-rolled sleep.
+    wait::until(
+        "the cell registers its mount (surface table non-empty)",
+        || {
+            let surfaces = Arc::clone(&surfaces);
+            async move { !surfaces.table().await.is_empty() }
+        },
+    )
+    .await;
 
     let (
         controls,
@@ -987,37 +999,92 @@ async fn boot_core(
         handler,
         io: io_task,
         listener,
+        surfaces,
         _reconfig: reconfig_tx,
     }
 }
 
+/// A client on the in-process link ([`Live::link`]).
+pub struct LinkClient {
+    link: Link,
+}
+
+impl LinkClient {
+    /// The next text frame whose `type` is `ty`, skipping everything else.
+    /// Panics at the hang mark (TV-Z3), naming the frame types that did come.
+    pub async fn frame_of_type(&mut self, ty: &str) -> Value {
+        let mut seen: Vec<String> = Vec::new();
+        let from_cell = &mut self.link.from_cell;
+        let found = tokio::time::timeout(deadline::scaled(deadline::HANG), async {
+            while let Some(frame) = from_cell.recv().await {
+                match frame {
+                    LinkFrame::Text(text) => {
+                        let v: Value =
+                            meclaw_core::serde_json::from_str(&text).expect("a text frame is JSON");
+                        let got = v.get("type").and_then(Value::as_str).unwrap_or_default();
+                        if got == ty {
+                            return Some(v);
+                        }
+                        seen.push(got.to_string());
+                    }
+                    LinkFrame::Binary(b) => seen.push(format!("binary({})", b.len())),
+                    LinkFrame::Close { code, reason } => {
+                        seen.push(format!("close({code}, {reason})"))
+                    }
+                }
+            }
+            None
+        })
+        .await;
+        match found {
+            Ok(Some(v)) => v,
+            Ok(None) => panic!("the link closed while waiting for a `{ty}` frame; saw {seen:?}"),
+            Err(_) => panic!(
+                "HANG: no `{ty}` frame on the link within {} s; last state: saw {seen:?}",
+                deadline::scaled(deadline::HANG).as_secs()
+            ),
+        }
+    }
+}
+
 impl Live {
-    /// Connect a client, retrying while the listener is still coming up.
+    /// Connect a client. The listener is bound before `boot` returns and the
+    /// mount is registered, so the first attempt normally lands; a refused
+    /// attempt is retried through the kit (TV-S3: scaled hang mark, `HANG:`),
+    /// and each refusal is logged so a hang names the last error.
     pub async fn connect(&self, query: &str) -> (VoiceClient, Value) {
         let url = format!("{}/ws?{query}", self.ws_base);
-        let deadline = Instant::now() + MARKER;
-        loop {
-            match VoiceClient::connect(&url).await {
-                Ok(pair) => return pair,
-                Err(e) if Instant::now() >= deadline => panic!("never connected to {url}: {e}"),
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+        let desc = format!("a client connects to {url} (refusals logged above)");
+        wait::until_some(&desc, || {
+            let url = url.clone();
+            async move {
+                match VoiceClient::connect(&url).await {
+                    Ok(pair) => Some(pair),
+                    Err(e) => {
+                        eprintln!("connect to {url} refused, retrying: {e}");
+                        None
+                    }
+                }
             }
-        }
+        })
+        .await
     }
 
     /// The handle of the session the cell opened for the connection.
     pub async fn session(&mut self) -> FakeSession {
-        tokio::time::timeout(MARKER, self.sessions.recv())
+        tokio::time::timeout(deadline::scaled(deadline::HANG), self.sessions.recv())
             .await
-            .expect("the cell opens a session with the hello, not with the first frame")
+            .expect(
+                "HANG: no session -- the cell opens one with the hello, not with the first frame",
+            )
             .expect("the provider is running")
     }
 
     /// The next control frame the model was told.
     pub async fn control(&mut self) -> DuplexControl {
-        tokio::time::timeout(MARKER, self.controls.recv())
+        tokio::time::timeout(deadline::scaled(deadline::HANG), self.controls.recv())
             .await
-            .expect("a control frame reaches the model within the failure marker")
+            .expect("HANG: no control frame reached the model")
             .expect("the provider is running")
     }
 
@@ -1040,25 +1107,56 @@ impl Live {
     /// The next emission whose `hop.route` is `route`, skipping everything
     /// else. Panics at the failure marker, naming what did arrive.
     pub async fn emission(&mut self, route: &str) -> Value {
-        let deadline = Instant::now() + MARKER;
+        // TV-Z3: the hang mark of `meclaw_testing::deadline`, on the tokio
+        // clock -- under a paused clock it is virtual like every other wait
+        // of the paused part, and a missing emission ends the test at once.
         let mut seen: Vec<String> = Vec::new();
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                panic!("no `{route}` emission within {MARKER:?}; saw {seen:?}");
-            }
-            match tokio::time::timeout(left, self.emissions.recv()).await {
-                Ok(Some(e)) => {
-                    let got = emission_route(&e.content).unwrap_or_default().to_string();
-                    if got == route {
-                        return e.content;
-                    }
-                    seen.push(got);
+        let emissions = &mut self.emissions;
+        let found = tokio::time::timeout(deadline::scaled(deadline::HANG), async {
+            while let Some(e) = emissions.recv().await {
+                let got = emission_route(&e.content).unwrap_or_default().to_string();
+                if got == route {
+                    return Some(e.content);
                 }
-                Ok(None) => panic!("the emission channel closed while waiting for `{route}`"),
-                Err(_) => panic!("no `{route}` emission within {MARKER:?}; saw {seen:?}"),
+                seen.push(got);
             }
+            None
+        })
+        .await;
+        match found {
+            Ok(Some(content)) => content,
+            Ok(None) => {
+                panic!("the emission channel closed while waiting for `{route}`; saw {seen:?}")
+            }
+            Err(_) => panic!(
+                "HANG: no `{route}` emission within {} s; last state: saw {seen:?}",
+                deadline::scaled(deadline::HANG).as_secs()
+            ),
         }
+    }
+
+    /// Open a client on the cell's second door, the in-process link
+    /// (`VoiceLinkOpener`, the door a display's socket topic takes): same
+    /// admission and same connection code as the socket door, with the frames
+    /// on tokio channels (`ClientLink::chan`). A test of time logic connects
+    /// here, never over a socket (TV-Z7). Returns the client and its `hello`.
+    pub async fn link(&self, session: &str, mode: &str) -> (LinkClient, Value) {
+        let opened = self
+            .surfaces
+            .open_link(
+                MOUNT,
+                LinkRequest {
+                    session: Some(session.to_string()),
+                    mode: Some(mode.to_string()),
+                    ..LinkRequest::default()
+                },
+            )
+            .await
+            .expect("the cell mounted a link opener")
+            .expect("the link is admitted");
+        let mut client = LinkClient { link: opened };
+        let hello = client.frame_of_type("hello").await;
+        (client, hello)
     }
 
     /// Hand the cell one message, the way a topology would.

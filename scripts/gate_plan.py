@@ -16,6 +16,10 @@ CLASSES (a path can carry several)
 ==================================
     rust_src      crates/<c>/{src/**,build.rs,Cargo.toml,tests/{common,support}/**}
     rust_test     crates/<c>/tests/<stem>.rs, crates/<c>/tests/<stem>/**
+    crate_file    every other file of crates/<c>/ -- schemas/ (`include_str!`),
+                  examples/, benches/, README.md, migrations/, templates/, a
+                  toml beside Cargo.toml, build.rs inputs (rule 10 of
+                  `test_filter`)
     workspace     Cargo.toml, Cargo.lock, .cargo/**, .config/nextest.toml,
                   crates/meclaw-testing/**, deny.toml, rust-toolchain*
     corridor      crates/meclaw-colony/src/colony.rs, .github/fixtures/**,
@@ -27,7 +31,8 @@ CLASSES (a path can carry several)
     example       examples/<name>/**
     docs          docs/**, top-level *.md, plans/** (minus corridor/export fixtures)
                   -- "docs-only means no cargo" holds only while no test READS
-                  the file; see rule 8 in `test_filter`
+                  the file -- by name or at runtime (a walk of `docs`, the
+                  seed generator); see rule 8 in `test_filter`
     corpus_source see CORPUS_SOURCES below
     evals_memory  workshop/evals/scenarios/**, workshop/fixtures/**memory-hive**,
                   workshop/evals/p5-longmemeval/tools/**
@@ -44,7 +49,11 @@ CLASSES (a path can carry several)
     evals_guide   workshop/evals/conversation-guide/**,
                   workshop/fixtures/positive/conversation-guide/**,
                   templates/memory-hive/inline-contract.md,
-                  workshop/evals/engine.py, workshop/tools/display-lab/fact_yield.py
+                  workshop/evals/engine.py, workshop/evals/colony_log.py,
+                  scripts/tests/test_colony_log.py,
+                  workshop/tools/display-lab/fact_yield.py,
+                  scripts/tests/test_replay_871.py,
+                  workshop/tools/display-lab/sidecar_turns.py
                   -- the guide harness and what its self-test reads: the
                      fixture edge, the shipped block its drift checks compare,
                      the engine it runs on and the fact counter it records
@@ -68,36 +77,81 @@ CLASSES (a path can carry several)
     persona_source see PERSONA_SOURCES below: the prompt literals, seeds, model knobs
                   and versions a persona is made of, plus the engine seam it is measured with
     evals_persona workshop/evals/persona/** -- its committed report included; it is NOT in IGNORED
-    gate_infra    scripts/gate.sh, scripts/gate_plan.py, scripts/precheck.py,
+    gate_infra    scripts/gate.sh, scripts/gate_legacy.sh, scripts/gate_plan.py,
+                  scripts/precheck.py, scripts/pipeline/pre.py, scripts/pipeline/locks.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
-                  scripts/wave_receipt.py, scripts/slow_tests.py (the strand kit and the receipt
-                  builder carry their tests in `gate-selftest`), .config/nextest.toml
+                  scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py (the strand kit and the receipt
+                  builder carry their tests in `gate-selftest`), scripts/pipeline.py,
+                  scripts/pipeline/** and workshop/grafana/** (the pipeline core and
+                  its dashboard), .config/nextest.toml
                   (the profile that decides what may be retried is gate
                   infrastructure too)
-    unwrap_infra  .github/gates/unwrap_budget.{py,txt}
+    unwrap_infra  .github/gates/unwrap_budget.{py,txt}, .github/gates/clock-bans/clippy.toml
     export_infra  plans/export-fixtures/**
     shell         **/*.sh
     ci            .github/workflows/**
 
 STATIONS (S strand, I integration, R release, C ci)
 ===================================================
-    precheck        the cheap form checks of the diff, FIRST and before the
-                    cargo lock: `rustfmt --check` on the changed sources, the
+    precheck        the cheap form checks of the diff, FIRST, beside `build`
+                    and before every other cargo station (GH #1162):
+                    `rustfmt --check` on the changed sources, the
                     sheet's byte ceiling, an ADR's anchor line, a `scripts/`
                     path a test reads without an export entry, a docs page
                     changed without its twin, an eval call to the local model
                     lane without its thinking depth (private tree only) --
                     plus five findings that are notes rather than judgements
-                    (`scripts/precheck.py`).
-                    A RED stops the cargo stations: the runner skips every
-                    station that needs a build, takes no lock, and runs the
-                    cheap rest on (`gate.sh --no-precheck-stop` overrides).
+                    (`scripts/precheck.py`). The cheap locks of
+                    `scripts/pipeline/locks.py` run here as well, the same
+                    functions `strand.sh pre` calls (W4, GH #1118):
+                      pin-lock / scenario-pin-lock  RED: a `"<template>@<x.y.z>"`
+                        pin no template provides, with path:line (GH #1108)
+                      version-lock  RED in a strand diff: a template or
+                        workspace version bump (assigned at the merge point)
+                      test-line-lock  NOTE: a promise changed without a test
+                      set-drift-lock RED / diff-size NOTE (> 400 lines)
+                      bin-owner-lock  RED: not exactly one `meclaw` binary,
+                        or a recipe (release.yml, install.sh) that builds
+                        another crate -- on any diff at a Cargo.toml,
+                        src/main.rs, src/bin/ or the two recipes, TOML and
+                        text only (GH #1168; it planned `gate-selftest`
+                        before, ~326 s for every manifest diff)
+                    A RED stops the cargo stations: the runner ends a
+                    running `build` or `build:browser`, a running
+                    `browser:display` -- it starts on phase 1 without
+                    waiting for precheck (GH #1162 Weg d) -- and in R a
+                    running `export-tree-tests` or `export-audit`, which
+                    start beside precheck as well (cargo 0, executor
+                    `PRECHECK_STOP_ALSO`) (SKIP `precheck red`), skips every
+                    station that needs a build, and runs the cheap rest on
+                    (`gate.sh --no-precheck-stop` overrides).
                     Never in C: the published tree has no `plans/`, so three
                     of the checks have no input there, and ci's diff is often
                     the whole tree, where the artefact notes grade files
                     nobody changed. An empty diff plans nothing to check
     roadmap-anchors adr-anchors claims tree-rules   always
+    test-bans-inventory  I/R/C always: `scripts/testing_bans.py --inventory
+                    --check` counts every testing ban over the whole tree;
+                    NOTE with the count, RED when a ban's count rose over
+                    `.config/testing-bans.baseline.json` (VORGABEN § 5.4,
+                    R-TV-W8: lowered once at the wave end, never per strand).
+                    A strand's added lines are graded in `precheck`
+                    (`test-bans`), not here. In C the published tree has no
+                    `workshop/`, so its counts sit at or under the baseline:
+                    a rise in `crates/` shows in full, one in `scripts/tests/`
+                    only beyond the share `workshop/evals/` holds locally
+    test-bans       C only, always: the two testing checks of `precheck`
+                    (`test-bans`, `testing-rules`) by themselves, because
+                    precheck never runs in C -- `scripts/testing_bans.py
+                    --files` with the diff's `.rs`/`.py`/`.mjs` files and the
+                    files the change reservation reads (`test_bans_paths`).
+                    The base is the module's own `merge_base`: on a pull
+                    request `origin/main` (the gate job checks out the full
+                    history -- a shallow clone has no base, and the change
+                    reservation fails closed RED), on a push to main HEAD
+                    itself, so an export grades nothing its strands' precheck
+                    and the owner rulings of its passes did not already grade
     corpus-committed  the seed corpus against the tree AS IT IS, before
                     anything regenerates it. NEVER in C, for the same reason
                     as `corpus`. NOTE in S (the strand still owes the commit),
@@ -107,30 +161,39 @@ STATIONS (S strand, I integration, R release, C ci)
                     seed corpus AND `build_librarian.py` (the R11 pair)
     catalogue       template/catalogue class; I/R always
     shellcheck      shell/gate_infra; C always
-    gate-selftest   gate_infra; C always (resolver, runner, strand kit, wave
-                    retro, merge driver, form station, the source mark of the
-                    display scenarios, the quarantine grammar of nextest and
-                    the roadmap anchor gate)
+    gate-selftest   gate_infra; C always (resolver, runner, strand
+                    kit, wave retro, merge driver, form station, the source
+                    mark of the display scenarios, the quarantine grammar of
+                    nextest, the roadmap anchor gate and the tests of the
+                    `meclaw` binary owner lock -- the lock itself runs in
+                    `precheck`, a manifest diff plans no selftest)
     display-lab     display_lab (workshop/tools/display-lab/** and its test);
                     I/R always; never in C -- workshop/ does not travel
     llm-conformance llm_conformance (workshop/tools/llm-conformance/**, its
                     test, the cell's translate.rs); I/R always; never in C --
                     workshop/ does not travel
-    guide-selftest  evals_guide; I/R always; never in C -- workshop/ does not travel
-    fmt             rust_src/rust_test/workspace
-    clippy          rust_src/rust_test/workspace  (-p <crates> in S, else --workspace)
-    unwrap-budget   rust_src/workspace/unwrap_infra; C always (cargo: it
+    guide-selftest  evals_guide (run_guide.py --self-test, the #871 replay's
+                    unittest and the log pager's with the Python pin "one page
+                    is not the log"); I/R always; never in C -- workshop/ does
+                    not travel
+    fmt             rust_src/rust_test/crate_file/workspace
+    clippy          rust_src/rust_test/crate_file/workspace  (-p <crates> in S,
+                    else --workspace)
+    unwrap-budget   rust_src/crate_file/workspace/unwrap_infra; C always (cargo: it
                     shells out to `cargo clippy --workspace`)
     corridor        corridor; C always
-    tests           see `test_filter`; planned but not run in C (shards run it).
+    tests           see `test_filter`; planned but not run in C (shards run it);
+                    the full suite in R whatever the diff (`test_select`, KR-TB-1 d).
+                    Outside C never a browser unit (rule 11, `browser:display`).
                     An empty diff plans the t0 TIER, not the equivalent filter
                     expression -- see `T0_FLOOR`
     slow-tests      right after `tests`, wherever `tests` is planned; not run
                     in C (tests do not run there). A test over 1/3 of its
-                    nextest budget is a NOTE in S (a time moves with the
-                    host's load), RED in I/R; exit 2 (no JUnit, a filter it
-                    cannot read, a debt without an issue) is RED in every mode
-    doctests        I/R with rust_src/workspace
+                    nextest budget is a NOTE in every mode and a finding of
+                    the wave (TV-K5: a time moves with the host's load, a
+                    perf signal, never a verdict); exit 2 (no JUnit, a filter
+                    it cannot read, a debt without an issue) is RED in every mode
+    doctests        I/R with rust_src/crate_file/workspace
     deny            workspace; R always. NOT in I for every diff (R-P2,
                     2026-09-19): the `workspace` class is what moves the
                     dependency graph it grades
@@ -139,6 +202,14 @@ STATIONS (S strand, I integration, R release, C ci)
                     when the diff carries `evals_memory` or the memory-hive
                     template (R-P2, 2026-09-19: 43 integration runs,
                     16 317 s, no finding -- wave P, finding 04 § 3.4).
+                    A station that books colonies (`pipeline/plan.py` NEEDS:
+                    memory the rest beside browser:display 3 -- 3 on a lane
+                    of 6 colonies, 5 on 8 -- and builder 4) is handed that
+                    many slots of the port register by the lane executor
+                    (MECLAW_COLONY_SLOTS); the runners take them as
+                    `--slots`, one worker per slot (GH #1161).
+                    `scenarios:display` forks its four booked threads as
+                    `--workers 4` outside C.
                     `scenarios:display` runs the scenarios of display-hive.md
                     § 11 against the real curator AND the reference model
                     against itself (development-rules § 10). It travels: the
@@ -153,21 +224,50 @@ STATIONS (S strand, I integration, R release, C ci)
                     S runs the SHEET half (scope `sheet`) -- a page the driver
                     builds out of `compose.py`'s own parts, ~30 s, no colony;
                     I and R run that AND the COLONY half (scope
-                    `sheet+colony`), six boots against three exits in two
-                    engines, 4-6 min, behind `#[ignore]` and
-                    `--run-ignored all`. In EVERY mode it also runs the CSP
+                    `sheet+colony`), six tests, one boot each, against three
+                    exits in two engines, behind `#[ignore]` and
+                    `--run-ignored all`. Two commands SIDE BY SIDE
+                    (`parallel` by cmd, GH #1161): one union of every lock and
+                    the sheet, split by engine -- every Chromium test in one
+                    part, every WebKit test in the other, which runs them one
+                    at a time (two WebKit pages never meet, GH #1048); each part
+                    has its own nextest profile and half the booked threads.
+                    The locks of ALONE_LOCKS (gh1002, GH #1191) leave both
+                    parts after every narrowing and run in `browser:alone`,
+                    alone on the lane (`pipeline/plan.py` `split_alone`).
+                    In EVERY mode it also runs the CSP
                     lock (GH #867): one colony, one page under a strict
                     policy in Chromium, ~30 s, `#[ignore]`d so the `tests`
                     station never builds a browser run into its own budget
                     (the lesson of GH #763), and the motion lock (GH #961):
                     one colony, three pages per engine, the same reasons.
+                    And in EVERY mode but C it runs the BROWSER UNITS the
+                    diff's test selection reaches (rule 11 of `test_filter`,
+                    GH #1161 re-check M-3): a unit that starts a browser --
+                    stem `*_browser`, or a driver `display-*-browser.mjs`
+                    named in code that starts a process (`browser_unit`) --
+                    never runs in `tests`, where nothing booked the engines
+                    and an absent one was SKIP-green; reaching one PLANS this
+                    station (a `crates/meclaw-cells/src/**` diff does), and
+                    the ones outside BROWSER_LOCKS join the union of both
+                    parts. An `#[ignore]`d one outside BROWSER_LOCKS, or a
+                    shared test module naming a driver, is RED in `precheck`
+                    (`browser-station-lock`, `scripts/pipeline/locks.py`).
                     The colony half was release-only
                     until 0.39.0, and the first gate that ever ran it found it
                     red on three proofs (GH #746): a proof only the release
                     night reaches is a proof nobody sees, and the pass that
                     declares a wave done is where it belongs. In CI_EXCLUDED,
                     unlike `scenarios:display`: the driver lives under
-                    workshop/, which never travels
+                    workshop/, which never travels. A narrowed integration
+                    (a wave decision term) keeps only the locks the wave can
+                    reach, fail-closed -- touched map cover or lock file,
+                    unmeasured lock, unfit map, a non-Rust station input,
+                    a workspace file, a crate file outside the map or a
+                    lock that spawns a workspace binary keeps them; release
+                    and a full pass (`--full`, the mark of pipeline/
+                    full_pass.py) run all (owner's ruling 10.10.,
+                    pipeline/browser_plan.py)
     recall-harness  memory-hive template, recall sources, evals_memory,
                     evals_recall; R always. Four commands: the recall cases
                     (tools/), the answer-side self-check (GH #878), the
@@ -181,6 +281,24 @@ STATIONS (S strand, I integration, R release, C ci)
                     under `crates/meclaw-cells/src/` reaches the harness and
                     not the scenario cases
     deny-advisories R always (the runner grades it NOTE, never RED)
+    crate-isolation R always (#1166 re-check M-1): `cargo check -p <member>
+                    --all-targets`, one call per workspace member, so each
+                    crate is checked with ITS OWN feature set. The build
+                    station merges `-p` sets (S6), and a merged set resolves
+                    the shared dependencies with the union of the members'
+                    features (S6-DIAG: colony beside cells gets tokio
+                    `process`, reqwest `rustls-tls`, rusqlite `functions`), so
+                    a crate that compiles only thanks to a sibling's feature
+                    is seen nowhere else. Members are cargo's
+                    (`workspace_members`: globs, `exclude`, a root
+                    [package], path dependencies under the root); a list
+                    the model cannot resolve plans scope `refused` and one
+                    command that exits 1 naming `<manifest>:1: <cause>`, a
+                    red call names its `-p` (fail-closed, re-check m-4/m-5).
+                    Runs after `build` on 4 threads, beside
+                    the stations without cargo; every variant
+                    lands in the shared target/ next to the others. The
+                    night run (S1b) plans it as well once it exists
     persona-cases   evals_persona; I/R always; never in C (workshop/ does not
                     travel). Free and offline: its own composition self-test,
                     then every part that is BUILT -- the privacy sweep and its
@@ -210,10 +328,13 @@ STATIONS (S strand, I integration, R release, C ci)
                     templates that ship (0.62.1) -- is RED here instead of in
                     the public CI. Never in C: plans/ does not travel, and the
                     public tree IS the export tree
-    export-audit    I/R always, last station. TWO shapes, one station name:
-                    R runs the FULL audit (scope `R1-R17`, cargo:1 --
+    export-audit    I/R always, after the four stations whose receipt
+                    verdicts it reads (`plan.AUDIT_READS`, GH #1162 -- no
+                    longer last). TWO shapes, one station name:
+                    R runs the FULL audit (scope `R1-R17`, cargo:1 here --
                     make_export.py runs `cargo check --workspace
-                    --all-targets` in a fresh target); I runs it DRY
+                    --all-targets` in a target of its own, so the pipeline
+                    books it no share of the pass's lock); I runs it DRY
                     (`--skip-cargo --rev HEAD`, scope `R1-R17 dry`, cargo:0
                     -- it builds nothing). `--rev HEAD` because the pass
                     judges the tree its receipt was written over; the release
@@ -263,15 +384,38 @@ TSV:   EXACTLY FIVE tab-separated columns on every row, in this order:
        The TSV has no room for the `run` flag, so it says what to RUN. In ci
        mode -- the one mode where a planned station is deliberately not run --
        read the JSON, which carries `"run": false`.
+
+--explain (JSON only; W3, GH #1117 -- additive, without it the JSON is byte-
+       for-byte what it was, and the TSV never changes):
+       every station gains `reason`: why it is planned, as `<label>: <path>`
+       entries -- the label is a class of the path (`rust_src`, `docs`, ...)
+       or one of `diff` (any path), `template:<name>`, `example:<name>`,
+       `recall_src`, `read` (rule 8 of `test_filter`); a station the MODE
+       plans says `mode: <mode>`, one every mode plans says `always`,
+       `slow-tests` says `station: tests`, the empty-diff floor `floor: empty
+       diff`. At most `REASON_CAP` path entries, then `+<n> more`. The table
+       behind it is `STATION_TRIGGERS`; a test holds it to `plan()`.
+       `tests` and `browser:display` also gain `select`, the structured
+       selection the filterset is rendered from: `{binaries: ["c::stem"],
+       rdeps: ["c"], all, floor, extra: ["c::stem"], minus: [<binary-name
+       regex>], filter}` -- `minus` is the scenario class subtracted, `extra`
+       the browser-lock binaries the station drives. A consumer reads these
+       fields and never parses `filter`.
 """
 
 import argparse
 import collections
+import fnmatch
 import glob as globmod
+import hashlib
+import itertools
 import json
 import os
+import pickle
+import posixpath
 import re
 import shlex
+import subprocess
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -293,6 +437,7 @@ SCENARIO_TERMS = (
 SCENARIO = " + ".join(SCENARIO_TERMS)
 
 _TERM_RE = re.compile(r"^binary\(/(.*)/\)$")
+_BINARY_TERM_RE = re.compile(r"binary\(/([^/]*)/\)")
 
 
 def _test_targets(repo):
@@ -321,14 +466,44 @@ def scenario_for(repo=None):
     only when a test target of the tree matches it. The real tree matches all
     of them; `scripts/tests/test_gate_plan.py` locks both directions.
     """
+    return " + ".join(_scenario_terms(repo))
+
+
+def _scenario_terms(repo=None):
+    """The terms of `scenario_for`, as a list (the `--explain` selection)."""
     names = _test_targets(repo)
     kept = []
     for term in SCENARIO_TERMS:
-        m = _TERM_RE.match(term)
+        # one binary operator only: a compound is kept unread (tb-s10 D)
+        m = _ONE_BINARY_RE.match(term)
         rx = re.compile(m.group(1)) if m else None
         if rx is None or any(rx.search(n) for n in names):
             kept.append(term)
-    return " + ".join(kept)
+    return kept
+
+
+# KR-TB-1 (d), AGENTS.md t2: the release is the full suite. It subtracted the
+# scenario class from `tests` (cost: a release must not pay for it twice) and
+# planned it nowhere else -- 8 terms, 57 units no release ran since before the
+# wave (OR-TB.S4.55, `release --plan-only` on 28c948e15). They run in a station
+# of their own now, release only, on the nextest profile `scenario` (its own
+# JUnit file: `test-tier.sh` clears the file of its profile before every run,
+# and `slow-tests` reads `default`'s). No `--run-ignored`: the live units are
+# `#[ignore]`d and skip there exactly as in the CI shards -- no new exception.
+SCENARIO_STATION = "scenario-tests"
+
+
+def scenario_station_terms(repo=None):
+    """The terms the release's scenario station runs: the scenario class."""
+    return _scenario_terms(repo)
+
+
+def scenario_binaries(repo=None):
+    """`["<crate>::<binary>"]` the scenario class selects in the tree, sorted."""
+    rxs = [re.compile(m.group(1))
+           for m in map(_ONE_BINARY_RE.match, scenario_station_terms(repo)) if m]
+    return sorted({"%s::%s" % (c, u.split("/")[0]) for c, u, _t in _test_sources(repo)
+                   if any(rx.search(u.split("/")[0]) for rx in rxs)})
 
 
 # The stations whose runner reads `<repo>/.env` (the scenario runners copy
@@ -479,10 +654,12 @@ PERSONA_SOURCES = (
 )
 
 # The shell sources shellcheck reads. CI runs on the published export mirror,
-# which has neither `plans/` nor `workshop/`, so only the first two patterns
-# are used there (`SHELL_GLOBS[:2]`).
-SHELL_GLOBS = ("scripts/*.sh", ".github/gates/*.sh", "plans/meclaw-os/*.sh",
-               "workshop/tools/display-lab/*.sh")
+# which has neither `plans/` nor `workshop/`, so only the first
+# `SHELL_GLOBS_PUBLIC` patterns are used there. `scripts/pipeline/*.sh` (the
+# lane fingerprint, W1) travels and is checked in CI as well.
+SHELL_GLOBS = ("scripts/*.sh", ".github/gates/*.sh", "scripts/pipeline/*.sh",
+               "plans/meclaw-os/*.sh", "workshop/tools/display-lab/*.sh")
+SHELL_GLOBS_PUBLIC = 3
 
 # Stations that are never planned in ci mode. ci runs in the published tree:
 # no workshop/, no plans/, and cargo-deny runs in its own job. Planning any of
@@ -514,15 +691,15 @@ CI_EXCLUDED = frozenset({
 # reads the tree every earlier station just proved.
 STATION_ORDER = (
     "precheck",
-    "roadmap-anchors", "adr-anchors", "claims", "tree-rules",
-    "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
+    "roadmap-anchors", "adr-anchors", "claims", "tree-rules", "test-bans-inventory",
+    "test-bans", "corpus-committed", "corpus", "catalogue", "shellcheck", "gate-selftest",
     "display-lab", "llm-conformance", "guide-selftest",
     "fmt", "clippy", "unwrap-budget", "corridor",
-    "tests", "slow-tests", "doctests", "deny",
+    "tests", "slow-tests", SCENARIO_STATION, "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
     "browser:display", "recall-harness",
-    "deny-advisories", "persona-cases", "persona-receipt", "export-selftest",
-    "export-tree-tests", "export-audit",
+    "deny-advisories", "crate-isolation", "persona-cases", "persona-receipt",
+    "export-selftest", "export-tree-tests", "export-audit",
 )
 
 
@@ -546,40 +723,119 @@ BROWSER_LOCKS = frozenset({
     "crates/meclaw-cells/tests/gh1028_a_new_window_keeps_the_others_in_place_browser.rs",
 })
 
-# The CSP lock's command. `#[ignore]`d in the tree, like the colony half, so the
-# `tests` station never runs a browser; unlike the colony half it costs one boot and
-# one page, so a strand pays for it too.
-CSP_LOCK_CMD = ["scripts/test-tier.sh", "filter",
-                "binary(/gh867_a_display_runs_under_a_strict_csp/)",
-                "--run-ignored", "all"]
+# The `#[ignore]`d browser locks of the station, one nextest term each. They run
+# as ONE nextest call over the union of their binaries (W7, `browser_cmds`), so
+# nextest's own test groups decide how many run at once (`.config/nextest.toml`:
+# `webkit` one at a time -- software rendering takes every core --, `colony-boot`
+# four at a time) instead of seven calls in a row.
+#
+# The CSP lock (GH #867): a display page under `script-src 'self'`. `#[ignore]`d in
+# the tree, like the colony half, so the `tests` station never runs a browser;
+# unlike the colony half it costs one boot and one page, so a strand pays for it too.
+CSP_LOCK = "binary(/gh867_a_display_runs_under_a_strict_csp/)"
 
-# The motion lock's command (GH #961): blocks glide in, 200 marks move in one diff,
-# in Chromium and WebKit. `#[ignore]`d like the CSP lock and nearly as cheap -- one boot,
-# three pages per engine -- so every mode that plans the station runs it.
-MOTION_LOCK_CMD = ["scripts/test-tier.sh", "filter",
-                   "binary(/gh961_motion_by_target_state/)",
-                   "--run-ignored", "all"]
+# The motion lock (GH #961): blocks glide in, 200 marks move in one diff, one test
+# per engine -- one boot and three pages each, so every mode that plans the station
+# runs it.
+MOTION_LOCK = "binary(/gh961_motion_by_target_state/)"
 
-# The slow-link lock's command (GH #1002): one `web` cell with a 4 400-object page,
-# loaded cold in Chromium on Slow 3G and on Fast 3G with the CPU slowed 4x -- two
-# page loads, about 45 s of browser time, so every mode that plans the station runs it.
-SLOW3G_LOCK_CMD = ["scripts/test-tier.sh", "filter",
-                   "binary(/gh1002_slow_3g_connects/)",
-                   "--run-ignored", "all"]
+# The slow-link lock (GH #1002): one `web` cell with a 4 400-object page, loaded cold
+# in Chromium on Slow 3G and on Fast 3G with the CPU slowed 4x -- two page loads,
+# about 45 s of browser time, so every mode that plans the station runs it.
+SLOW3G_LOCK = "binary(/gh1002_slow_3g_connects/)"
 
-# The orientation lock's command (GH #1003): one small `web` cell, one page in
-# Chromium as a phone, turned once -- a few seconds, so every mode that plans the
-# station runs it.
-ORIENTATION_LOCK_CMD = ["scripts/test-tier.sh", "filter",
-                        "binary(/gh1003_the_shell_marks_orientation/)",
-                        "--run-ignored", "all"]
+# The orientation lock (GH #1003): one small `web` cell, one page in Chromium as a
+# phone, turned once -- a few seconds, so every mode that plans the station runs it.
+ORIENTATION_LOCK = "binary(/gh1003_the_shell_marks_orientation/)"
 
-# The keep lock's command (GH #1028): four windows, the last one ranking first, in
-# Chromium and WebKit -- one boot and one page per engine, so every mode that plans
-# the station runs it.
-KEEP_LOCK_CMD = ["scripts/test-tier.sh", "filter",
-                 "binary(/gh1028_a_new_window_keeps_the_others_in_place/)",
-                 "--run-ignored", "all"]
+# The keep lock (GH #1028): four windows, the last one ranking first, one test per
+# engine -- one boot and one page each, so every mode that plans the station runs it.
+KEEP_LOCK = "binary(/gh1028_a_new_window_keeps_the_others_in_place/)"
+
+# The ignored locks every mode that plans the station runs, in this order.
+IGNORED_LOCKS = (CSP_LOCK, MOTION_LOCK, SLOW3G_LOCK, ORIENTATION_LOCK, KEEP_LOCK)
+
+# The locks that measure a bound in wall time under a slowed CPU, and so run with
+# nothing beside them on the lane (GH #1191): gh1002 asserts 6 s to `phx-connected`
+# on Fast 3G with the CPU slowed 4x, and in the shared Chromium part, beside `tests`
+# and the WebKit part, it measured the lane's load instead -- 6 of 10 isolated runs
+# green on build04 (welle-tb S1e, gate bd490c7ec). This station still plans them;
+# `pipeline/plan.py` (`split_alone`) moves them, after every narrowing, out of the
+# shared parts into the station `browser:alone`, which books the lane exclusively
+# (`executor._needs`). The assert, the bound and the throttle stay as they are.
+ALONE_LOCKS = (SLOW3G_LOCK,)
+
+# The colony half of the B-proofs: six tests, one boot and one page each (three
+# exits in two engines). Only the modes that declare work finished plan it.
+COLONY_LOCK = "binary(/710_the_colony_holds/)"
+
+# The sheet half: not ignored; it rides the same two parts as the ignored locks.
+SHEET_LOCK = "binary(/710_the_sheet_holds/)"
+
+# The sheet alone: the call a narrowed integration keeps when only the sheet's
+# lock is left (`browser_cmds(keep=...)`, pipeline/browser_plan.py), with the same
+# `--run-ignored all` as in the union.
+SHEET_LOCK_CMD = ["scripts/test-tier.sh", "filter", SHEET_LOCK, "--run-ignored", "all"]
+
+# The WebKit tests of the station's binaries: every one of them names its engine
+# (`*_in_webkit*`), and `.config/nextest.toml` puts exactly these in the `webkit`
+# group, one at a time (GH #1048).
+WEBKIT_TESTS = "test(/webkit/)"
+
+# One nextest profile per part: two calls on one profile delete each other's JUnit
+# file (`scripts/test-tier.sh` clears it before every run).
+BROWSER_PROFILES = ("browser-chromium", "browser-webkit")
+
+
+def browser_cmds(colony, keep=None, moved=()):
+    """The two parts of `browser:display`: every Chromium test, every WebKit test.
+
+    `moved` (GH #1161, re-check M-3): the browser units outside BROWSER_LOCKS the
+    diff reaches (`browser_moved`) -- they join the same union and the same split.
+
+    The station booked one Chromium and one WebKit side by side and ran its two calls
+    (the ignored locks, then the sheet) one after the other, every WebKit test holding
+    the whole call: 469.6 s in the integration pass of 2026-10-10 (build01), over the
+    466.3 s target on its own -- WebKit alone summed 327 s of it, Chromium 328 s at up
+    to four at a time (GH #1161). Now ONE union of every lock and the sheet, split by
+    engine into two parts that run side by side (`parallel` by cmd, each part at half
+    the booked threads): every test is in exactly one part, and every WebKit test is in
+    the one part that runs them one at a time -- two WebKit pages side by side starved
+    each other (GH #1048), so they never meet. `--run-ignored all` on both: the locks
+    are `#[ignore]`d, the sheet is not.
+
+    `keep` (lock paths, the integration rule of `pipeline/browser_plan.py`) drops
+    every lock term not in it, never a `moved` unit (the diff reaches it); None
+    keeps all. What a narrowed plan keeps runs as ONE call over the kept union
+    instead of the two engine parts: a part of a narrowed union can match no test
+    at all (gh867, gh1002 and gh1003 name no WebKit test), and a filter without a
+    test is RED (`test-tier.sh`, exit 6). In the one call nextest's `webkit` group
+    still runs the WebKit tests one at a time (GH #1048). Nothing left: no call."""
+    locks = ([COLONY_LOCK] if colony else []) + list(IGNORED_LOCKS) + [SHEET_LOCK]
+    terms = locks + sorted(moved)
+    if keep is not None:
+        stems = [l.rsplit("/", 1)[1].removesuffix(".rs") for l in keep]
+
+        def kept(term):
+            # a form that is no single binary operator stays (tb-s10 D)
+            m = _ONE_BINARY_RE.match(term)
+            return not m or any(re.search(m.group(1), s) for s in stems)
+        narrowed = [t for t in locks if kept(t)]
+        if narrowed != locks:
+            narrowed += sorted(moved)
+            return ([["scripts/test-tier.sh", "filter", " + ".join(narrowed), "--run-ignored", "all"]]
+                    if narrowed else [])
+    union = " + ".join(terms)
+    return [["scripts/test-tier.sh", "filter", "(%s) - %s" % (union, WEBKIT_TESTS),
+             "--run-ignored", "all"],
+            ["scripts/test-tier.sh", "filter", "(%s) & %s" % (union, WEBKIT_TESTS),
+             "--run-ignored", "all"]]
+
+
+# The workers of `scenarios:display`: its booking in `pipeline/plan.py` (`NEEDS`,
+# four threads), held equal by scripts/tests/test_pipeline_lab_width.py.
+DISPLAY_SCENARIO_WORKERS = 4
+
 
 # The empty-diff floor. `plan()` turns it into `scripts/test-tier.sh t0`
 # rather than a `filter` run: the tier passes `--lib --bins` and builds only the
@@ -593,18 +849,21 @@ class GatePlanError(Exception):
 
 
 Station = collections.namedtuple(
-    "Station", "name scope cargo cmds cwds run", defaults=(None, True))
+    "Station", "name scope cargo cmds cwds run parallel", defaults=(None, True, None))
 
 
-def station(name, scope, cargo, cmds, cwds=None, run=True):
-    """Build a `Station`, defaulting the per-command cwd list to all-unset."""
+def station(name, scope, cargo, cmds, cwds=None, run=True, parallel=None):
+    """Build a `Station`, defaulting the per-command cwd list to all-unset.
+
+    `parallel` (V0 § 4, additive): how the executor may split the station,
+    e.g. `{"by": "cmd"}` -- its commands run side by side. None: in order."""
     if cwds is None:
         cwds = [None] * len(cmds)
     if len(cwds) != len(cmds):
         # A caller bug inside this module, not a property of the diff.
         raise ValueError("station %s: %d commands but %d cwds"
                          % (name, len(cmds), len(cwds)))
-    return Station(name, scope, cargo, cmds, cwds, run)
+    return Station(name, scope, cargo, cmds, cwds, run, parallel)
 
 
 # --- path matching ----------------------------------------------------------
@@ -680,6 +939,14 @@ def _classes_of_path(path):
             cls.add("rust_src")
         elif rest.startswith("tests/"):
             cls.add("rust_test")
+        elif rest:
+            # Rule 10 (welle-tb S1b): every other file of the crate -- an
+            # `include_str!` schema (`crates/meclaw-core/schemas/ubf-body.json`),
+            # an example, a bench, a README a crate doc includes, a migration, a
+            # template or a toml inside the crate, a build.rs input. Neither the
+            # rules 2/3 nor the coverage map (`.rs` lines only) can name its test
+            # binary, so it plans the crate whole (fail-closed).
+            cls.add("crate_file")
         if crate == "meclaw-testing":
             cls.add("workspace")
 
@@ -700,7 +967,10 @@ def _classes_of_path(path):
     # checker must re-run it, and neither is a Rust source. The `scripts/
     # check_*.py` anchors need no such class -- their stations run in every
     # mode anyway.
-    if path in (".github/gates/unwrap_budget.py", ".github/gates/unwrap_budget.txt"):
+    # The clock bans (tv-p1b) are read by the ratchet alone: a change there
+    # moves its count, so it plans the station and moves its cache key.
+    if path in (".github/gates/unwrap_budget.py", ".github/gates/unwrap_budget.txt",
+                ".github/gates/clock-bans/clippy.toml"):
         cls.add("unwrap_infra")
 
     if path == "templates/README.md":
@@ -769,7 +1039,13 @@ def _classes_of_path(path):
             or path.startswith("workshop/fixtures/positive/conversation-guide/")
             or path in ("templates/memory-hive/inline-contract.md",
                         "workshop/evals/engine.py",
-                        "workshop/tools/display-lab/fact_yield.py")):
+                        "workshop/evals/colony_log.py",
+                        "scripts/tests/test_colony_log.py",
+                        "workshop/tools/display-lab/fact_yield.py",
+                        # L-7 (tb-s10): the #871 replay's unittest, and the
+                        # splitter `replay_871.py` imports from the lab.
+                        "scripts/tests/test_replay_871.py",
+                        "workshop/tools/display-lab/sidecar_turns.py")):
         cls.add("evals_guide")
 
     # The browser half of the same document: the layout driver under workshop/ and
@@ -795,13 +1071,24 @@ def _classes_of_path(path):
     # The strand kit and the receipt builder as well: their tests run in
     # `gate-selftest`, and a diff that touched only `strand.sh` planned
     # `shellcheck` and nothing else -- an under-selection (GH #861).
-    if (path in ("scripts/gate.sh", "scripts/gate_plan.py", "scripts/precheck.py",
+    # Since W3 (#1117) `gate.sh` is a shell: the runner body is
+    # `gate_legacy.sh` and the new path is `pipeline.py` + `scripts/pipeline/`,
+    # whose tests run in `gate-selftest` as well.
+    if (path in ("scripts/gate.sh", "scripts/gate_legacy.sh",
+                 "scripts/gate_plan.py", "scripts/precheck.py",
+                 "scripts/pipeline.py",
+                 "scripts/pipeline/pre.py", "scripts/pipeline/locks.py",
                  "scripts/test-tier.sh", "scripts/wave_retro.py",
                  "scripts/display_sync.py", "scripts/strand.sh",
                  "scripts/wave_receipt.py", "scripts/slow_tests.py",
-                 ".config/nextest.toml", ".config/slow-debt.toml")
+                 "scripts/flake_triage.py", "scripts/testing_bans.py",
+                 ".config/nextest.toml", ".config/slow-debt.toml",
+                 ".config/testing-bans.toml", ".config/testing-bans.baseline.json",
+                 ".config/flaky-legacy.toml", ".config/testing-rulings.toml", "ruff.toml")
             or path.startswith("scripts/tests/")
-            or path.startswith("scripts/retro/")):
+            or path.startswith("scripts/retro/")
+            or path.startswith("scripts/pipeline/")
+            or path.startswith("workshop/grafana/")):
         cls.add("gate_infra")
 
     if path.startswith("plans/export-fixtures/"):
@@ -844,7 +1131,7 @@ def _examples_of(paths):
 
 
 def crates_of(paths, repo=None):
-    """The crate directories the diff touches (rust_src or rust_test).
+    """The crate directories the diff touches (rust_src, rust_test or crate_file).
 
     A crate directory is the crate name. Where the manifest exists that
     assumption is VERIFIED rather than trusted: a `-p <dir>` built from a
@@ -855,7 +1142,7 @@ def crates_of(paths, repo=None):
     out = set()
     for p in _norm(paths):
         crate = _crate_of(p)
-        if crate and _classes_of_path(p) & {"rust_src", "rust_test"}:
+        if crate and _classes_of_path(p) & {"rust_src", "rust_test", "crate_file"}:
             out.add(crate)
     for crate in sorted(out):
         manifest = os.path.join(root, "crates", crate, "Cargo.toml")
@@ -872,18 +1159,225 @@ def crates_of(paths, repo=None):
     return out
 
 
+_DEP_TABLES = ("dependencies", "dev-dependencies", "dev_dependencies",
+               "build-dependencies", "build_dependencies")
+_GLOB_CHARS = re.compile(r"[*?\[]")
+
+
+class _Unresolved(Exception):
+    """A workspace the member model cannot resolve exactly as cargo does."""
+
+
+def workspace_members(repo=None):
+    """`(names, None)` -- the package names cargo makes workspace members of the
+    root manifest -- or `([], "<manifest>:1: <cause>")` (#1166 re-check m-4).
+
+    The model of cargo's `Workspace::find_members` (cargo/core/workspace.rs),
+    since cargo never runs on the planning machine: the `members` entries,
+    globs expanded to their directories and each match dropped by `exclude`
+    (`is_excluded`: a path under an exclude entry, unless a literal member
+    entry covers it); the root manifest's own `[package]`; and, transitively,
+    every path dependency of a member (any dependency table, also
+    target-specific, inherited from `[workspace.dependencies]`, renamed or
+    optional) that lies under the root and is not excluded. Whatever cargo
+    would reject, or this model does not cover (a glob directory without a
+    manifest, a member outside the root, a nested or foreign workspace root,
+    a path in `[patch]`/`[replace]`, two packages with one name), is refused:
+    the cause names its manifest as `path:1:`, the RED line's first finding."""
+    import tomllib
+    root = os.path.normpath(os.path.abspath(REPO_ROOT if repo is None else repo))
+    loaded = {}
+
+    def rel(d):
+        r = os.path.relpath(os.path.join(d, "Cargo.toml"), root)
+        return r.replace(os.sep, "/")
+
+    def load(d):
+        if d not in loaded:
+            try:
+                with open(os.path.join(d, "Cargo.toml"), "rb") as fh:
+                    loaded[d] = tomllib.load(fh)
+            except OSError as exc:
+                raise _Unresolved("%s:1: no readable manifest (%s)"
+                                  % (rel(d), type(exc).__name__))
+            except tomllib.TOMLDecodeError as exc:
+                raise _Unresolved("%s:1: the manifest does not parse (%s)" % (rel(d), exc))
+        return loaded[d]
+
+    def strings(value, what):
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise _Unresolved("Cargo.toml:1: [workspace] %s is not a list of paths" % what)
+        return value
+
+    def under(d, base):
+        return d == base or d.startswith(base.rstrip(os.sep) + os.sep)
+
+    try:
+        top = load(root)
+        ws = top.get("workspace")
+        if not isinstance(ws, dict):
+            raise _Unresolved("Cargo.toml:1: the root manifest has no [workspace] table")
+        listed = strings(ws.get("members", []), "members")
+        exclude = [os.path.normpath(os.path.join(root, e))
+                   for e in strings(ws.get("exclude", []), "exclude")]
+        literal = [os.path.normpath(os.path.join(root, m)) for m in listed]
+        for table in ("patch", "replace"):
+            for entry in _dep_entries(top.get(table) or {}, nested=table == "patch"):
+                if "path" in entry:
+                    raise _Unresolved("Cargo.toml:1: [%s] names a path; cargo's membership "
+                                      "of it is not modelled here" % table)
+        ws_deps = ws.get("dependencies") or {}
+
+        def excluded(d):
+            return (any(under(d, ex) for ex in exclude)
+                    and not any(under(d, m) for m in literal))
+
+        order = []  # member directories in discovery order
+        for entry in listed:
+            path = os.path.normpath(os.path.join(root, entry))
+            if not _GLOB_CHARS.search(entry):
+                order.append(path)
+                continue
+            dirs = [d for d in sorted(globmod.glob(path)) if os.path.isdir(d)]
+            if not dirs:
+                raise _Unresolved("Cargo.toml:1: the member glob %r matches no directory" % entry)
+            for d in dirs:
+                d = os.path.normpath(d)
+                if excluded(d):
+                    continue
+                if not os.path.isfile(os.path.join(d, "Cargo.toml")):
+                    raise _Unresolved("%s:1: the member glob %r matches a directory "
+                                      "without a manifest" % (rel(d), entry))
+                order.append(d)
+        if isinstance(top.get("package"), dict):
+            order.append(root)
+        names, seen, queue = [], {}, list(order)
+        while queue:
+            d = queue.pop(0)
+            if d in seen:
+                continue
+            if not under(d, root):
+                raise _Unresolved("%s:1: a member outside the workspace root" % rel(d))
+            m = load(d)
+            pkg = m.get("package")
+            if d != root and "workspace" in m:
+                raise _Unresolved("%s:1: a member with its own [workspace] table" % rel(d))
+            name = pkg.get("name") if isinstance(pkg, dict) else None
+            if not isinstance(name, str) or not name:
+                raise _Unresolved("%s:1: the member has no [package] name" % rel(d))
+            if "workspace" in pkg and os.path.normpath(
+                    os.path.join(d, str(pkg["workspace"]))) != root:
+                raise _Unresolved("%s:1: `%s` names another workspace root (%r)"
+                                  % (rel(d), name, pkg["workspace"]))
+            if name in seen.values():
+                raise _Unresolved("%s:1: a second package named `%s` in the workspace"
+                                  % (rel(d), name))
+            seen[d] = name
+            names.append(name)
+            for key, entry in _member_deps(m):
+                if entry.get("workspace") is True:
+                    base, entry = root, ws_deps.get(key)
+                    if not isinstance(entry, dict):
+                        continue
+                else:
+                    base = d
+                if "path" not in entry:
+                    continue
+                if not isinstance(entry["path"], str):
+                    raise _Unresolved("%s:1: dependency `%s` of `%s` has a path that is not "
+                                      "a string" % (rel(d), key, name))
+                dep = os.path.normpath(os.path.join(base, entry["path"]))
+                if not under(dep, root):
+                    try:
+                        claims = "workspace" in (load(dep).get("package") or {})
+                    except _Unresolved:
+                        claims = False
+                    if claims:
+                        raise _Unresolved("%s:1: path dependency `%s` of `%s` lies outside "
+                                          "the root and names a workspace" % (rel(dep), key, name))
+                    continue
+                if excluded(dep):
+                    continue
+                if not os.path.isfile(os.path.join(dep, "Cargo.toml")):
+                    raise _Unresolved("%s:1: path dependency `%s` of `%s` has no manifest"
+                                      % (rel(dep), key, name))
+                queue.append(dep)
+        if not names:
+            raise _Unresolved("Cargo.toml:1: the workspace manifest names no members")
+        return names, None
+    except _Unresolved as exc:
+        return [], str(exc)
+
+
+def _dep_entries(table, nested=False):
+    """The table-valued entries of a dependency table (`[patch.<src>]`: nested)."""
+    if not isinstance(table, dict):
+        return []
+    if nested:
+        return [e for t in table.values() for e in _dep_entries(t)]
+    return [e for e in table.values() if isinstance(e, dict)]
+
+
+def _member_deps(manifest):
+    """`(key, entry)` of every table-valued dependency of a package manifest:
+    the plain tables and those under each `[target.<cfg>]`."""
+    tables = [manifest] + [t for t in (manifest.get("target") or {}).values()
+                           if isinstance(t, dict)]
+    out = []
+    for t in tables:
+        for kind in _DEP_TABLES:
+            deps = t.get(kind)
+            if isinstance(deps, dict):
+                out.extend((k, e) for k, e in deps.items() if isinstance(e, dict))
+    return out
+
+
+def crate_isolation(repo=None):
+    """`(scope, cmds)` of the release station `crate-isolation` (#1166 re-check
+    M-1): `cargo check -p <member> --all-targets` for every workspace member,
+    one call each -- a separate `-p` resolves the shared dependencies with that
+    member's features only, which no merged call of the build station does.
+    Members from `workspace_members`. Fail-closed (m-4/m-5): a member list the
+    model refuses is ONE command that exits 1 with `crate-isolation: <cause>`,
+    the cause starting with its manifest as `path:1:`, and the scope `refused`
+    -- a release must not pass on a check that ran for nobody."""
+    names, why = workspace_members(repo)
+    if why:
+        msg = "crate-isolation: %s; refusing to pass a check that ran for nobody" % why
+        return "refused", [["python3", "-c", "import sys; sys.exit(%r)" % msg]]
+    return ("%d members, own features" % len(names),
+            [["cargo", "check", "-p", n, "--all-targets"] for n in names])
+
+
+def crate_isolation_cmds(repo=None):
+    """The commands of `crate_isolation`."""
+    return crate_isolation(repo)[1]
+
+
 # --- test sources -----------------------------------------------------------
 
 _SOURCE_CACHE = {}
+# `{root: (sources, {repo-relative file: text})}`: the text of every file
+# `_test_sources` read, so `_test_files` and `_includers` read none of them
+# again (re-check tb-s10 A1 13 d-4). Valid while `sources` is the cached list.
+_SOURCE_TEXTS = {}
 
 
 def _test_sources(repo):
-    """`[(crate, stem, text)]` for every `crates/*/tests/*.rs` under `repo`."""
+    """`[(crate, unit, text)]` for every test source under `repo`.
+
+    A flat `crates/*/tests/<stem>.rs` is the unit `<stem>`. A folded harness
+    (`scripts/harness_fold.py`, GH #1119) is a directory with a `main.rs`:
+    its `main.rs` is the unit `<harness>/main` (the whole binary, and the file
+    that `#[path]`s the shared helpers in) and every other `.rs` in it is the
+    unit `<harness>/<stem>` -- one module of that binary. `_binary_id` turns a
+    unit into the nextest term that selects exactly that.
+    """
     root = REPO_ROOT if repo is None else repo
     cached = _SOURCE_CACHE.get(root)
     if cached is not None:
         return cached
-    out = []
+    out, texts = [], {}
     crates_dir = os.path.join(root, "crates")
     if os.path.isdir(crates_dir):
         for crate in sorted(os.listdir(crates_dir)):
@@ -891,21 +1385,450 @@ def _test_sources(repo):
             if not os.path.isdir(tests_dir):
                 continue
             for entry in sorted(os.listdir(tests_dir)):
-                if not entry.endswith(".rs"):
-                    continue
                 path = os.path.join(tests_dir, entry)
-                if not os.path.isfile(path):
+                if os.path.isfile(os.path.join(path, "main.rs")):
+                    with open(os.path.join(path, "main.rs"), encoding="utf-8",
+                              errors="replace") as fh:
+                        main_text = fh.read()
+                    files = [("%s/main" % entry if f == "main.rs"
+                              else _folded_unit(main_text, entry, f[:-3]),
+                              os.path.join(path, f))
+                             for f in sorted(os.listdir(path)) if f.endswith(".rs")]
+                elif entry.endswith(".rs"):
+                    files = [(entry[:-3], path)]
+                else:
                     continue
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as fh:
-                        out.append((crate, entry[:-3], fh.read()))
-                except OSError:
-                    continue
+                for unit, fpath in files:
+                    if not os.path.isfile(fpath):
+                        continue
+                    if fpath == os.path.join(path, "main.rs"):
+                        text = main_text
+                    else:
+                        try:
+                            with open(fpath, encoding="utf-8", errors="replace") as fh:
+                                text = fh.read()
+                        except OSError:
+                            continue
+                    out.append((crate, unit, text))
+                    texts[os.path.relpath(fpath, root).replace(os.sep, "/")] = text
     _SOURCE_CACHE[root] = out
+    _SOURCE_TEXTS[root] = (out, texts)
     return out
 
 
+def _source_texts(repo):
+    """`{repo-relative file: text}` of the files `_test_sources` read."""
+    root = REPO_ROOT if repo is None else repo
+    sources = _test_sources(repo)
+    hit = _SOURCE_TEXTS.get(root)
+    return hit[1] if hit is not None and hit[0] is sources else {}
+
+
+_TEST_FILES = {}
+
+
+def _test_files(repo):
+    """`{repo-relative file: (crate, unit, helper)}` for every `.rs` below
+    `crates/*/tests/`, plus the helpers' texts: a file of a `_test_sources`
+    unit has its unit; any other file -- in a directory without main.rs
+    (`tests/support/*.rs`, `tests/h5_support/mod.rs`, `tests/gh927/*.rs`) or
+    in a subdirectory of a harness -- is a HELPER, unit = its path below
+    tests/ without `.rs`, no binary of its own (`_helper_users`). Rebuilt with
+    `_test_sources`."""
+    root = REPO_ROOT if repo is None else repo
+    sources = _test_sources(repo)
+    hit = _TEST_FILES.get(root)
+    if hit is not None and hit[0] is sources:
+        return hit[1], hit[2]
+    files, helpers = {}, []
+    texts = _source_texts(repo)
+    crates_dir = os.path.join(root, "crates")
+    for crate in sorted(os.listdir(crates_dir)) if os.path.isdir(crates_dir) else ():
+        tests_dir = os.path.join(crates_dir, crate, "tests")
+        for dirpath, dirnames, filenames in os.walk(tests_dir):
+            dirnames.sort()
+            rel = os.path.relpath(dirpath, tests_dir).replace(os.sep, "/")
+            harness = "/" not in rel and "main.rs" in filenames
+            main_text = None
+            for f in sorted(filenames):
+                if not f.endswith(".rs"):
+                    continue
+                key = "crates/%s/tests/%s" % (crate, f if rel == "." else rel + "/" + f)
+                if rel == ".":
+                    files[key] = (crate, f[:-3], False)
+                elif harness:
+                    if main_text is None:
+                        main_text = texts.get("crates/%s/tests/%s/main.rs" % (crate, rel))
+                    if main_text is None:
+                        with open(os.path.join(dirpath, "main.rs"), encoding="utf-8",
+                                  errors="replace") as fh:
+                            main_text = fh.read()
+                    files[key] = (crate, "%s/main" % rel if f == "main.rs"
+                                  else _folded_unit(main_text, rel, f[:-3]), False)
+                else:
+                    unit = "%s/%s" % (rel, f[:-3])
+                    try:
+                        with open(os.path.join(dirpath, f), encoding="utf-8",
+                                  errors="replace") as fh:
+                            helpers.append((crate, unit, fh.read()))
+                    except OSError:
+                        continue
+                    files[key] = (crate, unit, True)
+    _TEST_FILES[root] = (sources, files, helpers)
+    return files, helpers
+
+
+_READER_SOURCES = {}
+
+
+def _reader_sources(repo):
+    """`_test_sources` plus the helpers (`_test_files`): every text the reader
+    rules (4, 5, 8) read. Before tb-s1c-c (#1177, F4) the 30 helpers of the
+    tree were in none of them -- what they name or walk planned nothing for
+    the binaries that compile them in. `_test_sources` stays the units WITH a
+    binary (rule 9, `_sharers`, the graph's `bin:` nodes)."""
+    root = REPO_ROOT if repo is None else repo
+    sources = _test_sources(repo)
+    hit = _READER_SOURCES.get(root)
+    if hit is None or hit[0] is not sources:
+        helpers = _test_files(repo)[1]
+        hit = _READER_SOURCES[root] = (sources, sources + helpers,
+                                       frozenset((c, u) for c, u, _t in helpers))
+    return hit[1]
+
+
+def _is_helper(repo, crate, unit):
+    """Is `(crate, unit)` a helper of `_test_files` (no binary of its own)?"""
+    _reader_sources(repo)
+    return (crate, unit) in _READER_SOURCES[REPO_ROOT if repo is None else repo][2]
+
+
+# `path = "x.rs"` in `#[path = ..]` and in `#[cfg_attr(.., path = ..)]`
+_PATH_ATTR_RE = re.compile(r'\bpath\s*=\s*"([^"\\\n]+\.rs)"')
+_MOD_DECL_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;", re.M)
+_INCLUDERS = {}
+
+
+def _includers(repo):
+    """`{file: {file that compiles it in}}` over the `.rs` below `crates/*/tests/`
+    (`_test_files`). Over-approximated on purpose, an extra edge only plans
+    more: `#[path = "p"]` is resolved against the including file's directory
+    and, for a non-mod-rs file, against `<dir>/<stem>/` too; `mod m;` names
+    `m.rs` and `m/mod.rs` in both of those directories."""
+    root = REPO_ROOT if repo is None else repo
+    files, helpers = _test_files(repo)
+    hit = _INCLUDERS.get(root)
+    if hit is not None and hit[0] is files:
+        return hit[1]
+    texts = _source_texts(repo)
+    helper_texts = {(c, u): t for c, u, t in helpers}
+    out = collections.defaultdict(set)
+    seen = {}   # GH #1183: `{prefix: is a symlink}`, one lstat per directory
+    for f, (c, u, _h) in files.items():
+        d, base = posixpath.split(f)
+        bases = [d] if base in ("main.rs", "mod.rs", "lib.rs") else [d, d + "/" + base[:-3]]
+        if not _h and "/" not in u:
+            bases = [d]   # a flat test is a crate root (mod-rs)
+        if _h:
+            text = helper_texts.get((c, u), "")
+        else:
+            text = texts.get(f)
+            if text is None:
+                text = _read_text(os.path.join(root, f))
+        if text:
+            for m in _PATH_ATTR_RE.finditer(text):
+                for b in bases:
+                    out[posixpath.normpath(b + "/" + m.group(1))].add(f)
+                    real = _real_key(root, b + "/" + m.group(1), seen)
+                    if real:
+                        out[real].add(f)
+            for m in _MOD_DECL_RE.finditer(text):
+                for b in bases:
+                    for key in ("%s/%s.rs" % (b, m.group(1)), "%s/%s/mod.rs" % (b, m.group(1))):
+                        out[key].add(f)
+                        # re-check tb-s10 A1 9 L-b: `mod m;` through a link
+                        # opens the file in the link's target, as `#[path]` does
+                        real = _real_key(root, key, seen)
+                        if real:
+                            out[real].add(f)
+    out = {k: frozenset(v) for k, v in out.items()}
+    _INCLUDERS[root] = (files, out)
+    return out
+
+
+def _real_key(root, rel, seen):
+    """The repo-relative file the compiler opens for the `#[path]` join `rel`
+    when a directory on its way is a symlink, else None. GH #1183 (re-check
+    tb-s1c L-2): `normpath` names the file next to the link -- one the walk of
+    `_test_files` never lists --, the compiler the one in the link's target,
+    so that includer was missing from its helper (fail-open). The same lstat
+    of each prefix as `_resolve_dotdot`, the file itself included (re-check
+    tb-s1e h2 L-a: with `far/link.rs` -> `deep/s2.rs`, `far/deep/s2.rs`
+    lacked the includer of `far/link.rs`); out of the repository: None."""
+    segs = rel.split("/")
+    for j in range(1, len(segs) + 1):
+        pre = posixpath.normpath("/".join(segs[:j]))
+        if pre not in seen:
+            seen[pre] = os.path.islink(os.path.join(root, pre))
+        if seen[pre]:
+            real = os.path.relpath(os.path.realpath(os.path.join(root, rel)),
+                                   os.path.realpath(root)).replace(os.sep, "/")
+            return None if real == ".." or real.startswith("../") else real
+    return None
+
+
+_TREE_LINKS = {}
+_GIT_DIRS = {}
+
+
+def _tree_links(root):
+    """The repo-relative symlinks of the tree: those of its HEAD (mode 120000)
+    -- the commit's links, deterministic. Re-check tb-s1e h2 m-2: a walk of
+    the directories went through every untracked one, 0.34 s of each plan in
+    the main tree (152k entries, 118k of them below the untracked workshop/),
+    +12-15 %; measured there 362-404 ms for the walk, 34-44 ms for the index
+    (3 runs each). A tree outside git keeps the walk. Re-check tb-s1e L-e:
+    the memo follows HEAD (`_head_stamp`), a long-lived process that plans
+    again after a commit reads the new links."""
+    stamp = _head_stamp(root)
+    hit = _TREE_LINKS.get(root)
+    if hit is None or hit[0] != stamp:
+        found = None if stamp is None else _index_links(root)
+        links = frozenset(_walked_links(root) if found is None else found)
+        hit = _TREE_LINKS[root] = (stamp, links)
+    return hit[1]
+
+
+def _git_env(root):
+    """The environment of a git call on `root` alone: no repository variables
+    of the caller, the ceiling at its parent (a directory inside another work
+    tree is no git tree)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.realpath(root))
+    return env
+
+
+def _head_stamp(root):
+    """Where HEAD of `root` stands, from a few stats -- no git call after the
+    first per tree: the text of HEAD and the stat of the files a move of HEAD
+    rewrites (HEAD, the branch it names, packed-refs, the reftable list).
+    None when `root` is no git tree."""
+    dirs = _GIT_DIRS.get(root)
+    if dirs is None:
+        try:
+            res = subprocess.run(["git", "-C", root, "rev-parse", "--absolute-git-dir",
+                                  "--git-common-dir"], capture_output=True, env=_git_env(root))
+        except OSError:
+            res = None
+        lines = [] if res is None or res.returncode else os.fsdecode(res.stdout).splitlines()
+        dirs = _GIT_DIRS[root] = (lines[0], os.path.join(root, lines[1])) if len(lines) == 2 else ()
+    if not dirs:
+        return None
+    gitdir, common = dirs
+    head = os.path.join(gitdir, "HEAD")
+    try:
+        with open(head, "rb") as fh:
+            text = fh.read()
+    except OSError:
+        text = b""
+    paths = [head, os.path.join(common, "packed-refs"),
+             os.path.join(common, "reftable", "tables.list")]
+    if text.startswith(b"ref:"):
+        paths.append(os.path.join(common, os.fsdecode(text[4:].strip())))
+    stats = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            stats.append((st.st_mtime_ns, st.st_size, st.st_ino))
+        except OSError:
+            stats.append(None)
+    return text, tuple(stats)
+
+
+def _index_links(root):
+    """The symlinks of HEAD of `root` (`git ls-tree`, re-check tb-s1e L-f:
+    the plan is `rev..HEAD`, so a staged link does not count and one dropped
+    with `git rm --cached` still does), None when `root` is no git tree or
+    HEAD names no commit (the walk then)."""
+    try:
+        res = subprocess.run(["git", "-C", root, "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+                             capture_output=True, env=_git_env(root))
+    except OSError:
+        return None
+    if res.returncode:
+        return None
+    return {os.fsdecode(path) for meta, _, path in
+            (rec.partition(b"\t") for rec in res.stdout.split(b"\0"))
+            if meta.startswith(b"120000 ")}
+
+
+def _walked_links(root):
+    """The symlinks below `root` on disk (`.git` and `target` aside)."""
+    found, todo = set(), [""]
+    while todo:
+        rel = todo.pop()
+        try:
+            it = os.scandir(os.path.join(root, rel))
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                p = rel + "/" + e.name if rel else e.name
+                if e.is_symlink():
+                    found.add(p)
+                elif e.is_dir() and p not in (".git", "target"):
+                    todo.append(p)
+    return found
+
+
+def _linked_anywhere(root, pre):
+    """Is `pre` a symlink below ANY directory of the tree? GH #1183 (re-check
+    tb-s1c L-4): a test joins a literal to any base -- `tests/fixtures` as
+    much as the crate --, and `_resolve_dotdot` looked for the link only at
+    the root, the crate, its tests/ and the reader's directory. A prefix that
+    climbs above its start (`a/../../lnk` is `../lnk`) lands below some
+    directory too: its rest is matched the same way (re-check tb-s1e h2 L-c,
+    it answered False there)."""
+    pre = posixpath.normpath(pre)
+    while pre.startswith("../"):
+        pre = pre[3:]
+    if pre in (".", ".."):
+        return False
+    return any(link == pre or link.endswith("/" + pre) for link in _tree_links(root))
+
+
+def _read_text(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _helper_users(repo, crate, unit):
+    """The terms a helper (`_test_files`) reads for: rule 3's set
+    (`_unit_users`) of every unit that compiles it in, through other helpers
+    transitively (`support/warm_python.rs` is `#[path]`ed only by
+    `support/curator_hive.rs` and `support/file_space_hive.rs`). Nobody found:
+    `rdeps(<crate>)` -- the crate and its dependents (fail-closed, tb-s1c-c F4)."""
+    files = _test_files(repo)[0]
+    inc = _includers(repo)
+    start = "crates/%s/tests/%s.rs" % (crate, unit)
+    seen, todo, users = {start}, [start], set()
+    while todo:
+        for f in sorted(inc.get(todo.pop(), ())):
+            if f in seen:
+                continue
+            seen.add(f)
+            c, u, helper = files[f]
+            if helper:
+                todo.append(f)
+            else:
+                users |= _unit_users(repo, c, u)
+    return users or {"rdeps(%s)" % crate}
+
+
+def _folded_unit(main_text, harness, mod):
+    """`<harness>/<mod>` when the harness `main.rs` declares `mod <mod>;` at its
+    top level (the harness_fold shape), else `<harness>/main`: in any other
+    directory target the module's test names carry no known prefix, so the
+    whole binary is the only honest selection.
+
+    Read over `crate_root.tokens` (OR-TB.S1.19): a `mod <mod>;` nested in a
+    block, a macro or a comment is no fold, and a declaration carrying any
+    attribute but a lint (`#[cfg]` may drop it, `#[path]` moves it off this
+    file) or a `main.rs` the lexer doubts runs the whole harness -- never a
+    `<mod>::` term that selects 0 tests in silence. The lexer runs once per
+    main.rs (`_folded_mods`), not once per module (tb-s1c-d, #1177).
+    """
+    return harness + "/" + mod if mod in _folded_mods(main_text) else harness + "/main"
+
+
+_FOLDED_MODS = {}
+# The tree holds ~100 main.rs; the bound only stops a long-lived process from
+# keeping every text it ever saw (re-check tb-s1c L-7). Content-addressed, so
+# dropping the memo costs one lexer pass per text, never a stale answer.
+_FOLDED_MODS_MAX = 1024
+
+
+def _folded_mods(main_text):
+    """Every module `_folded_unit` folds in `main_text`: each `mod <name>;` at
+    the top level whose every declaration is a plain item (`_plain_mod_item`);
+    empty when the lexer doubts or a bracket does not balance. Memoized per
+    text -- one lexer pass per main.rs instead of one per module (#1177)."""
+    names = _FOLDED_MODS.get(main_text)
+    if names is None:
+        if len(_FOLDED_MODS) >= _FOLDED_MODS_MAX:
+            _FOLDED_MODS.clear()
+        names = _FOLDED_MODS[main_text] = _scan_folded_mods(main_text)
+    return names
+
+
+def _scan_folded_mods(main_text):
+    code = _rust_code(main_text)
+    if code is None:
+        return frozenset()
+    hits, depth = {}, 0
+    for i, t in enumerate(code):
+        if t in _BRACKETS:
+            depth += 1
+        elif t in (")", "]", "}"):
+            depth -= 1
+            if depth < 0:
+                return frozenset()
+        elif depth == 0 and t == "mod" and code[i + 2:i + 3] == [";"]:
+            hits.setdefault(code[i + 1], []).append(i)
+    if depth:
+        return frozenset()
+    names = set()
+    for name, at in hits.items():
+        try:
+            if all(_plain_mod_item(code, i) for i in at):
+                names.add(name)
+        except crate_root.Doubt:
+            pass
+    return frozenset(names)
+
+
+_LINT_ATTRS = {"allow", "expect", "warn", "deny", "forbid"}
+
+
+def _plain_mod_item(code, i):
+    """True when the top-level `mod` at `code[i]` starts its item: only a
+    visibility and lint attributes before it, then an item boundary."""
+    j = i - 1
+    if j >= 0 and code[j] == ")":
+        j = _opening(code, j) - 1
+        if j < 0 or code[j] != "pub":
+            return False
+        j -= 1
+    elif j >= 0 and code[j] == "pub":
+        j -= 1
+    while j >= 0 and code[j] == "]":
+        k = _opening(code, j)
+        if k >= 1 and code[k - 1] == "!":
+            break  # an inner attribute of the crate ends the run
+        if k < 1 or code[k - 1] != "#" or code[k + 1] not in _LINT_ATTRS:
+            return False
+        j = k - 2
+    return j < 0 or code[j] in (";", "}", "]")
+
+
 def _binary_id(crate, stem):
+    """The nextest term for a unit of `_test_sources`.
+
+    A folded module `<harness>/<stem>` is its harness binary narrowed to the
+    tests whose names start `<stem>::` -- harness_fold makes every old file one
+    `pub mod <stem>;`, so that prefix is exactly the old binary's tests
+    (measured: names SAME over all 153 cells binaries, W5-2c). The term is
+    parenthesised so it composes under `+` and `-` like a bare `binary_id`.
+    """
+    if "/" in stem:
+        harness, mod = stem.split("/", 1)
+        if mod == "main":
+            return "binary_id(=%s::%s)" % (crate, harness)
+        return "(binary_id(=%s::%s) & test(/^%s::/))" % (crate, harness, mod)
     return "binary_id(=%s::%s)" % (crate, stem)
 
 
@@ -924,6 +1847,10 @@ def _test_binary_exists(repo, crate, stem):
     """
     root = REPO_ROOT if repo is None else repo
     tests = os.path.join(root, "crates", crate, "tests")
+    if "/" in stem:  # a folded unit `<harness>/<stem>`: a harness and the file
+        harness, mod = stem.split("/", 1)
+        return (os.path.isfile(os.path.join(tests, harness, "main.rs"))
+                and os.path.isfile(os.path.join(tests, harness, mod + ".rs")))
     return (os.path.isfile(os.path.join(tests, stem + ".rs"))
             or os.path.isfile(os.path.join(tests, stem, "main.rs")))
 
@@ -934,18 +1861,23 @@ def _test_binary_exists(repo, crate, stem):
 # `scripts/test-tier.sh` -- its doc comment names the path -- and its only test
 # is an `#[ignore]` benchmark. The `tests` station then ran 0 tests (nextest
 # exit 4 on master; `no tests matched`, exit 6, since K1). A binary whose every
-# test is ignored is no drift lock for anything, so NO rule may target it. The
-# reference itself still counts (a comment naming a path stays a hit): only the
-# binary that cannot run a test is dropped, in one place in `test_filter`.
+# test is ignored is no drift lock for anything, so NO rule may target it,
+# and only that binary is dropped, in one place in `test_filter`. (The prose
+# reference itself is no hit since #1160, `_reader_text`.)
 
-# Comments and the CONTENTS of string/char literals go: a `//` inside
-# `"http://.."` is no comment, and a `#[test]` inside a string is no test.
-_RUST_LEXEME_RE = re.compile(
-    r'(?P<raw>r(?P<h>#*)"[\s\S]*?"(?P=h))'
-    r'|(?P<str>b?"(?:\\.|[^"\\])*")'
-    r"|(?P<chr>b?'(?:\\.|[^'\\])')"
-    r'|(?P<line>//[^\n]*)'
-    r'|(?P<block>/\*[\s\S]*?\*/)')
+# The lexer is `crate_root.tokens` (welle-tb S4, GH #1162) -- imported, not
+# copied. The regex lexer before it lost its phase on a string with a
+# `\`-newline continuation: its closing quote opened a "string", and from
+# there on code read as literal and literal as code. `misc_1/cogny_template.rs`
+# (4 tests) counted 0, and a `#[test]`, a `mod x;` or a macro past such a
+# string was gone -- rule 9 dropped binaries that run tests. A comment of any
+# kind goes (a doctest is no test of an integration binary), a literal is ONE
+# token (a `#[test]` or `mod x;` inside it is no code, a `//` inside it no
+# comment); a file the lexer doubts is kept.
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from pipeline import crate_root  # noqa: E402
 
 # An attribute that makes a test, read in the direction of doubt (K1 fix
 # round 2): every attribute whose LAST path segment contains `test` --
@@ -953,108 +1885,394 @@ _RUST_LEXEME_RE = re.compile(
 # `#[test_case(..)]`, `#[wasm_bindgen_test]` -- and `quickcheck`/`proptest`.
 # A form this misses would count as "no test" and could drop a binary that
 # runs tests; a form it over-counts only keeps a binary as target.
-_TEST_ATTR_RE = re.compile(
-    r'(?:\w+::)*(?:\w*test\w*|quickcheck|proptest)(?![\w:])')
-# Only the unconditional `#[ignore]` / `#[ignore = ".."]`; a
-# `#[cfg_attr(.., ignore)]` is conditional and leaves the test runnable.
-_IGNORE_ATTR_RE = re.compile(r'ignore\b')
-# Shapes that may carry tests the attribute count cannot see: a local macro,
-# an include, a column-0 item macro (`gen!();`), and a brace-bodied macro
-# invocation at ANY indentation (`quickcheck! { .. }` inside a `mod`) --
-# except the expression macros `select!`/`join!`/`try_join!`, which never make
-# an item: `gh1004_viewport_event_measure` (one `#[ignore]` test, a `select!`
-# in its body) stayed a target of every `scripts/strand.sh` diff and the
-# `tests` station ended RED on "no tests to run" (GH #1053 gate, 2026-10-07).
-_HIDDEN_TESTS_RE = re.compile(
-    r'macro_rules!|\binclude!|^[A-Za-z_][\w:]*!'
-    r'|\b(?!(?:select|join|try_join)!)\w+!\s*\{',
-    re.M)
-# An out-of-line module, `[#[path = ".."]] [pub] mod x;`, with the attributes
-# before it (one level of nested brackets, enough for `#[cfg(any(..))]`).
-_OUT_OF_LINE_MOD_RE = re.compile(
-    r'(?P<attrs>(?:#\[(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)*)'
-    r'(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>\w+)\s*;')
-_PATH_ATTR_RE = re.compile(r'#\[\s*path\s*=\s*"(?P<path>[^"]*)"\s*\]')
+_TEST_ATTR_RE = re.compile(r'\w*test\w*|quickcheck|proptest')
+# Only the unconditional `#[ignore]` / `#[ignore = ".."]` (the attribute's
+# first token); a `#[cfg_attr(.., ignore)]` is conditional and leaves the test
+# runnable.
+_IGNORE_ATTR = "ignore"
+# Unicode as Rust and the token lexer (`crate_root._IDENT`, tb-s10 A1 point 20).
+_IDENT_RE = crate_root._IDENT
+# Shapes that may carry tests the attribute count cannot see: `macro_rules!`,
+# `include!`, an item macro (`gen!();`, `a::gen!{..}` where an item stands: at
+# file level or directly in a `mod {}`), and a brace-bodied macro invocation at
+# ANY depth (`quickcheck! { .. }`) -- except the expression macros
+# `select!`/`join!`/`try_join!`, which never make an item:
+# `gh1004_viewport_event_measure` (one `#[ignore]` test, a `select!` in its
+# body) stayed a target of every `scripts/strand.sh` diff and the `tests`
+# station ended RED on "no tests to run" (GH #1053 gate, 2026-10-07). A
+# keyword before `!` is no macro (`impl !Send`, `if !x`).
+_EXPR_MACROS = ("select", "join", "try_join")
+_ITEM_BEFORE = (";", "}", "]", "{")
+_KEYWORDS = frozenset((
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
+    "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+    "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
+    "super", "trait", "type", "unsafe", "use", "where", "while", "yield"))
+_BRACKETS = {"(": ")", "[": "]", "{": "}"}
 
 
-def _rust_code(text, literals=False):
-    """`text` with comments blanked and every literal emptied to `""`.
+def _rust_code(text):
+    """The code tokens of `text` (`crate_root.tokens`, comments dropped); None in doubt.
 
-    `literals=True` keeps the literals whole (a `#[path = ".."]` is read).
+    None when the lexer doubts -- a comment or literal left open, a character
+    it does not know: every caller keeps the binary then.
     """
-    def keep(m):
-        if m.group("line") or m.group("block"):
-            return " "
-        return m.group(0) if literals else '""'
-    return _RUST_LEXEME_RE.sub(keep, text)
+    try:
+        toks = crate_root.tokens(text)
+    except crate_root.Doubt:
+        return None
+    return [t for t in toks if not t.startswith(("//", "/*"))]
 
 
-def _rust_code_aligned(text, literals=False):
-    """Like `_rust_code`, but every offset stays that of `text`.
+def _rust_code_aligned(text):
+    """`text` with every comment (doc comments too) blanked to spaces, every
+    literal whole, every offset and line where it was; None in doubt.
 
-    Comments become spaces of their own length; literals are kept whole
-    (`literals=True`) or blanked to spaces between their quotes.
+    For the readers that match text or report a line -- the browser marker
+    rule (`browser_unit`, `browser_unplaced`, GH #1161) and
+    `scripts/tests/test_browser_required.py`. They read the regex lexer's text
+    before S4 (#1162) replaced it by `crate_root.tokens`; the spans of that
+    lexer give the same text without the phase loss on a `\\`-newline string.
     """
-    def keep(m):
-        s = m.group(0)
-        if m.group("line") or m.group("block"):
-            return re.sub(r"[^\n]", " ", s)
-        if literals or len(s) < 2:
-            return s
-        return s[0] + re.sub(r"[^\n]", " ", s[1:-1]) + s[-1]
-    return _RUST_LEXEME_RE.sub(keep, text)
+    try:
+        spans = crate_root.token_spans(text)
+    except crate_root.Doubt:
+        return None
+    out = list(_NOT_NEWLINE_RE.sub(" ", text))
+    for i, t in spans:
+        if not t.startswith(("//", "/*")):
+            out[i:i + len(t)] = t
+    return "".join(out)
 
 
-def _brace_depth(code, pos):
-    """Brace depth of `code` at `pos` (comments and literals already blank)."""
-    return code.count("{", 0, pos) - code.count("}", 0, pos)
+_NOT_NEWLINE_RE = re.compile(r"[^\n]")
+
+
+def _closing(code, i):
+    """Index of the bracket closing `code[i]`; Doubt when it does not close."""
+    stack = []
+    for j in range(i, len(code)):
+        t = code[j]
+        if t in _BRACKETS:
+            stack.append(_BRACKETS[t])
+        elif t in (")", "]", "}"):
+            if not stack or stack.pop() != t:
+                raise crate_root.Doubt("unbalanced %s" % t)
+            if not stack:
+                return j
+    raise crate_root.Doubt("unclosed %s" % code[i])
+
+
+# --- the text rule 8 scans: no prose comments (#1160) -----------------------
+#
+# A path in a prose comment reads nothing: `gh617`/`gh623` named
+# `scripts/gate_plan.py` in a `//!` paragraph about their file name and ran
+# 22 tests (40.9 s) on every resolver diff. Rule 8 therefore scans code,
+# literals and the code of doc comments -- fenced blocks (``` or ~~~) and
+# indented lines, rustdoc's doctests -- and blanks the rest of every comment.
+# A hand lexer, not a regex: block comments nest, and a regex that
+# closed `/* a /* b */ "x */` early would open a phantom string and could take
+# a real `"http://.."` for a comment. Doubt keeps the text: an unterminated
+# literal or comment returns it unchanged.
+_READER_TOKEN_RE = re.compile(r'[bc]?r#*"|[bc]?"|b?\'|//|/\*')
+_READER_STR_RE = re.compile(r'(?:\\.|[^"\\])*"', re.S)
+_READER_CHAR_RE = re.compile(r"(?:\\(?:u\{[0-9A-Fa-f_]{1,8}\}|x[0-9A-Fa-f]{2}|.)|[^'\\\n])'")
+_READER_BLOCK_RE = re.compile(r"/\*|\*/")
+_READER_FENCE_RE = re.compile(r"`{3,}|~{3,}")
+_READER_CACHE = {}
+
+
+def _reader_text(text):
+    """`text` with its prose comments blanked -- what rule 8 scans.
+
+    Offsets and newlines stay those of `text`. Kept: code, every literal, and
+    in a doc comment (`///`, `//!`, `/**`, `/*!`) the fenced blocks and the
+    indented lines. A plain comment is prose whole."""
+    got = _READER_CACHE.get(text)
+    if got is None:
+        try:
+            got = _reader_lex(text)
+        except Exception:   # noqa: BLE001 -- doubt: the whole text counts
+            got = text
+        _READER_CACHE[text] = got
+    return got
+
+
+def _reader_lex(text):
+    comments = []   # (start, end, doc)
+    pos, n = 0, len(text)
+    while True:
+        m = _READER_TOKEN_RE.search(text, pos)
+        if not m:
+            break
+        tok, i = m.group(0), m.start()
+        if tok[0] in "bcr" and i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
+            pos = i + 1   # `xb"`: the prefix belongs to an identifier
+            continue
+        if tok.endswith('"') and "r" in tok:
+            hashes = tok.count("#")
+            end = text.find('"' + "#" * hashes, m.end())
+            if end < 0:
+                return text
+            pos = end + 1 + hashes
+        elif tok.endswith('"'):
+            s = _READER_STR_RE.match(text, m.end())
+            if not s:
+                return text
+            pos = s.end()
+        elif tok.endswith("'"):
+            c = _READER_CHAR_RE.match(text, m.end())
+            pos = c.end() if c else m.end()   # no char: a lifetime or a label
+        elif tok == "//":
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            body = text[i:end]
+            doc = (body.startswith("///") and not body.startswith("////")) \
+                or body.startswith("//!")
+            comments.append((i, end, doc))
+            pos = end
+        else:
+            depth, j = 1, m.end()
+            while depth:
+                b = _READER_BLOCK_RE.search(text, j)
+                if not b:
+                    return text
+                depth += 1 if b.group(0) == "/*" else -1
+                j = b.end()
+            body = text[i:j]
+            doc = (body.startswith("/**") and not body.startswith("/***")
+                   and body != "/**/") or body.startswith("/*!")
+            comments.append((i, j, doc))
+            pos = j
+    if not comments:
+        return text
+    out = list(text)
+    fence = None   # the open fence (its marker run), or None
+    prev_end = None
+    for start, end, doc in comments:
+        # Only an item ends a doc block's open fence: rustdoc joins the doc
+        # attributes across plain comments, attributes and `/** */`, and in
+        # doubt the line counts (re-check tb-s2 Zusatz-Check m-1).
+        if prev_end is not None and not _reader_only_attrs(text[prev_end:start]):
+            fence = None
+        prev_end = end
+        if not doc:
+            _reader_blank(out, start, end)
+            continue
+        line_start = start
+        for line in text[start:end].split("\n"):
+            line_end = line_start + len(line)
+            content = _reader_doc_content(line)
+            f = _READER_FENCE_RE.match(content.lstrip())
+            if fence is not None:
+                # CommonMark: the same character, at least as long, nothing after
+                if f and f.group(0)[0] == fence[0] and len(f.group(0)) >= len(fence) \
+                        and not content.lstrip()[f.end():].strip():
+                    fence = None
+            elif f and not (f.group(0)[0] == "`" and "`" in content.lstrip()[f.end():]):
+                fence = f.group(0)
+            elif not _reader_indented(content):
+                _reader_blank(out, line_start, line_end)
+            line_start = line_end + 1
+    return "".join(out)
+
+
+def _reader_only_attrs(code):
+    """Is `code` (the text between two comments) blank or attributes only?
+    An attribute whose brackets do not close is doubt: True."""
+    i, n = 0, len(code)
+    while True:
+        while i < n and code[i].isspace():
+            i += 1
+        if i == n:
+            return True
+        if code.startswith("#[", i):
+            i += 1
+        elif code.startswith("#![", i):
+            i += 2
+        else:
+            return False
+        depth = 0
+        while i < n:
+            c = code[i]
+            if c == '"':
+                s = _READER_STR_RE.match(code, i + 1)
+                if not s:
+                    return True
+                i = s.end()
+                continue
+            depth += 1 if c == "[" else -1 if c == "]" else 0
+            i += 1
+            if depth == 0:
+                break
+        else:
+            return True
+
+
+def _reader_doc_content(line):
+    """The markdown of one doc-comment line: marker and ` * ` decoration off."""
+    s = line
+    for marker in ("///", "//!", "/**", "/*!"):
+        if s.startswith(marker):
+            return s[len(marker):]
+    if s.rstrip().endswith("*/"):
+        s = s.rstrip()[:-2]
+    t = s.lstrip()
+    if t.startswith("*"):
+        return t[1:]
+    return s
+
+
+def _reader_indented(content):
+    """An indented code line (4 spaces or a tab past the usual one space)."""
+    c = content[1:] if content.startswith(" ") else content
+    return bool(c.strip()) and (c.startswith("    ") or c.startswith("\t"))
+
+
+def _reader_blank(out, start, end):
+    for k in range(start, end):
+        if out[k] != "\n":
+            out[k] = " "
+
+
+def _opening(code, i):
+    """Index of the bracket opening the `code[i]` it closes; Doubt when none."""
+    closers = {v: k for k, v in _BRACKETS.items()}
+    stack = []
+    for j in range(i, -1, -1):
+        t = code[j]
+        if t in closers:
+            stack.append(closers[t])
+        elif t in _BRACKETS:
+            if not stack or stack.pop() != t:
+                raise crate_root.Doubt("unbalanced %s" % t)
+            if not stack:
+                return j
+    raise crate_root.Doubt("unopened %s" % code[i])
 
 
 def _attribute_groups(code):
-    """Runs of outer attributes standing back to back, as lists of bodies."""
+    """Runs of outer attributes standing back to back, as lists of bodies
+    (the tokens between `#[` and `]`)."""
     groups, i, n = [], 0, len(code)
-    current, last_end = [], -1
-    while True:
-        j = code.find("#[", i)
-        if j < 0:
-            break
-        depth, k = 0, j + 1
-        while k < n:
-            if code[k] == "[":
-                depth += 1
-            elif code[k] == "]":
-                depth -= 1
-                if depth == 0:
-                    break
-            k += 1
-        body = code[j + 2:k].strip()
-        if current and code[last_end:j].strip() == "":
-            current.append(body)
-        else:
-            if current:
-                groups.append(current)
-            current = [body]
-        last_end, i = k + 1, k + 1
-    if current:
-        groups.append(current)
+    while i < n - 1:
+        if code[i] != "#" or code[i + 1] != "[":
+            i += 1
+            continue
+        group = []
+        while i < n - 1 and code[i] == "#" and code[i + 1] == "[":
+            close = _closing(code, i + 1)
+            group.append(code[i + 2:close])
+            i = close + 1
+        groups.append(group)
     return groups
 
 
-def _test_counts(text):
-    """`(tests, runnable)` -- test attributes, and those not `#[ignore]`d."""
-    code = _rust_code(text)
+def _is_test_attr(body):
+    """Does the attribute's leading path end in a segment that makes a test?"""
+    last = None
+    for t in body:
+        if t == "::":
+            continue
+        if not _IDENT_RE.fullmatch(t):
+            break
+        last = t
+    return last is not None and bool(_TEST_ATTR_RE.fullmatch(last))
+
+
+def _counts(code):
+    """`(tests, runnable)` of the tokens `code`; Doubt on unbalanced brackets."""
     tests = runnable = 0
     for group in _attribute_groups(code):
-        if not any(_TEST_ATTR_RE.match(a) for a in group):
+        if not any(_is_test_attr(a) for a in group):
             continue
         tests += 1
-        if not any(_IGNORE_ATTR_RE.match(a) for a in group):
+        if not any(a[:1] == [_IGNORE_ATTR] for a in group):
             runnable += 1
     return tests, runnable
 
 
-def _module_texts(text, tests_dir):
-    """The out-of-line modules of `text`, read one level deep; None in doubt.
+def _test_counts(text):
+    """`(tests, runnable)` -- test attributes, and those not `#[ignore]`d.
+
+    In doubt `(0, 0)`: 0 is never proof of "no test" for a reader of this
+    count. `_runs_no_test` keeps a binary with 0 tests (and checks doubt
+    before it counts), `pipeline/impact.py` `folded_form` plans rdeps for a
+    module with 0 -- both fail closed.
+    """
+    code = _rust_code(text)
+    if code is None:
+        return 0, 0
+    try:
+        return _counts(code)
+    except crate_root.Doubt:
+        return 0, 0
+
+
+def _hidden_tests(code):
+    """Does `code` hold a shape that may make tests the count cannot see?"""
+    item_scope = [True]     # per open bracket: may an item stand in it?
+    for k, t in enumerate(code):
+        if t in _BRACKETS:
+            item_scope.append(t == "{" and k >= 2 and code[k - 2] == "mod"
+                              and bool(_IDENT_RE.fullmatch(code[k - 1])))
+            continue
+        if t in (")", "]", "}"):
+            if len(item_scope) == 1:
+                raise crate_root.Doubt("unbalanced %s" % t)
+            item_scope.pop()
+            continue
+        if t != "!" or k == 0:
+            continue
+        name = code[k - 1]
+        if not _IDENT_RE.fullmatch(name) or name in _KEYWORDS:
+            continue
+        if name in ("macro_rules", "include"):
+            return True
+        if k + 1 < len(code) and code[k + 1] == "{" and name not in _EXPR_MACROS:
+            return True
+        start = k - 1           # the path `a::b::name` before the `!`
+        while start >= 1 and code[start - 1] == "::":
+            start -= 2 if start >= 2 and _IDENT_RE.fullmatch(code[start - 2]) else 1
+        if item_scope[-1] and (start <= 0 or code[start - 1] in _ITEM_BEFORE):
+            return True
+    if len(item_scope) != 1:
+        # m-hC-1: a file that ends inside a bracket is no proof of 0 tests.
+        raise crate_root.Doubt("unclosed bracket at the end")
+    return False
+
+
+def _out_of_line_mods(code):
+    """`(depth, attrs, name)` of every `[#[..]].. [pub[(..)]] mod <name>;`:
+    the brace depth it stands at and the bodies of the attributes before it."""
+    out, depth = [], 0
+    for k, t in enumerate(code):
+        if t == "{":
+            depth += 1
+        elif t == "}":
+            depth -= 1
+        elif (t == "mod" and k + 2 < len(code) and code[k + 2] == ";"
+              and _IDENT_RE.fullmatch(code[k + 1])):
+            j = k
+            if j >= 1 and code[j - 1] == "pub":
+                j -= 1
+            elif j >= 1 and code[j - 1] == ")":
+                o = _opening(code, j - 1)
+                if o >= 1 and code[o - 1] == "pub":
+                    j = o - 1
+            attrs = []
+            while j >= 2 and code[j - 1] == "]":
+                o = _opening(code, j - 1)
+                if o < 1 or code[o - 1] != "#":
+                    break
+                attrs.insert(0, code[o + 1:j - 1])
+                j = o - 1
+            out.append((depth, attrs, code[k + 1]))
+    return out
+
+
+def _module_texts(code, tests_dir):
+    """The out-of-line modules of the tokens `code`, read one level deep; None in doubt.
 
     K1 fix round 2: the browser locks gh867/gh961 pull in
     `#[path = "support/display_colony.rs"] mod display_colony;`. Taken as
@@ -1064,30 +2282,24 @@ def _module_texts(text, tests_dir):
     is not found, or whose `#[path]` cannot be read, is doubt.
     """
     out = []
-    with_literals = _rust_code_aligned(text, literals=True)
-    bare = _rust_code_aligned(text)
-    # K1 fix round 3 close: block comments nest in Rust (`/* x /* y */ } */`);
-    # the non-greedy blanking leaves ` } */` behind and the stray `}` skews
-    # the brace depth. A `*/` outside comments and literals cannot occur in
-    # valid Rust, so one left in `bare` is doubt.
-    if "*/" in bare:
-        return None
-    for m in _OUT_OF_LINE_MOD_RE.finditer(with_literals):
-        attrs = m.group("attrs")
+    for depth, attrs, name in _out_of_line_mods(code):
         # K1 fix round 3: a `mod` inside an inline module (`mod a { mod b; }`)
         # loads `tests/a/b.rs`, and a `cfg_attr(.., path = ..)` may swap the
         # file -- both are doubt.
-        if _brace_depth(bare, m.start("name")) != 0:
+        if depth != 0:
             return None
-        if re.search(r'#\[\s*cfg_attr\b[\s\S]*\bpath\s*=', attrs):
+        if any(a[:1] == ["cfg_attr"] and "path" in a for a in attrs):
             return None
-        path = _PATH_ATTR_RE.search(attrs)
-        if path:
-            candidates = [path.group("path")]
-        elif re.search(r'#\[\s*path\b', attrs):
+        paths = [a for a in attrs if a[:1] == ["path"]]
+        if len(paths) > 1:
             return None
+        if paths:
+            a = paths[0]
+            lit = a[2] if len(a) == 3 and a[1] == "=" else ""
+            if len(lit) < 2 or lit[0] != '"' or lit[-1] != '"' or "\\" in lit:
+                return None
+            candidates = [lit[1:-1]]
         else:
-            name = m.group("name")
             candidates = [name + ".rs", os.path.join(name, "mod.rs")]
         for rel in candidates:
             full = os.path.join(tests_dir, rel)
@@ -1106,26 +2318,33 @@ def _module_texts(text, tests_dir):
 def _runs_no_test(text, tests_dir=None):
     """True only when the binary SURELY runs 0 tests by default.
 
-    In doubt it runs: no test attribute at all (a `harness = false` target, a
-    helper compiled as its own binary), a local macro, an include, a module
-    that is not found -- or a module (read one level deep from `tests_dir`)
-    with test attributes or hidden shapes of its own.
+    In doubt it runs: a file the lexer doubts, no test attribute at all (a
+    `harness = false` target, a helper compiled as its own binary), a local
+    macro, an include, a module that is not found -- or a module (read one
+    level deep from `tests_dir`) with test attributes or hidden shapes of its
+    own.
     """
-    tests, runnable = _test_counts(text)
-    if tests == 0 or runnable > 0:
+    code = _rust_code(text)
+    if code is None:
         return False
-    if _HIDDEN_TESTS_RE.search(_rust_code(text)):
-        return False
-    if not _OUT_OF_LINE_MOD_RE.search(_rust_code(text)):
-        return True
-    modules = None if tests_dir is None else _module_texts(text, tests_dir)
-    if modules is None:
-        return False
-    for mod in modules:
-        code = _rust_code(mod)
-        if (_test_counts(mod)[0] or _HIDDEN_TESTS_RE.search(code)
-                or _OUT_OF_LINE_MOD_RE.search(code)):
+    try:
+        tests, runnable = _counts(code)
+        if tests == 0 or runnable > 0:
             return False
+        if _hidden_tests(code):
+            return False
+        if not _out_of_line_mods(code):
+            return True
+        modules = None if tests_dir is None else _module_texts(code, tests_dir)
+        if modules is None:
+            return False
+        for mod in modules:
+            mcode = _rust_code(mod)
+            if (mcode is None or _counts(mcode)[0] or _hidden_tests(mcode)
+                    or _out_of_line_mods(mcode)):
+                return False
+    except crate_root.Doubt:
+        return False
     return True
 
 
@@ -1137,6 +2356,11 @@ def _drop_binaries_without_tests(repo, terms):
 
     Only the selected binaries are parsed, once per tree: the whole tree is
     ~1300 sources, and a plan names a handful.
+
+    A term stands for every file of its unit: `<h>/main` is `main.rs` and each
+    module it declares in a form that does not fold (`#[cfg]`, `#[path]`, ...).
+    The term goes only when NONE of them runs a test (GH #1162 B-hC-1: one
+    text per term let the last file judge the whole harness binary).
     """
     root = REPO_ROOT if repo is None else repo
     texts = None
@@ -1145,13 +2369,45 @@ def _drop_binaries_without_tests(repo, terms):
         key = (root, t)
         if key not in _NO_TEST_CACHE:
             if texts is None:
-                texts = {_binary_id(c, s): (c, x) for c, s, x in _test_sources(repo)}
-            hit = texts.get(t)
-            _NO_TEST_CACHE[key] = hit is not None and _runs_no_test(
-                hit[1], os.path.join(root, "crates", hit[0], "tests"))
+                texts = {}
+                for c, s, x in _test_sources(repo):
+                    texts.setdefault(_binary_id(c, s), []).append((c, x))
+            hits = texts.get(t) or []
+            _NO_TEST_CACHE[key] = bool(hits) and all(
+                _runs_no_test(x, os.path.join(root, "crates", c, "tests")) for c, x in hits)
         if not _NO_TEST_CACHE[key]:
             out.add(t)
     return out
+
+
+def _folded_helper(repo, crate, harness, mod):
+    """Is the folded module `<harness>/<mod>` anything but a pure test module?
+
+    Other modules of the harness reach a helper by `use crate::<mod>;` (the
+    harness_fold rewrite of `mod <mod>;`), `super::<mod>`, `mod`, `#[path]`, so
+    their test names do not start `<mod>::` and the narrowed term misses them
+    (W5 delta C1: `llm/mock_responses.rs` selected 0 tests and none of its 4
+    users). Fail closed: the module's name as a whole word in any sibling, or a
+    module without a test of its own, makes it a helper -- the caller then
+    selects the whole harness binary.
+    """
+    hdir = os.path.join(REPO_ROOT if repo is None else repo, "crates", crate, "tests", harness)
+    word = re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(mod))
+    try:
+        names = sorted(os.listdir(hdir))
+        with open(os.path.join(hdir, mod + ".rs"), encoding="utf-8", errors="replace") as fh:
+            own = fh.read()
+    except OSError:
+        return True
+    if not re.search(r"#\[\s*(?:[\w:]+::)?test\b", own):
+        return True
+    for f in names:
+        if not f.endswith(".rs") or f in ("main.rs", mod + ".rs"):
+            continue
+        with open(os.path.join(hdir, f), encoding="utf-8", errors="replace") as fh:
+            if word.search(fh.read()):
+                return True
+    return False
 
 
 def _sharers(repo, crate, stem):
@@ -1164,7 +2420,10 @@ def _sharers(repo, crate, stem):
     for c, s, text in _test_sources(repo):
         if c != crate or s == stem:
             continue
-        if ("mod %s;" % stem) in text or ('"%s.rs"' % stem) in text:
+        # A harness `main.rs` names its shared helpers by path
+        # (`#[path = "../support/road.rs"]`), not by a bare `"road.rs"`.
+        if (("mod %s;" % stem) in text or ('"%s.rs"' % stem) in text
+                or ('/%s.rs"' % stem) in text):
             out.add(_binary_id(c, s))
     return out
 
@@ -1219,7 +2478,19 @@ CATALOGUE_WALKS = ("read_dir(", "glob(", "WalkDir", "scan_templates_dir(")
 _FN_RE = re.compile(r"\s*(?:pub\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*\s*[(<]")
 
 
+_CATALOGUE_WIDE = {}
+
+
 def _is_catalogue_wide(text):
+    """`_catalogue_wide(text)`, once per source text: rule 4 asks it for every
+    template name of the diff (65 names x 1 300 sources, 0.6 s per name)."""
+    hit = _CATALOGUE_WIDE.get(text)
+    if hit is None:
+        hit = _CATALOGUE_WIDE[text] = _catalogue_wide(text)
+    return hit
+
+
+def _catalogue_wide(text):
     """Does this test enumerate the whole template catalogue?
 
     Such a test asserts something about EVERY shipped template, so any
@@ -1385,16 +2656,39 @@ def _root_relative_reference_re(name):
     return rx
 
 
-def _tests_referencing_template(repo, name):
+_TEMPLATE_READERS = {}
+
+
+def _template_readers(repo, name):
+    """`{(crate, unit)}` -- the `_test_sources` units that reference the
+    template `name` (rule 4): a path into it, a versioned reference, a
+    declaration, the whole catalogue, or a root-relative path in a test that
+    names the shipped root. Once per tree and name (0.9 s a name on the tree;
+    the rules-4/5 guard asks it twice for each of 65 names, tb-s1c)."""
+    root = REPO_ROOT if repo is None else repo
+    sources = _reader_sources(repo)
+    hit = _TEMPLATE_READERS.get((root, name))
+    if hit is not None and hit[0] is sources:
+        return hit[1]
     ref = _template_reference_re(name)
     rel = _root_relative_reference_re(name)
     out = set()
-    for crate, stem, text in _test_sources(repo):
+    for crate, stem, text in sources:
         if ref.search(text) or _is_catalogue_wide(text):
-            out.add(_binary_id(crate, stem))
+            out.add((crate, stem))
         elif _names_the_shipped_root(text) and rel.search(text):
-            out.add(_binary_id(crate, stem))
+            out.add((crate, stem))
+    out = frozenset(out)
+    _TEMPLATE_READERS[(root, name)] = (sources, out)
     return out
+
+
+def _tests_referencing_template(repo, name):
+    """Binaries of rule 4: the rule-3 set (`_unit_users`) of every unit that
+    references the template -- a helper references it for its users, like a
+    rule-8 reader (welle-tb S1b OR-TB.S1b.34: 2215 template/example reader
+    pairs of the tree ran only the referencing module, not its users)."""
+    return {t for c, u in _template_readers(repo, name) for t in _unit_users(repo, c, u)}
 
 
 def _path_literals(path):
@@ -1419,30 +2713,938 @@ def _tests_reading_path(repo, path):
     that workflow that did not run it left the lock unrun. The rule generalises
     the template and example rules to every path outside `crates/`: docs, plans,
     workflows, CONTRIBUTING.md, README.md, workshop material.
+    A path a prose comment names reads nothing (`_reader_text`, #1160); in a
+    doctest block or a literal it reads. Doubt counts: a prose mention by a
+    unit that walks an ancestor directory of the path reads (`_walks_ancestor`).
     """
     literals = _path_literals(path)
     out = set()
-    for crate, stem, text in _test_sources(repo):
-        if any(lit in text for lit in literals):
-            out.add(_binary_id(crate, stem))
+    for crate, stem, text in _reader_sources(repo):
+        if any(lit in text for lit in literals) \
+                and (any(lit in _reader_text(text) for lit in literals)
+                     or _walks_ancestor(repo, crate, stem, path)):
+            out |= _unit_users(repo, crate, stem)   # a helper reads for its users (M-8)
     return out
+
+
+def _walks_ancestor(repo, crate, unit, path):
+    """Does the test unit name an ancestor directory of `path` as a directory
+    literal (`_runtime_index`)? Then a prose mention of `path` is no prose:
+    `gh311`/`gh408` walk `templates/` and read `templates/README.md`, and their
+    only edge to it is their `//!` paragraph -- the dir shape leaves
+    templates/ to rules 4/5 (re-check tb-s2 Zusatz-Check B-1).
+
+    The index misses walks spelled otherwise -- `glob("D/**/*.md")`,
+    `format!("{}/D/{}")`, `concat!(env!(..), "/../../D")`, `const X = "D"`
+    (re-check tb-s2 m-N9) -- so any code literal that names an ancestor as a
+    directory counts as well (`_names_dir_in_code`): in doubt more readers."""
+    lits = _runtime_index(repo)
+    ancestors = _ancestors(path)
+    if any((crate, unit) in lits.get(a, ()) for a in ancestors):
+        return True
+    text = _unit_texts(repo).get((crate, unit))
+    return text is not None and _names_dir_in_code(text, ancestors)
+
+
+_UNIT_TEXTS = {}
+
+
+def _unit_texts(repo):
+    """`{(crate, unit): text}` over `_reader_sources`, rebuilt when they are."""
+    sources = _reader_sources(repo)
+    got = _UNIT_TEXTS.get(id(sources))
+    if got is None or got[0] is not sources:
+        got = _UNIT_TEXTS[id(sources)] = (sources, {(c, u): t for c, u, t in sources})
+    return got[1]
+
+
+_ANY_LITERAL_RE = re.compile(r'"([^"\\\n]*)"')
+_OPEN_SEGMENT = frozenset("*?[{")
+
+
+def _names_dir_in_code(text, ancestors):
+    """Does a string literal in the code of `text` (prose blanked) name one of
+    `ancestors` as a directory: its segments, then the literal's end, an empty
+    segment (`D/`) or one with a glob or format hole (`*`, `?`, `[`, `{`)?
+    `"D/x.md"` names a file, not a walk; any prefix counts (`{}/`, `../`)."""
+    want = [a.split("/") for a in ancestors]
+    for m in _ANY_LITERAL_RE.finditer(_reader_text(text)):
+        segs = m.group(1).split("/")
+        for a in want:
+            for i in range(len(segs) - len(a) + 1):
+                if segs[i:i + len(a)] != a:
+                    continue
+                rest = segs[i + len(a):]
+                if not rest or not rest[0] or _OPEN_SEGMENT & set(rest[0]):
+                    return True
+    return False
+
+
+# --- rule 8 runtime: paths a test reads without naming them (GH #1138) ------
+#
+# A coverage map sees the Rust lines a test executes, never the files it opens.
+# Literal rule 8 sees a path the test NAMES. Between the two lies the runtime
+# read: a directory the test walks, a generator it runs that reads its own
+# sources, a crate fixture built from `CARGO_MANIFEST_DIR`. The W6 replay case
+# R18 fell through exactly there: `librarian_seed_corpus` runs the seed
+# generator, which reads `docs/cell-types.en.md`, and no test names that page.
+#
+# Three shapes, all derived from the test's text or this table, none guessed:
+#   dir     a string literal of the test is an ANCESTOR directory of the path
+#           (`root.join("docs")`, `"/tests/fixtures/x.json"` read relative to
+#           the repo or, for `crates/<c>/tests/**`, to the crate; relative
+#           to the repo at any depth, `crates` included, and then for EVERY
+#           crate file below, `.rs` and src/ too -- a crate-relative literal
+#           only for the non-`.rs` files of tests/). Paths under
+#           templates/ and examples/ stay with rules 4 and 5: their readers are
+#           selected by reference shape, and a walk of `templates` would pull
+#           the catalogue-wide tests that rule 4 already names.
+#   script  the test names a script of SCRIPT_READS (it runs it), and the
+#           path matches one of that script's source globs.
+#   unread  a non-`.rs` file under `crates/<c>/tests/` no test names in any of
+#           these ways: the reader is unknown, so `rdeps(<c>)` -- fail-closed.
+#           A repo-relative walk of `crates`, `crates/<c>` or
+#           `crates/<c>/tests` plans along but names no file: beside it the
+#           file stays unread (tb-s1c M-1).
+
+# `(script, globs)`: a test that names `script` runs it, and the script reads
+# every path the globs match. The globs are the ones the gate already keeps for
+# the script (CORPUS_SOURCES is a checked superset of the seed generator's).
+SCRIPT_READS = (
+    ("workshop/tools/build_librarian_seed.py", CORPUS_SOURCES),
+)
+
+# `{dir: suffixes}`: a test that names `dir` reads only these files below it.
+# `workshop/tools` is the PYTHONPATH of the generators the tests run
+# (gh661); the browser drivers beside them belong to `browser:display`, and a
+# driver-only diff plans no `tests` (gh961, measured).
+RUNTIME_DIR_READS_ONLY = {
+    "workshop/tools": (".py",),
+}
+
+_STRING_LITERAL_RE = re.compile(r'"([A-Za-z0-9_.@+\-/]+)"')
+# The same literals, plus (group 2) the next non-space character after each, ""
+# at the end: a lookahead, so it consumes nothing and finds exactly the
+# literals `_STRING_LITERAL_RE` finds. `_bare_root` needs that character for
+# every bare word; sliced off the text per literal it cost 0.8 s a build
+# (205 545 literals), and a gate builds the index twice -- in the runner and
+# in the resolver subprocess (tb-s1c-d, #1177).
+_STRING_LITERAL_NEXT_RE = re.compile(r'"([A-Za-z0-9_.@+\-/]+)"(?=\s*(\S?))')
+_QUOTED_RE = re.compile(r'"([^"]*)"')
+_RUNTIME_INDEX = {}
+
+
+# A literal followed by an existence probe (`"plans").is_dir()`) reads nothing.
+_PROBE_RE = re.compile(r"\s*\)\s*\.\s*(?:is_dir|is_file|exists)\s*\(\s*\)")
+
+
+def _bare_root(text, m, root, after, isdir, lists):
+    """Is the bare word at `m` a path the test reads? Only where a path goes:
+    the argument of a call (`root.join("docs")`), or a list whose every entry
+    is a directory of the tree (`["templates", "examples", "docs"]`) -- not a
+    JSON key or value (`"predicate": "plans"`, `["user", "plans"]`), not a
+    constant (`MARKER: &str = "workshop"`).
+
+    `after` is the next non-space character behind the literal (group 2 of
+    `_STRING_LITERAL_NEXT_RE`), `isdir` a `{word: bool}` memo of one build,
+    `lists` a `{(lo, hi): bool}` memo of one text (every entry of a list asks
+    the same list). The character before is found by stepping back over
+    whitespace, never by slicing the text (tb-s1c-d)."""
+    if after not in (")", "]", ","):
+        return False
+    i = m.start() - 1
+    while i >= 0 and text[i].isspace():
+        i -= 1
+    before = text[i] if i >= 0 else ""
+    if before == "(" and after == ")":
+        return True
+    if before not in ("[", ",") or after == ")":
+        return False
+    lo, hi = text.rfind("[", 0, m.start()), text.find("]", m.end())
+    if lo < 0 or hi < 0 or hi - lo > 400:
+        return False
+    hit = lists.get((lo, hi))
+    if hit is None:
+        seg = text[lo:hi]
+        hit = False
+        if "{" not in seg and "}" not in seg and ";" not in seg:
+            words = _QUOTED_RE.findall(seg)
+            for w in words:
+                if w not in isdir:
+                    isdir[w] = os.path.isdir(os.path.join(root, w))
+            hit = bool(words) and all(isdir[w] for w in words)
+        lists[(lo, hi)] = hit
+    return hit
+
+
+def _dir_literal(lit):
+    """`lit` as a relative path: leading `/`, `./` and `../` off, trailing `/` off."""
+    s = lit.lstrip("/")
+    while s.startswith(("./", "../")):
+        s = s[s.index("/") + 1:]
+    s = s.rstrip("/")
+    return s if s and s not in (".", "..") else None
+
+
+def _unit_dir(crate, unit):
+    """The repo-relative directory of the FILE of a `_test_sources` unit."""
+    return "crates/%s/tests%s" % (crate, "/" + unit.rsplit("/", 1)[0] if "/" in unit else "")
+
+
+def _resolve_dotdot(lit, crate, unit, root):
+    """`lit` (a `_dir_literal` with a `..` segment) lexically normalised: the
+    index keys it reads under, or None when no base pins it down.
+
+    No climb above its own start (`sub/../data.json`): the normalised literal,
+    read like any other (`_dir_literal`). A climb above its start
+    (`sub/../../x`): where it lands depends on the base it is joined to, so it
+    lands once per base of rule 8 -- the crate, its tests/, the reader file's
+    directory -- as a repo-relative key; a base the climb leaves (the repo
+    root always) is outside the repository. None -- the reader reads ANY
+    path, fail-closed -- when a `..` follows a symlink of the tree (it climbs
+    out of the link's target), or the climb leaves every base, or lands on the
+    repository root itself (tb-s1c-b, #1177)."""
+    segs = lit.split("/")
+    last = max(i for i, s in enumerate(segs) if s == "..")
+    bases = ["crates/%s" % crate, "crates/%s/tests" % crate, _unit_dir(crate, unit)]
+    for j in range(1, last + 1):
+        pre = "/".join(segs[:j])
+        if any(os.path.islink(os.path.join(root, b, pre)) for b in [""] + bases):
+            return None
+        if _linked_anywhere(root, pre):   # GH #1183: every join base
+            return None
+    norm = posixpath.normpath(lit)
+    parts = norm.split("/")
+    climb = len(parts) - len(list(itertools.dropwhile(lambda s: s == "..", parts)))
+    if not climb:
+        norm = _dir_literal(norm)
+        return [norm] if norm else []
+    tail = "/".join(parts[climb:])
+    keys = []
+    for b in bases:
+        bp = b.split("/")
+        if climb > len(bp):
+            continue   # out of the repository from this base
+        key = "/".join(bp[:len(bp) - climb] + ([tail] if tail else []))
+        if not key:
+            return None   # the repository root itself: every path
+        keys.append(key)
+    return sorted(set(keys)) or None
+
+
+def _runtime_index(repo):
+    """`{normalised literal: {(crate, unit)}}` over every test source, once per tree."""
+    return _runtime_tables(repo)[0]
+
+
+def _runtime_spelled(repo):
+    """`{path: {(crate, unit)}}` -- the keys of `_runtime_index` a `..`
+    spelling produced (`docs/sub/../x.md` -> `docs/x.md`): the literal rule 8
+    looks for the path as written and cannot see them, so the runtime rule
+    plans them as a whole-file read too."""
+    return _runtime_tables(repo)[1]
+
+
+def _runtime_any(repo):
+    """`{(crate, unit)}` -- readers with a `..` literal no base resolves
+    (`_resolve_dotdot` None): they read every path, fail-closed."""
+    return _runtime_tables(repo)[2]
+
+
+# One build of the rule-8 index per gate (tb-s10 w6, A1 11 L-8): the resolver
+# subprocess (`pipeline.plan.default_resolver`) and the runner (graph, impact)
+# each built it. The runner names a file in this variable; whichever side
+# builds first writes the tables there under `_runtime_key`, the other loads
+# them. A key that does not fit, a directory a bare word asked about that
+# changed, or a torn file: built anew (fail-closed).
+RULE8_INDEX_ENV = "GATE_PLAN_RULE8_INDEX"
+_CODE_DIGEST = []
+
+
+def _runtime_key(root, sources):
+    """What the index of `root` is built from: this code, the tree, HEAD (the
+    links of `_tree_links`) and every reader text."""
+    if not _CODE_DIGEST:
+        with open(__file__, "rb") as fh:
+            _CODE_DIGEST.append(hashlib.sha256(fh.read()).hexdigest())
+    h = hashlib.sha256()
+    for crate, unit, text in sources:
+        h.update(("%s\0%s\0%d\0" % (crate, unit, len(text))).encode("utf-8", "surrogatepass"))
+        h.update(text.encode("utf-8", "surrogatepass"))
+    return (_CODE_DIGEST[0], os.path.realpath(root), repr(_head_stamp(root)), h.hexdigest())
+
+
+def _runtime_load(path, key, root):
+    """The tables in `path` when they were built under `key` and every
+    directory a bare word asked about still answers the same, else None."""
+    try:
+        with open(path, "rb") as fh:
+            got = pickle.load(fh)
+        if got["key"] != key:
+            return None
+        if any(os.path.isdir(os.path.join(root, w)) != v for w, v in got["isdir"].items()):
+            return None
+        return got["tables"]
+    except Exception:  # noqa: BLE001 -- any unreadable file: build anew
+        return None
+
+
+def _runtime_store(path, key, isdir, tables):
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "wb") as fh:
+            pickle.dump({"key": key, "isdir": isdir, "tables": tables}, fh,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except OSError:
+        pass   # no hand-over: the other side builds itself
+
+
+def _runtime_tables(repo):
+    root = REPO_ROOT if repo is None else repo
+    idx = _RUNTIME_INDEX.get(root)
+    if idx is None or idx[0] is not _reader_sources(repo):
+        sources = _reader_sources(repo)
+        path = os.environ.get(RULE8_INDEX_ENV)
+        stamp = _runtime_key(root, sources) if path else None   # not `key`: the loop below uses it
+        tables = _runtime_load(path, stamp, root) if path else None
+        if tables is not None:
+            idx = _RUNTIME_INDEX[root] = (sources, tables)
+            return idx[1]
+        lits = collections.defaultdict(set)
+        spelled = collections.defaultdict(set)
+        anywhere = set()
+        isdir = {}
+        links = _tree_links(root)
+        for crate, unit, text in sources:
+            lists = {}
+            for m in _STRING_LITERAL_NEXT_RE.finditer(text):
+                word, after = m.group(1, 2)
+                if "/" not in word:
+                    # a bare word is its own `_dir_literal` (`.`/`..`: none) and
+                    # counts only as a call argument or a list entry
+                    if after not in (")", "]", ",") or word in (".", "..") \
+                            or not _bare_root(text, m, root, after, isdir, lists) \
+                            or _PROBE_RE.match(text, m.end()):
+                        continue
+                    lits[word].add((crate, unit))
+                    continue
+                lit = _dir_literal(word)
+                if not lit or _PROBE_RE.match(text, m.end()):
+                    continue   # `root.join("plans").is_dir()` asks, it reads nothing
+                if ".." in lit.split("/"):
+                    keys = _resolve_dotdot(lit, crate, unit, root)
+                    if keys is None:
+                        anywhere.add((crate, unit))
+                    for key in keys or ():
+                        lits[key].add((crate, unit))
+                        spelled[key].add((crate, unit))
+                    continue
+                if "/" not in lit and not _bare_root(text, m, root, after, isdir, lists):
+                    continue
+                lits[lit].add((crate, unit))
+                for key in _linked_keys(root, lit, crate, links):
+                    lits[key].add((crate, unit))
+                    spelled[key].add((crate, unit))
+        idx = _RUNTIME_INDEX[root] = (sources, (lits, spelled, anywhere))
+        if path:
+            _runtime_store(path, stamp, isdir, idx[1])
+    return idx[1]
+
+
+_LINK_HEADS = {}
+
+
+def _link_heads(links):
+    """Every directory on the way to a link of `links`, once per link set."""
+    heads = _LINK_HEADS.get(links)
+    if heads is None:
+        _LINK_HEADS.clear()   # one tree's set at a time, no growth
+        heads = _LINK_HEADS[links] = frozenset(
+            "/".join(link.split("/")[:j]) for link in links
+            for j in range(1, link.count("/") + 1))
+    return heads
+
+
+def _linked_keys(root, lit, crate, links):
+    """The repo-relative paths the literal `lit` (no `..`) reads under when a
+    directory on its way is a symlink of the tree (`links`, `_tree_links`):
+    joined to each base of rule 8 -- the repo, the crate, its tests/ -- and
+    resolved to the link's target. Re-check tb-s1e h2 L-d: `docs/lnk/x.md`
+    with `docs/lnk -> far` stayed lexical, a diff at `docs/far/x.md` planned
+    nothing. A target out of the repository is no key."""
+    keys = set()
+    heads = _link_heads(links)
+    for base in ("", "crates/%s/" % crate, "crates/%s/tests/" % crate):
+        rel, pre = base + lit, ""
+        for seg in rel.split("/"):
+            pre = pre + "/" + seg if pre else seg
+            if pre in links or pre not in heads:
+                break   # ~12k literals, ~300 links: mostly one lookup each
+        if pre not in links:
+            continue
+        top = os.path.realpath(root)
+        real = os.path.relpath(os.path.realpath(os.path.join(root, rel)), top).replace(os.sep, "/")
+        if real != rel and real not in (".", "..") and not real.startswith("../"):
+            keys.add(real)
+    return keys
+
+
+def _runtime_dir_applies(lit, path):
+    """Does a walk of the directory `lit` read `path`? (the dir shape's filter)"""
+    if path.startswith(("templates/", "examples/")):
+        return False
+    only = RUNTIME_DIR_READS_ONLY.get(lit)
+    return only is None or path.endswith(only)
+
+
+def _runtime_roots(repo, targets):
+    """`{(crate, unit): {path}}` -- the paths of `targets` (repo-relative: the
+    tree's directories, and its crate test files) each test unit names in the
+    dir shape's terms: relative to the repo, or (for the crate's own tests/)
+    to the crate or to its tests/. The pipeline graph hangs `reads` edges on
+    them (`dir:<d>`, or `file:<f>` for a crate fixture named whole)."""
+    out = collections.defaultdict(set)
+    for lit, units in _runtime_index(repo).items():
+        for crate, unit in units:
+            # the literal as written is repo-relative at any depth (`crates`,
+            # `crates/<c>`, `crates/<c>/tests` walk every fixture below); the
+            # crate-relative forms only below the crate's tests/ -- the bare
+            # `tests` is every binary's home (tb-s1c, #1177)
+            for d, crate_rel in ((lit, False), ("crates/%s/%s" % (crate, lit), True),
+                                 ("crates/%s/tests/%s" % (crate, lit), True)):
+                if d in targets and (not crate_rel or d.count("/") >= 3):
+                    out[(crate, unit)].add(d)
+    return out
+
+
+def _ancestors(rel):
+    parts = rel.split("/")
+    return ["/".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]
+
+
+def _runtime_readers(repo, path):
+    """`{(crate, unit): reason}` -- the test units that read `path` at runtime.
+
+    `(None, crate)` stands for `rdeps(crate)`: the `unread` shape. The units
+    are those of `_test_sources`; the pipeline graph hangs its `reads` edges
+    on them, `_tests_reading_at_runtime` turns them into filterset terms."""
+    out = _runtime_readers_named(repo, path)
+    # a `..` literal no base resolves reads every path (tb-s1c-b); after the
+    # `unread` fallback, which asks whether a NAMING reader exists
+    for unit in sorted(_runtime_any(repo)):
+        out.setdefault(unit, "rule:8 runtime unresolved-dotdot file:%s" % path)
+    return out
+
+
+def _runtime_readers_named(repo, path):
+    lits = _runtime_index(repo)
+    out = {}
+
+    def add(units, reason):
+        for unit in sorted(units):
+            out.setdefault(unit, reason)
+
+    crate = _crate_of(path)
+    if crate:
+        rest = path[len("crates/%s/" % crate):]
+        fixture = rest.startswith("tests/") and not path.endswith(".rs")
+        if fixture:
+            # relative to the crate (`CARGO_MANIFEST_DIR`) or to its tests/ --
+            # the crate's own tests only; the bare `tests` is every binary's
+            # home, and a crate-relative bare word is mostly a cell name
+            # (`"voice"` -> tests/voice), so never for a `.rs` file
+            rel_tests = rest[len("tests/"):]
+            cands = [rest, rel_tests] + [a for a in _ancestors(rest) if a != "tests"] \
+                + _ancestors(rel_tests)
+            for lit in cands:
+                if lit in lits:
+                    add({(c, u) for c, u in lits[lit] if c == crate},
+                        "rule:8 runtime dir:%s file:%s" % (lit, path))
+        # relative to the repo, from any crate, at any depth, for EVERY crate
+        # file: a test that walks `crates`, `crates/<c>` or `crates/<c>/src`
+        # reads what lies below, `.rs` included (tb-s1c, #1177: misc_5/gh523
+        # reads `.rs`/`.json`/`.manifest` below `crates`, gh_1/gh230 every
+        # `.rs`; first they ran for none of the 83 json fixtures, then for no
+        # `.rs` or src file of a crate they do not depend on -- 6 813 pairs)
+        known = bool(out)
+        for lit in [path] + _ancestors(path):
+            if lit in lits:
+                add(lits[lit], "rule:8 runtime dir:%s file:%s" % (lit, path))
+                # a walk of `crates`, `crates/<c>` or `crates/<c>/tests` plans
+                # along but says nothing of this one file (gh523 reads only
+                # json|rs|manifest, gh230 skips tests/): with only such a
+                # reader the file stays `unread` (tb-s1c M-1, KR-TB-1 (c))
+                known = known or lit.count("/") >= 3
+        if fixture and not known:
+            out[(None, crate)] = "rule:8 runtime unread file:%s" % path
+        return out
+    # a whole file spelled with `..` (`docs/sub/../x.md`): the literal rule
+    # looks for the path as written and misses it (tb-s1c-b)
+    add(_runtime_spelled(repo).get(path, ()), "rule:8 runtime dotdot file:%s" % path)
+    if not path.startswith(("templates/", "examples/")):
+        for lit in _ancestors(path):
+            if lit in lits and _runtime_dir_applies(lit, path):
+                add(lits[lit], "rule:8 runtime dir:%s file:%s" % (lit, path))
+    for script, globs in SCRIPT_READS:
+        if any(_matches(path, g) for g in globs):
+            add({(c, u) for c, u, text in _reader_sources(repo)
+                 if script in text and script in _reader_text(text)},
+                "rule:8 runtime script:%s file:%s" % (script, path))
+    return out
+
+
+def _tests_reading_at_runtime(repo, path):
+    """`{term: reason}` -- rule 8 runtime as filterset terms.
+
+    Additive to the literal rule 8 (`_tests_reading_path`): a term both name
+    keeps both reasons. See the block above for the three shapes. A reading
+    unit stands for every binary its file runs in (`_unit_users`)."""
+    out = {}
+    for (c, u), r in _runtime_readers(repo, path).items():
+        for t in ({"rdeps(%s)" % u} if c is None else sorted(_unit_users(repo, c, u))):
+            out.setdefault(t, r)
+    return out
+
+
+_UNIT_USERS = {}
+
+
+def _unit_users(repo, crate, unit):
+    """The terms rule 3 plans for the FILE of a `_test_sources` unit: the unit,
+    the whole harness for a folded helper (`_folded_helper`), and every binary
+    that compiles the file in (`_sharers`).
+
+    Rule 8 finds a reader by its unit. A helper module reads for every test of
+    its harness that calls it, a `#[path]`-shared or `mod`-shared file for
+    every binary it is compiled into -- the unit's own term ran only the
+    reader's tests and left its users silently unrun (welle-tb S1b M-8:
+    `support_14b.rs` reads `tests/fixtures/14a-tool-loop/README.md` for 20
+    binaries, `misc_2/gh203_*` reads `docs/README.md` as a helper of misc_2).
+    """
+    root = REPO_ROOT if repo is None else repo
+    sources = _test_sources(repo)
+    hit = _UNIT_USERS.get((root, crate, unit))
+    if hit is not None and hit[0] is sources:
+        return hit[1]
+    if _is_helper(repo, crate, unit):
+        # no binary of its own: what it reads, it reads for its includers (F4)
+        users = _helper_users(repo, crate, unit)
+        _UNIT_USERS[(root, crate, unit)] = (sources, users)
+        return users
+    stem = unit
+    users = set()
+    if "/" in unit:
+        harness, mod = unit.split("/", 1)
+        if mod != "main" and _folded_helper(repo, crate, harness, mod):
+            stem = harness + "/main"
+        if mod == "main":
+            # The unit `<h>/main` is no single file: `_test_sources` also names
+            # every module main.rs does not declare at its top level `<h>/main`
+            # (`_folded_unit`), and rule 3 plans such a FILE with its own
+            # sharers (`#[path = "../h/x.rs"]` in another harness) -- the unit's
+            # sharers alone left them unrun (tb-s1c m-16, family P12).
+            for m in _undeclared_modules(repo, crate, harness):
+                users |= _sharers(repo, crate, "%s/%s" % (harness, m))
+    users |= {_binary_id(crate, stem)} | _sharers(repo, crate, unit)
+    _UNIT_USERS[(root, crate, unit)] = (sources, users)
+    return users
+
+
+def _undeclared_modules(repo, crate, harness):
+    """The modules of the harness `crates/<crate>/tests/<harness>/` that its
+    main.rs does not declare at the top level (`_folded_unit` -> `<h>/main`)."""
+    hdir = os.path.join(REPO_ROOT if repo is None else repo, "crates", crate, "tests", harness)
+    try:
+        with open(os.path.join(hdir, "main.rs"), encoding="utf-8", errors="replace") as fh:
+            main = fh.read()
+        names = sorted(os.listdir(hdir))
+    except OSError:
+        return []
+    return [f[:-3] for f in names if f.endswith(".rs") and f != "main.rs"
+            and _folded_unit(main, harness, f[:-3]) == harness + "/main"]
+
+
+def _example_readers(repo, name):
+    """`{(crate, unit)}` -- the `_test_sources` units that name `examples/<name>` (rule 5)."""
+    needle = "examples/%s" % name
+    return {(crate, stem) for crate, stem, text in _reader_sources(repo) if needle in text}
 
 
 def _tests_referencing_example(repo, name):
-    out = set()
-    needle = "examples/%s" % name
-    for crate, stem, text in _test_sources(repo):
-        if needle in text:
-            out.add(_binary_id(crate, stem))
-    return out
+    """Binaries of rule 5: the rule-3 set of every unit that names the example."""
+    return {t for c, u in _example_readers(repo, name) for t in _unit_users(repo, c, u)}
 
 
 # --- the test filter --------------------------------------------------------
 
+def _term_rules(files, repo):
+    """The ONE rule source behind `test_terms` and `test_select` (W6 x W3).
+
+    `[(label, path, reason, terms)]` for rules 1-5, 8 and 10 over the normalised,
+    non-empty diff `files`: `label` is the class `test_select` prints as
+    `<label>: <path>`, `reason` the `rule:<n> ...` string `test_terms` keeps
+    per term, `terms` the set that firing brought in. Rule 9 (drop binaries
+    without tests) is NOT applied here -- both views apply it to their union.
+    """
+    out = []
+    if "workspace" in classify(files):
+        for p in files:
+            if "workspace" in _classes_of_path(p):
+                out.append(("workspace", p, "rule:1 file:%s" % p, {"all()"}))
+        return out
+    for crate in crates_of(files, repo):
+        for p in files:
+            if "rust_src" in _classes_of_path(p) and _crate_of(p) == crate:
+                out.append(("rust_src", p, "rule:2 file:%s" % p, {"rdeps(%s)" % crate}))
+    for p in files:
+        if "rust_test" not in _classes_of_path(p):
+            continue
+        crate = _crate_of(p)
+        parts = p.split("/")
+        # `tests/<stem>.rs` flat, `tests/<harness>/<stem>.rs` folded (#1119)
+        stem = (parts[3].removesuffix(".rs") if len(parts) == 4
+                else parts[3] + "/" + parts[4].removesuffix(".rs"))
+        # The FILE's own unit, before any rewrite to `<h>/main` below: a
+        # foreign harness `#[path]`s the file, not the harness (re-check N-C1).
+        file_stem = stem
+        if len(parts) == 5 and not stem.endswith("/main"):
+            main_p = os.path.join(REPO_ROOT if repo is None else repo,
+                                  *parts[:4], "main.rs")
+            if os.path.isfile(main_p):
+                with open(main_p, encoding="utf-8", errors="replace") as fh:
+                    stem = _folded_unit(fh.read(), parts[3],
+                                        parts[4].removesuffix(".rs"))
+                if not stem.endswith("/main") and _folded_helper(
+                        repo, crate, parts[3], parts[4].removesuffix(".rs")):
+                    stem = parts[3] + "/main"  # a helper: its users run too (W5 delta C1)
+        # A path the diff names may be GONE -- `git diff --name-only`
+        # lists deletions. An id for a binary that does not exist is not
+        # an over-selection, it is a filterset nextest refuses to parse.
+        # Rules 4, 5 and 8 are safe without this check: they derive every
+        # id from a file they just READ out of the tree.
+        exists = _test_binary_exists(repo, crate, stem)
+        if exists:
+            out.append(("rust_test", p, "rule:3 file:%s" % p, {_binary_id(crate, stem)}))
+        # Sharers come from the sources that compile the file in, not from the
+        # file's own binary: `tests/h5_support/mod.rs` and `tests/gh927/*.rs`
+        # lie in directories without main.rs (no binary) and planned NOTHING
+        # although misc_8 (6 units) and round_2 `#[path]` them in (tb-s1c m-17,
+        # the full rule-8 guard; family P13).
+        sharers = _sharers(repo, crate, file_stem)
+        if sharers:
+            out.append(("rust_test", p, "rule:3 shares file:%s" % p, set(sharers)))
+    for p in files:
+        # Rule 10: a crate file no rule above can assign -- the crate and its
+        # reverse dependencies, like a Rust source. NOT `rule:2`: the coverage
+        # narrowing replaces only rule-2 rdeps, and the map never sees this file.
+        if "crate_file" in _classes_of_path(p):
+            out.append(("crate_file", p, "rule:10 crate-file:%s" % p,
+                        {"rdeps(%s)" % _crate_of(p)}))
+    for name in sorted(_templates_of(files)):
+        hit = set(_tests_referencing_template(repo, name))
+        for p in files:
+            if p.startswith("templates/%s/" % name):
+                out.append(("template:" + name, p, "rule:4 template:%s" % name, hit))
+    for name in sorted(_examples_of(files)):
+        hit = set(_tests_referencing_example(repo, name))
+        for p in files:
+            if p.startswith("examples/%s/" % name):
+                out.append(("example:" + name, p, "rule:5 example:%s" % name, hit))
+    for p in files:
+        if not p.startswith("crates/") or "crate_file" in _classes_of_path(p):
+            out.append(("read", p, "rule:8 file:%s" % p, set(_tests_reading_path(repo, p))))
+        by_reason = collections.defaultdict(set)
+        for t, reason in _tests_reading_at_runtime(repo, p).items():
+            by_reason[reason].add(t)
+        for reason, hit in sorted(by_reason.items()):
+            out.append(("read", p, reason, hit))
+    return out
+
+
+def test_terms(paths, repo=None):
+    """`{term: [reason, ...]}` -- the terms of `test_filter` and the rule that chose each.
+
+    A view on `_term_rules`, the same source `test_select` renders: the keys
+    are exactly the terms `test_filter` joins, the reasons are what the
+    pipeline's `impact` (W6) reads. A reason names the rule and what fired
+    it -- `rule:2 file:<path>`, `rule:4 template:<name>`. An empty diff
+    (rule 7) and a diff no rule selects for (rule 6) give `{}`.
+    """
+    files = _norm(paths)
+    if not files:
+        return {}
+    reasons = collections.defaultdict(set)
+    for _label, _p, reason, hit in _term_rules(files, repo):
+        for t in hit:
+            reasons[t].add(reason)
+    # Rule 9, over all rules above: a binary that runs 0 tests is no
+    # target (GH #997). `all()` and `rdeps()` are untouched -- they never
+    # stand on one binary.
+    kept = _drop_binaries_without_tests(repo, set(reasons))
+    return {t: sorted(reasons[t]) for t in sorted(kept)}
+
+
+# Public names of the resolver functions the pipeline graph (W6) builds its
+# `reads`/`references` edges from -- the same functions, so the same hits.
+tests_reading_path = _tests_reading_path
+runtime_readers = _runtime_readers
+runtime_roots = _runtime_roots
+runtime_dir_applies = _runtime_dir_applies
+runtime_ancestors = _ancestors
+runtime_index = _runtime_index
+runtime_spelled = _runtime_spelled
+runtime_any = _runtime_any
+tests_referencing_template = _tests_referencing_template
+tests_referencing_example = _tests_referencing_example
+template_readers = _template_readers
+example_readers = _example_readers
+test_sources = _test_sources
+reader_sources = _reader_sources
+is_helper = _is_helper
+test_files = _test_files
+includers = _includers
+reader_text = _reader_text
+walks_ancestor = _walks_ancestor
+
+
+# --- browser units (GH #1161, re-check M-3) ----------------------------------
+#
+# `MECLAW_REQUIRE_BROWSERS` and the RED of an absent engine hang on the engine
+# booking, and only `browser:display` books the engines. A test that starts a
+# browser inside `tests` ran unbooked, beside the whole suite, and SKIP-green on
+# a lane without the engine -- in every mode (gh703, the WebKit phone, among
+# them). So a browser unit never runs in `tests` outside ci: `test_select`
+# subtracts every one, `plan` hands the ones the diff reaches to
+# `browser:display`, and `scripts/pipeline/locks.py` (`browser-station-lock`)
+# is RED for one the station cannot take.
+
+# A browser driver of the lab, as code names it (`workshop/tools/display-*`).
+_BROWSER_DRIVER_RE = re.compile(r"display-[a-z0-9-]+-browser\.mjs")
+# The unit starts a process, or reaches code this rule cannot read: then it is
+# taken as a starter (fail-closed). A unit that names a driver and does neither
+# only READS the driver's text (720, 722).
+_BROWSER_START_RE = re.compile(
+    r"\bCommand\b|\bsupport::|\bcommon::|#\s*\[\s*path\b|^\s*(?:pub\s+)?mod\s+\w+\s*;", re.M)
+
+
+# GH #1189: a unit that drives Chromium in-process (`BrowserParams`/CDP, gh766)
+# names no driver; it reads the engine's path from MECLAW_CHROMIUM.
+_BROWSER_ENGINE_READ_RE = re.compile(r"\benv::var(?:_os)?\(\s*\"MECLAW_CHROMIUM\"\s*\)")
+
+
+def browser_unit(unit, text):
+    """True when the test unit `unit` (a `_test_sources` unit) starts a browser:
+    its stem ends `_browser`, or its code (comments blanked, `_rust_code_aligned`)
+    names a driver `display-*-browser.mjs` and starts a process
+    (`_BROWSER_START_RE`), or reads `MECLAW_CHROMIUM` (GH #1189). A unit that names
+    a driver or the engine and that the lexer doubts is code this rule cannot
+    read: a starter (fail-closed)."""
+    if unit.rsplit("/", 1)[-1].endswith("_browser") or unit.split("/")[0].endswith("_browser"):
+        return True
+    driver, engine = _BROWSER_DRIVER_RE.search(text), "MECLAW_CHROMIUM" in text
+    if not (driver or engine):  # cheap: no driver, no engine anywhere, not even code
+        return False
+    code = _rust_code_aligned(text)
+    if code is None:
+        return True
+    return bool(_BROWSER_DRIVER_RE.search(code) and _BROWSER_START_RE.search(code)
+                or _BROWSER_ENGINE_READ_RE.search(code))
+
+
+_BROWSER_CACHE = {}
+
+
+def browser_units(repo=None):
+    """`{term: (crate, unit, text)}` of every browser unit of the tree (once per
+    tree, like `_test_sources`)."""
+    root = REPO_ROOT if repo is None else repo
+    if root not in _BROWSER_CACHE:
+        _BROWSER_CACHE[root] = {_binary_id(c, u): (c, u, t) for c, u, t in _test_sources(repo)
+                                if browser_unit(u, t)}
+    return _BROWSER_CACHE[root]
+
+
+def browser_terms(repo=None):
+    """The nextest terms of every browser unit, sorted."""
+    return sorted(browser_units(repo))
+
+
+def _browser_lock_term(crate, unit):
+    """True when the unit is one of BROWSER_LOCKS (the station drives it already)."""
+    return "/" not in unit and "crates/%s/tests/%s.rs" % (crate, unit) in BROWSER_LOCKS
+
+
+def browser_unplaced(repo=None):
+    """`[(rel, why)]` -- the browser units `browser:display` cannot take.
+
+    The station runs its union with `--run-ignored all`; an `#[ignore]`d proof
+    outside BROWSER_LOCKS would run in every mode without anybody deciding
+    which (the colony half runs in I/R only). And a test module outside the
+    units (`tests/support/**`) that names a driver hides its callers from the
+    marker rule. Both are RED in `browser-station-lock`, and so is a unit or
+    module the lexer doubts: unread is no proof (fail-closed)."""
+    root = REPO_ROOT if repo is None else repo
+    out = []
+    for term, (crate, unit, text) in sorted(browser_units(repo).items()):
+        if _browser_lock_term(crate, unit):
+            continue
+        rel = "crates/%s/tests/%s.rs" % (crate, unit)
+        # Not `_test_counts`: its doubt is (0, 0), which reads as "no #[ignore]".
+        # With the token lexer (#1162) a comment left open is such a doubt, and
+        # an #[ignore]d proof that S3's regex lexer flagged fell silent (re-check
+        # h2 M-1, fixture `doubted_proof.rs`).
+        code = _rust_code(text)
+        try:
+            tests, runnable = (None, None) if code is None else _counts(code)
+            # an item macro may make an #[ignore]d proof the count cannot see
+            # (tb-s10 A1 point 21; in the tree only the lock 710 holds one)
+            hidden = code is not None and _hidden_tests(code)
+        except crate_root.Doubt:
+            tests, runnable = None, None
+        if tests is None:
+            out.append((rel, "a browser unit the lexer doubts outside BROWSER_LOCKS"))
+        elif tests > runnable:
+            out.append((rel, "an #[ignore]d browser proof outside BROWSER_LOCKS"))
+        elif hidden:
+            out.append((rel, "a browser unit whose tests a macro may make outside BROWSER_LOCKS"))
+    units = {"crates/%s/tests/%s.rs" % (c, u) for c, u, _t in _test_sources(repo)}
+    crates_dir = os.path.join(root, "crates")
+    for crate in sorted(os.listdir(crates_dir)) if os.path.isdir(crates_dir) else ():
+        tests_dir = os.path.join(crates_dir, crate, "tests")
+        for dirpath, _dirs, names in os.walk(tests_dir):
+            for name in sorted(names):
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                if not name.endswith(".rs") or rel in units or name == "main.rs":
+                    continue
+                try:
+                    with open(os.path.join(dirpath, name), encoding="utf-8",
+                              errors="replace") as fh:
+                        text = fh.read()
+                except OSError:
+                    out.append((rel, "unreadable"))
+                    continue
+                if not _BROWSER_DRIVER_RE.search(text):
+                    continue
+                code = _rust_code_aligned(text)
+                if code is None:   # it names a driver, the lexer doubts: fail-closed
+                    out.append((rel, "a shared test module the lexer doubts names a "
+                                     "browser driver"))
+                elif _BROWSER_DRIVER_RE.search(code):
+                    out.append((rel, "a shared test module names a browser driver"))
+    return out
+
+
+def _crate_users(repo):
+    """`{crate: {crates that depend on it, transitively, itself included}}` from
+    the `path` dependencies of `crates/*/Cargo.toml` (dev ones too: nextest's
+    `rdeps` counts them). None when a manifest cannot be read (fail-closed)."""
+    import tomllib
+    root = REPO_ROOT if repo is None else repo
+    crates_dir = os.path.join(root, "crates")
+    deps = {}
+    for crate in sorted(os.listdir(crates_dir)) if os.path.isdir(crates_dir) else ():
+        manifest = os.path.join(crates_dir, crate, "Cargo.toml")
+        if not os.path.isfile(manifest):
+            continue
+        try:
+            with open(manifest, "rb") as fh:
+                doc = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError):
+            return None
+        name = (doc.get("package") or {}).get("name") or crate
+        found = set()
+        for key in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for dep, spec in (doc.get(key) or {}).items():
+                if isinstance(spec, dict) and "path" in spec:
+                    found.add(spec.get("package") or dep)
+        deps[name] = found
+    def reach(c):
+        seen, todo = set(), [c]
+        while todo:
+            for d in deps.get(todo.pop(), ()):
+                if d not in seen:
+                    seen.add(d)
+                    todo.append(d)
+        return seen
+    below = {c: reach(c) for c in deps}
+    return {x: {x} | {c for c, ds in below.items() if x in ds} for x in deps}
+
+
+def _selects_unit(term, crate, unit, users):
+    """True when the `tests` term `term` reaches the browser unit. An unknown
+    term shape reaches it (fail-closed)."""
+    if term == "all()":
+        return True
+    if term == T0_FLOOR:
+        return False
+    m = re.fullmatch(r"rdeps\(([^)]+)\)", term)
+    if m:
+        return users is None or crate in users.get(m.group(1), {m.group(1)})
+    if term == _binary_id(crate, unit):
+        return True
+    m = re.fullmatch(r"binary_id\(=([^:)]+)::([^)]+)\)", term)
+    if m:
+        return m.group(1) == crate and m.group(2) == unit.split("/")[0]
+    m = re.fullmatch(r"\(binary_id\(=([^:)]+)::([^)]+)\) & test\(/\^([^/]+)::/\)\)", term)
+    if m:
+        return (m.group(1) == crate and "/" in unit
+                and unit.split("/") in ([m.group(2), m.group(3)], [m.group(2), "main"]))
+    return True
+
+
+def _browser_reach(paths, mode, repo=None):
+    """`(terms, paths)`: the browser-unit terms the diff's `tests` selection
+    reaches (lock units included), and the diff paths whose rule reached one
+    -- both sorted; ([], []) in ci, where they stay in `tests`. A release
+    reaches every unit and names no path: its `tests` is `all()` by rule,
+    whatever the diff (`test_select`, KR-TB-1 d, GH #1162)."""
+    if mode == "release":
+        return sorted(browser_units(repo)), []
+    files = _norm(paths)
+    if mode == "ci" or not files:
+        return [], []
+    units = browser_units(repo)
+    users = _crate_users(repo) if units else None
+    terms, why = set(), set()
+    for _l, p, _r, hit in _term_rules(files, repo):
+        got = {t for t, (c, u, _x) in units.items()
+               if any(_selects_unit(s, c, u, users) for s in hit)}
+        if got:
+            terms |= got
+            why.add(p)
+    return sorted(terms), sorted(why)
+
+
+def browser_reached(paths, mode, repo=None):
+    """The browser-unit terms the diff's `tests` selection reaches (lock units
+    included), sorted; [] in ci, where they stay in `tests`."""
+    return _browser_reach(paths, mode, repo)[0]
+
+
+def browser_moved(paths, mode, repo=None):
+    """`browser_reached` minus BROWSER_LOCKS: the units `browser:display` adds."""
+    units = browser_units(repo)
+    return [t for t in browser_reached(paths, mode, repo)
+            if not _browser_lock_term(units[t][0], units[t][1])]
+
+
+def tests_minus_for(repo=None):
+    """What `tests` subtracts outside ci at most: the scenario class and every
+    browser unit. The narrowing (`pipeline/impact.py`) subtracts all of it; the
+    resolver the browser units its terms reach (`test_select`), the same set
+    for every crate-wide term."""
+    return " + ".join(_scenario_terms(repo) + browser_terms(repo))
+
+
 def test_filter(paths, mode, repo=None):
     """The nextest filterset for this diff, or None when no test must run.
 
-    1. workspace class            -> all()
+    1. workspace class            -> all()  (a workspace file the diff does
+                                     not hold but that changed since the
+                                     coverage map's rev: all() unless it is on
+                                     `pipeline/narrow.NO_SHIFT`, M-4, or the
+                                     merge point's version bump alone, V2-A3)
     2. rust_src in crate X        -> rdeps(X)
     3. rust_test file             -> its binary_id, plus every binary that
                                      compiles it in as a module -- but ONLY if
@@ -1450,7 +3652,10 @@ def test_filter(paths, mode, repo=None):
                                      (`_test_binary_exists`): a deleted test
                                      cannot run, and nextest treats an
                                      unmatched `binary_id(=..)` as a hard
-                                     error that kills the whole station
+                                     error that kills the whole station; the
+                                     binaries that compile it in count either
+                                     way (a `#[path]` target in a directory
+                                     without main.rs is no binary, tb-s1c)
     4. template <name>            -> the binaries that REFERENCE it
                                      (`_template_reference_re` -- a bare
                                      `"<name>"` does not count), the ones that
@@ -1459,71 +3664,144 @@ def test_filter(paths, mode, repo=None):
                                      plus the catalogue-wide ones
                                      (`_is_catalogue_wide`)
     5. example <name>             -> the binaries that reference it
+       4 and 5: like a rule-8 reader, a referencing unit stands for rule 3's
+                                     set of its file (`_unit_users`)
     6. none of the above, diff not empty -> None (no `tests` station at all)
     7. empty diff                 -> the t0 floor, `T0_FLOOR`; `plan()` turns
                                      that one value into `test-tier.sh t0`
-    8. any path outside `crates/` -> the binaries that name it as a literal
+    8. any path outside `crates/`, and every crate_file
+                                  -> the binaries that name it as a literal
                                      (`_tests_reading_path`). A test that reads
                                      a file is that file's drift lock, so the
                                      file's diff must run it. Additive: it
                                      extends rules 4 and 5, it replaces neither.
+       runtime (GH #1138), also for every crate file a repo-relative walk
+       covers (`crates`, `crates/<c>/src`: `.rs` too, tb-s1c) and for the
+       non-`.rs` files under `crates/<c>/tests/`
+                                  -> the tests that read the path WITHOUT
+                                     naming it (`_tests_reading_at_runtime`):
+                                     an ancestor directory as a literal (a
+                                     walk, `crates` and `crates/<c>` too;
+                                     not under templates/ or examples/,
+                                     rules 4/5 own those), a SCRIPT_READS
+                                     generator they run whose sources match
+                                     the path, a crate fixture named relative
+                                     to the crate. A crate test file no test
+                                     names -> `rdeps(<c>)` (reader unknown,
+                                     fail-closed); the coverage narrowing
+                                     never replaces that rdeps
+       both shapes: a reader stands for rule 3's set of its file
+                                  (`_unit_users`): a folded helper for its
+                                     whole harness, a shared file for every
+                                     binary that compiles it in (M-8)
     9. over rules 3, 4, 5 and 8   -> a binary whose every test is `#[ignore]`
                                      is dropped (`_runs_no_test`): it would
                                      run 0 tests, and a `tests` station of 0
                                      tests is RED (GH #997). In doubt it stays.
+   10. crate_file in crate X      -> rdeps(X), reason `rule:10 crate-file:<p>`
+                                     (welle-tb S1b): a crate file outside
+                                     src/ and tests/ (an `include_str!` schema,
+                                     an example, a bench, a README, a
+                                     migration, a template or toml inside the
+                                     crate, a build.rs input) that no rule
+                                     above can assign. Never `rule:2`, so the
+                                     coverage narrowing (`pipeline/impact.py`)
+                                     never replaces it -- the map lists `.rs`
+                                     lines only. Plans fmt/clippy/unwrap-budget
+                                     and in I/R doctests like a Rust source.
+   11. outside ci, every browser unit -> out of `tests` (GH #1161, re-check
+                                     M-3): a unit that starts a browser
+                                     (`browser_unit`: stem `*_browser`, or a
+                                     driver `display-*-browser.mjs` named in
+                                     code that starts a process) is dropped
+                                     from the terms and subtracted from every
+                                     wider one that reaches it (`_selects_unit`;
+                                     the narrowing: `tests_minus_for`); `plan`
+                                     gives the ones the diff reaches
+                                     (`browser_reached`) to `browser:display`,
+                                     which books the engines. In ci they stay.
 
     Over-selection is allowed here, under-selection is not: a missed binary is
     a gate that passes over an untested change.
     """
+    select = test_select(paths, mode, repo)
+    return None if select is None else select["filter"]
+
+
+def test_select(paths, mode, repo=None):
+    """The structured selection behind `test_filter`, or None (no `tests`).
+
+    `{binaries: ["<crate>::<stem>"], rdeps: ["<crate>"], all, floor, extra: [],
+    minus: [<binary-name regex>], filter, why: ["<label>: <path>"]}` -- the
+    rules are the ones `test_filter` documents, applied once; `filter` is the
+    string `test_filter` returns, rendered from the fields here and nowhere
+    else. `why` names the paths that put a term into the selection.
+    A release takes none of the rules: it plans the full suite whatever the
+    diff, `all()` minus the scenario class (KR-TB-1 d).
+    """
+    if mode == "release":
+        # KR-TB-1 (d), GH #1162 OR-TB.S4.39: the release runs the full suite by
+        # rule, whatever its export diff -- a one-file patch release planned
+        # `rdeps(<crate>)`, a docs-only one no `tests` at all. The scenario class
+        # stays subtracted: the release plans every scenario station. So does
+        # every browser unit (rule 11, GH #1161): `all()` reaches each one, and
+        # in `tests` it ran unbooked, SKIP-green on a lane without the engine.
+        minus = _scenario_terms(repo)
+        browser = browser_units(repo)
+        cut = minus + sorted(browser)
+        return {"binaries": [], "rdeps": [], "all": True, "floor": False, "extra": [],
+                "minus": [_ONE_BINARY_RE.match(m).group(1) for m in minus if _ONE_BINARY_RE.match(m)]
+                + ["^%s$" % re.escape(u) for _c, u, _x in sorted(browser.values())
+                   if "/" not in u],
+                "filter": "all() - (%s)" % " + ".join(cut) if cut else "all()",
+                "why": ["mode: release -- full suite (KR-TB-1 d)"]}
     files = _norm(paths)
     if not files:
-        return T0_FLOOR
+        return {"binaries": [], "rdeps": [], "all": False, "floor": True, "extra": [],
+                "minus": [], "filter": T0_FLOOR, "why": ["floor: empty diff"]}
 
-    classes = classify(files)
-    if "workspace" in classes:
-        terms = {"all()"}
-    else:
-        terms = set()
-        for crate in crates_of(files, repo):
-            if any("rust_src" in _classes_of_path(p) and _crate_of(p) == crate
-                   for p in files):
-                terms.add("rdeps(%s)" % crate)
-        for p in files:
-            if "rust_test" not in _classes_of_path(p):
-                continue
-            crate = _crate_of(p)
-            stem = p.split("/")[3].removesuffix(".rs")
-            # A path the diff names may be GONE -- `git diff --name-only`
-            # lists deletions. An id for a binary that does not exist is not
-            # an over-selection, it is a filterset nextest refuses to parse.
-            # Rules 4, 5 and 8 are safe without this check: they derive every
-            # id from a file they just READ out of the tree.
-            if not _test_binary_exists(repo, crate, stem):
-                continue
-            terms.add(_binary_id(crate, stem))
-            terms |= _sharers(repo, crate, stem)
-        for name in _templates_of(files):
-            terms |= _tests_referencing_template(repo, name)
-        for name in _examples_of(files):
-            terms |= _tests_referencing_example(repo, name)
-        for p in files:
-            if not p.startswith("crates/"):
-                terms |= _tests_reading_path(repo, p)
-        # Rule 9, over all rules above: a binary that runs 0 tests is no
-        # target (GH #997). `all()` and `rdeps()` are untouched -- they never
-        # stand on one binary.
-        terms = _drop_binaries_without_tests(repo, terms)
+    rules = _term_rules(files, repo)
+    why = [(label, p, hit) for label, p, _reason, hit in rules]
+    # Rule 9 (GH #997) over the union -- the same call `test_terms` makes.
+    terms = _drop_binaries_without_tests(
+        repo, set().union(*(hit for _l, _p, _r, hit in rules)))
+    browser = browser_units(repo) if mode != "ci" else {}
+    # Rule 11: a browser unit leaves `tests` (it runs in `browser:display`) --
+    # dropped as a term, subtracted from the wider terms that reach it. Only
+    # those: an unreached one changes the scope string (and the cache key),
+    # never the run.
+    terms = {t for t in terms if t not in browser}
+    if browser and terms:
+        users = _crate_users(repo)
+        browser = {t: v for t, v in browser.items()
+                   if any(_selects_unit(s, v[0], v[1], users) for s in terms)}
 
     if not terms:
         return None
     expr = " + ".join(sorted(terms))
-    if mode == "ci":
+    minus = []
+    if mode != "ci":
         # CI shards run the tests; the expression is planned, not reduced.
-        return expr
-    scenario = scenario_for(repo)
-    if not scenario:
-        return expr
-    return "%s - (%s)" % (expr, scenario)
+        minus = _scenario_terms(repo)
+        if minus or browser:
+            expr = "%s - (%s)" % (expr, " + ".join(minus + sorted(browser)))
+    return {
+        # every term's binaries, a narrowed harness `(binary_id(=c::h) & test(..))`
+        # too: the pipeline builds only these (`pipeline/plan.py` -> `--test`), and a
+        # missing harness took the tests station down (W5 delta I1)
+        "binaries": sorted({b for t in terms for b in re.findall(r"binary_id\(=([^)]+)\)", t)}),
+        "rdeps": sorted(t[len("rdeps("):-1] for t in terms if t.startswith("rdeps(")),
+        "all": "all()" in terms,
+        "floor": False,
+        "extra": [],
+        # binary-name regexes (`pipeline/plan.py` drops these parts of an `all()`);
+        # a folded browser module is a test-level cut, its harness still runs
+        "minus": [_ONE_BINARY_RE.match(m).group(1) for m in minus if _ONE_BINARY_RE.match(m)]
+        + ["^%s$" % re.escape(u) for _c, u, _x in sorted(browser.values()) if "/" not in u],
+        "filter": expr,
+        "why": list(dict.fromkeys("%s: %s" % (label, p) for label, p, hit in why
+                                  if hit & terms)),
+    }
 
 
 # --- scope helpers ----------------------------------------------------------
@@ -1576,6 +3854,36 @@ def _shell_files(repo, globs):
     return out or list(globs)
 
 
+def _testing_bans():
+    """`testing_bans` from beside this file, when the C plan needs it. Lazy:
+    a kit tree without it never plans C. Found by this module's own directory
+    when the caller's sys.path no longer holds `scripts/` -- the export
+    selftest (`ci_plan_scripts`) puts it there for its `import gate_plan` and
+    takes it off again before it calls `plan(.., "ci")`."""
+    try:
+        import testing_bans
+        return testing_bans
+    except ModuleNotFoundError:
+        pass
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "testing_bans", os.path.join(_SCRIPTS_DIR, "testing_bans.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_bans_paths(files):
+    """The paths of `files` the C station `test-bans` hands on: source files
+    the bans can grade and the files the change reservation reads. The rest
+    stays off the argv -- in C the diff is often the whole tree (`git
+    ls-files`, 23 177 paths in the private tree: over ARG_MAX)."""
+    testing_bans = _testing_bans()
+    reserved = {testing_bans.REGISTER_FILE} | {rel for rel, _judge in testing_bans.RESERVED}
+    suffixes = tuple(testing_bans.SUFFIX.values())
+    return sorted(f for f in files if f.endswith(suffixes) or f in reserved)
+
+
 def persona_source_files(repo=None):
     """PERSONA_SOURCES expanded against the tree: repo-relative files, sorted.
 
@@ -1603,6 +3911,24 @@ def persona_source_files(repo=None):
 
 
 # --- the plan ---------------------------------------------------------------
+
+def test_hook_flags(root, selector):
+    """`--features meclaw-colony/test-hooks` or nothing, for a cargo call with the
+    package selection `selector` (GH #1208, R-TV-W18). The rule lives once, in
+    `meclaw_test_features` of scripts/cargo-target.sh (the build station and
+    scripts/test-tier.sh read it there too); the tree's own copy wins, this
+    checkout's is the fallback. A failing probe is an error, never "no flags"."""
+    lib = os.path.join(root, "scripts", "cargo-target.sh")
+    if not os.path.isfile(lib):
+        lib = os.path.join(REPO_ROOT, "scripts", "cargo-target.sh")
+    res = subprocess.run(
+        ["bash", "-c", '. "$1" || exit 2; shift; meclaw_test_features "$@"', "_", lib, root]
+        + list(selector), capture_output=True, text=True, timeout=30)
+    if res.returncode:
+        raise GatePlanError("meclaw_test_features failed (exit %d): %s"
+                            % (res.returncode, res.stderr.strip()))
+    return [ln for ln in res.stdout.splitlines() if ln]
+
 
 def plan(paths, mode, repo=None):
     """The stations this diff must run, cheapest first."""
@@ -1646,6 +3972,19 @@ def plan(paths, mode, repo=None):
     out["tree-rules"] = station(
         "tree-rules", "templates+examples", False,
         [["python3", "scripts/check_tree_rules.py"]])
+    # The testing-bans inventory (VORGABEN § 5.4): a pass and the public CI
+    # count the whole tree against the baseline; a strand's added lines are
+    # `precheck`'s.
+    if irc:
+        out["test-bans-inventory"] = station(
+            "test-bans-inventory", "tree", False,
+            [["python3", "scripts/testing_bans.py", "--inventory", "--check"]])
+    # ... and in C, where precheck never runs, its two testing checks on the
+    # diff (tv-bn-ci, #1209): an outside pull request is graded nowhere else.
+    if ci:
+        out["test-bans"] = station(
+            "test-bans", "diff", False,
+            [["python3", "scripts/testing_bans.py", "--files"] + test_bans_paths(files)])
 
     # --- corpus. A touched source regenerates and then checks; otherwise the
     # check alone proves the committed seed still matches its sources. CI never
@@ -1697,7 +4036,7 @@ def plan(paths, mode, repo=None):
             [["python3", "scripts/check_catalogue.py"]])
 
     if classes & {"shell", "gate_infra"} or ci:
-        globs = SHELL_GLOBS[:2] if ci else SHELL_GLOBS
+        globs = SHELL_GLOBS[:SHELL_GLOBS_PUBLIC] if ci else SHELL_GLOBS
         out["shellcheck"] = station(
             "shellcheck", " ".join(globs), False,
             [["shellcheck"] + _shell_files(repo, globs)])
@@ -1709,18 +4048,90 @@ def plan(paths, mode, repo=None):
             # runner's, the strand kit's, the wave retro's and the merge
             # driver's. They all arrive with the runner (ROOT_FILES), so this
             # list is the same in both trees; the retro's one private-tree
-            # case skips itself there.
-            [["python3", "-m", "unittest",
+            # case skips itself there. `selftest_shard.py` runs the modules
+            # in shards side by side (GH #1126); one shard is the plain
+            # `python3 -m unittest` of before.
+            [["/usr/bin/python3", "-I", "scripts/pipeline/selftest_shard.py", "unittest",
               "scripts.tests.test_gate_plan", "scripts.tests.test_gate_sh",
               "scripts.tests.test_strand_sh",
+              "scripts.tests.test_pipeline_hygiene",
               "scripts.tests.test_wave_receipt",
+              "scripts.tests.test_lane_fingerprint",
+              "scripts.tests.test_lane_browser_deps",
               "scripts.tests.test_wave_retro",
               "scripts.tests.test_git_merge_display_sync",
               "scripts.tests.test_precheck",
+              "scripts.tests.test_precheck_testing_bans",
+              "scripts.tests.test_pipeline_locks",
+              "scripts.tests.test_harness_fold",
+              "scripts.tests.test_pipeline_pre",
+              "scripts.tests.test_pipeline_cascade_dry",
               "scripts.tests.test_display_sync",
               "scripts.tests.test_nextest_quarantine",
               "scripts.tests.test_slow_tests",
-              "scripts.tests.test_roadmap_anchors"]])
+              "scripts.tests.test_flake_triage",
+              "scripts.tests.test_clock_bans",
+              "scripts.tests.test_roadmap_anchors",
+              "scripts.tests.test_pipeline_store",
+              "scripts.tests.test_pipeline_events",
+              "scripts.tests.test_pipeline_receipt",
+              "scripts.tests.test_pipeline_executor",
+              "scripts.tests.test_pipeline_schedule",
+              "scripts.tests.test_pipeline_lanes_cli",
+              "scripts.tests.test_pipeline_plan",
+              "scripts.tests.test_pipeline_cache",
+              "scripts.tests.test_pipeline_cache_reads",
+              "scripts.tests.test_pipeline_lane",
+              "scripts.tests.test_fake_ssh",
+              "scripts.tests.test_lane_engstelle",
+              "scripts.tests.test_pipeline_gate_cli",
+              "scripts.tests.test_pipeline_metrics",
+              "scripts.tests.test_pipeline_backfill",
+              "scripts.tests.test_pipeline_grafana",
+              "scripts.tests.test_pipeline_retro",
+              "scripts.tests.test_pipeline_night",
+              "scripts.tests.test_pipeline_orga_export",
+              "scripts.tests.test_wave_close",
+              "scripts.tests.test_wave_live",
+              "scripts.tests.test_pipeline_register",
+              "scripts.tests.test_pipeline_unit_runner",
+              "scripts.tests.test_store_isolation",
+              "scripts.tests.test_kit_time",
+              "scripts.tests.test_pipeline_measure",
+              "scripts.tests.test_pipeline_ports",
+              "scripts.tests.test_pipeline_lab_width",
+              "scripts.tests.test_browser_required",
+              "scripts.tests.test_gate_plan_browser_units",
+              "scripts.tests.test_pipeline_pool",
+              "scripts.tests.test_nextest_groups",
+              "scripts.tests.test_display_scenarios_parallel",
+              "scripts.tests.test_side_effect_guard",
+              "scripts.tests.test_pipeline_merge",
+              "scripts.tests.test_pipeline_versions",
+              "scripts.tests.test_pipeline_revert",
+              "scripts.tests.test_pipeline_flakes",
+              "scripts.tests.test_pipeline_graph",
+              "scripts.tests.test_pipeline_impact",
+              "scripts.tests.test_pipeline_coverage",
+              "scripts.tests.test_pipeline_questions",
+              "scripts.tests.test_pipeline_finding",
+              "scripts.tests.test_unittest_shape",
+              "scripts.tests.test_pipeline_receipt_bytes",
+              "scripts.tests.test_pipeline_narrow",
+              "scripts.tests.test_pipeline_spawn_closure",
+              "scripts.tests.test_pipeline_browser_cover",
+              "scripts.tests.test_pipeline_browser_plan",
+              "scripts.tests.test_pipeline_full_pass",
+              "scripts.tests.test_pipeline_lanes_release",
+              "scripts.tests.test_pipeline_selftest_shard",
+              "scripts.tests.test_meclaw_bin_owner",
+              # GH #1162: the I/R path's tests stood in no station (the kit
+              # ran them, no gate did); every test_pipeline_* module is
+              # listed here (test_every_runner_test_module_is_in_gate_selftest).
+              "scripts.tests.test_pipeline_ir_path",
+              "scripts.tests.test_pipeline_two_phase_build",
+              # tb-s7 (#1167): the turnaround module, under the same lock
+              "scripts.tests.test_pipeline_turnaround"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that
@@ -1746,10 +4157,18 @@ def plan(paths, mode, repo=None):
     if (ir or "evals_guide" in classes) and not ci:
         out["guide-selftest"] = station(
             "guide-selftest", "unittest", False,
-            [["python3", "workshop/evals/conversation-guide/run_guide.py", "--self-test"]])
+            [["python3", "workshop/evals/conversation-guide/run_guide.py", "--self-test"],
+             # The #871 replay's unittest (L-7, tb-s10): its tool lives in the
+             # guide's directory, so it runs where the guide's self-test runs.
+             ["python3", "-m", "unittest", "scripts.tests.test_replay_871"],
+             # The workshop's one log pager and the Python class pin "a reader
+             # takes one page for the whole" (a scan of workshop/**/*.py, tv-bn
+             # M7b17): the guide is the first of its readers, and I/R always
+             # is where a reader that reads a window has to surface.
+             ["python3", "-m", "unittest", "scripts.tests.test_colony_log"]])
 
     # --- cargo work.
-    if classes & {"rust_src", "rust_test", "workspace"}:
+    if classes & {"rust_src", "rust_test", "crate_file", "workspace"}:
         out["fmt"] = station("fmt", "workspace", True,
                              [["cargo", "fmt", "--all", "--", "--check"]])
         if "workspace" in classes or irc or not crates:
@@ -1757,11 +4176,15 @@ def plan(paths, mode, repo=None):
         else:
             selector = [a for c in crates for a in ("-p", c)]
             scope = " ".join(crates)
+        # R-TV-W18 (GH #1208): lint what the test builds compile -- the
+        # `test-hooks` code was never linted while no build turned it on. The
+        # unwrap budget below keeps the product's view, without the feature.
         out["clippy"] = station(
             "clippy", scope, True,
-            [["cargo", "clippy"] + selector + ["--all-targets", "--", "-D", "warnings"]])
+            [["cargo", "clippy"] + selector + ["--all-targets"]
+             + test_hook_flags(repo or REPO_ROOT, selector) + ["--", "-D", "warnings"]])
 
-    if classes & {"rust_src", "workspace", "unwrap_infra"} or ci:
+    if classes & {"rust_src", "crate_file", "workspace", "unwrap_infra"} or ci:
         # cargo:1 -- it is a Python script, but it runs
         # `cargo clippy --workspace` under the hood, so the runner must give it
         # the same nice/ionice/flock and build budget as any other cargo work.
@@ -1800,9 +4223,18 @@ def plan(paths, mode, repo=None):
             "slow-tests", "1/3 of terminate-after", True,
             [["python3", "scripts/slow_tests.py"]], run=not ci)
 
-    if ir and classes & {"rust_src", "workspace"}:
+    if mode == "release":
+        scen = " + ".join(scenario_station_terms(repo))
+        if scen:
+            out[SCENARIO_STATION] = station(
+                SCENARIO_STATION, scen, True, [["scripts/test-tier.sh", "filter", scen]])
+
+    if ir and classes & {"rust_src", "crate_file", "workspace"}:
+        # with the test hooks, like every other build of the gate and the CI
+        # doctests (GH #1208, re-check M1): one variant of meclaw-colony in target/
         out["doctests"] = station("doctests", "workspace", True,
-                                  [["cargo", "test", "--workspace", "--doc"]])
+                                  [["cargo", "test", "--workspace", "--doc"]
+                                   + test_hook_flags(repo or REPO_ROOT, ["--workspace"])])
 
     # `workspace` only, plus the release (R-P2, 2026-09-19): cargo-deny grades
     # the dependency graph, and the `workspace` class is what moves that graph.
@@ -1821,10 +4253,24 @@ def plan(paths, mode, repo=None):
     # their own cases. 43 integration runs over five waves, 16 317 s, not one
     # finding (wave P, finding 04 § 3.4). `release` keeps both unconditional.
     if mode == "release" or "evals_memory" in classes or "memory-hive" in templates:
+        cmd = ["python3", "workshop/evals/scenarios/run_scenarios.py"]
+        # Case selection by impact (W7): when the memory-hive template is the
+        # ONLY reason for the station, a strand or an integration pass runs the
+        # cases that name that template. A diff on the suite itself and the
+        # release run every case.
+        if (mode in ("strand", "integration") and "memory-hive" in templates
+                and "evals_memory" not in classes):
+            cmd += ["--only-templates", "memory-hive"]
+        cmds = [cmd]
+        # The runner's own unit tests (W7: workers, slots, case selection)
+        # ride with a diff on the suite -- a unittest no station plans is not
+        # a lock. Seconds, fake colony, before the real cases.
+        if "evals_memory" in classes:
+            cmds.insert(0, ["python3", "-m", "unittest", "discover", "-s",
+                            "workshop/evals/scenarios/tests"])
         out["scenarios:memory"] = station(
             "scenarios:memory",
-            _case_scope(repo, "workshop/evals/scenarios/cases"), False,
-            [["python3", "workshop/evals/scenarios/run_scenarios.py"]])
+            _case_scope(repo, "workshop/evals/scenarios/cases"), False, cmds)
 
     if (ir or "evals_builder" in classes
             or (templates - {"memory-hive"})
@@ -1837,8 +4283,11 @@ def plan(paths, mode, repo=None):
         out["scenarios:builder"] = station(
             "scenarios:builder",
             _case_scope(repo, "workshop/evals/builder-scenarios/cases"), False,
-            [["python3", "run_builder_scenarios.py"]],
-            cwds=["workshop/evals/builder-scenarios"])
+            ([["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]]
+             if "evals_builder" in classes else [])
+            + [["python3", "run_builder_scenarios.py"]],
+            cwds=["workshop/evals/builder-scenarios"]
+            * (2 if "evals_builder" in classes else 1))
 
     # The pins of the one normative display document (development-rules § 10).
     # Pure Python, seconds, no colony and no browser -- so it runs in S as soon
@@ -1852,7 +4301,11 @@ def plan(paths, mode, repo=None):
             _scenario_scope(repo, "templates/display/compose/scenarios/scenarios.json"),
             False,
             [["python3",
-              "templates/display/compose/scenarios/run_display_scenarios.py"],
+              "templates/display/compose/scenarios/run_display_scenarios.py"]
+             # The four threads `pipeline/plan.py` books for the station are its
+             # workers (GH #1161): it booked four and forked none, 164-170 s in
+             # every I/R pass. ci runs the legacy runner, which books nothing.
+             + ([] if mode == "ci" else ["--workers", str(DISPLAY_SCENARIO_WORKERS)]),
              # The cheap half of the drift question (GH #753): does the mark
              # `SOURCE` still describe the living description tree? Seconds,
              # no cargo, and it never fails the station -- it prints a NOTE
@@ -1865,10 +4318,10 @@ def plan(paths, mode, repo=None):
     # The B-proofs of the same document, in a real engine (§ 6.7, R-23-10). Two
     # shapes of one station, like `export-audit`: the SHEET half builds its page out
     # of `compose.py`'s own parts, needs no colony and costs about half a minute, so
-    # a strand pays for it; the COLONY half boots the throwaway colony once and
-    # drives three exits in two engines -- 4 to 6 minutes, a fifth of the pass's
-    # whole budget. It is `#[ignore]`d in the tree, and the two modes that declare
-    # work finished take it off the shelf.
+    # a strand pays for it; the COLONY half drives three exits in two engines, six
+    # tests with a throwaway colony each -- 4 to 6 minutes in a row, about two when
+    # the Chromium ones run side by side. It is `#[ignore]`d in the tree, and the
+    # two modes that declare work finished take it off the shelf.
     #
     # Both of them, and not `release` alone (GH #746): the station was written with
     # the colony half in `release` only, the release gate of 0.39.0 was the first
@@ -1882,22 +4335,36 @@ def plan(paths, mode, repo=None):
     # station. Through `test-tier.sh`, which owns the nextest profile and knows not
     # to take the cargo lock twice.
     #
-    # No browser on this host is a SKIP, never a RED: the driver leaves with 3 and
-    # the Rust locks return green (R2b). That judgement is the test's, not the
-    # runner's -- `gate.sh` grades a station by its exit code alone.
-    if ir or "display" in templates or "display_browser" in classes:
+    # No browser on a developer's host is a SKIP: the driver leaves with 3 and the
+    # Rust locks return green (R2b). In the gate it is not (GH #1161, OR-TB.S3.17):
+    # the station books both engines, the planner gives it only a lane whose
+    # fingerprint says they start (`schedule.browser_refusals`), the executor is
+    # RED before the start when its own probe says otherwise, and the proofs run
+    # with MECLAW_REQUIRE_BROWSERS=1 -- an engine that does not start fails the run.
+    #
+    # Two commands (W7): ONE nextest call over every ignored lock, the colony half
+    # among them in I/R, and the sheet call. Inside the first call the groups of
+    # `.config/nextest.toml` set the width -- `webkit` one at a time, `colony-boot`
+    # four. The two calls are independent, but the station does not say so
+    # yet: two WebKit runs side by side were never measured (review W7 I1).
+    #
+    # A narrowed integration cuts this row afterwards (owner's ruling 10.10.,
+    # `pipeline/browser_plan.py`): a lock -- colony half and sheet included --
+    # stays when the wave diff touches its map cover or the lock file, when it is
+    # unmeasured, when the map does not fit, or when a non-Rust station input, a
+    # workspace file or a crate file outside the map changed. `release`, a full pass
+    # and an integration in doubt run all.
+    #
+    # Rule 11 of `test_filter` (GH #1161, re-check M-3): a browser unit the diff's
+    # selection reaches runs HERE, never in `tests` -- so it plans the station in
+    # every mode but ci, and the units outside BROWSER_LOCKS join its union.
+    reached = browser_reached(files, mode, repo)
+    if ir or "display" in templates or "display_browser" in classes or reached:
         colony = ir
-        cmds = [["scripts/test-tier.sh", "filter", "binary(/710_the_sheet_holds/)"]]
-        if colony:
-            cmds.append(["scripts/test-tier.sh", "filter",
-                         "binary(/710_the_colony_holds/)", "--run-ignored", "all"])
-        cmds.append(list(CSP_LOCK_CMD))
-        cmds.append(list(MOTION_LOCK_CMD))
-        cmds.append(list(SLOW3G_LOCK_CMD))
-        cmds.append(list(ORIENTATION_LOCK_CMD))
-        cmds.append(list(KEEP_LOCK_CMD))
         out["browser:display"] = station(
-            "browser:display", "sheet+colony" if colony else "sheet", True, cmds)
+            "browser:display", "sheet+colony" if colony else "sheet", True,
+            browser_cmds(colony, moved=browser_moved(files, mode, repo)),
+            parallel={"by": "cmd", "profiles": list(BROWSER_PROFILES)})
 
     recall_src = any(p.startswith("crates/meclaw-cells/src/") and "recall" in p
                      for p in files)
@@ -1917,6 +4384,11 @@ def plan(paths, mode, repo=None):
         out["deny-advisories"] = station(
             "deny-advisories", "advisories", True,
             [["cargo", "deny", "check", "advisories"]])
+        # #1166 re-check M-1: the build station merges `-p` sets, so a crate is
+        # no longer built in its own feature variant anywhere; this checks each
+        # member alone (S6-DIAG: colony beside cells resolves tokio `process`).
+        scope, iso = crate_isolation(repo)
+        out["crate-isolation"] = station("crate-isolation", scope, True, iso)
 
     # --- the persona gate (ADR-0029, GH #882). Two FREE stations read a committed
     # measurement; the paid or long run is an artefact, never a station.
@@ -1991,13 +4463,238 @@ def plan(paths, mode, repo=None):
         for name in CI_EXCLUDED:
             out.pop(name, None)
 
+    if mode == "release":
+        gaps, twice = release_partition(out, repo)
+        if gaps or twice:
+            raise GatePlanError(
+                "release plan does not split all() (KR-TB-1 d): in no station %s; "
+                "in two stations %s" % (gaps[:20], twice[:20]))
     return [out[name] for name in STATION_ORDER if name in out]
+
+
+_BINARY_ID_RE = re.compile(r"^binary_id\(=([^:()]+)::([^:()]+)\)$")
+# `_TERM_RE` is greedy: `binary(/(a/) & test(/b)/)` -- a compound of two
+# operators -- matched as ONE binary regex `(a/) & test(/b)`. The guard and
+# every reader of a binary regex (scenario class, `minus`, lock narrowing,
+# `harness_fold`; tb-s10 D) read a single operator only: no `/)` inside, so a
+# compound is a form they cannot read.
+_ONE_BINARY_RE = re.compile(r"^binary\(/((?:(?!/\)).)*)/\)$")
+
+
+def _term_hits(term, units):
+    """`{(crate, unit)}` the term selects, or None for a form this cannot read.
+
+    The three forms the planner writes: `binary(/<regex>/)` over the binary
+    name, `binary_id(=<crate>::<binary>)`, and `_binary_id` of a folded
+    module. Any other form is None: the guard cannot vouch for it."""
+    m = _ONE_BINARY_RE.match(term)
+    if m:
+        rx = re.compile(m.group(1))
+        return {(c, u) for c, u in units if rx.search(u.split("/")[0])}
+    m = _BINARY_ID_RE.match(term)
+    if m:
+        return {(c, u) for c, u in units if (c, u.split("/")[0]) == m.groups()}
+    hit = {(c, u) for c, u in units if _binary_id(c, u) == term}
+    return hit or None
+
+
+def _planned_terms(st, prefix="", suffix=""):
+    """The ` + `-joined terms of the first `test-tier.sh filter` call of `st`,
+    the frame `prefix`...`suffix` taken off; None when the call or frame is
+    missing."""
+    for cmd in st.cmds:
+        if cmd[:2] == ["scripts/test-tier.sh", "filter"] and len(cmd) > 2:
+            f = cmd[2]
+            if not (f.startswith(prefix) and f.endswith(suffix)):
+                return None
+            f = f[len(prefix):len(f) - len(suffix)]
+            return f.split(" + ") if f else []
+    return None
+
+
+# The row `pipeline.plan.split_alone` moves `ALONE_LOCKS` into (GH #1191).
+ALONE_STATION = "browser:alone"
+
+
+def release_partition(stations, repo=None):
+    """`(gaps, twice)` of a release plan (`{name: Station}`): the units of
+    `all()` in no part and in two, the parts being `tests`, `browser:display`,
+    `browser:alone` (once split) and the scenario station, each read from its
+    planned filter.
+
+    KR-TB-1 (d), fund tb-s1e re-check (Post-xhigh-8): the release stays the
+    full suite, and only a pin of the wave held it so far -- `plan()` refuses
+    a release this does not clear (fail-closed: a missing `tests`, a frame or
+    a term form this cannot read is a gap, `("<station>", "<term>")`). A unit is
+    `(crate, unit)` of `_test_sources`, plus `(crate, crate)` for each crate's
+    lib/bin unit tests."""
+    src = [(c, u) for c, u, _t in _test_sources(repo)]
+    units = src + [(c, c) for c in sorted({c for c, _u in src})]
+    everything = set(units)
+    gaps, where = [], {u: [] for u in units}
+    parts = (("tests", "all() - (", ")", True),
+             ("browser:display", "(", ") - %s" % WEBKIT_TESTS, False),
+             # fund 27 (re-check tb-s1e-alone): `pipeline.plan.split_alone` moves
+             # the `ALONE_LOCKS` into a row of their own after this plan; read
+             # behind the split, that row is a browser part of its own
+             (ALONE_STATION, "", "", False),
+             (SCENARIO_STATION, "", "", False))
+    for name, prefix, suffix, minus in parts:
+        st = stations.get(name)
+        if st is None and not minus:
+            continue   # a part not planned takes no unit; what it should hold is a gap
+        terms = None if st is None else _planned_terms(st, prefix, suffix)
+        if terms is None and name == "tests" and st is not None:
+            terms = [] if _planned_terms(st) == ["all()"] else None
+        if terms is None:
+            gaps.append((name, "station or filter missing"))
+            continue
+        hit = set()
+        for t in terms:
+            h = _term_hits(t, units)
+            if h is None:
+                gaps.append((name, t))
+                continue
+            hit |= h
+        for u in (everything - hit if minus else hit):
+            where[u].append(name)
+    gaps += [u for u in units if not where[u]]
+    twice = [(c, u, w) for (c, u), w in where.items() if len(w) > 1]
+    return gaps, twice
+
+
+# --- explain (W3, GH #1117) --------------------------------------------------
+
+IR_MODES = ("integration", "release")
+
+# station -> (trigger labels, modes that plan it whatever the diff[, labels
+# that do NOT trigger it]). A label is a class of `_classes_of_path` or a
+# pseudo-label of `_trigger_labels`; `*` is a wildcard. MODES in the second
+# slot means "every mode" (`always`). It mirrors the conditions of `plan()`
+# and serves `--explain` only; `scripts/tests/test_gate_plan.py` (class
+# `Explain`) holds the two together: every station `plan()` puts into a
+# strand plan must name the path that planned it, or say `always`.
+STATION_TRIGGERS = {
+    "precheck": (("diff",), ()),
+    "roadmap-anchors": ((), MODES),
+    "adr-anchors": ((), MODES),
+    "claims": ((), MODES),
+    "tree-rules": ((), MODES),
+    "test-bans-inventory": ((), IR_MODES + ("ci",)),
+    "test-bans": ((), ("ci",)),
+    "corpus-committed": ((), MODES),
+    "corpus": (("corpus_source",), MODES),
+    "catalogue": (("template", "catalogue"), IR_MODES),
+    "shellcheck": (("shell", "gate_infra"), ("ci",)),
+    "gate-selftest": (("gate_infra",), ("ci",)),
+    "display-lab": (("display_lab",), IR_MODES),
+    "llm-conformance": (("llm_conformance",), IR_MODES),
+    "guide-selftest": (("evals_guide",), IR_MODES),
+    "fmt": (("rust_src", "rust_test", "crate_file", "workspace"), ()),
+    "clippy": (("rust_src", "rust_test", "crate_file", "workspace"), ()),
+    "unwrap-budget": (("rust_src", "crate_file", "workspace", "unwrap_infra"), ("ci",)),
+    "corridor": (("corridor",), ("ci",)),
+    "doctests": (("rust_src", "crate_file", "workspace"), ()),
+    "deny": (("workspace",), ("release",)),
+    SCENARIO_STATION: ((), ("release",)),
+    "scenarios:memory": (("evals_memory", "template:memory-hive"), ("release",)),
+    "scenarios:builder": (("evals_builder", "template:*", "example:meclaw-os",
+                           "example:organism"), IR_MODES, ("template:memory-hive",)),
+    "scenarios:display": (("display_scenarios", "template:display"),
+                          ("integration", "release", "ci")),
+    "browser:display": (("display_browser", "template:display"), IR_MODES),
+    "recall-harness": (("evals_memory", "evals_recall", "template:memory-hive",
+                        "recall_src"), ("release",)),
+    "deny-advisories": ((), ("release",)),
+    "crate-isolation": ((), ("release",)),
+    "persona-cases": (("evals_persona",), IR_MODES),
+    "persona-receipt": (("persona_source", "evals_persona"), IR_MODES),
+    "export-selftest": (("export_infra",), IR_MODES),
+    "export-tree-tests": ((), ("release",)),
+    "export-audit": ((), IR_MODES),
+}
+
+# How many `<label>: <path>` entries one station lists before `+<n> more`: a ci
+# plan is the whole tree, and a reason is read by a person.
+REASON_CAP = 20
+
+
+def _trigger_labels(path):
+    """The classes of `path` plus the pseudo-labels `STATION_TRIGGERS` names."""
+    labels = set(_classes_of_path(path)) | {"diff"}
+    parts = path.split("/")
+    if parts[0] == "templates" and len(parts) >= 3:
+        labels.add("template:" + parts[1])
+    if parts[0] == "examples" and len(parts) >= 3:
+        labels.add("example:" + parts[1])
+    if path.startswith("crates/meclaw-cells/src/") and "recall" in path:
+        labels.add("recall_src")
+    return labels
+
+
+def _capped(entries):
+    if len(entries) <= REASON_CAP:
+        return entries
+    return entries[:REASON_CAP] + ["+%d more" % (len(entries) - REASON_CAP)]
+
+
+def _station_reason(name, files, mode, select=None):
+    """`reason` of one planned station (see `--explain` in the docstring)."""
+    if name == "tests":
+        return _capped(list(select["why"])) if select else []
+    if name == "slow-tests":
+        return ["station: tests"]
+    spec = STATION_TRIGGERS[name]
+    labels, modes = spec[0], spec[1]
+    excluded = spec[2] if len(spec) > 2 else ()
+    hits = []
+    for p in files:
+        for label in sorted(_trigger_labels(p)):
+            if label in excluded:
+                continue
+            if any(fnmatch.fnmatchcase(label, want) for want in labels):
+                hits.append("%s: %s" % (label, p))
+    hits = _capped(hits)
+    if modes == MODES:
+        return hits or ["always"]
+    if mode in modes:
+        hits.append("mode: %s" % mode)
+    return hits
+
+
+def _browser_select(st):
+    """`select` of `browser:display`: the lock binaries its commands drive."""
+    extra, filters = set(), []
+    for cmd in st.cmds:
+        if cmd[:2] != ["scripts/test-tier.sh", "filter"] or len(cmd) < 3:
+            continue
+        filters.append(cmd[2])
+        # `browser_cmds` joins the locks into ONE union and splits it by engine
+        # (`(binary(/a/) + binary(/b/)) - test(/webkit/)`), so each binary term
+        # is read on its own.
+        for pattern in _BINARY_TERM_RE.findall(cmd[2]):
+            rx = re.compile(pattern)
+            for lock in BROWSER_LOCKS:
+                stem = lock.rsplit("/", 1)[1].removesuffix(".rs")
+                if rx.search(stem):
+                    extra.add("%s::%s" % (_crate_of(lock), stem))
+        # the moved browser units (rule 11), flat or a folded harness module
+        extra.update(re.findall(r"binary_id\(=([^)]+)\)", cmd[2]))
+    return {"binaries": [], "rdeps": [], "all": False, "floor": False,
+            # Each part's filter in parentheses: a part is `(union) - test(..)`.
+            "extra": sorted(extra), "minus": [],
+            "filter": " + ".join("(%s)" % f for f in filters) if len(filters) > 1
+            else "".join(filters)}
 
 
 # --- rendering --------------------------------------------------------------
 
-def to_json(paths, mode, repo=None):
+def to_json(paths, mode, repo=None, explain=False):
     stations = plan(paths, mode, repo)
+    files = _norm(paths)
+    select = None
+    if explain and any(st.name == "tests" for st in stations):
+        select = test_select(files, mode, repo)
     rows = []
     for st in stations:
         row = {"name": st.name, "scope": st.scope, "cargo": bool(st.cargo)}
@@ -2011,8 +4708,25 @@ def to_json(paths, mode, repo=None):
                 row["cwds"] = list(st.cwds)
         if not st.run:
             row["run"] = False
+        if st.parallel:
+            row["parallel"] = st.parallel
         if st.name in ENV_STATIONS:
             row["env"] = True
+        if explain:
+            row["reason"] = _station_reason(st.name, files, mode, select)
+            if st.name == "tests" and select is not None:
+                row["select"] = {k: v for k, v in select.items() if k != "why"}
+            elif st.name == SCENARIO_STATION:
+                row["select"] = {"binaries": [], "rdeps": [], "all": False, "floor": False,
+                                 "extra": scenario_binaries(repo), "minus": [],
+                                 "filter": st.cmds[0][2]}
+            elif st.name == "browser:display":
+                row["select"] = _browser_select(st)
+                # `<label>: <path>` with the diff path whose rule reached a
+                # browser unit: the cache proves its inputs cover the trigger
+                # (`cache.uncovered_triggers`); the units are in the cmds
+                row["reason"] = _capped(row["reason"] + [
+                    "browser unit: %s" % p for p in _browser_reach(files, mode, repo)[1]])
         rows.append(row)
     return {
         "mode": mode,
@@ -2051,6 +4765,12 @@ def main(argv=None):
     ap.add_argument("--repo", metavar="DIR",
                     help="tree the test sources are read from (default: this repo)")
     ap.add_argument("--format", choices=("json", "tsv"), default="tsv")
+    ap.add_argument("--explain", action="store_true",
+                    help="JSON only: add `reason` to every station and `select` to "
+                         "`tests` and `browser:display` (see the docstring)")
+    ap.add_argument("--terms", action="store_true",
+                    help="print the test terms and the rule behind each as JSON "
+                         "(`{term: [reason, ...]}`, the view `test_terms`) instead of the plan")
     ap.add_argument("--print", dest="what", choices=("scenario", "ignored", "persona-sources",
                                                     "env-stations", "lane-local", "lane-env"),
                     help="print a constant and exit (`ignored`, `persona-sources`: "
@@ -2110,8 +4830,11 @@ def main(argv=None):
                 ap.error("--files-from %s: %s" % (args.files_from, exc.strerror))
 
     try:
-        if args.format == "json":
-            print(json.dumps(to_json(paths, args.mode, args.repo), indent=2))
+        if args.terms:
+            print(json.dumps(test_terms(paths, args.repo), indent=2, sort_keys=True))
+        elif args.format == "json":
+            print(json.dumps(to_json(paths, args.mode, args.repo, explain=args.explain),
+                             indent=2))
         else:
             text = to_tsv(paths, args.mode, args.repo)
             if text:

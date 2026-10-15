@@ -111,6 +111,11 @@
       "type": "text",
       "required": false,
       "describe": "Written by the screen: the stamp of the tap whose pass drew this."
+    },
+    "tapseq": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the screen for a test driver only: the seq of the last tap whose pass acted on this window. Absent unless a tap carried one; never read by the client."
     }
   },
   "components": [

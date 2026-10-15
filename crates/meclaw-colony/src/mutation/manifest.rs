@@ -26,7 +26,7 @@
 //! **The single form does not move.** Detection is one question — does the body
 //! carry a top-level `manifest` key — and a `None` answer means "this is the
 //! single form, do not touch it". Pinned by
-//! `tests/gh422_the_single_mutation_body_does_not_move.rs`.
+//! `tests/gh_2/gh422_the_single_mutation_body_does_not_move.rs`.
 
 use super::MutationOutcome;
 use meclaw_core::JsonValue;
@@ -176,7 +176,7 @@ pub enum ManifestOutcome {
 ///
 /// Why a new inbox variant rather than lifting `ColonyMsg::Mutation`'s ack: the
 /// single form must stay provably unmoved (R5, pinned by
-/// `tests/gh422_the_single_mutation_body_does_not_move.rs`), and ~140 call
+/// `tests/gh_2/gh422_the_single_mutation_body_does_not_move.rs`), and ~140 call
 /// sites take that variant with a `MutationOutcome` ack. Widening it would
 /// have touched every one of them to prove nothing. `ColonyMsg::Mutation` stays
 /// exactly what it was — "I know this is one mutation" — and

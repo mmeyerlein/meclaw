@@ -163,6 +163,12 @@ async fn demo_colony_boots_mutates_and_reaches_echo() {
         .await
         .unwrap();
     let json: serde_json::Value = resp.json().await.unwrap();
+    // K8 (tv-bn M7b17/M7b18): the default read serves API_READ_DEFAULT letters (pinned to
+    // `clamp_limit`) and has no cursor.
+    assert!(
+        json["dead_letters"].as_array().map_or(0, Vec::len) < meclaw_testing::API_READ_DEFAULT,
+        "a full DLQ read"
+    );
     let dlq_hit = json["dead_letters"]
         .as_array()
         .cloned()
@@ -206,6 +212,11 @@ async fn poll_for_trace_to_path(
             .unwrap_or_default()
             .into_iter()
             .any(|e| e["to_path"] == expected);
+        // K8 (tv-bn M7b17): a miss in a full read of 50 is a window, not an absence.
+        assert!(
+            hit || json["trace"].as_array().map_or(0, Vec::len) < 50,
+            "a full trace read"
+        );
         if hit || tokio::time::Instant::now() >= deadline {
             return hit;
         }

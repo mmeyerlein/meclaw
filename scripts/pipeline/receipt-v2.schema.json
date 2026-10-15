@@ -1,0 +1,399 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "meclaw.gate.receipt/2",
+  "title": "meclaw gate receipt v2",
+  "description": "A projection of a run's journal events (scripts/pipeline/receipt.py). Every v1 key is kept unchanged.",
+  "type": "object",
+  "required": [
+    "schema",
+    "mode",
+    "rev",
+    "base",
+    "dirty",
+    "lock_wait_secs",
+    "archive",
+    "plan",
+    "started",
+    "finished",
+    "stations",
+    "verdict",
+    "owner_decisions",
+    "repo",
+    "lane",
+    "run",
+    "rounds",
+    "secs",
+    "critical_path_s",
+    "lane_seconds",
+    "cache_hits",
+    "cache_known",
+    "fingerprint",
+    "minimum",
+    "plan_reason"
+  ],
+  "properties": {
+    "schema": {
+      "enum": [
+        "meclaw.gate.receipt/2"
+      ]
+    },
+    "mode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rev": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dirty": {
+      "type": "boolean"
+    },
+    "lock_wait_secs": {
+      "type": "number"
+    },
+    "archive": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "testing_ruling": {
+      "description": "The value of MECLAW_TESTING_RULES_RULING the pass ran under (one or more comma-separated owner-ruling ids, P1c 4, R-TV-W21 c); null without one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "narrowing": {
+      "description": "What the tests of a merge or integration were: tests=narrowed|full-suite|floor|none, stage, since (base sha), wave, map, why (re-check H2 M1).",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "plan": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "started": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "finished": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope",
+          "secs",
+          "verdict",
+          "log",
+          "build_s",
+          "run_s",
+          "round",
+          "cache_from",
+          "tests",
+          "parts"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "secs": {
+            "type": "number"
+          },
+          "verdict": {
+            "enum": [
+              "GREEN",
+              "RED",
+              "CACHED",
+              "FLAKY",
+              "SKIP",
+              "NOTE",
+              "ASK",
+              "ABORTED"
+            ]
+          },
+          "log": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "build_s": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run_s": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "round": {
+            "type": "integer"
+          },
+          "cache_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tests": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "total",
+              "passed",
+              "failed",
+              "flaky",
+              "skipped"
+            ]
+          },
+          "parts": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "in_total": {
+            "type": "boolean"
+          },
+          "legacy": {
+            "type": "boolean"
+          },
+          "cause": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "verdict": {
+      "enum": [
+        "RUNNING",
+        "GREEN",
+        "RED",
+        "ASK",
+        "ABORTED"
+      ]
+    },
+    "owner_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "station",
+          "decision",
+          "reason",
+          "at"
+        ]
+      }
+    },
+    "repo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lane": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "n",
+          "run",
+          "started",
+          "finished",
+          "stations",
+          "verdict"
+        ],
+        "properties": {
+          "n": {
+            "type": "integer"
+          },
+          "stations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "scope",
+                "secs",
+                "verdict",
+                "log",
+                "build_s",
+                "run_s",
+                "round",
+                "cache_from",
+                "tests",
+                "parts"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "secs": {
+                  "type": "number"
+                },
+                "verdict": {
+                  "enum": [
+                    "GREEN",
+                    "RED",
+                    "CACHED",
+                    "FLAKY",
+                    "SKIP",
+                    "NOTE",
+                    "ASK",
+                    "ABORTED"
+                  ]
+                },
+                "log": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "build_s": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "run_s": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "round": {
+                  "type": "integer"
+                },
+                "cache_from": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tests": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "total",
+                    "passed",
+                    "failed",
+                    "flaky",
+                    "skipped"
+                  ]
+                },
+                "parts": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "in_total": {
+                  "type": "boolean"
+                },
+                "legacy": {
+                  "type": "boolean"
+                },
+                "cause": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "secs": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "critical_path_s": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lane_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "cache_hits": {
+      "type": "integer"
+    },
+    "cache_known": {
+      "type": "integer"
+    },
+    "fingerprint": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "minimum": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "stage",
+        "seconds",
+        "x"
+      ]
+    },
+    "plan_reason": {
+      "type": "object"
+    }
+  }
+}

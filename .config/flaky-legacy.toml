@@ -1,0 +1,22 @@
+# The legacy flaky list (OR-TV-2, docs/development-rules.md § 7 and § 11).
+#
+# A test named here counts green when its flake triage says FLAKY; every other
+# FLAKY counts red. The list only shrinks: adding an entry is a loosening (check
+# `testing-rules`, owner ruling from `.config/testing-rulings.toml` naming this
+# file under `loosens`), removing one is free. It never covers a new or changed
+# test. The initial stock is written by strand tv-p1c (R-TV-W9).
+#
+# Schema, one table per test:
+#
+#   [[flaky]]
+#   test = "<crate>::<harness> <stem>::<test>"   # the nextest name, or the Python test id
+#   issue = <GH issue number>
+#   cause = "<cause class of the triage>"         # e.g. async-wait, cpu-starvation, order
+
+# Initial stock (strand tv-p1c4, 2026-10-12): every test the pipeline store recorded
+# FLAKY with a test name between 2026-09-12 and 2026-10-12 (journal `flake_isolated`
+# verdict FLAKY, cross-checked against the `flakes` table). Cause class = the reading of
+# the pre-triage isolation rerun; `time` where the issue names a time window.
+#
+# Emptied 2026-10-13 (tv-bn FN5): #1217, #1031 and #1213 on the measurement of NM4,
+# #1205 after the webkit phone line ran 10/10 green under an 80 % CPU quota.

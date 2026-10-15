@@ -1,0 +1,5 @@
+# Harness table of meclaw-cli: which integration-test file folds into which
+# test binary. Read by scripts/harness_fold.py (--plan/--apply/--unfold/--check).
+# No rule: every foldable stem goes to `misc`; scenario files stay flat.
+max_files = 60
+keep = []

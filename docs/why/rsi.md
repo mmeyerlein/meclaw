@@ -10,12 +10,12 @@ A mutation is a diff POSTed to `/colony/mutations`, carrying nine operations and
 reads is refused rather than ignored, a refusal names one of 28 stable `error_code` strings, and
 it is raised before anything is staged or spawned. A rejected mutation leaves nothing behind, and
 every submission lands in `colony.db::mutation_log`
-(`crates/meclaw-colony/tests/gh276_rejected_mutation_leaves_no_residue.rs`).
+(`crates/meclaw-colony/tests/gh_2/gh276_rejected_mutation_leaves_no_residue.rs`).
 
 An agent goes through that same door. The shipped `builder` drafts manifests and holds no edge
 onto `/colony/mutations`, `submit` is the one node in the tree that has one, and a mutation cannot
 draw the missing edge, because that address is absent from the endpoints a diff may name
-(`crates/meclaw-cells/tests/gh425_the_builder_cannot_reach_the_mutation_door.rs`). `submit` checks
+(`crates/meclaw-cells/tests/builder/gh425_the_builder_cannot_reach_the_mutation_door.rs`). `submit` checks
 that the manifest's bytes are the ones its digest was drawn over, reads the requester off the
 envelope and asks the capability broker. A manifest that wants to author executable behaviour, a
 script override or an `add_templates`, is a second question (`code.author`).

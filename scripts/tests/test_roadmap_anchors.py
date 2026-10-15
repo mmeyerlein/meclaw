@@ -10,6 +10,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from scripts.tests import store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "check_roadmap_anchors.py"
@@ -84,6 +85,14 @@ class RoadmapAnchorsTest(unittest.TestCase):
                              "- Another, by register. (register: some-id)\n\n  orphaned indent")
         strays = self.mod.stray_lines(self.roadmap(text))
         self.assertEqual([s.text for s in strays], ["orphaned indent"])
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

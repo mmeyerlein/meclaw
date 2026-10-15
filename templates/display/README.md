@@ -1,4 +1,4 @@
-# `display@2.10.7`
+# `display@2.10.11`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -258,16 +258,19 @@ sound before the first gesture stays silent.
 ## Behind a strict Content-Security-Policy
 
 The screen runs behind a proxy that sets `script-src 'self'` without `'unsafe-inline'`,
-`'unsafe-eval'` or `blob:`, provided the proxy lists the two hashes this template publishes.
+`'unsafe-eval'` or `blob:`, provided the proxy lists the hashes this template publishes.
 The page shell of the `web` cell carries no inline script since `web@2.2.0`: it boots from
 `@client/boot.js`, and the microphone's capture worklet is `@client/display-mic-worklet.js`,
-loaded by URL against the shell's `<base>`. What stays inline are the two hook scripts the
-screen writes into its own components, the scene hook and the microphone hook, because a
-hook has to be registered before the shell's socket reads `window.SurfaceHooks`. They are
-constants of this version, and `csp.json` beside this README carries their hashes together
+loaded by URL against the shell's `<base>`. What stays inline are the hook scripts drawn
+into the page, because a hook has to be registered before the shell's socket reads
+`window.SurfaceHooks`: the scene hook and the microphone hook the screen writes into its own
+components, and the client of each code view the screen shows by default
+(`params.code_views`, today `colony-view`), which that view's shell carries. They are
+constants of their versions, and `csp.json` beside this README carries their hashes together
 with the rest of the policy fragment the screen needs:
 
-- `script-src`: `'self'` and the two hashes.
+- `script-src`: `'self'` and the three hashes, in that order: scene hook, microphone hook,
+  colony-view client.
 - `style-src`: `'self'` and `'unsafe-inline'`. The shell's connection style, the sheet and
   a few `style` attributes the components write are inline, and a style hash would switch
   `'unsafe-inline'` off for the attributes too.
@@ -278,8 +281,9 @@ with the rest of the policy fragment the screen needs:
 
 The proxy adds what is its own business (`default-src`, `object-src 'none'`, `form-action`,
 `frame-ancestors`, a report endpoint). The cell sets no header of its own. The hashes change
-whenever a hook script changes, which is a new version of this template, so a proxy reads
-`csp.json` of the version it serves rather than copying the values once.
+whenever a hook script changes, which is a new version of this template or of the code view,
+so a proxy reads `csp.json` of the version it serves rather than copying the values once. An
+operator who adds a view to `code_views` adds that view's client hash to the policy too.
 
 ## The catalogue
 

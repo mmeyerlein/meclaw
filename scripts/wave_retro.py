@@ -44,8 +44,134 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from retro import metrics, render, transcripts  # noqa: E402
+from pipeline import retro as pipe_retro, store as pipe_store  # noqa: E402
 
 load_thresholds = metrics.load_thresholds
+
+#: The verdict words of the table (the vocabulary of `retro.metrics.rows`).
+_OK, _NA = "OK", "n/a"
+_BREACH = "VERSTOSS"  # noqa: the history's breach token, see render._breaches
+
+
+def history_head() -> list:
+    """The head of `plans/retro/RETRO.md`: render's head with Q14..Q17
+    (the pipeline store's columns, W11) right of Q13, before the breaches."""
+    head = list(render.HISTORY_HEAD)
+    spec = load_thresholds()
+    ids = [m["id"] for m in spec.get("store_metrics", [])]
+    cells = head[-2].split("|")
+    head[-2] = "|".join(cells[:-2] + [f" {i} " for i in ids] + cells[-2:])
+    head[-1] = "|" + "---|" * (len(cells) - 2 + len(ids))
+    return head
+
+
+def _pad(line: str, width: int) -> str:
+    """An older line gets `n/a` in the columns it predates, left of the breaches."""
+    cells = line.split("|")
+    while len(cells) < width:
+        cells.insert(len(cells) - 2, " n/a ")
+    return "|".join(cells)
+
+
+def update_history(path: Path, wave: str, rows, note: str = "") -> None:
+    """`render.update_history` with the store columns: replace this wave's
+    line or append it, pad older lines, keep the date order."""
+    head = history_head()
+    width = head[-2].count("|") + 1
+    line = render.history_line(wave, rows, note)
+    body = []
+    if path.is_file():
+        body = [l for l in path.read_text(encoding="utf-8").splitlines()
+                if l.startswith("|") and not l.startswith(head[-2][:8])
+                and not l.startswith("|---")]
+    body = [_pad(l, width) for l in body if not render._same_wave(l, wave)]
+    body.append(line)
+    body.sort(key=lambda l: l.split("|")[1].strip())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(head + body) + "\n", encoding="utf-8")
+
+
+def _store_value(metric: dict, value) -> str:
+    unit = metric["unit"]
+    if unit == "h/day":
+        return f"{metrics._de(value)} h"
+    if unit == "%":
+        return f"{value:.0f} %"
+    return metrics._de(value, 2)
+
+
+def _store_threshold(metric: dict) -> str:
+    sign = {"<=": "≤", "<": "<", ">=": "≥"}[metric["cmp"]]
+    limit = metric["threshold"]
+    text = f"{limit:g}".replace(".", ",")
+    return f"{sign} {text} {'h' if metric['unit'] == 'h/day' else metric['unit']}" \
+        if metric["unit"] in ("h/day", "%") else f"{sign} {text}"
+
+
+def _store_breached(metric: dict, value) -> bool:
+    limit = metric["threshold"]
+    return {"<=": value > limit, "<": value >= limit, ">=": value < limit}[metric["cmp"]]
+
+
+def store_rows(spec: dict, wave: str, store_path=None) -> list:
+    """Q14..Q17 from the pipeline store, read-only, over the wave's window
+    (`pipeline.retro.wave_window`). A missing store or an empty window is
+    `n/a` with its reason, never an error."""
+    metrics_ = spec.get("store_metrics", [])
+    path = Path(store_path) if store_path else pipe_store.default_path()
+    values, reason = {}, None
+    try:
+        db = pipe_store.open_ro(path)
+    except (FileNotFoundError, OSError):
+        reason = "no pipeline store"
+    else:
+        try:
+            since, until = pipe_retro.wave_window(wave, db)
+            values = pipe_retro.quarter(db, since, until)
+            flake_reason = pipe_retro.flake_share(db, since, until)[1]
+        except Exception as exc:  # noqa: BLE001 -- the retro never blocks a wave
+            reason = f"store unreadable: {type(exc).__name__}"
+        finally:
+            pipe_store.close(db)
+    out = []
+    for metric in metrics_:
+        value = values.get(metric["id"])
+        row = {"id": metric["id"], "title": metric["title_de"],
+               "threshold": _store_threshold(metric)}
+        if value is None:
+            why = reason or (flake_reason if metric["id"] == "Q15" and flake_reason
+                             else "no store data in the wave window")
+            row.update(value=_NA, verdict=_NA, advice=why)
+        else:
+            breached = _store_breached(metric, value)
+            row.update(value=_store_value(metric, value),
+                       verdict=_BREACH if breached else _OK,
+                       advice=metric["advice_de"] if breached else "—")
+        out.append(row)
+    return out
+
+
+STORE_README = [
+    "## Q14..Q17: the pipeline store",
+    "",
+    "* Q14..Q17 are not read from transcripts but from the pipeline journal "
+    "(`scripts/pipeline/retro.py`, read-only) over the wave's window: from "
+    "00:00 UTC of the date in the folder name until now. "
+    "`pipeline retro <wave>` prints the same numbers with the window before "
+    "the wave next to them.",
+    "* Q15 is `n/a` until flake isolation writes data; Q17 is 1.0 for the "
+    "backfilled passes, which ran their stations one after the other.",
+    "",
+]
+
+
+def readme(spec: dict) -> str:
+    """render.readme over Q1..Q17, with the store section before the footer."""
+    text = render.readme({**spec, "metrics": spec["metrics"]
+                          + spec.get("store_metrics", [])})
+    marker = "This file is generated"
+    at = text.rfind(marker)
+    return text[:at] + "\n".join(STORE_README) + "\n" + text[at:] if at >= 0 else text
 
 
 def metric_row(text: str, metric_id: str) -> dict:
@@ -105,6 +231,9 @@ def main(argv=None) -> int:
                              "still runs, with the strand count they saw")
     parser.add_argument("--check", action="store_true",
                         help="exit 1 while the wave has no retro.md")
+    parser.add_argument("--store", default=None,
+                        help="pipeline store for Q14..Q17 (default "
+                             "$MECLAW_PIPELINE_DB or the machine's store; read-only)")
     parser.add_argument("--readme", action="store_true",
                         help="regenerate plans/retro/README.md from the thresholds")
     args = parser.parse_args(argv)
@@ -115,7 +244,7 @@ def main(argv=None) -> int:
     if args.readme:
         target = root / "plans" / "retro" / "README.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(render.readme(spec), encoding="utf-8")
+        target.write_text(readme(spec), encoding="utf-8")
         print(f"geschrieben: {target}")
         return 0
 
@@ -147,7 +276,7 @@ def main(argv=None) -> int:
                               if a["first"] and str(a["first"])[:10] >= args.since]
         evidence["builders"] = [a for a in evidence["builders"]
                                 if a["first"] and str(a["first"])[:10] >= args.since]
-    rows = metrics.rows(evidence, spec)
+    rows = metrics.rows(evidence, spec) + store_rows(spec, args.wave, args.store)
 
     retro = wave_dir / "retro.md"
     note = render.provisional_note(evidence) if args.provisional else ""
@@ -156,9 +285,9 @@ def main(argv=None) -> int:
         encoding="utf-8")
     # The history sits beside the wave: plans/retro/ or docs/plans/retro/.
     history = wave_dir.parent / "retro" / "RETRO.md"
-    render.update_history(history, args.wave, rows, note)
+    update_history(history, args.wave, rows, note)
 
-    breaches = [r["id"] for r in rows if r["verdict"] == "VERSTOSS"]
+    breaches = [r["id"] for r in rows if r["verdict"] == _BREACH]
     print(f"geschrieben: {retro}")
     print(f"ergaenzt:    {history}")
     print("Verstoesse:  " + (" ".join(breaches) if breaches else "keine"))

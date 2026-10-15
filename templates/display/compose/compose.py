@@ -2385,23 +2385,24 @@ body::after {
     inset 0 0 0 1px rgba(74, 46, 39, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
     var(--shadow-2);
+}
 
+.display-notification[data-notice="urgent"] { position: relative; }
+
+.display-notification[data-notice="urgent"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 10px 0 0 var(--accent-soft);
+  opacity: 0;
   animation: display-notification-breathe 1000ms ease-in-out infinite;
 }
 
 @keyframes display-notification-breathe {
-  0%, 100% {
-    box-shadow: inset 4px 0 0 var(--accent-soft),
-      inset 0 0 0 1px rgba(74, 46, 39, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9),
-      var(--shadow-2);
-  }
-  50% {
-    box-shadow: inset 10px 0 0 var(--accent-soft),
-      inset 0 0 0 1px rgba(74, 46, 39, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9),
-      var(--shadow-2);
-  }
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
 }
 
 .display-notification[data-notice="urgent"] .display-notification-source { color: var(--accent); }
@@ -2495,21 +2496,22 @@ body::after {
   animation: display-pulse 1.6s var(--ease) infinite;
 }
 
+.display-status[data-kind="working"] { overflow: clip; }
+
 .display-status[data-kind="working"]::after {
   content: "";
   position: absolute;
-  inset-inline: 0;
+  inset-inline-start: 0;
   inset-block-end: 0;
+  inline-size: 40%;
   block-size: 2px;
   background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
-  background-size: 40% 100%;
-  background-repeat: no-repeat;
   animation: display-working 1.8s var(--ease) infinite;
 }
 
 @keyframes display-working {
-  0% { background-position: -40% 0; }
-  100% { background-position: 140% 0; }
+  0% { transform: translateX(-60%); }
+  100% { transform: translateX(210%); }
 }
 
 @keyframes display-pulse {
@@ -2831,19 +2833,41 @@ body::after {
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 4px var(--accent-soft), var(--rim-top), var(--shadow-2);
+}
 
+:where(.display-pane, .display-panel)[data-rung="urgent"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 7px var(--accent-soft), 0 0 0 5px rgba(232, 102, 79, 0.35);
+  opacity: 0;
   animation: display-urgent-breathe 1000ms ease-in-out infinite;
 }
 
 @keyframes display-urgent-breathe {
-  0%, 100% {
-    box-shadow: inset 0 0 0 2px var(--accent-soft), var(--rim-top), var(--shadow-2),
-      0 0 0 0 rgba(232, 102, 79, 0);
-  }
-  50% {
-    box-shadow: inset 0 0 0 7px var(--accent-soft), var(--rim-top), var(--shadow-2),
-      0 0 0 5px rgba(232, 102, 79, 0.35);
-  }
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+.display-tile[data-rung="urgent"]:not([data-pinned="1"])::after,
+.display-tile[data-rung="urgent"][data-pinned="1"]:not([data-unread="1"])::before {
+  content: "";
+  position: absolute;
+  inset: -25%;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 9px var(--accent-soft), inset 0 0 4px 9px rgba(232, 102, 79, 0.35);
+  opacity: 1;
+  animation: display-tile-breathe 1000ms ease-in-out infinite;
+}
+
+@keyframes display-tile-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.6667); }
 }
 
 [data-rung="focus"] :is(.display-pane-title, .display-panel-title) {
@@ -2854,6 +2878,10 @@ body::after {
 [data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
   font-size: var(--t-title-2);
   color: var(--accent);
+  animation: display-title-breathe 1000ms ease-in-out infinite;
+}
+
+.display-overlay[data-rung="urgent"] .display-overlay-title {
   animation: display-title-breathe 1000ms ease-in-out infinite;
 }
 
@@ -2952,14 +2980,62 @@ body::after {
 }
 
 .display-timer-fill {
-  animation:
-    display-timer-drain calc(var(--total, 0) * 1ms) linear
-      calc(var(--elapsed, 0) * -1ms) both,
-    display-timer-heat calc(var(--total, 0) * 1ms) linear
-      calc(var(--elapsed, 0) * -1ms) both;
+  position: relative;
+  isolation: isolate;
+  background-color: transparent;
+  animation: display-timer-drain calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
+}
+
+.display-timer-fill::before,
+.display-timer-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.display-timer-fill::before {
+  background-color: var(--accent-soft);
+  animation: display-timer-cool calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
+}
+
+.display-timer-fill::after {
+  background-color: var(--accent);
+  opacity: 0;
+  mix-blend-mode: plus-lighter;
+  animation: display-timer-heat calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
 }
 
 .display-timer-remaining {
+  position: relative;
+  isolation: isolate;
+  -webkit-text-fill-color: transparent;
+}
+
+.display-timer-remaining::before,
+.display-timer-remaining::after {
+  content: attr(data-digits);
+  content: attr(data-digits) / "";
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  -webkit-text-fill-color: currentColor;
+  pointer-events: none;
+}
+
+.display-timer-remaining::before {
+  color: var(--fg-primary);
+  animation: display-timer-calm calc(var(--total, 0) * 1ms) linear
+    calc(var(--elapsed, 0) * -1ms) both;
+}
+
+.display-timer-remaining::after {
+  color: var(--accent);
+  opacity: 0;
+  mix-blend-mode: plus-lighter;
   animation: display-timer-alarm calc(var(--total, 0) * 1ms) linear
     calc(var(--elapsed, 0) * -1ms) both;
 }
@@ -2969,14 +3045,24 @@ body::after {
   to { transform: scaleX(0); }
 }
 
+@keyframes display-timer-cool {
+  0%, 82% { opacity: 1; }
+  92%, 100% { opacity: 0; }
+}
+
 @keyframes display-timer-heat {
-  0%, 82% { background-color: var(--accent-soft); }
-  92%, 100% { background-color: var(--accent); }
+  0%, 82% { opacity: 0; }
+  92%, 100% { opacity: 1; }
+}
+
+@keyframes display-timer-calm {
+  0%, 88% { opacity: 1; }
+  96%, 100% { opacity: 0; }
 }
 
 @keyframes display-timer-alarm {
-  0%, 88% { color: var(--fg-primary); }
-  96%, 100% { color: var(--accent); }
+  0%, 88% { opacity: 0; }
+  96%, 100% { opacity: 1; }
 }
 
 .display-timer--done .display-timer-fill {
@@ -2985,7 +3071,10 @@ body::after {
   background-color: var(--accent);
 }
 
-.display-timer--done .display-timer-remaining { animation: none; color: var(--accent); }
+.display-timer--done :is(.display-timer-fill, .display-timer-remaining)::after { animation: none; }
+.display-timer--done .display-timer-fill::before { animation: none; opacity: 0; }
+.display-timer--done .display-timer-remaining::before { animation: none; color: var(--accent); }
+.display-timer--done .display-timer-remaining { color: var(--accent); }
 
 ::view-transition-group(*) {
   animation-duration: var(--t-focus);
@@ -3128,6 +3217,8 @@ body::after {
 }
 
 .display-os[data-phase="error"] .display-os-mark { color: var(--fg-tertiary); }
+
+.display-os[data-phase="offline"] .display-os-mark { color: var(--fg-tertiary); }
 
 .display-columns[data-inputs~="audio"] .display-os[data-phase="error"] .display-os-mark {
   opacity: var(--mark-dim);
@@ -3297,7 +3388,6 @@ html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-uns
   opacity: 1;
   background-color: var(--glass-tint-thick);
   box-shadow: inset 0 0 0 3px var(--accent), var(--rim-top), var(--shadow-contact);
-  animation: display-urgent-breathe 1000ms ease-in-out infinite;
 }
 
 .display-tile[data-open="1"] { opacity: var(--tile-open-opacity); }
@@ -3327,6 +3417,11 @@ html[data-dock-open="0"] .display-columns .display-os[data-unseen]:not([data-uns
 
 .display-tile[phx-click] { cursor: pointer; }
 .display-tile[phx-click]:active { transform: scale(0.96); }
+
+[data-offline="true"] [phx-click],
+[data-offline="true"] [phx-keyup],
+[data-offline="true"] .display-os-mark,
+[data-offline="true"] .display-browser-view { filter: grayscale(1); }
 
 .display-tile[data-topic="chat"] .display-tile-glyph {
   font-size: var(--t-title-1);
@@ -3615,6 +3710,10 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-timer-fill,
   .display-progress-fill { background: Highlight; }
 
+  .display-timer-remaining { -webkit-text-fill-color: currentColor; }
+  :is(.display-timer-fill, .display-timer-remaining)::before,
+  :is(.display-timer-fill, .display-timer-remaining)::after { display: none; }
+
   .display-os[data-unseen]:not([data-unseen="0"]):not([data-unseen=""])::after {
     --dot-fill: Highlight;
     forced-color-adjust: none;
@@ -3656,19 +3755,24 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-status[data-kind="working"]::after,
   .display-step[data-step-state="running"] .display-step-mark { animation: none !important; }
 
-  :where(.display-pane, .display-panel, .display-overlay)[data-rung="urgent"],
-  .display-tile[data-rung="urgent"] {
+  :where(.display-pane, .display-panel)[data-rung="urgent"]::after {
     animation: display-urgent-breathe 2000ms ease-in-out infinite !important;
   }
-  [data-rung="urgent"] :is(.display-pane-title, .display-panel-title) {
+  .display-tile[data-rung="urgent"]:not([data-pinned="1"])::after,
+  .display-tile[data-rung="urgent"][data-pinned="1"]:not([data-unread="1"])::before {
+    animation: display-tile-breathe 2000ms ease-in-out infinite !important;
+  }
+  [data-rung="urgent"] :is(.display-pane-title, .display-panel-title),
+  .display-overlay[data-rung="urgent"] .display-overlay-title {
     animation: display-title-breathe 2000ms ease-in-out infinite !important;
   }
-  .display-notification[data-notice="urgent"] {
+  .display-notification[data-notice="urgent"]::after {
     animation: display-notification-breathe 2000ms ease-in-out infinite !important;
   }
 
   .display-timer-fill,
-  .display-timer-remaining {
+  :is(.display-timer-fill, .display-timer-remaining)::before,
+  :is(.display-timer-fill, .display-timer-remaining)::after {
     animation-duration: calc(var(--total, 0) * 1ms) !important;
   }
 
@@ -3899,6 +4003,11 @@ CATALOG_JSON = r"""{
       "type": "text",
       "required": false,
       "describe": "Written by the screen: the stamp of the tap whose pass drew this."
+    },
+    "tapseq": {
+      "type": "text",
+      "required": false,
+      "describe": "Written by the screen for a test driver only: the seq of the last tap whose pass acted on this window. Absent unless a tap carried one; never read by the client."
     }
   },
   "components": [
@@ -5711,7 +5820,7 @@ PROSE_TEMPLATE = (
     ' data-owner="{{owner}}" data-rung="{{rung}}" data-age="{{age}}"'
     ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
     ' data-led="{{led}}" data-pinned="{{pinned}}" data-topic="{{topic}}"'
-    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}"'
+    ' data-since="{{since}}" data-acted="{{acted}}"{{#if tapseq}} data-tap-seq="{{tapseq}}"{{/if}} data-score="{{score}}"'
     ' style="--rank: {{canvas_rank}}"><div class="inner">'
     '{{#if title}}<h2 class="display-pane-title display-lead">{{title}}</h2>{{/if}}'
     '<div class="display-pane-body">'
@@ -5739,7 +5848,7 @@ CUSTOM_TEMPLATE = (
 PANE_TEMPLATE = (
     '<section class="display-pane glass{{#if thin}}--thin{{/if}}" id="{{pane_id}}"'
     ' data-rung="{{rung}}" data-age="{{age}}"'
-    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
+    ' data-since="{{since}}" data-acted="{{acted}}"{{#if tapseq}} data-tap-seq="{{tapseq}}"{{/if}} data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
     ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
     ' data-led="{{led}}" data-topic="{{topic}}"'
     ' data-region="{{region}}"'
@@ -5754,7 +5863,7 @@ PANE_TEMPLATE = (
 PANEL_TEMPLATE = (
     '<section class="display-panel glass{{#if scroll}} display-panel--scroll{{/if}}"'
     ' id="{{pane_id}}" data-rung="{{rung}}" data-age="{{age}}"'
-    ' data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
+    ' data-since="{{since}}" data-acted="{{acted}}"{{#if tapseq}} data-tap-seq="{{tapseq}}"{{/if}} data-score="{{score}}" data-tone="{{tone}}" data-pinned="{{pinned}}"'
     ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
     ' data-led="{{led}}" data-topic="{{topic}}" data-region="{{region}}"'
     ' style="view-transition-name: {{pane_id}}">'
@@ -5768,7 +5877,7 @@ PANEL_TEMPLATE = (
 # duration. The server never ticks: the browser owns elapsed time.
 OVERLAY_TEMPLATE = (
     '<aside class="display-overlay glass--thick" id="{{pane_id}}"'
-    ' data-rung="{{rung}}" data-age="{{age}}" data-since="{{since}}" data-acted="{{acted}}" data-score="{{score}}"'
+    ' data-rung="{{rung}}" data-age="{{age}}" data-since="{{since}}" data-acted="{{acted}}"{{#if tapseq}} data-tap-seq="{{tapseq}}"{{/if}} data-score="{{score}}"'
     ' data-level="{{level}}" data-layer="{{layer}}" data-front="{{front}}"'
     ' data-led="{{led}}" data-topic="{{topic}}" data-pinned="{{pinned}}"'
     ' data-region="{{region}}"'
@@ -5914,7 +6023,8 @@ TIMER_TEMPLATE = (
     '<div class="display-timer{{#if done}} display-timer--done{{/if}}"'
     ' data-end-at="{{end_at}}"'
     ' style="--end-at: {{end_at}}; --total: {{total_ms}}; --now: {{now}}">'
-    '<p class="display-timer-remaining display-lead" data-role="remaining">{{remaining}}</p>'
+    '<p class="display-timer-remaining display-lead" data-role="remaining"'
+    ' data-digits="{{remaining}}">{{remaining}}</p>'
     '{{#if label}}<p class="display-timer-label display-line">{{label}}</p>{{/if}}'
     '<div class="display-timer-bar"><span class="display-timer-fill"></span></div></div>'
 )
@@ -6463,12 +6573,17 @@ OS_CLIENT_JS = (
     "    var n = parseFloat(v);\n"
     "    return isNaN(n) ? fallback : (v.indexOf(\"ms\") > -1 ? n : n * 1000);\n"
     "  }\n"
+    "  // What the mark SAYS about its state, in one table and one language (K8 on\n"
+    "  // OR-T10-10): the word for a lost link stands beside the listening word, and\n"
+    "  // so does the word for a take the lost link ended (K8 on OR-T10-15): the person\n"
+    "  // has to know it did not go out and is to be said again.\n"
+    "  var WORDS = { listening: \"listening\\u2026\", offline: \"offline\", unsent: \"not sent \\u2014 say it again\", closed: \"closed\" };\n"
     "  var hook = {\n"
     "    mounted: function () {\n"
     "      var el = this.el, mount = el.dataset.mount || \"voice\";\n"
-    "      var st = { sent: 0, flushed: 0, drainMs: 0, played: 0, turns: 0, speakEnd: 0, hello: null, code: null,\n"
+    "      var st = { sent: 0, flushed: 0, drainMs: 0, drained: 0, played: 0, turns: 0, speakEnd: 0, hello: null, code: null,\n"
     "                 taps: 0, touches: 0, holdMs: 0, prebuffered: 0, setupMs: 0, refused: 0,\n"
-    "                 holdsRefused: 0, bound: false, audio: false, phase: \"\", said: \"\" };\n"
+    "                 holdsRefused: 0, holdsUnlinked: 0, holds: 0, takesLost: 0, ringed: 0, bound: false, audio: false, phase: \"\", said: \"\" };\n"
     "      root.__displayMic = st;\n"
     "      var state = el.querySelector('[data-role=\"state\"]'), btn = el.querySelector(\"button\");\n"
     "      var cols = document.querySelector(\".display-columns\");\n"
@@ -6533,16 +6648,31 @@ OS_CLIENT_JS = (
     "      // line a screen reader hears. Both are kept HERE as well, because\n"
     "      // the server renders an empty phase and an empty line and every\n"
     "      // patch would otherwise take them back (GH #720).\n"
-    "      function phase(p) { st.phase = p; el.setAttribute(\"data-phase\", p); }\n"
-    "      function say(t) { st.said = t; if (state) state.textContent = t; }\n"
-    "      // After a morph: put both back, and only what the morph actually\n"
+    "      // A lost take's word is SEEN, not only heard: the line is drawn only in\n"
+    "      // `error`, so that is the phase a lost take holds, by the same rule as `say`\n"
+    "      // -- until a press spends it (`down`, and the take that press begins). A\n"
+    "      // link that comes back and puts the phase to `\"\"` would end the take for a\n"
+    "      // seeing person like an idle mark (re-check tv-bn M10k M2).\n"
+    "      function phase(p) { if (lost) p = \"error\"; st.phase = p; el.setAttribute(\"data-phase\", p); }\n"
+    "      // `say` is the ONE way to the line, and a lost take's word is kept HERE: what\n"
+    "      // a join, a rejoin, the cell's `hello` or `error`, a refusal or a timeout\n"
+    "      // would say instead reaches the line as `not sent` until a press spends it\n"
+    "      // (`down`, and the take that press begins). A writer of its own -- a second\n"
+    "      // `textContent` -- would be one that forgets it (re-check tv-bn M10j M1).\n"
+    "      function say(t) { if (lost) t = WORDS.unsent; st.said = t; if (state) state.textContent = t; }\n"
+    "      // After a morph: put all three back, and only what the morph actually\n"
     "      // took. Writing the same words into an `aria-live` region again is\n"
     "      // an announcement a person hears twice. The line is re-queried\n"
     "      // rather than remembered: morphdom may have replaced the span.\n"
+    "      // The press is the third: the server renders `aria-pressed=\"false\"`,\n"
+    "      // so a pass while the person holds would undraw the running take\n"
+    "      // (re-check tv-bn M10n M1).\n"
     "      function repaint() {\n"
     "        if (el.getAttribute(\"data-phase\") !== st.phase) el.setAttribute(\"data-phase\", st.phase);\n"
     "        var s = el.querySelector('[data-role=\"state\"]');\n"
     "        if (s && s.textContent !== st.said) s.textContent = st.said;\n"
+    "        var b = el.querySelector(\"button\"), pr = holding ? \"true\" : \"false\";\n"
+    "        if (b && b.getAttribute(\"aria-pressed\") !== pr) b.setAttribute(\"aria-pressed\", pr);\n"
     "      }\n"
     "      // What ends a refusal: a NEW press, and a microphone that opened\n"
     "      // after all. Never a clock -- a dim that times out would be a\n"
@@ -6551,6 +6681,10 @@ OS_CLIENT_JS = (
     "      // socket's word and outlives the gesture, a refused DEVICE does\n"
     "      // not -- the person may have said yes in the meantime.\n"
     "      function clearMark() { phase(refused ? \"error\" : \"\"); say(refused ? refusal : idleText()); }\n"
+    "      // A screen without a link says so first: that is what is true about it\n"
+    "      // until LiveView reports the link back (K7, OR-T10-10, `link`).\n"
+    "      var offline = false;\n"
+    "      function offlineMark() { phase(\"offline\"); say(WORDS.offline); }\n"
     "      var socket = root.SurfaceSocket && root.SurfaceSocket.getSocket && root.SurfaceSocket.getSocket();\n"
     "      var call = \"\", topic = \"\", chan = null, joined = false, joinWait = null;\n"
     "      // A refused join is an answer about SPEECH and about nothing else.\n"
@@ -6575,7 +6709,18 @@ OS_CLIENT_JS = (
     "      // same way: the speech half is refused, the screen half is wired.\n"
     "      if (!socket) refuseFrom(\"no socket\");\n"
     "      var ctx = null, mctx = null, worklet = null, stream = null, playAt = 0;\n"
-    "      function frame(obj) { if (chan) chan.push(\"frame\", obj); }\n"
+    "      // K8 (a) on OR-T10-10: a frame goes out on a live link or not at all. Phoenix\n"
+    "      // keeps a push its channel cannot send (`pushBuffer`) and sends it on the\n"
+    "      // rejoin by itself, so the question is asked here, at the source, and ONE\n"
+    "      // function answers it for the hold, every frame and the audio (OR-T10-24):\n"
+    "      // `linked` is LiveView's word, `canPush` the socket's link AND this\n"
+    "      // channel's join -- true only once the join is answered, false again from\n"
+    "      // the channel's error until its rejoin is.\n"
+    "      function pushable() { return linked() && !!chan && chan.canPush(); }\n"
+    "      // A push refused while a take runs ends the take HERE, as a lost link does\n"
+    "      // (`lose`): nothing is dropped silently and nothing is sent later.\n"
+    "      function unsent() { if (holding || draining) { lose(); markLink(); } }\n"
+    "      function frame(obj) { if (pushable()) chan.push(\"frame\", obj); else unsent(); }\n"
     "      function onFrame(f) {\n"
     "        if (f.type === \"hello\") {\n"
     "          st.hello = f;\n"
@@ -6603,7 +6748,12 @@ OS_CLIENT_JS = (
     "      // A close is the end of a CALL, never of the button: a wall screen is\n"
     "      // looked at all day and the next press is a new call. Only a refused\n"
     "      // join is final -- that one is an answer about the screen itself.\n"
-    "      function onClose(c) { st.code = c.code; say(\"closed \" + c.code); phase(\"\"); joined = false; }\n"
+    "      // A take running into the close is over here as well, and says so.\n"
+    "      function onClose(c) {\n"
+    "        st.code = c.code; joined = false;\n"
+    "        if (holding || draining) lose();\n"
+    "        phase(\"\"); say(WORDS.closed + \" \" + c.code);\n"
+    "      }\n"
     "      // The state line when nothing is happening: what the cell said it is\n"
     "      // made of, and an empty line before it has said anything. Said for a\n"
     "      // screen reader; the mark itself shows its phase in light.\n"
@@ -6621,17 +6771,24 @@ OS_CLIENT_JS = (
     "        topic = \"voice:\" + call;\n"
     "        chan = socket.channel(topic, { mount: mount, mode: \"hold\", sample_rate: 16000 });\n"
     "        chan.on(\"frame\", onFrame); chan.on(\"audio\", onAudio); chan.on(\"close\", onClose);\n"
+    "        // OR-T10-24: the channel failing is the link failing for this mark, with\n"
+    "        // LiveView's word still up. Phoenix joins it again by itself; until that\n"
+    "        // join is answered `pushable` is false and the mark says the link is gone.\n"
+    "        var mine = chan;\n"
+    "        chan.onError(function () { if (chan === mine) chanDown(); });\n"
     "        say(\"joining\\u2026\");\n"
     "        joinWait = new Promise(function (done) {\n"
     "          chan.join()\n"
-    "            .receive(\"ok\", function () { joined = true; joinWait = null; say(idleText()); done(true); })\n"
+    "            .receive(\"ok\", function () { joined = true; joinWait = null; markLink(); done(true); })\n"
     "            .receive(\"error\", function (e) { refuseFrom((e && e.reason) || \"refused\"); joined = false; joinWait = null; done(false); })\n"
     "            .receive(\"timeout\", function () { say(\"the screen never answered\"); joined = false; joinWait = null; done(false); });\n"
     "        });\n"
     "        return joinWait;\n"
     "      }\n"
     "      if (audio && !refused) join();\n"
-    "      function sendAudio(ab) { if (!joined) return; socket.push({ topic: topic, event: \"audio\", payload: ab, ref: \"\", join_ref: chan.joinRef() }); st.sent++; }\n"
+    "      // The same for the audio, one layer lower: `socket.push` keeps a frame it\n"
+    "      // cannot send in the socket's `sendBuffer` and flushes it on the reconnect.\n"
+    "      function sendAudio(ab) { if (!pushable()) { unsent(); return; } socket.push({ topic: topic, event: \"audio\", payload: ab, ref: \"\", join_ref: chan.joinRef() }); st.sent++; }\n"
     "      async function openMic() {\n"
     "        // `localhost` read as a signpost and pointed at the wrong place; the\n"
     "        // address that WOULD work lives in a proxy this page knows nothing\n"
@@ -6685,7 +6842,9 @@ OS_CLIENT_JS = (
     "          // From the touch until the hold: KEPT, not sent. The ring is 2 s\n"
     "          // long, and the oldest frame falls out rather than the ring\n"
     "          // growing into a leak on a screen that is touched all day.\n"
-    "          else if (armed) { pre.push(e.data); if (pre.length > PRE_MAX) pre.shift(); }\n"
+    "          // `ringed`: what the ring holds right now, for a reader that waits on\n"
+    "          // the ring instead of on a span of time (VORGABEN TV-B1).\n"
+    "          else if (armed) { pre.push(e.data); if (pre.length > PRE_MAX) pre.shift(); st.ringed = pre.length; }\n"
     "          // And outside a hold, nothing: a frame that left the device\n"
     "          // without one would be the button breaking its own promise.\n"
     "        };\n"
@@ -6740,8 +6899,8 @@ OS_CLIENT_JS = (
     "      // second of every take.\n"
     "      var PRE_MAX = 100;\n"
     "      var pre = [], armed = false, armedAt = 0, micWait = null;\n"
-    "      function arm() { armed = true; armedAt = Date.now(); pre.length = 0; }\n"
-    "      function disarm() { armed = false; armedAt = 0; pre.length = 0; }\n"
+    "      function arm() { armed = true; armedAt = Date.now(); pre.length = 0; st.ringed = 0; }\n"
+    "      function disarm() { armed = false; armedAt = 0; pre.length = 0; st.ringed = 0; }\n"
     "      // One microphone at a time: a touch and the press that follows it are\n"
     "      // two callers, and two `getUserMedia` in flight would build two graphs\n"
     "      // of which one is never heard from again.\n"
@@ -6761,6 +6920,9 @@ OS_CLIENT_JS = (
     "        // permission prompt, no graph. The press below still lives.\n"
     "        if (!audio) return;\n"
     "        if (refused) return;\n"
+    "        // No link, no microphone: the press is answered at the threshold (re-check\n"
+    "        // tv-bn M10e H2).\n"
+    "        if (!linked()) return;\n"
     "        arm(); if (!worklet) mic();\n"
     "      }\n"
     "      var holding = false, pressed = false, draining = false, drainTimer = null;\n"
@@ -6782,16 +6944,25 @@ OS_CLIENT_JS = (
     "        var base = Math.ceil(1000 * Math.max((mctx && mctx.baseLatency) || 0, micLat || 0));\n"
     "        return Math.max(FLUSH_MIN, Math.min(FLUSH_MAX, base + 20 + gapMax));\n"
     "      }\n"
+    "      // The release is the take's last push and still part of it: refused, it\n"
+    "      // ends the take as `not sent` (`unsent`) -- which is why the drain is over\n"
+    "      // only AFTER it, not before (re-check tv-bn M10h M1).\n"
     "      function endDrain() {\n"
     "        if (!draining) return;\n"
-    "        draining = false;\n"
+    "        st.drained++;\n"
     "        if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }\n"
     "        frame({ type: \"release\" });\n"
+    "        draining = false;\n"
     "      }\n"
     "      async function down(e) {\n"
     "        // Pressed again inside the window: the release of the PREVIOUS take\n"
     "        // has to reach the cell before this hold does, or the cell sees a\n"
     "        // `hold` while one is open and refuses it (`already_holding`).\n"
+    "        // A new press: the `not sent` of an EARLIER take is spent. It is put\n"
+    "        // back BEFORE the drain ends, because a release the cell turns away there loses\n"
+    "        // the previous take NOW, and that `not sent` belongs to this press\n"
+    "        // (re-check tv-bn M10i M1).\n"
+    "        lost = false;\n"
     "        if (draining) endDrain();\n"
     "        if (holding) return;\n"
     "        pressed = true; pressAt = stamp(e); ready = false;\n"
@@ -6807,7 +6978,9 @@ OS_CLIENT_JS = (
     "        // AFTER the two lines above on purpose -- everything a tap\n"
     "        // needs is set before anything about the channel is read (GH\n"
     "        // #704).\n"
-    "        clearMark();\n"
+    "        // What it puts back is what `link` and `chanDown` say: LiveView's word\n"
+    "        // AND the channel's (re-check tv-bn M10h M4).\n"
+    "        markLink();\n"
     "        // The gesture stays on the button whatever moves under the pointer --\n"
     "        // the button itself, when the state line below it grows on a fresh\n"
     "        // screen, or a finger that drifts while holding (GH #684). It is\n"
@@ -6820,6 +6993,16 @@ OS_CLIENT_JS = (
     "        if (!audio) {\n"
     "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
     "          st.holdsRefused++;\n"
+    "          return;\n"
+    "        }\n"
+    "        // No link: the same threshold clock, and at its end the mark says the\n"
+    "        // link is gone -- no join, no microphone, no `hold` (K7, OR-T10-10). A\n"
+    "        // short press is still the dock, which is the screen's own.\n"
+    "        if (!linked()) {\n"
+    "          var noLink = HOLD_MS - (performance.now() - pressAt);\n"
+    "          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
+    "          if (noLink > 0) { atThreshold(unlinkedHold, noLink); return; }\n"
+    "          unlinkedHold();\n"
     "          return;\n"
     "        }\n"
     "        // Nothing to speak into: no ring, no microphone, no second join.\n"
@@ -6900,15 +7083,64 @@ OS_CLIENT_JS = (
     "      function refuseMic() {\n"
     "        holdTimer = null;\n"
     "        if (!pressed || holding) return;\n"
+    "        if (!linked()) { unlinkedHold(); return; }\n"
     "        phase(\"error\"); st.holdsRefused++;\n"
     "        if (hookSelf.pushEvent) { hookSelf.pushEvent(\"hold\", {}); st.touches++; }\n"
+    "      }\n"
+    "      // K7 for the hold (OR-T10-10): without a link the hold reaches nobody --\n"
+    "      // LiveView would drop the push and the voice cell would start a take the\n"
+    "      // curator never hears of (§ 5.4) -- so it is not sent, not now and not\n"
+    "      // later, and the mark says the link is gone instead of `listening`.\n"
+    "      function linked() {\n"
+    "        var live = hookSelf.liveSocket;\n"
+    "        return !offline && !(live && live.isConnected && !live.isConnected());\n"
+    "      }\n"
+    "      function unlinkedHold() {\n"
+    "        holdTimer = null;\n"
+    "        if (!pressed || holding) return;\n"
+    "        // The take the press itself lost keeps its word at the threshold too (`say`).\n"
+    "        offlineMark(); st.holdsUnlinked++;\n"
+    "      }\n"
+    "      // LiveView's word on the link, from the hook's `disconnected` and\n"
+    "      // `reconnected`. A take running when it drops ends here (`lose`).\n"
+    "      function link(up) {\n"
+    "        offline = !up;\n"
+    "        if (offline && (holding || draining)) lose();\n"
+    "        markLink();\n"
+    "      }\n"
+    "      // The channel's error (OR-T10-24): the same end for a running take.\n"
+    "      function chanDown() {\n"
+    "        if (holding || draining) lose();\n"
+    "        markLink();\n"
+    "      }\n"
+    "      // What the mark says about the link: gone while LiveView's word is down OR\n"
+    "      // a joined channel cannot push; and a lost take stays `not sent` until the\n"
+    "      // next press (`say`).\n"
+    "      function markLink() {\n"
+    "        if (holding) return;\n"
+    "        if (!linked() || (chan && joined && !refused && !chan.canPush())) offlineMark(); else clearMark();\n"
+    "      }\n"
+    "      // OR-T10-15 (K8): a take running when the link drops ends HERE. Its release,\n"
+    "      // a cancel and what the ring still hears would wait for the rejoin and go out\n"
+    "      // unasked, so the take is over on the screen: no drain, no release, the ring\n"
+    "      // emptied -- and the mark says it was NOT sent, so the person knows to say it\n"
+    "      // again, until the next press. The cell closes its half with the channel\n"
+    "      // (`a_hold_whose_channel_ends_is_closed_by_the_cell`).\n"
+    "      var lost = false;\n"
+    "      function lose() {\n"
+    "        holding = false; draining = false; lost = true; st.takesLost++;\n"
+    "        if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }\n"
+    "        btn.setAttribute(\"aria-pressed\", \"false\"); disarm();\n"
     "      }\n"
     "      // The take itself. It runs from `down` or from the threshold timer,\n"
     "      // and it refuses both a finger that is already up and a second entry.\n"
     "      function begin() {\n"
     "        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }\n"
     "        if (!pressed || holding || !ready) return;\n"
-    "        holding = true; btn.setAttribute(\"aria-pressed\", \"true\"); say(\"listening\\u2026\"); phase(\"listening\"); frame({ type: \"hold\" });\n"
+    "        if (!pushable()) { unlinkedHold(); return; }\n"
+    "        // The press's own take runs: the word of the one it lost is spent.\n"
+    "        lost = false;\n"
+    "        holding = true; btn.setAttribute(\"aria-pressed\", \"true\"); say(WORDS.listening); phase(\"listening\"); frame({ type: \"hold\" });\n"
     "        // And the other half of a hold (§ 5.4): holding the mark is where a\n"
     "        // dialogue starts, so the curator gets the hold at the same moment\n"
     "        // the voice cell gets the frame. The event carries NO field\n"
@@ -6961,8 +7193,15 @@ OS_CLIENT_JS = (
     "          // a press -- a longer one spoke. Without audio there is no\n"
     "          // hold to tell it from, so every press means the dock.\n"
     "          if (was && byPointer && (!audio || held < HOLD_MS)) tapDock();\n"
+    "          // The other verdict, said as positively as the tap (N-R4): a finger\n"
+    "          // that lifted past the threshold HELD the mark, whatever the threshold\n"
+    "          // found there -- a refused channel, a refused device, no link. Counted\n"
+    "          // at the lift like `taps`, so a press ends in exactly one of the two.\n"
+    "          else if (was && byPointer) st.holds++;\n"
     "          return;\n"
     "        }\n"
+    "        // A take ends at its lift: that press was a hold too.\n"
+    "        if (was && byPointer) st.holds++;\n"
     "        holding = false; btn.setAttribute(\"aria-pressed\", \"false\"); say(idleText()); phase(\"sending\");\n"
     "        // The ring belongs to the take that just ended. `begin()` disarmed\n"
     "        // on the way in, but a second finger on the mark re-arms it, and\n"
@@ -7022,6 +7261,7 @@ OS_CLIENT_JS = (
     "      root.addEventListener(\"keyup\", keyup);\n"
     "      st.down = down; st.up = up; st.cancel = function () { frame({ type: \"cancel\" }); };\n"
     "      st.holdThreshold = HOLD_MS; st.tapDock = tapDock; st.warm = warm;\n"
+    "      this.__mic.link = link;\n"
     "      // What a re-mount has to undo. LiveView re-mounts a hook after a reconnect,\n"
     "      // and without this the listeners, the microphone and the contexts of every\n"
     "      // previous life stay open.\n"
@@ -7055,6 +7295,13 @@ OS_CLIENT_JS = (
     "    // said (GH #720).\n"
     "    updated: function () {\n"
     "      if (this.__mic) this.__mic.repaint();\n"
+    "    },\n"
+    "    // LiveView's word on the link (K7, OR-T10-10): the mark's `link`.\n"
+    "    disconnected: function () {\n"
+    "      if (this.__mic && this.__mic.link) this.__mic.link(false);\n"
+    "    },\n"
+    "    reconnected: function () {\n"
+    "      if (this.__mic && this.__mic.link) this.__mic.link(true);\n"
     "    },\n"
     "    destroyed: function () {\n"
     "      if (this.__displayMicTeardown) { this.__displayMicTeardown(); this.__displayMicTeardown = null; }\n"
@@ -7371,7 +7618,11 @@ SCENE_CLIENT_JS = (
     "      // Only where the template marked a slot. Writing into the\n"
     "      // element itself would empty a tile of its glyph and its line.\n"
     "      var slot = nodes[i].querySelector('[data-role=\"remaining\"]');\n"
-    "      if (slot) slot.textContent = mmss(end - now);\n"
+    "      // The digits' warm layer repeats them (GH #1209).\n"
+    "      if (slot) {\n"
+    "        slot.textContent = mmss(end - now);\n"
+    "        slot.setAttribute(\"data-digits\", slot.textContent);\n"
+    "      }\n"
     "    }\n"
     "    st.ticks++;\n"
     "  }\n"
@@ -7615,8 +7866,14 @@ SCENE_CLIENT_JS = (
     "  function pageMods(e) {\n"
     "    return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);\n"
     "  }\n"
+    "  // K8 (a) on OR-T10-10 for a streamed page: an input goes out on a live link or\n"
+    "  // not at all. Phoenix keeps a push its channel cannot send (`pushBuffer`) and\n"
+    "  // sends it on the rejoin by itself -- every pointer, wheel, touch, key and line\n"
+    "  // of text from the time without a link, unasked. `canPush` is the socket's link\n"
+    "  // AND this channel's join; `offline` is LiveView's word on the same socket.\n"
     "  function pageSend(link, obj) {\n"
-    "    if (link.chan) link.chan.push(\"frame\", obj);\n"
+    "    if (!link.chan || link.st.offline || !link.chan.canPush()) return;\n"
+    "    link.chan.push(\"frame\", obj);\n"
     "  }\n"
     "  // Event coordinates into PAGE pixels: x and y scaled on their own, because a\n"
     "  // frame and its box need not have the same proportions for a single patch.\n"
@@ -7770,6 +8027,10 @@ SCENE_CLIENT_JS = (
     "    });\n"
     "    link.chan = chan;\n"
     "    chan.on(\"image\", function (buf) { pageDraw(link, buf); });\n"
+    "    // OR-T10-24: the channel failing is no link for this page, whatever\n"
+    "    // LiveView says -- the page shows it (`down`, no colour) while `canPush`\n"
+    "    // drops what it is given, until Phoenix's own rejoin is answered (`up`).\n"
+    "    chan.onError(function () { if (!link.gone && link.chan === chan) pageLink(link, \"down\", \"\"); });\n"
     "    chan.onClose(function () {\n"
     "      // Only the channel that is CURRENT may ask for a successor: a close\n"
     "      // arriving late from one already replaced would open a second stream on\n"
@@ -7895,11 +8156,53 @@ SCENE_CLIENT_JS = (
     "    for (key in st.pages) keys.push(key);\n"
     "    for (i = 0; i < keys.length; i++) pageLeave(st, keys[i]);\n"
     "  }\n"
+    "  // The one way a tile tap leaves this screen (display-hive.md § 2: \"a tap ...\n"
+    "  // reaches the curator as the event tap\"; § 5.8: ten taps on one tile are ten\n"
+    "  // steps). LiveView's own click path is no such way: the vendored 1.2.9 drops a\n"
+    "  // `phx-click` on an element whose last push is unanswered (\"noop if we are in\n"
+    "  // the middle of awaiting an ack for this el already\"), and under `--load 12`\n"
+    "  // (build03) the colony heard five of B-07's ten taps (welle-testing tv-bn M10).\n"
+    "  // `execJS` with a `push` is LiveView's public door to the same road -- the same\n"
+    "  // payload (`type: click`, the tile's `phx-value-*`), the same ref on the tile --\n"
+    "  // without that guard, and one channel keeps the order of the pushes, so every\n"
+    "  // tap goes out in the moment it becomes one. `false` when it could not go out.\n"
+    "  // Whether this screen has a link now: LiveView has not reported it gone\n"
+    "  // (`disconnected`, `link`) and its socket says it is connected. Every input\n"
+    "  // asks this one question before anything leaves (K7, OR-T10-10).\n"
+    "  function linked(hook, st) {\n"
+    "    var live = hook.liveSocket;\n"
+    "    return !!live && !st.offline && live.isConnected();\n"
+    "  }\n"
+    "  function deliver(hook, st, tile) {\n"
+    "    var live = hook.liveSocket, cmd = tile.getAttribute(\"phx-click\");\n"
+    "    if (!cmd || !linked(hook, st)) return false;\n"
+    "    live.execJS(tile, cmd.charAt(0) === \"[\" ? cmd : JSON.stringify([[\"push\", { event: cmd }]]), \"click\");\n"
+    "    st.sent++;\n"
+    "    return true;\n"
+    "  }\n"
+    "  // What the screen says about its link, in one place: `data-offline` on the\n"
+    "  // scene while LiveView reports it gone (the hook's `disconnected`), and the\n"
+    "  // sheet takes the colour out of every tile that takes a finger.\n"
+    "  function link(el, st, up) {\n"
+    "    st.offline = !up;\n"
+    "    if (up) el.removeAttribute(\"data-offline\"); else el.setAttribute(\"data-offline\", \"true\");\n"
+    "  }\n"
+    "  // K7 12.10., derived from display-hive.md § 3.2 (\"no state in the browser\n"
+    "  // carries meaning\"), and for EVERY input since OR-T10-10 (the tile, the app's\n"
+    "  // buttons and chips, the input line; the mark asks the same in its own\n"
+    "  // script): a tap while the link is down is not sent later and not\n"
+    "  // drawn -- a tap that lands seconds later at the reconnect is an intent the\n"
+    "  // person no longer has -- and the screen says it has no link. This function is\n"
+    "  // that answer and the only place it lives; another answer is a change here.\n"
+    "  function unlinked(el, st) {\n"
+    "    st.unlinked++;\n"
+    "    link(el, st, false);\n"
+    "  }\n"
     "  var hook = {\n"
     "    mounted: function () {\n"
-    "      var el = this.el;\n"
+    "      var el = this.el, self = this;\n"
     "      var st = { flips: 0, ticks: 0, chimes: 0, ends: 0, clocks: 0, optimistic: 0,\n"
-    "                 restored: 0, drawn: {}, audio: null, said: false,\n"
+    "                 restored: 0, drawn: {}, audio: null, said: false, sent: 0, unlinked: 0, offline: false,\n"
     "                 pages: {}, pageFrames: {}, pageLinks: 0, pageLeft: 0 };\n"
     "      root.__displayScene = st;\n"
     "      // The beat of the ring, and nothing more: which window is up there\n"
@@ -7909,18 +8212,32 @@ SCENE_CLIENT_JS = (
     "      // \"seen\" memory § 4.33 does without.\n"
     "      var seen = { id: \"\", since: 0, last: 0 };\n"
     "      var disarm = arm(st);\n"
-    "      // The optimistic half of a tile tap (§ 5.7). Capture phase, so it is\n"
-    "      // ahead of LiveView's own click path and the ring is on the tile in\n"
-    "      // the same frame the finger lands. The ring is the press; the window\n"
-    "      // beside it is the EFFECT, drawn here and confirmed by the pass.\n"
+    "      // A tile tap (§ 5.7), on `click` and in the capture phase. `click` is the\n"
+    "      // one moment a press is a tap: a press the browser cancels (a swipe in the\n"
+    "      // dock, `pointercancel`) never becomes one and was drawn on `pointerdown`\n"
+    "      // for a tap nobody sent (re-check M10 M1.1c); the finger-down itself is\n"
+    "      // the sheet's `:active`. Capture, so the hook is ahead of LiveView's click\n"
+    "      // path and keeps the tap from it: the hook sends it (`deliver`), and only a\n"
+    "      // tap that went out is drawn -- the ring is the press, the window beside it\n"
+    "      // the EFFECT, drawn here and confirmed by the pass (welle-testing tv-bn M10b).\n"
     "      var press = function (e) {\n"
     "        var t = e.target && e.target.closest && e.target.closest(\".display-tile[phx-click]\");\n"
-    "        if (!t) return;\n"
+    "        if (!t) {\n"
+    "          // Any other `phx-click` -- an app's button, an option chip -- is\n"
+    "          // LiveView's to send, ack lock and all; without a link it is\n"
+    "          // nobody's: kept from LiveView here, nothing goes out later, and\n"
+    "          // the screen says it has no link (K7, OR-T10-10).\n"
+    "          var b = e.target && e.target.closest && e.target.closest(\"[phx-click]\");\n"
+    "          if (b && !linked(self, st)) { e.stopPropagation(); e.preventDefault(); unlinked(el, st); }\n"
+    "          return;\n"
+    "        }\n"
+    "        e.stopPropagation();\n"
+    "        if (!deliver(self, st, t)) { unlinked(el, st); return; }\n"
     "        t.setAttribute(\"data-zoomed\", \"true\");\n"
     "        root.setTimeout(function () { t.removeAttribute(\"data-zoomed\"); }, dur(el, \"--t-enter\", 360));\n"
     "        optimistic(el, t, st);\n"
     "      };\n"
-    "      el.addEventListener(\"pointerdown\", press, true);\n"
+    "      el.addEventListener(\"click\", press, true);\n"
     "      // Enter in a `display-input` sends the line; emptying it afterwards is\n"
     "      // the screen's job, because the server never holds the field's value\n"
     "      // as state. It happens in a MACROTASK of its own, and that shape is\n"
@@ -7935,6 +8252,12 @@ SCENE_CLIENT_JS = (
     "        if (e.key !== \"Enter\") return;\n"
     "        var f = e.target;\n"
     "        if (!f || !f.classList || !f.classList.contains(\"display-input-field\")) return;\n"
+    "        // Without a link the line is not sent and not emptied: LiveView would\n"
+    "        // drop the push and the sentence would be gone. The key stops here,\n"
+    "        // ahead of LiveView on `window`, so nothing is held for later either --\n"
+    "        // once the link is back, the person's own Enter sends what stands in\n"
+    "        // the field (K7, OR-T10-10; K8: never sent by itself).\n"
+    "        if (!linked(self, st)) { e.stopPropagation(); unlinked(el, st); return; }\n"
     "        root.setTimeout(function () { f.value = \"\"; }, 0);\n"
     "      };\n"
     "      document.addEventListener(\"keyup\", typed);\n"
@@ -7956,6 +8279,12 @@ SCENE_CLIENT_JS = (
     "    },\n"
     "    updated: function () {\n"
     "      if (!this.__scene) return;\n"
+    "      // `patches`: the patches this page took, and nothing else -- `ticks` also\n"
+    "      // counts the 1-s interval. Test observability like `ringed`, never read here.\n"
+    "      this.__scene.st.patches = (this.__scene.st.patches || 0) + 1;\n"
+    "      // A patch writes the scene's attributes as the server renders them; the\n"
+    "      // link is the client's to say, so its mark goes back on (K7, `link`).\n"
+    "      if (this.__scene.st.offline) this.el.setAttribute(\"data-offline\", \"true\");\n"
     "      // Before the movement, always: `flip` compares the snapshot with what stands\n"
     "      // NOW, so a drawing put back after it would be a movement nobody asked for.\n"
     "      redraw(this.el, this.__scene.st);\n"
@@ -7968,13 +8297,21 @@ SCENE_CLIENT_JS = (
     "      // and the level it stands on is what the patch has just written.\n"
     "      pageSweep(this.el, this.__scene.st);\n"
     "    },\n"
+    "    // LiveView's word on the link (K7, `link`): `disconnected` when the channel\n"
+    "    // is gone, `reconnected` once it has joined again.\n"
+    "    disconnected: function () {\n"
+    "      if (this.__scene) link(this.el, this.__scene.st, false);\n"
+    "    },\n"
+    "    reconnected: function () {\n"
+    "      if (this.__scene) link(this.el, this.__scene.st, true);\n"
+    "    },\n"
     "    destroyed: function () {\n"
     "      if (!this.__scene) return;\n"
     "      root.clearInterval(this.__scene.iv);\n"
     "      // Both handles out of the bag first: what is given back has to read\n"
     "      // as the same two names it was registered with.\n"
     "      var press = this.__scene.press, typed = this.__scene.typed;\n"
-    "      this.el.removeEventListener(\"pointerdown\", press, true);\n"
+    "      this.el.removeEventListener(\"click\", press, true);\n"
     "      document.removeEventListener(\"keyup\", typed);\n"
     "      this.__scene.disarm();\n"
     "      // Every topic this hook still holds, through the one door.\n"
@@ -9264,7 +9601,53 @@ def pass_tap(event):
         # defect with it.
         sys.stderr.write("%s: the value carries no object id\n" % TAP_EVENT)
         return []
-    return pass_or_queue({"kind": "tap", "for": wrapper_of(oid)}, now_ms(), [])
+    return pass_or_queue(tap_event(value, oid), now_ms(), [])
+
+
+def tap_event(value, oid):
+    """The pass event of a tap, with the tap's `seq` where the value carries one.
+
+    `seq` is test observability, not a word of the catalogue (the tile writes only
+    `phx-value-for`): a browser driver sets `phx-value-seq` on the tile it taps, and the
+    pass that answered THAT tap renders it back on the window as `data-tap-seq`
+    (`stamp_tap_seq`). `data-acted` alone could not say whose pass it was -- it moves on
+    every touch of the window (an app write, a co-close, step 5), so a driver waiting
+    for "a bigger stamp" returned on the pass of an earlier tap (re-check tv-bn-layout
+    A-M1: B-07 green before its tenth tap was answered, the co-close judged the modal
+    without its stamp). Never read by the client; a value that is no positive integer
+    is dropped, and the tap stays the tap it always was.
+    """
+    event = {"kind": "tap", "for": wrapper_of(oid)}
+    raw = value.get("seq") if isinstance(value, dict) else None
+    try:
+        seq = int(str(raw)) if raw is not None else 0
+    except ValueError:
+        seq = 0
+    if seq > 0:
+        event["seq"] = seq
+    return event
+
+
+def stamp_tap_seq(state, event):
+    """After a pass that ran a tap with a `seq`: the windows that tap acted on carry it.
+
+    The tapped window (unless the pass refused the tap: no tile) and every modal its
+    tap co-closed (§ 5.3). Kept on the curator in memory only -- the rest row names its
+    fields one by one (`rest_content`), so it never reaches the store -- and only ever
+    raised, so a later pass can not take a driver's answer back before it read it.
+    """
+    seq = event.get("seq") if event.get("kind") == "tap" else None
+    if not seq:
+        return
+    views = state["views"]
+    oid = event.get("for")
+    refused = any(r[0] == oid and r[1] == "tap" for r in state["pass"].get("refused", []))
+    hit = ([] if refused else [oid]) + list(state["pass"].get("co_closed", []))
+    for o in hit:
+        view = views.get(o)
+        if view is not None:
+            c = view["curator"]
+            c["tap_seq"] = max(int(c.get("tap_seq") or 0), seq)
 
 
 def pass_hold(event):
@@ -9653,6 +10036,10 @@ def add_tree(want, parent, node, index, tiles=None, window="", attrs=None, regio
     # arrived from one that is on its way out, and an application's word for
     # it would fly a window in twice.
     props.pop("age", None)
+    # `tapseq` is the screen's answer to a test driver's tap (`stamp_tap_seq`), test
+    # observability like the client's `ringed` and no word of the contract: an
+    # application's value for it would render as an answer to a tap nobody made.
+    props.pop("tapseq", None)
     # The ladder is resolved at the door, once, on every window (R-23-2,
     # OR-F19): the sheet reads `data-layer` and a half-empty attribute is a
     # rule that never fires.
@@ -9787,7 +10174,8 @@ def as_unit(value, default):
 # a kill, a timeout, a replaced node. That rebuild is the boot below, and it costs ONE
 # select and ONE read.
 
-RAM_V = 1
+# 2: a queued event carries the row its write said, `(at, event, row)` (GH #1169).
+RAM_V = 2
 # How long a repair read may stay unanswered before the next event asks again. Its answer
 # comes back in milliseconds (a 540 kB tree read in 8 ms, wave Display integration pass);
 # one that has not come after five seconds died on the way -- its chain ran out of ttl or
@@ -9802,7 +10190,8 @@ def ram():
     nothing on module level re-assigns it. Killed child = fresh dict = phase "cold".
 
     `phase`: cold | booting-rows | booting-tree | live | repair. `pending`: the events that
-    arrived before the boot finished, `(at, event)` in order. `state`: the curator's state.
+    arrived before the boot finished, `(at, event, row)` in order -- `row` is the row an
+    app write said, so the boot draws each queued pass from the row of ITS write (GH #1169). `state`: the curator's state.
     `rows`: `{oid: row}`, exactly the store rows of the applications. `have`: the tree this
     cell last sent (`read_objects` form), None while unknown. `rest`: the rest row's content
     as last written. `said`: what the pass before said out loud. `dials`: the knobs the state
@@ -9856,13 +10245,13 @@ def pass_or_queue(event, now, ops, define=None):
         # killed cell woken by the same write, 58/112 with a new `touched` (REBUILD-WRITE).
         # Writes queued before a select that failed are in the store already; only those
         # the boot leaves out of the replay (`seen`).
-        r["seen"] = sorted(set(str(ev.get("oid") or "") for _, ev in r["pending"]
+        r["seen"] = sorted(set(str(ev.get("oid") or "") for _, ev, _ in r["pending"]
                                if ev.get("kind") in ("app_write", "app_withdraw")))
-        r["pending"].append((now, event))
+        r["pending"].append((now, event, queued_row(r, event)))
         r["phase"] = "booting-rows"
         return [select_rows({"boot": "rows"})] + ops
     if r["phase"] in ("booting-rows", "booting-tree"):
-        r["pending"].append((now, event))
+        r["pending"].append((now, event, queued_row(r, event)))
         return ops
     if r["phase"] == "repair" and now - int(r.get("asked") or 0) >= REPAIR_RETRY_MS:
         r["asked"] = now
@@ -9871,6 +10260,14 @@ def pass_or_queue(event, now, ops, define=None):
     if said is None:
         return ops
     return with_rest(ops + said + render(now, str(event.get("struck") or "")), now)
+
+
+def queued_row(r, event):
+    """The row a queued app write said: `accept_row` has just put it in memory, and a later
+    write to the same window will overwrite it there before the boot replays this one."""
+    if event.get("kind") != "app_write":
+        return None
+    return r["rows"].get(str(event.get("oid") or ""))
 
 
 def advance(event, now):
@@ -9895,6 +10292,7 @@ def advance(event, now):
     r["state"] = state
     if not state["pass"].get("runs"):
         return None
+    stamp_tap_seq(state, event)                          # test observability, not § 4
     spoken = spoken_of(state)
     out = refusals_of(state, spoken, r["said"])
     r["said"] = spoken
@@ -10221,7 +10619,7 @@ def boot_rows(body, hop):
         r["phase"] = "cold"                 # the next message asks again; pending stays
         return []
     now = now_ms()
-    queued = set(str(ev.get("oid") or "") for _, ev in r["pending"]
+    queued = set(str(ev.get("oid") or "") for _, ev, _ in r["pending"]
                  if ev.get("kind") in ("app_write", "app_withdraw"))
     seen = set(r.get("seen") or [])
     rows, rest = {}, None
@@ -10252,13 +10650,22 @@ def boot_rows(body, hop):
 
 
 def boot_tree(body):
-    """The boot's read answered: the mirror, then every queued event, then ONE patch.
+    """The boot's read answered: the mirror, then every queued event, then ONE patch --
+    unless a queued pass put up a work hint a later one would replace.
 
     First a stroke when the rows brought windows back, so presence, rungs and the dock
     stand as the clock says before any queued tap asks whether its window is open; it
     runs at the earliest queued moment so no pass runs earlier than the one before it
     (OR-D.D1.2). Then each queued event is its
-    own pass at its own moment (§ 4.1: one event, one pass).
+    own pass at its own moment (§ 4.1: one event, one pass), drawn from the row its own
+    write said. A pass that leaves a work hint the display does not hold yet, in a window
+    a later queued write or withdraw will change, is drawn at once in a patch of its
+    own: display-hive.md
+    § 1.6 names the window with its work hint as the first reaction, and § 9b.5 has the
+    first block REPLACE that hint. Bundled into the boot's one patch, the hint was never
+    drawn -- measured in a member lab, a turn as the first event of a fresh curator: 0/10
+    green, the window arrived with its block (GH #1169). Everything else stays one patch
+    (§ 3.1: at most one patch per pass).
     """
     r = ram()
     have = read_objects(body)
@@ -10267,18 +10674,52 @@ def boot_tree(body):
     r["phase"] = "live"
     pending, r["pending"] = r["pending"], []
     now = now_ms()
-    start = min([at for at, _ in pending] + [now])
+    start = min([at for at, _, _ in pending] + [now])
     # Only a rebuilt state needs the stroke: with no row to bring back there is nothing
     # it could set, and the first queued event is then the first pass, which is where
     # § 4.7 says a refused dial is said (OR-D.D1.2).
     ops = (advance({"kind": "stroke"}, start) or []) if r["state"]["views"] else []
-    last, struck = start, ""
-    for at, event in pending:
+    last, struck, drawn = start, "", False
+    final, r["rows"] = r["rows"], dict(r["rows"])
+    for i, (at, event, row) in enumerate(pending):
+        oid = str(event.get("oid") or "")
+        if row is not None:
+            r["rows"][oid] = row
+        elif event.get("kind") == "app_withdraw":
+            r["rows"].pop(oid, None)
         ops += advance(event, at) or []
         last = max(last, at)
         if event.get("kind") == "stroke" and event.get("struck"):
             struck = str(event["struck"])
-    return with_rest(ops + render(last, struck, bootstrap), last)
+        later = set(str(ev.get("oid") or "") for _, ev, _ in pending[i + 1:]
+                    if ev.get("kind") in ("app_write", "app_withdraw"))
+        if later and any(h == o or h.startswith(o + "/")
+                         for h in undrawn_hints(r, last) for o in later):
+            first = bootstrap and not drawn
+            sent = row_components(r["rows"]) if first else []
+            out = render(last, struck, first)
+            ops += out
+            if any((em.get("header") or {}).get("route") == "patch" for em in out):
+                drawn, struck = True, ""
+                if first:
+                    # The bootstrap defined only the vocabulary of the rows as they stood
+                    # at this pass; what a later write of the same window brings is still
+                    # owed to a fresh display (re-check tb-s8 m-1).
+                    r["define"] = [d for d in row_components(final) if d not in sent]
+    r["rows"] = final
+    return with_rest(ops + render(last, struck, bootstrap and not drawn), last)
+
+
+def undrawn_hints(r, now):
+    """The ids of the work hints (`display-status`, kind `working`, display-hive.md
+    § 9b.2a) on the screen the state says that the display does not hold yet (GH #1169)."""
+    state = r["state"]
+    have = r["have"] if r["have"] is not None else {}
+    default = str(state["settings"].get("default_screen") or "")
+    want = objects_from_state(state, sorted_rows(r["rows"]), now, default, have)
+    return [oid for oid, spec in want.items()
+            if spec.get("component") == "display-status"
+            and (spec.get("props") or {}).get("kind") == "working" and oid not in have]
 
 
 def pass_read(body):
@@ -10593,7 +11034,10 @@ def window_attrs(view, now):
             # that acted, so the value only moves when this window's own state did. It
             # therefore survives the dedup of GH #412 -- a pass that changed nothing
             # about this window sends no update for it.
-            "acted": str(max(int(c.get("since") or 0), int(c.get("dismissed_at") or 0)))}
+            "acted": str(max(int(c.get("since") or 0), int(c.get("dismissed_at") or 0))),
+            # The `seq` of the last tap whose pass acted on this window (`stamp_tap_seq`),
+            # only where a driver sent one: a screen nobody tests renders what it always did.
+            **({"tapseq": str(c["tap_seq"])} if c.get("tap_seq") else {})}
 
 
 def profile_broken(state, name):

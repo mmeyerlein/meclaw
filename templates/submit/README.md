@@ -477,9 +477,9 @@ read inside a class: with `code.author` granted (off by default), an
 `set_hop subscriber`, and this gate checks `add_edges` only -- in such a colony
 the road is not held here.
 
-Pinned in `crates/meclaw-cells/tests/gh855_the_model_road_is_a_form_at_the_gate.rs`,
+Pinned in `crates/meclaw-cells/tests/misc_7/gh855_the_model_road_is_a_form_at_the_gate.rs`,
 which drives the renderer's own output into this gate and pins the forward above as
-a broker question, and in `crates/meclaw-cells/tests/gh863_every_model_door_has_a_way_back.rs`
+a broker question, and in `crates/meclaw-cells/tests/misc_7/gh863_every_model_door_has_a_way_back.rs`
 for the way back.
 
 ## Where the policy lives

@@ -7,7 +7,7 @@
   },
   "consumers": [
     "templates/memory-hive/extract-glue/config.json -- renders the two cardinality groups into the extractor prompt (CORE_SINGLE / CORE_MULTI literal, marked by the PREDICATE CORE LIST anchor comments).",
-    "crates/meclaw-cells/tests/extract_canonicalization.rs -- drift lock: the rendered prompt is compared against THIS file, so the literal in the script cannot silently diverge.",
+    "crates/meclaw-cells/tests/misc_1/extract_canonicalization.rs -- drift lock: the rendered prompt is compared against THIS file, so the literal in the script cannot silently diverge.",
     "P2 (chain derivation) -- `cardinality` is the seeded half of `axis_is_multivalued`: a predicate listed as `multi` counts as an enumeration even before two facts of it ever shared a valid_from."
   ],
   "not_a_closed_set": "New predicates are allowed and expected. The list is the STYLE reference, not a whitelist: an unlisted relation is minted in the same shape (English, snake_case) and, once it recurs, is a candidate for this file.",

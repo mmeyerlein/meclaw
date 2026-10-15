@@ -28,7 +28,7 @@ use crate::voice::contract::{
     ProviderTimeouts, Speaker,
 };
 use meclaw_colony::io_liveness::IoLivenessMark;
-use std::time::Instant;
+use tokio::time::Instant;
 
 /// The rates the loopback negotiates (public: `params.rs` refuses any other
 /// one by NAME rather than letting a session open at a rate nothing serves).

@@ -300,7 +300,7 @@ impl LongRunningCell for McpCell {
 
             // T19: __list_tools__ reads cache, emits system.tools listing — no call_tool.
             if parsed.name == "__list_tools__" {
-                let started = std::time::Instant::now();
+                let started = tokio::time::Instant::now();
                 let cache = match db
                     .call_with_timeout(|c| crate::mcp::db::load_discovery_cache(c))
                     .await
@@ -322,7 +322,7 @@ impl LongRunningCell for McpCell {
 
             // T17: success-path only. T18 types the Err-branches.
             let timeout = std::time::Duration::from_millis(self.external_timeout_ms);
-            let started = std::time::Instant::now();
+            let started = tokio::time::Instant::now();
             let r = match &self.link {
                 McpLink::Http(client) => {
                     client

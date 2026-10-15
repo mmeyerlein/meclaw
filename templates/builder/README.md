@@ -1,4 +1,4 @@
-# `builder@1.26.38`
+# `builder@1.26.50`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -33,7 +33,7 @@ That is not a promise in this file. It is a property of the files:
   one edge onto the mutation door lives in the BIRTH topology, and it belongs to
   the submitter.
 - **Both facts are measured**, off this tree, by
-  `crates/meclaw-cells/tests/gh425_the_builder_cannot_reach_the_mutation_door.rs`
+  `crates/meclaw-cells/tests/builder/gh425_the_builder_cannot_reach_the_mutation_door.rs`
   — where the sharper half has an assertion of its own
   (`no_config_in_the_builder_draws_an_edge_onto_the_mutation_door`), so widening
   the read whitelist cannot quietly widen the guardrail — and, at runtime, by the
@@ -197,7 +197,7 @@ retrieved patterns, because a corpus outage is when a model has the least to
 lean on. Measured rather than assumed: before it existed, a capable hosted model
 designed the right topology three times running and encoded every `add_nodes`
 entry wrong, and the door refused all three at declaration 1
-(`crates/meclaw-cells/tests/builder_brief_mutation_grammar.rs`).
+(`crates/meclaw-cells/tests/assemble/builder_brief_mutation_grammar.rs`).
 
 It also carries the rule that a template may **demand** keys before it can be
 instantiated, and points at where that demand is legible: every row of the
@@ -209,7 +209,7 @@ of a row, and for a large composite the `requires` block was not in that row at
 all. Measured the same way: with the grammar in place and the contract still
 invisible, the same model encoded every entry correctly and was refused one level
 higher, with `requirement_missing`, for naming a template and passing it an empty
-`ctx` (`crates/meclaw-cells/tests/librarian_catalogue_carries_the_contract.rs`).
+`ctx` (`crates/meclaw-cells/tests/misc_8/librarian_catalogue_carries_the_contract.rs`).
 
 Since `1.2.0` it carries four more blocks, and each one answers a draft that
 LOOKS right — the failure class that costs a round rather than a refusal:
@@ -466,7 +466,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.7",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.11",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.0"}], "…": "…"}}]}
@@ -794,7 +794,7 @@ could never match a row recorded under a chat id. A **screen** renders the same
 word in both, because a screen is one room; a chat connector does not, and that
 is the whole of the repair. `templates/member/README.md` § *The two channel keys*
 is where the rule is published, and
-`crates/meclaw-cells/tests/gh522_a_chat_is_a_generation_and_a_node_is_an_address.rs`
+`crates/meclaw-cells/tests/misc_5/gh522_a_chat_is_a_generation_and_a_node_is_an_address.rs`
 holds the renderer and the addressing rule together.
 
 **Since `1.12.0` the set has a fourth edge, and it is addressed by the same key**
@@ -903,7 +903,7 @@ reason is worth writing down so nobody re-derives the disappointment:
   and `params.contract` has no vocabulary for it.
 
 So: a table, and the table is pinned against the examples rather than described.
-`crates/meclaw-cells/tests/gh466_grow_level_renders_the_level.rs` renders all six
+`crates/meclaw-cells/tests/misc_4/gh466_grow_level_renders_the_level.rs` renders all six
 levels and compares them **byte for byte** against `examples/organism/grow-*.json`
 — the recipe and the worked example cannot drift apart, because one is generated
 and diffed against the other.
@@ -944,7 +944,7 @@ rather than read by its truthiness; `null` is an absent key. The sentence form h
 member's door* (or *as its door*) both render `door: true`. The words are read as a request, not
 as a noun anywhere in the sentence: *… next to the member's door* and *…, not as the door* render
 none. An explicit `door` argument beats the words, as it does for `birth`. The worked example is `examples/organism/grow-member-door.json`, held to the renderer
-byte for byte by `crates/meclaw-cells/tests/gh835_a_door_takes_the_turn_nobody_addressed.rs`.
+byte for byte by `crates/meclaw-cells/tests/misc_7/gh835_a_door_takes_the_turn_nobody_addressed.rs`.
 
 ### A grown brain is a subscriber of the colony's model registry
 
@@ -1000,7 +1000,7 @@ stays a broker question and can still copy pushes into a foreign brain, which ap
 them: since 0.47.0 an `llm` cell applies a push only when `hop.subscriber` is its own path
 ([#862](https://github.com/mmeyerlein/meclaw/issues/862)), and it refuses each copy loudly,
 without the keys of a refusal -- `templates/submit/README.md` says what remains
-(`crates/meclaw-cells/tests/gh855_the_model_road_is_a_form_at_the_gate.rs`).
+(`crates/meclaw-cells/tests/misc_7/gh855_the_model_road_is_a_form_at_the_gate.rs`).
 
 **Why a second declaration, and why the rows are not in it.** The edges live in the graph of the
 container scope, above the one the level declares itself at, and a declaration has one scope.
@@ -1012,7 +1012,7 @@ a byte, and `gh466`'s pins hold.
 
 Without the setting, for another template, or for a generation outside the scope, nothing extra
 is rendered: a tree with no registry keeps its start values and the substrate's params road.
-Pinned in `crates/meclaw-cells/tests/gh855_a_grown_assistant_is_a_subscriber.rs`, including a
+Pinned in `crates/meclaw-cells/tests/misc_7/gh855_a_grown_assistant_is_a_subscriber.rs`, including a
 grown generation in the shipped shell whose three brains land as rows in the registry's store.
 
 **Every announced brain carries what it needs** (since `1.15.0`, [#858](https://github.com/mmeyerlein/meclaw/issues/858)).
@@ -1057,7 +1057,7 @@ with an empty default, so an unset key leaves the cell without a start value at 
 those tokens in two pieces, because the colony binds every whole `${...}` in the script itself
 when it reads the recipe cell's config. The push form the gate checks is one segment below the
 edge's `to`: a talky's `brain`, or one of the memory hive's four cells, and nothing deeper
-(`crates/meclaw-cells/tests/gh858_a_grown_member_announces_its_memory.rs`) -- except
+(`crates/meclaw-cells/tests/misc_7/gh858_a_grown_member_announces_its_memory.rs`) -- except
 `curator/summarizer`, the curator summarizer behind each rim, which a generation announces since
 GH #877 beside its three brains.
 
@@ -1247,7 +1247,7 @@ edge table holds an identical edge once — installing another app adds only its
 own bindings.
 
 What the four declarations that exist render, derived in
-`crates/meclaw-cells/tests/gh599_an_app_is_installed_from_what_it_declares.rs`
+`crates/meclaw-cells/tests/misc_5/gh599_an_app_is_installed_from_what_it_declares.rs`
 against the wiring a live colony carries for them:
 
 | app | edges |
@@ -1288,7 +1288,7 @@ touching a colony-wide setting. A CEL condition cannot read `params`, so the two
 bounds that live on an edge are written twice — as a literal on the edge that
 enforces them and as a settings default in the cell that documents them — and
 the two spellings are held to one number off the tree by
-`crates/meclaw-cells/tests/builder_bounds_agree_with_their_settings.rs`.
+`crates/meclaw-cells/tests/builder/builder_bounds_agree_with_their_settings.rs`.
 
 **Since `1.4.0` `BUILDER_MAX_ITER` is written a third time, in prose.** The
 composer was never told how many rounds it had, and the measured cost of that is
@@ -1431,7 +1431,7 @@ Each one answers a refusal this system has really produced in a measured
 build run (`CHANGELOG.md` § 0.26.0). That is the difference
 between this and a general harness: the vocabulary is closed, and its closedness
 is a property of the files
-(`crates/meclaw-cells/tests/builder_tool_vocabulary_is_closed.rs`).
+(`crates/meclaw-cells/tests/builder/builder_tool_vocabulary_is_closed.rs`).
 
 There is no fifth tool that applies anything. Submitting stays with whoever
 asked, under the identity the substrate stamped on the envelope — ADR-0015
@@ -1481,7 +1481,7 @@ reads a manifest out of the last turn and has no use for a prompt.
 Why no case caught it: every scenario case of the design lane drives a stub model
 (`workshop/evals/builder-scenarios/answers/*.json`) that answers by position and
 never reads its prompt, and a stub cannot notice a missing question. Pinned by
-`crates/meclaw-cells/tests/gh477_the_second_round_still_knows_the_question.rs`,
+`crates/meclaw-cells/tests/round_1/gh477_the_second_round_still_knows_the_question.rs`,
 which asserts the PROMPT and no answer at all.
 
 ### What the corpus publishes, and what it used to withhold
@@ -1588,9 +1588,9 @@ is not where prose belongs, and the only cell that reads it —
 `builder-librarian/retrieve` — re-sets it from its own `hop.orig` on every
 lookup. The row is the record; the hop stays short.
 
-Pinned by `crates/meclaw-cells/tests/gh460_the_caller_survives_a_lost_race.rs`,
+Pinned by `crates/meclaw-cells/tests/misc_4/gh460_the_caller_survives_a_lost_race.rs`,
 which lets the wrong eye win, and by
-`crates/meclaw-cells/tests/gh480_an_operator_keeps_its_door_across_a_trace_break.rs`,
+`crates/meclaw-cells/tests/misc_4/gh480_an_operator_keeps_its_door_across_a_trace_break.rs`,
 which breaks the chain both measured ways and checks that the names the builder
 restores are the names the shell guards on.
 
@@ -1653,8 +1653,8 @@ The binding travels on its own `bind` route rather than on `recipe`, because bot
 `./recipes -> .` edges match on `hop.operation == 'recipe'` and a binding wearing
 that operation would leave the hive as a second answer to the same wish.
 
-Pinned by `crates/meclaw-cells/tests/gh480_a_model_free_build_keeps_its_door.rs`
-and `crates/meclaw-cells/tests/gh501_a_repair_does_not_restart_the_round_budget.rs`.
+Pinned by `crates/meclaw-cells/tests/misc_4/gh480_a_model_free_build_keeps_its_door.rs`
+and `crates/meclaw-cells/tests/round_1/gh501_a_repair_does_not_restart_the_round_budget.rs`.
 
 ### Nothing this hive remembers about itself leaves it
 
@@ -1680,7 +1680,7 @@ reads them:
 
 The rule is `templates/README.md` § *The hive boundary*, authoring rule 5; the
 sweep that measures it is `workshop/tools/hive_context_sweep.py`, and
-`crates/meclaw-cells/tests/gh494_no_interior_marker_leaves_a_hive.rs` holds it for
+`crates/meclaw-cells/tests/misc_4/gh494_no_interior_marker_leaves_a_hive.rs` holds it for
 every shipped hive.
 
 ## The digest, and why it exists
@@ -1813,7 +1813,7 @@ reasoning breaks the builder": `reasoning_effort: high` died at the backstop in
 5 of 6 runs, `low` in none of them, for the plain reason that reasoning depth
 lengthens exactly the call the backstop was cutting. Nine more shipped `llm`
 cells carried the same inversion; the gate that now forbids it is
-`crates/meclaw-cells/tests/a_shipped_llm_backstop_outlasts_its_own_call.rs`.
+`crates/meclaw-cells/tests/llm/a_shipped_llm_backstop_outlasts_its_own_call.rs`.
 
 **`max_tokens` is a budget the thinking eats first.** On the OpenAI-compatible
 wire this cell speaks, reasoning tokens are completion tokens: they are billed

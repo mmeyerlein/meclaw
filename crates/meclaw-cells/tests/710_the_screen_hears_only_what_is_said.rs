@@ -20,17 +20,11 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::Duration;
-
 use display_colony::{Boot, boot, have_python, library_ships, next_text, push};
 use meclaw_core::serde_json::{Value, json};
 
 /// The app whose window stands on the screen for the whole file.
 const APP: &str = "/alex/apps/note";
-
-/// How long the colony must stay quiet before a count is taken. A settle window, never a
-/// semantic discriminator: what is asserted afterwards is the same at 5 ms or 500.
-const QUIET: Duration = Duration::from_millis(400);
 
 /// The props of one rendered root, out of the last patch bundle that named it.
 fn root_props(patches: &[Vec<Value>], prefix: &str) -> Value {
@@ -100,7 +94,7 @@ async fn the_screen_hears_only_what_is_said() {
                    "topic": "note:1", "touched": "1"}),
         )
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
 
     // ── Q-17, § 6.5: the switch and three outputs, and nothing else ───────────────────
     let patches = colony.patches().await;
@@ -210,7 +204,10 @@ async fn the_screen_hears_only_what_is_said() {
     // message (§ 4.1), so what is counted is what reached the pass -- not the whole log,
     // which the screen's own clock also writes to.
     let mut ws = colony.socket("monitor").await;
-    colony.settle(QUIET).await;
+    // Re-check tv-bn M7 M2 (TV-A2): quiescence does not cover the socket's ingress half;
+    // the marker for "nothing came on open" is the hold below -- it is awaited, and it is
+    // the ONLY event that reached the pass.
+    colony.settle().await;
     assert!(
         colony.events_into_pass().await.is_empty(),
         "an open page that nobody touches sends nothing: {:?}",
@@ -220,7 +217,12 @@ async fn the_screen_hears_only_what_is_said() {
     // The same socket, the gesture that DOES have a wire: one hold, one event.
     push(&mut ws, "hold", json!({})).await;
     let _ = next_text(&mut ws).await; // the reply to the push
-    colony.settle(QUIET).await;
+    colony
+        .wait_until("the hold reaches the pass", async || {
+            !colony.events_into_pass().await.is_empty()
+        })
+        .await;
+    colony.settle().await;
     let seen = colony.events_into_pass().await;
     assert_eq!(
         seen,
@@ -275,7 +277,12 @@ async fn the_screen_hears_only_what_is_said() {
     // ── S-053, § 6.12: a tap for a window the state does not hold is absorbed ────────
     push(&mut ws, "tap", json!({"for": "view.nobody.nothing"})).await;
     let _ = next_text(&mut ws).await;
-    colony.settle(QUIET).await;
+    colony
+        .wait_until("the tap reaches the pass", async || {
+            colony.events_into_pass().await.len() >= 2
+        })
+        .await;
+    colony.settle().await;
     assert_eq!(
         colony.events_into_pass().await.len(),
         2,
@@ -291,6 +298,8 @@ async fn the_screen_hears_only_what_is_said() {
     // ── § 4.16, Decision 16.09.: `judge: off` means the hive has no judge to ask ─────
     // This colony ships the shipped default. Windows arrived, rungs changed, strokes
     // struck -- and not one question left for the judge cell.
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    colony.settle().await;
     assert_eq!(
         colony.judge_questions().await,
         0,
@@ -303,7 +312,7 @@ async fn the_screen_hears_only_what_is_said() {
 /// Every `event` the screen sent out of the hive, drained.
 async fn drain_egress(colony: &mut display_colony::Colony) -> Vec<Value> {
     let mut out = Vec::new();
-    while let Ok(m) = colony.egress.try_recv() {
+    for m in colony.left_the_hive().await {
         if m.headers.hop.get("route").and_then(Value::as_str) == Some("event") {
             out.push(json!({"owner": m.headers.hop.get("owner")}));
         }

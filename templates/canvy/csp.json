@@ -1,0 +1,19 @@
+{
+  "script-src": [
+    "'self'",
+    "'sha256-FNLL2O14I38nxaYZ0UpylhO8D6CNNp4++vF7hykjdAc='"
+  ],
+  "style-src": [
+    "'self'",
+    "'unsafe-inline'"
+  ],
+  "img-src": [
+    "'self'"
+  ],
+  "connect-src": [
+    "'self'"
+  ],
+  "base-uri": [
+    "'self'"
+  ]
+}

@@ -1,0 +1,23 @@
+# Clock bans of the unwrap ratchet (VORGABEN TV-Z8 / § 5.4, tv-p1b).
+#
+# This file is NOT a workspace clippy config: there is no root clippy.toml,
+# and the normal clippy station, CI and hand runs never read it. Only
+# `.github/gates/unwrap_budget.py` points CLIPPY_CONF_DIR here and counts the
+# hits per package in two columns of `unwrap_budget.txt`, chosen by the
+# prefix of `reason`:
+#
+#   mono:  std monotonic clock -- production reads `tokio::time::Instant::now()`
+#          (the same clock in production, virtual under `start_paused`).
+#          Pinned at 0 for meclaw-cells and meclaw-colony; may only go down.
+#   wall:  wall clock -- allowed, counted, may only go down.
+#
+# A change here plans the `unwrap-budget` station and moves its cache key
+# (`gate_plan.py`, class `unwrap_infra`).
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "mono: read tokio::time::Instant::now() (virtual under start_paused)" },
+    { path = "std::time::Instant::elapsed", reason = "mono: a std Instant ignores the paused test clock; use tokio::time::Instant" },
+    { path = "std::time::SystemTime::now", reason = "wall: wall clock, counted by the ratchet" },
+    { path = "std::time::SystemTime::elapsed", reason = "wall: wall clock, counted by the ratchet" },
+    { path = "chrono::offset::Utc::now", reason = "wall: wall clock, counted by the ratchet" },
+    { path = "chrono::offset::Local::now", reason = "wall: wall clock, counted by the ratchet" },
+]

@@ -1,4 +1,4 @@
-//! `ColonyDb` struct: writer thread + read-only connection for `colony.db`.
+//! `ColonyDb` struct: writer (async front, ADR-0051) + read-only connection for `colony.db`.
 //!
 //! **Single-owner invariant (FIX 2, review 2026-05-20)**: `writer_tx` lives in
 //! exactly one owner (`ColonyDb`) and is NEVER cloned into a longer-lived scope.
@@ -10,18 +10,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::thread::JoinHandle;
 
-/// Lifecycle handle for `colony.db`: writer thread + read-only connection.
+/// Lifecycle handle for `colony.db`: writer + read-only connection.
 pub struct ColonyDb {
     /// Sender into the writer thread. Single owner per FIX 2.
     ///
     /// Phase-12-Pre: bounded `tokio::sync::mpsc::channel(1000)` with
-    /// cooperative `.send().await` backpressure. The writer receiver stays
-    /// `std::thread`-based and drains via `blocking_recv()`.
+    /// cooperative `.send().await` backpressure. The writer drains it with
+    /// `recv().await` on the runtime (ADR-0051).
     pub(crate) writer_tx: tokio::sync::mpsc::Sender<ColonyWriteOp>,
     /// Read-only connection for trace queries (cells do not read colony.db directly).
     pub(crate) read_conn: rusqlite::Connection,
-    /// JoinHandle of the writer thread. `Option` only for drop safety;
-    /// in T12 `shutdown()` consumes it via self-destructuring.
+    /// JoinHandle of the writer thread -- only for a caller without a
+    /// runtime (`run_writer_on_thread`); on a runtime the shutdown ack is the
+    /// join (ADR-0051). `shutdown()` consumes it via self-destructuring.
     pub(crate) writer_join: Option<JoinHandle<()>>,
     /// Atomic counter (sent - committed). Shared with the writer thread, which
     /// decrements it after every committed op.
@@ -183,12 +184,22 @@ pub struct DeadLetterRow {
     pub message_json: String,
 }
 
+/// File name of the colony database inside a colony root.
+const FILE_NAME: &str = "colony.db";
+
 impl ColonyDb {
-    /// Opens `colony.db` at `path`, initializes the schema, spawns the writer thread.
+    /// Opens the colony database of the colony root `dir` (`dir/colony.db`),
+    /// the file the bootstrap reads; see [`ColonyDb::open`].
+    pub fn open_in(dir: &std::path::Path) -> rusqlite::Result<Self> {
+        Self::open(&dir.join(FILE_NAME))
+    }
+
+    /// Opens `colony.db` at `path`, initializes the schema, spawns the writer.
     ///
-    /// The writer thread runs in a blocking loop (`run_writer`) and processes
-    /// `ColonyWriteOp` messages in batches (max `BATCH_MAX` per transaction).
-    /// The thread terminates when the sender is dropped (channel disconnected).
+    /// The writer (`run_writer`, ADR-0051) processes `ColonyWriteOp` messages
+    /// in batches (max `BATCH_MAX` per transaction), each inside one
+    /// `spawn_blocking` of the current runtime. It ends on the shutdown op or
+    /// when the sender is dropped (channel disconnected).
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let writer_conn = rusqlite::Connection::open(path)?;
         crate::persist::setup_colony_db(&writer_conn)?;
@@ -208,13 +219,34 @@ impl ColonyDb {
         let qd_writer = queue_depth.clone();
         let log_seq = Arc::new(tokio::sync::watch::channel(0_u64).0);
         let seq_writer = log_seq.clone();
-        let writer_join = std::thread::spawn(move || {
-            crate::persist::writer::run_writer(writer_rx, writer_conn, qd_writer, seq_writer);
-        });
+        // ADR-0051 (amended 2026-10-12): on a runtime the writer is an async
+        // front with one `spawn_blocking` per run of batches (the next op
+        // within the linger stays in the same task; every flavor -- production
+        // and tests run the same writer); its shutdown ack is the join. Only a
+        // caller without a runtime gets the same batch on a thread of its own.
+        let writer_join = match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                rt.spawn(crate::persist::writer::run_writer(
+                    writer_rx,
+                    writer_conn,
+                    qd_writer,
+                    seq_writer,
+                ));
+                None
+            }
+            Err(_) => Some(std::thread::spawn(move || {
+                crate::persist::writer::run_writer_on_thread(
+                    writer_rx,
+                    writer_conn,
+                    qd_writer,
+                    seq_writer,
+                );
+            })),
+        };
         Ok(Self {
             writer_tx,
             read_conn,
-            writer_join: Some(writer_join),
+            writer_join,
             queue_depth,
             db_path: path.to_path_buf(),
             log_seq,
@@ -639,9 +671,8 @@ impl ColonyDb {
     /// New mechanics: an explicit shutdown op + oneshot ack. The writer drains
     /// the current batch (FIFO guarantees: every op enqueued before shutdown
     /// lands in the same or an earlier transaction), fires the ack, and returns
-    /// explicitly. `try_send` fallback on a full channel (bounded 1000, never
-    /// reached in practice — shutdown is a singleton, at most BATCH_MAX=64
-    /// backlog left over from the drain).
+    /// explicitly. On a full channel the shutdown op waits its turn; a writer
+    /// that died before the ack fails the shutdown loudly (GH #1208).
     ///
     /// Self-destructuring leaves `writer_tx` as a plain sender in the struct
     /// (no `Option<>` hack); the `Self { ... }` pattern moves every field
@@ -672,8 +703,9 @@ impl ColonyDb {
     /// `colony_task::ColonyMsg::Shutdown` arm.
     ///
     /// Mechanics identical to `shutdown()`, just with `.await` instead of
-    /// `blocking_recv()`. `writer_join.join()` (sync) stays — the writer thread
-    /// should `return` immediately after the ack send, so the join is instant.
+    /// `blocking_recv()`. On a runtime the ack is the join (the writer closed
+    /// its connection before it acked); `writer_join` exists only for a
+    /// writer opened without a runtime and returns at once after the ack.
     pub async fn shutdown_async(self) {
         let Self {
             writer_tx,
@@ -695,21 +727,18 @@ impl ColonyDb {
         writer_tx: tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
     ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        match writer_tx.try_send(crate::persist::writer::ColonyWriteOp::Shutdown { ack: tx }) {
+        // `blocking_send`, not `try_send`: a full queue must delay the shutdown
+        // op, never skip it (see `send_shutdown_op_and_wait_async`).
+        match writer_tx.blocking_send(crate::persist::writer::ColonyWriteOp::Shutdown { ack: tx }) {
             Ok(()) => {
                 drop(writer_tx);
                 // Wait synchronously for the writer ack — parking_lot block_on,
                 // runtime-independent. Panics inside a Tokio async context.
-                let _ = rx.blocking_recv();
+                if rx.blocking_recv().is_err() {
+                    writer_died_before_the_shutdown_ack();
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    "ColonyDb::shutdown: could not enqueue the shutdown op, \
-                     falling back to drop-only (race-prone close detection)"
-                );
-                drop(writer_tx);
-            }
+            Err(_) => writer_died_before_the_shutdown_ack(),
         }
     }
 
@@ -719,21 +748,39 @@ impl ColonyDb {
         writer_tx: tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
     ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        match writer_tx.try_send(crate::persist::writer::ColonyWriteOp::Shutdown { ack: tx }) {
+        // `send().await`, not `try_send`: under a full queue the shutdown op
+        // waits its turn behind the queued writes. A `try_send` failed there and
+        // fell back to drop-only, which returned before the drain once the writer
+        // runs on the runtime (no thread to join, ADR-0051).
+        match writer_tx
+            .send(crate::persist::writer::ColonyWriteOp::Shutdown { ack: tx })
+            .await
+        {
             Ok(()) => {
                 drop(writer_tx);
-                let _ = rx.await;
+                if rx.await.is_err() {
+                    writer_died_before_the_shutdown_ack();
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    "ColonyDb::shutdown_async: could not enqueue the shutdown op, \
-                     falling back to drop-only (race-prone close detection)"
-                );
-                drop(writer_tx);
-            }
+            Err(_) => writer_died_before_the_shutdown_ack(),
         }
     }
+}
+
+/// The shutdown found the writer dead: its receiver is gone (the send failed)
+/// or it dropped the shutdown ack unfired. Only a panic in a batch ends the
+/// writer that way -- the shutdown op is its one regular exit, and this handle
+/// holds a sender. GH #1208 (re-check tv-p1a M1): on the runtime there is no
+/// thread left to join (ADR-0051), and the base's `join().expect("writer
+/// panicked")` was the one place a death in the last batch (dead letters,
+/// `ForgiveAttempts`, `CleanStop`) surfaced; swallowing it ended a lossy
+/// shutdown with exit 0. Fail-stop like `send_op`.
+fn writer_died_before_the_shutdown_ack() -> ! {
+    tracing::error!("colony.db writer died before it acked the shutdown");
+    panic!(
+        "colony.db writer died before it acked the shutdown (a panic in its \
+         last batch); the writes queued before it are not durable"
+    )
 }
 
 /// Identity overlay read from `colony.db`'s `registry` table: meclaw path →
@@ -951,6 +998,19 @@ pub fn read_registry_overlay(db_path: &std::path::Path) -> rusqlite::Result<Regi
 mod tests {
     use super::*;
 
+    /// `open_in(dir)` opens the database the bootstrap reads in a colony root
+    /// (`root.join("colony.db")`): a caller names the directory, never the file.
+    #[test]
+    fn open_in_opens_the_colony_database_of_a_root() {
+        let td = tempfile::TempDir::new().unwrap();
+        let db = ColonyDb::open_in(td.path()).unwrap();
+        assert!(
+            td.path().join("colony.db").exists(),
+            "open_in creates the colony database inside the root"
+        );
+        drop(db);
+    }
+
     #[test]
     fn colony_db_open_creates_file_with_schema() {
         let td = tempfile::TempDir::new().unwrap();
@@ -1009,10 +1069,18 @@ mod tests {
             .await
             .unwrap();
         // Drop the ColonyDb — the writer sender is dropped (single-owner path). The
-        // writer processes the last item, commits, and terminates.
+        // writer processes the last item, commits, and terminates. The commit
+        // counter is the event (ADR-0051: the writer runs on this runtime, so a
+        // blocking sleep here would starve it).
+        let mut seq = db.subscribe_log_seq();
         drop(db);
-        // T13 replaces the sleep with a shutdown barrier.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        meclaw_testing::deadline::hang("the dropped writer commits its last batch", async {
+            seq.wait_for(|n| *n >= 1)
+                .await
+                .map(|_| ())
+                .expect("writer committed")
+        })
+        .await;
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let cnt: i64 = conn
             .query_row("SELECT COUNT(*) FROM hive_scopes", [], |r| r.get(0))
@@ -1050,17 +1118,121 @@ mod tests {
         use std::sync::mpsc::{RecvTimeoutError, channel};
         let td = tempfile::TempDir::new().unwrap();
         let db = ColonyDb::open(&td.path().join("c.db")).unwrap();
-        // shutdown runs in a separate std::thread; test-side timeout via channel.
+        let depth_before = db.queue_depth();
+        // shutdown runs in a separate std::thread; the hang marker (TV-Z3)
+        // waits on its done signal.
         let (done_tx, done_rx) = channel();
         std::thread::spawn(move || {
             db.shutdown();
             done_tx.send(()).unwrap();
         });
-        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        let marker = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG);
+        match done_rx.recv_timeout(marker) {
             Ok(()) => {}
-            Err(RecvTimeoutError::Timeout) => panic!("shutdown hung — writer never joined"),
-            Err(e) => panic!("unexpected: {e:?}"),
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "HANG: sync shutdown did not return within {marker:?} -- the writer thread \
+                 never joined (last seen: queue_depth {depth_before} before the shutdown)"
+            ),
+            Err(e) => panic!("the shutdown thread died before it signalled: {e:?}"),
         }
+    }
+
+    /// tv-p1a-m P2b (re-check M2): the sync shutdown puts a `Shutdown` op on
+    /// the writer queue and returns once its ack fires. The test holds the
+    /// receiver itself, so the writer's backlog plays no part: without the
+    /// op, `recv` sees the dropped sender at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_sync_shutdown_enqueues_its_op_and_returns_on_the_ack() {
+        use crate::persist::writer::ColonyWriteOp;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let shut =
+            tokio::task::spawn_blocking(move || ColonyDb::send_shutdown_op_and_wait_sync(tx));
+        let Some(ColonyWriteOp::Shutdown { ack }) =
+            meclaw_testing::deadline::hang("the sync shutdown enqueues its op", rx.recv()).await
+        else {
+            panic!("the sync shutdown sent no shutdown op");
+        };
+        ack.send(())
+            .expect("the sync shutdown still waits on its ack");
+        meclaw_testing::deadline::hang("the sync shutdown returns on its ack", shut)
+            .await
+            .expect("the sync shutdown returns once its ack fired");
+    }
+
+    /// tv-p1a-m P2b (re-check M2): the twin -- an ack dropped unfired means
+    /// the writer died, and the sync shutdown fails loudly instead of
+    /// returning as if the queue were durable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_sync_shutdown_panics_when_its_ack_is_dropped() {
+        use crate::persist::writer::ColonyWriteOp;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let shut =
+            tokio::task::spawn_blocking(move || ColonyDb::send_shutdown_op_and_wait_sync(tx));
+        let Some(ColonyWriteOp::Shutdown { ack }) =
+            meclaw_testing::deadline::hang("the sync shutdown enqueues its op", rx.recv()).await
+        else {
+            panic!("the sync shutdown sent no shutdown op");
+        };
+        drop(ack);
+        let err =
+            meclaw_testing::deadline::hang("the sync shutdown fails on its dropped ack", shut)
+                .await
+                .expect_err("a dropped ack must fail the sync shutdown");
+        assert!(
+            err.is_panic(),
+            "the sync shutdown panics, it is not cancelled"
+        );
+        let payload = err.into_panic();
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(
+            msg.starts_with("colony.db writer died before it acked the shutdown"),
+            "the panic names the dead writer: {msg}"
+        );
+    }
+
+    /// GH #1208 (re-check tv-p1a M1): the writer runs on the runtime
+    /// (ADR-0051), so there is no thread left whose join re-raised a writer
+    /// panic. A writer that dies in its last batch -- here a primary-key clash
+    /// inside `apply_or_die` -- must still fail the shutdown instead of ending
+    /// it quietly with exit 0 and the queued writes lost. Deterministic either
+    /// way the race goes: the shutdown op is accepted and never acked, or the
+    /// writer is already gone when it is sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_panics_when_the_writer_died_in_its_last_batch() {
+        use crate::persist::writer::ColonyWriteOp;
+        let td = tempfile::TempDir::new().unwrap();
+        let db = ColonyDb::open(&td.path().join("c.db")).unwrap();
+        for _ in 0..2 {
+            db.send_op(ColonyWriteOp::MutationLogInsert {
+                id: "same-id".into(),
+                scope: "/".into(),
+                payload_json: "{}".into(),
+                created_at: 1,
+                ack: None,
+            })
+            .await;
+        }
+        let err = meclaw_testing::deadline::hang(
+            "the shutdown fails on the writer that died in its last batch",
+            tokio::spawn(db.shutdown_async()),
+        )
+        .await
+        .expect_err("a writer that died in its last batch must fail the shutdown");
+        assert!(err.is_panic(), "the shutdown panics, it is not cancelled");
+        let payload = err.into_panic();
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert!(
+            msg.contains("colony.db writer died"),
+            "the panic names the dead writer: {msg}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1084,7 +1256,7 @@ mod tests {
             },
         )
         .await;
-        db.shutdown_async().await;
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
 
         let db2 = ColonyDb::open(&db_path).unwrap();
         let rows = db2.read_mutation_log(None, 100).unwrap();
@@ -1094,7 +1266,11 @@ mod tests {
         assert_eq!(r.error_code.as_deref(), Some("naming_collision"));
         assert_eq!(r.trace_id.as_deref(), Some("tr-7"));
         assert!(r.committed_at.is_none());
-        db2.shutdown_async().await;
+        meclaw_testing::deadline::hang(
+            "the reopened writer shutdown returns",
+            db2.shutdown_async(),
+        )
+        .await;
     }
 
     /// W6d (A6) step a+b: an `InsertDeadLetter` op persists a DLQ row that
@@ -1121,7 +1297,7 @@ mod tests {
             })
             .await;
         }
-        db.shutdown_async().await;
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
 
         // Reopen — DB is the single source of truth; entries survive the restart.
         let db2 = ColonyDb::open(&db_path).unwrap();
@@ -1155,7 +1331,11 @@ mod tests {
         let since = db2.read_dead_letters(Some(150), None, 1000).unwrap();
         assert_eq!(since.len(), 1);
         assert_eq!(since[0].created_at, 200);
-        db2.shutdown_async().await;
+        meclaw_testing::deadline::hang(
+            "the reopened writer shutdown returns",
+            db2.shutdown_async(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1163,12 +1343,18 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let db_path = td.path().join("c.db");
         let db = ColonyDb::open(&db_path).unwrap();
-        db.insert_mutation_log_durable("mid-9".into(), "/x".into(), "{}".into(), 100)
-            .await
-            .expect("insert ack");
-        db.update_mutation_log_durable("mid-9".into(), "committed".into(), 200, None)
-            .await
-            .expect("update ack");
+        meclaw_testing::deadline::hang(
+            "the writer acks the durable insert",
+            db.insert_mutation_log_durable("mid-9".into(), "/x".into(), "{}".into(), 100),
+        )
+        .await
+        .expect("insert ack");
+        meclaw_testing::deadline::hang(
+            "the writer acks the durable update",
+            db.update_mutation_log_durable("mid-9".into(), "committed".into(), 200, None),
+        )
+        .await
+        .expect("update ack");
         let conn = rusqlite::Connection::open_with_flags(
             &db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -1190,9 +1376,17 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let db_path = td.path().join("c.db");
         let db = ColonyDb::open(&db_path).unwrap();
-        db.insert_mutation_log_durable("mid-42".into(), "/main".into(), r#"{"x":1}"#.into(), 100)
-            .await
-            .expect("ack");
+        meclaw_testing::deadline::hang(
+            "the writer acks the durable insert",
+            db.insert_mutation_log_durable(
+                "mid-42".into(),
+                "/main".into(),
+                r#"{"x":1}"#.into(),
+                100,
+            ),
+        )
+        .await
+        .expect("ack");
         // Read directly from the DB — the ack guarantee means: the row is committed.
         let conn = rusqlite::Connection::open_with_flags(
             &db_path,
@@ -1213,7 +1407,6 @@ mod tests {
     async fn writer_flushes_100_distinct_inserts_before_shutdown_returns() {
         use crate::persist::writer::ColonyWriteOp;
         use meclaw_core::Path;
-        use std::sync::mpsc::{RecvTimeoutError, channel};
 
         let td = tempfile::TempDir::new().unwrap();
         let db_path = td.path().join("c.db");
@@ -1228,17 +1421,9 @@ mod tests {
             .await;
         }
 
-        // No-Hang-Guard (FIX 2): shutdown in separater std::thread, Timeout via channel.
-        let (done_tx, done_rx) = channel();
-        std::thread::spawn(move || {
-            db.shutdown();
-            done_tx.send(()).unwrap();
-        });
-        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(()) => {}
-            Err(RecvTimeoutError::Timeout) => panic!("shutdown hung"),
-            Err(e) => panic!("unexpected: {e:?}"),
-        }
+        // Liveness gate: the writer runs on this runtime (ADR-0051), so the
+        // shutdown is awaited here under the hang mark, not joined from a thread.
+        meclaw_testing::deadline::hang("the writer shutdown returns", db.shutdown_async()).await;
 
         // Flush proof: a fresh reopen sees all 100 distinct scopes.
         let conn = rusqlite::Connection::open(&db_path).unwrap();

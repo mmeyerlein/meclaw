@@ -143,4 +143,54 @@ mod tests {
         let l = TcpListener::bind(("127.0.0.1", p)).expect("the handed-out port must bind");
         drop(l);
     }
+
+    /// GH #1220: no test of the workspace hands out a port number it drew with
+    /// `bind("127.0.0.1:0")` and then dropped — the race the module docs
+    /// describe, measured a second time on 2026-10-11. The two GH #1061 daemon
+    /// tests drew their API port that way; while a daemon (re)started, the
+    /// kernel gave that ephemeral port to the switch mock of
+    /// `freeswitch_channel_places_a_call_and_hears_the_line::the_three_line_tools_write_the_switches_table`
+    /// in another test process, and the daemon test's `/health` and
+    /// `/messages` requests landed in it (66 foreign requests beside the three
+    /// switch commands). A port from the band is out of reach of every
+    /// `bind(…, 0)`, so the mock can no longer be handed it.
+    ///
+    /// The shape caught: a `fn … -> u16` whose body binds port 0 — returning the
+    /// number means the listener is gone by the time anybody binds it.
+    #[test]
+    fn no_test_hands_out_a_dropped_ephemeral_port() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut hits = Vec::new();
+        let mut dirs = vec![crates.to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("a readable directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    if path.file_name().is_none_or(|n| n != "target") {
+                        dirs.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).expect("a readable source");
+                for (at, _) in src.match_indices("-> u16 {") {
+                    let body = &src[at..];
+                    let end = body.find("\n}").unwrap_or(body.len());
+                    if body[..end].contains("\"127.0.0.1:0\"") {
+                        let line = src[..at].lines().count();
+                        hits.push(format!("{}:{line}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "expected no port helper that binds 127.0.0.1:0 and returns the \
+             number (use `meclaw_testing::ports::free_port`); found: {hits:?}"
+        );
+    }
 }

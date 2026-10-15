@@ -1,4 +1,11 @@
-"""Tests for the bash runner `scripts/gate.sh`.
+"""Tests for the bash runner `scripts/gate_legacy.sh` and the shell `scripts/gate.sh`.
+
+Since W3 (GH #1117) `scripts/gate.sh` is a thin shell: `ci` (with or
+without `--lane`) goes to `scripts/gate_legacy.sh` (the runner these cases
+pin, byte for byte the former `gate.sh`), `strand|integration|release` to
+`python3 scripts/pipeline.py gate --mode <mode>`; the switch back is gone
+(GH #1156). The shell has its own
+class at the end (`TestShell`).
 
 The runner is exercised against a throw-away git repository, never against the
 real tree: every station in these tests is a FAKE, planted through the two
@@ -24,17 +31,23 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import unittest.mock
+from scripts.tests import kit_time, kit_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-GATE_SH = REPO / "scripts" / "gate.sh"
+# The runner the cases below pin. `scripts/gate.sh` is the shell in front of
+# it (see `TestShell`); the cases run the runner itself, under its own name.
+GATE_SH = REPO / "scripts" / "gate_legacy.sh"
+RUNNER = GATE_SH.name
+GATE_SHELL = REPO / "scripts" / "gate.sh"
 # The runner asks the resolver which run artefacts do not make a tree dirty
 # (`--print ignored`), so the throw-away repo needs a copy of it.
 GATE_PLAN = REPO / "scripts" / "gate_plan.py"
 # ... and the shared snippet both the runner and the tier script source for the
 # target directory and the ghost-binary guard (GH #802).
-TARGET_LIB = REPO / "scripts" / "cargo-target.sh"
 
 # name<TAB>scope<TAB>cargo<TAB>shell-quoted argv<TAB>cwd
 PLAN_OK_BAD = (
@@ -106,10 +119,14 @@ def make_repo(root):
     """
     repo = pathlib.Path(root) / "repo"
     (repo / "scripts").mkdir(parents=True, exist_ok=True)
-    shutil.copy(GATE_SH, repo / "scripts" / "gate.sh")
-    (repo / "scripts" / "gate.sh").chmod(0o755)
+    shutil.copy(GATE_SH, repo / "scripts" / RUNNER)
+    (repo / "scripts" / RUNNER).chmod(0o755)
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
-    shutil.copy(TARGET_LIB, repo / "scripts" / "cargo-target.sh")
+    # gate_plan.py reads Rust through `pipeline.crate_root` (GH #1162)
+    (repo / "scripts" / "pipeline").mkdir(exist_ok=True)
+    for f in ("__init__.py", "crate_root.py"):
+        shutil.copy(REPO / "scripts" / "pipeline" / f, repo / "scripts" / "pipeline" / f)
+    kit_tree.library(repo / "scripts", "cargo-target.sh")
     (repo / "README.md").write_text("first\n")
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
@@ -142,14 +159,20 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
     # where the receipt lands: TestTargetDirectory sets it deliberately.
     env.pop("CARGO_TARGET_DIR", None)
     # Never the real cargo lock: a build running on this host would block the
-    # test suite for as long as it takes.
-    env.setdefault("MECLAW_GATE_LOCK", str(repo.parent / "cargo.lock.test"))
+    # test suite for as long as it takes. Nor an inherited one: inside a gate
+    # run the self-test station carries the outer run's lock, which that run
+    # holds until it ends (W3 gate build02: timeout after 170 tests); the
+    # tests that hold this file themselves (TestLockWait) rely on the path.
+    env["MECLAW_GATE_LOCK"] = str(repo.parent / "cargo.lock.test")
     # A full disk must not turn the self-test station red over a build that
     # these fake stations never run.
     env.setdefault("MECLAW_GATE_MIN_FREE_G", "0")
     # ... and the same for the lane floor (OR-S3.L.7): below it the runner
     # WIPES the target directory, which no test may trigger by accident.
     env.setdefault("MECLAW_GATE_LANE_MIN_FREE_G", "0")
+    # ... and the floor of lane_sync.sh (60 G): on a build host the temp
+    # directory of the fake lane has less free (W1 gate on a build host).
+    env.setdefault("MECLAW_LANE_FLOOR_G", "0")
     # The lane root decides what the runner may wipe; never the shell's.
     env.pop("MECLAW_LANE_ROOT", None)
     # A lane receipt is handed over by the kit to ONE local run, never
@@ -174,7 +197,7 @@ def run_gate(repo, *args, plan=None, dry=True, extra_env=None, timeout_s=None):
         env.update(extra_env)
     # `None` removes a variable: the one way to test a default.
     env = {k: v for k, v in env.items() if v is not None}
-    return subprocess.run([str(repo / "scripts" / "gate.sh")] + list(args),
+    return subprocess.run([str(repo / "scripts" / RUNNER)] + list(args),
                           cwd=str(repo), env=env, capture_output=True, text=True,
                           timeout=timeout_s)
 
@@ -260,6 +283,15 @@ class TestGateLines(GateShTestCase):
         self.assertEqual("3", got["green"])
         self.assertEqual("3", got["total"])
         self.assertEqual(0, res.returncode)
+
+    def test_the_full_rev_is_printed(self):
+        # W9 (GH #1123): `merge --host` gates through this runner on the lane
+        # and accepts the verdict only for the candidate's full rev.
+        res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_OK_BAD))
+        self.assertEqual(0, res.returncode, res.stderr + res.stdout)
+        head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        self.assertRegex(head, r"^[0-9a-f]{40}$")
+        self.assertIn("gate: rev = %s" % head, res.stdout.splitlines())
 
     def test_a_station_with_two_commands_yields_one_gate_line(self):
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_TWO_COMMANDS))
@@ -566,9 +598,10 @@ class TestSlowTests(GateShTestCase):
     """GH #1046 -- the slow lock grades a time, and a time moves with the load.
 
     A strand on a busy lane would go red over a test it never touched (the
-    border cases sat at 88-98 % of the mark at 12 threads). So a strand NOTEs
-    an over-the-mark finding -- the name stays in the log -- and the one
-    integration pass grades it RED. A broken lock (exit 2: no JUnit file, a
+    border cases sat at 88-98 % of the mark at 12 threads). So every mode NOTEs
+    an over-the-mark finding -- the name stays in the log, the wave owns it
+    (TV-K5, ruling K6 2026-10-11: a time is a perf signal, never a verdict;
+    until then the integration pass graded it RED). A broken lock (exit 2: no JUnit file, a
     filter it cannot read, a debt without an issue) is not about load: RED in
     every mode. The station's own verdict line (`SLOW-VERDICT`) becomes the
     reason of the GATE line, so the debt is in the summary, not only the log.
@@ -588,8 +621,8 @@ class TestSlowTests(GateShTestCase):
     def test_over_the_mark_is_a_note_in_a_strand(self):
         res, row = self.row("strand", 1)
         self.assertEqual("NOTE", row["verdict"], res.stdout)
-        self.assertEqual("2 over 1/3, 4 owed (GH #1048); named in the log, "
-                         "integration grades it RED", row["reason"])
+        self.assertEqual("2 over 1/3, 4 owed (GH #1048); a finding of the wave, "
+                         "named in the log", row["reason"])
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
     def test_a_broken_lock_is_red_in_a_strand(self):
@@ -598,12 +631,13 @@ class TestSlowTests(GateShTestCase):
         self.assertEqual("broken: no JUnit file", row["reason"])
         self.assertEqual(1, res.returncode)
 
-    def test_over_the_mark_is_red_in_the_passes(self):
+    def test_over_the_mark_is_a_note_in_the_passes(self):
         for mode in ("integration", "release"):
             res, row = self.row(mode, 1)
-            self.assertEqual("RED", row["verdict"], "%s: %s" % (mode, res.stdout))
-            self.assertEqual("2 over 1/3, 4 owed (GH #1048)", row["reason"])
-            self.assertEqual(1, res.returncode, mode)
+            self.assertEqual("NOTE", row["verdict"], "%s: %s" % (mode, res.stdout))
+            self.assertEqual("2 over 1/3, 4 owed (GH #1048); a finding of the wave, "
+                             "named in the log", row["reason"])
+            self.assertEqual(0, res.returncode, mode)
 
     def test_the_debt_is_in_the_green_line(self):
         for mode in ("strand", "integration"):
@@ -700,7 +734,7 @@ class TestPersonaReceipt(GateShTestCase):
             self.assertIn("run_persona.py --live --engine local", out)
             self.assertIn("--engine paid --budget-eur", out)
             self.assertIn('--decide persona-receipt=without:"', out)
-            self.assertIn('scripts/gate.sh %s --decide persona-receipt=without:"<reason>"'
+            self.assertIn('scripts/gate.sh %s --decide persona-receipt=without:"OR-<id>: <reason>"'
                           % mode, out)
             doc = self.last_receipt(mode)
             self.assertEqual("ASK", doc["verdict"], mode)
@@ -728,7 +762,7 @@ class TestPersonaReceipt(GateShTestCase):
                          res.stdout)
         self.assertEqual(1, res.returncode)
         # "without" answers a missing measurement; it never outvotes a finding.
-        res = self.run_mode("integration", 6, "--decide", "persona-receipt=without:x")
+        res = self.run_mode("integration", 6, "--decide", "persona-receipt=without:OR-T.1 x")
         self.assertEqual("RED", self.rows(res)["persona-receipt"]["verdict"], res.stdout)
         self.assertEqual(1, res.returncode)
         self.assertIn("unused", res.stderr)
@@ -755,7 +789,7 @@ class TestPersonaReceipt(GateShTestCase):
                 self.assertEqual(1, res.returncode, "%s rc %d" % (mode, rc))
 
     def test_without_is_recorded_in_the_receipt(self):
-        reason = "ships without a fresh run"
+        reason = "OR-T.1 ships without a fresh run"
         res = self.run_mode("integration", 3, "--decide",
                             "persona-receipt=without:" + reason)
         row = self.rows(res)["persona-receipt"]
@@ -779,7 +813,7 @@ class TestPersonaReceipt(GateShTestCase):
 
     def test_decide_is_refused_outside_the_passes(self):
         for mode in ("strand", "ci"):
-            res = run_gate(self.repo, mode, "--decide", "persona-receipt=without:x",
+            res = run_gate(self.repo, mode, "--decide", "persona-receipt=without:OR-T.1 x",
                            plan=self.plan_for(3), dry=False)
             self.assertEqual(2, res.returncode, mode)
             self.assertIn("--decide answers a question only integration and release ask",
@@ -790,14 +824,15 @@ class TestPersonaReceipt(GateShTestCase):
         for bad in ("persona-receipt=with:x", "persona-receipt=without",
                     "persona-receipt=without:", "persona-receipt=without:   ",
                     "corpus-committed=without:x", "persona-receipt",
-                    "persona-receipt=without:a\tb", "persona-receipt=without:a\nb"):
+                    "persona-receipt=without:a\tb", "persona-receipt=without:a\nb",
+                    "persona-receipt=without:no ruling id"):
             res = self.run_mode("integration", 3, "--decide", bad)
             self.assertEqual(2, res.returncode, "%r: %s" % (bad, res.stdout + res.stderr))
             self.assertIn("gate: --decide", res.stderr, bad)
             self.assertNotIn("GATE-SUMMARY", res.stdout, bad)
 
     def test_an_unused_decision_says_so_and_records_nothing(self):
-        res = self.run_mode("integration", 0, "--decide", "persona-receipt=without:x")
+        res = self.run_mode("integration", 0, "--decide", "persona-receipt=without:OR-T.1 x")
         self.assertEqual("GREEN", self.rows(res)["persona-receipt"]["verdict"])
         self.assertEqual(0, res.returncode)
         self.assertIn("gate: --decide persona-receipt unused -- "
@@ -1259,7 +1294,7 @@ class TestSummaryCounts(GateShTestCase):
                 "deny\tbans\t0\ttrue\t\n"
                 "build\tworkspace\t1\ttrue\t\n")
         res = run_gate(self.repo, "strand", plan=self.plan_file(plan), dry=False,
-                       extra_env={"PATH": "/usr/bin:/bin"})
+                       extra_env={"PATH": store_isolation.trapped_path()})
         rows = {r["name"]: r for r in gate_lines(res.stdout)}
         self.assertEqual("SKIP", rows["deny"]["verdict"], res.stdout)
         self.assertEqual("NOTE", rows["tree-sync"]["verdict"], res.stdout)
@@ -1332,7 +1367,7 @@ class TestCargoLockFd(GateShTestCase):
         plan = ("one\tworkspace\t1\ttrue\t\n"
                 "two\tworkspace\t1\ttrue\t\n")
         res = run_gate(self.repo, "strand", plan=self.plan_file(plan), dry=False,
-                       timeout_s=30)
+                       timeout_s=kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         rows = {r["name"]: r for r in gate_lines(res.stdout)}
         self.assertEqual("GREEN", rows["one"]["verdict"])
@@ -1347,7 +1382,7 @@ class TestCargoLockFd(GateShTestCase):
         plan = ("one\tworkspace\t1\tsh -c 'sleep 20 & echo spawned'\t\n"
                 "two\tworkspace\t1\ttrue\t\n")
         res = run_gate(self.repo, "strand", plan=self.plan_file(plan), dry=False,
-                       timeout_s=10)
+                       timeout_s=kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         names = [r["name"] for r in gate_lines(res.stdout)]
         self.assertEqual(["one", "two"], [n for n in names if n != "tree-sync"])
@@ -1371,7 +1406,7 @@ class TestRunWideCargoLock(GateShTestCase):
 
     def test_the_lock_spans_the_stations_after_the_first_cargo_one(self):
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_LOCK_WINDOW),
-                       dry=False, timeout_s=30)
+                       dry=False, timeout_s=kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         # Before the first cargo station nothing is locked ...
         self.assertIn("held=0", self.station_log("early").read_text())
@@ -1381,7 +1416,7 @@ class TestRunWideCargoLock(GateShTestCase):
 
     def test_the_lock_is_free_again_when_the_run_ends(self):
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                       dry=False, timeout_s=30)
+                       dry=False, timeout_s=kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         free = subprocess.run(["flock", "-n", str(self.lock_path()), "true"])
         self.assertEqual(0, free.returncode,
@@ -1419,6 +1454,7 @@ class TestTierLockHandoff(GateShTestCase):
         dst = self.repo / "scripts" / "test-tier.sh"
         shutil.copy(src, dst)
         dst.chmod(0o755)
+        kit_tree.seed(dst.parent, "test-tier.sh")
         return dst
 
     def run_tier(self, held, timeout_s):
@@ -1439,7 +1475,7 @@ class TestTierLockHandoff(GateShTestCase):
                                   capture_output=True, text=True, timeout=timeout_s)
 
     def test_the_tier_skips_its_own_flock_when_the_caller_holds_it(self):
-        res = self.run_tier(held=True, timeout_s=30)
+        res = self.run_tier(held=True, timeout_s=kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertIn("cargo lock: held by the caller", res.stdout)
         self.assertIn("tier-dry:", res.stdout)
@@ -1447,8 +1483,29 @@ class TestTierLockHandoff(GateShTestCase):
     def test_the_tier_still_takes_the_lock_on_its_own(self):
         # The counter-case, and the reason the skip is not simply "never
         # lock": run outside the gate, the script serialises as it always did.
-        with self.assertRaises(subprocess.TimeoutExpired):
-            self.run_tier(held=False, timeout_s=5)
+        # Re-check tv-bn M7e A-M5 (TV-Z3): the proof was a 5-s timeout -- time
+        # as the verdict. Now the event: the tier is SEEN waiting on the lock
+        # this process holds, and runs once it is free.
+        tier = self.tier_sh()
+        lock = pathlib.Path(self._tmp.name) / "tier.lock"
+        env = dict(os.environ, MECLAW_GATE_LOCK=str(lock), MECLAW_TIER_DRY="1")
+        env.pop("CI", None)
+        env.pop("MECLAW_CARGO_LOCK_HELD", None)
+        with open(lock, "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            proc = subprocess.Popen([str(tier), "t0"], cwd=str(self.repo), env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+            try:
+                kit_time.until("the tier waits on the held cargo lock", lambda: kit_time.flock_waiters(lock),
+                               state=proc.poll)
+            except BaseException:
+                proc.kill()
+                proc.communicate(timeout=kit_time.HANG)
+                raise
+            self.assertIsNone(proc.poll(), "the tier ran beside a held cargo lock")
+        out, _ = proc.communicate(timeout=kit_time.HANG)
+        self.assertEqual(0, proc.returncode, out)
+        self.assertIn("tier-dry:", out)
 
 
 class TestTierTargetDirectory(GateShTestCase):
@@ -1474,6 +1531,7 @@ class TestTierTargetDirectory(GateShTestCase):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / "scripts" / "test-tier.sh", dst)
         dst.chmod(0o755)
+        kit_tree.seed(dst.parent, "test-tier.sh")
         return dst
 
     def add_worktree(self):
@@ -1515,7 +1573,7 @@ class TestTierTargetDirectory(GateShTestCase):
         if extra_env:
             env.update(extra_env)
         return subprocess.run([str(self.tier_sh(cwd))] + list(args), cwd=str(cwd),
-                              env=env, capture_output=True, text=True, timeout=120)
+                              env=env, capture_output=True, text=True, timeout=4 * kit_time.HANG)
 
     def test_a_linked_worktree_builds_into_the_main_target(self):
         wt = self.add_worktree()
@@ -1587,6 +1645,277 @@ class TestTierTargetDirectory(GateShTestCase):
         self.assertGreater(source.stat().st_mtime, stale)
 
 
+def _leash_secs(profile_table):
+    """`slow-timeout` of one nextest profile as the seconds until the kill."""
+    st = profile_table["slow-timeout"]
+    period = st["period"]
+    assert period.endswith("s") and period[:-1].isdigit(), period
+    return int(period[:-1]) * st["terminate-after"]
+
+
+class TestTierQuotaLeash(GateShTestCase):
+    """K8 (OR-T17-15): the nextest kill grows in a QUOTA run and only there.
+
+    The quota mark (`MECLAW_TEST_CPU_QUOTA`, set by `lane_sync.sh` inside the
+    CPU-quota scope from the enforced `cpu.max`, and read again by the tier from
+    its own cgroup's `cpu.max` -- tv-br M10y, re-check R-D1: an inherited mark
+    alone is no quota) is the one switch; the leash
+    itself is the one profile `quota` in `.config/nextest.toml`. On 13.10. the
+    organism test was killed at the 240 s of `default` under 80 % / F = 3 while
+    busy to its last line (tv-br M10v) -- the hang marks scaled, the kill did not.
+    """
+
+    # The default leash every ordinary run keeps: 30 s x 8.
+    DEFAULT_LEASH_SECS = 240
+    # The quota leash (tv-br report § M10m3): >= 3x the highest P95 of any test
+    # under 80 % / F = 3 (gh1061_the_organism, 327.0 s over three full-scope
+    # runs; 16 gh1061 series runs P95 123.5 s -> 981 s), rounded up to whole
+    # 60 s and never below the K8 release of 1020 s; >= F x the default leash.
+    QUOTA_LEASH_SECS = 1020
+    # The time factor of the measured quota runs (OR-T12-13), stated once:
+    # `QUOTA_TIME_FACTOR` of `meclaw_testing::deadline` (OR-T18-7), read from
+    # that very line like `flake_triage.max_time_factor` reads its bound.
+    QUOTA_FACTOR = float(re.search(
+        r"^pub const QUOTA_TIME_FACTOR: f64 = ([0-9.]+);$",
+        (REPO / "crates" / "meclaw-testing" / "src" / "deadline.rs").read_text(),
+        re.M).group(1))
+
+    tier_sh = TestTierTargetDirectory.tier_sh
+
+    def run_tier(self, cwd, *args, extra_env=None, **kw):
+        """The tier against a FAKE cgroup mount (tv-br M10y, re-check R-D1):
+        empty unless a case gives the own cgroup a `cpu.max`
+        (`effective_quota`), so the host's real quota never leaks in, and no
+        inherited time factor unless the case names one."""
+        env = {"MECLAW_LANE_CGROUP_FS": str(self.cgfs), "MECLAW_TEST_TIME_FACTOR": None}
+        env.update(extra_env or {})
+        saved = os.environ.pop("MECLAW_TEST_TIME_FACTOR", None)
+        try:
+            return TestTierTargetDirectory.run_tier(
+                self, cwd, *args,
+                extra_env={k: v for k, v in env.items() if v is not None}, **kw)
+        finally:
+            if saved is not None:
+                os.environ["MECLAW_TEST_TIME_FACTOR"] = saved
+
+    def setUp(self):
+        super().setUp()
+        self.cgfs = pathlib.Path(self._tmp.name) / "cgfs"
+        self.cgfs.mkdir()
+        # tv-bn FN5: a quota run without a factor reads QUOTA_TIME_FACTOR from
+        # its one line in the tree it runs in.
+        src = REPO / "crates" / "meclaw-testing" / "src" / "deadline.rs"
+        dst = self.repo / "crates" / "meclaw-testing" / "src" / "deadline.rs"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, dst)
+
+    def effective_quota(self, cpu_max):
+        """The own cgroup's `cpu.max` as the kernel shows it with the cpu
+        controller delegated; the tier runs in this process's cgroup
+        (`0::<path>` of /proc/self/cgroup)."""
+        own = ""
+        for line in pathlib.Path("/proc/self/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                own = line[3:]
+        scope = self.cgfs / own.lstrip("/")
+        scope.mkdir(parents=True, exist_ok=True)
+        (scope / "cpu.max").write_text(cpu_max + "\n")
+
+    def nextest_profile(self, res):
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        m = re.search(r"tier-dry: .*--profile (\S+)", res.stdout)
+        self.assertIsNotNone(m, res.stdout)
+        return m.group(1)
+
+    def test_an_ordinary_run_keeps_the_default_profile(self):
+        env = {"MECLAW_TIER_PROFILE": ""}
+        res = self.run_tier(self.repo, "t0", extra_env=env)
+        self.assertEqual("default", self.nextest_profile(res))
+        self.assertNotIn("quota run", res.stdout)
+
+    def test_the_empty_mark_in_front_of_the_scope_is_no_quota_run(self):
+        """`lane_sync.sh` blanks the mark before the scope; blank is ordinary."""
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": ""}
+        res = self.run_tier(self.repo, "t0", extra_env=env)
+        self.assertEqual("default", self.nextest_profile(res))
+
+    def test_a_quota_run_takes_the_quota_profile(self):
+        self.effective_quota("80000 100000")
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": "80"}
+        res = self.run_tier(self.repo, "filter", "test(=x)", extra_env=env)
+        self.assertEqual("quota", self.nextest_profile(res))
+        self.assertIn("=== nextest [profile=quota]", res.stdout)
+        self.assertIn("enforced cpu.max: 80 %", res.stdout)
+
+    def test_a_named_profile_stays_the_callers_in_a_quota_run(self):
+        self.effective_quota("80000 100000")
+        env = {"MECLAW_TIER_PROFILE": "isolate", "MECLAW_TEST_CPU_QUOTA": "80"}
+        res = self.run_tier(self.repo, "t0", extra_env=env)
+        self.assertEqual("isolate", self.nextest_profile(res))
+
+    def test_a_claimed_mark_without_an_enforced_quota_is_no_quota_run(self):
+        """R-D1 (fail-open): a mark set by hand, or carried into a scope whose
+        user manager has no cpu controller -- no `cpu.max`, or `max` -- swaps
+        in neither the quota leash nor a mark for the hang marks."""
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": "80"}
+        for cpu_max in (None, "max 100000"):
+            with self.subTest(cpu_max=cpu_max):
+                if cpu_max is not None:
+                    self.effective_quota(cpu_max)
+                res = self.run_tier(self.repo, "t0", extra_env=env)
+                self.assertEqual("default", self.nextest_profile(res))
+                self.assertNotIn("quota run", res.stdout)
+                self.assertIn("is not the enforced cpu.max (none)", res.stderr)
+
+    def test_the_enforced_quota_counts_over_the_claimed_one(self):
+        """Asked 80, enforced 50: the mark is the 50 the kernel holds."""
+        self.effective_quota("50000 100000")
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": "80"}
+        res = self.run_tier(self.repo, "t0", extra_env=env)
+        self.assertEqual("quota", self.nextest_profile(res))
+        self.assertIn("enforced cpu.max: 50 %", res.stdout)
+        self.assertIn("is not the enforced cpu.max (50)", res.stderr)
+
+    def test_a_time_factor_without_an_enforced_quota_is_refused(self):
+        """OR-T12-13: F != 1 belongs to a quota run; without an effective
+        quota the tier refuses before nextest (exit 2), F = 1 passes."""
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": "80",
+               "MECLAW_TEST_TIME_FACTOR": "3"}
+        res = self.run_tier(self.repo, "t0", extra_env=env)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("a factor belongs to a quota run only", res.stderr)
+        self.assertNotIn("tier-dry:", res.stdout)
+        env["MECLAW_TEST_TIME_FACTOR"] = "1"
+        self.assertEqual("default", self.nextest_profile(
+            self.run_tier(self.repo, "t0", extra_env=env)))
+        self.effective_quota("80000 100000")
+        env["MECLAW_TEST_TIME_FACTOR"] = "3"
+        self.assertEqual("quota", self.nextest_profile(
+            self.run_tier(self.repo, "t0", extra_env=env)))
+
+    def factor_seen_by_cargo(self, env):
+        """The time factor and the quota mark the real cargo would have been
+        handed: a stub on PATH records them (no compile)."""
+        bindir = pathlib.Path(self._tmp.name) / "factorbin"
+        bindir.mkdir(exist_ok=True)
+        seen = pathlib.Path(self._tmp.name) / "cargo-factor.txt"
+        (bindir / "cargo").write_text(
+            "#!/bin/sh\nprintf '%%s %%s\\n' \"${MECLAW_TEST_TIME_FACTOR-unset}\" "
+            "\"${MECLAW_TEST_CPU_QUOTA-unset}\" > \"%s\"\n" % seen)
+        (bindir / "cargo").chmod(0o755)
+        res = self.run_tier(self.repo, "t0", dry=False, extra_env=env, path_prefix=str(bindir))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        return res, seen.read_text().split()
+
+    def test_a_quota_run_without_a_factor_scales_its_marks_by_the_quota_factor(self):
+        """tv-bn FN5 (OR-T12-13, OR-T18-7): NM4 ran 710 webkit/phone under 80 %
+        without a factor -- quota leashes, factor-1 marks, and B-15's 30 s
+        marker read a throttled page change as a hang. Every quota run gets
+        F = QUOTA_TIME_FACTOR unless the caller names one; an ordinary run
+        gets none."""
+        self.effective_quota("80000 100000")
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": "80"}
+        res, (factor, mark) = self.factor_seen_by_cargo(env)
+        self.assertEqual(self.QUOTA_FACTOR, float(factor), res.stdout)
+        self.assertEqual("80", mark)
+        self.assertIn("quota run: time factor MECLAW_TEST_TIME_FACTOR=%s (QUOTA_TIME_FACTOR"
+                      % factor, res.stdout)
+        env["MECLAW_TEST_TIME_FACTOR"] = "2"
+        res, (factor, _) = self.factor_seen_by_cargo(env)
+        self.assertEqual("2", factor, "a factor the caller names stays theirs")
+        self.assertIn("(named by the caller)", res.stdout)
+
+    def test_an_ordinary_run_gets_no_time_factor(self):
+        env = {"MECLAW_TIER_PROFILE": ""}
+        res, (factor, mark) = self.factor_seen_by_cargo(env)
+        self.assertEqual(["unset", "unset"], [factor, mark])
+        self.assertNotIn("time factor", res.stdout)
+
+    def test_a_quota_run_without_the_factor_line_is_refused(self):
+        """Fail-closed: no QUOTA_TIME_FACTOR to read is exit 2, never F = 1."""
+        (self.repo / "crates" / "meclaw-testing" / "src" / "deadline.rs").write_text("// gone\n")
+        self.effective_quota("80000 100000")
+        env = {"MECLAW_TIER_PROFILE": "", "MECLAW_TEST_CPU_QUOTA": "80"}
+        res = self.run_tier(self.repo, "t0", extra_env=env)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("QUOTA_TIME_FACTOR is not in", res.stderr)
+        self.assertNotIn("tier-dry:", res.stdout)
+
+    def test_the_leashes_of_the_config(self):
+        import tomllib
+        cfg = tomllib.loads((REPO / ".config" / "nextest.toml").read_text())
+        prof = cfg["profile"]
+        self.assertEqual(self.DEFAULT_LEASH_SECS, _leash_secs(prof["default"]),
+                         "the ordinary leash moved")
+        self.assertEqual(self.QUOTA_LEASH_SECS, _leash_secs(prof["quota"]),
+                         "the quota leash is not the value of § M10x")
+        self.assertGreaterEqual(self.QUOTA_LEASH_SECS,
+                                self.QUOTA_FACTOR * self.DEFAULT_LEASH_SECS)
+        self.assertEqual({"slow-timeout", "junit"}, set(prof["quota"]) - {"overrides"},
+                         "the quota profile changes the leash and nothing else")
+        # R<->N merge NS: the per-test leashes of the 710 browser binaries in the
+        # quota profile (their default ones know no factor). An override there is
+        # a leash and nothing else, over a binary the default profile leashes too.
+        default_leashed = {o["filter"] for o in prof["default"].get("overrides", [])
+                           if "slow-timeout" in o}
+        for o in prof["quota"].get("overrides", []):
+            self.assertEqual({"filter", "slow-timeout"}, set(o),
+                             "a quota override changes the leash and nothing else")
+            self.assertIn(o["filter"], default_leashed,
+                          "a quota leash over a test the default profile does not leash")
+
+
+class TestTierPackageScope(GateShTestCase):
+    """A `-p <pkg>` narrows the run to that package (GH #1127).
+
+    The tier used to call `cargo nextest run --workspace ... "$@"`, and cargo
+    reads `--workspace` next to `-p` as "every member": a single
+    `strand.sh test '<expr>' -p <pkg>` built 1388 test binaries and ran 11246
+    tests until its timeout (lane probe 2026-10-08). With a package named the
+    script drops `--workspace`; without one it keeps it.
+    """
+
+    # The planting and the run of the target-directory cases, not their tests.
+    tier_sh = TestTierTargetDirectory.tier_sh
+    run_tier = TestTierTargetDirectory.run_tier
+
+    def argv_cargo(self):
+        """A `cargo` on PATH that records its argv, one word per line."""
+        bindir = pathlib.Path(self._tmp.name) / "argvbin"
+        bindir.mkdir(exist_ok=True)
+        seen = pathlib.Path(self._tmp.name) / "cargo-argv.txt"
+        (bindir / "cargo").write_text(
+            "#!/bin/sh\nprintf '%%s\\n' \"$@\" > \"%s\"\n" % seen)
+        (bindir / "cargo").chmod(0o755)
+        return bindir, seen
+
+    def real_argv(self, *args):
+        bindir, seen = self.argv_cargo()
+        res = self.run_tier(self.repo, *args, dry=False, path_prefix=str(bindir))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        return seen.read_text().splitlines()
+
+    def test_a_named_package_drops_the_workspace_flag(self):
+        for pkg_args in (["-p", "meclaw-cells"], ["--package", "meclaw-cells"],
+                         ["--package=meclaw-cells"], ["-pmeclaw-cells"]):
+            with self.subTest(pkg_args=pkg_args):
+                argv = self.real_argv("t0", *pkg_args)
+                self.assertNotIn("--workspace", argv)
+                self.assertTrue(set(pkg_args) <= set(argv), argv)
+
+    def test_without_a_package_the_workspace_flag_stays(self):
+        self.assertIn("--workspace", self.real_argv("t0"))
+
+    def test_the_dry_line_shows_the_same_scope(self):
+        res = self.run_tier(self.repo, "t1", "-p", "meclaw-cells")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        dry = [l for l in res.stdout.splitlines() if "tier-dry:" in l]
+        self.assertEqual(1, len(dry), res.stdout)
+        self.assertNotIn("--workspace", dry[0])
+        res = self.run_tier(self.repo, "t1")
+        self.assertIn("--workspace", res.stdout)
+
+
 class TestTierNoTestsMatched(GateShTestCase):
     """A filter that runs no test is RED, exit 6, `no tests matched` (GH #997).
 
@@ -1629,6 +1958,32 @@ class TestTierNoTestsMatched(GateShTestCase):
 
     def test_nextest_finding_no_tests_is_no_tests_matched(self):
         self.assert_no_match(self.tier(err="error: no tests to run\n", rc=4))
+
+    def test_a_refused_filter_says_so_apart_from_an_empty_one(self):
+        # GH #1167 (i), re-check H2 B1 b: nothing was looked at -- the gate's
+        # cache cut must not read it as an empty remainder.
+        res = self.tier(err="error: operator didn't match any binary IDs\n", rc=94)
+        self.assertIn("no tests matched (filterset refused): ", res.stderr)
+        self.assertNotIn("no tests matched: ", res.stderr)
+        res = self.tier(out="     Summary [   0.010s] 0 tests run: 0 passed, 0 skipped\n")
+        self.assertIn("test-tier: RED -- no tests matched: ", res.stderr)
+
+    def test_list_mode_counts_the_selection_with_the_same_arguments(self):
+        bindir = pathlib.Path(self._tmp.name) / "fakebin"
+        bindir.mkdir(exist_ok=True)
+        args = pathlib.Path(self._tmp.name) / "args"
+        (bindir / "cargo").write_text(
+            "#!/bin/sh\necho \"$*\" > %s\nprintf 'w::a t1\\nw::a t2\\n'\n" % args)
+        (bindir / "cargo").chmod(0o755)
+        res = self.run_tier(self.repo, "filter", "binary(~helpers)", "--run-ignored", "all",
+                            dry=False, path_prefix=str(bindir),
+                            extra_env={"MECLAW_TIER_LIST": "1"})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual("test-tier: LISTED 2", res.stdout.strip().splitlines()[-1])
+        called = args.read_text()
+        self.assertIn("nextest list", called)
+        self.assertIn("--run-ignored all", called)
+        self.assertIn("--message-format oneline", called)
 
     def test_a_run_with_tests_stays_green(self):
         res = self.tier(out="     Summary [   0.420s] 3 tests run: 3 passed, 0 skipped\n")
@@ -1674,7 +2029,7 @@ class TestOptionValues(GateShTestCase):
     def test_an_option_without_a_value_is_a_usage_error(self):
         for flag in ("--base", "--only", "--log-dir"):
             res = subprocess.run(
-                ["timeout", "5", str(self.repo / "scripts" / "gate.sh"),
+                ["timeout", "5", str(self.repo / "scripts" / RUNNER),
                  "strand", flag],
                 cwd=str(self.repo), capture_output=True, text=True)
             self.assertEqual(2, res.returncode,
@@ -1820,48 +2175,68 @@ class TestLockWait(GateShTestCase):
     def lock_path(self):
         return self.repo.parent / "cargo.lock.test"
 
-    def hold_the_lock(self, seconds):
-        """Hold the run lock for `seconds`; the runner's own start eats some of it.
+    def hold_the_lock(self):
+        """Hold the run lock until the runner blocks on it, then a second more.
 
-        Six, not three: since GH #764 the wait is truncated rather than rounded
-        up by a tick, so the margin between what the runner still sees and the
-        two-second floor below has to come from the hold itself.
+        The release is an event (TV-K2): the runner's blocking flock shows up in
+        /proc/locks as a waiter (`->`) on the lock's inode. The second after it
+        is the product's own floor -- a wait from 1 s is booked, truncated
+        (GH #764) -- a lower bound a loaded host only lengthens. The seconds
+        themselves are pinned exact on a fake clock in the executor's tests
+        (`test_executor_respects_cargo_lock`); here only the events count.
         """
         lock = self.lock_path()
         lock.touch()
-        holder = subprocess.Popen(["flock", str(lock), "sleep", str(seconds)])
+        gate = lock.parent / "lock-release"
+        gate.unlink(missing_ok=True)
+        holder = subprocess.Popen(
+            ["flock", str(lock), "sh", "-c",
+             'while [ ! -e "$1" ]; do sleep 0.05; done; sleep 1.1', "hold", str(gate)],
+            start_new_session=True)
         self.addCleanup(holder.wait)
-        self.addCleanup(holder.terminate)
-        for _ in range(500):
-            probe = subprocess.run(["flock", "-n", str(lock), "true"])
-            if probe.returncode != 0:
-                return holder
-            time.sleep(0.01)
-        self.skipTest("the background holder never took the lock")
+        self.addCleanup(lambda: holder.poll() is None and os.killpg(holder.pid, 15))
+        kit_time.until("the holder takes the run lock", lambda: subprocess.run(
+            ["flock", "-n", str(lock), "true"]).returncode != 0)
+        ino = ":%d" % lock.stat().st_ino
+
+        def waiter():
+            with open("/proc/locks", encoding="ascii") as fh:
+                return [ln for ln in fh if " -> " in ln and ln.split()[-3].endswith(ino)]
+
+        def release():
+            try:
+                kit_time.until("the runner blocks on the run lock", waiter)
+            except kit_time.Hang:
+                return            # the run's own timeout reports it
+            gate.touch()
+        t = threading.Thread(target=release, daemon=True)
+        t.start()
+        self.addCleanup(t.join, kit_time.HANG)
+        return holder
 
     def test_the_wait_is_its_own_note_line_before_the_cargo_station(self):
-        self.hold_the_lock(6)
+        self.hold_the_lock()
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                       dry=False, timeout_s=60)
+                       dry=False, timeout_s=2 * kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         rows = gate_lines(res.stdout)
         names = [r["name"] for r in rows]
         self.assertIn("lock-wait", names, res.stdout)
         row = rows[names.index("lock-wait")]
         self.assertEqual("NOTE", row["verdict"])
-        self.assertGreaterEqual(int(row["secs"]), 2, res.stdout)
         self.assertIn("behind other runs", row["scope"])
-        # It comes BEFORE the station it was waiting for ...
+        # It comes BEFORE the station it was waiting for (that station's own
+        # seconds no longer carry the queue: exact on the fake clock,
+        # `test_executor_respects_cargo_lock`).
         self.assertLess(names.index("lock-wait"), names.index("build"), names)
-        # ... and that station's own seconds no longer carry the queue.
-        self.assertLessEqual(int(rows[names.index("build")]["secs"]), 1, res.stdout)
+        self.assertEqual(int(row["secs"]), self.last_receipt()["lock_wait_secs"], res.stdout)
 
     def test_the_wait_is_in_the_receipt_and_counts_as_no_judgement(self):
-        self.hold_the_lock(6)
+        self.hold_the_lock()
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                       dry=False, timeout_s=60)
+                       dry=False, timeout_s=2 * kit_time.HANG)
         receipt = self.last_receipt()
-        self.assertGreaterEqual(receipt["lock_wait_secs"], 2, res.stdout)
+        self.assertNotEqual(0, receipt["lock_wait_secs"], res.stdout)
         self.assertIn("lock-wait", [s["name"] for s in receipt["stations"]])
         summary = [m.groupdict() for m in
                    (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m]
@@ -1869,7 +2244,7 @@ class TestLockWait(GateShTestCase):
 
     def test_a_run_that_never_waits_has_no_line_and_a_zero_field(self):
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                       dry=False, timeout_s=60)
+                       dry=False, timeout_s=2 * kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertNotIn("lock-wait", [r["name"] for r in gate_lines(res.stdout)])
         self.assertEqual(0, self.last_receipt()["lock_wait_secs"])
@@ -1889,7 +2264,7 @@ class TestStageLock(GateShTestCase):
 
     def run_with_stage(self, lock):
         return run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                        dry=False, timeout_s=60,
+                        dry=False, timeout_s=2 * kit_time.HANG,
                         extra_env={"MECLAW_STAGE_LOCK": str(lock)})
 
     def test_a_held_lock_is_a_note_before_the_cargo_station(self):
@@ -1941,7 +2316,7 @@ class TestStageLock(GateShTestCase):
 
     def test_without_the_variable_nothing_is_probed(self):
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                       dry=False, timeout_s=60)
+                       dry=False, timeout_s=2 * kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertNotIn("stage-lock", [r["name"] for r in gate_lines(res.stdout)])
 
@@ -1954,7 +2329,7 @@ class TestStageLock(GateShTestCase):
         lock = self.stage_lock()
         lock.touch()
         res = run_gate(self.repo, "strand", plan=self.plan_file(PLAN_CARGO),
-                       dry=False, timeout_s=60,
+                       dry=False, timeout_s=2 * kit_time.HANG,
                        extra_env={"MECLAW_STAGE_LOCK": str(lock),
                                   "PATH": self.path_without_flock()})
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
@@ -2405,6 +2780,46 @@ class TestLane(GateShTestCase):
         "guide-selftest\tunittest\t0\ttrue\t\n"
     )
 
+    @staticmethod
+    def default_lane_roots():
+        """The roots `lane_wipe_target` in gate_legacy.sh accepts besides
+        `MECLAW_LANE_ROOT` -- read from the runner, not copied (GH #1175)."""
+        text = (REPO / "scripts" / "gate_legacy.sh").read_text(encoding="utf-8")
+        m = re.search(r'for r in (.+?) "\$\{MECLAW_LANE_ROOT:-\}"', text)
+        return tuple(m.group(1).split()) if m else ()
+
+    def setUp(self):
+        """The tree lies outside every default lane root, wherever TMPDIR
+        points: the "outside the lane root" tests need that premise (GH #1175)."""
+        super().setUp()
+        roots = [os.path.realpath(r) for r in self.default_lane_roots()]
+
+        def inside(path):
+            p = os.path.realpath(path)
+            return any(p == r or p.startswith(r + os.sep) for r in roots)
+
+        if inside(self._tmp.name):
+            base = next((d for d in ("/dev/shm", "/var/tmp", "/tmp")
+                         if os.path.isdir(d) and os.access(d, os.W_OK) and not inside(d)), None)
+            self.assertIsNotNone(base, "no writable directory outside %s" % roots)
+            self._tmp = tempfile.TemporaryDirectory(dir=base)
+            self.addCleanup(self._tmp.cleanup)
+            self.repo = make_repo(self._tmp.name)
+
+    def test_the_tree_leaves_a_default_lane_root(self):
+        # GH #1175: with TMPDIR under a root the runner always accepts, the
+        # "outside the lane root" tests ran on a target inside it.
+        root = os.path.realpath(tempfile.gettempdir())
+        with unittest.mock.patch.object(TestLane, "default_lane_roots",
+                                        staticmethod(lambda: (root,)), create=True):
+            self.setUp()
+        here = os.path.realpath(self._tmp.name)
+        self.assertFalse(here.startswith(root + os.sep), here)
+        self.assertTrue((self.repo / ".git").exists())
+
+    def test_the_default_lane_roots_come_from_the_runner(self):
+        self.assertEqual(("/srv/target",), self.default_lane_roots())
+
     def test_lane_without_base_refuses(self):
         res = run_gate(self.repo, "strand", "--lane", plan=self.plan_file(PLAN_OK_BAD))
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
@@ -2539,6 +2954,42 @@ class TestLane(GateShTestCase):
         self.assertTrue((target / "warm").exists())
         self.assertIn("only 5G free on /", res.stderr)
         self.assertNotIn("wiped", res.stdout + res.stderr)
+
+    # --- GH #1154 re-check m-1/m-2: a negative floor switched the disk guard
+    # off without a word. It is no value: the default 60 G holds, and a NOTE
+    # says so; 0 stays the explicit off switch and says that too.
+
+    def test_a_negative_lane_floor_is_ignored_and_the_default_wipes(self):
+        target = self.warm_target()
+        res = self.run_lane_df(14, 64, MECLAW_GATE_LANE_MIN_FREE_G="-5")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse((target / "warm").exists())
+        self.assertIn("(14 G free < 60 G)", self.station_log("build").read_text())
+        self.assertIn("gate: NOTE MECLAW_GATE_LANE_MIN_FREE_G=-5 ignored, floor 60G",
+                      res.stdout)
+
+    def test_a_zero_lane_floor_says_the_disk_guard_is_off(self):
+        target = self.warm_target()
+        res = self.run_lane_df(14, 64, MECLAW_GATE_LANE_MIN_FREE_G="0")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertTrue((target / "warm").exists())
+        self.assertIn("gate: NOTE MECLAW_GATE_LANE_MIN_FREE_G=0: disk guard off", res.stdout)
+
+    def test_a_negative_local_floor_is_ignored_and_the_default_refuses(self):
+        self.warm_target()
+        res = self.run_lane_df(5, 5, lane=False, MECLAW_GATE_MIN_FREE_G="-5")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("only 5G free on / -- need 60G", res.stderr)
+        self.assertIn("gate: NOTE MECLAW_GATE_MIN_FREE_G=-5 ignored, floor 60G", res.stdout)
+
+    def test_an_overflowing_local_floor_is_ignored_and_the_default_refuses(self):
+        # Re-check pd-legacy m-4: 2^63 wrapped to a negative floor -- off, silent.
+        self.warm_target()
+        res = self.run_lane_df(5, 5, lane=False, MECLAW_GATE_MIN_FREE_G="9223372036854775808")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("only 5G free on / -- need 60G", res.stderr)
+        self.assertIn("gate: NOTE MECLAW_GATE_MIN_FREE_G=9223372036854775808 ignored, floor 60G",
+                      res.stdout)
 
     # --- GH #942: a lane runs every station; nothing is left for the owner's
     # machine (it runs no cargo while a wave builds on the lanes).
@@ -2822,6 +3273,154 @@ class TestMakeExportLaneReceipt(unittest.TestCase):
         res = subprocess.run([sys.executable, str(MAKE_EXPORT), "--help"],
                              capture_output=True, text=True)
         self.assertIn("--lane-receipt", res.stdout)
+
+
+# The two stubs behind the shell: each writes the argv it was handed as one
+# JSON line to `$SHELL_RECORD` and exits with `$SHELL_EXIT` (default 0).
+_LEGACY_STUB = """#!/usr/bin/env bash
+python3 -c 'import json, os, sys
+with open(os.environ["SHELL_RECORD"], "a") as f:
+    f.write(json.dumps(["legacy"] + sys.argv[1:]) + "\\n")' "$@"
+echo "legacy says hello"
+exit "${SHELL_EXIT:-0}"
+"""
+
+_PIPELINE_STUB = """import json, os, sys
+with open(os.environ["SHELL_RECORD"], "a") as f:
+    f.write(json.dumps(["pipeline"] + sys.argv[1:]) + "\\n")
+print("pipeline says hello")
+sys.exit(int(os.environ.get("SHELL_EXIT") or 0))
+"""
+
+# Every option `scripts/gate.sh` takes today, plus the three the pipeline adds
+# (`--no-pre --reason`, `--strand`, `--wave`), with values that break naive
+# word splitting.
+_ALL_FLAGS = ["--base", "abc123", "--only", "precheck,unit", "--fail-fast",
+              "--plan-only", "--archive", "/tmp/a dir", "--log-dir", "/tmp/l",
+              "--no-nice", "--resync", "--no-precheck-stop",
+              "--decide", 'persona-receipt=without:"OR-T.1 no time, sorry"',
+              "--no-pre", "--reason", "a reason with spaces",
+              "--strand", "kit", "--wave", "welle-x"]
+
+
+class TestShell(unittest.TestCase):
+    """`scripts/gate.sh` since W3 (GH #1117): a shell of at most 80 lines.
+
+    `ci` goes to `scripts/gate_legacy.sh` for good (the public CI runs it),
+    and so do `--help`, no mode and an unknown mode.
+    `strand|integration|release` go to `python3 scripts/pipeline.py gate
+    --mode <mode>` with every option unchanged, `--lane` included (GH #1139);
+    `MECLAW_GATE_LEGACY` switches nothing any more (GH #1156). Both
+    runners are stubs here: nothing in these cases runs a gate.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = pathlib.Path(self._tmp.name)
+        self.scripts = root / "tree" / "scripts"
+        self.scripts.mkdir(parents=True)
+        shutil.copy(GATE_SHELL, self.scripts / "gate.sh")
+        (self.scripts / "gate.sh").chmod(0o755)
+        kit_tree.seed(self.scripts, "gate.sh")
+        (self.scripts / "gate_legacy.sh").write_text(_LEGACY_STUB)
+        (self.scripts / "gate_legacy.sh").chmod(0o755)
+        (self.scripts / "pipeline.py").write_text(_PIPELINE_STUB)
+        self.record = root / "record.jsonl"
+
+    def shell(self, *args, env=None, cwd=None):
+        e = dict(os.environ)
+        e.pop("MECLAW_GATE_LEGACY", None)
+        e["SHELL_RECORD"] = str(self.record)
+        e.update(env or {})
+        # From a directory that is NOT the tree: the shell finds its runners
+        # next to itself, not under the caller's working directory.
+        return subprocess.run([str(self.scripts / "gate.sh")] + list(args),
+                              cwd=str(cwd or self._tmp.name), env=e,
+                              capture_output=True, text=True, timeout=kit_time.HANG)
+
+    def calls(self):
+        if not self.record.exists():
+            return []
+        return [json.loads(ln) for ln in self.record.read_text().splitlines()]
+
+    def test_gate_sh_is_shell_and_ci_untouched(self):
+        text = GATE_SHELL.read_text()
+        self.assertTrue(text.startswith("#!/bin/bash -p\n"), text[:40])
+        self.assertLessEqual(len(text.splitlines()), 80)
+        res = subprocess.run(["bash", "-n", str(GATE_SHELL)], capture_output=True, text=True)
+        self.assertEqual(0, res.returncode, res.stderr)
+        argv = ["ci", "--plan-only", "--base", "0" * 40, "--decide",
+                'x=without:"a b"', "--archive", "/tmp/a dir"]
+        res = self.shell(*argv)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual([["legacy"] + argv], self.calls())
+
+    def test_the_old_switch_runs_no_mode_on_the_old_runner(self):
+        # GH #1156: `MECLAW_GATE_LEGACY=1` was the way back for every mode.
+        for mode in ("strand", "integration", "release"):
+            res = self.shell(mode, *_ALL_FLAGS, env={"MECLAW_GATE_LEGACY": "1"})
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertEqual(["pipeline", "gate", "--mode", mode] + _ALL_FLAGS,
+                             self.calls()[-1], mode)
+        self.shell("ci", env={"MECLAW_GATE_LEGACY": "1"})
+        self.assertEqual(["legacy", "ci"], self.calls()[-1])
+        self.assertNotIn("MECLAW_GATE_LEGACY", GATE_SHELL.read_text())
+
+    def test_the_other_modes_go_to_the_pipeline_with_every_flag(self):
+        for mode in ("strand", "integration", "release"):
+            res = self.shell(mode, *_ALL_FLAGS)
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertEqual(["pipeline", "gate", "--mode", mode] + _ALL_FLAGS,
+                             self.calls()[-1], mode)
+            self.assertIn("pipeline says hello", res.stdout)
+
+    def test_a_tree_without_the_kits_python_starts_no_runner(self):
+        """M7w: gate.sh sources pipeline/kit_python.sh fail-closed. Without it
+        the shell ends with 2 and starts nothing -- M7v's open source ran on
+        and exec'd pipeline.py itself (126 here, its shebang elsewhere)."""
+        (self.scripts / "pipeline" / "kit_python.sh").unlink()
+        (self.scripts / "pipeline.py").chmod(0o755)
+        for mode in ("strand", "integration", "release"):
+            res = self.shell(mode)
+            self.assertEqual(2, res.returncode, res.stderr)
+            self.assertIn("pipeline/kit_python.sh: No such file or directory", res.stderr)
+        self.assertEqual([], self.calls())
+
+    def test_the_exit_code_of_the_runner_is_the_exit_code(self):
+        for code in ("1", "3", "4"):
+            res = self.shell("strand", env={"SHELL_EXIT": code})
+            self.assertEqual(int(code), res.returncode)
+            res = self.shell("ci", env={"SHELL_EXIT": code})
+            self.assertEqual(int(code), res.returncode)
+
+    def test_strand_lane_base_reaches_the_pipeline_gate(self):
+        """GH #1139: `strand --lane --base` went to the old runner -- no pre
+        stamp, no lane host. Now it reaches `pipeline.py gate`, whose pre-stamp
+        rule holds for `--lane` too; only `ci --lane` stays on the old runner
+        (`lane_sync.sh run` is gone, `strand.sh gate ci --host` refused)."""
+        argv = ["--lane", "--base", "abc", "--log-dir", "/tmp/runs"]
+        for mode in ("strand", "integration", "release"):
+            res = self.shell(mode, *argv)
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertEqual(["pipeline", "gate", "--mode", mode] + argv, self.calls()[-1], mode)
+        self.shell("ci", *argv)
+        self.assertEqual(["legacy", "ci"] + argv, self.calls()[-1])
+
+    def test_help_no_mode_and_an_unknown_mode_stay_on_the_old_runner(self):
+        for argv in (["--help"], ["-h"], [], ["sideways", "--base", "x"], ["--plan-only"]):
+            self.shell(*argv)
+            self.assertEqual(["legacy"] + argv, self.calls()[-1], argv)
+        self.assertNotIn("pipeline", [c[0] for c in self.calls()])
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
+
 
 if __name__ == "__main__":
     unittest.main()

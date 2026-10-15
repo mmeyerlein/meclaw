@@ -3649,8 +3649,55 @@ mod tests {
     }
 
     fn hand(external_timeout: Duration) -> Hand {
+        hand_in(Mode::Auto, external_timeout)
+    }
+
+    fn hand_in(mode: Mode, external_timeout: Duration) -> Hand {
+        hand_on(
+            mode,
+            external_timeout,
+            Arc::new(crate::voice::providers::echo::EchoStt::new()),
+        )
+    }
+
+    /// A recogniser with turns: the echo provider under another name. `echo`
+    /// refuses `hold`, `release` and `cancel` (`wrong_mode`), so a test about a
+    /// take runs on this one; what it hears is the echo's business.
+    struct TurnStt(crate::voice::providers::echo::EchoStt);
+
+    impl crate::voice::contract::SttProvider for TurnStt {
+        fn name(&self) -> &'static str {
+            "turns"
+        }
+        fn input_format(&self) -> crate::voice::contract::AudioFormat {
+            self.0.input_format()
+        }
+        fn input_rates(&self) -> Vec<u32> {
+            self.0.input_rates()
+        }
+        fn negotiate_input(&self, sample_rate: u32) -> Option<crate::voice::contract::AudioFormat> {
+            self.0.negotiate_input(sample_rate)
+        }
+        fn run_session(
+            &self,
+            format: crate::voice::contract::AudioFormat,
+            audio: mpsc::Receiver<Vec<u8>>,
+            events: mpsc::Sender<crate::voice::contract::SttEvent>,
+            liveness: meclaw_colony::io_liveness::IoLivenessMark,
+        ) -> crate::voice::contract::BoxFuture<Result<(), crate::voice::contract::SttError>>
+        {
+            self.0.run_session(format, audio, events, liveness)
+        }
+    }
+
+    fn hand_on(
+        mode: Mode,
+        external_timeout: Duration,
+        stt: Arc<dyn crate::voice::contract::SttProvider>,
+    ) -> Hand {
         let (events_tx, events) = mpsc::channel::<VoiceEvent>(16);
-        let shared = crate::voice::io::VoiceIoShared::for_test(events_tx, external_timeout);
+        let shared =
+            crate::voice::io::VoiceIoShared::for_test_with_stt(events_tx, external_timeout, stt);
         let (to_cell, to_cell_rx) = mpsc::channel(16);
         let (from_cell_tx, from_cell) = mpsc::channel(16);
         let link = ClientLink::chan(to_cell_rx, from_cell_tx);
@@ -3661,7 +3708,7 @@ mod tests {
             link,
             shared,
             "call-1".to_string(),
-            Mode::Auto,
+            mode,
             negotiated,
             conn_id,
             to_conn_tx,
@@ -3765,5 +3812,63 @@ mod tests {
             matches!(&frame, meclaw_colony::LinkFrame::Close { code, .. } if *code == CLOSE_SESSION_NOT_TAKEN),
             "no hello for a session nobody holds: {frame:?}"
         );
+    }
+
+    /// OR-T10-15 with K8 (b) (welle-testing tv-bn M10f): a screen that loses its link in
+    /// the middle of a take ends the take locally and never sends the `release` --
+    /// so the cell must not keep the take open for a release that cannot come. The
+    /// channel's end IS the end of the take: the session is handed back
+    /// (`Disconnected`, which takes the turn machine's state with it), and the cell
+    /// makes up no `release` of its own on the way out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hold_whose_channel_ends_is_closed_by_the_cell() {
+        let mut h = hand_on(
+            Mode::Hold,
+            MARKER,
+            Arc::new(TurnStt(crate::voice::providers::echo::EchoStt::new())),
+        );
+        let mut connected = h.event().await;
+        assert!(
+            matches!(&connected, VoiceEvent::Connected { session_id, .. } if session_id == "call-1"),
+            "the connection reports itself first: {connected:?}"
+        );
+        connected.acknowledge();
+        let hello = h.frame().await;
+        assert!(is_hello(&hello), "the hello comes first: {hello:?}");
+        h.to_cell
+            .send(meclaw_colony::LinkFrame::Text(r#"{"type":"hold"}"#.into()))
+            .await
+            .expect("the link takes the hold");
+        let held = h.event().await;
+        assert!(
+            matches!(
+                &held,
+                VoiceEvent::Control {
+                    frame: ClientFrame::Hold,
+                    ..
+                }
+            ),
+            "the hold reaches the handler: {held:?}"
+        );
+        // The channel ends with the take open: no `release`, ever.
+        let (unrelated, _) = mpsc::channel(1);
+        drop(std::mem::replace(&mut h.to_cell, unrelated));
+        loop {
+            let ev = h.event().await;
+            match ev {
+                VoiceEvent::Disconnected { ref session_id } => {
+                    assert_eq!(session_id, "call-1");
+                    break;
+                }
+                VoiceEvent::Control { ref frame, .. } => {
+                    panic!("the cell made up a control frame on the channel's end: {frame:?}")
+                }
+                _ => continue,
+            }
+        }
+        tokio::time::timeout(MARKER, h.conn)
+            .await
+            .expect("the connection task ends with its channel")
+            .expect("no panic");
     }
 }

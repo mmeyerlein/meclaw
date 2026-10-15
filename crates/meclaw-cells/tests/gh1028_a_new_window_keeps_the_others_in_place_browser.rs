@@ -15,9 +15,15 @@
 //! against a sentinel write behind it, not by waiting), and the new window still stands
 //! first in reading order.
 //!
+//! One test per engine, each with a colony of its own, so the Chromium run does not wait
+//! for the WebKit one: nextest runs the WebKit test in its group `webkit` (one at a time,
+//! software rendering) and the Chromium test beside it (`.config/nextest.toml`).
+//!
 //! Station `browser:display` (`scripts/gate_plan.py`, `BROWSER_LOCKS`), `#[ignore]`d
 //! everywhere else. No node, no playwright, no engine, no template library or no python
-//! is a `SKIP`, never a red (R2b).
+//! is a `SKIP`, never a red (R2b) -- outside the gate. Inside it the runner sets
+//! `MECLAW_REQUIRE_BROWSERS=1` on a station that books the engine (GH #1161), and no
+//! playwright or an engine that does not start is `NO-ENGINE ...`, exit 1, red.
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
@@ -25,18 +31,13 @@ mod display_colony;
 use std::path::Path;
 use std::time::Duration;
 
-use display_colony::{Boot, SCREEN, boot, have_python, library_ships, repo};
+use display_colony::{Boot, Colony, Driver, SCREEN, Site, boot, have_python, library_ships, repo};
 use meclaw_core::serde_json::{Value, json};
 
 const DRIVER: &str = "workshop/tools/display-keep-browser.mjs";
-/// The laboratory WebKit runs in on this host, sourced for every run except a Chromium
-/// one (the driver's default engine is WebKit). Sourced for Chromium too, a host without
-/// the laboratory read its `SKIP` line as the Chromium run's own, and the lock proved
-/// nothing there (XB-M review I-1: build02 skipped every Chromium run).
+/// The WebKit laboratory the driver runs in on this host (skip without it).
 const WKENV: &str = "workshop/tools/wkenv.sh";
-/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments.
-const WITH_LAB: &str =
-    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
+// The laboratory and the launch through it are the fixture's (`Colony::drive`).
 /// How long one engine's run may take, all in.
 const DRIVER_LIMIT: Duration = Duration::from_secs(180);
 
@@ -95,24 +96,14 @@ fn write_steps(dir: &Path, engine: &str) {
 }
 
 /// One engine's report, or `None` when this host cannot measure.
-async fn drive(engine: &str, url: &str, api: &str, dir: &Path) -> Option<Value> {
-    let run = tokio::time::timeout(
-        DRIVER_LIMIT,
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(WITH_LAB)
-            .arg("sh")
-            .arg(repo(WKENV))
-            .arg(repo(DRIVER))
-            .arg(url)
-            .arg(dir)
-            .arg("--engine")
-            .arg(engine)
-            .env("MECLAW_DISPLAY_API", api)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
+async fn drive(colony: &Colony, engine: &str, dir: &Path) -> Option<Value> {
+    let with = Driver::default()
+        .script(DRIVER)
+        .arg(dir)
+        .arg("--engine")
+        .arg(engine);
+    let driving = colony.drive(Site::Gh1028, "monitor", with);
+    let run = tokio::time::timeout(DRIVER_LIMIT, driving.output()).await;
     let out = match run {
         Err(_) => panic!("{engine}: the keep driver did not finish within {DRIVER_LIMIT:?}"),
         Ok(Err(e)) => {
@@ -151,9 +142,8 @@ fn n(v: &Value, key: &str) -> i64 {
         .unwrap_or_else(|| panic!("{key} is not a number in {v}"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "browser lock: runs in the station browser:display (scripts/gate_plan.py BROWSER_LOCKS)"]
-async fn a_new_window_ahead_keeps_the_others_in_place() {
+/// Boot a colony, open the page in ONE engine and hold the three standing windows there.
+async fn keep_the_others_in(engine: &str) {
     if !library_ships() || !have_python() {
         println!("SKIP no template library or no python3 in this tree");
         return;
@@ -170,32 +160,41 @@ async fn a_new_window_ahead_keeps_the_others_in_place() {
         ..Boot::default()
     })
     .await;
-    let url = colony.url("monitor");
-    let api = colony.api_url();
     let steps = tempfile::tempdir().expect("a steps directory");
 
-    for engine in ["chromium", "webkit"] {
-        let dir = steps.path().join(engine);
-        write_steps(&dir, engine);
-        let Some(v) = drive(engine, &url, &api, &dir).await else {
-            continue;
-        };
-        assert_eq!(
-            n(&v, "same_nodes"),
-            3,
-            "{engine}: the three standing windows keep their nodes: {v}"
-        );
-        assert_eq!(
-            n(&v, "touched"),
-            0,
-            "{engine}: no patch removed or re-inserted a standing window: {v}"
-        );
-        assert_eq!(
-            v["new_first"],
-            json!(true),
-            "{engine}: the new window still stands first in reading order: {v}"
-        );
-    }
+    let dir = steps.path().join(engine);
+    write_steps(&dir, engine);
+    let Some(v) = drive(&colony, engine, &dir).await else {
+        colony.shutdown().await;
+        return;
+    };
+    assert_eq!(
+        n(&v, "same_nodes"),
+        3,
+        "{engine}: the three standing windows keep their nodes: {v}"
+    );
+    assert_eq!(
+        n(&v, "touched"),
+        0,
+        "{engine}: no patch removed or re-inserted a standing window: {v}"
+    );
+    assert_eq!(
+        v["new_first"],
+        json!(true),
+        "{engine}: the new window still stands first in reading order: {v}"
+    );
 
     colony.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "browser lock: runs in the station browser:display (scripts/gate_plan.py BROWSER_LOCKS)"]
+async fn a_new_window_ahead_keeps_the_others_in_place_in_chromium() {
+    keep_the_others_in("chromium").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "browser lock: runs in the station browser:display (scripts/gate_plan.py BROWSER_LOCKS)"]
+async fn a_new_window_ahead_keeps_the_others_in_place_in_webkit() {
+    keep_the_others_in("webkit").await;
 }

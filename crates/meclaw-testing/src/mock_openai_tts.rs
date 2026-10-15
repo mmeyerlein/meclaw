@@ -265,6 +265,17 @@ async fn serve_conn(
         body: parsed,
     });
 
+    write_scripted_response(&mut stream, &script).await
+}
+
+/// Writes the scripted answer: head delay, then the error body or the chunked
+/// stream with its chunk delays. Generic over the writer (GH #1208) so the
+/// delays are timed in process without a socket (TV-Z7); the server hands it
+/// the TCP stream.
+async fn write_scripted_response<W: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut W,
+    script: &OpenAiTtsScript,
+) -> std::io::Result<()> {
     if let Some(d) = script.head_delay {
         tokio::time::sleep(d).await;
     }
@@ -340,11 +351,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpStream as StdTcpStream;
 
-    /// Failure-marker timeout for the blocking client calls below: generous
-    /// against cargo-parallel load, finite so a hung fake fails as a test.
-    const MARKER: Duration = Duration::from_secs(30);
-
-    /// Run `raw_post` on a blocking thread under the failure marker.
+    /// Run `raw_post` on a blocking thread under the hang mark
+    /// (`deadline::hang`, scaled, TV-Z3): a hung fake fails as a test.
     async fn post(addr: SocketAddr, path: &'static str, body: &'static [u8]) -> Vec<u8> {
         post_with(addr, path, &[], body).await
     }
@@ -356,12 +364,11 @@ mod tests {
         headers: &'static [(&'static str, &'static str)],
         body: &'static [u8],
     ) -> Vec<u8> {
-        tokio::time::timeout(
-            MARKER,
+        crate::deadline::hang(
+            "the mock answers the request",
             tokio::task::spawn_blocking(move || raw_post(addr, path, headers, body)),
         )
         .await
-        .expect("mock did not answer within the failure marker")
         .expect("join")
     }
 
@@ -461,44 +468,83 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// Runs the scripted writer into an in-memory pipe and stamps every read
+    /// with its virtual instant: `(offset from start, bytes so far)`.
+    async fn stamped_response(script: OpenAiTtsScript) -> Vec<(Duration, Vec<u8>)> {
+        let (mut server, mut client) = tokio::io::duplex(64 * 1024);
+        let t0 = tokio::time::Instant::now();
+        let writer = tokio::spawn(async move {
+            write_scripted_response(&mut server, &script)
+                .await
+                .expect("write");
+        });
+        let mut seen = Vec::new();
+        let mut stamps = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = client.read(&mut buf).await.expect("read");
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buf[..n]);
+            stamps.push((t0.elapsed(), seen.clone()));
+        }
+        writer.await.expect("writer");
+        stamps
+    }
+
+    /// The first stamp whose bytes contain `needle`.
+    fn first_seen(stamps: &[(Duration, Vec<u8>)], needle: &[u8]) -> Duration {
+        stamps
+            .iter()
+            .find(|(_, bytes)| bytes.windows(needle.len()).any(|w| w == needle))
+            .map(|(at, _)| *at)
+            .expect("needle never written")
+    }
+
+    /// TV-Z7: the chunk delay without a socket, exact in virtual time.
+    #[tokio::test(start_paused = true)]
     async fn chunk_delay_spaces_the_chunks_out() {
         let delay = Duration::from_millis(120);
+        let stamps = stamped_response(
+            OpenAiTtsScript::new()
+                .chunk(b"first")
+                .chunk(b"second")
+                .with_chunk_delay(delay),
+        )
+        .await;
+        assert_eq!(first_seen(&stamps, b"first"), Duration::ZERO);
+        assert_eq!(first_seen(&stamps, b"second"), delay);
+    }
+
+    /// TV-Z7: the head delay without a socket, exact in virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn head_delay_holds_the_response_back() {
+        let delay = Duration::from_millis(120);
+        let stamps =
+            stamped_response(OpenAiTtsScript::new().chunk(&[7u8]).with_head_delay(delay)).await;
+        assert_eq!(first_seen(&stamps, b"HTTP/1.1 200"), delay);
+    }
+
+    /// Over the socket only the event: a delayed script still serves its
+    /// chunks, in order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delayed_script_serves_every_chunk_over_tcp() {
         let mock = MockOpenAiTts::start(
             OpenAiTtsScript::new()
-                .chunk(&[1u8])
-                .chunk(&[2u8])
-                .with_chunk_delay(delay),
+                .chunk(b"first")
+                .chunk(b"second")
+                .with_head_delay(Duration::from_millis(20))
+                .with_chunk_delay(Duration::from_millis(20)),
         )
         .await
         .expect("start");
-        let addr = mock.addr();
-        let started = std::time::Instant::now();
-        post(addr, "/v1/audio/speech", b"{}").await;
-        assert!(
-            started.elapsed() >= delay,
-            "elapsed {:?} < delay {:?}",
-            started.elapsed(),
-            delay
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn head_delay_holds_the_response_back() {
-        let delay = Duration::from_millis(120);
-        let mock =
-            MockOpenAiTts::start(OpenAiTtsScript::new().chunk(&[7u8]).with_head_delay(delay))
-                .await
-                .expect("start");
-        let addr = mock.addr();
-        let started = std::time::Instant::now();
-        let resp = post(addr, "/v1/audio/speech", b"{}").await;
-        assert!(
-            started.elapsed() >= delay,
-            "elapsed {:?}",
-            started.elapsed()
-        );
-        assert!(String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 200"));
+        let resp = post(mock.addr(), "/v1/audio/speech", b"{}").await;
+        let text = String::from_utf8_lossy(&resp);
+        assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+        let first = text.find("first").expect("first chunk");
+        let second = text.find("second").expect("second chunk");
+        assert!(first < second, "chunks in order: {text}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

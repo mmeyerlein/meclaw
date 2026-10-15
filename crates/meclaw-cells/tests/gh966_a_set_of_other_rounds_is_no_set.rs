@@ -16,8 +16,7 @@
 //! stood at once and told the screen that a set of another round exists.
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use display_colony::{SCREEN, body_of, hop_of};
 use meclaw_core::serde_json::json;

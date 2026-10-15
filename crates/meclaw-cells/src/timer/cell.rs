@@ -847,8 +847,13 @@ impl LongRunningCell for TimerCell {
             // 2. State before emit (phase-5 canon).
             let is_once = matches!(row.kind, crate::timer::schedule::ScheduleKind::At(_));
             if is_once {
+                // GH #1181: whether the mark landed is SQLite's to say, not the
+                // query clock's -- a mark whose commit outlasted the timeout
+                // completed the row, and withholding its strike lost the one-shot.
                 let marked = db
-                    .call_with_timeout(move |c| crate::timer::db::mark_completed(c, schedule_id))
+                    .call_with_timeout_verdict(move |c| {
+                        crate::timer::db::mark_completed(c, schedule_id)
+                    })
                     .await;
                 // GH #922 fix round 1 (review M-A): a `catch_up` row whose mark
                 // did not land stays `active` and is planned again -- no emit.

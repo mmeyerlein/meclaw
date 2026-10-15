@@ -13,8 +13,7 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use meclaw_core::serde_json::json;
 use presenter_colony::{Dials, PRESENTER, boot, guard, to_path};
@@ -39,14 +38,13 @@ async fn a_refused_push_leaves_as_an_error_not_as_a_verdict() {
     .into_iter()
     .enumerate()
     {
-        s.c.h
-            .send(to_path(
-                PRESENTER,
-                json!({"route": "in_model", "subscriber": "/elsewhere/brain"}),
-                context,
-                json!({"system": {}, "params": {"model": "vendor/other"}}),
-            ))
-            .await;
+        s.c.send(to_path(
+            PRESENTER,
+            json!({"route": "in_model", "subscriber": "/elsewhere/brain"}),
+            context,
+            json!({"system": {}, "params": {"model": "vendor/other"}}),
+        ))
+        .await;
         let refused = s.out("error").await;
         assert_eq!(
             refused.headers.hop.get("error_code"),

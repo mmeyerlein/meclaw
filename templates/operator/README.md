@@ -296,7 +296,7 @@ disjoint:
 
 One carrier alone is a lane that works until the outcome changes: read off the id only, a
 refused agent round looks like an operator's and its receipt leaves the colony instead of
-reaching the assistant that submitted. `crates/meclaw-cells/tests/operator_one_front_door.rs`
+reaching the assistant that submitted. `crates/meclaw-cells/tests/misc_8/operator_one_front_door.rs`
 pins both roads.
 
 **The identity is the front door's, for both callers.** `envelope.reply_to` on what leaves
@@ -323,13 +323,13 @@ rather than a lane every level offers separately.
 
 ## Gates
 
-- `crates/meclaw-cells/tests/operator_one_front_door.rs` — the seal, the dispatch, the
+- `crates/meclaw-cells/tests/misc_8/operator_one_front_door.rs` — the seal, the dispatch, the
   unknown lane, the identity the submitter's gate accepts, and the lifecycle mapping.
-- `crates/meclaw-cells/tests/gh446_model_authored_code_needs_a_capability.rs` — the other
+- `crates/meclaw-cells/tests/code/gh446_model_authored_code_needs_a_capability.rs` — the other
   half of GH #446, in the submitter: a manifest that authors code is denied until
   `code.author` is enabled.
-- `crates/meclaw-cells/tests/gh425_the_digest_is_one_definition.rs` — the digest helper,
+- `crates/meclaw-cells/tests/misc_3/gh425_the_digest_is_one_definition.rs` — the digest helper,
   byte for byte, across every script that carries it.
-- `crates/meclaw-cells/tests/gh474_a_draft_waits_for_a_yes.rs` — the halt: what `in_draft` parks
+- `crates/meclaw-cells/tests/misc_4/gh474_a_draft_waits_for_a_yes.rs` — the halt: what `in_draft` parks
   and answers, what a quoted digest un-parks, what an unknown one refuses, and which of the two
   roads the shell takes with and without `hop.auto_submit`.

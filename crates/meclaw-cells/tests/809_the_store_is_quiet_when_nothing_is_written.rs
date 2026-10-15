@@ -14,20 +14,10 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::Duration;
-
 use display_colony::{Boot, attr, boot, have_python, library_ships};
 use meclaw_core::serde_json::json;
 
 const APP: &str = "/alex/apps/note";
-
-/// A settle window, never a semantic discriminator.
-const QUIET: Duration = Duration::from_millis(300);
-
-/// How long the screen is left alone after the first stroke. A window for further strokes
-/// to come, not a discriminator: what is asserted is an equality, which a slow host can
-/// only make easier to hold, never wrongly green -- the stroke it is about is awaited.
-const ALONE: Duration = Duration::from_secs(5);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_is_quiet_when_nothing_is_written() {
@@ -52,6 +42,8 @@ async fn the_store_is_quiet_when_nothing_is_written() {
     // wrong (welle-loop Z1, integration run 88d9410e: "the clock strikes a pass nobody
     // wrote did not hold within 30s; DLQ []"). Both writes order their stroke after
     // this line, so the wait below cannot miss one.
+    // TV-A2: the baseline of an absence claim is read after quiescence (re-check tv-bn M7b3 H1).
+    colony.settle().await;
     let strikes = colony.strikes().await.len();
 
     // Two windows, one of them pinned (§ 7.6): a pinned window is the one that lives on.
@@ -71,6 +63,8 @@ async fn the_store_is_quiet_when_nothing_is_written() {
                    "topic": "pinned:1", "pinned": true, "touched": "1"}),
         )
         .await;
+    // TV-A2: the baseline of an absence claim is read after quiescence (re-check tv-bn M7b3 H1).
+    colony.settle().await;
     let bundles = colony.store_bundles().await.len();
     let rest = colony.rest_rows().await;
 
@@ -86,8 +80,12 @@ async fn the_store_is_quiet_when_nothing_is_written() {
             attr(t, &note, "age") == json!("settled")
         })
         .await;
-    tokio::time::sleep(ALONE).await;
-    colony.settle(QUIET).await;
+    // Re-check tv-bn M7 M2 (TV-S2, TV-A4): the claim is judged over the strokes that really
+    // ran -- awaited above -- and the quiescence after them, not over a 5-s real-time window
+    // "for further strokes to come". The curator holds at most ONE order (`due`, § 4.34),
+    // and once the note is `settled` the next is linger or fade (minutes), so the window
+    // never saw a further stroke; what it could not see either, it never proved.
+    colony.settle().await;
 
     let struck = colony.strikes().await.len() - strikes;
     eprintln!("809 quiet: {struck} strokes, {bundles} store bundles before and after");

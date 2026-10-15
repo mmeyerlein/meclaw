@@ -893,7 +893,7 @@ The error message to `reply_to`, if set, carries:
 `required_drain_missing` | `template_ref_cycle` | `requirement_missing` | `invalid_template_name` |
 `template_name_taken` | `template_version_immutable` | `shutdown_draining` | `seed_target_not_a_store` | `seed_table_undeclared` |
 `v_lane_no_connect_point` | `v_lane_mandatory_hop` | `v_lane_unanchored` |
-`hive_template_single_cell` | `env_value_unsafe`.
+`hive_template_single_cell` | `env_value_unsafe` | `hive_config_timeout` | `hive_config_unreadable`.
 
 These strings are part of the stable mutation API contract, with the same promise the dead-letter
 codes carry: new reject reasons extend the list, existing ones never change their string form. A
@@ -921,6 +921,18 @@ a future code. Notes on the substrate codes:
   the wait, and the wait beats the watchdog while it lasts (GH #838, § Heartbeat watchdog).
 - `shutdown_draining`: a build order that arrived during the shutdown drain (GH #47). It happens
   before any staging, so the reject leaves no trace.
+- `hive_config_timeout`: a hive's or a template's `config.json` did not come back from disk within
+  twice the watchdog's work-item budget (10 s by default), or an earlier scan of the same colony is
+  still stuck (GH #1176). The mutation reads cell types, sealed ports, hive contracts and
+  `required_drains` from it, and a check that
+  could not read its rule does not let the diff through. The refusal is pre-destructive with a full
+  rollback and names the hive. The cause lies outside the diff, so the same diff can succeed again
+  once the disk answers.
+- `hive_config_unreadable`: a hive's `config.json` came back from disk but could not be read as a
+  seal: a read error other than a missing file (EIO, a directory in its place), or a `config.json`
+  or `params` that does not parse (GH #1176). Counted as "declares nothing", an `add_edges` would
+  pass that hive's sealed ports. The refusal is pre-destructive and names the hive; the same diff
+  can succeed again once the file reads. A missing `config.json` still declares nothing.
 - `resume_requires_stopped_cell`: the resume path requires a stopped cell.
 - `seed_target_not_a_store`: a `seed_rows` entry names a target that is not a `store`, whether
   nothing stands there, a cell of another type stands there, or its declaration cannot be read. Only
@@ -1330,7 +1342,8 @@ The default mode is direct mode: a stdin/stdout bridge to the root cell, all on 
 invocation, for interactive sessions, simple pipes and tests. The process is stdin-driven; closing
 stdin (EOF, for instance the end of a pipe) **drains the in-flight work and exits with exit code 0**
 (Unix pipe semantics, so `cat input.jsonl | meclaw` terminates like `grep`). A shutdown signal
-(SIGINT or SIGTERM) acts additionally.
+(SIGINT or SIGTERM) acts additionally and ends the process after the drain even while stdin stays
+open.
 
 The drain is a state of the colony loop in its own right, not a wait inside one iteration. After the
 shutdown signal the loop accepts no new ingress (a source that fires meanwhile, a timer tick or a
@@ -1910,7 +1923,10 @@ Notes on the delivery-boundary codes:
   refused it. What a hive declares is in § The hive boundary. The refusal happens **before** the
   routing corridor, so no `message_log` row is written: a boundary refusal lives in the dead-letter
   queue and never in `/colony/trace`. It is joinable all the same — the entry carries the
-  `trace_id` and the `message_id` of the message that was posted.
+  `trace_id` and the `message_id` of the message that was posted. The same code applies while the
+  hive boundary is closed after the slot table's scan timed out or could not read a seal (GH #1176,
+  § Heartbeat): every address inside a hive is then unreachable from outside, a declared one too and
+  `/colony/*` as well (the root `/` counts), and `detail` is the innermost hive.
 - `mailbox_full`: the target cell's overflow is at its cap (`colony.json`
   `mailbox_overflow_cap_messages` / `mailbox_overflow_cap_bytes`, GH #850). A full mailbox alone
   is not this: below the cap the message waits in the cell's overflow and is delivered in order
@@ -1932,9 +1948,12 @@ Notes on the delivery-boundary codes:
   answer goes neither to the model nor on as an error; the cell dead-letters the message itself
   (`resolved_target` is the cell). A session that connects again is a new call.
 - `replay_exhausted` (GH #1015): a delivery the colony logged to a cell and that cell never finished
-  was replayed on three starts and finished on none of them — the message takes the process down
-  with it. The fourth start dead-letters it (`resolved_target` is the cell) instead of replaying it
-  again; its `message_log` row stays. See `stability.md` § Delivery across a crash.
+  was taken by that cell's handler on three replays, and each of those lives crashed — the message
+  takes the process down with it. An attempt is a handler start on the replay in a life that does
+  not end in order (GH #1200): a life that ends before the handler takes it counts nothing, and an
+  ordered stop counts nothing even when its drain cut the handler. The next start dead-letters it
+  (`resolved_target` is the cell) instead of replaying it again; its `message_log` row stays. See
+  `stability.md` § Delivery across a crash.
 
 When processing a cell emission in the outputs arm, exactly one of three disjoint paths applies, in
 this order (ruling A1, 2026-06-12):
@@ -3847,7 +3866,19 @@ awake, because the I/O task does external polling and the handler task waits for
   and delivers it in order to the successor after the respawn, and the ordering carries itself
   because the guard hands over strictly before the `JoinHandle` resolves. A death that leaves no
   successor, a normal exit whose entry is removed or an exhausted `restart_limit`, dead-letters the
-  rescue instead.
+  rescue instead. A sender that reserved its slot before the close can still write after it
+  (GH #1068, #1209). When the drain finds such a slot outstanding, the guard hands the closed
+  `Receiver` to a short task and announces it from `Drop` under a ticket of its own, so this too
+  happens before the `CellDied`; the task forwards each late write as
+  `ColonyMsg::MailboxRescuedLate` and finally reports its end. Where late writes go, the colony
+  settles per ticket at the `CellDied`. Before it, they queue behind the rescue and ahead of mail
+  that met the closed mailbox afterwards. After it, they go to the successor that this death
+  restarted, as long as it is the registered, running entry, and otherwise to the dead-letter
+  queue (`cell_inactive`), as does a ticket that was never announced. A late write of an old
+  incarnation therefore never reaches a newer cell at the same path (`replace_nodes`, GH #688),
+  and none is left in the mailbox of a failed or sleeping cell. A write that arrives only after the
+  restart lands behind what the successor has received in the meantime; that order is deliberate
+  and pinned.
 
 The asymmetry is deliberate. The guard sits in `cell_task_stateful` and in the long-running handler
 loop. `stateless_dispatcher` does not carry it: a stateless cell dispatches a short-lived worker per
@@ -4069,21 +4100,87 @@ The trip line is structured (GH #84), with the prefix unchanged and the diagnosi
 meclaw: watchdog trip - colony heartbeat lost for 5 consecutive supervisor periods of 100 ms
   [starved=colony_loop silent_for=500ms nominal_window=500ms supervisor_lag=0ms
    in_flight_work=false work_item_budget=5000ms witness=kept witness_missed=0/5
-   beats_seen=3 armed_for=801ms colony_task=alive work_item=none
+   beats_seen=3 armed_for=801ms colony_task=alive work_item=none cpu_denied=0ms
    cells_at_boot=3 on_trip=exit]
 ```
 
 `starved` is the diagnosis, derived from three pieces of evidence: the witness, the loop's last
 declared phase and `supervisor_lag`.
 
+`supervisor_lag` is measured, not derived (GH #1172): the silence beyond the periods the supervisor
+actually evaluated since the last beat (`silent_for − evaluated periods × period`). The silence
+clock survives a non-fatal trip, which is what the escalation from `slow_work_item` to
+`stuck_work_item` is built on; the former value `silent_for − nominal_window` therefore grew by one
+window on every repeated trip of the same item, even with a punctual supervisor. Only the silence
+charged to the item counts against `work_item_budget`: `silent_for` minus `supervisor_lag`, i.e. at
+most one period per evaluated period. What the supervisor sleeps through itself is not silence of
+the item. Without a CPU denial a hung item is still `stuck_work_item` at the latest one window after
+`work_item_budget / period` evaluated periods, however late each one comes: a supervisor that lags
+permanently delays the verdict in wall time and never prevents it. The one window is the tick edge:
+tokio keeps the tick grid for up to 5 ms of delay and the supervisor reads the clock after the tick,
+so `silent_for` can lie milliseconds below the evaluated periods (`silent_for=9999ms` for 100
+periods of 100 ms); the item is then still `slow_work_item` at the bound and no longer at the next
+trip.
+
+A gap in scheduling is not a hang (GH #1216). Under a CPU quota the supervisor and the witness get
+their slice on time while the colony's worker waits for its own; the wall clock alone read a 14 s
+instantiation on a sliver of one core as `stuck_work_item` after 5 s (`supervisor_lag=0ms`,
+`witness=kept`). The supervisor therefore also deducts what the kernel measures as denied:
+`cpu_denied` is the largest growth of any thread's `run_delay` in the silence (time runnable but
+off the CPU, `/proc/self/task/*/schedstat`; the run-queue wait of a full host without a quota counts like a quota's throttled time), read at the first
+silent period and at the trip. The charged silence is `silent_for` minus the larger of
+`supervisor_lag` and the credited denial; the two overlap and are never added. The deduction applies to a work item in
+flight only; a parked loop is measured against the idle bar without it (`colony_loop`). Without procfs `cpu_denied` is zero and the
+verdict is as before. The reading is process-wide and cannot be pinned to the item's thread, so a
+hung item is credited the denial of every other thread too: a deadlock beside a throttled thread, a
+spin that itself loses its share of the quota. The credited denial is therefore capped at four
+fifths of the silence (`WORK_ITEM_DENIAL_FACTOR` = 5). The denial deduction always leaves a fifth
+of the silence charged, the deduction for `supervisor_lag` every evaluated period; the item is
+charged the smaller remainder, so at least a fifth of the smaller of `silent_for` and the evaluated
+periods. A hung item is therefore `stuck_work_item` at the latest one window after five times
+`work_item_budget / period` evaluated periods (the window is the tick edge again), however much the
+host denies and however late the supervisor runs; with a punctual supervisor that is five times
+`work_item_budget` of silence plus at most one window. The denial delays the verdict by at most that
+factor and never prevents it. The trip line appends the value as read
+(`cpu_denied=<n>ms`).
+
+An item is only as silent as it really is. A mutation beats per cell it builds and per template
+version it keeps (GH #811): the copies after the commit run in `spawn_blocking` with one beat per
+version, and the mutation waits for the durable repoint of each row without blocking the worker
+(GH #1172). The wait on the writer itself does not beat, because a writer that never acknowledges
+is a wedge and has to stay `stuck_work_item`.
+
+The same holds for reading the configurations (GH #1176). A mutation reads twice: in validation
+every template's `config.json` (cell type) and every hive's (sealed ports, contracts), after the
+apply the post-state hives' (`required_drains`; the answer to the caller depends on nothing
+else). When an `add_nodes` names templates, the mutation reads their trees (every `config.json`,
+through `ref`s) in a scan of its own before the first validation stage, and every later reading of
+the same tree in that mutation answers from that parse (GH #1193). The slot table reads the post-state seal and hive boundaries in a scan of its own after
+that answer. Each scan runs in one
+`spawn_blocking` with one beat per file, and the beat comes before the read. A read that never
+returns therefore stays `stuck_work_item`; after twice the work-item budget without the next file
+the scan ends cleanly (`hive_config_timeout`). When the slot table's scan ends that way, the
+hive boundary closes: until a pass reads again, every hive counts as sealed with no declared
+address, and a message from outside to an address inside a hive is refused with `hive_boundary`,
+under `watchdog_on_trip: log-only` too. The root `/` counts: `/colony/*` is unreachable from
+outside as well. It closes the same way when the scan cannot read a hive's `config.json` (EIO) or
+it does not parse; a missing file still declares nothing. The log reports the closing once as the
+ERROR `ingress closed: slot rebuild timed out` or `ingress closed: slot rebuild could not read a
+hive config`, the reopening after the first good pass as the WARN `ingress reopened: slot rebuild
+succeeded`. At most one scan per colony is in flight: when one hangs, the next waits
+the same time and then ends with the same code instead of tying up a second blocking thread. The
+lane checks of the contracts against the post-state are pure CPU and stay on the worker; they give
+it back at the next unit boundary after 1 ms and beat as they do, between two contracts or lanes,
+never on a timer.
+
 | `starved` | Meaning |
 |---|---|
-| `colony_task_gone` | The heartbeat channel is closed, so the task is dead (a panic) rather than slow. That is a proof, not an inference. |
+| `colony_task_gone` | The heartbeat channel is closed, so the task is dead (a panic) rather than slow. That is a proof, not an inference. An orderly shutdown never reports it: once its drain is over the loop says `StandDown` before the teardown, and the supervisor disarms on that word. A hang inside the drain still trips. |
 | `host_runtime` | The independent witness failed the same rule in the same window: a task with no relation to the colony did not get through either. The observation says something about the host and nothing about the colony. |
 | `slow_work_item` | The loop had declared a work item and is still inside it, below `work_item_budget`. An operation is taking long, which is not a defect. A `/colony/*` read is such a work item and declares itself as `colony-read <endpoint>`. |
 | `stuck_work_item` | The same declared work item outlived `work_item_budget` too. An operation that never returns is a wedge whatever its name. |
-| `process_scheduling` | The supervisor's own periods came in at least twice as slow as configured: the whole process was off CPU, and this observation says nothing against the colony loop. |
-| `colony_loop` | Every control held: the supervisor kept its schedule, the witness kept finishing work, and the loop was parked with nothing in flight, and it still went quiet. This is the only silence that implicates the colony. The verdict has one limit: a cell that blocks its runtime worker synchronously can hold the colony task in that worker's LIFO slot, which no other worker may steal — the witness keeps running on another worker and does not cover it (GH #866). That is why neither the spawn path of `code` and `bash` nor a cell falling asleep blocks a worker: the sandbox, the `fork` and the orphan journal's records run in `spawn_blocking`, and a stateful cell closes its `cell.db` (the WAL checkpoint) there before it tells the colony it sleeps. The other stdio children (`StdioChild::spawn`) still spawn and journal on the worker (`docs/defer-register.md`, `reg:stdio-child-spawn-off-worker`). |
+| `process_scheduling` | The supervisor's own ticks fell at least one window behind the periods it evaluated (on the first trip of a silence: periods at least twice as slow as configured): the whole process was off CPU, and this observation says nothing against the colony loop. A follow-up trip of the same silence with a punctual supervisor is `colony_loop`. The lag is summed over the silence and only a beat resets it; a parked loop is therefore credited it for at most `work_item_budget / period` evaluated periods of one silence, after which the silence is `colony_loop` however late the supervisor runs (as long as the witness holds; else `host_runtime`). |
+| `colony_loop` | The loop was parked with nothing in flight and still went quiet, the witness kept finishing work, and the supervisor kept its schedule — or its lag is no longer credited to the loop, because the same silence already lasts `work_item_budget / period` evaluated periods (see `process_scheduling`). This is the only silence that implicates the colony. The verdict has one limit: a cell that blocks its runtime worker synchronously can hold the colony task in that worker's LIFO slot, which no other worker may steal — the witness keeps running on another worker and does not cover it (GH #866). That is why neither the spawn path of `code` and `bash` nor a cell falling asleep blocks a worker: the sandbox, the `fork` and the orphan journal's records run in `spawn_blocking`, and a stateful cell closes its `cell.db` (the WAL checkpoint) there before it tells the colony it sleeps. The other stdio children (`StdioChild::spawn`) still spawn and journal on the worker (`docs/defer-register.md`, `reg:stdio-child-spawn-off-worker`). |
 
 `cells_at_boot` is deliberately the boot count rather than "active cells now": the registry belongs
 to the colony, and at trip time the colony by definition is not answering.
@@ -4363,10 +4460,12 @@ template versions, and HTTP/OpenAPI conventions for auth, retry and timeout.
 
 The crate layout is `meclaw-core` (actor trait, `ActorHandle`, `Message`, path resolution, CEL
 wrapper), `meclaw-colony` (colony task, registry, lifecycle, templates, routing, mutations),
-`meclaw-cells` (built-in cell types), `meclaw-api` (the axum HTTP API), `meclaw-cli` (binary, clap,
-daemon, stdin/stdout bridge) and `meclaw-testing` (test fixtures). The dependency direction is
-`meclaw-colony` and `meclaw-cells` on `meclaw-core`, `meclaw-api` on `meclaw-colony`, and
-`meclaw-cli` on all three. `meclaw-testing` is always a `[dev-dependencies]` entry and never a
+`meclaw-cells` (built-in cell types), `meclaw-surface` (LiveView wire format, session tokens and
+client bundles of the `web` cell), `meclaw-api` (the axum HTTP API), `meclaw-cli` (library: clap,
+daemon, stdin/stdout bridge), `meclaw` (the workspace's one `meclaw` binary, a thin wrapper around
+`meclaw-cli`) and `meclaw-testing` (test fixtures). The dependency direction is `meclaw-colony`,
+`meclaw-cells` and `meclaw-surface` on `meclaw-core`, `meclaw-cells` also on `meclaw-surface`,
+`meclaw-api` on `meclaw-colony`, `meclaw-cli` on all three and `meclaw` on `meclaw-cli`. `meclaw-testing` is always a `[dev-dependencies]` entry and never a
 runtime dependency. It provides `TestRoot` (a RAII wrapper around a tmp directory), `ColonyHandle`
 (an async wrapper around a running colony), `MessageBuilder`, the mock cells under
 `meclaw_testing::mocks` and the per-phase topology fixtures. `TestRoot` is the only permitted

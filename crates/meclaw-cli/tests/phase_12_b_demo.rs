@@ -25,7 +25,7 @@
 //!   `meclaw-cells` (`bash`, `web_fetch`, `edit`, `read`, `llm`, `store`,
 //!   `code`) all require non-trivial `params` setup that would dilute this
 //!   demo. The full mutation-via-HTTP path is exercised by T9
-//!   (`crates/meclaw-api/tests/phase_12_b_mutations_post.rs`) against the
+//!   (`crates/meclaw-api/tests/misc/phase_12_b_mutations_post.rs`) against the
 //!   testing Colony with the `echo`-factory registered — the loop is
 //!   demonstrably wired.
 

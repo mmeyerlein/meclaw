@@ -50,5 +50,5 @@ under two minutes and without a key.
 episode, and it carries a seed step the README alone will not get you past.
 
 Every colony here writes its conditions in the guarded CEL form (`has(hop.x) && hop.x == ...`),
-which the sweep in `crates/meclaw-colony/tests/gh80_shipped_conditions_are_guarded.rs` enforces
+which the sweep in `crates/meclaw-colony/tests/gh_3/gh80_shipped_conditions_are_guarded.rs` enforces
 over every shipped `config.json`. Copy from these examples instead of from an old README.

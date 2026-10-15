@@ -11,7 +11,7 @@
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
-use crate::ui::layout;
+use crate::ui::{count_of, layout};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -79,7 +79,7 @@ pub async fn get_trace_ui(
 
     let content = html! {
         (render_search_form(&trace_id_input))
-        h2 { "Trace " code { (trace_id_str) } " (" (reply.entries.len()) " hops)" }
+        h2 { "Trace " code { (trace_id_str) } " (" (count_of(reply.entries.len(), clamp_limit(q.limit))) " hops)" }
         @if reply.entries.is_empty() {
             p class="empty" { "No trace found for " code { (trace_id_str) } "." }
         } @else {

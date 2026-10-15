@@ -1,4 +1,4 @@
-# `web@2.3.0`
+# `web@2.3.1`
 
 A display as one cell, with a name of its own. One `web` cell, one `cell.db`,
 one mount on the colony's listener, and a token stylesheet in the visionOS
@@ -160,7 +160,7 @@ second display takes its own. The template is one cell, so `override_params`
 takes the flat form -- there is no path inside it to address:
 
 ```json
-{"name": "web-two", "template": "web@2.3.0",
+{"name": "web-two", "template": "web@2.3.1",
  "override_params": {"mount": "screen"}}
 ```
 
@@ -312,8 +312,9 @@ boot it replaced had the socket URL -- prefix plus mount -- in its text, so its
 hash was different on every deployment path, and a proxy that sets a
 Content-Security-Policy could not list it once (GH #867). The shell itself now
 runs under `script-src 'self'`. A page that brings inline script of its own
-needs that script's hash listed: `display` publishes its two in
-`templates/display/csp.json`; `canvy` and `colony-view` publish none yet.
+needs that script's hash listed: `display` publishes its hooks and the client of
+`colony-view`, the code view it shows by default, in `templates/display/csp.json`; `canvy`
+publishes its client's in `templates/canvy/csp.json`.
 `style-src` needs `'unsafe-inline'` (the block below, and `style` attributes a
 page writes), and `base-uri` needs `'self'` for the `<base>` above. The proxy
 sets the header; the cell sets none.

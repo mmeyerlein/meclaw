@@ -228,14 +228,14 @@ struct Wiring {
 /// otherwise repeat per message.
 #[derive(Debug, Default)]
 struct Throttle {
-    last: Option<std::time::Instant>,
+    last: Option<tokio::time::Instant>,
     since: u64,
 }
 
 impl Throttle {
     /// Count one occurrence; `Some(count)` when it is time to say so.
     fn tick(&mut self) -> Option<u64> {
-        let now = std::time::Instant::now();
+        let now = tokio::time::Instant::now();
         self.since += 1;
         if self
             .last
@@ -355,6 +355,12 @@ impl Overflow {
             }),
             ..Self::default()
         }
+    }
+
+    /// The overflow is wired to a running colony (`colony_task` always wires
+    /// it; only unit rigs of the router run without).
+    pub(crate) fn is_wired(&self) -> bool {
+        self.wiring.is_some()
     }
 
     /// No cell has anything in its overflow, and nothing is being settled.
@@ -1673,6 +1679,19 @@ pub(crate) fn message_from_log(id: &str, c: LogColumns) -> Option<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tv-p1b (TV-Z8): the warning throttle reads `tokio::time::Instant`, so
+    /// its one-second window runs on a paused clock -- virtual, no real wait.
+    #[tokio::test(start_paused = true)]
+    async fn the_warning_throttle_window_runs_on_the_paused_clock() {
+        let mut throttle = Throttle::default();
+        assert_eq!(throttle.tick(), Some(1));
+        assert_eq!(throttle.tick(), None);
+        tokio::time::advance(std::time::Duration::from_millis(999)).await;
+        assert_eq!(throttle.tick(), None);
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        assert_eq!(throttle.tick(), Some(3));
+    }
 
     fn cols(body_kind: &str, body_payload: Option<&str>) -> LogColumns {
         LogColumns {

@@ -1,0 +1,181 @@
+{
+  "schema": "meclaw.pipeline.timer-tests/1",
+  "threshold_s": 30,
+  "tests": [
+    {
+      "test": "meclaw-cells::gh905_a_workspace_is_materialized_and_adopted::a_workspace_is_materialized_and_adopted",
+      "before_s": 32.3,
+      "after_s": 31.2,
+      "action": "keep_real_time",
+      "reason": "Every store hop spawns a cold python3 code cell (hundreds per test) and no timer is on the path; a warm runner would cut it but tests a different runner than the shipped templates."
+    },
+    {
+      "test": "meclaw-cells::gh906_a_repo_round_trips_through_the_hive::a_repo_round_trips_through_the_hive",
+      "before_s": 45.7,
+      "after_s": 46.5,
+      "action": "keep_real_time",
+      "reason": "Every store hop spawns a cold python3 code cell (hundreds per test) and no timer is on the path; a warm runner would cut it but tests a different runner than the shipped templates."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_0_to_4",
+      "before_s": 34.0,
+      "after_s": 33.4,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_10_to_14",
+      "before_s": 34.0,
+      "after_s": 34.6,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_15_to_19",
+      "before_s": 34.4,
+      "after_s": 34.7,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_5_to_9",
+      "before_s": 34.9,
+      "after_s": 35.4,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_0_to_4",
+      "before_s": 36.2,
+      "after_s": 37.0,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_10_to_14",
+      "before_s": 37.4,
+      "after_s": 37.0,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_15_to_19",
+      "before_s": 37.5,
+      "after_s": 37.6,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_5_to_9",
+      "before_s": 41.7,
+      "after_s": 40.0,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_0_to_2",
+      "before_s": 44.4,
+      "after_s": 43.7,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_12_to_14",
+      "before_s": 42.8,
+      "after_s": 43.0,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_15_to_17",
+      "before_s": 43.6,
+      "after_s": 43.3,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_18_to_20",
+      "before_s": 42.3,
+      "after_s": 42.7,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_3_to_5",
+      "before_s": 42.7,
+      "after_s": 42.7,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_6_to_8",
+      "before_s": 42.2,
+      "after_s": 41.3,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_9_to_11",
+      "before_s": 41.6,
+      "after_s": 41.8,
+      "action": "keep_real_time",
+      "reason": "Event-driven member-road runs whose time is CPU work (about 2,200 deliveries per part through SQLite and code cells): 12.9 s alone on an idle lane, over 30 s only under full-suite load, and no timer to pause on a multi_thread runtime."
+    },
+    {
+      "test": "meclaw-cells::gh974_a_person_round_leaves_no_dead_letter::a_person_round_leaves_only_declared_dead_letters",
+      "before_s": 51.2,
+      "after_s": 51.7,
+      "action": "keep_real_time",
+      "reason": "Grows a full member tree of about 215 real cells through builder runs and mutations before the round; every wait is on an event, the time is the build work itself."
+    },
+    {
+      "test": "meclaw-cells::gh974_a_person_round_leaves_no_dead_letter::the_ways_own_messages_never_dead_letter",
+      "before_s": 46.5,
+      "after_s": 47.2,
+      "action": "keep_real_time",
+      "reason": "Grows a full member tree of about 215 real cells through builder runs and mutations before the round; every wait is on an event, the time is the build work itself."
+    },
+    {
+      "test": "meclaw-cells::gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64",
+      "before_s": 44.4,
+      "after_s": 46.1,
+      "action": "keep_real_time",
+      "reason": "Every store hop spawns a cold python3 code cell (hundreds per test) and no timer is on the path; a warm runner would cut it but tests a different runner than the shipped templates."
+    },
+    {
+      "test": "meclaw-cells::gh980_the_writer_drives_its_projection::exec_cannot_steer_the_view",
+      "before_s": 32.7,
+      "after_s": 30.9,
+      "action": "keep_real_time",
+      "reason": "Every store hop spawns a cold python3 code cell (hundreds per test) and no timer is on the path; a warm runner would cut it but tests a different runner than the shipped templates."
+    },
+    {
+      "test": "meclaw-cells::gh980_the_writer_drives_its_projection::export_after_pull_commits_nothing",
+      "before_s": 33.6,
+      "after_s": 34.1,
+      "action": "keep_real_time",
+      "reason": "Every store hop spawns a cold python3 code cell (hundreds per test) and no timer is on the path; a warm runner would cut it but tests a different runner than the shipped templates."
+    },
+    {
+      "test": "meclaw-cells::gh980_the_writer_drives_its_projection::six_file_export_fits_ttl_64",
+      "before_s": 31.1,
+      "after_s": 31.9,
+      "action": "keep_real_time",
+      "reason": "Every store hop spawns a cold python3 code cell (hundreds per test) and no timer is on the path; a warm runner would cut it but tests a different runner than the shipped templates."
+    },
+    {
+      "test": "meclaw-cli::p9_subcolony_demo::a_mutation_scoped_into_the_child_tree_creates_nothing",
+      "before_s": 31.0,
+      "after_s": 2.1,
+      "action": "confirm",
+      "reason": "Waited out a 30 s silence window; now waits for a sentinel ask to the facade to be answered first, after the dead letter of the refused message is confirmed."
+    },
+    {
+      "test": "meclaw-cli::p9_subcolony_demo::a_path_inside_the_child_tree_is_not_routable_from_the_parent",
+      "before_s": 31.0,
+      "after_s": 1.9,
+      "action": "confirm",
+      "reason": "Waited out a 30 s silence window; now waits for a sentinel ask to the facade to be answered first, after the dead letter of the refused message is confirmed."
+    }
+  ]
+}

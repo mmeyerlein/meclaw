@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from scripts.tests import store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SYNC = REPO / "scripts" / "display_sync.py"
@@ -298,6 +299,14 @@ class TheCatalogueCopies(unittest.TestCase):
         attrs = (REPO / ".gitattributes").read_text(encoding="utf-8").splitlines()
         for rel, _keys in display_sync.BLOCK_COPIES + [("display/compose/config.json", ())]:
             self.assertIn("templates/%s merge=display-sync" % rel, attrs, rel)
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

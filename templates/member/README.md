@@ -1,4 +1,4 @@
-# `member@2.5.26`
+# `member@2.5.29`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -176,10 +176,10 @@ sends.
 
 A level that declared a lane without the edge, or carried the edge without
 declaring the lane, would be lying in one of the two directions; the pin is
-`crates/meclaw-cells/tests/gh302_member_holds_the_memory.rs`
+`crates/meclaw-cells/tests/misc_3/gh302_member_holds_the_memory.rs`
 § `every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level`, which
 reads `templates/assistant/config.json` off the tree and admits no third answer.
-`crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs` is the other half:
+`crates/meclaw-cells/tests/misc_3/gh454_two_assistants_one_channel.rs` is the other half:
 it measures that one bot really does reach two agents of one person, by name.
 
 `error` is the sharp one, and it is why that test reads the *edges* and not only
@@ -211,7 +211,7 @@ answer would ALSO have left through them, up the org and the OS, and dead-letter
 root as `hive_no_route` -- one dead letter per turn with a counterpart. A caller at the door
 is `outside` by stamp, and a caller that stamped nothing at all is outside too, which is how
 every colony wired before 1.10.0 keeps its answers.
-`crates/meclaw-cells/tests/gh834_the_member_stamps_the_brief_and_the_answer_finds_the_generation.rs`
+`crates/meclaw-cells/tests/assemble/gh834_the_member_stamps_the_brief_and_the_answer_finds_the_generation.rs`
 boots the road and counts zero messages of it above this level.
 
 ### The asker outside, and the token that addresses it
@@ -258,7 +258,7 @@ dies one level up instead of one level down. `params.required_drains` pairs
 caller's own `set_hop` (GH #237), so a parent that names the lane in a
 *condition* rather than stamping it is not caught by it; the shipped recipes are
 pinned instead, in
-`crates/meclaw-cells/tests/gh533_the_outside_asker_gets_an_answer.rs`.
+`crates/meclaw-cells/tests/assemble/gh533_the_outside_asker_gets_an_answer.rs`.
 
 **A refused recall now reaches the round that asked.** Before #533 every
 `reject` of the memory left the level, so an assistant that asked a question the
@@ -560,7 +560,7 @@ refuse turns for traffic it never saw. This level reads none of that and
 decides none of it.
 
 Pinned end to end in
-`crates/meclaw-cells/tests/gh471_a_member_carries_all_of_itself.rs`: two real
+`crates/meclaw-cells/tests/misc_4/gh471_a_member_carries_all_of_itself.rs`: two real
 colonies sharing nothing but a directory, one distinctive row per holder, and
 the receiving colony's firewall refusing a turn on a rule that only ever existed
 in the sending one.
@@ -626,13 +626,13 @@ grown the ordinary way had no second step at all. It ships here now, and the
 example copies it like every other line of the level. **The birth is still the
 example's job**: a `ref` carries no files, so putting a seed into `./memory-hive`
 takes an `add_templates` and cannot be done by a lane. Pinned in
-`crates/meclaw-cells/tests/gh467_the_shipped_member_carries_the_import_lane.rs`
+`crates/meclaw-cells/tests/misc_4/gh467_the_shipped_member_carries_the_import_lane.rs`
 (the shape of the shipped file) and
-`crates/meclaw-cells/tests/gh467_a_member_is_born_with_its_history.rs`, which
+`crates/meclaw-cells/tests/misc_4/gh467_a_member_is_born_with_its_history.rs`, which
 grows a member out of another colony's export and then feeds the running one a
 later document. The four-door shape of the lane is pinned in the first of those
 two, and the keeper's own leg of it in
-`crates/meclaw-cells/tests/gh475_a_member_reaches_the_keeper_it_holds.rs`.
+`crates/meclaw-cells/tests/misc_4/gh475_a_member_reaches_the_keeper_it_holds.rs`.
 
 **The two that only pass through.** `build` and an
 assistant's `error` get one plain exit edge each, `./assistants -> .`, and no
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.26` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.29` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.26"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.29"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.15"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.16"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1144,7 +1144,7 @@ knowing what the member knows — the same memory, the same record, the same rat
 window on the same attacker — and is reachable on the same bot, by name. Nothing
 is copied and nothing is synchronised, because there was only ever one of each.
 That is what #454 bought, and
-`crates/meclaw-cells/tests/gh454_two_assistants_one_channel.rs` is what measures
+`crates/meclaw-cells/tests/misc_3/gh454_two_assistants_one_channel.rs` is what measures
 it.
 
 ### The member's door
@@ -1213,7 +1213,7 @@ in front of a channel, can write it. The channel's ingress edge then turns it in
 the named agent takes the turn from there, and the door stays silent. A turn that carries the
 name of one of the member's agents never reaches the door, so the door has nothing to hand on.
 
-`crates/meclaw-cells/tests/gh835_a_door_takes_the_turn_nobody_addressed.rs` measures all of
+`crates/meclaw-cells/tests/misc_7/gh835_a_door_takes_the_turn_nobody_addressed.rs` measures all of
 it on a booted colony with two rendered generations. It checks the door, a named agent, an
 unknown name and a member without a door, and it holds the rendered manifest to
 `examples/organism/grow-member-door.json` byte for byte.
@@ -1268,7 +1268,7 @@ and the same pair again with `cogny` in place of `talky`. The runnable version o
 these edges rides behind the level's own in `examples/organism/grow-assistant.json`
 (the fourth entry of `examples/organism/grow.manifest.json`, one declaration with the
 generation and its grants since #1061); the whole round is measured in
-`crates/meclaw-cells/tests/gh560_a_members_brain_gets_its_sealed_key.rs`.
+`crates/meclaw-cells/tests/misc_5/gh560_a_members_brain_gets_its_sealed_key.rs`.
 
 Four things about that shape are load-bearing.
 
@@ -1535,7 +1535,7 @@ device `<device>` it opens pages on.
 ```
 
 It renders this declaration, and a test holds the two blocks together
-(`crates/meclaw-cells/tests/gh599_an_app_is_installed_from_what_it_declares.rs`):
+(`crates/meclaw-cells/tests/misc_5/gh599_an_app_is_installed_from_what_it_declares.rs`):
 
 ```json
 {"scope": "<member>", "ctx": {"member_person": "<person>"}, "diff": {

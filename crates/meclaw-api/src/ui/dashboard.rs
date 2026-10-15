@@ -8,7 +8,7 @@
 //! rendered directly into the page.
 
 use crate::ColonyHandle;
-use crate::ui::layout;
+use crate::ui::{count_of, layout};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -17,6 +17,10 @@ use meclaw_colony::ColonyMsg;
 use meclaw_colony::api_dto::{DeadLetterDto, MessageLogDto, RegistryEntryDto};
 use std::sync::Arc;
 use tokio::sync::oneshot;
+
+/// Rows one dashboard read of the dead letters and of the recent errors asks for; a full
+/// read shows as "at least" ([`count_of`]).
+const DASHBOARD_READ: usize = 100;
 
 /// Dashboard handler. When colony is unavailable: 503 + a minimal HTML error.
 pub async fn get_dashboard(State(colony): State<Arc<ColonyHandle>>) -> impl IntoResponse {
@@ -45,13 +49,13 @@ pub async fn get_dashboard(State(colony): State<Arc<ColonyHandle>>) -> impl Into
             "move on between them."
         }
 
-        h2 { "Cells (" (registry.len()) ")" }
+        h2 { "Cells (" (count_of(registry.len(), DASHBOARD_READ)) ")" }
         (render_registry_section(&registry))
 
-        h2 { "Dead Letters (" (dead_letters.len()) ")" }
+        h2 { "Dead Letters (" (count_of(dead_letters.len(), DASHBOARD_READ)) ")" }
         (render_dead_letters_section(&dead_letters))
 
-        h2 { "Recent Errors (" (errors.len()) ")" }
+        h2 { "Recent Errors (" (count_of(errors.len(), DASHBOARD_READ)) ")" }
         (render_errors_section(&errors))
     };
 
@@ -161,7 +165,7 @@ async fn read_registry(colony: &Arc<ColonyHandle>) -> Result<Vec<RegistryEntryDt
         path_prefix: None,
         cell_type: None,
         active: None,
-        limit: 100,
+        limit: DASHBOARD_READ,
         ack: ack_tx,
     };
     colony.inbox.send(msg).await.map_err(|_| ())?;
@@ -174,7 +178,7 @@ async fn read_dead_letters(colony: &Arc<ColonyHandle>) -> Result<Vec<DeadLetterD
     let msg = ColonyMsg::ReadDeadLetters {
         since: None,
         error_code: None,
-        limit: 100,
+        limit: DASHBOARD_READ,
         ack: ack_tx,
     };
     colony.inbox.send(msg).await.map_err(|_| ())?;
@@ -190,7 +194,7 @@ async fn read_errors(colony: &Arc<ColonyHandle>) -> Result<Vec<MessageLogDto>, (
         correlation_id: None,
         only_error: true,
         since: None,
-        limit: 100,
+        limit: DASHBOARD_READ,
         wait: None,
         ack: ack_tx,
     };

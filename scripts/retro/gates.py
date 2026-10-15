@@ -13,6 +13,9 @@ TWO THINGS THE NUMBERS WOULD LIE ABOUT OTHERWISE:
 * A receipt JSON and a GATE-SUMMARY line describe the SAME run. The receipt
   has no top-level `secs`, so its wall clock is `finished - started` -- which
   is exactly the number the summary prints (finding 01 section 3.3).
+  A pipeline receipt (GH #1152) takes `started` from the coordinator's
+  journal time of `pass_planned`, before guard and push: on a build lane the
+  duration includes the push and any clock skew between coordinator and lane.
 """
 
 from __future__ import annotations

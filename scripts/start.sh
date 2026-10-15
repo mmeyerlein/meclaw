@@ -250,8 +250,9 @@ fi
 installer=""
 case "$0" in
     */*)
-        if [ -f "$(dirname "$0")/install.sh" ]; then
-            installer="$(dirname "$0")/install.sh"
+        # this file's directory with builtins only (M7y, the kit's one form)
+        if [ -f "${0%/*}/install.sh" ]; then
+            installer="${0%/*}/install.sh"
         fi
         ;;
 esac

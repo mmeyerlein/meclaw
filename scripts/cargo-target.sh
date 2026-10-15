@@ -54,6 +54,11 @@
 # it for the narrower "would an export carry this" question; the reader below
 # passes "all". Both callers pass one, so no shellcheck directive is needed
 # here -- the file is checked as part of `scripts/*.sh` and comes back clean.
+# The kit's one Python (`KIT_PY`, lane.PYTHON; re-check tv-bn M7t B-M4), beside this file.
+# shellcheck source=scripts/pipeline/kit_python.sh
+case "${BASH_SOURCE[0]}" in */*) _meclaw_ct_dir=${BASH_SOURCE[0]%/*}/ ;; *) _meclaw_ct_dir=./ ;; esac  # builtins only (M7w), see gate.sh
+. "${_meclaw_ct_dir}pipeline/kit_python.sh" || exit 2
+
 meclaw_porcelain_paths() {
     local only="${1:-all}" entry x path orig
     while IFS= read -r -d '' entry; do
@@ -155,7 +160,15 @@ meclaw_tree_sync() {   # <root> <target_dir> <rev> <dirty_files> [resync]
         while IFS= read -r f; do
             [ -n "$f" ] && [ -e "$root/$f" ] && touch "$root/$f" && n=$((n + 1))
         done <<<"$list"
-        printf '%s files touched, target last built from %s@%s' "$n" "$s_path" "${s_sha:0:7}"
+        # On a lane every cargo run builds in the one build path of the lane
+        # (`scripts/lane_sync.sh`), so the stamp names this path and only the
+        # diff is touched -- the note says so by the lane's name.
+        if [ -n "${MECLAW_LANE_NAME:-}" ]; then
+            printf '%s files touched, own path (%s), target last built from %s@%s' \
+                "$n" "$MECLAW_LANE_NAME" "$s_path" "${s_sha:0:7}"
+        else
+            printf '%s files touched, target last built from %s@%s' "$n" "$s_path" "${s_sha:0:7}"
+        fi
     fi
     return 0
 }
@@ -183,8 +196,101 @@ meclaw_write_stamp() {   # <root> <target_dir> <rev> <dirty_files>
 # carried its own copy of the probe, word for word (review of GH #942, M-2) --
 # here once, like the target rule above, so the two cannot drift apart.
 meclaw_lanes_active() {   # <cargo lock path>
+    # Armed with lanes either way: the token file of the legacy kit, or the
+    # pool of the pipeline store (`pipeline.py lanes init --lanes`, which
+    # writes no token file -- C-C1 of the W3 review).
     local tokens="${MECLAW_STRAND_TOKENS:-${1%.lock}.tokens}"
-    [ -f "$tokens" ] || return 1
-    python3 -c 'import json, sys
-sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("lanes") else 1)' "$tokens" 2>/dev/null
+    local db="${MECLAW_PIPELINE_DB:-$HOME/.local/state/meclaw/pipeline/pipeline.db}"
+    # Z15 (M4): a store decision (init, off, migrate) at or after the file's
+    # `armed` stamp outlives the file, as in the store's own migration.
+    if [ -f "$tokens" ] && "${KIT_PY[@]}" -c 'import calendar, json, os, sqlite3, sys, time, urllib.parse
+st = json.load(open(sys.argv[1])) or {}
+if not st.get("lanes"):
+    sys.exit(1)
+def epoch(s):
+    return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
+# Review Z-A I1: an armed stamp that is no time falls back on the mtime (as
+# in lease_migrate), and any other fault counts as armed (fail-closed).
+try:
+    armed = epoch(st["armed"])
+except (KeyError, TypeError, ValueError):
+    armed = int(os.stat(sys.argv[1]).st_mtime)
+try:
+    db = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(sys.argv[2]), uri=True, timeout=5)
+    rows = db.execute("SELECT at, data FROM journal WHERE event = ?", ("lease_noted",)).fetchall()
+    for at, data in rows:
+        verb = (json.loads(data or "{}").get("verb") or "").split(" ")[0]
+        if verb in ("init", "off", "migrate") and epoch(at) >= armed:
+            sys.exit(1)
+except Exception:
+    sys.exit(0)
+sys.exit(0)' "$tokens" "$db" 2>/dev/null; then
+        return 0
+    fi
+    [ -f "$db" ] || return 1
+    # Fail-closed (Delta C M-neu-4): a store this probe cannot read, or a
+    # lanes column that is no JSON, counts as armed; only a store without
+    # the lease tables (never armed) is not.
+    "${KIT_PY[@]}" -c 'import json, sqlite3, sys, urllib.parse
+try:
+    db = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(sys.argv[1]), uri=True, timeout=5)
+    row = db.execute("SELECT lanes FROM lease_pools WHERE pool = ? AND armed IS NOT NULL",
+                     ("cargo",)).fetchone()
+except sqlite3.OperationalError as exc:
+    sys.exit(1 if str(exc).startswith(("no such table", "no such column")) else 0)
+except sqlite3.Error:
+    sys.exit(0)
+try:
+    lanes = json.loads(row[0] or "[]") if row else []
+except (TypeError, ValueError):
+    sys.exit(0)
+sys.exit(0 if lanes else 1)' "$db" 2>/dev/null
+}
+
+# THE TEST-HOOK FEATURE
+# =====================
+# `meclaw-colony` carries a `test-hooks` feature: a crash-injection hook that
+# parks a mutation between rename(2) and the spawn loop. The tests that use it
+# (`#![cfg(feature = "test-hooks")]`, e.g. `tests/phase/phase_6_crash_recovery.rs`)
+# compiled to empty stubs in every gate and in CI, because no test build turned
+# the feature on (GH #1208). Every build of the gate and the tests -- the
+# runner's build station with its `cargo build --bin meclaw`, clippy, the
+# doctests, `scripts/test-tier.sh`, the CI test jobs, the coverage run
+# (`scripts/pipeline/coverage_host.sh`, own target) -- carries it, so the
+# shared target/ holds one variant and one `target/debug/meclaw`. The product
+# binary (the release build, the export's cargo check) never does.
+#
+# `meclaw_test_features <root> [cargo args...]` prints the flags, one per line,
+# or nothing. cargo refuses `--features meclaw-colony/test-hooks` for a
+# selection in which no package depends on meclaw-colony ("does not contain
+# this feature"), so the flag goes with `--workspace` (no `-p` given) and with
+# a `-p` set that names meclaw-colony or a member with a direct dependency on
+# it. The same answer for the same selection in every caller keeps one variant
+# of meclaw-colony in the shared target/ instead of two.
+MECLAW_TEST_FEATURE="meclaw-colony/test-hooks"
+meclaw_test_features() {   # <root> [cargo args...]
+    local root="$1" arg next="" any="" want=""
+    shift
+    for arg in "$@"; do
+        if [ -n "$next" ]; then
+            any=1
+            meclaw_knows_test_hooks "$root" "$arg" && want=1
+            next=""
+            continue
+        fi
+        case "$arg" in
+            -p|--package) next=1 ;;
+            --package=*) any=1; meclaw_knows_test_hooks "$root" "${arg#--package=}" && want=1 ;;
+            -p?*) any=1; meclaw_knows_test_hooks "$root" "${arg#-p}" && want=1 ;;
+            --) break ;;
+        esac
+    done
+    if [ -z "$any" ] || [ -n "$want" ]; then
+        printf '%s\n' --features "$MECLAW_TEST_FEATURE"
+    fi
+}
+
+meclaw_knows_test_hooks() {   # <root> <package>
+    [ "$2" = meclaw-colony ] && return 0
+    grep -qE '^[[:space:]]*meclaw-colony[[:space:]]*=' "$1/crates/$2/Cargo.toml" 2>/dev/null
 }

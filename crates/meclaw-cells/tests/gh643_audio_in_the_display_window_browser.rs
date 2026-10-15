@@ -64,8 +64,12 @@ const FRAMES: usize = 20;
 const SAID: &str = "what time is it";
 /// What the test speaks back into the call.
 const ANSWER: &str = "It is noon.";
-/// How long the browser driver may take, all in.
-const DRIVER_LIMIT: Duration = Duration::from_secs(90);
+/// How long the browser driver may take, all in: a HANG mark (90 s x the lane's
+/// factor), scaled like the driver's own run mark `RUN_MS` (80 s x factor) so that the
+/// driver always ends first and names the wait that hung (re-check tv-bn-layout C H5).
+fn driver_limit() -> Duration {
+    meclaw_testing::deadline::scaled(Duration::from_secs(90))
+}
 /// The context key that opens the colony's egress door for this file's listener.
 const MARK: &str = "voice_out";
 /// The page's threshold between a tap and a hold, in ms: `--hold-ms` in the display's
@@ -405,7 +409,7 @@ async fn answer_when_the_turn_lands(
     inbox: mpsc::Sender<ColonyMsg>,
     mut egress: mpsc::Receiver<Message>,
 ) {
-    let deadline = Instant::now() + DRIVER_LIMIT;
+    let deadline = Instant::now() + driver_limit();
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
         // Three outcomes, three answers. Folding them into one `continue` made a
@@ -469,11 +473,16 @@ async fn drive_with(live: &mut Live, mode: Option<&str>, env: &[(&str, &str)]) -
     let script = repo("workshop/tools/display-mic-browser.mjs");
     if !script.is_file() {
         println!("SKIP the driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the driver does not ship in this tree"
+        );
         return None;
     }
 
-    // The answer goes in as soon as the turn comes out, so the page has a
-    // `speak_end` to count before the driver reads its counters.
+    // The answer goes in as soon as the turn comes out: the driver's turn wait
+    // (`turns >= 1`) needs the turn, and the colony's answer closes the call.
     let inbox = live.h.inbox_tx.clone();
     let egress = std::mem::replace(&mut live.egress, mpsc::channel(1).1);
     let speaking = tokio::spawn(answer_when_the_turn_lands(inbox, egress));
@@ -491,14 +500,23 @@ async fn drive_with(live: &mut Live, mode: Option<&str>, env: &[(&str, &str)]) -
     // is the leak the 90 s bound exists to prevent, so the bound has to take the
     // process with it. Node kills the browser itself, by PID, on every exit path
     // it now has.
-    let run = tokio::time::timeout(DRIVER_LIMIT, command.kill_on_drop(true).output()).await;
+    let run = tokio::time::timeout(driver_limit(), command.kill_on_drop(true).output()).await;
     speaking.abort();
 
     let out = match run {
-        Err(_) => panic!("the browser driver did not finish within {DRIVER_LIMIT:?}"),
+        Err(_) => panic!(
+            "HANG: the browser driver did not finish within {:?} (the driver's own run \
+             mark RUN_MS is shorter and should have named the wait that hung)",
+            driver_limit()
+        ),
         // No node on this host is the same kind of absence as no browser.
         Ok(Err(e)) => {
             println!("SKIP node is not on this host: {e}");
+            assert_ne!(
+                std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+                Ok("1"),
+                "SKIP under the switch: node is not on this host"
+            );
             return None;
         }
         Ok(Ok(out)) => out,
@@ -509,6 +527,12 @@ async fn drive_with(live: &mut Live, mode: Option<&str>, env: &[(&str, &str)]) -
         // The script already writes its own `SKIP <reason>`; repeating the word
         // would print it twice.
         Some(3) => {
+            // GH #1161 (OR-TB.S3.39): the gate's station booked this engine and runs with
+            // `MECLAW_REQUIRE_BROWSERS=1`; there a skipped driver is a red test, never a pass.
+            assert!(
+                std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref() != Ok("1"),
+                "a skip under MECLAW_REQUIRE_BROWSERS=1 is red:\n{stderr}"
+            );
             println!("{}", stderr.trim());
             return None;
         }
@@ -626,6 +650,11 @@ async fn the_release_drains_before_it_lets_go() {
 
     if !library_ships() || !have_python() {
         println!("SKIP no template library or no python3 on this host");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: no template library or no python3 on this host"
+        );
         return;
     }
 
@@ -647,6 +676,11 @@ async fn the_release_drains_before_it_lets_go() {
         // absence as no browser: reported, not failed.
         other => {
             println!("SKIP the 16 kHz fixture could not be derived: {other:?}");
+            assert_ne!(
+                std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+                Ok("1"),
+                "SKIP under the switch: the 16 kHz fixture could not be derived"
+            );
             return;
         }
     }
@@ -702,12 +736,13 @@ async fn a_short_press_opens_the_dock_and_a_long_one_speaks() {
         return;
     };
     // `drive_with` already printed the line; one copy is the record.
-    // The stimulus before the verdict (GH #763): the page timed the short press, and a
-    // host that held the release back past the threshold did not tap at all. Belt and
-    // braces: the driver measures the same `tap_ms` against its own `TAP_LIMIT_MS` and
-    // leaves with exit 1 before this line is reached (wave fix, strand X, OR-FX.X.2) --
-    // so this assert cannot go red on its own; it names the rule, and
-    // `the_tap_threshold_is_one_number` keeps the two numbers the page's.
+    // The stimulus before the verdict (GH #763, #687): `tap_ms` is the distance between
+    // the two stamps the page got, set by the driver in one task -- not a duration any
+    // clock measured. The page is kept busy past the threshold between the lift and its
+    // handler, so a classification by the handler's clock reads a hold and the counters
+    // below go red on every run (M10r); `the_tap_is_classified_by_its_stamps_not_the_clock`
+    // holds the driver to that, `the_tap_threshold_is_one_number` keeps the numbers the
+    // page's. This assert names the rule; it cannot go red on its own.
     assert!(
         counter(&line, "tap_ms=") < THRESHOLD_MS,
         "the stimulus was not a tap: the host held the release back: {line}"
@@ -839,11 +874,21 @@ fn threshold_drift(driver: &str, compose: &str) -> Vec<String> {
 fn the_tap_threshold_is_one_number() {
     if !library_ships() {
         println!("SKIP the template library does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the template library does not ship in this tree"
+        );
         return;
     }
     let script = repo("workshop/tools/display-mic-browser.mjs");
     if !script.is_file() {
         println!("SKIP the driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the driver does not ship in this tree"
+        );
         return;
     }
     let driver = std::fs::read_to_string(&script).expect("the driver reads");
@@ -875,4 +920,306 @@ fn the_threshold_lock_bites() {
         vec!["driver `TAP_LIMIT_MS` is 400, the proofs assert 250".to_string()]
     );
     assert_eq!(threshold_drift("const TAP_LIMIT = 250;", compose).len(), 1);
+}
+
+/// Where the mic driver waits on the clock instead of the page (re-check tv-bn-layout
+/// C-M3, VORGABEN TV-B1): a fixed 10/30 s mark that does not grow with the lane's
+/// factor and reports `TIMEOUT` instead of `HANG:`, a held gesture measured by a sleep,
+/// and a wall-clock loop that fell through silently. Each finding names the line.
+fn clock_waits(driver: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (n, line) in driver.lines().enumerate() {
+        let code = line.trim_start();
+        if code.starts_with("//") || code.starts_with('*') || code.starts_with("/**") {
+            continue;
+        }
+        for (needle, why) in [
+            ("sleep(", "a sleep in the driver"),
+            ("Date.now() +", "a wall-clock deadline"),
+            ("TIMEOUT", "an expiry that is not a `HANG:` line"),
+            (
+                "const RUN_MS = 80_000",
+                "a run mark that does not scale with the factor",
+            ),
+        ] {
+            if code.contains(needle) {
+                out.push(format!("{}: {why}: {code}", n + 1));
+            }
+        }
+        // The run's own line in place of whatever `main()` threw: an inner `HANG:` with
+        // its condition and last state reads as "the run did not finish" (re-check
+        // tv-bn-layout C fix1 M1, TV-Z3).
+        if code.contains("e instanceof Hang ? `HANG: the run") {
+            out.push(format!(
+                "{}: the run's line stands in for every inner HANG: {code}",
+                n + 1
+            ));
+        }
+    }
+    for (needle, why) in [
+        (
+            "await until(evaluate, expression, null",
+            "the page waits are not `until` with the HANG mark",
+        ),
+        (
+            "await hang(\"the page loaded\", loaded)",
+            "the load is not bounded by the HANG mark",
+        ),
+        (
+            "`HANG: the run did not finish within ${RUN_MS} ms; last state: ${JSON.stringify(e.last)}\\n`",
+            "the run mark does not say `HANG:` with its last state",
+        ),
+        (
+            "if (e.desc !== RUN) return `${e.message}\\n`;",
+            "a HANG inside the run does not keep its own condition and state",
+        ),
+        (
+            "}).catch((e) => finish(1, runFailure(e)));",
+            "the run's catch does not go through `runFailure` (re-check C fix2 H-b)",
+        ),
+        (
+            "CAPTURED + \" >= \" + (atDown + HOLD_FRAMES)",
+            "the hold does not end on the page's frames",
+        ),
+    ] {
+        if !driver.contains(needle) {
+            out.push(format!("missing: {why}"));
+        }
+    }
+    out
+}
+
+/// The mic driver waits for states of the page, never for the clock (TV-B1). No browser:
+/// it reads the driver.
+#[test]
+fn the_mic_driver_waits_on_the_page_and_never_on_the_clock() {
+    let script = repo("workshop/tools/display-mic-browser.mjs");
+    if !script.is_file() {
+        println!("SKIP the driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the driver does not ship in this tree"
+        );
+        return;
+    }
+    let driver = std::fs::read_to_string(&script).expect("the driver reads");
+    let found = clock_waits(&driver);
+    assert!(
+        found.is_empty(),
+        "the mic driver waits on the clock:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The lock above bites: each kind of clock wait is a finding.
+#[test]
+fn the_clock_wait_lock_bites() {
+    let clean = "await until(evaluate, expression, null, {});\n\
+                 await hang(\"the page loaded\", loaded);\n\
+                 return `HANG: the run did not finish within ${RUN_MS} ms; last state: ${JSON.stringify(e.last)}\\n`;\n\
+                 if (e.desc !== RUN) return `${e.message}\\n`;\n\
+                 }).catch((e) => finish(1, runFailure(e)));\n\
+                 await until(evaluate, CAPTURED + \" >= \" + (atDown + HOLD_FRAMES), null);\n";
+    assert_eq!(clock_waits(clean), Vec::<String>::new());
+    assert_eq!(
+        clock_waits(&format!("{clean}  await sleep(HOLD_MS);\n")).len(),
+        1
+    );
+    assert_eq!(
+        clock_waits(&format!(
+            "{clean}  const deadline = Date.now() + SPEAK_MS;\n"
+        ))
+        .len(),
+        1
+    );
+    assert_eq!(
+        clock_waits(&format!("{clean}  finish(1, `TIMEOUT x`);\n")).len(),
+        1
+    );
+    assert_eq!(
+        clock_waits(&clean.replace("await hang(\"the page loaded\", loaded)", "x")).len(),
+        1
+    );
+    // The catch of C-M3: one line for every Hang, the inner ones included (fix1 M1).
+    let swallowed = "await until(evaluate, expression, null, {});\n\
+                     await hang(\"the page loaded\", loaded);\n\
+                     await until(evaluate, CAPTURED + \" >= \" + (atDown + HOLD_FRAMES), null);\n\
+                     finish(1, e instanceof Hang ? `HANG: the run did not finish within ${RUN_MS} ms\\n` : failure(e)));\n";
+    // A catch past `runFailure` keeps the distinction in dead code (fix2 H-b).
+    assert_eq!(
+        clock_waits(&clean.replace(
+            "}).catch((e) => finish(1, runFailure(e)));",
+            "}).catch((e) => finish(1, `HANG: the run did not finish`));"
+        ))
+        .len(),
+        1
+    );
+    assert_eq!(
+        clock_waits(swallowed).len(),
+        4,
+        "{:?}",
+        clock_waits(swallowed)
+    );
+}
+
+/// Where the short press of `tap` is judged by a clock instead of by the events' stamps
+/// (GH #763, #687, M10r; VORGABEN TV-B2): a sleep between down and up, a duration taken
+/// off the wall clock or the handler's clock, a lift delivered without its stamp, or a
+/// press without the stall that makes a handler-clock reading red on every run. Reads
+/// the tap block of the driver, from `if (TAP) {` to the wait for the classification.
+fn tap_clock(driver: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(start) = driver.find("if (TAP) {") else {
+        return vec!["missing: the tap block".to_string()];
+    };
+    let end = driver[start..]
+        .find("the page classified the short press")
+        .map_or(driver.len(), |e| start + e);
+    let block = &driver[start..end];
+    for (n, line) in block.lines().enumerate() {
+        let code = line.trim_start();
+        if code.starts_with("//") || code.starts_with('*') {
+            continue;
+        }
+        for (needle, why) in [
+            ("setTimeout", "a sleep between down and up"),
+            ("Date.now()", "the wall clock"),
+            (
+                "performance.now() -",
+                "a duration taken off the page's clock",
+            ),
+            (
+                "m.up()",
+                "a lift without its stamp: the handler's clock decides",
+            ),
+            (
+                "tapMs < TAP_LIMIT_MS",
+                "a delivered duration as the verdict",
+            ),
+        ] {
+            if code.contains(needle) {
+                out.push(format!("tap line {}: {why}: {code}", n + 1));
+            }
+        }
+    }
+    for (needle, why) in [
+        (
+            "up = {pointerId: 1, timeStamp: t}",
+            "the lift does not carry its stamp",
+        ),
+        (
+            "while (performance.now() < end)",
+            "no stall between the lift and its handler",
+        ),
+        (
+            "var end = t + \" + TAP_STALL_MS + \";",
+            "the stall does not last `TAP_STALL_MS`",
+        ),
+        ("m.up(up);", "the stamped lift is not what the page gets"),
+    ] {
+        if !block.contains(needle) {
+            out.push(format!("missing: {why}"));
+        }
+    }
+    if !driver.contains("if (!(TAP_MS < TAP_LIMIT_MS))") {
+        out.push("missing: the stimulus is not held under the threshold by construction".into());
+    }
+    // The stall reaches PAST the threshold: `TAP_LIMIT_MS + <n>` with n > 0 (re-check
+    // M10r M1: `+ 0`, or a stall of `TAP_MS`, left the handler's clock under it).
+    let past = driver
+        .split("const TAP_STALL_MS = TAP_LIMIT_MS + ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|n| n.trim().replace('_', "").parse::<u64>().ok());
+    if !matches!(past, Some(n) if n > 0) {
+        out.push("missing: the stall does not reach past the threshold".into());
+    }
+    out
+}
+
+/// The tap is a tap by its stamps, never by a clock (GH #763, #687). No browser: it
+/// reads the driver.
+#[test]
+fn the_tap_is_classified_by_its_stamps_not_the_clock() {
+    let script = repo("workshop/tools/display-mic-browser.mjs");
+    if !script.is_file() {
+        println!("SKIP the driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the driver does not ship in this tree"
+        );
+        return;
+    }
+    let driver = std::fs::read_to_string(&script).expect("the driver reads");
+    let found = tap_clock(&driver);
+    assert!(
+        found.is_empty(),
+        "the tap is judged by a clock:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The lock above bites: the wall-clock form that flaked (#763/#687), a lift handed to
+/// the handler's clock, and a press without the stall are each a finding.
+#[test]
+fn the_tap_clock_lock_bites() {
+    let head = "const TAP_STALL_MS = TAP_LIMIT_MS + 100;\nif (!(TAP_MS < TAP_LIMIT_MS)) {}\n";
+    let clean = format!(
+        "{head}  if (TAP) {{\n\
+         const tapMs = await evaluate(\"(function () {{ var m = window.__displayMic, t = performance.now();\"\n\
+         + \" var down = {{pointerId: 1, timeStamp: t - \" + TAP_MS + \"}}, up = {{pointerId: 1, timeStamp: t}};\"\n\
+         + \" m.down(down); var end = t + \" + TAP_STALL_MS + \"; while (performance.now() < end) {{ }}\"\n\
+         + \" m.up(up); return Math.round(up.timeStamp - down.timeStamp); }})()\");\n\
+         await until(evaluate, x, null, {{ desc: \"the page classified the short press\" }});\n"
+    );
+    assert_eq!(tap_clock(&clean), Vec::<String>::new());
+    // The form on master before M10r, verbatim: a sleep in the page, the wall clock
+    // as the measure, a lift without its stamp, the measured duration as the verdict.
+    let master = format!(
+        "{head}  if (TAP) {{\n\
+         const tapMs = await evaluate(\n\
+         \"(async function () {{ var m = window.__displayMic, t0 = Date.now();\"\n\
+         + \" m.down({{pointerId: 1}}); await new Promise(function (r) {{ setTimeout(r, \" + TAP_MS + \"); }});\"\n\
+         + \" var held = Date.now() - t0; m.up(); return held; }})()\",\n\
+         );\n\
+         if (!(tapMs < TAP_LIMIT_MS)) {{\n\
+         await until(evaluate, x, null, {{ desc: \"the page classified the short press\" }});\n"
+    );
+    let found = tap_clock(&master);
+    assert!(found.len() >= 5, "{found:?}");
+    // The lift handed back to the handler's clock: the stall turns it into a hold.
+    assert_eq!(
+        tap_clock(&clean.replace("m.up(up);", "m.up();")).len(),
+        2,
+        "{:?}",
+        tap_clock(&clean.replace("m.up(up);", "m.up();"))
+    );
+    // No stall: the handler's clock and the stamps agree, and nothing tells them apart.
+    assert_eq!(
+        tap_clock(&clean.replace("while (performance.now() < end)", "if (0)")).len(),
+        1
+    );
+    // A stall of nothing, or one that stays under the threshold (re-check M10r M1).
+    for stall0 in [
+        clean.replace("var end = t + \" + TAP_STALL_MS + \";", "var end = t + 0;"),
+        clean.replace(
+            "var end = t + \" + TAP_STALL_MS + \";",
+            "var end = t + \" + TAP_MS + \";",
+        ),
+        clean.replace("TAP_LIMIT_MS + 100;", "TAP_LIMIT_MS + 0;"),
+        clean.replace("TAP_LIMIT_MS + 100;", "TAP_MS;"),
+    ] {
+        assert_eq!(tap_clock(&stall0).len(), 1, "{:?}", tap_clock(&stall0));
+    }
+    // A measured duration as the verdict again.
+    assert_eq!(
+        tap_clock(&clean.replace(
+            "await until(",
+            "if (!(tapMs < TAP_LIMIT_MS)) {}\nawait until("
+        ))
+        .len(),
+        1
+    );
 }

@@ -30,11 +30,11 @@ const APP: &str = "/alex/apps/note";
 /// spelled here and written below.
 const DIM_OID: &str = "view.~alex~apps~note.dim";
 
-/// § 4.3: the shortest distance between two calls. Held over real time, so it is the one
-/// tight number in this file and it is why the second write below asks nothing.
-const BRAKE: Duration = Duration::from_millis(3000);
-
-const QUIET: Duration = Duration::from_millis(300);
+/// § 4.3: the shortest distance between two calls, an hour: no run of this file comes near
+/// it, so the second write below asks nothing whatever the host's load. Re-check tv-bn M7
+/// M2 (TV-Z6, TV-Z9): it was 3 s held over real time, and the file slept the brake out
+/// before "past the brake"; that half is the brake-open colony's below.
+const BRAKE: Duration = Duration::from_secs(3600);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_verdict_comes_back_from_the_judge() {
@@ -105,14 +105,16 @@ async fn a_verdict_comes_back_from_the_judge() {
     );
 
     // -- Q-15: what the judge was asked is the situation, and it really left ----------
-    let asked = colony.judge_asks.lock().await.len();
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    colony.settle().await;
+    let in_the_log = colony.judge_questions().await;
+    let asked = colony.judge_asked().await.len();
     assert_eq!(
-        asked,
-        colony.judge_questions().await,
+        asked, in_the_log,
         "every question the hive sent reached the provider"
     );
     assert!(asked >= 1, "and at least one did");
-    let body = String::from_utf8_lossy(&colony.judge_asks.lock().await[0].body).to_string();
+    let body = String::from_utf8_lossy(&colony.judge_asked().await[0].body).to_string();
     assert!(
         body.contains("\\\"bar\\\"") || body.contains("bar"),
         "the judge is shown the screen state (§ 4.4): {body}"
@@ -142,6 +144,8 @@ async fn a_verdict_comes_back_from_the_judge() {
     // -- § 4.3: the brake holds over real time ---------------------------------------
     // A second real event, taken well inside `judge_min_interval_ms`: the window arrives,
     // the pass runs, and the judge is NOT asked.
+    // TV-A2: the baseline of an absence claim is read after quiescence (re-check tv-bn M7b3 H1).
+    colony.settle().await;
     let before = colony.judge_questions().await;
     let standing = colony
         .put(
@@ -151,7 +155,7 @@ async fn a_verdict_comes_back_from_the_judge() {
                    "topic": "note:1", "touched": "1"}),
         )
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
     assert_eq!(
         colony.judge_questions().await,
         before,
@@ -176,28 +180,6 @@ async fn a_verdict_comes_back_from_the_judge() {
         json!(""),
         "while the closed one stays closed: a verdict stands until the next (§ 4.5)"
     );
-
-    // -- § 4.3: past the brake, a real event asks again -------------------------------
-    tokio::time::sleep(BRAKE).await;
-    colony
-        .put(
-            APP,
-            "late",
-            json!({"title": "Late", "context": "work", "relevance": "0.7",
-                   "topic": "late:1", "touched": "1"}),
-        )
-        .await;
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        if colony.judge_questions().await > before {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "past the brake the next real event asks again (§ 4.3)"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 
     colony.shutdown().await;
 }
@@ -251,13 +233,22 @@ async fn a_verdict_between_two_writes_loses_no_window() {
         )
         .await;
 
+    // -- § 4.3: past the brake, a real event asks again -------------------------------
+    // With the brake at 1 ms, write B is past it, and its pass asks a second time.
+    colony
+        .wait_until(
+            "past the brake the next real event asks again (§ 4.3)",
+            async || colony.judge_questions().await >= 2,
+        )
+        .await;
+
     // The verdict came back, and it took neither window with it.
     colony
         .wait_until("the verdict reaches a pass", async || {
             colony.rest().await["bar"] == json!(0.25)
         })
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
     let rest = colony.rest().await;
     assert_eq!(
         rest["weights"]["work"],

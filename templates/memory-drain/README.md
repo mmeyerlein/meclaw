@@ -272,7 +272,7 @@ and an empty dead-letter queue — nothing was refused, the wrong thing was writ
 inline annotation of that turn then had nothing to bind to. This adapter is not defective
 there; it is being handed something it never promised to take. The lock that keeps the edge
 from being drawn a third time is
-`crates/meclaw-cells/tests/gh523_the_per_turn_lane_is_not_a_batch.rs`, and it carries the
+`crates/meclaw-cells/tests/misc_5/gh523_the_per_turn_lane_is_not_a_batch.rs`, and it carries the
 measurement above as two cases.
 
 ## Known limits

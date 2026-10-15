@@ -280,8 +280,7 @@ async fn normal_disconnect_still_dlqs_remainder_no_a1_regression() {
             .build(),
     )
     .await;
-    meclaw_testing::wait::wait_for_spawn_count(&spawn_count, 1, std::time::Duration::from_secs(30))
-        .await;
+    meclaw_testing::wait::wait_for_spawn_count(&spawn_count, 1).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     // Queue a remainder message.
     h.send(
@@ -326,26 +325,34 @@ async fn normal_disconnect_still_dlqs_remainder_no_a1_regression() {
     );
 
     // R1 was DLQ'd as cell_inactive (NOT re-queued — this is a disconnect).
-    // 60 s deadline: generous against full-workspace saturation (the async flow
-    // disconnect → peace-stop → mailbox-drain → DLQ-persist can starve under load).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let dlq = h.drain_dead_letters().await;
-        if dlq.iter().any(|d| {
-            d.resolved_target.as_str() == "/c1"
-                && matches!(
-                    d.reason,
-                    meclaw_colony::dead_letter::DeadLetterReason::CellInactive
-                )
-        }) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "disconnect remainder was NOT DLQ'd as cell_inactive (A1 regression!)"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    // The 60 s mark (`deadline::BOOT_HANG`, scaled by the time factor): generous
+    // against full-workspace saturation (the async flow disconnect → peace-stop →
+    // mailbox-drain → DLQ-persist can starve under load) -- a hang mark, never a
+    // verdict (tv-br M10u, re-check R-delta M2).
+    let last_dlq = std::sync::Mutex::new(Vec::new());
+    meclaw_testing::wait::boot_until_with(
+        "the disconnect remainder is dead-lettered as cell_inactive (A1)",
+        || {
+            let (h, last_dlq) = (&h, &last_dlq);
+            async move {
+                let dlq = h.drain_dead_letters().await;
+                let hit = dlq.iter().any(|d| {
+                    d.resolved_target.as_str() == "/c1"
+                        && matches!(
+                            d.reason,
+                            meclaw_colony::dead_letter::DeadLetterReason::CellInactive
+                        )
+                });
+                *last_dlq.lock().unwrap() = dlq
+                    .iter()
+                    .map(|d| format!("{} {:?}", d.resolved_target.as_str(), d.reason))
+                    .collect::<Vec<_>>();
+                hit
+            }
+        },
+        || last_dlq.lock().unwrap().clone(),
+    )
+    .await;
 
     h.shutdown().await;
 }

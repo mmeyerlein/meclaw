@@ -58,14 +58,41 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
 /// Setup a cell.db connection: PRAGMAs + DDL.
 ///
 /// PRAGMA order: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`.
-/// The DDL is idempotent (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`).
+/// The DDL is idempotent (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`)
+/// and atomic: it runs in one transaction (see [`bootstrap_ddl`]).
 pub fn setup_cell_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     apply_busy_timeout(conn)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.execute_batch(CELL_DB_DDL)?;
-    Ok(())
+    bootstrap_ddl(conn, CELL_DB_DDL)
+}
+
+/// GH #1179: run a bootstrap DDL batch all or nothing.
+///
+/// `execute_batch` alone runs in autocommit, statement by statement. A process
+/// killed (SIGKILL, crash, power loss) between `CREATE TABLE meta` and the
+/// `schema_version` insert left a `meta` without a version row, and every
+/// later boot of that `colony.db` failed with "migration failed: Query
+/// returned no rows" -- a permanent blocker, measured 1 in 60 runs under load
+/// in `gh121_root_lease::a_hard_killed_daemon_leaves_no_permanent_blocker`.
+/// One transaction means a kill leaves either the whole bootstrap or none of
+/// it, and the DDL stays idempotent on restart. The PRAGMAs stay outside:
+/// `journal_mode` cannot change inside a transaction.
+///
+/// The transaction is IMMEDIATE, not rusqlite's default DEFERRED. On an
+/// existing database every `CREATE ... IF NOT EXISTS` only reads, so a
+/// deferred transaction holds a read snapshot when the `INSERT OR IGNORE`
+/// into `meta` wants to write -- and SQLite never calls the busy handler for
+/// that read-to-write upgrade. A reopen racing another writer then failed at
+/// once with "database is locked" instead of waiting out the busy budget of
+/// GH #98 (`gh98_db_busy_timeout`, both pins red on the deferred form).
+/// `BEGIN IMMEDIATE` takes the write lock from no transaction, where the busy
+/// handler applies, and serialises two concurrent openers.
+fn bootstrap_ddl(conn: &rusqlite::Connection, ddl: &str) -> rusqlite::Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(ddl)?;
+    tx.commit()
 }
 
 const COLONY_DB_DDL: &str = "
@@ -208,7 +235,10 @@ pub fn setup_colony_db(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             )
         })?;
     }
-    conn.execute_batch(COLONY_DB_DDL)?;
+    // GH #1179: atomic, see `bootstrap_ddl`. The migrations after it are
+    // atomic per step (`migrations::migrate`), so every intermediate state a
+    // kill can leave behind carries a valid `schema_version`.
+    bootstrap_ddl(conn, COLONY_DB_DDL)?;
     super::migrations::migrate(conn).map_err(|e| {
         rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
@@ -452,6 +482,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, "13");
+    }
+
+    /// The names of every table and index in `conn`, sorted.
+    fn objects(conn: &rusqlite::Connection) -> Vec<String> {
+        let mut st = conn
+            .prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name")
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// GH #1179: the bootstrap DDL is all or nothing. It used to run statement
+    /// by statement in autocommit, so a daemon SIGKILLed between `CREATE TABLE
+    /// meta` and the `schema_version` insert left a `colony.db` that every
+    /// later boot refused ("migration failed: Query returned no rows") -- a
+    /// permanent blocker, measured 1 in 60 under load in
+    /// `gh121_root_lease::a_hard_killed_daemon_leaves_no_permanent_blocker`.
+    /// A batch that stops halfway (here: an index on a column a stray table
+    /// lacks) must leave nothing of its own behind.
+    #[test]
+    fn a_colony_bootstrap_that_stops_halfway_leaves_no_table_behind() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE mailbox_overflow (cell_path TEXT);")
+            .unwrap();
+        assert!(
+            setup_colony_db(&conn).is_err(),
+            "the stray table breaks the batch"
+        );
+        assert_eq!(objects(&conn), vec!["mailbox_overflow".to_string()]);
+    }
+
+    /// GH #1179, the cell.db half: the same autocommit gap sat between `CREATE
+    /// TABLE meta` and its `schema_version` insert.
+    #[test]
+    fn a_cell_bootstrap_that_stops_halfway_leaves_no_table_behind() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY);")
+            .unwrap();
+        assert!(
+            setup_cell_db(&conn).is_err(),
+            "the stray meta breaks the insert"
+        );
+        assert_eq!(objects(&conn), vec!["meta".to_string()]);
     }
 
     #[test]

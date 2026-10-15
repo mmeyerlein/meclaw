@@ -1,15 +1,49 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # meclaw -- the strand kit. One command for the four steps every strand of a
 # wave repeats by hand.
 #
 #     scripts/strand.sh new <name> --issue <nr> [options]
-#     scripts/strand.sh gate [<mode>] [--host <lane>] [gate.sh options]
-#     scripts/strand.sh test '<nextest filterset>' [--host <lane>] [nextest args]
+#     scripts/strand.sh pre [--no-lane] [--host <lane>] [--holder <n>] [--allow-bump <reason>]
+#         (the pre-run before a strand gate: form, locks, cargo check; writes the stamp)
+#     scripts/strand.sh gate [<mode>] [--host <lane>] [--holder <n>] [--no-pre --reason <text>] [gate.sh options]
+#         (--wait-admission: block while queued instead of exit 3, woken by a lease end)
+#     scripts/strand.sh test '<nextest filterset>' [--host <lane>] [--holder <n>] [nextest args]
+#         (a second lease is --holder <n>, never --strand <s>:<n> -- refused, GH #1146)
 #         (GH277_WRITE_GOLDEN=1 / MECLAW_GH935_BLESS=1 travel; the goldens come back)
 #     scripts/strand.sh report [--strand <name>]
-#     scripts/strand.sh close [--strand <name>] [--do]
+#     scripts/strand.sh close [--strand <name>] [--wave <dir>] [--do]
+#     scripts/strand.sh merge --strand <name> | --batch <s1,s2> [--wave <dir>] [--host <lane>]
+#         [--no-pre --reason <text>] [--no-close] [--dequeue]
+#         (the one way into master: lease tree:master, tested candidate, versions
+#          at the merge point; exit 3 = queued behind another merge)
+#     scripts/strand.sh revert <merge-sha|name> --reason <text> [--wave <dir>] [--host <lane>]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
-#     scripts/strand.sh lanes status
+#     scripts/strand.sh lanes status [<lane>]
+#     scripts/strand.sh lanes idle-off [--after <h>] [--lane <name>]
+#     scripts/strand.sh lanes release <lane> --run <run> [--by <who>]
+#     scripts/strand.sh lanes browsers <lane> check|install [<engine>...]
+#     scripts/strand.sh bench new <name> --ttl <h> [--lane <name>]
+#     scripts/strand.sh bench collect <name> [--lane <name>]
+#     scripts/strand.sh bench list [--lane <name>]
+#     scripts/strand.sh wave open <wave> --title "<English sentence>"
+#         (the Running row on top of plans/README.md section Live, committed)
+#     scripts/strand.sh wave close <wave> [--dry-run] [--issue <n>]... [--bump]
+#         (issues lock, retro, bump line, Orga inputs, export -- `pipeline wave close`)
+#
+# SINCE W3 (GH #1117) the kit is the entry and `scripts/pipeline.py` the core:
+# `gate` runs this tree's `scripts/gate.sh <mode>` -- the shell in front of
+# `pipeline.py gate` -- with `--strand <name> --wave <wave> --archive
+# plans/<wave dir>/receipts/<strand>` and prints what it printed before (the
+# red stations, the summary, the question block); `test` runs `pipeline.py
+# test`; `token ...` and `lanes status` run `pipeline.py lanes ...` on the
+# store (`MECLAW_PIPELINE_DB`), words and exit codes 1:1, `token` stays the
+# alias and `MECLAW_STRAND_TOKEN_SKIP` still counts -- with two exceptions
+# (Z11): `token take` on an unarmed store is exit 2 with the way to arm it,
+# never a silent pass (`check` stays exit 0), and an old token file beside an unarmed store is
+# carried into it once (lanes, max, TTL, holders, queue) or the verb fails
+# with the reason. `gate ci` stays on the old runner
+# (`scripts/gate_legacy.sh`, local only: `--host` is refused) for good;
+# there is no other way back to it (GH #1156).
 #
 # WHY THIS EXISTS
 # ===============
@@ -58,20 +92,24 @@
 # first served -- end the turn and wait to be woken), and `report` gives it
 # back at the end of the cargo phase. Once armed, `scripts/test-tier.sh`
 # and `strand.sh gate` refuse without a token (exit 3). Never checked: a
-# host without a token file (a public clone, CI, every test, any work
+# host with an unarmed store (a public clone, CI, every test, any work
 # outside a wave), a tree whose branch has no `/` (the main tree, where the
 # orchestrator runs the pass), a tier run inside a gate, and
 # `MECLAW_STRAND_TOKEN_SKIP=<reason>` -- which is logged, not silent.
 #
-#     token init [--max N] [--ttl MIN] [--force]   arm the host (refuses over a queue)
+#     token init [--max N] [--ttl MIN] [--force]   arm the host (refuses over a queue or a live run)
 #     token init --lanes a,b,c [--ttl MIN]         arm one named token per build lane
 #     token take [--strand S] [--lane NAME]        hold a token (that lane) or join the queue
-#     token take ... --wait                         block until taken (start it in the background)
-#     token release [--strand S]                   give it back, name the next
+#     token take ... --wait                         block until taken (start it in the background;
+#                                                   the queue line says it blocks, it never returns queued)
+#     token release [--strand S] [--force]         give it back, name the next (a lease of a live
+#                                                   run stays, exit 3: its close frees it)
 #     token who                                    holders, queue, last events
 #     token check [--pid P]                        what the gate and the tier call
 #     token off [--force]                          disarm (refuses over a queue; the log stays)
 #     token lane [--strand S]                      the lane this strand holds, or nothing
+#     token take|release|check|lane ... --holder N  a second lease of the strand (`<strand>:N`,
+#                                                   GH #1146); `gate`/`test --holder N` run under it
 #
 # The file lives next to the cargo lock: `${MECLAW_GATE_LOCK%.lock}.tokens`
 # (default /tmp/meclaw-w26-cargo.tokens), or `MECLAW_STRAND_TOKENS`, with
@@ -115,12 +153,16 @@
 # `*.example`, `vault.env`, `vault-pass*`, credentials; `scripts/lane_sync.sh`
 # holds the list) never leaves: untracked it is left out, TRACKED the gate is
 # refused with its path (exit 2, fail closed). Both sides hash the overlay
-# and a difference is refused too. The host's runner runs with `--lane --base
-# <merge base>`, the base computed HERE, where `master` is. Receipt and
+# and a difference is refused too. The run on the host is the pipeline's
+# (`pipeline.py exec`), against the merge base computed HERE, where `master` is. Receipt and
 # station logs come back into the wave's archive -- or the run is not green;
 # the summary, the red stations and the exit code (1/2/4) are the runner's,
 # after one first line `strand: lane <name> (<host>) rev <sha> overlay
 # <hash>`. Without a held token, `--host` wants MECLAW_STRAND_TOKEN_SKIP.
+# The skip passes the token CHECK only: the scheduler's admission still
+# queues the pass behind the lease queue (`lane <x> is leased to another
+# strand or a waiter ahead`, exit 3) -- on purpose, a skip never takes a
+# leased lane (kit find (d), 09.10.).
 #
 # A LANE RUNS EVERY STATION (GH #942). While the lanes are armed this machine
 # builds nothing -- it runs the owner's live and lab colonies, and a lab
@@ -134,7 +176,7 @@
 # station here, with a second summary line and the lane's receipt handed
 # over, stays for a station that is ever listed there again.
 #
-#     test '<filterset>' [--host <lane>]   one nextest filterset on the lane
+#     test '<filterset>' [--host <lane>] [--holder <n>]   one nextest filterset on the lane
 #
 # The same transport as a gate (push, overlay, the same refusals), then
 # `scripts/test-tier.sh filter '<filterset>'` in the host's tree. The whole
@@ -153,13 +195,63 @@
 # The lanes are named in a PRIVATE host file, `${MECLAW_LANES_FILE:-
 # ~/.config/meclaw/lanes}`: `<name> <ssh-target> [<bmc>] [threads=<n>]` per
 # line, `#` a comment. `threads=<n>` caps the test threads and the build jobs
-# of that lane (default: every core); old readers skip the word. It is never
+# of that lane (default: every core); old readers skip the word. Further
+# words (W1, read by `scripts/lane_sync.sh`): `class=egon` (the protection
+# class of the owner's machine, with `jobs=<n>` and `watch=<unit>`),
+# `slots=<n>` (build paths with their own target, default 1), `sccache=1`,
+# `linker=mold|wild`. A lane on THIS machine reads `<name> local <root> ...`:
+# no ssh, its root in place of the bmc. It is never
 # in the repository -- it names machines -- and it holds no password. Build hosts are normally switched off; switching one on or off
 # is a step of the orchestrator's, outside this kit, and `lanes status` is
 # the one lane verb that reads: per lane reachable or not, the file system
 # type and free space of its `/srv/target`, strand refs in its bare
 # repository. On a tmpfs the first gate after a boot builds cold and pushes
 # the history; on a disk the target stays warm (GH #942).
+#
+# THE LANE HYGIENE (`scripts/pipeline/hygiene.py`, W2 of the dev-tempo
+# wave). On 08.10.2026 four disks ran full in one day -- a linker `Bus error`
+# at 100 %, 124 G of bench leftovers, five generations of test binaries in one
+# `target/debug/deps` -- and each was found by hand, after the run it cost.
+# Since then a gate on a lane asks the host first: the pipeline pipes
+# `hygiene.py check` over ssh before the runner starts and `collect` after it;
+# no room even after collecting is exit 2 with `refused the run -- its
+# hygiene check found no room`, before a single crate is built
+# (`MECLAW_HYGIENE=0` switches the check off). `lanes status` appends the
+# hygiene's own word on the host to its line: warm trees, artifact
+# generations, zombie scopes, stray targets.
+#
+#     bench new <name> --ttl <h> [--lane <name>]   a managed bench directory, path on stdout
+#     bench collect <name> [--lane <name>]        remove it now
+#     bench list [--lane <name>]                  the bench directories and their rest TTL
+#
+# A bench or comparison build gets its own directory under the lane root
+# (`bench/<name>/`, its `CARGO_TARGET_DIR`) with a time to live: a one-shot
+# timer on the host removes it when the TTL is over, and every `check`
+# sweeps the ones whose timer was lost. A bare `target/` beside the layout is
+# a finding of the next check (`stray-target`), not a thing that waits for
+# somebody to notice the disk. Without `--lane` the hygiene runs here.
+#
+#     lanes idle-off [--after <h>] [--lane <name>]
+#
+# A build host that nobody uses switches itself off: one re-armable one-shot
+# timer per lane on THIS machine (`systemd-run --user`, unit
+# `pipe-idle-<lane>`), default 2 h (`MECLAW_IDLE_OFF_H`), that powers the host
+# off when it fires and no strand holds the lane (`token who`). Every gate on
+# a lane arms it again, so the clock starts at the end of the last run;
+# `MECLAW_IDLE_OFF_H=0` arms nothing. A lane with `class=egon` in the host
+# file, or the target `local`, is never armed. Switching a host ON stays the
+# orchestrator's step; `systemctl --user stop pipe-idle-<lane>.timer` disarms.
+#
+#     lanes release <lane> --run <run> [--by <who>]
+#
+# A run whose driver ended without closing it (killed, a chain that stopped)
+# keeps its task runs `dispatched` and the lane busy in the admission until
+# deadline + grace. `lanes release` closes it the store's way (`close()`:
+# workpackage `stopped/aborted`, open task runs `failed/orphan`, journal
+# `run_closed reason=orphan by=<who>`) -- only when no local driver pid of the
+# run lives (workpackage doc, lease entries, journal), the lane reports the
+# run's `pipe-<run>.scope` gone and no process lives in its workspace. Any
+# other answer, or none, refuses with the reason and exit 2.
 #
 # THE HEADER BLOCK is the point of all of it. Every report starts with a YAML
 # block (strang, branch, issues, basis, gate, commits) and
@@ -181,24 +273,62 @@
 # wave lives once. Every path this script writes is resolved against the main
 # worktree, whichever tree it was started from.
 #
-# Exit 0 = the step succeeded.
+# Exit 0 = the step succeeded. `gate` passes the engine's codes through:
+# GREEN 0, RED 1, ABORTED or a refused argument 2, queued 3, ASK 4, a lane
+# that refuses this tree 5, a store error at the admission 6.
 
 set -uo pipefail
+
+# The kit's directory, absolute before the entry below changes the working
+# directory -- `lane_sync.sh`, `gate.sh` and `pipeline.py` beside it belong
+# to the same tree.
+# This file's directory with builtins only: an external `dirname` missing from
+# PATH made it the caller's cwd and the kit library came from there (M7w).
+case "${BASH_SOURCE[0]}" in */*) KIT_DIR=${BASH_SOURCE[0]%/*}/ ;; *) KIT_DIR=./ ;; esac
+KIT_DIR=$(cd -- "$KIT_DIR" && pwd) || exit 2
+# The kit's one Python (`KIT_PY`, lane.PYTHON; re-check tv-bn M7t B-M4).
+# shellcheck source=scripts/pipeline/kit_python.sh
+. "$KIT_DIR/pipeline/kit_python.sh" || exit 2
 
 usage() {
     # The header block above IS the help text: everything from the line after
     # the shebang up to the first line that is not a comment.
     awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' \
-        "${BASH_SOURCE[0]}"
+        "$KIT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 }
 
 die() { echo "strand: $*" >&2; exit 2; }
 
-REPORT=""; ARCHIVE=""
+REPORT=""; ARCHIVE=""; S_REL=""
 
 need_value() {
     [ "$2" -ge 2 ] || die "$1 needs a value"
 }
+
+# The pipeline core next to this kit, and the store it keeps the leases in.
+pipeline_py() {
+    printf '%s/pipeline.py\n' "$KIT_DIR"
+}
+pipeline_db() {
+    printf '%s\n' "${MECLAW_PIPELINE_DB:-$HOME/.local/state/meclaw/pipeline/pipeline.db}"
+}
+
+# Is the store armed -- the cargo pool of `pipeline.py lanes init`? The query
+# of `meclaw_lanes_active` in `cargo-target.sh`, without asking for lanes.
+store_armed() {
+    local db
+    db=$(pipeline_db)
+    [ -f "$db" ] || return 1
+    "${KIT_PY[@]}" -c 'import sqlite3, sys, urllib.parse
+try:
+    db = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(sys.argv[1]), uri=True, timeout=5)
+    row = db.execute("SELECT 1 FROM lease_pools WHERE pool = ? AND armed IS NOT NULL",
+                     ("cargo",)).fetchone()
+except sqlite3.Error:
+    sys.exit(1)
+sys.exit(0 if row else 1)' "$db" 2>/dev/null
+}
+
 
 # --- where things live ------------------------------------------------------
 
@@ -223,13 +353,19 @@ main_root() {
 # one directory that carries this strand's report `berichte/<name>.md` wins --
 # `new` wrote it there. Two or none with that report stay ambiguous.
 branch_wave_dir() {
-    local plans="$1" branch wave cand hits=() owners=()
+    local plans="$1" branch wave cand top hits=() owners=()
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
     case "$branch" in */*) wave=${branch%%/*} ;; *) return 1 ;; esac
     for cand in "$plans/$wave"-*/; do
         [ -d "$cand" ] || continue
         hits+=("$(basename -- "${cand%/}")")
-        [ -f "${cand}berichte/${branch##*/}.md" ] && owners+=("${hits[-1]}")
+        # The report lives in the strand's worktree since #1148; the main
+        # tree's copy (older strands) counts as well.
+        if [ -f "${cand}berichte/${branch##*/}.md" ] || { [ -n "$top" ] \
+                && [ -f "$top/plans/${hits[-1]}/berichte/${branch##*/}.md" ]; }; then
+            owners+=("${hits[-1]}")
+        fi
     done
     if [ ${#hits[@]} -eq 1 ]; then
         printf '%s\n' "${hits[0]}"
@@ -240,18 +376,20 @@ branch_wave_dir() {
     fi
 }
 
-# The wave directory under `plans/`: `--wave` wins, then the branch, and only
-# then the first row of `plans/README.md` section Live that names a directory
-# which exists.
+# The wave directory under `plans/`: `--wave` wins, then the branch, then the
+# one row of `plans/README.md` section Live that says `**Running since <date>:**`
+# (`strand.sh wave open`, welle-validierung-2 3b, GH #1199), and only then the
+# first row that names a directory which exists.
 #
-# That last step is a GUESS, and it used to be a silent one: section Live is an
-# archive in order, not a pointer at what is running -- its top row is the wave
-# built LAST, and the row for the running wave is written by the orchestrator
-# when the wave ends, because it describes the result. So a row that says it is
-# built is not a fallback, it is a stop: the report and the gate archive of a
-# running strand would land in a wave that is over.
+# Two Running rows (parallel waves) are no guess either: a stop naming both.
+# The last step is a GUESS, and it used to be a silent one: without a Running
+# row section Live is an archive in order -- its top row is the wave built
+# LAST. So a row that says it is built is not a fallback, it is a stop: the
+# report and the gate archive of a running strand would land in a wave that is
+# over.
 wave_dir() {
-    local plans="$1" want="${2:-}" cand row rest
+    local plans="$1" want="${2:-}" cand row rest names
+    local -a running=()
     if [ -n "$want" ]; then
         want=${want%/}
         [ -d "$plans/$want" ] || die "no such wave: plans/$want"
@@ -265,9 +403,23 @@ wave_dir() {
         return 0
     fi
     [ -f "$plans/README.md" ] || die "no plans/README.md -- pass --wave"
-    # SC2016: the backticks in the sed pattern are markdown table syntax,
-    # not a command substitution -- single quotes are exactly right here.
-    # shellcheck disable=SC2016
+    # The Running rows are read by the one reader `wave open`/`wave close` write
+    # them for (`pipeline wave running`, wave.RUNNING): a second spelling of the
+    # marker here would take rows the core does not (re-check v2-kit c23 M-5).
+    names=$("${KIT_PY[@]}" "$(pipeline_py)" wave running "$plans/README.md") \
+        || die "plans/README.md section Live is unreadable -- pass --wave <directory>"
+    while IFS= read -r cand; do
+        [ -n "$cand" ] && [ -d "$plans/$cand" ] && running+=("$cand")
+    done <<<"$names"
+    if [ ${#running[@]} -eq 1 ]; then
+        echo "strand: wave ${running[0]} (Running row of plans/README.md section Live)" >&2
+        printf '%s\n' "${running[0]}"
+        return 0
+    fi
+    if [ ${#running[@]} -gt 1 ]; then
+        die "plans/README.md section Live names ${#running[@]} running waves"\
+            "(${running[*]}) -- pass --wave <directory>"
+    fi
     while IFS= read -r row; do
         cand=${row%%	*}; rest=${row#*	}
         [ -d "$plans/$cand" ] || continue
@@ -275,16 +427,24 @@ wave_dir() {
             '**Built'*|'**Done'*|'**Gebaut'*)
                 die "the newest wave in plans/README.md section Live is over"\
                     "($cand) and the running one is not in the table yet --"\
-                    "pass --wave <verzeichnis>" ;;
+                    "pass --wave <directory>" ;;
         esac
         echo "strand: wave $cand (top row of plans/README.md section Live)" >&2
         printf '%s\n' "$cand"
         return 0
-    done < <(awk '/^## Live/ { live = 1; next }
-                  live && /^## / { exit }
-                  live' "$plans/README.md" \
-             | sed -n 's#^| *`\([^`]*\)/` *| *\(.*\)#\1\t\2#p')
+    done < <(live_rows "$plans/README.md")
     die "no wave directory found in plans/README.md section Live -- pass --wave"
+}
+
+# `<dir>\t<text>` for every row of the section Live table of a plans README.
+live_rows() {
+    # SC2016: the backticks in the sed pattern are markdown table syntax,
+    # not a command substitution -- single quotes are exactly right here.
+    # shellcheck disable=SC2016
+    awk '/^## Live/ { live = 1; next }
+         live && /^## / { exit }
+         live' "$1" \
+        | sed -n 's#^| *`\([^`]*\)/` *| *\(.*\)#\1\t\2#p'
 }
 
 # `welle-p-2026-09-19` -> `welle-p`. The branch of a strand is `<wave>/<name>`,
@@ -321,7 +481,7 @@ plan_section() {
 }
 
 cmd_new() {
-    local name="" issues=() plan="" section="" base="master" wave_in="" force=0
+    local name="" issues=() plan="" section="" base="master" wave_in="" force=0 graphify=0
     [ $# -ge 1 ] || die "new needs a strand name"
     name="$1"; shift
     case "$name" in -*) die "new needs a strand name" ;; esac
@@ -333,6 +493,7 @@ cmd_new() {
             --base)    need_value "$1" "$#"; base="$2"; shift 2 ;;
             --wave)    need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
             --force)   force=1; shift ;;
+            --graphify) graphify=1; shift ;;
             *) die "new: unknown argument: $1" ;;
         esac
     done
@@ -345,10 +506,13 @@ cmd_new() {
     wave=$(wave_name "$wdir")
     branch="$wave/$name"
     tree="$(dirname -- "$root")/$(basename -- "$root")-wt-$name"
-    report="$plans/$wdir/berichte/$name.md"
+    # #1148: report and strand file go into the strand's WORKTREE -- the
+    # strand commits them on its branch; the main tree is never written.
+    report="$tree/plans/$wdir/berichte/$name.md"
 
     if [ "$force" = 0 ]; then
-        [ -e "$report" ] && die "$name: the report already exists ($report)"
+        [ -e "$plans/$wdir/berichte/$name.md" ] \
+            && die "$name: the report already exists ($plans/$wdir/berichte/$name.md)"
         [ -e "$tree" ] && die "$name: the worktree already exists ($tree)"
         git -C "$root" rev-parse --verify --quiet "$branch" >/dev/null \
             && die "$name: the branch already exists ($branch)"
@@ -356,6 +520,14 @@ cmd_new() {
 
     basis=$(git -C "$root" rev-parse --short=8 "$base" 2>/dev/null) \
         || die "no such base: $base"
+    # GH #1167 (g): the base is the master tip. Another base carries no commit
+    # that is not the owner's (author AND committer) -- the merge would refuse
+    # it after the gate (`foreign_commits`); here it costs nothing.
+    if [ "$base" != "master" ]; then
+        local foreign
+        foreign=$("${KIT_PY[@]}" "$(kit_dir)/pipeline/turnaround.py" foreign "$root" "master..$base" 2>&1) \
+            || die "base $base carries commits not by the owner -- start from master: $(printf '%s' "$foreign" | tr '\n' ';')"
+    fi
 
     git -C "$root" worktree add -b "$branch" "$tree" "$base" >/dev/null 2>&1 \
         || die "could not create the worktree $tree on $branch"
@@ -378,14 +550,54 @@ cmd_new() {
         printf '## Auftrag\n\n(aus dem Plan)\n\n'
         printf '## Rote Zeile\n\n(der Test, der zuerst rot war)\n\n'
         printf '## Änderungen\n\n(Datei:Zeile, WARUM)\n\n'
+        printf '## Versionsart\n\n(kind je Template in plans/%s/straenge/%s.json: fix|feature|break; fehlt es → fix; der Merge vergibt die Nummern)\n\n' "$wdir" "$name"
         printf '## Gate\n\n(die Summenzeile steht im Kopfblock)\n\n'
         printf '## Offene Punkte\n\n'
+        # The field merge asks for (GH #1196, merge.OUTSOURCED); the
+        # placeholder itself is refused until the strand fills it in.
+        printf 'Outsourced findings: <none | #<n> (owner-ruling <reference>)>\n\n'
         printf '## Strang-Rulings\n\n'
+        # The section `merge` asks for (Z-I 2c (2)); fix rounds may also
+        # write `## Fix-Runde Review <sha>`. Empty it is refused: merge wants
+        # a verdict line under it (review Z-I gap I1, merge.REVIEW_VERDICT).
+        printf '## Review\n\n(the reviewer adds the verdict line with the review file; merge asks for a yes)\n'
     } >"$report"
+
+    # The strand file: the issue, the title of the merge commit and the KIND
+    # of change per template (fix|feature|break). A strand never bumps a
+    # version; `merge` reads the kinds and assigns the numbers from the master
+    # it merges into (dev rules section 4). An existing file is kept -- the
+    # orchestrator may have written the kinds before the strand was set up;
+    # its copy in the main tree is carried into the worktree (#1148).
+    local sfile="$tree/plans/$wdir/straenge/$name.json"
+    local sfile_main="$plans/$wdir/straenge/$name.json"
+    if [ ! -e "$sfile" ] && [ -f "$sfile_main" ]; then
+        mkdir -p "$(dirname -- "$sfile")"
+        cp -- "$sfile_main" "$sfile" || die "could not copy the strand file $sfile_main"
+    fi
+    if [ ! -e "$sfile" ]; then
+        mkdir -p "$(dirname -- "$sfile")"
+        MECLAW_S_FILE="$sfile" MECLAW_S_NAME="$name" "${KIT_PY[@]}" - "${issues[@]}" <<'PY' \
+            || die "could not write the strand file $sfile"
+import json, os, sys
+
+nums = [int(i) if i.isdigit() else i for i in sys.argv[1:]]
+doc = {"strand": os.environ["MECLAW_S_NAME"],
+       "issue": nums[0] if len(nums) == 1 else nums,
+       "title": "", "kind": {}}
+with open(os.environ["MECLAW_S_FILE"], "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+PY
+    fi
 
     # The dispatch prompt. It carries the order and the paths, and for the
     # rules it carries a POINTER -- see WHY THIS EXISTS above.
     local order="(Auftrag hier einsetzen)"
+    # The contracts file only in a wave that has one (C-M4).
+    local orient="dein Plan-Teil"
+    [ -f "$plans/$wdir/plan-parts/V0-vertraege.md" ] \
+        && orient="\`plan-parts/V0-vertraege.md\`, dein Plan-Teil"
     if [ -n "$plan" ]; then
         local found
         found=$(plan_section "$plan" "${section:-$name}")
@@ -397,10 +609,14 @@ Du bist ein Opus-Bauer des Strangs "$name" der Welle $wave.
 Regeln: plans/PREAMBLE.md (gilt wörtlich) und plans/$wdir/BUILD-PREAMBLE.md
 (das Wellen-Spezifische). Beide zuerst lesen; sie werden hier nicht wiederholt.
 
+Orientierung: $orient, die dort genannten
+Dateien (Koepfe zuerst); nie \`grep -r\` ueber \`crates/\` ohne Pfadfilter.
+
 Worktree: $tree
 Branch:   $branch (Basis $basis)
 Issues:   $issue_list
 Bericht:  plans/$wdir/berichte/$name.md (Kopfblock steht schon drin)
+Strang:   plans/$wdir/straenge/$name.json (kind je Template: fix|feature|break -- kein Bump im Strang)
 
 Auftrag:
 $order
@@ -409,6 +625,13 @@ Gate und Bericht laufen über das Kit:
   scripts/strand.sh gate            -- fährt das Gate einmal, blockt, druckt die Summenzeile
   scripts/strand.sh report          -- füllt den Kopfblock aus dem Archiv
 PROMPT
+    # `--graphify` (W6, OR-DT-18): the trial's one line -- questions across the
+    # tree go to graphify's read-only commands against the main tree. No read
+    # hooks, no MCP; the command is whatever the host names (never a path here).
+    if [ "$graphify" = 1 ]; then
+        printf '\nQuestions across the tree: %s query|path|explain '"'"'<question>'"'"' (read-only, main tree state; no read hooks, no MCP).\n' \
+            "${MECLAW_GRAPHIFY_CMD:-graphify}"
+    fi
 }
 
 # --- gate -------------------------------------------------------------------
@@ -463,10 +686,11 @@ restore_latest() {
     return 0
 }
 
-# Red and asking stations of a run log -- the lines a report needs.
-red_lines() { grep -E '^GATE [^ ]+ \[.*\] [0-9]+s (RED|ASK)' "$1" || true; }
+# Red, asking and aborted stations of a run log -- the lines a report needs
+# (ABORTED: a watchdog stopped the station, C-M2).
+red_lines() { grep -E '^GATE [^ ]+ \[.*\] [0-9]+s (RED|ASK|ABORTED)' "$1" || true; }
 
-# --- the gate on a build host (THE LANES) -------------------------------------
+# --- the lanes of the host file (THE LANES) ------------------------------------
 
 # The ssh target of a lane in the host file, or nothing.
 lane_target() {
@@ -490,141 +714,53 @@ lane_threads() {
         exit }' "$file"
 }
 
-# The lane's word on the browser drivers of the tree (`lane_sync.sh push`, third
-# word): a tree with drivers but no playwright on the host runs its browser
-# proofs as SKIPs (OR-DP-83), and that is said before the run, not found after.
-browser_note() {   # lane, own|linked|none|n/a
-    [ "$2" = none ] || return 0
-    printf 'strand: lane %s has no playwright for this tree -- its browser proofs SKIP' "$1"
-    printf ' (an npm install in workshop/tools of one tree on the lane seeds its cache)\n'
+# A `key=value` word of a lane in the host file (`class=`, `slots=`, `jobs=`,
+# `watch=`, `sccache=`, `linker=`, `root=`), or nothing.
+lane_kv() {   # <lane> <key>
+    local file
+    file=$(lanes_file)
+    [ -f "$file" ] || return 0
+    awk -v n="$1" -v k="$2" '{ sub(/#.*/, "") } $1 == n && NF >= 2 {
+        for (i = 3; i <= NF; i++) if (index($i, k "=") == 1) { print substr($i, length(k) + 2); exit }
+        exit }' "$file"
 }
 
-# `gate_on_host <mode> <lane> <strand> <archive-root> <runner> [gate options]`
-gate_on_host() {
-    local mode="$1" lane="$2" name="$3" archive_root="$4" gate="$5"; shift 5
-    local target sync base sha digest browser out errf prc runlog rc lrc=0 envs="" summary lsum="" pass=()
+# The root of a `local` lane: `root=<path>`, or the third word when it is a
+# path (`<name> local <root> class=egon ...`).
+lane_local_root() {   # <lane>
+    local file r
+    r=$(lane_kv "$1" root)
+    if [ -z "$r" ]; then
+        file=$(lanes_file)
+        [ -f "$file" ] || return 0
+        r=$(awk -v n="$1" '{ sub(/#.*/, "") } $1 == n && NF >= 3 && $3 ~ /^\// { print $3; exit }' "$file")
+    fi
+    printf '%s' "$r"
+}
+
+# The settings of a lane for `scripts/lane_sync.sh`, exported into this
+# process: every later call of the transport for this lane sees them.
+lane_settings() {   # <lane>
+    local lane="$1" target root
     target=$(lane_target "$lane")
-    [ -n "$target" ] || die "no lane $lane in the host file $(lanes_file)"
-    sync="$(dirname -- "$gate")/lane_sync.sh"
-    [ -x "$sync" ] || die "no lane transport at $sync"
-    [ "$mode" != ci ] || die "a ci run belongs to the workflow, not to a lane"
-
-    # What travels to the runner there: everything but the base (computed
-    # here) and an archive path (one of this machine).
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --base|--log-dir|--archive) shift 2 ;;
-            *) pass+=("$1"); shift ;;
-        esac
-    done
-
-    # The base, as the runner of THIS tree computes it -- one rule, not two
-    # -- resolved to a full sha here, where `master` is: the host's copy of
-    # the repository has no reliable one.
-    base=$("$gate" "$mode" --plan-only "$@" 2>/dev/null \
-        | sed -n 's/^gate: base = \([^ ]*\) .*/\1/p' | head -1)
-    base=$(git rev-parse --verify --quiet "${base:-none}^{commit}" 2>/dev/null) \
-        || die "cannot tell the base of this diff -- see scripts/gate.sh $mode --plan-only"
-
-    # Exit 5 of the transport is a refusal HERE -- a tracked secret, or a
-    # host tree whose overlay hash is not this tree's (OR-S3-64): fail
-    # closed, the paths or hashes on stderr, no archive, the token held.
-    errf=$(mktemp) || die "no temp file"
-    out=$("$sync" push "$target" "$name" 2>"$errf")
-    prc=$?
-    if [ "$prc" = 5 ]; then
-        echo "strand: lane $lane refused -- the host would not gate this tree:" >&2
-        sed 's/^/  /' "$errf" >&2
-        rm -f "$errf"
-        return 2
-    elif [ "$prc" != 0 ]; then
-        echo "strand: lane $lane unreachable" >&2
-        sed 's/^/  /' "$errf" >&2
-        rm -f "$errf"
-        return 2
+    export MECLAW_LANE_NAME="$lane"
+    export MECLAW_LANE_THREADS; MECLAW_LANE_THREADS=$(lane_threads "$lane")
+    export MECLAW_LANE_CLASS; MECLAW_LANE_CLASS=$(lane_kv "$lane" class)
+    export MECLAW_LANE_SLOTS; MECLAW_LANE_SLOTS=$(lane_kv "$lane" slots)
+    export MECLAW_LANE_JOBS; MECLAW_LANE_JOBS=$(lane_kv "$lane" jobs)
+    export MECLAW_LANE_WATCH; MECLAW_LANE_WATCH=$(lane_kv "$lane" watch)
+    export MECLAW_LANE_SCCACHE; MECLAW_LANE_SCCACHE=$(lane_kv "$lane" sccache)
+    export MECLAW_LANE_LINKER; MECLAW_LANE_LINKER=$(lane_kv "$lane" linker)
+    if [ "$target" = local ]; then
+        root=$(lane_local_root "$lane")
+        [ -n "$root" ] || die "the local lane $lane names no root (<name> local <root> ... in $(lanes_file))"
+        export MECLAW_LANE_ROOT="$root"
     fi
-    rm -f "$errf"
-    read -r sha digest browser <<<"$out"
-    browser_note "$lane" "$browser"
-
-    open_run_dir "$archive_root"
-    runlog="$RUN_DIR/run.log"
-    # The overlay hash names the tree that was gated -- the same on both
-    # sides, or the push above had refused.
-    printf 'strand: lane %s (%s) rev %s overlay %s\n' "$lane" "${target#*@}" "${sha:0:8}" "${digest:-?}"
-
-    MECLAW_LANE_THREADS=$(lane_threads "$lane") \
-        "$sync" run "$target" "$name" "$mode" "$base" ${pass[@]+"${pass[@]}"} >"$runlog" 2>&1
-    rc=$?
-    if [ "$rc" = 255 ] && ! grep -q '^GATE-SUMMARY ' "$runlog"; then
-        restore_latest "$archive_root"
-        echo "strand: lane $lane unreachable (lost during the run, log: $runlog)" >&2
-        return 2
-    fi
-    # Receipt and station logs HERE are part of the verdict (review M5): a
-    # run whose archive did not come back is not green, whatever it said.
-    if ! "$sync" fetch "$target" "$name" "$RUN_DIR" >/dev/null; then
-        echo "strand: the receipt of the run did not come back from lane $lane -- not green" \
-            "(remote: $(grep -E '^GATE-SUMMARY ' "$runlog" | tail -1))" >&2
-        restore_latest "$archive_root"
-        return 2
-    fi
-    cmd_token check --pid 0 >/dev/null 2>&1 || true
-
-    # The stations a host could not run (`SKIP <reason> (lane)`, `gate_plan.py
-    # --print lane-local`) would run here, with the same base, and add their
-    # own summary line (GH #934, OR-S3-96), with the lane's receipt handed
-    # over. Since GH #942 that list is empty -- a lane gets a secret-free `.env`,
-    # the export ref and has `node` -- so nothing runs here after a lane; the
-    # mechanism stays for a station that is ever listed again.
-    envs=$(sed -n 's/^GATE \([^ ]*\) \[.*\] [0-9]*s SKIP no-[a-z]* (lane)$/\1/p' "$runlog" \
-        | paste -sd, -)
-    if [ -n "$envs" ]; then
-        local lane_receipt=""
-        [ -f "$RUN_DIR/last-$mode.json" ] && lane_receipt="$RUN_DIR/last-$mode.json"
-        MECLAW_GATE_LANE_RECEIPT="$lane_receipt" \
-        MECLAW_GATE_ARCHIVE="$RUN_DIR/local" "$gate" "$mode" --only "$envs" \
-            --base "$base" --log-dir "$RUN_DIR/local" >"$RUN_DIR/run-local.log" 2>&1
-        lrc=$?
-    fi
-
-    red_lines "$runlog"
-    [ -n "$envs" ] && red_lines "$RUN_DIR/run-local.log"
-    summary=$(grep -E '^GATE-SUMMARY ' "$runlog" | tail -1)
-    if [ -z "$summary" ]; then
-        echo "strand: the gate on lane $lane wrote no summary line -- last lines of $runlog:" >&2
-        tail -20 "$runlog" >&2
-        return "$rc"
-    fi
-    printf '%s\n' "$summary"
-    if [ -n "$envs" ]; then
-        lsum=$(grep -E '^GATE-SUMMARY ' "$RUN_DIR/run-local.log" | tail -1)
-        if [ -z "$lsum" ]; then
-            echo "strand: the local run of $envs wrote no summary line -- see $RUN_DIR/run-local.log" >&2
-            lsum="GATE-SUMMARY $mode local 0/0 0s RED"
-            lrc=1
-        fi
-        printf '%s\n' "$lsum"
-    fi
-    sed -n '/^gate: ASK/,$p' "$runlog"
-
-    # ONE verdict of the kit: RED when either half is red, ASK when either
-    # asks and nothing is red. `summary.txt` -- what `report` reads -- holds
-    # the line that decides it.
-    local out="$rc"
-    if [ "$rc" = 1 ] || [ "$lrc" = 1 ]; then out=1
-    elif [ "$rc" = 0 ] && [ "$lrc" != 0 ]; then out="$lrc"
-    fi
-    local decides="$summary"
-    if [ "$rc" != 1 ] && [ "$lrc" = 1 ]; then decides="$lsum"
-    elif [ "$rc" = 0 ] && [ "$lrc" != 0 ]; then decides="$lsum"
-    fi
-    printf '%s\n' "$decides" >"$RUN_DIR/summary.txt"
-    return "$out"
 }
 
-cmd_gate() {
+cmd_gate_legacy() {
     local mode="strand" strand_in="" wave_in="" args=() have_log_dir=0 plan_only=0 host=""
+    local no_pre=0 pre_reason=""
     if [ $# -ge 1 ]; then
         case "$1" in strand|integration|release|ci) mode="$1"; shift ;; esac
     fi
@@ -643,9 +779,12 @@ cmd_gate() {
             --host)      need_value "$1" "$#"; host="$2"; shift 2 ;;
             --log-dir)   have_log_dir=1; args+=("$1"); shift ;;
             --plan-only) plan_only=1; args+=("$1"); shift ;;
+            --no-pre)    no_pre=1; shift ;;
+            --reason)    need_value "$1" "$#"; pre_reason="$2"; shift 2 ;;
             *)           args+=("$1"); shift ;;
         esac
     done
+    [ "$no_pre" = 0 ] || [ -n "$pre_reason" ] || die "gate: --no-pre needs --reason \"<text>\""
 
     local root plans wdir name archive_root archive runlog gate rc summary
 
@@ -654,7 +793,7 @@ cmd_gate() {
     # that changes `gate.sh` is exactly the wave in which the difference shows.
     gate="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/gate.sh"
     [ -x "$gate" ] \
-        || gate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/gate.sh"
+        || gate="$KIT_DIR/gate.sh"
     [ -x "$gate" ] || die "no gate runner at $gate"
 
     # A plan runs nothing: it goes to the caller as the runner prints it,
@@ -673,32 +812,28 @@ cmd_gate() {
 
     archive_root="$plans/$wdir/receipts/$name"
 
-    # THE LANES: `--host`, or the lane this strand holds. Without either the
-    # gate is local, as it always was.
-    [ -n "$host" ] || host=$(cmd_token lane 2>/dev/null) || host=""
-    if [ -n "$host" ]; then
-        # A gate on a host binds to a HELD token (review M3): unarmed, or in
-        # a tree that is no strand, the check below says nothing -- and two
-        # strands could share one host and one target unseen. Then the
-        # caller names the reason, like for a local skip.
-        if [ -z "${MECLAW_STRAND_TOKEN_SKIP:-}" ] \
-            && { [ ! -f "$(token_file)" ] || [ "$(strand_of_branch 2>/dev/null)" = "" ]; }; then
-            echo "strand: a gate on a build host binds to a held token -- arm the lanes and" \
-                "take one, or name the reason in MECLAW_STRAND_TOKEN_SKIP" >&2
-            return 3
+    # THE PRE STAMP (OR-DT-23, W4): a strand gate from a strand worktree (a
+    # branch with a `/`) runs only on a tree `strand.sh pre` graded GREEN in
+    # the last 24 h. Passes in the main tree and `merge` check no stamp.
+    # `--no-pre --reason` gets past it, and the receipt says so.
+    if [ "$mode" = strand ] && [ "$no_pre" = 0 ] && pre_applies; then
+        local pre_py
+        pre_py="$(git rev-parse --show-toplevel)/scripts/pipeline/pre.py"
+        if [ -f "$pre_py" ]; then
+            "${KIT_PY[@]}" "$pre_py" --stamp-check || return 2
         fi
-        # The token check names the lane: a strand gates on the lane it holds.
-        cmd_token check --pid "$$" --lane "$host" || return $?
-        gate_on_host "$mode" "$host" "$name" "$archive_root" "$gate" ${args[@]+"${args[@]}"}
-        return $?
     fi
+
+    # A gate on a lane is the pipeline's (`strand|integration|release
+    # --host`); this runner gates here only (GH #1156).
+    [ -z "$host" ] || die "gate $mode --host: a lane runs the pipeline's modes, not this runner"
 
     # The cargo token, BEFORE anything is written: a refused gate leaves no
     # run directory behind. The heartbeat names this shell, which blocks for
     # the whole run, so a gate longer than the TTL keeps its token. The exit
-    # of the check goes on as it is, like in `test-tier.sh`: 3 is no token,
-    # 2 a broken token file that somebody has to look at (review M4).
-    cmd_token check --pid "$$" || return $?
+    # of the check goes on as it is, like in `test-tier.sh`: 3 is no lease,
+    # any other a store that somebody has to look at (review M4).
+    ! store_armed || cmd_token_store check --pid "$$" || return $?
 
     open_run_dir "$archive_root"
     archive="$RUN_DIR"
@@ -722,7 +857,7 @@ cmd_gate() {
     # Seen after the run, and the pid of the finished run is gone from the
     # entry: from here on the TTL counts. A token released during the run is
     # no refusal (the check stays silent then).
-    cmd_token check --pid 0 >/dev/null 2>&1 || true
+    ! store_armed || cmd_token_store check --pid 0 >/dev/null 2>&1 || true
 
     # Red and asking stations first, then the summary -- the two things a
     # report needs. ASK is the runner's third summary word (exit 4): a
@@ -736,6 +871,7 @@ cmd_gate() {
     fi
     printf '%s\n' "$summary" >"$archive/summary.txt"
     printf '%s\n' "$summary"
+    [ "$no_pre" = 0 ] || record_pre_skipped "$archive" "$pre_reason"
     # The question itself, as the runner printed it after the summary: the
     # three answers and the `--decide` line. Without it the caller holds an
     # ASK and has to open the run log to learn what was asked. Printed
@@ -747,192 +883,94 @@ cmd_gate() {
     return "$rc"
 }
 
-# --- a single test on a lane (GH #942) ------------------------------------------
+# --- the pre-run (W4, GH #1118) ---------------------------------------------------
 
-cmd_test() {
-    local expr="" host="" strand_in="" wave_in="" extra=()
+# Does the stamp apply here? A strand worktree: a branch with a `/`, in a
+# linked worktree (the main tree's passes never need a stamp).
+pre_applies() {
+    local branch gd common
+    branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || return 1
+    case "$branch" in */*) ;; *) return 1 ;; esac
+    gd=$(git rev-parse --git-dir 2>/dev/null) || return 1
+    common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+    [ "$(cd -- "$gd" && pwd -P)" != "$(cd -- "$common" && pwd -P)" ]
+}
+
+# `--no-pre --reason`: the decision goes into the receipt beside the owner's
+# other decisions, so the retro sees every gate that ran without a pre-run.
+record_pre_skipped() {   # dir reason
+    local dir="$1" reason="$2"
+    [ -n "$dir" ] && [ -d "$dir" ] || return 0
+    echo "gate: pre skipped -- $reason"
+    "${KIT_PY[@]}" - "$dir" "$reason" <<'PY'
+import json, os, sys, datetime
+d, reason = sys.argv[1], sys.argv[2]
+entry = {"station": "pre", "decision": "pre_skipped", "reason": reason,
+         "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+path = os.path.join(d, "receipt.json")
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except (OSError, ValueError):
+    doc = None
+if isinstance(doc, dict):
+    doc.setdefault("owner_decisions", []).append(entry)
+    doc["pre_skipped"] = reason
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+else:
+    with open(os.path.join(d, "pre_skipped.json"), "w", encoding="utf-8") as fh:
+        json.dump(entry, fh, indent=2)
+        fh.write("\n")
+PY
+}
+
+cmd_pre() {
+    local host="" held="" no_lane=0 allow="" target="" holder="" args=()
     while [ $# -gt 0 ]; do
         case "$1" in
             -h|--help) usage; return 0 ;;
-            --host)   need_value "$1" "$#"; host="$2"; shift 2 ;;
-            --strand) need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
-            --wave)   need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
-            --)       shift; extra+=("$@"); break ;;
-            # GH #1050: an option before the filterset is a nextest argument,
-            # not the filterset (`test --no-fail-fast '<expr>'` ran `-E
-            # --no-fail-fast`). The ones that take a value take the next word
-            # (`-p meclaw-cells '<expr>'` made the package the filterset).
-            --run-ignored|-j|--test-threads|--retries|--max-fail|--partition|--status-level \
-            |--final-status-level|--failure-output|--success-output|--cargo-profile|--features \
-            |-p|--package|-F|--exclude|--test|--bin|--example|--bench|--target|--target-dir \
-            |--no-tests|-P|--profile|--manifest-path|--config|--tool-config-file|--color \
-            |--message-format|--build-jobs|--show-progress)
-                      need_value "$1" "$#"; extra+=("$1" "$2"); shift 2 ;;
-            -*)       extra+=("$1"); shift ;;
-            *)        if [ -z "$expr" ]; then expr="$1"; else extra+=("$1"); fi; shift ;;
+            --host)       need_value "$1" "$#"; host="$2"; shift 2 ;;
+            --holder)     need_value "$1" "$#"; holder="$2"; shift 2
+                          # fail closed (re-check Z-A M-b): "" took the main
+                          # lease, a bad suffix lost the rc 2 of `token lane`.
+                          [[ "$holder" =~ ^[A-Za-z0-9_-]{1,32}$ ]] \
+                              || die "pre: --holder takes a short suffix ([A-Za-z0-9_-], 1-32), got '$holder'" ;;
+            --no-lane)    no_lane=1; shift ;;
+            --fast)       no_lane=1; args+=(--fast); shift ;;
+            --allow-bump) need_value "$1" "$#"; allow="$2"; shift 2 ;;
+            *) die "pre: unknown option $1" ;;
         esac
     done
-    [ -n "$expr" ] || die "test: expected a nextest filterset, e.g. 'binary(~gh123)'"
-
-    local root plans wdir name archive_root target sync gate errf out prc sha digest browser
-    root=$(main_root) || exit 2
-    plans="$root/plans"
-    wdir=$(wave_dir "$plans" "$wave_in") || exit 2
-    name="$strand_in"
-    [ -n "$name" ] || name=$(strand_of_branch) \
-        || die "cannot tell the strand from the branch -- pass --strand"
-    archive_root="$plans/$wdir/receipts/$name"
-
-    # The lane: `--host`, or the one this strand holds -- and a test binds to a
-    # held token like a gate on a host (review M3 of GH #934).
-    [ -n "$host" ] || host=$(cmd_token lane 2>/dev/null) || host=""
-    if [ -z "$host" ]; then
-        echo "strand: test runs on a lane -- take one ('scripts/strand.sh token take')" \
-            "or pass --host <lane> with MECLAW_STRAND_TOKEN_SKIP=<reason>" >&2
-        return 3
-    fi
-    if [ -z "${MECLAW_STRAND_TOKEN_SKIP:-}" ] \
-        && { [ ! -f "$(token_file)" ] || [ "$(strand_of_branch 2>/dev/null)" = "" ]; }; then
-        echo "strand: a test on a build host binds to a held token -- arm the lanes and" \
-            "take one, or name the reason in MECLAW_STRAND_TOKEN_SKIP" >&2
-        return 3
-    fi
-    cmd_token check --pid "$$" --lane "$host" || return $?
-
-    target=$(lane_target "$host")
-    [ -n "$target" ] || die "no lane $host in the host file $(lanes_file)"
-    gate="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/gate.sh"
-    sync="$(dirname -- "$gate")/lane_sync.sh"
-    [ -x "$sync" ] || sync="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lane_sync.sh"
-    [ -x "$sync" ] || die "no lane transport at $sync"
-
-    # The transport of a gate, with its refusals (a tracked secret, a host
-    # tree that is not this one: exit 5 there, 2 here).
-    errf=$(mktemp) || die "no temp file"
-    out=$("$sync" push "$target" "$name" 2>"$errf")
-    prc=$?
-    if [ "$prc" = 5 ]; then
-        echo "strand: lane $host refused -- the host would not test this tree:" >&2
-        sed 's/^/  /' "$errf" >&2; rm -f "$errf"
-        return 2
-    elif [ "$prc" != 0 ]; then
-        echo "strand: lane $host unreachable" >&2
-        sed 's/^/  /' "$errf" >&2; rm -f "$errf"
-        return 2
-    fi
-    rm -f "$errf"
-    read -r sha digest browser <<<"$out"
-    browser_note "$host" "$browser"
-
-    # Its own directory, NOT a gate run: `test-` keeps it out of `latest` and
-    # out of the run-id glob `report` falls back on.
-    local run_dir log t0 rc secs passed total verdict
-    run_dir="$archive_root/test-$(date -u +%Y%m%dT%H%M%SZ)-${sha:0:8}"
-    while [ -e "$run_dir" ]; do run_dir="$run_dir-2"; done
-    mkdir -p "$run_dir" || die "cannot create $run_dir"
-    log="$run_dir/test.log"
-    printf 'strand: lane %s (%s) rev %s overlay %s\n' "$host" "${target#*@}" "${sha:0:8}" "${digest:-?}"
-
-    t0=$(date +%s)
-    MECLAW_LANE_THREADS=$(lane_threads "$host") \
-        "$sync" test "$target" "$name" "$expr" ${extra[@]+"${extra[@]}"} >"$log" 2>&1
-    rc=$?
-    secs=$(( $(date +%s) - t0 ))
-    cmd_token check --pid 0 >/dev/null 2>&1 || true
-    if [ "$rc" = 255 ] && ! grep -qE 'tests? run:' "$log"; then
-        echo "strand: lane $host unreachable (lost during the test, log: $log)" >&2
-        return 2
-    fi
-    # nextest's summary: `N tests run: P passed, ...` -- the last one counts.
-    total=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/^([0-9]+).*/\1/')
-    passed=$(grep -oE '[0-9]+ tests? run: [0-9]+ passed' "$log" | tail -1 | sed -E 's/.*run: ([0-9]+) passed/\1/')
-    # A stress series (`--stress-count N`) is graded by its ITERATIONS (GH
-    # #1086): nextest prints one `Stress test [..] iteration i/N: T tests run:
-    # P passed, F failed` line per iteration and closes with `Summary [..]
-    # R/N stress run iterations: G passed, B failed`. The tests-run grep above
-    # read only the LAST iteration (measured 07.10.: `75/75 GREEN`, exit 0,
-    # while 3 of 5 iterations were red), so the counts become the sum over all
-    # iterations and any red iteration -- or a series cut short -- is RED with
-    # a non-zero exit, whatever exit came back from the lane.
-    local stress="" s_n s_ran s_red s_pass s_total
-    stress=$(awk '
-        /Stress test \[.*\] iteration [0-9]+\/[0-9]+: [0-9]+ tests? run:/ {
-            line = $0
-            sub(/.* iteration /, "", line)
-            split(line, a, /[\/:]/); n = a[2] + 0; it++
-            t = line; sub(/^[^:]*: /, "", t); total += t + 0
-            p = t; sub(/.*run: /, "", p); pass += p + 0
-            # every class of red nextest counts on the line: failed, timed
-            # out, exec failed (a test that never started) -- review M1
-            if (t ~ /, [1-9][0-9]* (failed|timed out|exec failed)/) red++
-        }
-        /Summary \[.*\] [0-9]+\/[0-9]+ stress run iterations:/ {
-            line = $0; sub(/.*\] /, "", line)
-            split(line, b, /[\/ ]/); ran = b[1] + 0; n = b[2] + 0
-            # a green series has no failed count at all (`5/5 ...: 5 passed`)
-            sred = 0
-            if (line ~ /passed, [0-9]+ failed/) {
-                f = line; sub(/.* passed, /, "", f); sred = f + 0
-            }
-            seen = 1
-        }
-        END {
-            if (!it && !seen) exit
-            if (seen && sred > red) red = sred
-            if (!seen) ran = it
-            if (!n) n = it
-            printf "%d %d %d %d %d\n", n, ran, red, pass, total
-        }' "$log")
-    if [ -n "$stress" ]; then
-        read -r s_n s_ran s_red s_pass s_total <<<"$stress"
-        passed=$s_pass
-        total=$s_total
-    fi
-    verdict=GREEN
-    [ "$rc" = 0 ] || verdict=RED
-    if [ -n "$stress" ]; then
-        if [ "$s_red" -gt 0 ] || [ "$s_ran" -lt "$s_n" ]; then
-            verdict="RED ($s_red/$s_n iterations red"
-            [ "$s_ran" -ge "$s_n" ] || verdict="$verdict, $s_ran/$s_n ran"
-            verdict="$verdict)"
-            # nextest's own code for failed tests, when the lane said 0
-            [ "$rc" != 0 ] || rc=100
-        elif [ "$rc" = 0 ]; then
-            verdict="GREEN ($s_n/$s_n iterations green)"
+    local top name
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || die "pre: not in a git tree"
+    name=$(strand_of_branch 2>/dev/null) || name=""
+    args+=(--repo "$top")
+    [ -n "$name" ] && args+=(--strand "$name")
+    [ -n "$allow" ] && args+=(--allow-bump "$allow")
+    if [ "$no_lane" = 1 ]; then
+        args+=(--no-lane)
+    else
+        # A held lane and an explicit --host must agree (kit find (a)): the
+        # gate's admission refuses the mismatch, so pre refuses it first.
+        # `--holder <n>`: the lane of the strand's second lease (GH #1146, Review Z-A2 R3).
+        held=$(cmd_token lane ${holder:+--holder "$holder"} 2>/dev/null) || held=""
+        [ -z "$host" ] || [ -z "$held" ] || [ "$host" = "$held" ] \
+            || die "pre: ${name:-this strand} holds lane $held, not $host -- the gate would refuse" \
+                "--host $host; pre on $held, or release and take $host"
+        [ -n "$host" ] || host="$held"
+        if [ -n "$host" ]; then
+            target=$(lane_target "$host")
+            [ -n "$target" ] || die "pre: no lane $host in the host file $(lanes_file)"
+            args+=(--lane "$host" --lane-target "$target")
+            # pre calls the transport itself (`lane_sync.sh push|check|test`):
+            # the lane's settings and the cargo build path, as for a gate.
+            lane_settings "$host"
+            export MECLAW_LANE_CARGO=1
         fi
     fi
-    # Zero tests prove nothing (GH #997): the tier's own `no tests matched`
-    # (exit 6), a zero in the summary, a clean exit without one, nextest's
-    # "no tests to run" (4) or a filterset it refused -- RED, exit 6, and the
-    # reason on the line. A failing test or a failed build keeps its exit,
-    # and so does a pass: the texts are read only off any other exit, else a
-    # test that merely prints them would turn 0 or 100 into 6.
-    local refused=""
-    case "$rc" in
-        0|100|101) ;;
-        *) grep -qE "no tests matched|failed to parse filterset|didn't match any" "$log" \
-               && refused=1 ;;
-    esac
-    if [ "$rc" = 6 ] || [ "$rc" = 4 ] || [ "${total:-}" = 0 ] \
-        || { [ "$rc" = 0 ] && [ -z "$total" ]; } || [ -n "$refused" ]; then
-        verdict="RED (no tests matched)"
-        rc=6
-    fi
-    [ "$rc" = 0 ] || tail -20 "$log"
-    # Every red test by name (GH #1050): the tail above is the output of the
-    # LAST failure only (`failure-output = "immediate-final"`), and a red line
-    # of a filterset with five red locks read like one. A stress series tags
-    # each line with its iteration (`[2/5] (48/75)`); without the tag a test
-    # red in three iterations is named once (GH #1086).
-    [ "$rc" = 0 ] || grep -E '^ +(FAIL|TIMEOUT|SIG[A-Z]+|LEAK-FAIL) \[' "$log" \
-        | sed -E 's/\[[^]]*\] //; s/^ +/  /' \
-        | sed -E 's/^(  [A-Z-]+ )\[ *[0-9]+\/[0-9]+\] \( *[0-9]+\/[0-9]+\) /\1/' \
-        | awk '!seen[$0]++'
-    # The goldens that came back from the lane (GH #1051).
-    sed -n 's/^lane_sync: \(golden .*\)$/strand: \1/p' "$log"
-    printf 'TEST [%s] %s/%s %ss %s\n' "$expr" "${passed:-0}" "${total:-0}" "$secs" "$verdict" \
-        | tee -a "$log"
-    return "$rc"
+    "${KIT_PY[@]}" "$top/scripts/pipeline/pre.py" "${args[@]}"
 }
 
 # --- report and close -------------------------------------------------------
@@ -949,8 +987,27 @@ strand_paths() {
     [ -n "$name" ] || name=$(strand_of_branch) \
         || die "cannot tell the strand from the branch -- pass --strand"
     REPORT="$plans/$wdir/berichte/$name.md"
+    S_REL="plans/$wdir/berichte/$name.md"
     ARCHIVE=$(latest_run "$plans/$wdir/receipts/$name")
-    [ -f "$REPORT" ] || die "no report at $REPORT"
+    # Called from another tree (`--strand`): the report `new` wrote into the
+    # strand's worktree (#1148) is the one -- also over a stale copy in the
+    # main tree, which is never written while the strand has a worktree
+    # (GH #1167 e: an untracked copy there stops the merge's fast-forward).
+    local wt
+    if wt=$(strand_worktree "$root" "$(wave_name "$wdir")/$name") \
+            && [ -f "$wt/$S_REL" ]; then
+        REPORT="$wt/$S_REL"
+    fi
+    [ -f "$REPORT" ] || [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/$S_REL" ] \
+        || die "no report at $REPORT"
+}
+
+# The worktree that has <branch> checked out, or exit 1.
+strand_worktree() {
+    git -C "$1" worktree list --porcelain 2>/dev/null | awk -v want="branch refs/heads/$2" '
+        /^worktree / { path = substr($0, 10) }
+        $0 == want { print path; found = 1; exit }
+        END { exit !found }'
 }
 
 # The newest run of a strand, in three answers, most reliable first: the
@@ -982,7 +1039,33 @@ cmd_report() {
         esac
     done
     strand_paths "$strand_in" "$wave_in"
-    MECLAW_S_REPORT="$REPORT" MECLAW_S_ARCHIVE="$ARCHIVE" python3 - <<'PY'
+    # E-DT-W0.a: the report lives in the strand's worktree -- from there that
+    # copy is the one filled, never the main tree's (strands copied files into
+    # the main tree to feed `report`, and stalled on the permission dialog).
+    local top
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
+    # The main tree is no strand tree: from there `strand_paths` chose (GH #1167 e).
+    [ -n "$top" ] && [ "$top" = "$(main_root)" ] && top=""
+    # Only the strand's OWN tree (re-check H2 m8): a copy another strand's
+    # tree carries (a rebase brought it along) is not its report.
+    if [ -n "$top" ] && [ -f "$top/$S_REL" ] \
+            && [ "$(strand_of_branch 2>/dev/null)" = "$(basename -- "$S_REL" .md)" ]; then
+        REPORT="$top/$S_REL"
+    fi
+    # Convergence A (owner, 13.10.): a strand reports done only on a head
+    # `strand.sh pre` graded GREEN -- the done-definition's (a), checked here
+    # instead of trusted. The report's own tree decides: a strand worktree (the
+    # branch has a `/`, a linked worktree) needs a fresh stamp that still
+    # covers its code (`pre.py --stamp-check`, as the strand gate asks); a
+    # report in the main tree (after the merge) has no stamp to ask for.
+    local rtree
+    rtree=$(git -C "$(dirname -- "$REPORT")" rev-parse --show-toplevel 2>/dev/null) || rtree=""
+    if [ -n "$rtree" ] && [ -f "$rtree/scripts/pipeline/pre.py" ] \
+            && (cd -- "$rtree" && pre_applies); then
+        "${KIT_PY[@]}" "$rtree/scripts/pipeline/pre.py" --repo "$rtree" --stamp-check >/dev/null \
+            || die "report: $rtree has no fresh pre-GREEN stamp on its head -- run strand.sh pre first"
+    fi
+    MECLAW_S_REPORT="$REPORT" MECLAW_S_ARCHIVE="$ARCHIVE" "${KIT_PY[@]}" - <<'PY'
 import os, re, subprocess, sys
 
 report = os.environ["MECLAW_S_REPORT"]
@@ -1047,11 +1130,20 @@ if base:
 
 # The gate line comes from the archive, not from a human retyping it: the
 # same summary line stood in up to three files of one wave.
+# The verdict is the LAST `GATE-SUMMARY` line, never the last line: the lane
+# gate writes `GATE-LANE ...` after it (W3), and the station lines before it.
+# A file without one fails closed: the header gets a non-GREEN gate first,
+# so an earlier GREEN cannot stay behind for `close`.
 summary = os.path.join(archive, "summary.txt")
+no_summary = False
 if os.path.isfile(summary):
     lines = [ln.strip() for ln in open(summary) if ln.strip()]
-    if lines:
-        head["gate"] = '"%s"' % lines[-1]
+    sums = [ln for ln in lines if ln.startswith("GATE-SUMMARY ")]
+    if sums:
+        head["gate"] = '"%s"' % sums[-1]
+    elif lines:
+        head["gate"] = '"no GATE-SUMMARY"'
+        no_summary = True
 
 seen, keys = set(), []
 for k in FIELDS + order:
@@ -1060,6 +1152,10 @@ for k in FIELDS + order:
         keys.append(k)
 open(report, "w").write(
     "---\n" + "\n".join("%s: %s" % (k, head[k]) for k in keys) + "\n---\n" + body)
+
+if no_summary:
+    sys.exit("strand: %s has no GATE-SUMMARY line -- run the gate again"
+             % summary)
 
 missing = [f for f in FIELDS
            if not head[f].strip() or head[f].strip() in ('""', "[]")]
@@ -1082,12 +1178,24 @@ PY
     # The report ends the cargo phase (plans/PREAMBLE.md section 5), so it
     # gives the token back: a forgotten `release` would block a place in the
     # pipeline until the TTL runs out. The strand is the BRANCH of the head
-    # block, whichever tree this runs in.
-    if [ -f "$(token_file)" ]; then
+    # block, whichever tree this runs in. Only an armed source holds one: a
+    # store whose pool is off has nothing to give back (C-M3).
+    if store_armed; then
         branch=$(awk 'NR == 1 && /^---$/ { head = 1; next }
                       head && /^---$/ { exit }
                       head && sub(/^branch: */, "") { print; exit }' "$REPORT")
-        [ -n "$branch" ] && cmd_token release --strand "$branch"
+        # A release that leaves the lease standing (exit 3: a live run, or a
+        # stale-but-busy note) is passed on, not thrown away -- the report is
+        # written, but the lane is still held (re-check tv-kit fix11 M1).
+        if [ -n "$branch" ]; then
+            cmd_token release --strand "$branch"
+            rc=$?
+            if [ "$rc" != 0 ]; then
+                echo "strand: the report is written, but the lease of $branch stays" \
+                     "(token release exit $rc) -- see the line above" >&2
+                return "$rc"
+            fi
+        fi
     fi
     return 0
 }
@@ -1103,93 +1211,37 @@ cmd_close() {
         esac
     done
     strand_paths "$strand_in" "$wave_in"
-    MECLAW_S_REPORT="$REPORT" MECLAW_S_DO="$do_it" python3 - <<'PY'
-import os, re, subprocess, sys
+    # The comment is built by `pipeline.py close` (GH #1107), the same code the
+    # merge closes with. It reads machine facts only: the commit list comes from
+    # git -- `<merge>^1..<tip>` once the strand is merged, `merge-base..<branch>`
+    # before -- not from the head block, so the commits of other strands that a
+    # rebase or a merge of master brought in are never listed under this issue;
+    # the gate line is the one of the NEWEST STRAND receipt of the archive; and
+    # a head block that names commits reachable from master before the branch
+    # point is refused (run `report` again) instead of closing with them.
+    # The copy `report` fills (review Z-A R3 M2): the strand tree's, when it
+    # stands there -- else close read the main tree's and refused it.
+    local top
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
+    if [ -n "$top" ] && [ -f "$top/$S_REL" ]; then
+        REPORT="$top/$S_REL"
+    fi
+    local args=(close --report "$REPORT")
+    [ "$do_it" = 1 ] && args+=(--do)
+    "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" "${args[@]}"
+}
 
-report = os.environ["MECLAW_S_REPORT"]
-do_it = os.environ["MECLAW_S_DO"] == "1"
+# --- merge and revert -------------------------------------------------------
 
+# Both live in `scripts/pipeline/` (merge.py, revert.py); the kit only hands
+# the arguments through and passes the exit on unchanged: 0 merged, 1 refused,
+# 2 usage, 3 queued behind the `tree:master` lease of another merge.
+cmd_merge() {
+    "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" merge "$@"
+}
 
-def git(*args):
-    out = subprocess.run(["git"] + list(args), capture_output=True, text=True)
-    return out.stdout.strip() if out.returncode == 0 else ""
-
-
-text = open(report).read()
-m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
-if not m:
-    sys.exit("strand: %s has no header block" % report)
-head = {}
-for line in m.group(1).splitlines():
-    key, _, value = line.partition(":")
-    head[key.strip()] = value.strip()
-
-for f in ("branch", "issues", "basis", "gate", "commits"):
-    if not head.get(f, "").strip() or head[f].strip() in ('""', "[]"):
-        sys.exit("strand: run `strand.sh report` first -- %s is empty" % f)
-
-gate = head["gate"].strip('"')
-# Only GREEN closes an issue (see `report`): ASK is an open question.
-word = gate.split()[-1] if gate.split() else ""
-if word != "GREEN":
-    if word == "ASK":
-        sys.exit("strand: the gate is ASK, not GREEN -- answer the question "
-                 "or measure, then report")
-    sys.exit("strand: the gate is %s, not GREEN -- nothing to close"
-             % (word or "empty"))
-
-branch = head["branch"]
-base = head["basis"]
-commits = [c.strip() for c in head["commits"].strip("[]").split(",") if c.strip()]
-issues = [i.strip().lstrip("#") for i in head["issues"].strip("[]").split(",")
-          if i.strip()]
-merged = ""
-for line in git("log", "--merges", "--format=%h\t%s", "master").splitlines():
-    sha, _, subject = line.partition("\t")
-    if branch in subject:
-        merged = sha
-        break
-
-# The strand is its BRANCH, not the `HEAD` of whatever tree this runs in. The
-# orchestrator closes from the main tree after the merge, where `HEAD` is
-# master: `base..HEAD` would list every strand of the wave under this one
-# issue. A branch already deleted after the merge still has its tip -- the
-# second parent of the merge commit.
-tip = branch if git("rev-parse", "--verify", "--quiet",
-                    "%s^{commit}" % branch) else ""
-if not tip and merged:
-    tip = "%s^2" % merged
-if not tip:
-    sys.exit("strand: neither the branch %s nor a merge of it is in this "
-             "repository -- close where one of them is" % branch)
-
-changed = [p for p in git("diff", "--name-only", "%s..%s" % (base, tip)).splitlines()
-           if p]
-
-# EVERYTHING in this comment is machine-read: the branch, the base, the gate
-# line, the SHAs and the file list out of git. The German prose of the report
-# is deliberately NOT read -- a closing comment is public and English, and a
-# sentence written for the wave carries the owner, a private host or a port
-# sooner or later. What cannot be copied cannot leak.
-lines = ["Built on `%s` from %s." % (branch, base), ""]
-lines.append("Gate: `%s`" % gate)
-lines.append("Commits: %s" % ", ".join(commits))
-if changed:
-    lines.append("Changed: %s" % ", ".join("`%s`" % c for c in changed))
-if merged:
-    lines.append("Merged as %s." % merged)
-comment = "\n".join(lines)
-
-for issue in issues:
-    argv = ["gh", "issue", "close", issue, "--comment", comment]
-    if do_it:
-        rc = subprocess.run(argv).returncode
-        if rc != 0:
-            sys.exit("strand: gh failed for #%s" % issue)
-    else:
-        print("gh issue close %s --comment '%s'"
-              % (issue, comment.replace("'", "'\\''")))
-PY
+cmd_revert() {
+    "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" revert "$@"
 }
 
 # --- token ------------------------------------------------------------------
@@ -1208,664 +1260,371 @@ lanes_file() {
     printf '%s\n' "${MECLAW_LANES_FILE:-$HOME/.config/meclaw/lanes}"
 }
 
-cmd_token() {
-    local verb="${1:-}"
-    [ $# -ge 1 ] && shift
-    case "$verb" in
-        take|release|who|check|init|off|lane) ;;
-        *) die "token: expected take|release|who|check|init|off|lane" ;;
-    esac
-    # `take --wait`: block until the take succeeds. A waiter is an entry in
-    # the token file and nothing more -- nothing in it takes a lane that comes
-    # free, it waits for somebody to wake its builder. Measured 07.10.: a
-    # builder that ended its turn in the queue waited 115 min beside a free
-    # lane until the orchestrator dropped it. Started in the BACKGROUND, the
-    # exit of this call is the wake-up. Only a queued take (exit 3) is tried
-    # again; every other refusal goes through at once. FIFO stays the take's
-    # own rule: a retry keeps the waiter's place and passes nobody ahead.
-    if [ "$verb" = take ]; then
-        local a wait=0 rest=() trc tries=0 werr
-        for a in "$@"; do
-            if [ "$a" = --wait ]; then wait=1; else rest+=("$a"); fi
-        done
-        if [ "$wait" = 1 ]; then
-            werr=$(mktemp) || die "no temp file"
-            while :; do
-                # the queue line once, not every retry -- but the words of the
-                # round that ends the wait are said (review N4: a later refusal,
-                # the lane gone after `init --force`, came back as a bare exit).
-                # A subshell, so a `die` in it ends the round, not the waiter.
-                if [ "$tries" = 0 ]; then
-                    cmd_token take ${rest[@]+"${rest[@]}"}
-                else
-                    ( cmd_token take ${rest[@]+"${rest[@]}"} ) 2>"$werr"
-                fi
-                trc=$?
-                tries=$((tries + 1))
-                if [ "$trc" != 3 ]; then
-                    [ "$tries" = 1 ] || cat "$werr" >&2
-                    rm -f "$werr"
-                    return "$trc"
-                fi
-                sleep "${MECLAW_TOKEN_WAIT_SECS:-30}"
-            done
-        fi
-    fi
-    local strand_in="" wave_in="" max="3" ttl="90" pid="" force=0
-    local lanes="" lane_want="" max_set=0
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --strand) need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
-            --wave)   need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
-            --max)    need_value "$1" "$#"; max="$2"; max_set=1; shift 2 ;;
-            --lanes)  need_value "$1" "$#"; lanes="$2"; shift 2 ;;
-            --lane)   need_value "$1" "$#"; lane_want="$2"; shift 2 ;;
-            --ttl)    need_value "$1" "$#"; ttl="$2"; shift 2 ;;
-            --pid)    need_value "$1" "$#"; pid="$2"; shift 2 ;;
-            --force)  force=1; shift ;;
-            *) die "token $verb: unknown argument: $1" ;;
-        esac
-    done
+# The directory of this script -- `lane_sync.sh` and `pipeline/hygiene.py`
+# beside it belong to the same tree.
+kit_dir() {
+    printf '%s\n' "$KIT_DIR"
+}
 
-    local file branch tree key="" wave root
-    file=$(token_file)
-    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-    tree=$(git rev-parse --show-toplevel 2>/dev/null || true)
-    case "$strand_in" in
-        */*) key="$strand_in" ;;
-        "")  case "$branch" in */*) key="$branch" ;; esac ;;
-        *)
-            if [ -n "$wave_in" ]; then
-                root=$(main_root) || exit 2
-                wave=$(wave_dir "$root/plans" "$wave_in") || exit 2
-                wave=$(wave_name "$wave")
-            else
-                case "$branch" in
-                    */*) wave=${branch%%/*} ;;
-                    *) die "token: --strand $strand_in needs --wave, a strand branch, or the form <wave>/<name>" ;;
-                esac
-            fi
-            key="$wave/$strand_in" ;;
-    esac
+# Why a lane of the host file is never switched off by idle-off, or nothing:
+# the owner's machine (`class=egon`) and a lane that is this machine (target
+# `local`) stay on whatever the timer thinks.
+lane_idle_skip() {
+    local file
+    file=$(lanes_file)
+    [ -f "$file" ] || return 0
+    awk -v n="$1" '{ sub(/#.*/, "") } $1 == n && NF >= 2 {
+        if ($2 == "local") { print "transport local"; exit }
+        for (i = 3; i <= NF; i++) {
+            if ($i == "class=egon") { print "class egon"; exit }
+            if ($i == "transport=local") { print "transport local"; exit } }
+        exit }' "$file"
+}
 
-    if [ "$verb" = check ] || [ "$verb" = lane ]; then
-        # Unarmed host, or a tree that is no strand (the main tree, a
-        # detached HEAD): nothing to check, and nothing to say.
-        [ -f "$file" ] || return 0
-        [ -n "$key" ] || return 0
-    fi
-    if [ -n "$lanes" ]; then
-        [ "$verb" = init ] || die "token $verb: --lanes belongs to init"
-        [ "$max_set" = 0 ] || die "token init: --lanes and --max exclude each other" \
-            "(a lane host file entry is one token; the count is the list)"
-    fi
-    case "$verb" in
-        take|release)
-            [ -n "$key" ] || die "token $verb: cannot tell the strand from the branch -- pass --strand" ;;
-    esac
+# `idle_arm <lane> <hours>`: (re-)arm the idle-off timer of one lane here.
+#
+# The timer asks a holder command before it powers a host off, and powers
+# it off when the command's output does not name the lane. `token who` as it
+# stands names EVERY armed lane (its `lanes:` line) and nothing at all when it
+# fails -- the first would keep every host on forever, the second would switch
+# off a host that a strand holds. So the holder command is `token who`
+# narrowed to its holder lines (`held <lane>`), and a `token who` that fails
+# prints `held <lane>`: fail closed, the host stays on. It runs the MAIN
+# tree's kit (a strand's worktree may be gone when the timer fires) with the
+# token and host file of this call, so the timer reads the queue this caller
+# sees. One string, split by the script with `shlex`.
+# shellcheck disable=SC2016  # expanded by the timer's bash, not here
+HOLDER_SH='out=$("$0" token who 2>&1) || { echo "held $1 (token who failed: the lane counts as held)"; exit 0; }
+printf "%s\n" "$out" | sed -n "s/^  [^ ].*  lane \([^ ][^ ]*\)  held .*/held \1/p"'
 
-    MECLAW_T_VERB="$verb" MECLAW_T_KEY="$key" MECLAW_T_BRANCH="$branch" \
-    MECLAW_T_TREE="$tree" MECLAW_T_FILE="$file" MECLAW_T_MAX="$max" \
-    MECLAW_T_TTL="$ttl" MECLAW_T_PID="$pid" MECLAW_T_FORCE="$force" \
-    MECLAW_T_LANES="$lanes" MECLAW_T_LANE="$lane_want" \
-    MECLAW_T_LANES_FILE="$(lanes_file)" \
-    MECLAW_T_SELF="$$" python3 - <<'PY'
-import fcntl, json, os, sys, time
-
-verb = os.environ["MECLAW_T_VERB"]
-key = os.environ["MECLAW_T_KEY"]
-branch = os.environ["MECLAW_T_BRANCH"]
-tree = os.environ["MECLAW_T_TREE"]
-path = os.environ["MECLAW_T_FILE"]
-force = os.environ["MECLAW_T_FORCE"] == "1"
-pid_arg = os.environ["MECLAW_T_PID"]
-caller = int(os.environ["MECLAW_T_SELF"])   # the kit process that asks
-LOG = path + ".log"
-now = int(os.environ.get("MECLAW_STRAND_NOW") or time.time())   # TEST HOOK
-
-REFUSED = ("no cargo token for %s -- run 'scripts/strand.sh token take' first. "
-           "Without a token: write code, tests and docs without cargo, then end "
-           "your turn and wait to be woken (plans/PREAMBLE.md section 5).")
-
-
-# One poll period: how long a waiter beyond the TTL may leave a token offered
-# to it untaken before it drops out of the queue (GH #1053). A standing tree
-# proves nothing about its builder: on 2026-10-07 00:12 two waiters in standing
-# trees, 96-115 min beyond the TTL, never took the free build04; the `take` of
-# the strand behind them left them where they were, and the lane stood empty
-# for about 30 min until the orchestrator dropped both by hand. A woken builder
-# takes within a minute or two -- ten is room for a slow wake-up.
-OFFER_MIN = 10
-
-
-def say(msg):
-    print("strand: " + msg, file=sys.stderr)
-
-
-def fail(msg):
-    say(msg)
-    sys.exit(2)
-
-
-def whole(name, value):
-    try:
-        n = int(value)
-    except ValueError:
-        n = 0
-    if n < 1:
-        fail("token %s: %s must be a whole number of at least 1, not %r"
-             % (verb, name, value))
-    return n
-
-
-def iso(t):
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
-
-
-def mins(t):
-    return max(0, (now - t) // 60)
-
-
-def log(event, strand, detail=""):
-    with open(LOG, "a") as fh:
-        fh.write("\t".join([iso(now), event, strand, branch or "-", detail]) + "\n")
-
-
-def load():
-    """The state, None for an unarmed host -- and never a silent new file
-    over a broken one: that would hand out tokens somebody already holds."""
-    try:
-        text = open(path).read()
-    except FileNotFoundError:
-        return None
-    try:
-        st = json.loads(text)
-        if not (isinstance(st["holders"], list) and isinstance(st["waiting"], list)):
-            raise ValueError
-        st["max"], st["ttl_min"] = int(st["max"]), int(st["ttl_min"])
-        for h in st["holders"]:
-            # The first form of the file kept one `pid` per holder.
-            old = h.pop("pid", 0)
-            h["pids"] = [int(p) for p in h.get("pids", [old] if old else [])]
-    except (ValueError, KeyError, TypeError, AttributeError):
-        fail("the token file %s is broken -- look at it, then "
-             "'scripts/strand.sh token init --force'" % path)
-    return st
-
-
-def write(st):
-    # Every write states which waiter a free token is offered to -- the time
-    # of the offer is what `take` drops a silent waiter by (GH #1053).
-    mark_offers(st)
-    tmp = "%s.tmp.%d" % (path, os.getpid())
-    with open(tmp, "w") as fh:
-        json.dump(st, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
-
-
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def stale(h, st):
-    if h.get("tree") and not os.path.isdir(h["tree"]):
-        return "its worktree is gone"
-    if now - h["seen"] <= st["ttl_min"] * 60 or any(alive(p) for p in h["pids"]):
-        return ""
-    return "last seen %d min ago, no live process" % mins(h["seen"])
-
-
-def stale_wait(w, st):
-    # A waiter in its own worktree is alive as long as the tree is: it waits
-    # on purpose, and with three tokens for eight strands a wait beyond the
-    # TTL is the normal case -- the drop landed at somebody else's `take`, so
-    # the strand that lost its place never heard of it (review I1). The TTL
-    # is for waiters queued from outside (`--strand`), which have no tree.
-    if w.get("tree"):
-        return "" if os.path.isdir(w["tree"]) else "its worktree is gone"
-    if now - w["since"] > st["ttl_min"] * 60:
-        return "waiting %d min, nobody took it up" % mins(w["since"])
-    return ""
-
-
-def holder(st, strand):
-    return next((h for h in st["holders"] if h["strand"] == strand), None)
-
-
-LANES_FILE = os.environ["MECLAW_T_LANES_FILE"]
-
-
-def host_lanes():
-    """The lane names of the host file: `<name> <ssh-target> [<bmc>]` per
-    line, `#` starts a comment. The file is private to the host -- it names
-    machines -- and never part of the repository (GH #934)."""
-    try:
-        text = open(LANES_FILE).read()
-    except OSError:
-        fail("token init: --lanes needs the host file %s (lines "
-             "'<name> <ssh-target> [<bmc>]')" % LANES_FILE)
-    names = []
-    for line in text.splitlines():
-        words = line.split("#", 1)[0].split()
-        if len(words) >= 2:
-            names.append(words[0])
-    return names
-
-
-def lanes_left(st, ahead):
-    """The free lanes in the order of `init --lanes`, minus what the waiters
-    `ahead` of the caller get first: a waiter that named a lane reserves it
-    when it is free, one without a wish the first free lane (FIFO)."""
-    held = {h.get("lane") for h in st["holders"]}
-    left = [n for n in st["lanes"] if n not in held]
-    for w in ahead:
-        if w.get("lane"):
-            if w["lane"] in left:
-                left.remove(w["lane"])
-        elif left:
-            left.pop(0)
-    return left
-
-
-def refuse_over_a_queue(st, way_out):
-    """Exit 2 while anybody holds a token or waits for one -- the verbs that
-    throw the state away (`init`, `off`) never do it over a queue."""
-    if st and (st["holders"] or st["waiting"]):
-        who = ["%s holds a cargo token" % h["strand"] for h in st["holders"]]
-        who += ["%s waits in the queue" % w["strand"] for w in st["waiting"]]
-        fail("token %s: %s -- %s" % (verb, ", ".join(who), way_out))
-
-
-def offer_of(st, i):
-    """What the waiter at place `i` would get from a `take` right now: a
-    lane name, "" for a plain token, None for nothing -- read the way `take`
-    reads it (FIFO, a named lane is only ever that lane)."""
-    w = st["waiting"][i]
-    if st.get("lanes"):
-        left = lanes_left(st, st["waiting"][:i])
-        if w.get("lane"):
-            return w["lane"] if w["lane"] in left else None
-        return left[0] if left else None
-    return "" if i < st["max"] - len(st["holders"]) else None
-
-
-def offer_name(w):
-    return w["offered"]["lane"] if w["offered"].get("lane") else "a token"
-
-
-def mark_offers(st):
-    """Stamp each waiter with the token offered to it. An offer keeps its
-    first time as long as the waiter would get SOME token -- a drop ahead of
-    it may turn north into south, and that is no fresh poll period -- and
-    goes when it would get nothing any more."""
-    for i, w in enumerate(st["waiting"]):
-        got = offer_of(st, i)
-        if got is None:
-            w.pop("offered", None)
-            continue
-        old = w.get("offered")
-        if old and old.get("lane", "") == got:
-            continue
-        w["offered"] = {"at": old["at"] if old else now}
-        if got:
-            w["offered"]["lane"] = got
-        log("offer", w["strand"], ("lane " + got) if got else "token")
-
-
-def offer_not_taken(w, st):
-    """A waiter beyond the TTL that left its offer untaken for one poll
-    period. Only then: within the TTL an untaken offer is the normal case --
-    the orchestrator wakes the builder, and that may take a while."""
-    o = w.get("offered")
-    return bool(o) and now - o["at"] >= OFFER_MIN * 60 \
-        and now - w["since"] > st["ttl_min"] * 60
-
-
-mine_tree = tree if branch == key else ""
-
-# Unarmed means without a trace: only `init` creates a file, the `.lock`
-# included -- a `take` on an unarmed host left an empty one behind (review
-# M1). Arming happens only through `init`, so the look outside the lock
-# cannot miss a file that another call is writing.
-if verb != "init" and not os.path.exists(path):
-    if verb == "who":
-        print("cargo tokens are not armed on this host (%s)" % path)
-    elif verb == "off":
-        say("cargo tokens are not armed on this host -- nothing to switch off")
-    elif verb in ("take", "release"):
-        say("cargo tokens are not armed on this host -- nothing to %s" % verb)
-    sys.exit(0)
-
-# One writer at a time, reader included: `who` must not see half a queue.
-with open(path + ".lock", "a") as guard:
-    fcntl.flock(guard, fcntl.LOCK_EX)
-
-    if verb == "init":
-        cap, ttl = whole("--max", os.environ["MECLAW_T_MAX"]), whole("--ttl", os.environ["MECLAW_T_TTL"])
-        lanes = [n for n in os.environ["MECLAW_T_LANES"].split(",") if n]
-        if os.environ["MECLAW_T_LANES"] and lanes:
-            known = host_lanes()
-            unknown = [n for n in lanes if n not in known]
-            if unknown:
-                fail("token init: no lane %s in the host file %s"
-                     % (", ".join(unknown), LANES_FILE))
-            if len(set(lanes)) != len(lanes):
-                fail("token init: a lane is named twice in --lanes")
-            cap = len(lanes)
-        elif os.environ["MECLAW_T_LANES"]:
-            fail("token init: --lanes needs at least one name")
-        if not force:
-            # Holders AND waiters: a re-init in the middle of a wave emptied
-            # the queue without a word (review M6).
-            refuse_over_a_queue(load(), "pass --force to start over")
-        fresh = {"max": cap, "ttl_min": ttl, "armed": iso(now),
-                 "holders": [], "waiting": []}
-        if lanes:
-            fresh["lanes"] = lanes
-        write(fresh)
-        log("init --force" if force else "init", "-", "max %d ttl %d%s"
-            % (cap, ttl, (" lanes " + ",".join(lanes)) if lanes else ""))
-        if lanes:
-            say("build lanes armed: %s, ttl %d min (%s)" % (" ".join(lanes), ttl, path))
-        else:
-            say("cargo tokens armed: %d, ttl %d min (%s)" % (cap, ttl, path))
-        sys.exit(0)
-
-    if verb == "off":
-        if not force:
-            # The same check as `init`: `off` dropped the waiters without a
-            # word and only looked at the holders (review fix round 1, m3).
-            refuse_over_a_queue(load(), "release them or pass --force")
-        if not os.path.exists(path):
-            say("cargo tokens are not armed on this host -- nothing to switch off")
-            sys.exit(0)
-        os.remove(path)
-        log("off --force" if force else "off", "-")
-        say("cargo tokens switched off; the log stays (%s)" % LOG)
-        sys.exit(0)
-
-    st = load()
-
-    if verb == "who":
-        if st is None:
-            print("cargo tokens are not armed on this host (%s)" % path)
-            sys.exit(0)
-        print("cargo tokens: %d/%d held, ttl %d min, armed %s"
-              % (len(st["holders"]), st["max"], st["ttl_min"], st.get("armed", "?")))
-        if st.get("lanes"):
-            print("lanes: %s" % " ".join(st["lanes"]))
-        for h in st["holders"]:
-            why = stale(h, st)
-            pids = ", ".join("%d (%s)" % (p, "alive" if alive(p) else "gone")
-                             for p in h["pids"])
-            print("  %s%s  held %d min, seen %d min ago, pid %s%s"
-                  % (h["strand"], ("  lane " + h["lane"]) if h.get("lane") else "",
-                     mins(h["since"]), mins(h["seen"]), pids or "-",
-                     ("  STALE: " + why) if why else ""))
-        if st["waiting"]:
-            print("queue:")
-            for n, w in enumerate(st["waiting"], 1):
-                why = stale_wait(w, st)
-                if why:
-                    note = "  STALE: " + why
-                elif now - w["since"] > st["ttl_min"] * 60:
-                    # A waiter in a standing tree never expires (review I1),
-                    # so a builder that died while it waited blocks the
-                    # queue until `release --strand`. Say so -- a hint, the
-                    # entry stays (review fix round 1, m1).
-                    note = "  waiting beyond the ttl"
-                else:
-                    note = ""
-                if w.get("offered"):
-                    # GH #1053: who gets the free token, and since when --
-                    # beyond the TTL the waiter drops out one poll period later.
-                    note += "  offered %s at %s" % (offer_name(w), iso(w["offered"]["at"]))
-                print("  #%d %s%s  waiting %d min%s"
-                      % (n, w["strand"], ("  for lane " + w["lane"]) if w.get("lane") else "",
-                         mins(w["since"]), note))
-        else:
-            print("queue: empty")
-        try:
-            tail = open(LOG).read().splitlines()[-5:]
-        except FileNotFoundError:
-            tail = []
-        if tail:
-            print("last events:")
-            for line in tail:
-                print("  " + "  ".join(line.split("\t")))
-        sys.exit(0)
-
-    if st is None:
-        if verb in ("take", "release"):
-            say("cargo tokens are not armed on this host -- nothing to %s" % verb)
-        sys.exit(0)
-
-    if verb == "lane":
-        # The lane this strand holds, or nothing -- what `gate` asks when it
-        # was given no `--host`.
-        mine = holder(st, key)
-        if mine and mine.get("lane"):
-            print(mine["lane"])
-        sys.exit(0)
-
-    if verb == "check":
-        skip = os.environ.get("MECLAW_STRAND_TOKEN_SKIP", "")
-        if skip:
-            log("skip", key, skip)
-            write(st)
-            say("token check skipped for %s: %s" % (key, skip))
-            sys.exit(0)
-        mine = holder(st, key)
-        want = os.environ["MECLAW_T_LANE"]
-        if mine and want and st.get("lanes") and mine.get("lane") != want:
-            # A gate on a host is a run on THAT lane: two strands on one host
-            # share one target directory and one cargo lock (GH #934).
-            log("refused", key, "lane %s" % want)
-            say("%s holds lane %s, not %s -- gate on your own lane, or release "
-                "and take again" % (key, mine.get("lane") or "-", want))
-            sys.exit(3)
-        if mine:
-            mine["seen"] = now
-            if pid_arg:
-                # Every live process of the strand holds the token, not the
-                # last one to say so: a single test beside a background gate
-                # wrote its pid over the gate's, and after the test the entry
-                # named a dead process -- a gate running past the TTL lost its
-                # token (review M2). `--pid 0` takes back the caller's own pid
-                # (the gate after its run); dead pids fall out on the way.
-                pids = [p for p in mine["pids"] if p != caller and alive(p)]
-                new_pid = int(pid_arg) if pid_arg.isdigit() else 0
-                if new_pid and new_pid not in pids:
-                    pids.append(new_pid)
-                mine["pids"] = pids
-            write(st)
-            sys.exit(0)
-        if pid_arg == "0":
-            # The heartbeat after a run: the token was released while it ran,
-            # by the orchestrator or by the station itself. Nothing is being
-            # refused -- the run is over (review M3).
-            sys.exit(3)
-        log("refused", key)
-        say(REFUSED % key)
-        sys.exit(3)
-
-    if verb == "release":
-        mine = holder(st, key)
-        queued = any(w["strand"] == key for w in st["waiting"])
-        if not mine and not queued:
-            say("%s holds no cargo token and is not in the queue -- nothing to release" % key)
-            sys.exit(0)
-        st["holders"] = [h for h in st["holders"] if h["strand"] != key]
-        st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
-        write(st)
-        by = "" if branch == key else " (released by %s)" % (branch or "a detached tree")
-        if not mine:
-            log("leave" if not by else "leave-by", key)
-            say("%s left the queue%s" % (key, by))
-            sys.exit(0)
-        log("release" if not by else "release-by", key, "held %d min" % mins(mine["since"]))
-        if st["waiting"] and st.get("lanes") and mine.get("lane"):
-            # With lanes the head of the queue may wait for a lane that stays held:
-            # name the waiter the freed lane goes to, read the way `take` reads it
-            # (`lanes_left` over the waiters ahead) -- naming the head woke a strand
-            # that gets nothing, and the one that would got no word (N review I-2).
-            freed = mine["lane"]
-            nxt = None
-            for i, w in enumerate(st["waiting"]):
-                left = lanes_left(st, st["waiting"][:i])
-                got = w["lane"] if w.get("lane") else (left[0] if left else None)
-                if got == freed and freed in left:
-                    nxt = w
-                    break
-            if nxt:
-                tail = "next in the queue: %s (lane %s, waiting %d min)" % (
-                    nxt["strand"], freed, mins(nxt["since"]))
-            else:
-                tail = "no waiter takes lane %s (%d in the queue, each for a held lane)" % (
-                    freed, len(st["waiting"]))
-        elif st["waiting"]:
-            nxt = st["waiting"][0]
-            tail = "next in the queue: %s (waiting %d min)" % (nxt["strand"], mins(nxt["since"]))
-        else:
-            tail = "the queue is empty"
-        say("cargo token released by %s after %d min -- %d/%d held; %s%s"
-            % (key, mins(mine["since"]), len(st["holders"]), st["max"], tail, by))
-        sys.exit(0)
-
-    # take
-    for h in list(st["holders"]):
-        why = stale(h, st)
-        if why:
-            st["holders"].remove(h)
-            log("stale", h["strand"], why)
-            say("reclaimed the cargo token of %s -- %s (ttl %d min)"
-                % (h["strand"], why, st["ttl_min"]))
-    # A waiter nobody wakes any more would hold its place for everybody behind
-    # it. The caller's own entry is exempt: its `take` IS the sign of life.
-    for w in list(st["waiting"]):
-        why = "" if w["strand"] == key else stale_wait(w, st)
-        if why:
-            st["waiting"].remove(w)
-            log("stale-wait", w["strand"], why)
-            say("dropped %s from the queue -- %s (ttl %d min)"
-                % (w["strand"], why, st["ttl_min"]))
-    # A waiter in a standing tree beyond the TTL that leaves its offer untaken
-    # is gone in all but name (GH #1053, OFFER_MIN): it drops out, and the
-    # offer moves on -- one at a time, so the next waiter gets its own poll
-    # period. The caller is exempt: its `take` is the sign of life.
-    mark_offers(st)
-    while True:
-        late = next((w for w in st["waiting"]
-                     if w["strand"] != key and offer_not_taken(w, st)), None)
-        if late is None:
-            break
-        st["waiting"].remove(late)
-        what = offer_name(late)
-        if late["offered"].get("lane"):
-            what = "lane " + what
-        log("dropped", late["strand"], "waiter past ttl, did not take %s offered at %s, waiting %d min"
-            % (what, iso(late["offered"]["at"]), mins(late["since"])))
-        say("dropped %s from the queue -- waiter past ttl, did not take %s offered %d min ago "
-            "(ttl %d min)" % (late["strand"], what, mins(late["offered"]["at"]), st["ttl_min"]))
-        mark_offers(st)
-    want = os.environ["MECLAW_T_LANE"]
-    if want and not st.get("lanes"):
-        fail("token take: --lane %s, but this host is not armed with lanes" % want)
-    if want and want not in st["lanes"]:
-        fail("token take: no lane %s among the armed lanes (%s)"
-             % (want, " ".join(st["lanes"])))
-    mine = holder(st, key)
-    if mine and want and mine.get("lane") != want:
-        fail("%s holds lane %s, not %s -- release it first, then take %s"
-             % (key, mine.get("lane") or "-", want, want))
-    if mine:
-        mine["seen"] = now
-        write(st)
-        say("cargo token already held by %s (%d/%d)" % (key, len(st["holders"]), st["max"]))
-        if mine.get("lane"):
-            print("lane %s" % mine["lane"])
-        sys.exit(0)
-    names = [w["strand"] for w in st["waiting"]]
-    pos = names.index(key) if key in names else len(names)
-    free = st["max"] - len(st["holders"])
-    # FIFO: a token goes to the head of the queue -- a strand that just
-    # finished writing does not overtake one that has been waiting. On lanes
-    # the queue is read per lane: what the waiters ahead get first is gone,
-    # and a named lane is only ever that lane.
-    lane = None
-    if st.get("lanes"):
-        left = lanes_left(st, st["waiting"][:pos])
-        lane = want if want in left else (None if want else (left[0] if left else None))
-        granted = lane is not None
-    else:
-        granted = pos < free
-    if granted:
-        st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
-        entry = {"strand": key, "since": now, "seen": now,
-                 "pids": [], "tree": mine_tree}
-        if lane:
-            entry["lane"] = lane
-        st["holders"].append(entry)
-        log("take", key, ("lane " + lane) if lane else "")
-        write(st)
-        say("cargo token %d/%d taken by %s" % (len(st["holders"]), st["max"], key))
-        if lane:
-            # stdout, one line: the one thing a builder needs from `take`.
-            print("lane %s" % lane)
-        sys.exit(0)
-    if key not in names:
-        entry = {"strand": key, "since": now, "tree": mine_tree}
-        if want:
-            entry["lane"] = want
-        st["waiting"].append(entry)
-        log("wait", key, ("lane " + want) if want else "")
-    elif want:
-        # A second take may name the lane the first one did not.
-        st["waiting"][pos]["lane"] = want
-    write(st)
-    held = ", ".join("%s %d min" % (h["strand"], mins(h["since"])) for h in st["holders"])
-    if free <= 0:
-        head = "all %d cargo tokens are held (%s)" % (st["max"], held)
-    else:
-        head = ("%d of %d cargo tokens are held (%s) and the queue goes first"
-                % (len(st["holders"]), st["max"], held or "none"))
-    if want:
-        by = next((h["strand"] for h in st["holders"] if h.get("lane") == want), "")
-        head = ("lane %s is held by %s" % (want, by)) if by else \
-            ("lane %s goes to a strand ahead in the queue" % want)
-    say("%s -- %s is #%d in the queue. End your turn; you are woken when a "
-        "token is free." % (head, key, pos + 1))
-    sys.exit(3)
-PY
+idle_arm() {
+    local lane="$1" hours="$2" hyg main common holder
+    main=$(kit_dir)
+    common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+        && [ -x "$(dirname -- "$common")/scripts/strand.sh" ] \
+        && main="$(dirname -- "$common")/scripts"
+    # The timer calls the script it was armed with, hours later: the main
+    # tree's when it has one (a strand's worktree is gone after `strand
+    # close`), else the kit's own (before the hygiene is merged).
+    hyg="$main/pipeline/hygiene.py"
+    [ -f "$hyg" ] || hyg="$(kit_dir)/pipeline/hygiene.py"
+    [ -f "$hyg" ] || { echo "strand: no $hyg -- idle-off not armed" >&2; return 3; }
+    holder=$("${KIT_PY[@]}" -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' \
+        env "MECLAW_STRAND_TOKENS=$(token_file)" "MECLAW_LANES_FILE=$(lanes_file)" \
+        bash -c "$HOLDER_SH" "$main/strand.sh" "$lane") || return 2
+    "${KIT_PY[@]}" "$hyg" idle-off arm --lane "$lane" --after "$hours" --lanes-file "$(lanes_file)" \
+        "--holder-cmd=$holder"
 }
 
 # --- lanes ------------------------------------------------------------------
 
-# `lanes status`: one line per lane of the host file -- reachable or not, the
-# file system type (`tmpfs` or a disk) and free space of the host's target
-# root, and how many strand refs its bare repository holds. The only lane verb
-# that reads; switching a host on or off stays a step of the orchestrator's
-# (THE LANES).
+# --- the delegation to the pipeline core (W3, GH #1117) ----------------------
+
+# `gate [<mode>] [options]`: this tree's `scripts/gate.sh` (the shell in front
+# of `pipeline.py gate`), with the strand, the wave and the archive root named.
+# It still BLOCKS and prints the red and asking stations, the summary (and
+# `GATE-LANE`) and the question block -- the rest of the run goes to `run.log`
+# in the run directory the pipeline opened under the archive (`latest`).
+cmd_gate() {
+    # A tree older than W3 (no `gate_legacy.sh` beside its `gate.sh`) carries
+    # the old runner, which knows no `--strand` -- it gates the old way (C-M1).
+    local own
+    own="$(git rev-parse --show-toplevel 2>/dev/null)/scripts"
+    if [ "${1:-}" = ci ] \
+        || { [ -x "$own/gate.sh" ] && [ ! -e "$own/gate_legacy.sh" ]; }; then
+        cmd_gate_legacy "$@"
+        return $?
+    fi
+    local mode="strand" strand_in="" wave_in="" args=() have_archive=0 plan_only=0
+    if [ $# -ge 1 ]; then
+        case "$1" in strand|integration|release) mode="$1"; shift ;; esac
+    fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                usage
+                echo "gate options pass through to scripts/pipeline.py gate -- see scripts/gate.sh --help"
+                return 0 ;;
+            --strand)    need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
+            --wave)      need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
+            --archive|--log-dir) have_archive=1; args+=("$1"); shift ;;
+            --plan-only) plan_only=1; args+=("$1"); shift ;;
+            *)           args+=("$1"); shift ;;
+        esac
+    done
+
+    local gate root plans wdir name archive_root log rc summary run
+    gate="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/gate.sh"
+    [ -x "$gate" ] \
+        || gate="$KIT_DIR/gate.sh"
+    [ -x "$gate" ] || die "no gate runner at $gate"
+
+    # A plan runs nothing: it goes to the caller as the pipeline prints it --
+    # with the wave the run would name (re-check m-N3), else the plan of an
+    # integration differs from its run. A named wave that does not exist stops
+    # here as in the run; no wave found plans without one (full suite).
+    if [ "$plan_only" = 1 ]; then
+        local pwdir=""
+        if [ -n "$wave_in" ]; then
+            root=$(main_root) || exit 2
+            pwdir=$(wave_dir "$root/plans" "$wave_in") || exit 2
+        elif root=$(main_root 2>/dev/null); then
+            pwdir=$(wave_dir "$root/plans" "" 2>/dev/null) || pwdir=""
+        fi
+        if [ -n "$pwdir" ]; then
+            MECLAW_GATE_WAVE="${MECLAW_GATE_WAVE:-$pwdir}" \
+                "$gate" "$mode" --wave "$(wave_name "$pwdir")" ${args[@]+"${args[@]}"}
+        else
+            "$gate" "$mode" ${args[@]+"${args[@]}"}
+        fi
+        return $?
+    fi
+
+    root=$(main_root) || exit 2
+    plans="$root/plans"
+    wdir=$(wave_dir "$plans" "$wave_in") || exit 2
+    name="$strand_in"
+    [ -n "$name" ] || name=$(strand_of_branch) \
+        || die "cannot tell the strand from the branch -- pass --strand"
+    archive_root="$plans/$wdir/receipts/$name"
+    [ "$have_archive" = 1 ] || args+=(--archive "$archive_root")
+
+    log=$(mktemp) || die "no temp file"
+    # The integration narrows from the start of this wave: the directory with
+    # its date (re-check m-N2), as MECLAW_GATE_WAVE -- `--wave` keeps the name
+    # without it (lease holder, schedule). A wave set by hand still wins.
+    MECLAW_GATE_WAVE="${MECLAW_GATE_WAVE:-$wdir}" \
+        "$gate" "$mode" --strand "$name" --wave "$(wave_name "$wdir")" \
+        ${args[@]+"${args[@]}"} >"$log" 2>&1
+    rc=$?
+    red_lines "$log"
+    summary=$(grep -E '^GATE-SUMMARY ' "$log" | tail -1)
+    if [ -z "$summary" ]; then
+        echo "strand: the gate wrote no summary line -- last lines of its output:" >&2
+        tail -20 "$log" >&2
+        rm -f "$log"
+        return "$rc"
+    fi
+    if [ "$have_archive" = 0 ]; then
+        run=$(latest_run "$archive_root")
+        if [ -d "$run" ] && [ "$run" != "$archive_root" ]; then
+            [ -e "$run/run.log" ] || cp "$log" "$run/run.log"
+            [ -e "$run/summary.txt" ] || printf '%s\n' "$summary" >"$run/summary.txt"
+        fi
+    fi
+    printf '%s\n' "$summary"
+    grep -E '^GATE-LANE ' "$log" | tail -1
+    sed -n '/^gate: ASK/,$p' "$log"
+    rm -f "$log"
+    return "$rc"
+}
+
+# `test '<filterset>' [options]`: `pipeline.py test`, every argument as given.
+cmd_test() {
+    case "${1:-}" in -h|--help) usage; return 0 ;; esac
+    "${KIT_PY[@]}" "$(pipeline_py)" test "$@"
+}
+
+# `token <verb> [options]`: `pipeline.py lanes <verb> [options]`. The one thing
+# resolved here is `--strand <name> --wave <wave dir>`: the wave directory is
+# looked up under plans/ as before and goes on as `--strand <wave>/<name>`.
+# The caller (`MECLAW_LANES_CALLER`) is this kit's process, like the old
+# heartbeat's.
+cmd_token() {
+    cmd_token_store "$@"
+}
+
+cmd_token_store() {
+    local args=() strand_in="" wave_in="" root wave
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --strand) need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
+            --wave)   need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
+            *)        args+=("$1"); shift ;;
+        esac
+    done
+    if [ -n "$strand_in" ] && [ -n "$wave_in" ] && [ "${strand_in#*/}" = "$strand_in" ]; then
+        root=$(main_root) || exit 2
+        wave=$(wave_dir "$root/plans" "$wave_in") || exit 2
+        strand_in="$(wave_name "$wave")/$strand_in"
+        wave_in=""
+    fi
+    [ -n "$strand_in" ] && args+=(--strand "$strand_in")
+    [ -n "$wave_in" ] && args+=(--wave "$wave_in")
+    MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" lanes ${args[@]+"${args[@]}"}
+}
+
+# `lanes status [<lane>]`: `pipeline.py lanes status` (one line per lane of
+# the host file, or of the one named; the store learns which lanes answer).
+# The free space of a lane comes from here, over the host file's target --
+# never from `ssh <alias> df`, whose name known_hosts may not know (GH #1144).
 cmd_lanes() {
-    [ "${1:-}" = status ] || die "lanes: expected status"
-    local file sync name target rest
+    # `idle-off` is the host's own timer (W2), no lane state of the store.
+    case "${1:-}" in
+        status)   shift; [ $# -le 1 ] || die "lanes status: at most one lane name" ;;
+        idle-off) shift; cmd_lanes_idle_off "$@"; return $? ;;
+        # an orphaned run (its driver ended without close): fail-closed, Z-I #1126
+        release)  shift; "${KIT_PY[@]}" "$(pipeline_py)" lanes release-run "$@"; return $? ;;
+        # the browser packages of a lane (GH #1161): the transport with the
+        # lane's ssh target from the host file
+        browsers) shift; cmd_lanes_browsers "$@"; return $? ;;
+        # the lane's fingerprint now, into the store (Re-Check S3 Teil 2 m-2)
+        fingerprint) shift; MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" lanes fingerprint "$@"
+                     return $? ;;
+        *) die "lanes: expected status|idle-off|release|browsers|fingerprint" ;;
+    esac
+    "${KIT_PY[@]}" "$(pipeline_py)" lanes status "$@"
+}
+
+# `lanes browsers <lane> check|install [<engine>...]`: `lane_sync.sh browsers`
+# against the lane's ssh target; an unknown lane is refused before any call.
+# `install` runs apt as root there: never on the owner's machine (`class=egon`)
+# or on this one (`local`) -- the lanes idle-off skips too (lane_idle_skip);
+# `check` only reads. The class travels on, lane_sync.sh refuses a second time.
+cmd_lanes_browsers() {
+    local lane="${1:-}" target why
+    [ -n "$lane" ] || die "lanes browsers <lane> check|install [<engine>...]"
+    shift
+    target=$(lane_target "$lane")
+    [ -n "$target" ] || die "lanes browsers: no lane $lane in the host file $(lanes_file)"
+    if [ "${1:-}" = install ]; then
+        why=$(lane_idle_skip "$lane")
+        [ -z "$why" ] || die "lanes browsers: never installs on $lane ($why) -- packages there are the owner's call"
+    fi
+    local rc=0
+    MECLAW_LANE_CLASS=$(lane_kv "$lane" class) "$(kit_dir)/lane_sync.sh" browsers "$target" "$@" || rc=$?
+    # The store learns the lane's fingerprint again, real start included: a lane
+    # refused for an engine stayed refused after `install` until some other run
+    # wrote a new one (Re-Check S3 Teil 2 m-2). Its words go to stderr; the exit
+    # code stays the recipe's.
+    MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" lanes fingerprint "$lane" >&2 || true
+    return "$rc"
+}
+
+# `lanes idle-off [--after <h>] [--lane <name>]`: arm the idle-off timer of
+# every lane of the host file (or the one named), skipping `class=egon` and
+# `local`. One line per lane; exit 1 when one could not be armed. Arming
+# again replaces the lane's timer (`hygiene.py idle-off arm` stops the old
+# one first).
+cmd_lanes_idle_off() {
+    local after=2 only="" file name target rest why rc=0 seen=0 arc
+    # The default is the gates' own (`MECLAW_IDLE_OFF_H`) when that arms at
+    # all -- `0` switches the re-arm after a gate off, not this command.
+    if [[ "${MECLAW_IDLE_OFF_H:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+            && ! [[ "$MECLAW_IDLE_OFF_H" =~ ^0+([.]0+)?$ ]]; then
+        after="$MECLAW_IDLE_OFF_H"
+    fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --after) need_value "$1" "$#"; after="$2"; shift 2 ;;
+            --lane)  need_value "$1" "$#"; only="$2"; shift 2 ;;
+            *) die "lanes idle-off: unknown argument: $1" ;;
+        esac
+    done
+    [[ "$after" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "lanes idle-off: --after wants hours, got '$after'"
+    [[ "$after" =~ ^0+([.]0+)?$ ]] \
+        && die "lanes idle-off: --after 0 arms nothing -- disarm with systemctl --user stop pipe-idle-<lane>.timer"
     file=$(lanes_file)
     [ -f "$file" ] || die "no lane host file at $file"
-    sync="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lane_sync.sh"
-    [ -x "$sync" ] || die "no lane transport at $sync"
-    while read -r name target rest; do
+    [ -f "$(kit_dir)/pipeline/hygiene.py" ] || die "no lane hygiene at $(kit_dir)/pipeline/hygiene.py"
+    while read -r name target rest <&3; do
         case "$name" in ''|'#'*) continue ;; esac
         [ -n "$target" ] || continue
         case "$target" in '#'*) continue ;; esac
-        printf '%s  %s\n' "$name" "$("$sync" status "$target" </dev/null)"
-    done <"$file"
+        [ -z "$only" ] || [ "$name" = "$only" ] || continue
+        seen=1
+        why=$(lane_idle_skip "$name")
+        if [ -n "$why" ]; then
+            printf '%s  skipped (%s)\n' "$name" "$why"
+            continue
+        fi
+        idle_arm "$name" "$after" >/dev/null
+        arc=$?
+        if [ "$arc" = 0 ]; then
+            printf '%s  idle-off in %s h unless a strand holds it\n' "$name" "$after"
+        else
+            printf '%s  NOT armed (exit %s)\n' "$name" "$arc"
+            rc=1
+        fi
+    done 3<"$file"
+    [ "$seen" = 1 ] || die "lanes idle-off: no lane ${only:-at all} in the host file $file"
+    return "$rc"
+}
+
+# --- bench --------------------------------------------------------------------
+
+# `bench new|collect|list` (THE LANE HYGIENE): `hygiene.py bench` on the lane
+# (`--lane`, the script over ssh like every hygiene call) or here. `new`
+# prints the directory as its last stdout line -- the `CARGO_TARGET_DIR` of
+# the bench build.
+cmd_bench() {
+    local verb="${1:-}" name="" ttl="" lane="" hyg target sync rc args=()
+    [ $# -ge 1 ] && shift
+    case "$verb" in
+        new|collect|list) ;;
+        *) die "bench: expected new|collect|list" ;;
+    esac
+    if [ "$verb" != list ]; then
+        [ $# -ge 1 ] || die "bench $verb: expected a name"
+        name="$1"; shift
+        [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+            || die "bench $verb: a name is letters, digits, '.', '_' and '-', got '$name'"
+    fi
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --ttl)  [ "$verb" = new ] || die "bench $verb: --ttl belongs to 'bench new'"
+                    need_value "$1" "$#"; ttl="$2"; shift 2 ;;
+            --lane) need_value "$1" "$#"; lane="$2"; shift 2 ;;
+            *) die "bench $verb: unknown argument: $1" ;;
+        esac
+    done
+    if [ "$verb" = new ]; then
+        [ -n "$ttl" ] || die "bench new: --ttl <hours> is required -- a bench without an end is the leftover of tomorrow"
+        [[ "$ttl" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "bench new: --ttl wants hours, got '$ttl'"
+    fi
+    args=(bench "$verb")
+    [ -z "$name" ] || args+=("$name")
+    [ -z "$ttl" ] || args+=(--ttl "$ttl")
+    if [ -z "$lane" ]; then
+        hyg="$(kit_dir)/pipeline/hygiene.py"
+        [ -f "$hyg" ] || die "no lane hygiene at $hyg"
+        "${KIT_PY[@]}" "$hyg" "${args[@]}" --root "${MECLAW_LANE_ROOT:-/srv/target}"
+        return $?
+    fi
+    target=$(lane_target "$lane")
+    [ -n "$target" ] || die "no lane $lane in the host file $(lanes_file)"
+    sync="$(kit_dir)/lane_sync.sh"
+    [ -x "$sync" ] || die "no lane transport at $sync"
+    # `new` leaves a timer on the host, and a timer needs a script path: the
+    # transport installs the script under the lane root first (`--kit`).
+    if [ "$verb" = new ]; then
+        "$sync" hygiene --kit "$target" "${args[@]}"
+    else
+        "$sync" hygiene "$target" "${args[@]}"
+    fi
+    rc=$?
+    case "$rc" in
+        255) echo "strand: lane $lane unreachable" >&2; return 2 ;;
+        3)   return 2 ;;
+    esac
+    return "$rc"
+}
+
+# --- wave close (W11) --------------------------------------------------------
+
+# `wave close <wave>` and `wave open <wave>` are the pipeline core's commands;
+# the kit only hands them over. `open` writes and commits in THIS tree (the
+# branch it stands on), not in the tree of the kit.
+cmd_wave() {
+    [ $# -ge 1 ] || die "wave: expected 'wave open|close <wave> [options]'"
+    case "$1" in
+        close) "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" wave "$@" ;;
+        open)
+            local top
+            top=$(git rev-parse --show-toplevel 2>/dev/null) || die "wave open: not in a git tree"
+            "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" wave "$@" --root "$top" ;;
+        *) die "wave: unknown step $1 (expected open|close)" ;;
+    esac
 }
 
 # --- main -------------------------------------------------------------------
@@ -1876,14 +1635,50 @@ if [ $# -lt 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     exit 0
 fi
 
+# An inherited repository (`GIT_DIR`/`GIT_WORK_TREE`, the recipe without
+# `cd`) is neutralized once, here: the tree it names becomes the working
+# directory and the variables go, so no `git -C <tree>` below acts on the
+# caller's tree (re-check pd-legacy M-1; `pipeline.py` does the same through
+# scripts/pipeline/gitenv.py).
+for _var in $(git rev-parse --local-env-vars 2>/dev/null); do
+    if [ -n "${!_var+x}" ]; then
+        # The repository `GIT_DIR` names, before it goes: when the tree that
+        # wins is another one, say so (re-check pd-legacy m-N2).
+        _named=""
+        if [ -n "${GIT_DIR+x}" ]; then
+            _named=$(git rev-parse --absolute-git-dir 2>/dev/null) \
+                && _named=$(cd -- "$_named" 2>/dev/null && pwd -P) \
+                || _named="(no repository)"
+        fi
+        if _top=$(git rev-parse --show-toplevel 2>/dev/null); then
+            cd -- "$_top" || die "cannot enter $_top"
+        fi
+        # shellcheck disable=SC2046 # one name per word
+        unset $(git rev-parse --local-env-vars)
+        if [ -n "$_named" ]; then
+            _won=$(git rev-parse --absolute-git-dir 2>/dev/null) \
+                && _won=$(cd -- "$_won" 2>/dev/null && pwd -P) \
+                || _won="(no repository)"
+            [ "$_named" = "$_won" ] \
+                || echo "strand: NOTE inherited GIT_DIR names $_named, working in $_won ($PWD)" >&2
+        fi
+        break
+    fi
+done
+
 sub="$1"; shift
 case "$sub" in
     new)    cmd_new "$@" ;;
+    pre)    cmd_pre "$@" ;;
     gate)   cmd_gate "$@" ;;
     test)   cmd_test "$@" ;;
     report) cmd_report "$@" ;;
     close)  cmd_close "$@" ;;
+    merge)  cmd_merge "$@" ;;
+    revert) cmd_revert "$@" ;;
     token)  cmd_token "$@" ;;
     lanes)  cmd_lanes "$@" ;;
-    *) die "unknown subcommand: $sub (expected new|gate|test|report|close|token|lanes)" ;;
+    bench)  cmd_bench "$@" ;;
+    wave)   cmd_wave "$@" ;;
+    *) die "unknown subcommand: $sub (expected new|pre|gate|test|report|close|merge|revert|token|lanes|bench|wave)" ;;
 esac

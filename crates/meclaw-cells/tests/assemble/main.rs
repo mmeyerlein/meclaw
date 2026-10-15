@@ -1,0 +1,44 @@
+//! Test harness `assemble` of `meclaw-cells`: one binary, one module per old file.
+//! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
+
+pub use road::organism_assistant;
+#[path = "../support/assemble_cell.rs"]
+pub mod assemble_cell;
+pub mod builder_brief_mutation_grammar;
+pub mod gh1036_a_block_beside_a_call_never_reaches_a_channel;
+pub mod gh532_two_askers_one_hive;
+pub mod gh533_the_outside_asker_gets_an_answer;
+pub mod gh562_recall_rides_a_v_lane_and_the_member_stamps;
+pub mod gh728_a_consult_leaves_a_row_that_names_its_turn;
+pub mod gh728_a_delegation_answer_carries_the_callers_turn;
+pub mod gh728_a_late_answer_says_it_is_late;
+pub mod gh728_an_advice_answer_carries_the_turn_that_asked;
+pub mod gh728_an_advice_without_a_departure_behaves_as_before;
+pub mod gh728_the_deadline_is_one_knob;
+pub mod gh728_two_advices_under_one_turn_never_share_a_fan_in;
+pub mod gh728_two_consults_in_one_bundle_are_two_rounds_of_the_core;
+pub mod gh822_a_proposal_takes_its_origin_round_from_the_hop_only;
+pub mod gh823_no_recall_key_leaves_the_memory_hive;
+pub mod gh831_an_accepted_proposal_becomes_the_disclosure_row;
+pub mod gh832_a_trust_level_says_no_on_purpose;
+pub mod gh834_a_turn_briefs_affinity_about_the_counterpart;
+pub mod gh834_the_member_stamps_the_brief_and_the_answer_finds_the_generation;
+pub mod gh841_a_recall_round_closes_under_its_turn;
+pub mod gh843_a_cut_answer_leaves_without_its_sidecar_and_says_so;
+pub mod gh845_a_channel_narrows_the_menu_of_its_sessions;
+pub mod gh847_a_peer_turn_is_never_the_agents_own;
+pub mod gh848_affinity_names_who_is_speaking;
+pub mod gh864_a_brief_carries_each_persona_once;
+pub mod gh871_a_turn_with_history_still_sees_the_sidecar_contract;
+pub mod gh889_the_collector_passes_the_round_uncut;
+pub mod gh895_a_fact_from_session_one_reaches_session_three;
+pub mod gh916_an_app_hears_its_member;
+pub mod gh919_a_turn_with_an_audience_is_answered;
+pub mod gh939_a_brief_never_names_more_than_the_disclosure_releases;
+pub mod gh941_a_section_marks_its_own_episode;
+pub mod gh946_who_names_only_what_the_disclosure_releases;
+pub mod gh949_an_app_candidate_reaches_the_push;
+#[path = "../mock_openai.rs"]
+pub mod mock_openai;
+#[path = "../support/gh929_member_road.rs"]
+pub mod road;

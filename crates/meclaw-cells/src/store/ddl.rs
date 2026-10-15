@@ -346,14 +346,23 @@ fn ensure_keyed_table(
     } else {
         "ORDER BY rowid ASC"
     };
-    conn.execute_batch(&format!(
+    // A statement that fails inside the batch stops it before the RELEASE and
+    // leaves the savepoint open on the cell's connection; every later
+    // `consumed::dispatch_once` would then nest as a SAVEPOINT and never commit
+    // an acknowledged write. Close it on the error path (re-check legacy-a2
+    // fix3 M2, pin `gh1179_a_failed_rekey_leaves_no_transaction_open`); the
+    // scratch table goes with it like on the missing-key path above.
+    if let Err(e) = conn.execute_batch(&format!(
         "SAVEPOINT meclaw_rekey;\n\
          INSERT OR REPLACE INTO \"{tmp}\" ({cols}) SELECT {cols} FROM \"{table}\" {order};\n\
          DROP TABLE \"{table}\";\n\
          ALTER TABLE \"{tmp}\" RENAME TO \"{table}\";\n\
          RELEASE meclaw_rekey;"
-    ))
-    .map_err(|e| fail("rekey", e))?;
+    )) {
+        let _ = conn.execute_batch("ROLLBACK TO meclaw_rekey; RELEASE meclaw_rekey;");
+        let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{tmp}\""), []);
+        return Err(fail("rekey", e));
+    }
     tracing::warn!(
         table = table,
         key = ?key,
@@ -1795,5 +1804,43 @@ mod tests {
         let err = apply_index_ddl(&conn, &decl).unwrap_err();
         assert!(err.contains("records_k"), "{err}");
         assert!(index_sql(&conn, "records_k").is_none());
+    }
+
+    /// GH #1179, the error path of the rekey: a statement inside the
+    /// `SAVEPOINT meclaw_rekey` batch that fails must not leave the savepoint
+    /// open. The rekey runs at spawn on the cell's connection; left open, every
+    /// later `consumed::dispatch_once` would see `!is_autocommit()`, nest as a
+    /// SAVEPOINT and never commit an acknowledged write. Forced here with a
+    /// NULL in a column the keyed body declares NOT NULL without a default:
+    /// `INSERT OR REPLACE` aborts on it in the middle of the batch.
+    #[test]
+    fn gh1179_a_failed_rekey_leaves_no_transaction_open() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE aliases (alias TEXT, canonical TEXT, recorded_at TEXT);
+             INSERT INTO aliases VALUES ('x', NULL, NULL);",
+        )
+        .unwrap();
+        let err = ensure_keyed_table(
+            &conn,
+            "aliases",
+            "\"alias\" TEXT PRIMARY KEY, \"canonical\" TEXT NOT NULL, \"recorded_at\" TEXT",
+            &["alias"],
+        )
+        .unwrap_err();
+        assert!(err.contains("rekey"), "{err}");
+        assert!(conn.is_autocommit(), "the rekey savepoint is closed: {err}");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM aliases", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "the table it was copied from stays the authority");
+        let scratch: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'aliases__meclaw_rekey'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scratch, 0, "the scratch table goes with the failed rekey");
     }
 }

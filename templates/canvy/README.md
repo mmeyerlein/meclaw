@@ -1,4 +1,4 @@
-# `canvy@2.4.0`
+# `canvy@2.4.2`
 
 > **Deprecated since GH #455.** This template fuses two things the library now keeps apart: a SURFACE (a screen, which belongs to a person and is shared by everybody who writes to it) and a VIEW of the colony (which is one application among many). Those are `display` and `colony-view` in the table next door. `canvy` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new screen should be a `display` with `colony-view` writing onto it.
 
@@ -199,10 +199,23 @@ the layout cell's `script_inline` by `scripts/canvy_sync.py`; a test fails if
 the copies ever drift.
 
 `layout/canvy.test.js` runs under plain `node` and is invoked from
-`crates/meclaw-cells/tests/canvy2_client_geometry.rs`. That is not a
+`crates/meclaw-cells/tests/web_1/canvy2_client_geometry.rs`. That is not a
 convenience. Every client-side defect this canvas has ever had was invisible to
 the server-side tests — the hook was never mounted, and when it did run its edge
 call threw — so **the client path is never proven over the websocket alone**.
+
+## Behind a strict Content-Security-Policy
+
+The page shell of the `web` cell carries no inline script, but the canvas does: the
+root's `<script>{{&client_js}}</script>` is `layout/canvy.js`, inline, because the
+hook has to be registered before the shell's socket reads `window.SurfaceHooks`.
+A proxy that sets `script-src 'self'` lists its hash, and `csp.json` beside this
+README publishes it with the rest of the fragment the page needs (`style-src`
+`'self' 'unsafe-inline'` for the inline sheet, `connect-src 'self'` for the
+socket, `base-uri 'self'` for the shell's `<base>`). The hash changes with every
+change of `canvy.js`, so a proxy reads `csp.json` of the version it serves.
+`gh867_no_surface_page_carries_unlisted_inline_script` holds it equal to the
+script the layout ships.
 
 ## Wiring one
 
@@ -232,7 +245,7 @@ canvas in the same colony needs a different name, because two displays sharing
 one is a mount collision rather than a configuration.
 
 ```json
-{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.4.0",
+{"add_nodes": [{"path": "/ops", "name": "canvy", "template": "canvy@2.4.2",
                 "override_params": {"web": {"mount": "ops-canvy"}}}]}
 ```
 

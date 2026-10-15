@@ -87,7 +87,20 @@ mod tests {
     use meclaw_colony::surfaces::listener::DRAIN_CAP;
     use meclaw_colony::{HandedConnection, SurfaceEntry};
     use meclaw_core::Path;
-    use std::time::Duration;
+    use meclaw_testing::deadline;
+
+    /// The listener's own debug line for a connection it dropped at the
+    /// shutdown before it had asked for anything (`listener::decide`).
+    const DROPPED_SILENT: &str = "this connection had asked for nothing";
+    /// The listener's warning when the drain ran out at [`DRAIN_CAP`]
+    /// (`listener::serve`).
+    const DRAIN_RAN_OUT: &str = "a connection did not finish inside the drain";
+
+    /// Every line the process's tracing recorder holds at `level` for `peer`
+    /// that contains `needle`.
+    fn lines_for(level: tracing::Level, peer: std::net::SocketAddr, needle: &str) -> Vec<String> {
+        meclaw_testing::log_recorder::global().lines(level, &[&format!("peer={peer}"), needle])
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_mounted_segment_is_handed_over_and_everything_else_reaches_the_api() {
@@ -150,21 +163,69 @@ mod tests {
         );
 
         let _ = stop_tx.send(());
-        tokio::time::timeout(Duration::from_secs(30), server)
+        deadline::hang("the accept loop ends on shutdown", server)
             .await
-            .expect("the accept loop ends on shutdown")
             .expect("no panic");
+    }
+
+    /// Reads one HTTP/1.1 answer off `stream`: its status code and its body,
+    /// framed by `content-length`. `None` when the connection ends, or fails,
+    /// before the answer is whole.
+    async fn read_answer(stream: &mut TcpStream) -> Option<(u16, String)> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let head_end = loop {
+            if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break end;
+            }
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        let head = std::str::from_utf8(&buf[..head_end]).ok()?;
+        let status = head.split(' ').nth(1)?.parse().ok()?;
+        let length: usize = head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse().ok()
+            } else {
+                None
+            }
+        })?;
+        let body_start = head_end + 4;
+        while buf.len() < body_start + length {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        String::from_utf8(buf[body_start..body_start + length].to_vec())
+            .ok()
+            .map(|body| (status, body))
     }
 
     /// Ruling O-639-6, pinned: the first request line decides the whole life of a
     /// connection, so the second request on a reused one reaches the first one's
-    /// backend. The count of handoffs is the receipt that the connection really
-    /// was reused — a second connection would have been a second handoff, and
-    /// then `/health` would have answered `200`.
+    /// backend.
+    ///
+    /// **Why the connection is provably reused:** both requests are written on
+    /// one raw socket, the second only after the first answer was read whole.
+    /// There is no client pool that could open a second connection behind the
+    /// test's back (a pooled client puts its connection back asynchronously, and
+    /// under load the second request went out on a fresh one and met the API).
+    /// The answer to `/health` is then positively the voice cell's: its router's
+    /// own fallback body, which the API never sends.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_reused_connection_keeps_the_backend_of_its_first_request() {
+        use meclaw_api::axum::http::StatusCode;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
 
+        const VOICE_HAS_NO_ROUTE: &str = "the voice cell has no such route";
         let surfaces = Arc::new(SurfaceRegistry::new());
         let (mut rx, _held) = surfaces
             .register(
@@ -184,7 +245,9 @@ mod tests {
                 counted.fetch_add(1, Ordering::Relaxed);
                 tokio::spawn(meclaw_api::serve_handed(
                     connection.stream,
-                    Router::new().route("/voice/info", get(|| async { "voice here" })),
+                    Router::new()
+                        .route("/voice/info", get(|| async { "voice here" }))
+                        .fallback(|| async { (StatusCode::NOT_FOUND, VOICE_HAS_NO_ROUTE) }),
                 ));
             }
         });
@@ -198,41 +261,42 @@ mod tests {
             let _ = stop_rx.await;
         }));
 
-        // One client, one idle connection kept: the body of the first answer is
-        // read to the end, which is what puts the connection back in the pool.
-        let client = reqwest::Client::builder()
-            .pool_max_idle_per_host(1)
-            .build()
-            .expect("build the client");
-        let info = client
-            .get(format!("http://{addr}/voice/info"))
-            .send()
-            .await
-            .expect("the mount answers");
-        assert_eq!(info.status(), 200);
-        assert_eq!(info.text().await.expect("text"), "voice here");
+        let (info, health) = deadline::hang("both answers on one connection", async {
+            let mut stream = TcpStream::connect(addr).await.expect("connect");
+            stream
+                .write_all(b"GET /voice/info HTTP/1.1\r\nHost: mux\r\n\r\n")
+                .await
+                .expect("write the first request");
+            let info = read_answer(&mut stream)
+                .await
+                .expect("the mount answers the first request");
+            stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: mux\r\n\r\n")
+                .await
+                .expect("write the second request on the same connection");
+            let health = read_answer(&mut stream)
+                .await
+                .expect("the second request is answered on the same connection");
+            (info, health)
+        })
+        .await;
 
-        let health = client
-            .get(format!("http://{addr}/health"))
-            .send()
-            .await
-            .expect("the second request is answered by somebody");
+        assert_eq!(info, (200, "voice here".to_string()));
         assert_eq!(
-            handed.load(Ordering::Relaxed),
-            1,
-            "the second request rode the first connection, so nothing was handed over twice"
-        );
-        assert_eq!(
-            health.status(),
-            404,
+            health,
+            (404, VOICE_HAS_NO_ROUTE.to_string()),
             "the voice cell's router answers it, and it has no /health: a client that \
              wants the API on this connection has already lost"
         );
+        assert_eq!(
+            handed.load(Ordering::Relaxed),
+            1,
+            "one connection, one handoff"
+        );
 
         let _ = stop_tx.send(());
-        tokio::time::timeout(Duration::from_secs(30), server)
+        deadline::hang("the accept loop ends on shutdown", server)
             .await
-            .expect("the accept loop ends on shutdown")
             .expect("no panic");
     }
 
@@ -248,8 +312,16 @@ mod tests {
     /// by a later accept, so by the time it arrives the silent one is already in
     /// its peek loop with its five-second budget running. Without that ordering
     /// the test would pass on a connection the loop never saw.
+    ///
+    /// **Why it was not waited for**, without a clock: the listener says which
+    /// end the peek took. Its line for this peer is the shutdown arm ("asked for
+    /// nothing"), so the connection's task ended with the signal and the drain
+    /// had nothing of it to wait for -- the peek budget's arm would have logged
+    /// "no request line within the peek budget" instead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_shutdown_drops_a_connection_that_asked_for_nothing() {
+        // The recorder listens from here on; the listener's lines are the verdict.
+        meclaw_testing::log_recorder::global();
         use tokio::io::AsyncReadExt;
 
         let surfaces = Arc::new(SurfaceRegistry::new());
@@ -266,6 +338,7 @@ mod tests {
         let mut silent = tokio::net::TcpStream::connect(addr)
             .await
             .expect("the silent socket connects");
+        let silent_peer = silent.local_addr().expect("the silent socket's address");
         assert_eq!(
             reqwest::get(format!("http://{addr}/health"))
                 .await
@@ -277,49 +350,65 @@ mod tests {
             "the answer proves the accept loop got past the silent connection"
         );
 
-        let signalled = std::time::Instant::now();
         let _ = stop_tx.send(());
-        tokio::time::timeout(DRAIN_CAP + Duration::from_secs(5), server)
+        deadline::hang("serve returns after the shutdown", server)
             .await
-            .expect("serve returns")
             .expect("no panic");
-        let served_after = signalled.elapsed();
-        assert!(
-            served_after < Duration::from_secs(1),
-            "a connection that asked for nothing must not be waited for; serve took \
-             {served_after:?} of its {DRAIN_CAP:?} cap"
+        let dropped = lines_for(tracing::Level::DEBUG, silent_peer, DROPPED_SILENT);
+        assert_eq!(
+            dropped.len(),
+            1,
+            "a connection that asked for nothing is dropped by the shutdown, not waited \
+             for until its peek budget runs out; lines for it: {dropped:?}"
         );
 
         // And the socket is closed rather than merely un-awaited: a read on it
-        // ends at once, which is what the client of a shut-down listener should
-        // see.
+        // ends, which is what the client of a shut-down listener should see.
         let mut byte = [0u8; 1];
-        let read = tokio::time::timeout(Duration::from_secs(30), silent.read(&mut byte))
-            .await
-            .expect("the read ends within the failure marker")
-            .expect("the socket reads");
+        let read = deadline::hang(
+            "the read on the dropped socket ends",
+            silent.read(&mut byte),
+        )
+        .await
+        .expect("the socket reads");
         assert_eq!(read, 0, "the listener closed the connection it dropped");
     }
 
     /// The drain: a request that is being answered when the shutdown fires is
     /// answered, and `serve` returns after it rather than before it.
+    ///
+    /// The handler is held until the shutdown has reached the listener (its
+    /// shutdown future has resolved), then released. The order of the two ends
+    /// is the discriminator, not a duration: a listener that only stops
+    /// accepting returns at once and before the held answer, one that drains
+    /// cannot return before the handler it interrupted has finished.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_shutdown_waits_for_the_answer_a_client_is_already_owed() {
-        /// How long the slow handler takes. Long enough that the shutdown lands
-        /// inside it for certain, short enough to be a fraction of [`DRAIN_CAP`].
-        const HANDLER_WORK: Duration = Duration::from_millis(300);
+        // The recorder listens from here on; the listener's lines are the verdict.
+        meclaw_testing::log_recorder::global();
+        use std::sync::Mutex;
 
         let surfaces = Arc::new(SurfaceRegistry::new());
+        // What ended, in the order it ended: the handler, and `serve`.
+        let ends: Arc<Mutex<Vec<&'static str>>> = Arc::default();
         // The handler says when it has started, so the shutdown fires while the
-        // request really is in flight rather than after a hopeful sleep.
+        // request really is in flight, and waits for the test to release it.
         let (started_tx, mut started_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let release_rx = Arc::new(tokio::sync::Mutex::new(Some(release_rx)));
+        let handler_ends = Arc::clone(&ends);
         let api = Router::new().route(
             "/slow",
             get(move || {
                 let started = started_tx.clone();
+                let release = Arc::clone(&release_rx);
+                let ends = Arc::clone(&handler_ends);
                 async move {
                     let _ = started.send(()).await;
-                    tokio::time::sleep(HANDLER_WORK).await;
+                    if let Some(rx) = release.lock().await.take() {
+                        let _ = rx.await;
+                    }
+                    ends.lock().expect("ends").push("answered");
                     "answered"
                 }
             }),
@@ -329,52 +418,81 @@ mod tests {
             .expect("bind a throwaway port");
         let addr = listener.local_addr().expect("the bound address");
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(serve(listener, api, surfaces, async move {
-            let _ = stop_rx.await;
-        }));
+        let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve_ends = Arc::clone(&ends);
+        let server = tokio::spawn(async move {
+            serve(listener, api, surfaces, async move {
+                let _ = stop_rx.await;
+                let _ = stopping_tx.send(());
+            })
+            .await;
+            serve_ends.lock().expect("ends").push("serve returned");
+        });
 
         let request =
             tokio::spawn(async move { reqwest::get(format!("http://{addr}/slow")).await });
-        tokio::time::timeout(Duration::from_secs(30), started_rx.recv())
+        deadline::hang("the handler starts", started_rx.recv())
             .await
-            .expect("the handler starts within the failure marker")
             .expect("the handler reports its start");
 
-        let signalled = std::time::Instant::now();
         let _ = stop_tx.send(());
-
-        // `serve` is awaited FIRST, and how long it took is the discriminator: a
-        // listener that only stops accepting returns within a millisecond or two
-        // of the signal, while one that drains cannot return before the handler
-        // it interrupted has finished. Half of the handler's work is the floor,
-        // and the whole point is that the colony shutdown behind this call runs
-        // after the answer rather than against it.
-        tokio::time::timeout(DRAIN_CAP + Duration::from_secs(5), server)
+        deadline::hang("the shutdown reaches the listener", stopping_rx)
             .await
-            .expect("serve returns once the drain is over")
+            .expect("the shutdown future resolves");
+        let _ = release_tx.send(());
+
+        deadline::hang("serve returns once the drain is over", server)
+            .await
             .expect("no panic");
-        let served_after = signalled.elapsed();
-        assert!(
-            served_after >= HANDLER_WORK / 2,
-            "serve returned {served_after:?} after the signal, so it did not wait for the \
-             answer it still owed"
+        assert_eq!(
+            *ends.lock().expect("ends"),
+            ["answered", "serve returned"],
+            "serve returned before the answer it still owed"
         );
+        let ran_out =
+            meclaw_testing::log_recorder::global().lines(tracing::Level::WARN, &[DRAIN_RAN_OUT]);
         assert!(
-            served_after < DRAIN_CAP,
-            "the drain ended with the connection, not at the cap; took {served_after:?}"
+            ran_out.is_empty(),
+            "the drain ended with the connection, not at its {DRAIN_CAP:?} cap: {ran_out:?}"
         );
 
-        let answer = tokio::time::timeout(Duration::from_secs(30), request)
+        let answer = deadline::hang("the owed answer arrives", request)
             .await
-            .expect("the answer arrives within the failure marker")
             .expect("no panic in the client task")
             .expect("the request the client was owed is answered, not cut");
         assert_eq!(answer.status(), 200);
         assert_eq!(answer.text().await.expect("text"), "answered");
     }
 
+    /// Sends `GET /voice/info` on a raw socket and reads the answer; returns the
+    /// client's own address (the listener's `peer`) and the answer.
+    async fn ask_voice(
+        addr: std::net::SocketAddr,
+    ) -> (std::net::SocketAddr, Option<(u16, String)>) {
+        use tokio::io::AsyncWriteExt;
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        let peer = stream.local_addr().expect("the client's address");
+        stream
+            .write_all(b"GET /voice/info HTTP/1.1\r\nHost: mux\r\n\r\n")
+            .await
+            .expect("write the request");
+        (peer, read_answer(&mut stream).await)
+    }
+
+    /// The `reason` fields the listener logged for `peer`'s refusal.
+    fn refusal_reasons(peer: std::net::SocketAddr) -> Vec<&'static str> {
+        ["reader_gone", "handoff_timeout"]
+            .into_iter()
+            .filter(|reason| {
+                !lines_for(tracing::Level::DEBUG, peer, &format!("reason={reason}")).is_empty()
+            })
+            .collect()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_mount_whose_reader_is_gone_answers_that_it_is_busy() {
+        // The recorder listens from here on; the listener's lines are the verdict.
+        meclaw_testing::log_recorder::global();
         // GH #660: the sentence both long-running cells' teardown relies on.
         // A cell that is going drops the receiving end of its handoff channel
         // BEFORE it gives the mount back, so there is a window in which the
@@ -412,37 +530,36 @@ mod tests {
             let _ = stop_rx.await;
         }));
 
-        let asked = std::time::Instant::now();
-        let answer = tokio::time::timeout(
-            Duration::from_secs(30),
-            reqwest::get(format!("http://{addr}/voice/info")),
+        let (peer, answer) = deadline::hang(
+            "a mount nobody reads answers instead of swallowing the client",
+            ask_voice(addr),
         )
-        .await
-        .expect("a mount nobody reads answers instead of swallowing the client")
-        .expect("the request itself went through");
-        let took = asked.elapsed();
-        assert_eq!(answer.status(), 503);
+        .await;
         // GH #851: a FULL queue is waited on, a CLOSED one is not — the
-        // teardown depends on hearing the refusal at once.
-        assert!(
-            took < meclaw_colony::surfaces::HANDOFF_WAIT,
-            "a mount whose reader is gone refuses at once, not after the wait; took {took:?}"
+        // teardown depends on hearing the refusal at once. The listener's
+        // `reason` names the arm that refused: the closed queue's, never the
+        // end of the wait for a slot.
+        assert_eq!(
+            refusal_reasons(peer),
+            ["reader_gone"],
+            "a mount whose reader is gone refuses at once, not after the wait for a slot"
         );
         assert_eq!(
-            answer.text().await.expect("text"),
-            "surface busy\n",
+            answer,
+            Some((503, "surface busy\n".to_string())),
             "and it is the mount's refusal, not the API fallback's 404"
         );
 
         let _ = stop_tx.send(());
-        tokio::time::timeout(Duration::from_secs(30), server)
+        deadline::hang("the accept loop ends on shutdown", server)
             .await
-            .expect("the accept loop ends on shutdown")
             .expect("no panic");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_mount_that_reads_nothing_answers_that_it_is_busy() {
+        // The recorder listens from here on; the listener's lines are the verdict.
+        meclaw_testing::log_recorder::global();
         let surfaces = Arc::new(SurfaceRegistry::new());
         // The receiver is held and never read: the handoff channel fills up, and
         // the connection after that has to be refused rather than parked.
@@ -487,32 +604,28 @@ mod tests {
             let _ = stop_rx.await;
         }));
 
-        let asked = std::time::Instant::now();
-        let answer = tokio::time::timeout(
-            Duration::from_secs(30),
-            reqwest::get(format!("http://{addr}/voice/info")),
+        let (peer, answer) = deadline::hang(
+            "a full mount answers instead of parking the client",
+            ask_voice(addr),
         )
-        .await
-        .expect("a full mount answers instead of parking the client")
-        .expect("the request itself went through");
-        let took = asked.elapsed();
-        assert_eq!(answer.status(), 503);
+        .await;
         // GH #851: a full queue whose reader is still there is given the wait
-        // for a slot before it is refused.
-        assert!(
-            took >= meclaw_colony::surfaces::HANDOFF_WAIT,
-            "a full mount refuses only after the wait for a slot; took {took:?}"
+        // for a slot before it is refused. The listener's `reason` names the
+        // arm that refused: the end of that wait, never the closed queue's.
+        assert_eq!(
+            refusal_reasons(peer),
+            ["handoff_timeout"],
+            "a full mount refuses only after the wait for a slot"
         );
         assert_eq!(
-            answer.text().await.expect("text"),
-            "surface busy\n",
+            answer,
+            Some((503, "surface busy\n".to_string())),
             "the refusal says what happened"
         );
 
         let _ = stop_tx.send(());
-        tokio::time::timeout(Duration::from_secs(30), server)
+        deadline::hang("the accept loop ends on shutdown", server)
             .await
-            .expect("the accept loop ends on shutdown")
             .expect("no panic");
     }
 }

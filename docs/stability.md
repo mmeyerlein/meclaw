@@ -59,10 +59,15 @@ panic), never when the cell received it. When the process dies with deliveries t
 not consumed, the next start hands each of them to its cell again, in log order, with the budget
 (`ttl`) it was logged with, before the colony routes anything new. Order holds per cell, with one
 exception: a cell that also had an overflow on disk gets its replayed mailbox deliveries behind
-those overflow rows. A delivery that was replayed after three lives that crashed and finished on
-none of them is the dead letter `replay_exhausted` on the next start; an ordered stop (the
-shutdown teardown) does not count as an attempt, so restarts with a deep backlog never exhaust a
-healthy delivery. The log keeps every row; replay deletes nothing.
+those overflow rows. After three attempts the next start dead-letters the delivery as
+`replay_exhausted`. An attempt is a handler start on the replayed delivery in a life that does not
+end in order (GH #1200). A life killed while the delivery still waited in a mailbox or behind a
+waking cell counts nothing. An ordered stop (the shutdown teardown) counts nothing either, also
+when its drain cut a replayed handler that was still running, such as a long model call. So
+neither repeated kills nor ordered restarts exhaust a healthy delivery. Known limit: a replay that
+takes the process down before any handler starts (for example a cell whose wake aborts the
+process) counts nothing and is replayed on every start without bound. The log keeps every row;
+replay deletes nothing.
 
 A replayed delivery carries its original message id, and so does everything a replayed handler
 emits: a follow-up's id is derived from the message it answers and its place among that handler's

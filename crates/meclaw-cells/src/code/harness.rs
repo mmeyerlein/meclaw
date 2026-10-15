@@ -97,10 +97,22 @@ mod tests {
         persistent: bool,
         docs: &[&str],
     ) -> Vec<JsonValue> {
+        drive_env(cwd, &[], script, persistent, docs)
+    }
+
+    /// [`drive_in`] with `env` added to the child's environment.
+    fn drive_env(
+        cwd: Option<&std::path::Path>,
+        env: &[(&str, &std::ffi::OsStr)],
+        script: &str,
+        persistent: bool,
+        docs: &[&str],
+    ) -> Vec<JsonValue> {
         let mut command = std::process::Command::new("python3");
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
+        command.envs(env.iter().copied());
         let mut child = command
             .args(["-c", HARNESS])
             .stdin(std::process::Stdio::piped())
@@ -214,8 +226,18 @@ mod tests {
     /// starts a small inline script: `python3 -c <script>`, the document on
     /// stdin. Returns its stdout.
     fn cold_in(cwd: &std::path::Path, script: &str) -> String {
+        cold_in_env(cwd, &[], script)
+    }
+
+    /// [`cold_in`] with `env` added to the child's environment.
+    fn cold_in_env(
+        cwd: &std::path::Path,
+        env: &[(&str, &std::ffi::OsStr)],
+        script: &str,
+    ) -> String {
         let mut child = std::process::Command::new("python3")
             .current_dir(cwd)
+            .envs(env.iter().copied())
             .args(["-c", script])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -478,17 +500,32 @@ mod tests {
     /// sees.
     #[test]
     fn a_thread_of_the_script_never_sees_collections_abc_while_the_harness_reports_a_raise() {
-        let script = "import sys, json, threading\n\
+        watcher_never_sees_collections_abc(&[]);
+    }
+
+    /// The script of the test above. `start()` returns only once the watcher
+    /// has made its first check (GH #1204): before, it returned as soon as
+    /// the thread existed, and a full-suite run on a loaded lane went red on
+    /// the cold baseline with `hits=0 watched=False` -- the 300 caught raises
+    /// and the report (a fraction of a millisecond) were done before the OS
+    /// had scheduled the watcher once, so the baseline had watched nothing.
+    /// Warm and resident had the same window, only wider (the 302 messages
+    /// take about 45 ms): a watcher held back 50 ms made all three report
+    /// `watched=False`. The 30 s wait is the failure marker, not a budget: a
+    /// watcher that never checks still ends in `watched=False`.
+    const GH1026_WATCHER_SCRIPT: &str = "import sys, json, threading\n\
                       op = json.loads(sys.stdin.read())['body'].get('op', 'cold')\n\
                       def watch(st):\n\
                       \x20   c = sys.modules['collections']\n\
                       \x20   while not st['stop'].is_set():\n\
                       \x20       st['checks'] += 1\n\
                       \x20       if 'abc' in vars(c): st['hits'] += 1\n\
+                      \x20       if st['checks'] == 1: st['live'].set()\n\
                       def start():\n\
                       \x20   sys.setswitchinterval(1e-6)\n\
-                      \x20   st = {'stop': threading.Event(), 'checks': 0, 'hits': 0}\n\
+                      \x20   st = {'stop': threading.Event(), 'live': threading.Event(), 'checks': 0, 'hits': 0}\n\
                       \x20   threading.Thread(target=watch, args=(st,), daemon=True).start()\n\
+                      \x20   st['live'].wait(30)\n\
                       \x20   return st\n\
                       def report(st):\n\
                       \x20   st['stop'].set()\n\
@@ -502,14 +539,40 @@ mod tests {
                       if op == 'start': sys.gh1026_watch = start()\n\
                       if op == 'raise': raise ValueError('boom')\n\
                       if op == 'report': report(sys.gh1026_watch)\n";
+
+    /// GH #1204: the loaded lane made deterministic. A `sitecustomize` on
+    /// `PYTHONPATH` makes every thread a script starts sleep 50 ms before its
+    /// target runs -- a sleeping thread holds no GIL, like one the OS has not
+    /// scheduled yet. Before the fix this was red on every run (cold 20/20,
+    /// warm and resident too); the watcher must still have watched.
+    #[test]
+    fn gh1204_a_watcher_thread_that_starts_late_still_watches_cold_warm_and_resident() {
+        let site = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(
+            site.path().join("sitecustomize.py"),
+            "import threading, time\n\
+             _run = threading.Thread.run\n\
+             def _late_run(self):\n\
+             \x20   time.sleep(0.05)\n\
+             \x20   _run(self)\n\
+             threading.Thread.run = _late_run\n",
+        )
+        .expect("plant sitecustomize.py");
+        watcher_never_sees_collections_abc(&[("PYTHONPATH", site.path().as_os_str())]);
+    }
+
+    /// The body of the two tests above: the cold baseline, then warm and
+    /// resident over 300 raising messages, every child with `env` added.
+    fn watcher_never_sees_collections_abc(env: &[(&str, &std::ffi::OsStr)]) {
+        let script = GH1026_WATCHER_SCRIPT;
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let cold = cold_in(dir.path(), script);
+        let cold = cold_in_env(dir.path(), env, script);
         assert_eq!(cold, "hits=0 watched=True", "the cold baseline");
         let mut docs = vec![r#"{"body":{"op":"start"}}"#];
         docs.extend([r#"{"body":{"op":"raise"}}"#; 300]);
         docs.push(r#"{"body":{"op":"report"}}"#);
         for persistent in [false, true] {
-            let frames = drive_in(Some(dir.path()), script, persistent, &docs);
+            let frames = drive_env(Some(dir.path()), env, script, persistent, &docs);
             assert_eq!(
                 frames.len(),
                 docs.len(),

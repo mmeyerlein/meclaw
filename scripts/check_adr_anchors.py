@@ -486,7 +486,7 @@ def main() -> int:
         adr_count = len({r[0] for r in rows})
         print(
             f"ADR anchor gate OK: {adr_count} accepted ADR(s), "
-            f"{len(rows)} anchor(s) resolved, source {source}"
+            f"{len(rows)} anchor(s) resolved, read from {source}"
         )
         return 0
 

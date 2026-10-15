@@ -41,6 +41,17 @@ env:
   # `.cargo/config.toml` builds dev and test with `debug = 0` for every
   # tree, this one included.
   CARGO_INCREMENTAL: 0
+  # The test tools that carry no Cargo.toml entry. ruff is pinned to the
+  # version the maintainer's build lanes run, so a verdict here and there
+  # comes from the same tool: it grades the Python half of the testing bans
+  # in the `gate` job, and that job fails unless the ruff on PATH is this
+  # version (without ruff the bans would fall back to a regex). The
+  # cargo-mutants pin is a declaration only: no job installs or runs it, and
+  # no gate station runs it yet. It names the one version a mutation-testing
+  # station of the maintainer's integration pass is to run once that station
+  # exists, so the version is fixed in one public place before then.
+  RUFF_VERSION: "0.16.10"
+  CARGO_MUTANTS_VERSION: "27.1.0"
 
 jobs:
   # ---------------------------------------------------------------------
@@ -118,11 +129,27 @@ jobs:
   # maintainer's strand and release gates, and as a test in the suite that
   # ships (that twin skips when no generator is present, which here is
   # always).
+  #
+  # The testing rules hold here as they hold in the maintainer's gate:
+  # `test-bans-inventory` counts every testing ban over the tree and is red
+  # when a count rose over `.config/testing-bans.baseline.json`, and
+  # `test-bans` grades the added test lines of a pull request and refuses a
+  # change that loosens the bans without an owner ruling -- the two checks
+  # the local `precheck` station carries, which cannot run here as a whole.
+  # Their base is `origin/main`, which only a full clone has: hence
+  # `fetch-depth: 0`. A shallow clone would leave the change reservation
+  # without a base, and it fails closed (red), not quietly green.
   # ---------------------------------------------------------------------
   gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: ruff (pinned)
+        run: |
+          pipx install "ruff==${{ env.RUFF_VERSION }}"
+          test "$(ruff --version)" = "ruff ${{ env.RUFF_VERSION }}"
       - uses: Swatinem/rust-cache@v2
         with:
           # Its own key: clippy builds dependencies as `check` artifacts
@@ -210,10 +237,13 @@ jobs:
       # nextest does not run doctests -- it has no way to, they are rustdoc's.
       # `cargo test --doc` keeps them in the run; it is cheap here because the
       # libraries are already built by the step above (measured: ~2s for all
-      # seven crates). One shard is enough, doctests do not partition.
+      # seven crates). One shard is enough, doctests do not partition. The
+      # test-hook feature is the one the shards built with (test-tier.sh,
+      # GH #1208): another feature set would build meclaw-colony and its
+      # dependents a second time. The release build never carries it.
       - name: doctests
         if: matrix.shard == 1
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --doc --features meclaw-colony/test-hooks
       # The `ci` profile writes JUnit XML. Keeping it makes a red shard
       # readable without scrolling a log.
       - name: junit

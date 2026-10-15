@@ -197,7 +197,7 @@ does not gets its `credential_pending` receipt immediately) and
 `credential_wait_ms` (how long the round may take before every parked turn gets
 that receipt, in order). `credential_pending` is therefore the code for a vault
 that refused or never answered, and no longer the price of a wake. Measured in
-`crates/meclaw-cells/tests/gh457_a_parked_turn_is_answered_not_dropped.rs`.
+`crates/meclaw-cells/tests/misc_4/gh457_a_parked_turn_is_answered_not_dropped.rs`.
 
 ## The policy row, and what it is not for
 

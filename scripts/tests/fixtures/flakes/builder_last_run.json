@@ -1,0 +1,11 @@
+{
+  "passed": 2,
+  "failed": 1,
+  "skipped": 0,
+  "results": [
+    {"id": "B1", "name": "a green build", "pass": true, "error": null},
+    {"id": "B4", "name": "a build that met the registry race", "pass": false,
+     "error": "registry lacks 'a-template' (have [])"},
+    {"id": "B5", "name": "another green build", "pass": true, "error": null}
+  ]
+}

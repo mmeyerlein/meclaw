@@ -46,6 +46,25 @@ slow-timeout = { period = "30s", terminate-after = 8 }
 [profile.default.junit]
 path = "junit.xml"
 
+# K8 (OR-T17-15): the leash of a QUOTA run (`scripts/lane_sync.sh` under
+# MECLAW_LANE_CPU_QUOTA, the quota mark set inside the scope). The whole
+# selection shares a capped core there: on 13.10. gh1061_the_organism ran
+# 79 s alone under 80 % / F = 3 and past the 240 s of `default` beside 177
+# others, busy to the last line (tv-br M10v). `scripts/test-tier.sh` picks this
+# profile by the quota mark and by nothing else; every other run keeps
+# `default`. The value is >= 3x the longest test measured in full scope under
+# 80 % / F = 3 and >= F x the 240 s of `default`. Final 1020 s = 60 s x 17
+# (tv-br report § M10m3): the highest P95 of any test is gh1061_the_organism
+# with 327.0 s over three full-scope runs (its 16 gh1061 series runs: P95
+# 123.5 s), 3 x 327.0 s = 981 s, rounded up to whole 60 s and held at the K8
+# release of 1020 s; F x 240 s = 720 s. Inherits everything else from
+# `default`.
+[profile.quota]
+slow-timeout = { period = "60s", terminate-after = 17 }
+
+[profile.quota.junit]
+path = "junit.xml"
+
 [profile.ci]
 retries = 0
 fail-fast = false
@@ -58,6 +77,97 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# The two calls of the station `browser:display` (scripts/gate_plan.py,
+# `browser_cmds`): the ignored browser locks and the sheet. Each runs with its
+# own profile so each writes its own JUnit file (`target/nextest/<profile>/`)
+# and neither overwrites the one the slow lock reads from `default`. Everything
+# else -- timeouts, test groups, the overrides below -- is inherited from
+# `default`: nextest applies the default profile's overrides to every profile,
+# after the profile's own. Picked with `MECLAW_TIER_PROFILE=<name>` on
+# `scripts/test-tier.sh`; without it the tier runs `default`, as before.
+[profile.browser.junit]
+path = "junit.xml"
+
+[profile.browser-ignored.junit]
+path = "junit.xml"
+
+# GH #1161: the station's two parts -- every Chromium test, every WebKit test of
+# the same union -- run side by side, so each has a profile (and a JUnit file) of
+# its own; the names stand in `scripts/gate_plan.py` (`BROWSER_PROFILES`).
+[profile.browser-chromium.junit]
+path = "junit.xml"
+
+[profile.browser-webkit.junit]
+path = "junit.xml"
+
+# OR-TB.S3.14 (GH #1161): a station never boots more colonies than it books.
+# `browser:display` books three (`scripts/pipeline/plan.py`, `NEEDS`): one for the
+# WebKit part (group `webkit`, one at a time) and two for the Chromium part, whose
+# tests all boot a colony (`*_browser`). Without this override they fell through to
+# `colony-boot` (four at a time), bounded only by the part's threads -- wider than
+# the booking as soon as the part gets more threads. The profile's own override
+# comes before the inherited ones, so it wins over `colony-boot`; the WebKit tests
+# stay out of it and keep `webkit`. Two, not one: one at a time the Chromium part
+# took 420 s on build02 (S3-diag), over the WebKit floor of 327 s.
+# `scripts/tests/test_pipeline_lab_width.py` holds width == booking.
+# The width is no number of its own (VORGABEN TV-B7): it is
+# `pipeline/plan.py::browser_workers` over the station's booking,
+# max(1, floor((cpu 4 - 0 cargo jobs) / 2)) = 2; change the booking, not this line
+# alone (`TestBrowserWorkerFormula` fails until both agree).
+[test-groups.chromium-part]
+max-threads = 2
+
+[[profile.browser-chromium.overrides]]
+filter = 'binary_id(/_browser$/) & not test(/webkit/)'
+test-group = "chromium-part"
+
+# KR-TB-1 (d): the release station `scenario-tests` (`scripts/gate_plan.py`,
+# SCENARIO_STATION) runs the scenario class beside `tests` on the same build; a
+# profile of its own keeps the JUnit file `slow-tests` reads from `default`.
+[profile.scenario.junit]
+path = "junit.xml"
+
+# W3 (GH #1117): the lane executor (`scripts/pipeline/executor.py`) runs
+# several nextest stations of one run at the same time against the same
+# build, and `scripts/test-tier.sh` deletes the JUnit file of its profile
+# before every run -- two stations on one profile would delete and overwrite
+# each other's. The flake isolation therefore runs a profile of its own.
+[profile.isolate.junit]
+path = "junit.xml"
+
+# OR-TV-2 (VG TV-F3): the pipeline's NOTE station `quarantine` runs the
+# quarantined tests here -- out of the blocking `tests` selection. No retries
+# in this file: the run's own `quarantine.toml` (pipeline store) adds them per
+# entry, each with `flaky-result = "fail"` -- a retry classifies, it never
+# turns red green.
+[profile.quarantine]
+retries = 0
+flaky-result = "fail"
+fail-fast = false
+
+[profile.quarantine.junit]
+path = "junit.xml"
+
+# TV-P2 (tv-p1c § 6): the perf tests (`perf_*`, all `#[ignore]`), run only by
+# `scripts/test-tier.sh perf` with `--run-ignored only` -- never by t0-t2 or a
+# gate station. One at a time and no retries: a perf number is a measurement.
+[profile.perf]
+retries = 0
+test-threads = 1
+fail-fast = false
+
+[profile.perf.junit]
+path = "junit.xml"
+
+# welle-tb S1b (#1165): the browser-lock call of the coverage build
+# (`scripts/pipeline/coverage_host.sh`). Its junit keeps the output of GREEN
+# tests: a lock that could not drive its browser leaves green with one `SKIP `
+# line, and `scripts/pipeline/browser_cover.py` marks a lock measured only
+# without one. Everything else is inherited from `default`.
+[profile.coverage-browser.junit]
+path = "junit.xml"
+store-success-output = true
 
 # ---------------------------------------------------------------------------
 # QUARANTINE -- the ONLY place where retries are allowed.
@@ -72,6 +182,8 @@ path = "junit.xml"
 #   3. An entry is a debt, not a state. When the issue closes, the entry goes.
 #   4. Adding an entry does not lift the "red test = BLOCKED" rule: a test that
 #      fails all its attempts is still a hard stop.
+#   5. A retry classifies, it never turns red green (OR-TV-2, VG TV-F8): every
+#      profile or entry with `retries > 0` carries `flaky-result = "fail"`.
 #
 # Format per entry:
 #
@@ -79,11 +191,12 @@ path = "junit.xml"
 #   # GH #NNN -- one line on WHY it is flaky, not on what the test does.
 #   filter = 'binary_id(=<crate>::<binary>) & test(=<test name>)'
 #   retries = 2
+#   flaky-result = "fail"
 #
 # TWO terms, and they are not interchangeable. `cargo nextest list` PRINTS
 # `<crate>::<binary> <test name>`, but that spelling belongs in no filter:
 # `test()` compares its matcher against the TEST NAME alone, and the binary is
-# its own term, `binary_id()`. A test name carries neither `::` nor a space, so
+# its own term, `binary_id()`. A test name carries no space and no crate, so
 # `test(=<crate>::<binary> <test name>)` parses cleanly, matches nothing, and
 # leaves the station green over an entry that does nothing -- which is exactly
 # what the first #763 entry did for a whole wave (wave P review C1).
@@ -92,6 +205,13 @@ path = "junit.xml"
 #   two named tests    filter = 'binary_id(=meclaw-cells::w10b_remember_colony) \\
 #                                 & (test(=a_broken_annotation_costs_the_answer_nothing) \\
 #                                  + test(=an_annotated_turn_is_a_fact_candidate_on_the_turn_it_answered))'
+#
+# In a folded harness (`scripts/harness_fold.py`, GH #1119) the binary is the
+# harness and a test is named `<stem>::<test>` after the file it lives in. A bare
+# `test(=<test>)` matches nothing there and leaves the station green over a dead
+# entry -- the #763 class again. Name the stem:
+#
+#   one test in a harness  filter = 'binary_id(=meclaw-cells::misc_5) & test(=gh669_x::a_test)'
 #
 #   5. An entry is proved, not written: `cargo nextest list -E '<filter>'` must
 #      print exactly the tests the comment claims. The `nextest list` output
@@ -153,6 +273,17 @@ success-output = "immediate-final"
 filter = 'binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser)'
 success-output = "immediate-final"
 
+# GH #1210 (TV-B7, re-check tv-bn-drv2-fix1 § 5): the os-mark proof prints its
+# driver's `THROTTLE` line, the one sign that a robustness probe ran braked;
+# gh703 and gh867 above already show their green output.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_6) & test(/^gh704_a_refused_channel_does_not_take_the_dock::/)'
+success-output = "immediate-final"
+
+[[profile.ci.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_6) & test(/^gh704_a_refused_channel_does_not_take_the_dock::/)'
+success-output = "immediate-final"
+
 # GH #1043 (review Z-M3, finding 5): the two SIGKILL locks print one line per
 # round -- what arrived, and how many replayed answers the store's book gave
 # after the kills. A green run whose kills replayed nothing proves nothing (the
@@ -173,33 +304,275 @@ success-output = "immediate-final"
 # iterations red, 83-104 s each, `page.goto: Timeout 30000ms` and
 # `waitForSelector … Timeout 10000ms` (build01, 2026-10-07). Every test that
 # drives a WebKit page takes the cores it really uses and they take turns: the
-# sheet parts, the phone sheet (gh703) and the colony proof, whose one test runs
-# its WebKit half after the Chromium one. A scheduling fact, not a longer
-# leash: `slow-timeout` and `terminate-after` stay the profile's.
+# sheet parts, the phone sheet (gh703), and the WebKit tests of the colony
+# proof (three lines of six), the motion lock (gh961) and the keep lock
+# (gh1028), each of which is one test per engine. The filter is narrow on
+# purpose -- `test(/webkit/)` inside those binaries: a whole binary here would
+# put its Chromium tests in the one-at-a-time line too. The last term takes every
+# WebKit test of a browser binary (gh958, gh964 among them): since GH #1161
+# (re-check M-3) they run in the WebKit part of `browser:display`, never in
+# `tests`, and must not meet another WebKit page there. A scheduling fact, not
+# a longer leash: `slow-timeout` and `terminate-after` stay the profile's.
+#
+# A test is in exactly ONE group: of the overrides that set `test-group`, the
+# first one that matches wins. So this override stands ABOVE `colony-boot`, and
+# a test that boots a colony AND drives WebKit stays here
+# (`scripts/tests/test_nextest_groups.py` holds both rules against the tree).
 [test-groups.webkit]
 max-threads = 1
 
+# GH #1088: the tests that boot a heavy colony -- the display colony of
+# `crates/meclaw-cells/tests/support/display_colony.rs` (python compose cells,
+# a judge mock, mounts), the browser locks, the scenario class (`*_demo`,
+# `e2e`, `workshop_scenario`). At full lane width (24 threads) too many of them
+# at once ran the colony proof past its timeout, and the answer was a host-wide
+# `threads=12` that halved every other test as well. This group caps the heavy
+# boots at four at a time and lets the rest of the suite run at full width.
+# The plain `bootstrap_from_filesystem` tests (a tiny colony each, a few
+# hundred binaries) are not in it on purpose. No `threads-required`: the group
+# width is the control, and a test that reserved more threads would idle the
+# lane around it. `scripts/tests/test_nextest_groups.py` names every
+# display-colony test missing below.
+[test-groups.colony-boot]
+max-threads = 4
+
 [[profile.default.overrides]]
-filter = '(binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & test(/^the_sheet_holds_in_webkit_/)) + binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+filter = '(binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & test(/^the_sheet_holds_in_webkit_/)) + binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + ((binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser) + binary_id(=meclaw-cells::gh961_motion_by_target_state_browser) + binary_id(=meclaw-cells::gh1028_a_new_window_keeps_the_others_in_place_browser)) & test(/webkit/)) + (binary_id(/_browser$/) & test(/webkit/))'
 test-group = "webkit"
 threads-required = 4
 
 [[profile.ci.overrides]]
-filter = '(binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & test(/^the_sheet_holds_in_webkit_/)) + binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+filter = '(binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & test(/^the_sheet_holds_in_webkit_/)) + binary_id(=meclaw-cells::gh703_the_phone_holds_in_webkit_browser) + ((binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser) + binary_id(=meclaw-cells::gh961_motion_by_target_state_browser) + binary_id(=meclaw-cells::gh1028_a_new_window_keeps_the_others_in_place_browser)) & test(/webkit/)) + (binary_id(/_browser$/) & test(/webkit/))'
 test-group = "webkit"
 threads-required = 4
+
+# colony-boot, after `webkit` (first match wins): the browser locks and the
+# scenario class by name ...
+[[profile.default.overrides]]
+filter = 'binary_id(/_browser$/) + binary_id(/_demo$/) + binary_id(/_demo_/) + binary_id(/e2e/) + binary_id(=meclaw-cells::workshop_scenario)'
+test-group = "colony-boot"
+
+# ... and the display-colony tests by binary, a few per entry so that a line
+# stays readable.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::710_a_verdict_comes_back_from_the_judge) + binary_id(=meclaw-cells::710_a_view_lives_in_the_store) + binary_id(=meclaw-cells::710_the_apps_write_what_the_pass_reads) + binary_id(=meclaw-cells::710_the_clock_strikes_what_the_curator_ordered) + binary_id(=meclaw-cells::710_the_screen_hears_only_what_is_said) + binary_id(=meclaw-cells::808_the_colony_view_stands_in_the_dock) + binary_id(=meclaw-cells::809_a_restart_reads_once_and_draws_the_same_screen)'
+test-group = "colony-boot"
+
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::809_no_header_carries_the_plan) + binary_id(=meclaw-cells::809_the_store_is_quiet_when_nothing_is_written) + binary_id(=meclaw-cells::gh1027_a_foreign_round_opens_no_window) + binary_id(=meclaw-cells::gh867_no_surface_page_carries_unlisted_inline_script) + binary_id(=meclaw-cells::gh958_a_mistyped_block_is_refused_at_the_door) + binary_id(=meclaw-cells::gh959_an_unplaceable_lead_yields_the_standard_block) + binary_id(=meclaw-cells::gh959_an_unsure_or_late_verdict_shows_nothing)'
+test-group = "colony-boot"
+
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh959_a_sure_verdict_opens_the_window_and_fills_it) + binary_id(=meclaw-cells::gh959_data_follows_the_verdict_and_builds_up) + binary_id(=meclaw-cells::gh963_a_declared_source_is_read_with_the_round) + binary_id(=meclaw-cells::gh963_a_search_fills_a_window_only_after_a_sure_verdict) + binary_id(=meclaw-cells::gh963_the_work_report_shows_steps_not_contents) + binary_id(=meclaw-cells::gh964_a_map_stands_on_a_running_screen) + binary_id(=meclaw-cells::gh965_the_data_question_names_the_screen_round)'
+test-group = "colony-boot"
+
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh965_the_member_residents_show_on_the_screen) + binary_id(=meclaw-cells::gh966_a_refusal_of_the_decider_reaches_the_stage) + binary_id(=meclaw-cells::gh966_a_set_of_other_rounds_is_no_set) + binary_id(=meclaw-cells::gh976_the_last_result_shows_only_to_its_round) + binary_id(=meclaw-cells::gh977_a_partial_verdict_keeps_the_sure_topic) + binary_id(=meclaw-cells::gh983_a_missing_resident_is_left_out)'
+test-group = "colony-boot"
+
+# A display-colony test folded into the `display` harness (GH #1210): folded
+# form, the binary of before the fold matches nothing (#1153).
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::display) & test(/^gh1210_a_gesture_reaches_the_member_exactly_once::/)'
+test-group = "colony-boot"
+
+# GH #1164 (Z-INT-W § 2): the long tests of `LONG TESTS FIRST` below, at most
+# four at a time. `priority` alone started all 47 together at the head of the
+# station; on build01 (12 slots) twelve of them ran side by side, each 1.5-2.3x
+# slower (gh974 62 s -> 135 s), and 12 went over the 80 s mark of slow-tests.
+# Before #1162 they were spread over the run -- 2009 s of them in a 470 s
+# station on build04 is 4.3 at a time on average -- and none went over in any
+# full run of the wave. Four keeps that density on every lane and still starts
+# the longest first: 2009 s / 4 = 502 s of chain beside ~460 s for the rest of
+# the suite on the other 20 slots of build04; on build01 the station takes
+# 1443 s anyway. A scheduling fact, not a leash: the marks stay the profile's.
+# The two sheet tests stay in `colony-boot` (first match wins), so they are not
+# named here. Each takes two slots (`threads-required = 2`): their colonies run
+# four Tokio workers, and the head of the station overlaps the parallel stations
+# of the run (gate-selftest, cpu 4, on build01 beside 12 slots on 12 vCPUs) --
+# there gh906 alone still went 88.6 s over the 80 s mark. Two slots each keeps
+# fewer light tests beside them; the group width stays four.
+# Pinned by scripts/tests/test_pipeline_ir_path.py.
+[test-groups.long-first]
+max-threads = 4
+
+[[profile.default.overrides]]
+filter = '''
+    (binary_id(=meclaw-cells::round_2) & test(=gh906_a_repo_round_trips_through_the_hive::a_repo_round_trips_through_the_hive))
+  + (binary_id(=meclaw-cells::member_road) & (test(=gh974_a_person_round_leaves_no_dead_letter::a_person_round_leaves_only_declared_dead_letters) + test(=gh974_a_person_round_leaves_no_dead_letter::growing_a_level_leaves_only_declared_dead_letters) + test(=gh974_a_person_round_leaves_no_dead_letter::the_ways_own_messages_never_dead_letter)))
+  + (binary_id(=meclaw-cells::misc_8) & test(=gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64))
+  + (binary_id(=meclaw-cells::member_road) & (test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_0_to_2) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_12_to_14) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_15_to_17) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_18_to_20) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_3_to_5) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_6_to_8) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_9_to_11)))
+  + (binary_id(=meclaw-cells::member_road) & (test(=gh953_a_round_change_closes_after_the_last_answer::a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_0_to_2) + test(=gh953_a_round_change_closes_after_the_last_answer::a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_3_to_5) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_0_to_4) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_10_to_14) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_15_to_19) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_5_to_9) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_0_to_4) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_10_to_14) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_15_to_19) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_5_to_9)))
+  + (binary_id(=meclaw-cells::misc_7) & test(=gh905_a_workspace_is_materialized_and_adopted::a_workspace_is_materialized_and_adopted))
+  + (binary_id(=meclaw-cells::graph_space_2) & test(=gh951_an_alias_pushes_the_brief::an_alias_pushes_the_brief))
+  + (binary_id(=meclaw-cells::misc_8) & (test(=gh980_the_writer_drives_its_projection::exec_cannot_steer_the_view) + test(=gh980_the_writer_drives_its_projection::export_after_pull_commits_nothing) + test(=gh980_the_writer_drives_its_projection::six_file_export_fits_ttl_64)))
+  + (binary_id(=meclaw-cells::graph_space_1) & test(=gh945_the_graph_answers_without_waking_the_files::the_graph_answers_across_files_and_wakes_none))
+  + (binary_id(=meclaw::gh1061_the_organism_example_starts_and_its_member_gets_the_key) & test(=gh1061_the_organism_example_starts_and_its_member_gets_the_key))
+  + (binary_id(=meclaw-cells::member_road) & (test(=gh995_every_run_tool_result_names_its_tool::gh995_a_derive_job_behind_a_run_keeps_its_budget) + test(=gh995_every_run_tool_result_names_its_tool::gh995_an_observer_hears_every_holder_by_name) + test(=gh995_every_run_tool_result_names_its_tool::gh995_every_run_tool_result_names_its_tool) + test(=gh995_every_run_tool_result_names_its_tool::gh995_the_body_text_is_the_result)))
+  + (binary_id(=meclaw-cells::graph_space_1) & test(=gh945_a_rename_breaks_and_reports_the_edge::a_renamed_function_breaks_its_callers_and_a_removed_file_its_links))
+  + (binary_id(=meclaw-cells::member_road) & test(=gh929_every_budget_segment_fits_its_reserve::s5_without_its_restoring_edges_a_file_turn_does_not_fit))
+  + (binary_id(=meclaw-cells::gh302_the_stack_grows_from_templates) & test(=d_a_second_channel_is_one_instantiation_in_the_member))
+  + (binary_id(=meclaw-cells::misc_7) & test(=gh855_a_grown_assistant_is_a_subscriber::a_generation_and_a_member_grown_in_the_shell_become_subscribers))
+  + (binary_id(=meclaw-cells::round_2) & (test(=gh933_the_close_pass_never_crosses_a_round::round_ea_files_at_the_source_orders_0_to_2) + test(=gh933_the_close_pass_never_crosses_a_round::round_ea_files_at_the_source_orders_3_to_5) + test(=gh933_the_close_pass_never_crosses_a_round::round_eb_files_at_the_source_orders_0_to_2) + test(=gh933_the_close_pass_never_crosses_a_round::round_eb_files_at_the_source_orders_3_to_5)))
+  + (binary_id(=meclaw-cells::misc_3) & (test(=gh422_the_manifest_grows_the_same_stack::a_manifest_grows_the_same_stack_as_the_five_declarations) + test(=gh422_the_manifest_grows_the_same_stack::the_manifest_is_resumable_from_where_it_stopped)))
+  + (binary_id(=meclaw-cells::curator) & test(=curator_cells::a_failed_summary_keeps_the_old_window))
+  + (binary_id(=meclaw-cells::misc_4) & test(=gh466_a_recipe_grown_level_boots::the_rendered_levels_grow_the_tree_the_declarations_grow))
+'''
+test-group = "long-first"
+threads-required = 2
 
 # ---------------------------------------------------------------------------
 # SLOW BY DESIGN -- a longer leash, never a retry.
 # ---------------------------------------------------------------------------
 #
 # The four-minute kill of the default profile says "a meclaw test that needs
-# four minutes is wedged, not busy". One test is busy: the colony half of the
-# B-proofs boots a throwaway colony once and then drives six real browser
-# sessions through it -- two engines on three exits, with gestures and page
-# loads in each. It is `#[ignore]`d and runs in `integration` and `release`
-# (GH #746; station `browser:display`, scope `sheet+colony`); measured it takes
-# three and a half minutes on this host. The cap is raised for THIS test alone.
+# four minutes is wedged, not busy". The colony half of the B-proofs was busy:
+# it booted a throwaway colony once and drove six real browser sessions through
+# it -- two engines on three exits, with gestures and page loads in each,
+# three and a half minutes measured. It is six tests now, one boot and one page
+# each (W7); the raised cap stays for this binary until a lane run has measured
+# the six under the station's load. `#[ignore]`d, run in `integration` and
+# `release` (GH #746; station `browser:display`, scope `sheet+colony`).
 [[profile.default.overrides]]
 filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
-slow-timeout = { period = "60s", terminate-after = 10 }
+slow-timeout = { period = "60s", terminate-after = 22 }
+
+# The two leashes over the browser driver's own run marker (`RUN_HANG_MS`,
+# workshop/tools/wait.mjs): the driver ends a hung run first and reports the proof
+# it hung in, the harness kill stays behind it with room for what runs outside the
+# marker (the colony's boot, the browser's launch, `browser.close()`). The marker is
+# >= 3 x the loaded P95 of a run (TV-Z3/TV-K5): a colony line under `--load 12` on
+# build03 ran 272-330 s (wave testing C1, n = 12), so the marker is 1020 s and the
+# colony leash 22 x 60 s = 1320 s. At 690 s against 720 s a hung line ran into this
+# kill 3 of 3 and lost its HANG line (re-check tv-bn-layout B, M1). The sheet marker
+# is 330 s and its leash 9 x 60 s = 540 s. Over the driver's marker the test puts its
+# own (`tests/support/browser_run.rs`, re-check M1-R): marker + 60 s outside it, then
+# SIGTERM and a HANG mark, then SIGKILL, a HANG mark for the tree to be gone and a
+# 10 s mark for the streams (re-check B fix2, M3/H1), then `HANG:` with the survivors
+# and the stderr tail. A leash covers boot (colony) or page parts (themselves under a
+# HANG marker), the stage, that marker, the SIGTERM, survivors and streams marks and
+# 30 s: colony 60 + 30 + 1080 + 30 + 30 + 10 + 30 = 1270 s,
+# sheet 30 + 390 + 30 + 30 + 10 + 30 = 520 s.
+# The leash is laid out for factor 1: nextest knows no `MECLAW_TEST_TIME_FACTOR`, so
+# whoever introduces a factor > 1 raises the leash in the same strand. Raise marker
+# and leash together, never one of them
+# (`708_... the_run_marker_sits_under_the_leash_with_room`).
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser)'
+slow-timeout = { period = "60s", terminate-after = 9 }
+
+# The same two leashes in the QUOTA profile (K8, OR-T17-15; Welle-Merge R<->N, NS;
+# OR-T18-7): there the marks run scaled by `MECLAW_TEST_TIME_FACTOR`, the leash above
+# knows no factor, and a profile's own overrides are read before the default ones. The
+# profile is laid out for F = 3 like its own leash above (`QUOTA_TIME_FACTOR`,
+# `meclaw_testing::deadline`; every quota run and measurement uses it), so the leash is
+# the factor-1 end times 3, rounded up to whole 60 s: colony 1270 s x 3 = 3810 s ->
+# 64 x 60 s = 3840 s, sheet 520 s x 3 = 1560 s -> 26 x 60 s. The scaled run marker inside
+# stays >= 3 x the loaded P95 (1020 s x 3, 330 s x 3). A backstop behind the scaled
+# marks, never a verdict; pinned in `708_... the_run_marker_sits_under_the_leash_with_room`.
+[[profile.quota.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_colony_holds_in_both_engines_browser)'
+slow-timeout = { period = "60s", terminate-after = 64 }
+
+[[profile.quota.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser)'
+slow-timeout = { period = "60s", terminate-after = 26 }
+
+# ---------------------------------------------------------------------------
+# LONG TESTS FIRST -- `priority`, never a group or a leash (GH #1162, #1088).
+# ---------------------------------------------------------------------------
+#
+# A test that starts in the tail of the `tests` station holds the station open
+# for its own length after every other slot is idle. M0 measured the full
+# suite on build04 at 24 threads (A4 j24, 469.7 s): 11094 tests, 47 of them
+# above 30 s, 2009.2 s together, the longest 69.7 s (gh906). nextest starts
+# higher priorities first ("a test priority between -100 and 100, inclusive;
+# higher values run sooner", schema of cargo-nextest 0.9.143); the priority is
+# the measured seconds of the slowest test of each source file, so the longest
+# go first. One override per source file, the names as the harness fold gives
+# them (`binary_id(=<crate>::<harness>) & test(=<stem>::<test>)`, GH #1119).
+# These overrides set `priority` and nothing else: nextest resolves every
+# setting on its own (the first matching override that sets it), so the
+# groups and timeouts above stay exactly as they are. Pinned by
+# scripts/tests/test_pipeline_ir_path.py (the 47 names, and that each one exists).
+# gh906_a_repo_round_trips_through_the_hive: 1, longest 69.7 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::round_2) & test(=gh906_a_repo_round_trips_through_the_hive::a_repo_round_trips_through_the_hive)'
+priority = 70
+# gh974_a_person_round_leaves_no_dead_letter: 3, longest 62.1 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::member_road) & (test(=gh974_a_person_round_leaves_no_dead_letter::a_person_round_leaves_only_declared_dead_letters) + test(=gh974_a_person_round_leaves_no_dead_letter::growing_a_level_leaves_only_declared_dead_letters) + test(=gh974_a_person_round_leaves_no_dead_letter::the_ways_own_messages_never_dead_letter))'
+priority = 62
+# gh975_a_projection_job_fits_the_colony_ttl: 1, longest 56.5 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_8) & test(=gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64)'
+priority = 56
+# gh954_two_first_turns_open_one_generation: 7, longest 53.8 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::member_road) & (test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_0_to_2) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_12_to_14) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_15_to_17) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_18_to_20) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_3_to_5) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_6_to_8) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_9_to_11))'
+priority = 54
+# gh953_a_round_change_closes_after_the_last_answer: 10, longest 50.3 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::member_road) & (test(=gh953_a_round_change_closes_after_the_last_answer::a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_0_to_2) + test(=gh953_a_round_change_closes_after_the_last_answer::a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_3_to_5) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_0_to_4) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_10_to_14) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_15_to_19) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_5_to_9) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_0_to_4) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_10_to_14) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_15_to_19) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_5_to_9))'
+priority = 50
+# gh905_a_workspace_is_materialized_and_adopted: 1, longest 45.6 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_7) & test(=gh905_a_workspace_is_materialized_and_adopted::a_workspace_is_materialized_and_adopted)'
+priority = 46
+# gh951_an_alias_pushes_the_brief: 1, longest 44.9 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::graph_space_2) & test(=gh951_an_alias_pushes_the_brief::an_alias_pushes_the_brief)'
+priority = 45
+# gh980_the_writer_drives_its_projection: 3, longest 39.2 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_8) & (test(=gh980_the_writer_drives_its_projection::exec_cannot_steer_the_view) + test(=gh980_the_writer_drives_its_projection::export_after_pull_commits_nothing) + test(=gh980_the_writer_drives_its_projection::six_file_export_fits_ttl_64))'
+priority = 39
+# gh945_the_graph_answers_without_waking_the_files: 1, longest 39.0 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::graph_space_1) & test(=gh945_the_graph_answers_without_waking_the_files::the_graph_answers_across_files_and_wakes_none)'
+priority = 39
+# gh1061_the_organism_example_starts_and_its_member_gets_the_key: 1, longest 38.1 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw::gh1061_the_organism_example_starts_and_its_member_gets_the_key) & test(=gh1061_the_organism_example_starts_and_its_member_gets_the_key)'
+priority = 38
+# gh995_every_run_tool_result_names_its_tool: 4, longest 37.5 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::member_road) & (test(=gh995_every_run_tool_result_names_its_tool::gh995_a_derive_job_behind_a_run_keeps_its_budget) + test(=gh995_every_run_tool_result_names_its_tool::gh995_an_observer_hears_every_holder_by_name) + test(=gh995_every_run_tool_result_names_its_tool::gh995_every_run_tool_result_names_its_tool) + test(=gh995_every_run_tool_result_names_its_tool::gh995_the_body_text_is_the_result))'
+priority = 38
+# gh945_a_rename_breaks_and_reports_the_edge: 1, longest 37.3 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::graph_space_1) & test(=gh945_a_rename_breaks_and_reports_the_edge::a_renamed_function_breaks_its_callers_and_a_removed_file_its_links)'
+priority = 37
+# 710_the_sheet_holds_in_both_engines_browser: 2, longest 35.7 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::710_the_sheet_holds_in_both_engines_browser) & (test(=the_sheet_holds_in_chromium_hold) + test(=the_sheet_holds_in_webkit_hold))'
+priority = 36
+# gh929_every_budget_segment_fits_its_reserve: 1, longest 35.5 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::member_road) & test(=gh929_every_budget_segment_fits_its_reserve::s5_without_its_restoring_edges_a_file_turn_does_not_fit)'
+priority = 36
+# gh302_the_stack_grows_from_templates: 1, longest 35.1 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::gh302_the_stack_grows_from_templates) & test(=d_a_second_channel_is_one_instantiation_in_the_member)'
+priority = 35
+# gh855_a_grown_assistant_is_a_subscriber: 1, longest 34.4 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_7) & test(=gh855_a_grown_assistant_is_a_subscriber::a_generation_and_a_member_grown_in_the_shell_become_subscribers)'
+priority = 34
+# gh933_the_close_pass_never_crosses_a_round: 4, longest 32.4 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::round_2) & (test(=gh933_the_close_pass_never_crosses_a_round::round_ea_files_at_the_source_orders_0_to_2) + test(=gh933_the_close_pass_never_crosses_a_round::round_ea_files_at_the_source_orders_3_to_5) + test(=gh933_the_close_pass_never_crosses_a_round::round_eb_files_at_the_source_orders_0_to_2) + test(=gh933_the_close_pass_never_crosses_a_round::round_eb_files_at_the_source_orders_3_to_5))'
+priority = 32
+# gh422_the_manifest_grows_the_same_stack: 2, longest 32.2 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_3) & (test(=gh422_the_manifest_grows_the_same_stack::a_manifest_grows_the_same_stack_as_the_five_declarations) + test(=gh422_the_manifest_grows_the_same_stack::the_manifest_is_resumable_from_where_it_stopped))'
+priority = 32
+# curator_cells: 1, longest 32.2 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::curator) & test(=curator_cells::a_failed_summary_keeps_the_old_window)'
+priority = 32
+# gh466_a_recipe_grown_level_boots: 1, longest 30.6 s
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::misc_4) & test(=gh466_a_recipe_grown_level_boots::the_rendered_levels_grow_the_tree_the_declarations_grow)'
+priority = 31
+

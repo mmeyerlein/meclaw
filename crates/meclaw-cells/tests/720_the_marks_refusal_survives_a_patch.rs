@@ -71,12 +71,15 @@ fn the_hook_keeps_the_phase_and_the_line_it_wrote() {
          GH #720: the next morph puts the server's empty value back"
     );
     assert!(
-        os.contains("function phase(p) { st.phase = p; el.setAttribute(\\\"data-phase\\\", p); }"),
+        os.contains(
+            "function phase(p) { if (lost) p = \\\"error\\\"; st.phase = p; \
+             el.setAttribute(\\\"data-phase\\\", p); }"
+        ),
         "the mark's phase is not kept in the hook's own state, so nothing can \
          write it back after a patch"
     );
     assert!(
-        os.contains("function say(t) { st.said = t;"),
+        os.contains("function say(t) { if (lost) t = WORDS.unsent; st.said = t;"),
         "§ 5.4: the mark SAYS the refusal in its live region -- a line only the \
          DOM remembers is gone with the same patch as the phase"
     );
@@ -98,13 +101,15 @@ fn updated_puts_the_mark_back_after_the_morph() {
         .find("    updated: function () {")
         .expect("the OS hook has no `updated()` -- then no patch is ever answered (GH #720)");
     let body = &os[start..start + 200.min(os.len() - start)];
+    // Word for word (re-check tv-bn M10n M1): the morph and `updated` run in one task,
+    // so the repaint is synchronous and unconditional -- a timer leaves the server's
+    // `data-phase=""` standing for a paint, a condition (`if the phase is set`) leaves
+    // it standing for good, which is exactly the case a morph produces.
     assert!(
-        body.contains("this.__mic"),
-        "`updated()` reaches for no handle of its own: {body}"
-    );
-    assert!(
-        body.contains("repaint()"),
-        "`updated()` does not repaint the mark: {body}"
+        body.starts_with(
+            "    updated: function () {\\n\"\n    \"      if (this.__mic) this.__mic.repaint();\\n\"\n    \"    },\\n\""
+        ),
+        "`updated()` is not the one synchronous repaint of the mark: {body}"
     );
 
     let rp = os
@@ -121,7 +126,14 @@ fn updated_puts_the_mark_back_after_the_morph() {
         "the repaint does not restore the live region (§ 5.4): {paint}"
     );
     assert!(
-        paint.contains("!== st.phase") && paint.contains("!== st.said"),
+        paint.contains("b.setAttribute(\\\"aria-pressed\\\", pr)") && paint.contains("holding ?"),
+        "the repaint does not restore the press of a running take, which the \
+         server renders `aria-pressed=\"false\"`: {paint}"
+    );
+    assert!(
+        paint.contains("!== st.phase")
+            && paint.contains("!== st.said")
+            && paint.contains("!== pr)"),
         "the repaint writes unconditionally: re-writing the same text into an \
          `aria-live` region announces it a second time: {paint}"
     );
@@ -192,8 +204,18 @@ fn a_new_press_and_a_granted_microphone_clear_the_mark() {
         .find("// \u{a7} 6.4: on an output without audio")
         .expect("`down` no longer reads the profile");
     let head = &os[down..down + end];
+    // Since M10i the press repaints through `markLink`: `clearMark` where the screen
+    // has its link, `offlineMark` where it has not (K7, OR-T10-10) -- the press still
+    // starts the mark's story over, with what is TRUE about the link.
     assert!(
-        head.contains("clearMark();"),
+        os.contains(
+            "if (!linked() || (chan && joined && !refused && !chan.canPush())) offlineMark(); \
+             else clearMark();"
+        ),
+        "`markLink` no longer ends in `clearMark` for a linked screen"
+    );
+    assert!(
+        head.contains("markLink();"),
         "a new press does not start the mark's story over: {head}"
     );
     // GH #704: everything a tap needs is recorded before anything about the
@@ -202,7 +224,7 @@ fn a_new_press_and_a_granted_microphone_clear_the_mark() {
         .find("byPointer = !!(e && e.pointerId")
         .expect("`down` no longer records what kind of press this is");
     assert!(
-        head.find("clearMark();").unwrap() > kind,
+        head.find("markLink();").unwrap() > kind,
         "the mark is repainted before the press is recorded (GH #704): {head}"
     );
     let mic = os

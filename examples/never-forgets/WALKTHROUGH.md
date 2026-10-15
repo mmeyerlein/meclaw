@@ -518,7 +518,7 @@ longer knows and refuse the mutation with `resume_requires_stopped_cell`.
 
 ## Pinned
 
-`crates/meclaw-cells/tests/never_forgets_example.rs` boots **this** seed and
+`crates/meclaw-cells/tests/misc_8/never_forgets_example.rs` boots **this** seed and
 applies **this** declaration — the files, not copies of them — against a mock
 provider, replays **this** `past.jsonl`, and drives the February question through
 the whole tree. It checks that the second inference's prompt contains the

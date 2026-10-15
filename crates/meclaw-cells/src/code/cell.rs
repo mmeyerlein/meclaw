@@ -248,7 +248,7 @@ impl CodeCell {
         sink: &OutputSink,
         reply_target: &Path,
         cell_path: &Path,
-        started: std::time::Instant,
+        started: tokio::time::Instant,
         env: Option<(&str, &str)>,
     ) -> Option<KillingTimeoutOutput> {
         // GH #349: an inline script above the platform's per-argv-string cap
@@ -506,7 +506,7 @@ async fn emit_spawn_error(sink: &OutputSink, target: &Path, msg: String) {
 }
 
 /// Emit a `script_timeout` error body to `target`.
-async fn emit_script_timeout(sink: &OutputSink, target: &Path, started: std::time::Instant) {
+async fn emit_script_timeout(sink: &OutputSink, target: &Path, started: tokio::time::Instant) {
     let dms = started.elapsed().as_millis() as i64;
     let body = json!({
         "header":{"finish_reason":"error","error_code":"script_timeout","duration_ms":dms},
@@ -622,7 +622,7 @@ impl StatelessCell for CodeCell {
         sink: &'a OutputSink,
     ) -> impl std::future::Future<Output = ()> + Send + 'a {
         async move {
-            let started = std::time::Instant::now();
+            let started = tokio::time::Instant::now();
             // W2b (Ruling A1, mirror of proxy::emit_inbound_error): on a missing
             // `reply_to`, `/colony/dead_letters` is the READ endpoint, NOT a valid
             // delivery target. Emit the error as a normal emission to the input's

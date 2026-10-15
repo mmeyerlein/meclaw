@@ -13,6 +13,9 @@
     python3 run_display_scenarios.py --idle-only      strokes alone write nothing
     python3 run_display_scenarios.py --boot-only      writes during the boot are kept
     python3 run_display_scenarios.py --repair-only    a refused patch is repaired by one read
+    python3 run_display_scenarios.py --workers 4      the scenarios of a stage on 4 processes
+                                                      (stages stay in order; the output is
+                                                      the serial run's, line for line)
 
 The numbers, one station (development-rules § 10):
 
@@ -34,9 +37,11 @@ The numbers, one station (development-rules § 10):
 
 Exit 0 only when every number is full.
 """
+import concurrent.futures
 import copy
 import importlib.util
 import json
+import multiprocessing
 import os
 import sys
 
@@ -524,6 +529,141 @@ def run_boot_retry():
     return failures
 
 
+def show_window(topic, inner, touched=None):
+    """The view `show-<topic>` the app presenter writes (templates/presenter/stage/stage.py
+    `window`): a canvas pane, its tile, and a stack holding either the work hint or the
+    blocks placed so far (display-hive.md § 9b.2a, § 9b.5)."""
+    vid = "show-" + topic
+    props = {"pane_id": vid, "kicker": topic, "title": "", "context": "conversation",
+             "relevance": "0.8", "topic": "show:" + topic, "layer": "canvas"}
+    if touched is not None:
+        props["touched"] = str(int(touched))
+    tile = {"component": "display-tile", "key": "tile",
+            "props": {"glyph": "", "line": topic, "value": ""}}
+    stack = {"component": "display-stack", "props": {"gap": "s"}, "key": vid + "-stack",
+             "children": inner}
+    return {"component": "display-pane", "props": props, "key": "show." + topic,
+            "children": [tile, stack]}
+
+
+def write_show(hive, topic, inner, now, touched=None, components=None):
+    body = {"messages": [], "view_id": "show-" + topic, "region": "main", "ord": 0,
+            "kind": "component", "content": show_window(topic, inner, touched),
+            "components": list(components or []), "ttl_ms": 0}
+    hive.set_now(now)
+    return hive.send(Hive._lane("in_view", body, "presenter"))
+
+
+HINT = {"component": "display-status", "key": "show-weather-hint",
+        "props": {"kind": "working", "text": "Looking it up"}}
+BLOCK = {"component": "display-card", "key": "show-weather-card",
+         "props": {"title": "Sunny", "text": "21 degrees"}}
+# The vocabulary only the block's write brings: a fresh display must still learn it when
+# the hint went out first (re-check tb-s8 m-1).
+BLOCK_DEFINES = [{"name": "show-weather-line", "template": "<span>{{text}}</span>",
+                  "prop_schema": {"text": "string"}}]
+
+
+def is_work_hint(call):
+    return (call.get("op") == "object.create" and call.get("component") == "display-status"
+            and (call.get("props") or {}).get("kind") == "working")
+
+
+def is_block(call):
+    return call.get("op") == "object.create" and call.get("component") == "display-card"
+
+
+def hint_first_hive(hold):
+    """A turn's window as the FIRST thing a fresh member's curator hears: the hint, then
+    -- before the boot is through -- the block that replaces it (GH #1169)."""
+    hive = Hive(IDLE_PARAMS, hold_internal=hold)
+    write_show(hive, "weather", [HINT], 1000, touched=1000)
+    write_show(hive, "weather", [BLOCK], 1050, components=BLOCK_DEFINES)
+    if hold:
+        hive.flush()
+    return hive
+
+
+def run_boot_hint_first():
+    """A cold curator that queues a work hint and the block replacing it draws the hint in
+    a patch of its own, before the block (display-hive.md § 1.6 "the first reaction (the
+    window with its work hint)", § 9b.5). Measured in a member lab: 0/10 green alone, the
+    hint never drawn, because the boot rendered every queued pass into ONE patch. The rest
+    of the boot may still be one patch (§ 3.1 "at most one patch per pass"), and the
+    screen it ends on is the one a live cell draws from the same two writes."""
+    hive, control = hint_first_hive(True), hint_first_hive(False)
+    failures = []
+    patches = [h for h in hive.hops if h["route"] == "patch"]
+    hint_at = [i for i, h in enumerate(patches) if any(is_work_hint(c) for c in h["calls"])]
+    block_at = [i for i, h in enumerate(patches) if any(is_block(c) for c in h["calls"])]
+    if not hint_at:
+        failures.append("the work hint was never drawn (%d patches)" % len(patches))
+    if not block_at:
+        failures.append("the block was never drawn")
+    if hint_at and block_at and not hint_at[0] < block_at[0]:
+        failures.append("the hint came in patch %d, the block in patch %d -- not before it"
+                        % (hint_at[0], block_at[0]))
+    if any(o.get("component") == "display-status" for o in hive.objects.values()):
+        failures.append("the work hint still stands after the block replaced it")
+    if hive.objects != control.objects:
+        diff = diff_of(hive.objects, control.objects)
+        failures.append("the screen after the boot differs from a live cell's in %s"
+                        % ", ".join(diff[:3]))
+    if hive.components != control.components:
+        failures.append("the display learnt %s, a live cell's %s"
+                        % (sorted(hive.components), sorted(control.components)))
+    if hive.pages != control.pages:
+        failures.append("the pages after the boot differ from a live cell's: %s vs %s"
+                        % (json.dumps(hive.pages, sort_keys=True),
+                           json.dumps(control.pages, sort_keys=True)))
+    return failures
+
+
+def hint_withdrawn_hive(hold):
+    hive = Hive(IDLE_PARAMS, hold_internal=hold)
+    write_show(hive, "weather", [HINT], 1000, touched=1000)
+    hive.send_event({"kind": "app_withdraw", "oid": "view.presenter.show-weather"}, 1050)
+    if hold:
+        hive.flush()
+    return hive
+
+
+def run_boot_hint_withdrawn():
+    """A work hint whose window is withdrawn before the boot is through is still drawn
+    first: the withdraw half of the look-ahead (re-check tb-s8 m-5). Two patches, the hint
+    in the first, and the display ends where a live cell's ends."""
+    hive, control = hint_withdrawn_hive(True), hint_withdrawn_hive(False)
+    failures = []
+    patches = [h for h in hive.hops if h["route"] == "patch"]
+    if len(patches) != 2:
+        failures.append("%d patches after the boot, not 2" % len(patches))
+    if not patches or not any(is_work_hint(c) for c in patches[0]["calls"]):
+        failures.append("the boot's first patch does not draw the work hint")
+    for name in ("objects", "pages", "components"):
+        if getattr(hive, name) != getattr(control, name):
+            failures.append("the %s after the boot differ from a live cell's" % name)
+    return failures
+
+
+def run_boot_hint_alone():
+    """A work hint nothing queued behind it replaces stays in the boot's ONE patch: only a
+    later write or withdraw of the SAME window pulls the hint forward (re-check tb-s8
+    m-2) -- another window's write is no reason for a second patch."""
+    hive = Hive(IDLE_PARAMS, hold_internal=True)
+    write_show(hive, "weather", [HINT], 1000, touched=1000)
+    hive.send_event({"kind": "app_write", "oid": "view.alex.a",
+                     "view": {"title": "A", "context": "conversation", "relevance": "0.9"}},
+                    1050)
+    hive.flush()
+    patches = [h for h in hive.hops if h["route"] == "patch"]
+    failures = []
+    if len(patches) != 1:
+        failures.append("%d patches after the boot, not 1" % len(patches))
+    elif not any(is_work_hint(c) for c in patches[0]["calls"]):
+        failures.append("the boot's patch does not draw the work hint")
+    return failures
+
+
 def run_boot_row_gone():
     """A row that left the store while the cell was down (OR-D.D1.12): the boot knows the
     window only from the rest row, and without its row there are no hints to draw a
@@ -703,15 +843,54 @@ def run_repair_lost_read():
 
 # --- main -------------------------------------------------------------------------
 
-def stage(label, scs, only, skip, runner):
+# --workers: the calls of ONE stage run in a pool of forked processes. A forked worker
+# inherits the loaded curator, the fixtures and the stage's runner, so nothing is
+# pickled but an index and the answer. Answers come back in call order and the stage
+# prints them in that order, so the output is the serial run's. A runner may record
+# into AGE_ONLY; what a worker recorded travels back with its answer.
+_CALLS = None
+
+
+def _call(i):
+    mark = len(AGE_ONLY)
+    failures = _CALLS[i]()
+    return failures, AGE_ONLY[mark:]
+
+
+def fan_out(calls, workers):
+    """The answers of `calls` (no-argument callables), in order; None = run serially."""
+    global _CALLS
+    if (workers <= 1 or len(calls) < 2
+            or "fork" not in multiprocessing.get_all_start_methods()):
+        return None
+    sys.stdout.flush()   # a forked worker must not inherit (and flush again) our buffer
+    sys.stderr.flush()
+    _CALLS = calls
+    try:
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=min(workers, len(calls)),
+                mp_context=multiprocessing.get_context("fork")) as pool:
+            answers = list(pool.map(_call, range(len(calls))))
+    finally:
+        _CALLS = None
+    out = []
+    for failures, age in answers:
+        AGE_ONLY.extend(age)
+        out.append(failures)
+    return iter(out)
+
+
+def stage(label, scs, only, skip, runner, workers=1):
     total = passed = 0
+    todo = [sc for sc in scs if not (only and sc["id"] not in only) and sc["id"] not in skip]
+    answers = fan_out([lambda sc=sc: runner(sc) for sc in todo], workers)
     for sc in scs:
         if only and sc["id"] not in only:
             continue
         if sc["id"] in skip:
             print("SKIP %s %s -- colony only: %s" % (sc["id"], sc["title"], skip[sc["id"]]))
             continue
-        failures = runner(sc)
+        failures = next(answers) if answers is not None else runner(sc)
         if failures is None:
             print("SKIP %s %s %s -- not applicable" % (label, sc["id"], sc["title"]))
             continue
@@ -725,10 +904,11 @@ def stage(label, scs, only, skip, runner):
     return int(passed != total)
 
 
-def single(label, cases):
+def single(label, cases, workers=1):
     passed = 0
+    answers = fan_out([fn for _, fn in cases], workers)
     for name, fn in cases:
-        failures = fn()
+        failures = next(answers) if answers is not None else fn()
         if failures:
             print("FAIL %s %s: %s" % (label, name, "; ".join(failures)))
         else:
@@ -738,7 +918,24 @@ def single(label, cases):
     return int(passed != len(cases))
 
 
+def workers_of(argv):
+    """`--workers K` / `--workers=K` out of argv: (K, the rest). Default 1."""
+    rest, workers, i = [], 1, 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--workers" and i + 1 < len(argv):
+            workers, i = int(argv[i + 1]), i + 2
+            continue
+        if a.startswith("--workers="):
+            workers = int(a.split("=", 1)[1])
+        else:
+            rest.append(a)
+        i += 1
+    return max(1, workers), rest
+
+
 def main(argv):
+    workers, argv = workers_of(argv)
     only = {a for a in argv if not a.startswith("--")}
     picked = [m for m in MODES if m in argv] or list(MODES)
     if "--cell-only" in argv:          # the old name of --curator-only
@@ -756,34 +953,42 @@ def main(argv):
         print("MODEL %s" % ("%d/%d" % (n, n) if rc == 0 else "FAIL"))
     compose = load(COMPOSE, "compose")
     if "--pure-only" in picked:
-        rc |= stage("PURE", scs, only, {}, lambda sc: run_pure(compose, fixtures, sc))
+        rc |= stage("PURE", scs, only, {}, lambda sc: run_pure(compose, fixtures, sc), workers)
     if "--curator-only" in picked:
         rc |= stage("CURATOR", scs, only, COLONY_ONLY,
-                    lambda sc: run_curator(compose, fixtures, sc))
+                    lambda sc: run_curator(compose, fixtures, sc), workers)
     if "--rebuild-only" in picked:
         rc |= stage("REBUILD", scs, only, COLONY_ONLY,
-                    lambda sc: run_rebuild(compose, fixtures, sc))
+                    lambda sc: run_rebuild(compose, fixtures, sc), workers)
         for sid, first in AGE_ONLY:
             print("REBUILD %s equal after the second stroke only (OR-D19), first stroke: %s"
                   % (sid, ", ".join(first)))
     if "--rebuild-write-only" in picked:
         rc |= stage("REBUILD-WRITE", scs, only, COLONY_ONLY,
-                    lambda sc: run_rebuild_write(compose, fixtures, sc))
+                    lambda sc: run_rebuild_write(compose, fixtures, sc), workers)
     if "--boot-only" in picked:
         rc |= single("BOOT", [("two writes inside the boot window", run_boot),
                               ("a failed boot select asked again", run_boot_retry),
-                              ("a row gone while the cell was down", run_boot_row_gone)])
+                              ("a row gone while the cell was down", run_boot_row_gone),
+                              ("a work hint queued with its block is drawn first",
+                               run_boot_hint_first),
+                              ("a work hint nothing replaces stays in the one patch",
+                               run_boot_hint_alone),
+                              ("a work hint withdrawn during the boot is drawn first",
+                               run_boot_hint_withdrawn)],
+                     workers)
     if "--repair-only" in picked:
         rc |= single("REPAIR", [("a refused patch", run_repair),
                                 ("the clock through a repair", run_repair_clock),
                                 ("a leg the display always refuses", run_repair_refused_leg),
-                                ("a repair read that never answers", run_repair_lost_read)])
+                                ("a repair read that never answers", run_repair_lost_read)],
+                     workers)
     if "--snapshot-only" in picked:
         rc |= stage("SNAPSHOT", scs, only, COLONY_ONLY,
-                    lambda sc: run_snapshot(compose, fixtures, sc))
+                    lambda sc: run_snapshot(compose, fixtures, sc), workers)
     if "--hops-only" in picked:
         rc |= stage("HOPS", scs, only, COLONY_ONLY,
-                    lambda sc: run_hops(compose, fixtures, sc))
+                    lambda sc: run_hops(compose, fixtures, sc), workers)
         # Only over the picked ids: a run per scenario would otherwise replay all 116
         # here for one informational line (GH #1046, ~7 s of an 8 s run per id).
         size, where = largest_header(compose, fixtures,
@@ -791,7 +996,8 @@ def main(argv):
         print("HOPS largest internal header %d B (%s)" % (size, where))
     if "--idle-only" in picked:
         rc |= single("IDLE", [("20 strokes, judge off", lambda: run_idle(False)),
-                              ("20 strokes after a judged app touch", lambda: run_idle(True))])
+                              ("20 strokes after a judged app touch", lambda: run_idle(True))],
+                     workers)
     return rc
 
 

@@ -1871,7 +1871,7 @@ fn build_ledger_reply(reply: &crate::api_dto::ReadLedgerReply) -> meclaw_core::s
 /// HTTP door. The question is exactly one — does the body carry a top-level
 /// `manifest` key — and a `None` answer hands the body to `handle_mutation`
 /// byte-for-byte the way it has always been handed (R5, pinned by
-/// `tests/gh422_the_single_mutation_body_does_not_move.rs`).
+/// `tests/gh_2/gh422_the_single_mutation_body_does_not_move.rs`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_mutation_door(
     registry: &mut std::collections::HashMap<meclaw_core::Path, crate::RegistryEntry>,

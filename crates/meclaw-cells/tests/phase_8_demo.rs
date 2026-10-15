@@ -17,7 +17,6 @@ use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_error_status, canned_tool_calls};
@@ -110,9 +109,8 @@ async fn demo_e2e_text_completion() {
     h.send(probe).await;
 
     // 7. Await the sink emission.
-    let em = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    let em = meclaw_testing::deadline::hang("the cell's emit reaches the sink", sink_rx.recv())
         .await
-        .expect("emit timed out")
         .expect("sink channel closed");
 
     // 8. ASSERT mock received the request with the right UBF→OpenAI shape.
@@ -155,9 +153,11 @@ async fn demo_e2e_text_completion() {
         "meta.response_id must be set: {}",
         body["meta"]
     );
+    // A latency is a measurement, never a verdict (CLAUDE.md rule 11, tv-br
+    // M10y): the slot is set and a whole number of milliseconds.
     assert!(
-        body["meta"]["latency_ms"].as_u64().unwrap() < 5000,
-        "meta.latency_ms must be < 5s: {}",
+        body["meta"]["latency_ms"].as_u64().is_some(),
+        "meta.latency_ms must be set: {}",
         body["meta"]["latency_ms"]
     );
 
@@ -265,9 +265,8 @@ async fn demo_e2e_tool_call() {
     h.send(probe).await;
 
     // 7. Await the sink emission.
-    let em = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    let em = meclaw_testing::deadline::hang("the cell's emit reaches the sink", sink_rx.recv())
         .await
-        .expect("emit timed out")
         .expect("sink channel closed");
 
     // 8. ASSERT 1: mock received the request — tools[] extracted from
@@ -404,9 +403,8 @@ async fn demo_error_rate_limit() {
     h.send(probe).await;
 
     // 7. Await the sink emission.
-    let em = tokio::time::timeout(Duration::from_secs(30), sink_rx.recv())
+    let em = meclaw_testing::deadline::hang("the cell's emit reaches the sink", sink_rx.recv())
         .await
-        .expect("emit timed out")
         .expect("sink channel closed");
 
     // ─── Plan § 11.3 final fix-set ───
@@ -485,9 +483,9 @@ async fn demo_error_rate_limit() {
 ///
 /// Proves three things end-to-end:
 ///   1. **Q3 system-only silence** (handle() step-4 early return):
-///      `/sink` receives NOTHING within 500ms. No assistant-turn, no
-///      inference, no Provider-call. Verified via `tokio::time::timeout`
-///      on `sink_rx.recv()` returning `Err`.
+///      `/sink` receives NOTHING for the probe. No assistant-turn, no
+///      inference, no Provider-call. Verified by a marker, not a window: the
+///      first emit at the sink is the reply to a follow-up turn sent after it.
 ///   2. **DB-Probe-Tiefe** (Plan § 11.4 "tief"): direct
 ///      `rusqlite::Connection::open` on the cell.db file confirms the
 ///      new leaf row landed at `system.facts.x` with the UBF-leaf-JSON
@@ -497,8 +495,8 @@ async fn demo_error_rate_limit() {
 ///
 /// **Defense-in-depth**: `base_url = "http://127.0.0.1:1/v1"` is a sentinel
 /// unreachable URL. If `handle()` accidentally reached step 5/6 (i.e. Q3
-/// regression), the wire call would either timeout or emit a wire-error;
-/// both fail the silence-assert below. So this test also proves "system-only
+/// regression), the wire call would emit a wire-error that reaches the sink
+/// before the follow-up's reply; that fails the silence-assert below. So this test also proves "system-only
 /// MUST NOT call the Provider".
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn demo_system_only_no_emit() {
@@ -565,29 +563,13 @@ async fn demo_system_only_no_emit() {
         .build();
     h.send(probe).await;
 
-    // ─── ASSERT 1 (deep-watch requirement): Sink receives NOTHING within 500ms ───
-    // Q3 silence: handle() returns after the step-2 persist, no inference,
-    // no emit. `tokio::time::timeout(...)` returns `Err` on timeout —
-    // exactly what we want (no message arrived).
-    let sink_result = tokio::time::timeout(Duration::from_millis(500), sink_rx.recv()).await;
-    assert!(
-        sink_result.is_err(),
-        "Q3 silence: Sink MUST NOT receive any emission for system-only input. Got: {sink_result:?}"
-    );
-
     // 6. Sync-on-DB-commit BEFORE direct rusqlite probe: the cell-task must
     //    have committed the persist transaction. `wait_for_cell_db_value`
     //    polls via fresh read-only Connection per iteration (Phase-7.5
     //    helper). The "v" in `{"text":"v"}` is the inner UBF-leaf-JSON-string;
     //    the DB stores the FULL leaf-JSON: `{"text":"v"}`.
     let cell_dir = td.path().join("main").join("llm");
-    meclaw_testing::wait::wait_for_cell_db_value(
-        &cell_dir,
-        "facts.x",
-        r#"{"text":"v"}"#,
-        Duration::from_secs(5),
-    )
-    .await;
+    meclaw_testing::wait::wait_for_cell_db_value(&cell_dir, "facts.x", r#"{"text":"v"}"#).await;
 
     // ─── ASSERT 2 (Plan § 11.4 "tief"): direct rusqlite probe on cell.db ───
     // Fresh Connection on the cell.db file. This is the "tief" part: not
@@ -617,23 +599,52 @@ async fn demo_system_only_no_emit() {
         "system-only input must NOT touch last_input (T15 system_first_persist with None messages skips the write)"
     );
 
+    // ─── ASSERT 1 (deep-watch requirement): Sink receives NOTHING for the probe ───
+    // Q3 silence, proved by a marker instead of a window (tv-br M10y, re-check
+    // R H4; CLAUDE.md rule 11): one task per cell and a FIFO mailbox, so a
+    // follow-up turn sent AFTER the probe is handled after it. Its reply is a
+    // wire error (Port 1 is unreachable) that carries its own turn through
+    // (Gate-1). If the probe had emitted anything -- an inference, a wire
+    // error of its own -- that emit would reach the sink FIRST.
+    let follow_up = json!({"origin":"user","type":"text","text":"follow-up after the probe"});
+    h.send(
+        MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/sink"))
+            .body(Body::Inline(json!({"messages": [follow_up.clone()]})))
+            .build(),
+    )
+    .await;
+    let first = meclaw_testing::deadline::hang("the follow-up's reply at the sink", sink_rx.recv())
+        .await
+        .expect("sink channel closed");
+    let first_messages = match &first.body {
+        Body::Inline(v) => v["messages"].clone(),
+        Body::Blob(_) => panic!("expected Body::Inline, got Body::Blob"),
+    };
+    assert_eq!(
+        first_messages,
+        json!([follow_up]),
+        "Q3 silence: the first emit at the sink must be the follow-up's reply -- \
+         system-only input emits nothing. Got: {first:?}"
+    );
+
     h.shutdown().await;
 }
 
 /// T31: `demo_a_timeout` — the last Phase-8 demo. Full production-bootstrap-
 /// spawn pipeline (TempDir + `/main/llm` config → `ColonyHandle.spawn /sink` →
 /// `bootstrap_from_filesystem` → probe to `/llm`) with the mock holding back
-/// its response by 5 seconds while `params.external_timeout_ms = 200`.
+/// its response for good (a held request, never released) while
+/// `params.external_timeout_ms = 200`.
 ///
-/// Proves four things end-to-end:
+/// Proves three things end-to-end:
 ///   1. **A-Timeout (`params.external_timeout_ms`) fires in the production
 ///      spawn-path**: the cell's `call_openai` wraps the HTTP-future in
-///      `tokio::time::timeout(200ms, ...)` and drops it before the mock's
-///      5s delay completes. A successful error-emit received within 4s — below
-///      the mock's 5s delay — is the externally observable proof: the mock
-///      cannot answer before 5s regardless of load, so anything arriving sooner
-///      can only be the A-Timeout error-path (no load-sensitive wallclock
-///      threshold needed — test hygiene 2026-06-04, precedent e17803a).
+///      `tokio::time::timeout(200ms, ...)` and drops it. The mock never answers
+///      (`start_mock_server_held`, its channel kept alive and nothing released),
+///      so any emit at all is the A-Timeout error-path, and
+///      `error_code == "timeout"` names it -- no wall-clock window decides
+///      anything (tv-br M10y, re-check R H4; CLAUDE.md rule 11).
 ///   2. **Wire-error mapping**: `WireError::Timeout → "timeout"` (via
 ///      `wire_error_to_code`, T8) propagates through `handle()`'s error-branch
 ///      (T22's mapping verified end-to-end on a fresh error path).
@@ -641,30 +652,32 @@ async fn demo_system_only_no_emit() {
 ///      Failover-Edge-Compatibility on a different error path (T29 covered
 ///      `rate_limit`; T31 covers `timeout`). `output.messages` is byte-equal
 ///      to `input.messages`.
-///   4. **`MockResponse::with_delay` works end-to-end with the LlmCell+wire
-///      stack** (T9 verified this at the mock_http-level; T31 confirms it
-///      through the full Colony→Cell→wire chain).
+///
+/// Whether the request reaches the mock before the 200 ms run out is not the
+/// test's to decide: the window is real time and the product's own, and under
+/// load the timeout may drop the call before hyper has written it (re-check
+/// bundle R, delta 2, M1). So there is no marker on the held request; the held
+/// mock's channel only stays alive so that a request that does arrive is held,
+/// never answered.
 ///
 /// **Defensive layering**: B-Backstop (`cell.message_timeout`) is NOT wired
 /// per Phase 7.5 (deferred substrate-pass). The only thing protecting from a
 /// runaway `handle()` is the A-Timeout in `call_openai`. If A-Timeout fails
-/// to fire, the outer `tokio::time::timeout(4s, sink_rx.recv())` (deliberately
-/// below the mock's 5s delay) will yield a useful "emit timed out" rather than
+/// to fire, the hang mark around `sink_rx.recv()` names the wait instead of
 /// letting the test hang.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn demo_a_timeout() {
-    // 1. Mock first — single canned chat-completion BUT with a 5-second delay
-    //    before sending. The cell's A-Timeout (200ms) MUST fire long before
-    //    this response would arrive.
-    let slow_response =
-        canned_chat_completion("late response", "stop").with_delay(Duration::from_secs(5));
-    let mock = MockOpenAI::start(vec![slow_response]).await;
-    let base_url = format!("{}/v1", mock.base_url);
+    // 1. Mock first — a server that HOLDS every request and is never told to
+    //    answer: the cell's A-Timeout (200ms) is the only way the call ends.
+    let (mock_addr, _mock_join, _held_rx) = meclaw_testing::mock_http::start_mock_server_held()
+        .await
+        .expect("bind the held mock");
+    let base_url = format!("http://{mock_addr}/v1");
 
     // 2. Same TempDir/FS-fixture layout as T27/T28/T29/T30 — `/main` (hive)
     //    → `/main/llm` (cell). `plan_bootstrap` maps `<td>/main` → `/`, so
     //    the cell registers under `/llm`. Critical: `external_timeout_ms=200`
-    //    → A-Timeout fires ~200ms, way before mock's 5s.
+    //    → A-Timeout fires ~200ms; the held mock never answers.
     let td = tempfile::TempDir::new().unwrap();
     let main_dir = td.path().join("main");
     let llm_dir = main_dir.join("llm");
@@ -726,23 +739,15 @@ async fn demo_a_timeout() {
         })))
         .build();
 
-    // 7. Send. The discriminator between "A-Timeout fired" and "didn't" is the
-    //    recv-timeout placed BETWEEN the A-Timeout (200ms) and the mock's 5s
-    //    delay. The old test added a separate `elapsed < 1s` wallclock assert,
-    //    which flaked under Workspace-Last (cross-process Tokio-Scheduler-Druck
-    //    pushed the ~200ms path past 1s without violating the A-timeout semantics
-    //    war). Dropped: `error_code=="timeout"` below + the sub-5s recv-timeout
-    //    already prove the A-Timeout-path airtight without a tight threshold.
+    // 7. Send. No window discriminates "A-Timeout fired" from "didn't": the
+    //    mock never answers, so an emit can only come from the A-Timeout
+    //    error-path, and `error_code == "timeout"` below names it.
     h.send(probe).await;
 
-    // 8. Outer 4s defensive timeout (deliberately < mock's 5s delay): if the
-    //    A-Timeout failed to fire, the cell would block on the mock's 5s response
-    //    → this fires first with a useful "emit timed out". A successful recv can
-    //    therefore only be the A-Timeout error-emit (mock can't answer before 5s,
-    //    load-independent: it's a fixed `tokio::time::sleep` in the mock).
-    let em = tokio::time::timeout(Duration::from_secs(4), sink_rx.recv())
+    // 8. The error emit, under the hang mark (never a verdict): if the A-Timeout
+    //    failed to fire, the cell would wait on the held mock forever.
+    let em = meclaw_testing::deadline::hang("the A-timeout error emit", sink_rx.recv())
         .await
-        .expect("emit timed out (cell's A-timeout didn't fire? would have waited for mock's 5s)")
         .expect("sink channel closed");
 
     // ─── Header assertions ───

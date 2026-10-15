@@ -23,6 +23,7 @@ import re
 import textwrap
 import tomllib
 import unittest
+from scripts.tests import store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 CONFIG = REPO / ".config" / "nextest.toml"
@@ -124,7 +125,37 @@ def retry_entries_missing_an_issue(text: str) -> list[str]:
 TEST_TERM = re.compile(r"test\(\s*([^)]*?)\s*\)")
 
 
+def term_names_a_binary(matcher: str) -> bool:
+    """Does a `test()` matcher carry `<crate>::<binary>` -- the spelling of
+    `binary_id()`, which `test()` never sees?
+
+    A space always gives it away. `::` alone does not any more: in a folded
+    harness (`scripts/harness_fold.py`) every test is named `<stem>::<test>`,
+    so `test(=gh1015_x::a_test)` and `test(/^gh1015_x::/)` are honest names.
+    What stays wrong is a crate in front -- crate names carry `-`, Rust
+    identifiers never do."""
+    if any(c.isspace() for c in matcher):
+        return True
+    return re.match(r"^[=~/^]*(?:[\w]*-[\w-]*|meclaw)::", matcher) is not None
+
+
 class TheFilterGrammar(unittest.TestCase):
+    def test_a_crate_without_a_dash_is_still_a_crate(self):
+        """`meclaw` is a crate name too (W5 delta M5)."""
+        self.assertTrue(term_names_a_binary("=meclaw::some_bin"))
+        self.assertFalse(term_names_a_binary("=gh1015_x::a_test"))
+
+    def test_the_documented_grammar_names_the_stem_prefix(self):
+        """The template teaches `test(=<stem>::<test>)` in a harness, not a bare
+        fn name that matches nothing there (W5 delta B-I2)."""
+        text = (REPO / ".config" / "nextest.toml").read_text(encoding="utf-8")
+        self.assertFalse("A test name carries neither `::` nor a space" in text)
+        self.assertTrue("test(=gh669_x::a_test)" in text)
+        rules = (REPO / "docs" / "development-rules.md").read_text(encoding="utf-8")
+        self.assertFalse("a test once named `<stem>::<test>` in binary" in rules)
+        log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertFalse("with the same test names under the harness binary" in log)
+
     def setUp(self):
         self.text = CONFIG.read_text(encoding="utf-8")
         self.config = tomllib.loads(self.text)
@@ -141,10 +172,20 @@ class TheFilterGrammar(unittest.TestCase):
             if "<" in matcher:
                 continue  # a placeholder in the prose, including the one it warns against
             with self.subTest(matcher=matcher):
-                self.assertNotIn("::", matcher,
-                                 "a test name has no `::` -- that is `binary_id()`")
-                self.assertFalse(any(c.isspace() for c in matcher),
-                                 "a test name has no space -- that is `binary_id()`")
+                self.assertFalse(term_names_a_binary(matcher),
+                                 "a test name carries no crate and no space -- "
+                                 "that is `binary_id()`")
+
+    def test_quarantine_grammar_accepts_harness_filter(self):
+        """A folded binary names its tests `<stem>::<test>`; the grammar takes
+        them and still refuses a crate or a space inside `test()`."""
+        for ok in ("=gh1015_the_log::a_test", "/^gh1015_the_log::/", "=plain_test"):
+            with self.subTest(ok=ok):
+                self.assertFalse(term_names_a_binary(ok))
+        for bad in ("=meclaw-colony::gh1015_the_log", "~meclaw-cells::misc a_test",
+                    "=misc a_test"):
+            with self.subTest(bad=bad):
+                self.assertTrue(term_names_a_binary(bad))
 
     def test_every_retry_entry_names_its_binary(self):
         """A quarantine entry belongs to one binary. Naming it keeps the entry
@@ -155,6 +196,69 @@ class TheFilterGrammar(unittest.TestCase):
                 continue
             with self.subTest(filter=entry["filter"]):
                 self.assertIn("binary_id(=", entry["filter"])
+
+    def test_every_retry_counts_a_flake_as_a_failure(self):
+        """TV-F8 (OR-TV-2): a profile or an override with `retries > 0` carries
+        `flaky-result = "fail"` -- a retry classifies, it never turns red green."""
+        config = tomllib.loads(CONFIG.read_text())
+        for name, profile in config.get("profile", {}).items():
+            blocks = [("profile." + name, profile)] + [
+                ("profile.%s.overrides" % name, o) for o in profile.get("overrides", [])]
+            for where, block in blocks:
+                retries = block.get("retries", 0)
+                count = retries.get("count", 0) if isinstance(retries, dict) else retries
+                if count:
+                    with self.subTest(where=where):
+                        self.assertEqual(block.get("flaky-result"), "fail")
+        self.assertIn('flaky-result = "fail"', CONFIG.read_text())   # the entry template
+
+    def test_the_public_ci_profile_never_retries(self):
+        """tv-bn-ci (#1209, plan S11 § 3): the public CI has no triage rerun, so its
+        profile retries nothing -- a red there is red, also for a test of
+        `.config/flaky-legacy.toml` or one the local pipeline holds in quarantine.
+        A retry entry of the default profile reaches `ci` too (nextest applies the
+        default overrides to every profile), and carries `flaky-result = "fail"`
+        (the test above): a flake is a failure there as well. `final-status-level`
+        shows every flaky attempt; the slow-timeout is a hang mark, never a verdict."""
+        ci = tomllib.loads(CONFIG.read_text())["profile"]["ci"]
+        self.assertEqual(0, ci.get("retries"))
+        self.assertEqual([], [o["filter"] for o in ci.get("overrides", []) if "retries" in o])
+        self.assertEqual("flaky", ci.get("final-status-level"))
+        self.assertGreaterEqual(ci["slow-timeout"].get("terminate-after", 0), 3)
+
+    def test_agents_md_says_a_retry_only_detects(self):
+        """Re-check B-M2: AGENTS.md states TV-F8 -- no sentence lets a retry catch a flake.
+        The wording is the one of VORGABEN section 5.1 (tv-p0): no retry in the blocking path."""
+        text = (REPO / "AGENTS.md").read_text()
+        self.assertNotIn("fängt nur eine gemessene, getrackte Flake ab", text)
+        self.assertNotIn("Retries gibt es nur für die Quarantäne-Liste", text)
+        self.assertIn("Retries gibt es nicht im blockierenden Pfad", text)
+        self.assertIn('`flaky-result = "fail"`', text)
+
+    def test_perf_tests_are_outside_every_gate_tier(self):
+        """TV-P2 (tv-p1c § 6): a `perf_*` test is `#[ignore]` and runs only in
+        the profile `perf` (`scripts/test-tier.sh perf`: `--run-ignored only`,
+        no retries, one thread). t0-t2 never run ignored tests, so no gate tier
+        ever runs a perf test; an empty profile is fine."""
+        perf = tomllib.loads(CONFIG.read_text())["profile"]["perf"]
+        self.assertEqual((perf.get("retries"), perf.get("test-threads")), (0, 1))
+        tier = (REPO / "scripts" / "test-tier.sh").read_text()
+        self.assertRegex(tier, r"\n    perf\)\n(?:.*\n){0,6}?.*profile=perf\n"
+                               r"(?:.*\n){0,3}?.*run_nextest \"\$PERF\" --run-ignored only")
+        for t in ("T0", "T1", "T2"):
+            line = re.search(r"^%s=(.*)$" % t, tier, re.M)
+            self.assertIsNotNone(line, t)
+        gate_tiers = re.findall(r"^\s+(t[012])\) run_nextest .*$", tier, re.M)
+        self.assertEqual(sorted(gate_tiers), ["t1", "t2"])
+        self.assertNotRegex(tier, r"run_nextest \"\$T[012]\"[^\n]*run-ignored")
+        bare = []
+        for path in (REPO / "crates").rglob("*.rs"):
+            text = path.read_text(errors="replace")
+            for m in re.finditer(r"^\s*(?:async\s+)?fn (perf_\w+)\s*\(", text, re.M):
+                head = text[:m.start()].rsplit("\n", 6)[1:]
+                if not any("#[ignore" in h for h in head):
+                    bare.append("%s::%s" % (path.relative_to(REPO), m.group(1)))
+        self.assertEqual(bare, [], "perf_* tests without #[ignore] run in every gate tier")
 
     def test_every_retry_entry_names_its_issue(self):
         """Rule 2 of the head comment, held by a test: no issue, no entry.
@@ -344,6 +448,14 @@ class TheFilterGrammar(unittest.TestCase):
                             if f"binary_id(=meclaw-cells::{binary})" in e["filter"]
                             and e.get("success-output") == "immediate-final"]
                     self.assertEqual(len(hits), 1, entries)
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

@@ -267,6 +267,14 @@ pub struct Hive {
     seq: u64,
 }
 
+// Folded, this module is `pub` at a harness root, so clippy::new_without_default
+// applies to `Hive::new` (W5 clippy).
+impl Default for Hive {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hive {
     pub fn new() -> Self {
         Self::with(&[])

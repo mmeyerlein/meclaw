@@ -28,9 +28,8 @@ mod display_colony;
 mod support;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use display_colony::{MARKER, calls_of, hop_of};
+use display_colony::{calls_of, hop_of};
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::timer::TimerCellFactory;
@@ -178,26 +177,16 @@ async fn stage() -> Stage {
 impl Stage {
     /// Every patch bundle that reached the `web` cell, oldest first, as its calls.
     async fn patches(&self) -> Vec<Vec<Value>> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.h
-            .inbox_tx
-            .send(ColonyMsg::ReadMessages {
-                filter: MessageLogFilter {
-                    to_path_prefix: Some(WEB.to_string()),
-                    limit: 100_000,
-                    scan_budget: 500_000,
-                    ..Default::default()
-                },
-                ack: ack_tx,
+        // The WHOLE log under `web`, page by page (`ColonyHandle::read_log`): one read is
+        // clamped to 1000 rows by the colony, a window read as every patch (K8 class
+        // "a page for the whole", tv-bn M7b16).
+        let mut rows = self
+            .h
+            .read_log(MessageLogFilter {
+                to_path_prefix: Some(WEB.to_string()),
+                ..Default::default()
             })
-            .await
-            .expect("inbox alive");
-        let reply = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("the log answers")
-            .expect("ack");
-        assert!(!reply.scan_truncated, "the log outgrew the scan budget");
-        let mut rows = reply.entries;
+            .await;
         rows.reverse();
         rows.iter()
             .filter(|row| hop_of(row)["route"] == "patch")
@@ -216,25 +205,14 @@ impl Stage {
 
     /// Every `touched` the app said on an `in_view` that reached the pass.
     async fn touches(&self) -> Vec<u64> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.h
-            .inbox_tx
-            .send(ColonyMsg::ReadMessages {
-                filter: MessageLogFilter {
-                    to_path_prefix: Some(COMPOSE.to_string()),
-                    limit: 100_000,
-                    scan_budget: 500_000,
-                    ..Default::default()
-                },
-                ack: ack_tx,
+        // The WHOLE log under compose, page by page (K8 class, tv-bn M7b16).
+        let mut rows = self
+            .h
+            .read_log(MessageLogFilter {
+                to_path_prefix: Some(COMPOSE.to_string()),
+                ..Default::default()
             })
-            .await
-            .expect("inbox alive");
-        let reply = tokio::time::timeout(MARKER, ack_rx)
-            .await
-            .expect("the log answers")
-            .expect("ack");
-        let mut rows = reply.entries;
+            .await;
         rows.reverse();
         rows.iter()
             .filter(|row| hop_of(row)["route"] == "in_view")
@@ -250,14 +228,19 @@ impl Stage {
     }
 
     /// Wait until the folded tree satisfies `want`; the tree it held then.
+    ///
+    /// Re-check tv-bn M7 M1 (TV-S3, TV-Z3): the kit's wait under the scaled hang mark; a
+    /// hang names the view's and the dock's objects read after the mark, and the DLQ.
     async fn wait_tree(&self, why: &str, want: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-        let deadline = Instant::now() + MARKER;
-        loop {
-            let tree = self.tree().await;
-            if want(&tree) {
-                return tree;
-            }
-            if Instant::now() > deadline {
+        let want = &want;
+        meclaw_testing::wait::until_some_with(
+            why,
+            move || async move {
+                let tree = self.tree().await;
+                want(&tree).then_some(tree)
+            },
+            || async {
+                let tree = self.tree().await;
                 let mine: Vec<&Value> = tree
                     .iter()
                     .filter(|o| {
@@ -269,14 +252,13 @@ impl Stage {
                     .map(|o| &o["props"])
                     .collect();
                 let dlq = self.h.drain_dead_letters().await;
-                panic!(
-                    "{why} did not hold within 30 s; {} objects held, the view's and the \
-                     dock's: {mine:?}; DLQ {dlq:?}",
+                format!(
+                    "{} objects held, the view's and the dock's: {mine:?}; DLQ {dlq:?}",
                     tree.len()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+                )
+            },
+        )
+        .await
     }
 
     /// A finger on the tile, as the `web` cell hands it on: `event` from `./web`.
@@ -340,7 +322,6 @@ async fn the_colony_view_stands_in_the_dock_opens_on_a_tap_and_rises_on_a_mutati
     {
         return;
     }
-    let started = Instant::now();
     let s = stage().await;
     let oid = window_oid();
 
@@ -350,9 +331,8 @@ async fn the_colony_view_stands_in_the_dock_opens_on_a_tap_and_rises_on_a_mutati
             tile(t).is_some()
         })
         .await;
-    let to_tile = started.elapsed();
     let t = tile(&tree).expect("the tile");
-    eprintln!("(a) tile after {to_tile:?}: {}", t["props"]);
+    eprintln!("(a) tile: {}", t["props"]);
     assert_eq!(
         t["props"]["for"], "colony-view-window",
         "the tile points at the pane's DOM id"
@@ -391,6 +371,11 @@ async fn the_colony_view_stands_in_the_dock_opens_on_a_tap_and_rises_on_a_mutati
         .await;
 
     // (c) A committed mutation: a new view with a greater `touched`, drawn present.
+    // Re-check tv-bn M7b11 M6: this test reads its OWN colony's log past the fixture's
+    // readers (809 `PAST_THE_READERS_ALLOWED`), so it settles that colony itself before the
+    // baseline (`ColonyMsg::Settle`, GH #1208): a view still on its way with a greater
+    // `touched` would carry (c) without the mutation. Pinned below.
+    s.h.quiesce().await;
     let before = s.touches().await;
     let last = *before.iter().max().expect("the app has written its view");
     mutate(
@@ -401,18 +386,12 @@ async fn the_colony_view_stands_in_the_dock_opens_on_a_tap_and_rises_on_a_mutati
         }]}}),
     )
     .await;
-    let deadline = Instant::now() + MARKER;
-    let newer = loop {
-        let now = s.touches().await;
-        if let Some(t) = now.iter().copied().find(|t| *t > last) {
-            break t;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "(c) no view with a touched greater than {last} after the mutation: {now:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    let newer = meclaw_testing::wait::until_some_with(
+        &format!("(c) a view with a touched greater than {last} after the mutation"),
+        || async { s.touches().await.into_iter().find(|t| *t > last) },
+        || async { format!("touched {:?}", s.touches().await) },
+    )
+    .await;
     let tree = s
         .wait_tree("(c) the mutation lifts the window", |t| {
             is_open(t)
@@ -425,5 +404,30 @@ async fn the_colony_view_stands_in_the_dock_opens_on_a_tap_and_rises_on_a_mutati
     eprintln!(
         "(c) touched {last} -> {newer}; rung {}",
         pane(&tree).expect("the pane")["props"]["rung"]
+    );
+}
+
+/// Re-check tv-bn M7b11 M6 (TV-Q1): the baseline of (c) is read on a settled colony. Read
+/// while a view of the app was still on its way, the baseline misses that view's
+/// `touched`, and when it is the greater one (c) is green without the mutation's doing.
+/// So the statement right before the baseline is the quiescence barrier
+/// (`ColonyHandle::quiesce`, `ColonyMsg::Settle`, GH #1208). Read off this file: the two
+/// mutants -- the settle taken out, the baseline read elsewhere -- leave the barrier off
+/// the line before it. Needles split, so the pin does not find itself.
+#[test]
+fn the_baseline_of_c_is_read_on_a_settled_colony() {
+    let src = include_str!("808_the_colony_view_stands_in_the_dock.rs");
+    let code: Vec<&str> = src
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .collect();
+    let baseline = concat!("let bef", "ore = s.touches().await;");
+    let at: Vec<usize> = (0..code.len()).filter(|&i| code[i] == baseline).collect();
+    assert_eq!(at.len(), 1, "one baseline of (c): {at:?}");
+    assert_eq!(
+        code[at[0] - 1],
+        concat!("s.h.qui", "esce().await;"),
+        "the baseline of (c) follows the settle"
     );
 }

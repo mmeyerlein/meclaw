@@ -78,7 +78,13 @@ fn run() -> Option<String> {
         .ok()?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    if out.status.code() == Some(3) || stderr.contains("SKIP") {
+    if out.status.code() == Some(3) || stderr.lines().any(|l| l.starts_with("SKIP ")) {
+        // GH #1161 (OR-TB.S3.39): the gate's station booked this engine and runs with
+        // `MECLAW_REQUIRE_BROWSERS=1`; there a skipped driver is a red test, never a pass.
+        assert!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref() != Ok("1"),
+            "a skip under MECLAW_REQUIRE_BROWSERS=1 is red:\n{stderr}"
+        );
         println!("{stderr}");
         return None;
     }

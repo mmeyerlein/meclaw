@@ -17,12 +17,8 @@ use meclaw_testing::ColonyHandle;
 use meclaw_testing::mock_http::MockResponse;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
-
-/// Failure marker, generous per the 30 s convention -- not a timing claim.
-pub const MARKER: Duration = Duration::from_secs(30);
 
 /// What one turn left behind: every request the provider got, the body of
 /// the answer and its hop, both as the sink received them.
@@ -141,11 +137,9 @@ pub async fn turn_with(
             .build(),
     )
     .await;
-    let answer = tokio::time::timeout(MARKER, sink_rx.recv())
+    let answer = meclaw_testing::deadline::hang("the answer reaches the sink", sink_rx.recv())
         .await
-        .ok()
-        .flatten()
-        .expect("the answer reaches the sink");
+        .expect("the sink channel stays open");
     let requests = mock
         .recorded_requests()
         .await

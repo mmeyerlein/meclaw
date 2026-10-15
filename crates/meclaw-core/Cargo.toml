@@ -9,10 +9,11 @@ license.workspace = true
 
 [dependencies]
 jsonschema = "0.30"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["sync"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros", "sync"] }
+# Paused tokio clock for the time-logic test class (OR-TV-1/OR-TV-4); dev-only, never in a release build.
+tokio = { workspace = true, features = ["test-util"] }

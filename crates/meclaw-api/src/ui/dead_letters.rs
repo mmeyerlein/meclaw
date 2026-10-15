@@ -8,7 +8,7 @@
 
 use crate::ColonyHandle;
 use crate::handlers::clamp_limit;
-use crate::ui::layout;
+use crate::ui::{count_of, layout};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -33,11 +33,12 @@ pub async fn get_dead_letters_ui(
     State(colony): State<Arc<ColonyHandle>>,
     Query(q): Query<DeadLettersUiQuery>,
 ) -> impl IntoResponse {
+    let limit = clamp_limit(q.limit);
     let (ack_tx, ack_rx) = oneshot::channel();
     let msg = ColonyMsg::ReadDeadLetters {
         since: None,
         error_code: q.error_code.clone(),
-        limit: clamp_limit(q.limit),
+        limit,
         ack: ack_tx,
     };
     if colony.inbox.send(msg).await.is_err() {
@@ -50,7 +51,7 @@ pub async fn get_dead_letters_ui(
 
     let content = html! {
         (render_filter_form(&q))
-        h2 { "Dead Letters (" (reply.entries.len()) ")" }
+        h2 { "Dead Letters (" (count_of(reply.entries.len(), limit)) ")" }
         (render_table(&reply.entries))
     };
     (

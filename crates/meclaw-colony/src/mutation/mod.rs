@@ -8,6 +8,7 @@ pub mod apply;
 pub mod apply_replace;
 pub mod header_views;
 pub mod hive_contract;
+pub(crate) mod hive_scan;
 pub mod hook;
 pub mod manifest;
 pub mod port_boundary;
@@ -512,6 +513,22 @@ pub enum MutationError {
     /// default comes through. Raised at stage 4 and COLLECTING, so three unset
     /// params are three named violations in one refusal. Pre-destructive.
     OperatorParamUnset(String),
+    /// GH #1176: a hive's `config.json` did not come back from disk within the
+    /// read timeout of the hive-config scan (`mutation::hive_scan`). The
+    /// sealed ports, the hive contracts and the required drains are all read
+    /// from there, and a check that could not read its rule must not pass the
+    /// diff: refused, pre-destructive, with every RAM change rolled back. A
+    /// condition outside the diff, so the same diff may succeed once the disk
+    /// answers.
+    HiveConfigTimeout(String),
+    /// GH #1176: a hive's `config.json` came back from disk but could not be
+    /// read as a seal -- a read error other than a missing file (EIO, a
+    /// directory in its place), or a `config.json` / `params` that does not
+    /// parse. Counted as "declares nothing", an `add_edges` into the hive
+    /// passed its sealed ports. Refused, pre-destructive; a condition outside
+    /// the diff, so the same diff may succeed once the file reads again. A
+    /// missing `config.json` is not this error: such a scope declares nothing.
+    HiveConfigUnreadable(String),
 }
 
 impl MutationError {
@@ -554,6 +571,8 @@ impl MutationError {
             Self::VLaneUnanchored(_) => "v_lane_unanchored",
             Self::HiveTemplateSingleCell(_) => "hive_template_single_cell",
             Self::OperatorParamUnset(_) => "operator_param_unset",
+            Self::HiveConfigTimeout(_) => "hive_config_timeout",
+            Self::HiveConfigUnreadable(_) => "hive_config_unreadable",
         }
     }
 
@@ -598,6 +617,8 @@ impl MutationError {
             | Self::VLaneUnanchored(s)
             | Self::HiveTemplateSingleCell(s)
             | Self::OperatorParamUnset(s)
+            | Self::HiveConfigTimeout(s)
+            | Self::HiveConfigUnreadable(s)
             | Self::SeedTargetNotAStore(s)
             | Self::SeedTableUndeclared(s) => s.clone(),
             Self::ScopeOutOfBounds { path } => path.as_str().to_string(),
@@ -773,6 +794,8 @@ mod tests {
             MutationError::VLaneUnanchored("x".into()).error_code(),
             MutationError::HiveTemplateSingleCell("x".into()).error_code(),
             MutationError::OperatorParamUnset("x".into()).error_code(),
+            MutationError::HiveConfigTimeout("x".into()).error_code(),
+            MutationError::HiveConfigUnreadable("x".into()).error_code(),
         ];
 
         // The ones the lifecycle path emits, pinned individually in `colony.rs`.
@@ -832,6 +855,10 @@ mod tests {
             "hive_template_single_cell",
             // GH #661: a declared default that has no meaning until it is set.
             "operator_param_unset",
+            // GH #1176: a hive config that did not come back from disk.
+            "hive_config_timeout",
+            // GH #1176 (re-check M2): a hive seal that did not read.
+            "hive_config_unreadable",
         ]
         .into_iter()
         .collect();
@@ -851,7 +878,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 34, "the documented enum is 34 tokens wide");
+        assert_eq!(spec.len(), 36, "the documented enum is 36 tokens wide");
     }
 
     #[test]

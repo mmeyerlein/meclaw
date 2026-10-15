@@ -1,0 +1,46 @@
+//! Test harness `voice` of `meclaw-cells`: one binary, one module per old file.
+//! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
+
+#[path = "../support/gh1059_grants.rs"]
+pub mod gh1059_grants;
+pub mod gh1059_voice_grant;
+pub mod gh643_a_voice_topic_rides_the_display_socket;
+pub mod gh949_a_bound_chat_names_its_speaker;
+pub mod voice_duplex_a_delegation_never_reaches_the_memory;
+pub mod voice_duplex_a_long_interjection_is_a_barge_in;
+pub mod voice_duplex_a_provider_is_a_trait_with_two_implementations;
+pub mod voice_duplex_a_recorded_fragment_stream_yields_the_reference_turns;
+pub mod voice_duplex_a_short_interjection_is_a_backchannel;
+pub mod voice_duplex_a_turn_closes_on_the_model_timeline;
+pub mod voice_duplex_a_turn_pair_is_one_episode;
+pub mod voice_duplex_a_turn_without_an_assistant_part_passes;
+pub mod voice_duplex_an_agent_start_does_not_cut_a_turn;
+pub mod voice_duplex_an_append_is_answered_and_mirrored;
+pub mod voice_duplex_gpt_live_a_quiet_socket_is_held_by_its_own_keepalive;
+pub mod voice_duplex_gpt_live_closes_with_the_final_usage;
+pub mod voice_duplex_gpt_live_decodes_output_audio;
+pub mod voice_duplex_gpt_live_every_control_frame_reaches_the_socket;
+pub mod voice_duplex_gpt_live_maps_every_documented_event;
+pub mod voice_duplex_gpt_live_refuses_bad_credentials;
+pub mod voice_duplex_gpt_live_sends_the_greeting_once;
+pub mod voice_duplex_gpt_live_starts_a_session_and_streams;
+pub mod voice_duplex_gpt_live_the_idle_deadline_counts_every_frame;
+pub mod voice_duplex_gpt_live_the_idle_deadline_outlives_the_talk;
+pub mod voice_duplex_gpt_live_times_out_a_silent_handshake;
+pub mod voice_duplex_gpt_live_warns_when_the_socket_tears;
+pub mod voice_duplex_hello_declares_the_engine;
+pub mod voice_duplex_never_reaches_the_echo_path;
+pub mod voice_duplex_params_exclude_stt_and_tts;
+pub mod voice_duplex_params_refuse_an_unknown_key;
+pub mod voice_duplex_talky_offers_the_advise_sections;
+pub mod voice_duplex_the_collector_switches_to_advise_on_the_engine;
+pub mod voice_t1_cell_boots;
+pub mod voice_t2a_deepgram;
+pub mod voice_t2b_openai_stt;
+pub mod voice_t3a_cartesia;
+pub mod voice_t3b_openai_tts;
+pub mod voice_t3c_elevenlabs;
+pub mod voice_t4_service;
+pub mod voice_t5_behaviour;
+pub mod voice_t6_template;
+pub mod voice_t7_link;

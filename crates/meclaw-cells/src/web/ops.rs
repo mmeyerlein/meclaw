@@ -128,7 +128,7 @@ pub fn apply_all(conn: &Connection, legs: &[Value]) -> Vec<Applied> {
     let mut open = conn.execute_batch("BEGIN").is_ok();
     let mut first = 0;
     for args in legs {
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         let (outcome, touched) = apply(conn, args);
         out.push((outcome, touched, started.elapsed().as_millis() as i64));
         if open && conn.is_autocommit() {

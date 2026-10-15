@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from scripts.tests import store_isolation
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1]
 DRIVER = "scripts/git_merge_display_sync.py"
@@ -195,6 +196,14 @@ class MergeDriverCase(unittest.TestCase):
         out = subprocess.run(["python3", str(script), "O", "A", "B"],
                              cwd=self.repo, capture_output=True, text=True)
         self.assertEqual(out.returncode, 1)
+
+
+def setUpModule():
+    store_isolation.isolate()
+
+
+def tearDownModule():
+    store_isolation.restore()
 
 
 if __name__ == "__main__":

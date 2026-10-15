@@ -251,8 +251,18 @@ async fn decide(
         biased;
         reserved = tokio::time::timeout(HANDOFF_WAIT, handoff.reserve()) => match reserved {
             Ok(Ok(permit)) => Some(permit),
-            // Closed (the reader is gone) or the wait is over: refuse.
-            Ok(Err(_)) | Err(_) => None,
+            // Closed: the reader is gone, refuse at once. The `reason` field
+            // says which arm decided, so a test can tell the two refusals
+            // apart without a clock.
+            Ok(Err(_)) => {
+                tracing::debug!(%peer, mount = %mount, reason = "reader_gone", "the mount's reader is gone; refusing");
+                None
+            }
+            // Full, and no slot freed within the wait: refuse.
+            Err(_) => {
+                tracing::debug!(%peer, mount = %mount, reason = "handoff_timeout", "no slot freed within the handoff wait; refusing");
+                None
+            }
         },
         _ = signal.closed() => None,
     };

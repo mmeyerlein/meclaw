@@ -6,8 +6,10 @@
 pub mod bootstrap_apply;
 pub mod code_wire;
 mod colony_handle;
+pub mod deadline;
 pub mod emissions;
 pub mod factories;
+pub mod log_recorder;
 mod message_builder;
 pub mod mock_cartesia;
 pub mod mock_deepgram;
@@ -18,6 +20,7 @@ pub mod mock_openai_realtime;
 pub mod mock_openai_tts;
 pub mod mock_slack;
 pub mod mocks;
+pub mod page_scripts;
 pub mod ports;
 pub mod shipped_params;
 pub mod surface_listener;
@@ -30,7 +33,10 @@ pub use code_wire::{
     code_stdin, code_stdin_bytes, emit_all, emit_one, resolve_script_vars, run_shipped_script,
     shipped_script,
 };
-pub use colony_handle::{ColonyHandle, HARNESS_DRAIN_BUDGET_MS, spawn_colony_task_at};
+pub use colony_handle::{
+    API_READ_DEFAULT, AUDIT_PAGE, ColonyHandle, DEAD_LETTERS_PAGE, HARNESS_DRAIN_BUDGET_MS,
+    LogMark, MESSAGES_PAGE, OnePage, spawn_colony_task_at,
+};
 pub use emissions::EmissionsExt;
 pub use factories::EmitOnceMockCellFactory;
 pub use factories::{SPAWN_REFUSAL, SpawnRefusesCellFactory};

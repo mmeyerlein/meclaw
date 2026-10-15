@@ -31,14 +31,29 @@
 # =====
 #     scripts/test-tier.sh t0|t1|t2 [extra nextest args...]
 #     scripts/test-tier.sh filter '<nextest filterset>' [extra nextest args...]
+#     scripts/test-tier.sh perf [extra nextest args...]   (the ignored perf_* tests, profile perf)
 #
 # EXIT: nextest's own, with one addition: a `filter` run in which no test ran
 # -- a summary of `0 tests run`, no summary at all, nextest's "no tests to
 # run", or a filterset nextest refused because an operator matched nothing --
 # exits 6 with `no tests matched`. Zero tests prove nothing; a gate station
-# and `scripts/strand.sh test` grade it RED.
+# and `scripts/strand.sh test` grade it RED. A refused filterset says so in
+# its own line (`no tests matched (filterset refused)`): nothing was looked
+# at, so the gate's cache cut (GH #1167 i) never reads it as an empty rest.
+#
+#     MECLAW_TIER_LIST=1          `filter` only: LIST the selection with the very
+#                                 same arguments instead of running it, and end
+#                                 with `test-tier: LISTED <n>` (exit 0) -- the
+#                                 gate's proof that a remainder is empty.
 #
 #     MECLAW_TIER_PROFILE=<name>  nextest profile (default: default)
+#     MECLAW_TEST_CPU_QUOTA=<n>   the quota mark (meclaw_testing::deadline::
+#                                 CPU_QUOTA_MARK_VAR), set by `lane_sync.sh`
+#                                 inside the CPU-quota scope only: the run
+#                                 takes the profile `quota` instead of
+#                                 `default` -- the one longer nextest leash of
+#                                 a quota run, measured there (K8, OR-T17-15).
+#                                 Every other run keeps its profile.
 #     CI=<anything>               CI mode: no nice/ionice, no cargo lock, no
 #                                 TMPDIR override -- the runner owns the box.
 #     MECLAW_CARGO_LOCK_HELD=1    the CALLER already holds the cargo lock; do
@@ -63,10 +78,23 @@
 #     MECLAW_STRAND_TOKEN_SKIP=<reason>
 #                                 run without a token anyway -- logged, and
 #                                 `strand.sh token who` shows it.
+#     MECLAW_TIER_REUSE=<dir>     reuse a finished build (the lane executor,
+#                                 `scripts/pipeline/executor.py`): run
+#                                 `cargo-nextest nextest run --binaries-metadata
+#                                 <dir>/binaries.json --cargo-metadata
+#                                 <dir>/cargo-metadata.json` directly. Nothing
+#                                 is built, so nothing here touches cargo: no
+#                                 lanes probe, no token, no cargo lock, no tree
+#                                 sync, no `--workspace`, and t0 drops its
+#                                 build-only `--lib --bins`. The station runs
+#                                 beside a cargo station instead of queueing
+#                                 behind its lock.
 #
 # TEST HOOK (part of the interface, used by scripts/tests/test_gate_sh.py)
 # =======================================================================
 #     MECLAW_TIER_DRY=1           print the nextest argv instead of running it.
+#     MECLAW_TIER_EXCLUDE=<expr>  drop these tests from the selection (the pipeline's
+#                                 quarantine, OR-TV-2; never set by hand).
 #                                 The locking still happens: that is what the
 #                                 hook exists to make testable without paying
 #                                 for a compile. The tree sync does NOT -- it
@@ -83,7 +111,13 @@
 
 set -uo pipefail
 
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# This file's directory with builtins only: an external `dirname` missing from
+# PATH made it the caller's cwd and the kit library came from there (M7w).
+case "${BASH_SOURCE[0]}" in */*) root=${BASH_SOURCE[0]%/*}/ ;; *) root=./ ;; esac
+root=$(cd -- "${root}.." && pwd) || exit 2
+# The kit's one Python (`KIT_PY`, lane.PYTHON; re-check tv-bn M7t B-M4).
+# shellcheck source=scripts/pipeline/kit_python.sh
+. "$root/scripts/pipeline/kit_python.sh" || exit 2
 cd "$root" || exit 1
 
 # --- where cargo builds, and the guard that comes with sharing it -----------
@@ -94,12 +128,75 @@ cd "$root" || exit 1
 # `docs/development-rules.md` section 7 (GH #802). Both scripts now read the
 # rule -- and the ghost-binary guard that goes with it -- from one file.
 # shellcheck source=scripts/cargo-target.sh
-. "$root/scripts/cargo-target.sh"
+. "$root/scripts/cargo-target.sh" || exit 2
 meclaw_resolve_target_dir "$root"
 target_dir="$MECLAW_TARGET_DIR"
 echo "=== target: $target_dir"
 
+# tv-br M10y (re-check bundle R, R-D1): the quota mark is believed only where
+# the quota bites. It is taken again HERE from the `cpu.max` of this process's
+# own cgroup (v2, `0::<path>` of /proc/self/cgroup) -- the reading of
+# `lane_sync.sh` QUOTA_MARK_SH -- and never from the inherited value: a mark
+# set by hand, or carried into a scope whose user manager has no cpu
+# controller delegated, would swap in the long quota leash and widen every
+# hang mark of a run that is not throttled at all (fail-open). No effective
+# quota: no mark, and a time factor other than 1 is refused (OR-T12-13).
+# MECLAW_LANE_CGROUP_FS is the cgroup mount (default /sys/fs/cgroup; the pins
+# point it at a fake tree).
+effective_quota_mark() {
+    local cg q="" p="" m
+    cg=$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)
+    { read -r q p <"${MECLAW_LANE_CGROUP_FS:-/sys/fs/cgroup}$cg/cpu.max"; } 2>/dev/null || :
+    case "$q:$p" in
+        *[!0-9:]*|:*|*:) return 0 ;;
+    esac
+    [ "$p" -gt 0 ] || return 0
+    m=$((q * 100 / p))
+    [ "$m" = 0 ] || echo "$m"
+}
+claimed_mark=${MECLAW_TEST_CPU_QUOTA:-}
+quota_mark=$(effective_quota_mark)
+if [ -n "$claimed_mark" ] && [ "$claimed_mark" != "$quota_mark" ]; then
+    echo "=== quota mark: MECLAW_TEST_CPU_QUOTA=$claimed_mark is not the enforced cpu.max (${quota_mark:-none}): the enforced one counts" >&2
+fi
+if [ -z "$quota_mark" ] && [ -n "${MECLAW_TEST_TIME_FACTOR+x}" ] && [ "$MECLAW_TEST_TIME_FACTOR" != 1 ]; then
+    echo "test-tier: MECLAW_TEST_TIME_FACTOR=$MECLAW_TEST_TIME_FACTOR but no effective cpu quota (cpu.max of the own cgroup): a factor belongs to a quota run only (OR-T12-13)" >&2
+    exit 2
+fi
+if [ -n "$quota_mark" ]; then
+    export MECLAW_TEST_CPU_QUOTA="$quota_mark"
+    # tv-bn FN5 (OR-T12-13, OR-T18-7): every quota run measures under F =
+    # QUOTA_TIME_FACTOR -- the quota profile's leashes are laid out for it. A
+    # caller that names no factor got F = 1 under the quota: the leashes grew,
+    # the hang marks did not, and a 30 s marker of the browser driver turned a
+    # throttled page change into a red (NM4 f7w, B-15 at 80 %). Unset is that
+    # factor, read from its one line; a factor the caller names stays theirs.
+    if [ -z "${MECLAW_TEST_TIME_FACTOR+x}" ]; then
+        qf=$(sed -n 's/^pub const QUOTA_TIME_FACTOR: f64 = \([0-9.]*\);$/\1/p' \
+            "$root/crates/meclaw-testing/src/deadline.rs" 2>/dev/null)
+        if [ -z "$qf" ]; then
+            echo "test-tier: a quota run (cpu.max $quota_mark %) without a time factor, and QUOTA_TIME_FACTOR is not in crates/meclaw-testing/src/deadline.rs (OR-T12-13)" >&2
+            exit 2
+        fi
+        export MECLAW_TEST_TIME_FACTOR="$qf"
+        echo "=== quota run: time factor MECLAW_TEST_TIME_FACTOR=$qf (QUOTA_TIME_FACTOR, none named)"
+    else
+        echo "=== quota run: time factor MECLAW_TEST_TIME_FACTOR=$MECLAW_TEST_TIME_FACTOR (named by the caller)"
+    fi
+else
+    unset MECLAW_TEST_CPU_QUOTA
+fi
+
 profile=${MECLAW_TIER_PROFILE:-default}
+# K8 (OR-T17-15): a quota run is slower by design -- 80 % of a core shared by
+# the whole selection. Its hang marks scale with the time factor; the nextest
+# kill (`slow-timeout` x `terminate-after`) lives in ONE place, the profile
+# `quota` in .config/nextest.toml, chosen here by the effective quota mark and
+# by nothing else. Only `default` is swapped: a named profile is the caller's.
+if [ -n "$quota_mark" ] && [ "$profile" = default ]; then
+    profile=quota
+    echo "=== quota run (enforced cpu.max: $quota_mark %): nextest profile quota"
+fi
 
 if [ -z "${CI:-}" ]; then
     # A live colony shares this machine: its watchdog reads a long CPU gap as
@@ -123,7 +220,7 @@ T0='kind(lib) + kind(bin)'
 # owner. A second copy here is exactly how the two used to drift. The resolver
 # travels with the public export (it is listed in the export's ROOT_FILES), so
 # this call resolves in the public tree too.
-SCENARIO=$(python3 "$root/scripts/gate_plan.py" --print scenario) || {
+SCENARIO=$("${KIT_PY[@]}" "$root/scripts/gate_plan.py" --print scenario) || {
     echo "test-tier: cannot read the scenario filterset from scripts/gate_plan.py" >&2
     exit 2
 }
@@ -134,18 +231,71 @@ T1="all() - ( ${SCENARIO} )"
 
 # T2: the whole suite.
 T2='all()'
+# TV-P2 (tv-p1c): the perf tests -- `#[ignore]`, so no tier above runs them
+# (none passes `--run-ignored`); only `perf` below, in the profile `perf`.
+PERF='test(/(^|::)perf_/)'
 
 # The build-host cargo lock. Run on its own, this script takes it ITSELF. Run
 # from `scripts/gate.sh`, the whole gate run already holds it and says so with
 # MECLAW_CARGO_LOCK_HELD=1 -- taking it again would deadlock the gate against
 # its own child. Same file as the runner's, same switch to move it.
 LOCK="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
+# The build this run reuses instead of building (empty: build as always).
+reuse="${MECLAW_TIER_REUSE:-}"
 # The exit of a `filter` run in which no test ran (GH #997).
 EXIT_NO_TESTS=6
+
+# `workspace_scope <nextest args...>`: `--workspace`, unless the caller named a
+# package. cargo reads `--workspace` next to `-p` as "every member", so a
+# single `strand.sh test '<expr>' -p <pkg>` built 1388 test binaries and ran
+# 11246 tests until its timeout (lane probe 2026-10-08, GH #1127).
+workspace_scope() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -p|-p?*|--package|--package=*) return 0 ;;
+            --) break ;;
+        esac
+    done
+    echo "--workspace"
+}
+
+# K9 (welle-validierung-2): the lease's `seen` once more after the run, as
+# `strand.sh gate` does -- checked in only before it, a long tier left `seen`
+# at its start and the idle reclaim (15 min) took the lane back as "idle"
+# seconds after the run ended. A token released meanwhile is no refusal.
+# Said exactly once: the first call clears `token_held`.
+#
+# On the abort as well (re-check v2-fix-b M4): a tier stopped by ^C or a kill
+# left `seen` at its start, and the dead process no longer guarded the lane.
+# Once the token is checked in, `token_traps` makes every end say it -- EXIT
+# keeps the run's exit, INT/TERM/HUP say `seen` and die of the same signal.
+token_held=0
+token_seen_after_run() {
+    [ "$token_held" = 1 ] || return 0
+    token_held=0
+    "$root/scripts/strand.sh" token check --pid 0 >/dev/null 2>&1 || true
+}
+token_seen_on_signal() {
+    token_seen_after_run
+    trap - "$1"
+    kill -s "$1" $$
+}
+token_traps() {
+    trap token_seen_after_run EXIT
+    trap 'token_seen_on_signal INT' INT
+    trap 'token_seen_on_signal TERM' TERM
+    trap 'token_seen_on_signal HUP' HUP
+}
 
 run_nextest() {
     local filter="$1"
     shift
+    # The runtime quarantine (OR-TV-2, VG TV-F3): a quarantined test leaves the
+    # blocking selection; the pipeline runs it in its NOTE station `quarantine`.
+    if [ -n "${MECLAW_TIER_EXCLUDE:-}" ]; then
+        filter="($filter) - ($MECLAW_TIER_EXCLUDE)"
+    fi
     echo "=== nextest [profile=$profile]"
     echo "=== filter: $filter"
 
@@ -167,8 +317,10 @@ run_nextest() {
     # probe is `meclaw_lanes_active` in `scripts/cargo-target.sh`, shared with
     # the runner. CI passes, but on an armed host it says so in a NOTE line --
     # a `CI=1` typed here is local cargo all the same (C1 finding, L Nit).
-    if [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] && [ -z "${MECLAW_TIER_LANE:-}" ] \
-       && meclaw_lanes_active "$LOCK"; then
+    # A reuse set by hand is asked as well (Delta C M-neu-3): the gate's
+    # executor sets MECLAW_TIER_LANE beside its own MECLAW_TIER_REUSE.
+    if [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
+       && [ -z "${MECLAW_TIER_LANE:-}" ] && meclaw_lanes_active "$LOCK"; then
         if [ -n "${CI:-}" ]; then
             echo "=== NOTE lanes armed on this host, cargo runs here under CI"
         elif [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
@@ -180,14 +332,19 @@ run_nextest() {
         fi
     fi
 
-    if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
+    if [ -z "$reuse" ] && [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
        && [ -x "$root/scripts/strand.sh" ]; then
         "$root/scripts/strand.sh" token check --pid $$ || return $?
+        token_held=1
+        token_traps
     fi
 
     # Who owns the cargo lock for this call.
     local own_lock=1
-    if [ -n "${CI:-}" ]; then
+    if [ -n "$reuse" ]; then
+        own_lock=0
+        echo "=== cargo lock: none (reusing the build in $reuse)"
+    elif [ -n "${CI:-}" ]; then
         own_lock=0
         echo "=== cargo lock: none (CI owns the machine)"
     elif [ -n "${MECLAW_CARGO_LOCK_HELD:-}" ]; then
@@ -228,7 +385,7 @@ run_nextest() {
     # (MECLAW_CARGO_LOCK_HELD) the run has already synced and stamped for the
     # whole chain, CI builds in a fresh checkout with an empty target/, and the
     # dry hook builds nothing that could be a ghost.
-    if [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
+    if [ -z "$reuse" ] && [ -z "${CI:-}" ] && [ -z "${MECLAW_CARGO_LOCK_HELD:-}" ] \
        && [ -z "${MECLAW_TIER_DRY:-}" ]; then
         local rev dirty note
         rev=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -245,16 +402,41 @@ run_nextest() {
     # store, not cargo's target dir), so a moved store cannot leave it an old
     # file. Should the call fail, the station fails the same way -- red, not
     # silent.
-    if [ -z "${MECLAW_TIER_DRY:-}" ]; then
+    if [ -z "${MECLAW_TIER_DRY:-}" ] && [ -z "${MECLAW_TIER_LIST:-}" ]; then
         local junit
-        junit=$(python3 "$root/scripts/slow_tests.py" --print-junit-path \
+        junit=$("${KIT_PY[@]}" "$root/scripts/slow_tests.py" --print-junit-path \
                     --profile "$profile") && [ -n "$junit" ] && rm -f "$junit"
     fi
 
     local rc=0 seen=""
-    if [ -n "${MECLAW_TIER_DRY:-}" ]; then
-        echo "=== tier-dry: cargo nextest run --workspace --profile $profile" \
-             "-E $filter $*"
+    if [ -n "${MECLAW_TIER_DRY:-}" ] && [ -n "$reuse" ]; then
+        echo "=== tier-dry: cargo-nextest nextest run --profile $profile" \
+             "--binaries-metadata $reuse/binaries.json" \
+             "--cargo-metadata $reuse/cargo-metadata.json -E $filter $*"
+    elif [ -n "${MECLAW_TIER_DRY:-}" ]; then
+        echo "=== tier-dry: cargo nextest run $(workspace_scope "$@")" \
+             "$(meclaw_test_features "$root" "$@" | tr '\n' ' ')--profile $profile -E $filter $*"
+    elif [ -n "${MECLAW_TIER_LIST:-}" ] && [ "$tier" = filter ]; then
+        # GH #1167 (i): the proof of an empty remainder -- one line per test
+        # on stdout (`--message-format oneline`), counted; any error is the
+        # list's own exit, never a count.
+        seen=$(mktemp) || {
+            [ "$own_lock" = 1 ] && exec 9>&-
+            echo "test-tier: no temp file" >&2
+            return 2
+        }
+        cargo_nextest "$filter" "$@" > "$seen" 9>&-
+        rc=$?
+        [ "$own_lock" = 1 ] && exec 9>&-
+        token_seen_after_run
+        cat "$seen"
+        if [ "$rc" = 0 ]; then
+            echo "test-tier: LISTED $(grep -c . "$seen")"
+        else
+            echo "test-tier: LIST FAILED (exit $rc): $filter" >&2
+        fi
+        rm -f "$seen"
+        return "$rc"
     elif [ "$tier" = filter ]; then
         # A filter is judged on what ran, not only on the exit (GH #997): the
         # output goes through `tee` so the summary can be read afterwards.
@@ -270,8 +452,12 @@ run_nextest() {
         rc=$?
     fi
     [ "$own_lock" = 1 ] && exec 9>&-
+    token_seen_after_run
     if [ -n "$seen" ]; then
-        if no_tests_matched "$rc" "$seen"; then
+        if filterset_refused "$rc" "$seen"; then
+            echo "test-tier: RED -- no tests matched (filterset refused): $filter" >&2
+            rc=$EXIT_NO_TESTS
+        elif no_tests_matched "$rc" "$seen"; then
             echo "test-tier: RED -- no tests matched: $filter" >&2
             rc=$EXIT_NO_TESTS
         fi
@@ -283,29 +469,58 @@ run_nextest() {
 cargo_nextest() {
     local filter="$1"
     shift
-    if [ -n "${CI:-}" ]; then
-        cargo nextest run --workspace --profile "$profile" -E "$filter" "$@"
+    local scope=() verb=run
+    if [ -n "${MECLAW_TIER_LIST:-}" ]; then
+        verb=list
+        set -- --message-format oneline "$@"
+    fi
+    [ -n "$(workspace_scope "$@")" ] && scope=(--workspace)
+    # The test-hook feature of the test builds (GH #1208, scripts/cargo-target.sh):
+    # the same flags as the gate's build station for the same selection. A
+    # reused build already carries them.
+    local feat
+    while IFS= read -r feat; do
+        scope+=("$feat")
+    done < <(meclaw_test_features "$root" "$@")
+    if [ -n "$reuse" ]; then
+        # No cargo in this call at all: `cargo nextest` would start cargo for
+        # the build-dir lock and the metadata; the plain binary reads both from
+        # the files of the build it reuses.
+        set -- --profile "$profile" --binaries-metadata "$reuse/binaries.json" \
+               --cargo-metadata "$reuse/cargo-metadata.json" -E "$filter" "$@"
+        if [ -n "${CI:-}" ]; then
+            cargo-nextest nextest "$verb" "$@"
+        else
+            nice -n 19 ionice -c3 cargo-nextest nextest "$verb" "$@"
+        fi
+    elif [ -n "${CI:-}" ]; then
+        cargo nextest "$verb" "${scope[@]}" --profile "$profile" -E "$filter" "$@"
     else
         ( [ "$own_lock" = 1 ] && exec 9>&-
           nice -n 19 ionice -c3 \
-              cargo nextest run --workspace --profile "$profile" -E "$filter" "$@" )
+              cargo nextest "$verb" "${scope[@]}" --profile "$profile" -E "$filter" "$@" )
     fi
 }
 
-# `no_tests_matched <rc> <output>`: did a filter run no test at all? Four
+# `no_tests_matched <rc> <output>`: did a filter run no test at all? Three
 # shapes of the same thing -- a zero in nextest's summary, a clean exit
-# without any summary, nextest's own "no tests to run" (exit 4), and a
-# filterset nextest refused because an operator matched nothing. A failing
-# test or a failed build has its own exit and keeps it -- and so does a run
-# that passed: the refusal text is read only off any OTHER exit, else a test
-# that merely prints it would turn 0 or 100 into 6.
+# without any summary, nextest's own "no tests to run" (exit 4).
+# `filterset_refused <rc> <output>`: nextest refused the filterset (an
+# operator matched nothing, or it did not parse) -- also exit 6, in a line of
+# its own, because nothing was looked at. A failing test or a failed build
+# has its own exit and keeps it -- and so does a run that passed: the refusal
+# text is read only off any OTHER exit, else a test that merely prints it
+# would turn 0 or 100 into 6.
+filterset_refused() {
+    case "$1" in
+        0|4|100|101) return 1 ;;
+    esac
+    grep -qE "failed to parse filterset|didn't match any" "$2"
+}
+
 no_tests_matched() {
     local rc="$1" out="$2" total
     [ "$rc" = 4 ] && return 0
-    case "$rc" in
-        0|100|101) ;;
-        *) grep -qE "failed to parse filterset|didn't match any" "$out" && return 0 ;;
-    esac
     total=$(grep -oE '[0-9]+ tests? run:' "$out" | tail -1 | grep -oE '^[0-9]+')
     [ "$total" = 0 ] && return 0
     [ "$rc" = 0 ] && [ -z "$total" ] && return 0
@@ -326,8 +541,13 @@ case "$tier" in
         # `--lib --bins` is not a duplicate of the filterset: the filter decides
         # what RUNS, this decides what gets BUILT. Without it nextest compiles
         # all ~660 integration binaries before running 13 of them, and the tier
-        # costs minutes of rustc instead of seconds of tests.
-        run_nextest "$T0" --lib --bins "$@"
+        # costs minutes of rustc instead of seconds of tests. A reused build
+        # builds nothing, and nextest refuses build flags there.
+        if [ -n "$reuse" ]; then
+            run_nextest "$T0" "$@"
+        else
+            run_nextest "$T0" --lib --bins "$@"
+        fi
         ;;
     t1) run_nextest "$T1" "$@" ;;
     t2) run_nextest "$T2" "$@" ;;
@@ -340,12 +560,18 @@ case "$tier" in
         shift
         run_nextest "$expr" "$@"
         ;;
+    perf)
+        # Never a gate tier (TV-P2): one thread, no retries, the ignored perf_*
+        # tests only; a measurement, never a verdict of a pass.
+        profile=perf
+        run_nextest "$PERF" --run-ignored only "$@"
+        ;;
     changed)
         echo "test-tier: 'changed' is gone -- run 'scripts/gate.sh strand' instead" >&2
         exit 2
         ;;
     *)
-        echo "unknown tier: $tier (expected t0|t1|t2|filter)" >&2
+        echo "unknown tier: $tier (expected t0|t1|t2|filter|perf)" >&2
         exit 2
         ;;
 esac

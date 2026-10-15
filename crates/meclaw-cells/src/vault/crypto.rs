@@ -90,6 +90,31 @@ impl MasterKey {
         Ok(Self(out))
     }
 
+    /// [`Self::derive`] on the blocking pool, never on a runtime worker
+    /// (GH #1216). argon2id is a CPU burst: milliseconds on an idle host,
+    /// seconds on a loaded one. Run inline it holds its worker, and with it
+    /// whatever task sits in that worker's LIFO slot -- at boot, the colony
+    /// task, whose watchdog reads the silence as `starved=colony_loop` and ends
+    /// the process (`docs/development-rules.md`, coding standard: CPU bursts
+    /// over 1 ms go through `spawn_blocking`).
+    ///
+    /// No operation timeout of its own: this is CPU work, not I/O (rule 12
+    /// covers I/O); only the message backstop sits above it. When the backstop
+    /// or a shutdown drops the awaiting future, the derivation still finishes on
+    /// the pool (seconds at most), its key is zeroed on drop, and the runtime
+    /// waits for it on shutdown. The passphrase buffer is moved, not copied,
+    /// and not zeroed (as before this wrapper); the derived bytes pass the
+    /// task's output slot on their way back, a heap move like any other, which
+    /// is why zeroing stays best-effort (see the type).
+    pub async fn derive_off_worker(
+        passphrase: Vec<u8>,
+        salt: Vec<u8>,
+    ) -> Result<Self, CryptoError> {
+        tokio::task::spawn_blocking(move || Self::derive(&passphrase, &salt))
+            .await
+            .map_err(|e| CryptoError::Derive(format!("the derivation task ended: {e}")))?
+    }
+
     /// Seal a plaintext. Returns `(nonce, ciphertext)`; both are stored, only
     /// the key is secret.
     pub fn seal(&self, plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
@@ -189,6 +214,43 @@ pub fn key_id(key: &MasterKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #1216: the derivation leaves the runtime worker. On this one-thread
+    /// runtime a task spawned beside the unlock gets a turn only while the
+    /// derivation runs elsewhere; derived inline on the worker, the key is
+    /// there before the probe was ever polled.
+    #[tokio::test]
+    async fn the_key_derivation_leaves_the_runtime_worker() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let salt = new_salt().unwrap();
+        let turns = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let probe = tokio::spawn({
+            let (turns, done) = (turns.clone(), done.clone());
+            async move {
+                while !done.load(Ordering::SeqCst) {
+                    turns.fetch_add(1, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+        let key = MasterKey::derive_off_worker(b"correct horse".to_vec(), salt.to_vec())
+            .await
+            .unwrap();
+        let during = turns.load(Ordering::SeqCst);
+        done.store(true, Ordering::SeqCst);
+        probe.await.unwrap();
+        assert!(
+            during > 0,
+            "the derivation held the only runtime worker: no other task ran while it worked"
+        );
+        let inline = MasterKey::derive(b"correct horse", &salt).unwrap();
+        assert_eq!(
+            key.0, inline.0,
+            "the same passphrase and salt give the same key"
+        );
+    }
 
     #[test]
     fn a_sealed_secret_comes_back_under_the_same_key() {

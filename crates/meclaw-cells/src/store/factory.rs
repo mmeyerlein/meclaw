@@ -563,6 +563,11 @@ fn effective_params_or_degrade(
 /// database (which would make writes look accepted and lose them at the next
 /// restart), and `consumes` is deliberately NOT enforced so the database defect is
 /// what comes back, not a contract verdict hiding it.
+///
+/// GH #1082 holds here as on the wake path: the restarted degraded cell answers
+/// one message and sleeps, and the entry keeps the factory's `WakeFn`, so the
+/// next message wakes it through that `WakeFn` and the open is tried again,
+/// instead of the cell refusing until the process restarts.
 fn respawn_degraded(
     path: Path,
     mailbox_capacity: usize,
@@ -578,17 +583,19 @@ fn respawn_degraded(
     tokio::sync::oneshot::Receiver<()>,
 ) {
     let (sender, receiver) = mpsc::channel::<Message>(mailbox_capacity);
-    let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = meclaw_colony::build_stateless_task(
-        path.clone(),
-        receiver,
-        outputs_tx,
-        Arc::new(crate::store::DegradedStoreCell::new(reason)),
-        1, // one worker: the answer is a single push, ordering costs nothing
-        message_timeout,
-        Some(colony_inbox_tx.clone()),
-        blob_store,
-        None,
-    );
+    // GH #1082: one-shot — answer one message, then sleep, so the next message
+    // wakes the cell through the factory's `WakeFn` and the open is tried again.
+    let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) =
+        meclaw_colony::build_stateless_one_shot_task(
+            path.clone(),
+            receiver,
+            outputs_tx,
+            Arc::new(crate::store::DegradedStoreCell::new(reason)),
+            message_timeout,
+            colony_inbox_tx.clone(),
+            blob_store,
+            None,
+        );
     // Same re-notify as the healthy respawn: sync `try_send`, never await — this
     // runs inside the await-free respawn corridor.
     renotify_stop_wiring(&colony_inbox_tx, path, stop_tx, death_ack_rx);
@@ -609,6 +616,16 @@ fn respawn_degraded(
 /// ever die `Normal` (it never panics, and the stateless backstop is per-worker),
 /// so this never drives `handle_cell_died` into a respawn.
 ///
+/// GH #1082: the cell is one-shot. It answers one message and goes to sleep
+/// through the colony's ordinary sleep path (`ColonyMsg::Sleep` →
+/// `handle_sleep`), so the next message calls this `WakeFn` again and the open
+/// is tried again. As a resident dispatcher it stayed `Awake` for the life of the
+/// process: the lab colony of #1082 ran out of file descriptors (226 `cell.db` ×
+/// 3 fds plus ~216 pipes against a soft limit of 1024), and its stores refused
+/// every message until a restart, long after the pressure was gone. Each message
+/// costs one open attempt while the cause lasts — cheap against a store that
+/// never recovers.
+///
 /// `consumes` is deliberately NOT enforced for the degraded cell: every message
 /// must come back with the database defect, not with a contract verdict that
 /// hides it.
@@ -624,17 +641,19 @@ fn wake_degraded(
     tokio::sync::oneshot::Sender<()>,
     tokio::sync::oneshot::Receiver<()>,
 ) {
-    let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = meclaw_colony::build_stateless_task(
-        path.clone(),
-        receiver,
-        outputs_tx,
-        Arc::new(crate::store::DegradedStoreCell::new(reason)),
-        1, // one worker: the answer is a single push, ordering costs nothing
-        message_timeout,
-        Some(colony_inbox_tx.clone()),
-        blob_store,
-        None,
-    );
+    // GH #1082: one-shot — answer one message, then sleep, so the next message
+    // wakes the cell through the factory's `WakeFn` and the open is tried again.
+    let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) =
+        meclaw_colony::build_stateless_one_shot_task(
+            path.clone(),
+            receiver,
+            outputs_tx,
+            Arc::new(crate::store::DegradedStoreCell::new(reason)),
+            message_timeout,
+            colony_inbox_tx.clone(),
+            blob_store,
+            None,
+        );
     meclaw_colony::spawn_watcher(&colony_inbox_tx, path, join, peace_rx, backstop_rx);
     (stop_tx, death_ack_rx)
 }

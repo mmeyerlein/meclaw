@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -94,6 +94,65 @@ pub struct CapturedRequest {
     pub headers: HashMap<String, String>,
     /// Full request body (Content-Length bytes).
     pub body: Vec<u8>,
+    /// When the mock took the request (GH #1208): `tokio::time`, so virtual
+    /// under a paused clock. A stamp to order requests by, never a latency
+    /// verdict over the socket (TV-Z7).
+    pub at: tokio::time::Instant,
+}
+
+/// A capturing mock that hands its requests out as events (GH #1208):
+/// [`CaptureMock::next_requests`] waits for the next `n` captures instead of
+/// polling a shared list. Built by [`start_capture`].
+pub struct CaptureMock {
+    /// The bound address (`127.0.0.1:<port>`).
+    pub addr: SocketAddr,
+    /// The accept loop.
+    pub join: JoinHandle<()>,
+    seen: tokio::sync::watch::Receiver<Vec<CapturedRequest>>,
+    taken: usize,
+}
+
+impl CaptureMock {
+    /// The next `n` requests after those already handed out, in capture order.
+    /// Waits for them under the [`crate::deadline::HANG`] mark.
+    pub async fn next_requests(&mut self, n: usize) -> Vec<CapturedRequest> {
+        let want = self.taken + n;
+        let desc = format!("the mock captures request {want}");
+        let seen = match crate::deadline::hang(&desc, self.seen.wait_for(|v| v.len() >= want)).await
+        {
+            Ok(seen) => seen[self.taken..want].to_vec(),
+            Err(_) => panic!("{desc}: the capture mock ended"),
+        };
+        self.taken = want;
+        seen
+    }
+}
+
+/// Like [`start_mock_server_capturing`], but the captures arrive as events
+/// through [`CaptureMock::next_requests`] (GH #1208).
+pub async fn start_capture(response_sequence: Vec<MockResponse>) -> CaptureMock {
+    let (seen_tx, seen) = tokio::sync::watch::channel(Vec::new());
+    let (addr, join, _captured) =
+        start_mock_server_capturing_inner(response_sequence, None, 0, Arc::new(seen_tx)).await;
+    CaptureMock {
+        addr,
+        join,
+        seen,
+        taken: 0,
+    }
+}
+
+/// GH #1208: the capture announcement of a mock nobody watches.
+fn unwatched() -> Arc<tokio::sync::watch::Sender<Vec<CapturedRequest>>> {
+    Arc::new(tokio::sync::watch::channel(Vec::new()).0)
+}
+
+/// GH #1208: the scripted delay of a response, the one place both servers wait
+/// it out — timed in process under a paused clock (TV-Z7), never over the socket.
+async fn hold_back(response: &MockResponse) {
+    if let Some(d) = response.delay {
+        tokio::time::sleep(d).await;
+    }
 }
 
 /// Spawns a mock HTTP server on `127.0.0.1:0`. Returns `(SocketAddr, JoinHandle)`.
@@ -180,7 +239,7 @@ pub async fn start_mock_server_capturing_with_validator(
     response_sequence: Vec<MockResponse>,
     validator: Option<RequestValidator>,
 ) -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Vec<CapturedRequest>>>) {
-    start_mock_server_capturing_inner(response_sequence, validator, 0).await
+    start_mock_server_capturing_inner(response_sequence, validator, 0, unwatched()).await
 }
 
 /// `start_mock_server_capturing` variant that models a **half-dead peer**: the
@@ -201,13 +260,14 @@ pub async fn start_mock_server_capturing_hanging_body(
     hang_after_head: usize,
     response_sequence: Vec<MockResponse>,
 ) -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Vec<CapturedRequest>>>) {
-    start_mock_server_capturing_inner(response_sequence, None, hang_after_head).await
+    start_mock_server_capturing_inner(response_sequence, None, hang_after_head, unwatched()).await
 }
 
 async fn start_mock_server_capturing_inner(
     response_sequence: Vec<MockResponse>,
     validator: Option<RequestValidator>,
     hang_after_head: usize,
+    seen_tx: Arc<tokio::sync::watch::Sender<Vec<CapturedRequest>>>,
 ) -> (SocketAddr, JoinHandle<()>, Arc<Mutex<Vec<CapturedRequest>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind failed");
     let addr = listener.local_addr().expect("local_addr failed");
@@ -227,12 +287,14 @@ async fn start_mock_server_capturing_inner(
             accepted += 1;
             let hang = accepted <= hang_after_head;
             let captured_for_conn = captured_for_task.clone();
+            let seen_for_conn = seen_tx.clone();
             let responses_for_conn = responses.clone();
             let validator_for_conn = validator.clone();
             tokio::spawn(async move {
                 let _ = handle_capturing_connection(
                     stream,
                     captured_for_conn,
+                    seen_for_conn,
                     responses_for_conn,
                     validator_for_conn,
                     hang,
@@ -244,7 +306,13 @@ async fn start_mock_server_capturing_inner(
     (addr, join, captured)
 }
 
-async fn handle_connection(mut stream: TcpStream, response: MockResponse) -> std::io::Result<()> {
+/// One connection of [`start_mock_server`]. Generic over the stream so the
+/// scripted delay is pinned in process over `tokio::io::duplex` under a paused
+/// clock (GH #1208, re-check tv-p1a M2) -- over a socket only the event is.
+async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    response: MockResponse,
+) -> std::io::Result<()> {
     let mut buf = vec![0u8; 4096];
     let mut total = 0;
     while total < buf.len() {
@@ -257,15 +325,14 @@ async fn handle_connection(mut stream: TcpStream, response: MockResponse) -> std
             break;
         }
     }
-    if let Some(d) = response.delay {
-        tokio::time::sleep(d).await;
-    }
+    hold_back(&response).await;
     write_response(&mut stream, &response).await
 }
 
 async fn handle_capturing_connection(
     mut stream: TcpStream,
     captured: Arc<Mutex<Vec<CapturedRequest>>>,
+    seen: Arc<tokio::sync::watch::Sender<Vec<CapturedRequest>>>,
     responses: Arc<Mutex<ResponseSequence>>,
     validator: Option<RequestValidator>,
     hang_after_head: bool,
@@ -330,6 +397,7 @@ async fn handle_capturing_connection(
         path,
         headers,
         body,
+        at: tokio::time::Instant::now(),
     };
     // Validator runs BEFORE the capture push and the sequence pop; a rejection
     // answers the connection without consuming a canned response.
@@ -338,7 +406,7 @@ async fn handle_capturing_connection(
     // Push capture.
     {
         let mut cap = captured.lock().await;
-        cap.push(request);
+        cap.push(request.clone());
     }
 
     // Validator rejection, or pop the next response (repeats last on exhaustion).
@@ -346,10 +414,12 @@ async fn handle_capturing_connection(
         Some(r) => r,
         None => responses.lock().await.pop(),
     };
+    // GH #1208: announce the capture once its response is chosen, so a test
+    // that reacts to `next_requests` never races this request for the next
+    // canned response.
+    seen.send_modify(|v| v.push(request));
 
-    if let Some(d) = response.delay {
-        tokio::time::sleep(d).await;
-    }
+    hold_back(&response).await;
     if hang_after_head {
         // Half-dead peer: head out, body never. The socket stays open (this task
         // owns it and never returns), so the client sees neither FIN nor RST — it
@@ -468,6 +538,7 @@ async fn handle_held_connection(
             path,
             headers,
             body,
+            at: tokio::time::Instant::now(),
         },
         answer,
     };
@@ -484,7 +555,10 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-async fn write_response(stream: &mut TcpStream, response: &MockResponse) -> std::io::Result<()> {
+async fn write_response<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    response: &MockResponse,
+) -> std::io::Result<()> {
     write_response_head(stream, response).await?;
     stream.write_all(&response.body).await?;
     stream.shutdown().await?;
@@ -494,8 +568,8 @@ async fn write_response(stream: &mut TcpStream, response: &MockResponse) -> std:
 /// Writes only the response head (status line + headers + blank line). The
 /// announced `Content-Length` is the real body length — a client that trusts it
 /// blocks until the body arrives.
-async fn write_response_head(
-    stream: &mut TcpStream,
+async fn write_response_head<S: AsyncWrite + Unpin>(
+    stream: &mut S,
     response: &MockResponse,
 ) -> std::io::Result<()> {
     let head = format!(
@@ -624,6 +698,7 @@ mod tests {
             path: "/foo".into(),
             headers: HashMap::new(),
             body: b"hello".to_vec(),
+            at: tokio::time::Instant::now(),
         };
         assert_eq!(r.method, "POST");
         assert_eq!(r.path, "/foo");
@@ -738,39 +813,91 @@ mod tests {
         assert_eq!(split_body(&r2), b"canned".to_vec());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn with_delay_holds_back_response() {
-        let delay = Duration::from_millis(150);
-        let (addr, _join, _captured) =
-            start_mock_server_capturing(vec![MockResponse::ok(b"slow").with_delay(delay)]).await;
-        let started = std::time::Instant::now();
-        let resp = tokio::task::spawn_blocking(move || raw_post_sync(addr, "/x", &[], b""))
-            .await
-            .unwrap();
-        let elapsed = started.elapsed();
-        assert_eq!(split_body(&resp), b"slow".to_vec());
-        assert!(elapsed >= delay, "delay={:?}, elapsed={:?}", delay, elapsed);
+    /// TV-Z7: the delay itself, without a socket, exact in virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn with_delay_holds_back_for_exactly_the_delay() {
+        let t0 = tokio::time::Instant::now();
+        hold_back(&MockResponse::ok(b"slow").with_delay(Duration::from_millis(150))).await;
+        assert_eq!(t0.elapsed(), Duration::from_millis(150));
+        let t1 = tokio::time::Instant::now();
+        hold_back(&MockResponse::ok(b"fast")).await;
+        assert_eq!(t1.elapsed(), Duration::ZERO, "no delay, no wait");
     }
 
+    /// One POST over a tokio socket (cancelled with the runtime, unlike a
+    /// blocking client that would outlive a delayed answer).
+    async fn post_async(addr: SocketAddr, path: &str) -> Vec<u8> {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let req = format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        buf
+    }
+
+    /// Over the socket only the order (M4): a delayed answer comes after the
+    /// undelayed answer to a request sent once the delayed one was captured.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn with_delay_holds_back_response() {
+        let mut mock = start_capture(vec![
+            MockResponse::ok(b"slow")
+                .with_delay(crate::deadline::scaled(crate::deadline::HANG) * 2),
+            MockResponse::ok(b"fast"),
+        ])
+        .await;
+        let addr = mock.addr;
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(2);
+        let slow_done = done_tx.clone();
+        tokio::spawn(async move {
+            let resp = post_async(addr, "/slow").await;
+            let _ = slow_done.send(split_body(&resp)).await;
+        });
+        let first = mock.next_requests(1).await;
+        assert_eq!(first[0].path, "/slow");
+        tokio::spawn(async move {
+            let resp = post_async(addr, "/fast").await;
+            let _ = done_tx.send(split_body(&resp)).await;
+        });
+        let answered = crate::deadline::hang("an answer arrives", done_rx.recv())
+            .await
+            .expect("both clients gone");
+        assert_eq!(answered, b"fast".to_vec(), "the delayed answer overtook");
+        let second = mock.next_requests(1).await;
+        assert_eq!(second[0].path, "/fast");
+        assert!(second[0].at >= first[0].at, "captures stamped in order");
+    }
+
+    /// GH #1208 (re-check tv-p1a M2): the plain server's own connection holds
+    /// its answer back for exactly the scripted delay -- in process over
+    /// `duplex`, virtual time, so a server without the `hold_back` call answers
+    /// at 0 and this is red. The socket test below keeps only the event.
+    #[tokio::test(start_paused = true)]
+    async fn the_plain_server_holds_back_for_exactly_the_delay() {
+        let delay = Duration::from_millis(100);
+        let (mut client, server) = tokio::io::duplex(4096);
+        let serve = tokio::spawn(handle_connection(
+            server,
+            MockResponse::ok(b"slowget").with_delay(delay),
+        ));
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let t0 = tokio::time::Instant::now();
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(t0.elapsed(), delay, "answered after exactly the delay");
+        assert_eq!(split_body(&buf), b"slowget".to_vec());
+        serve.await.unwrap().unwrap();
+    }
+
+    /// Over the socket only the event: the plain server answers through the
+    /// same `hold_back` (timed above).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_delay_also_works_on_plain_start_mock_server() {
-        // Sanity: the delay knob is generic — start_mock_server honors it too.
         let delay = Duration::from_millis(100);
         let (addr, _join) = start_mock_server(MockResponse::ok(b"slowget").with_delay(delay)).await;
-        let started = std::time::Instant::now();
-        let resp = tokio::task::spawn_blocking(move || {
-            let mut stream = StdTcpStream::connect(addr).unwrap();
-            stream
-                .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-                .unwrap();
-            let mut buf = Vec::new();
-            stream.read_to_end(&mut buf).unwrap();
-            buf
-        })
-        .await
-        .unwrap();
-        let elapsed = started.elapsed();
+        let resp = post_async(addr, "/").await;
         assert_eq!(split_body(&resp), b"slowget".to_vec());
-        assert!(elapsed >= delay, "delay={:?}, elapsed={:?}", delay, elapsed);
     }
 }

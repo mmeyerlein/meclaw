@@ -705,7 +705,7 @@ pub async fn bootstrap_from_filesystem(
 /// EMPTY registry — which is not a silent failure but a `template_missing` that
 /// names `none`, the right answer to "resolve this against nothing".
 fn boot_templates_registry(root: &std::path::Path) -> crate::templates::TemplatesRegistry {
-    let Ok(db) = crate::persist::colony_db::ColonyDb::open(&root.join("colony.db")) else {
+    let Ok(db) = crate::persist::colony_db::ColonyDb::open_in(root) else {
         return crate::templates::TemplatesRegistry::default();
     };
     let rows = db.read_templates().unwrap_or_default();

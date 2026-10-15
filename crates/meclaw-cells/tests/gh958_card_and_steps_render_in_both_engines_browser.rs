@@ -145,15 +145,30 @@ fn blocks(all: &[Value]) -> String {
 fn the_blocks_draw_in(engine: &str) {
     if !library_ships() {
         println!("SKIP the template library does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the template library does not ship in this tree"
+        );
         return;
     }
     if !repo(DRIVER).is_file() || !repo(WKENV).is_file() {
         println!("SKIP the browser driver does not ship in this tree");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: the browser driver does not ship in this tree"
+        );
         return;
     }
     let td = tempfile::TempDir::new().expect("tempdir");
     let Some(all) = page_parts(td.path()) else {
         println!("SKIP no python3 on this host");
+        assert_ne!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+            Ok("1"),
+            "SKIP under the switch: no python3 on this host"
+        );
         return;
     };
     std::fs::write(td.path().join("blocks.html"), blocks(&all)).expect("blocks.html");
@@ -174,12 +189,23 @@ fn the_blocks_draw_in(engine: &str) {
         Ok(out) => out,
         Err(e) => {
             println!("SKIP neither node nor a shell for it on this host: {e}");
+            assert_ne!(
+                std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref(),
+                Ok("1"),
+                "SKIP under the switch: neither node nor a shell for it on this host"
+            );
             return;
         }
     };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     if out.status.code() == Some(3) || stderr.lines().any(|l| l.starts_with("SKIP ")) {
+        // GH #1161 (OR-TB.S3.39): the gate's station booked this engine and runs with
+        // `MECLAW_REQUIRE_BROWSERS=1`; there a skipped driver is a red test, never a pass.
+        assert!(
+            std::env::var("MECLAW_REQUIRE_BROWSERS").as_deref() != Ok("1"),
+            "a skip under MECLAW_REQUIRE_BROWSERS=1 is red:\n{stderr}"
+        );
         println!("SKIP {engine}: {}", stderr.trim());
         return;
     }

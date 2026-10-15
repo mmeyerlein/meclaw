@@ -174,5 +174,56 @@
       "advice": "A strand the build had to add is a question the planning left open: read the supplements before the next planning.",
       "advice_de": "Ein Strang, den der Bau nachschieben musste, ist eine Frage, die die Planung offen ließ: die Nachträge vor der nächsten Planung lesen."
     }
+  ],
+  "store_metrics_note": "Q14..Q17 come from the pipeline store (scripts/pipeline/retro.py), not from transcripts; start values by OR-DT.W11.10 (2026-10-09), changed by ruling only.",
+  "store_metrics": [
+    {
+      "id": "Q14",
+      "title": "lane hours of the busiest day of one lane",
+      "title_de": "Lane-Stunden am stärksten Tag einer Lane",
+      "unit": "h/day",
+      "cmp": "<=",
+      "threshold": 8,
+      "source": "pass_ended.lane_seconds per runner and UTC day of the pass end in the wave window; the limit holds per lane, the sum over all lanes is shown next to it (OR-DT.ORCH.15)",
+      "source_de": "pass_ended.lane_seconds je Runner und UTC-Tag des Pass-Endes im Wellen-Fenster; die Schwelle gilt je Lane, die Summe über alle Lanes steht daneben (OR-DT.ORCH.15)",
+      "advice": "More than a working day of time on one lane on one day is a queue: cut the reruns or let the cache carry the green part.",
+      "advice_de": "Mehr als ein Arbeitstag Zeit auf einer Lane an einem Tag ist eine Schlange: Wiederholungen streichen oder den grünen Teil dem Cache überlassen."
+    },
+    {
+      "id": "Q15",
+      "title": "flake share of red passes",
+      "title_de": "Flake-Anteil roter Passes",
+      "unit": "%",
+      "cmp": "<",
+      "threshold": 10,
+      "source": "red passes whose run carries a FLAKY flake_isolated or only failed tests the flakes table knows as flaky",
+      "source_de": "rote Passes, deren Lauf ein FLAKY flake_isolated trägt oder nur Tests verlor, die die Flake-Tabelle als flaky kennt",
+      "advice": "A red gate that is a flake every tenth time teaches the builder to rerun: isolate and quarantine the measured flakes.",
+      "advice_de": "Ein rotes Gate, das jedes zehnte Mal eine Flake ist, erzieht zum Wiederholen: die gemessenen Flakes isolieren und in Quarantäne legen."
+    },
+    {
+      "id": "Q16",
+      "title": "cache quota of integration passes",
+      "title_de": "Cache-Quote der Integrations-Passes",
+      "unit": "%",
+      "cmp": ">=",
+      "threshold": 50,
+      "source": "CACHED stations over all stations of the integration passes in the window (pass_ended.stations)",
+      "source_de": "CACHED-Stationen über allen Stationen der Integrations-Passes im Fenster (pass_ended.stations)",
+      "advice": "An integration pass that rebuilds what its strands proved green pays twice: check the cache keys.",
+      "advice_de": "Ein Integrations-Pass, der neu baut, was die Stränge grün bewiesen, zahlt doppelt: die Cache-Schlüssel prüfen."
+    },
+    {
+      "id": "Q17",
+      "title": "critical path over lane seconds (p50)",
+      "title_de": "kritischer Pfad über Lane-Sekunden (p50)",
+      "unit": "ratio",
+      "cmp": "<=",
+      "threshold": 0.6,
+      "source": "p50 over the lane passes of critical_path_s / lane_seconds; 1.0 is a sequential pass",
+      "source_de": "p50 über die Lane-Passes von critical_path_s / lane_seconds; 1,0 ist ein sequenzieller Pass",
+      "advice": "A pass whose critical path is its whole lane time runs its stations one after the other: plan them as a graph.",
+      "advice_de": "Ein Pass, dessen kritischer Pfad seine ganze Lane-Zeit ist, fährt die Stationen nacheinander: als Graph planen."
+    }
   ]
 }

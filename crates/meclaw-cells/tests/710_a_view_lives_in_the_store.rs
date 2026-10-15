@@ -23,14 +23,10 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::Duration;
-
 use display_colony::{Boot, attr, boot, calls_of, have_python, library_ships, present, request_of};
 use meclaw_core::serde_json::{Value, json};
 
 const APP: &str = "/alex/apps/note";
-
-const QUIET: Duration = Duration::from_millis(300);
 
 /// The rows of one owner in the table.
 fn rows_of<'a>(rows: &'a [Value], owner: &str) -> Vec<&'a Value> {
@@ -76,7 +72,7 @@ async fn a_view_lives_in_the_store() {
                    "topic": "note:1", "touched": "1"}),
         )
         .await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
     let rows = colony.store_rows().await;
     let own: Vec<&Value> = rows_of(&rows, "display");
     assert_eq!(
@@ -115,8 +111,8 @@ async fn a_view_lives_in_the_store() {
                    "topic": "bad:1", "state": "loud"}),
         )
         .await;
-    colony.settle(QUIET).await;
-    let refused = colony.receipts();
+    colony.settle().await;
+    let refused = colony.receipts().await;
     assert!(
         refused
             .iter()
@@ -155,7 +151,7 @@ async fn a_view_lives_in_the_store() {
 
     // -- The withdrawal takes the row out of the table -------------------------------
     colony.withdraw(APP, "flash").await;
-    colony.settle(QUIET).await;
+    colony.settle().await;
     let rows = colony.store_rows().await;
     assert!(
         !rows.iter().any(|r| r["view_id"] == "flash"),

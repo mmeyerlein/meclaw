@@ -267,6 +267,15 @@ fn edge(from: &str, to: &str) -> PlannedEdge {
     }
 }
 
+async fn begin_initial_apply(b: &Booted) {
+    let (ack_tx, ack_rx) = oneshot::channel();
+    b.inbox
+        .send(ColonyMsg::BeginInitialApply { ack: ack_tx })
+        .await
+        .expect("colony inbox closed");
+    ack_rx.await.expect("begin initial apply ack");
+}
+
 async fn initial_apply(b: &Booted, edges: Vec<PlannedEdge>) {
     let (ack_tx, ack_rx) = oneshot::channel();
     b.inbox
@@ -359,6 +368,15 @@ async fn child_colony() {
     // file when a life does not come up).
     let step = |what: &str| eprintln!("gh1043 child: {what}");
     let mut b = boot(&dir.join("colony.db"));
+    // The shipped bootstrap (`apply_bootstrap_plan`) opens the apply window
+    // before the first registration, on a reboot too. Without it, a later
+    // life routed the proxy's re-handed inbox rows while `/book` was still
+    // unregistered: the gate's lay became a routing error answered to the
+    // gate, and the frame was lost (GH #1200, 2 of 84 runs under 8-fold
+    // load; pinned in meclaw-colony
+    // `gh1200_an_emission_in_the_reboot_window_waits_for_its_target`).
+    begin_initial_apply(&b).await;
+    step("apply window open");
     let surfaces = Arc::new(SurfaceRegistry::new());
     register_peer(&mut b, &surfaces, &dir.join("friend")).await;
     step("peer registered");
@@ -515,8 +533,115 @@ fn count(dir: &std::path::Path, sql: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The colony's own log (`colony.db`), read-only; `0` when it cannot be read.
+fn colony_count(dir: &std::path::Path, sql: &str) -> i64 {
+    rusqlite::Connection::open_with_flags(
+        dir.join("colony.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()
+    .and_then(|c| c.query_row(sql, [], |r| r.get(0)).ok())
+    .unwrap_or(0)
+}
+
+/// GH #1200: open deliveries whose replayed attempts already reached the
+/// colony's cap (`REPLAY_MAX`, 3) — the next boot dead-letters them as
+/// `replay_exhausted` instead of delivering them. Before the fix a boot
+/// counted every open delivery, also one no handler had taken, and a healthy
+/// frame reached the cap under load; printed per round, so a red round says
+/// whether this was the way it was lost.
+const AT_REPLAY_CAP: &str = "SELECT count(*) FROM delivery_open WHERE replays >= 3";
+
 /// The replays the book answered from its record so far.
 const REPLAYS: &str = "SELECT coalesce(sum(replays), 0) FROM meclaw_consumed";
+
+/// Rows of `sql` (every column as text, `|`-joined) in the SQLite file
+/// `file`, read-only; one line `<error>` when it cannot be read.
+fn rows(file: &std::path::Path, sql: &str, key: &str) -> Vec<String> {
+    let read = || -> rusqlite::Result<Vec<String>> {
+        let c = rusqlite::Connection::open_with_flags(
+            file,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let mut st = c.prepare(sql)?;
+        let n = st.column_count();
+        st.query_map([format!("%{key}%")], |r| {
+            Ok((0..n)
+                .map(|i| match r.get_ref(i) {
+                    Ok(v) => match v {
+                        rusqlite::types::ValueRef::Null => "NULL".to_string(),
+                        rusqlite::types::ValueRef::Integer(i) => i.to_string(),
+                        rusqlite::types::ValueRef::Real(f) => f.to_string(),
+                        rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => {
+                            String::from_utf8_lossy(t).chars().take(160).collect()
+                        }
+                    },
+                    Err(e) => format!("<{e}>"),
+                })
+                .collect::<Vec<_>>()
+                .join(" | "))
+        })?
+        .collect()
+    };
+    read().unwrap_or_else(|e| vec![format!("<{e}>")])
+}
+
+/// GH #1200 (second recurrence): where a lost frame stopped. For every key
+/// with no `arrived` row: its row in the receiving proxy's inbox, every log
+/// row of the colony that names it (with its open delivery, if any), every
+/// dead letter that names it, and the book's rows. A red round says which
+/// hand-on lost it instead of only that one is missing.
+fn forensics(dir: &std::path::Path) -> String {
+    let arrived: std::collections::HashSet<String> = book(dir)
+        .and_then(|c| {
+            let mut st = c.prepare("SELECT key FROM arrived").ok()?;
+            st.query_map([], |r| r.get::<_, String>(0))
+                .ok()?
+                .collect::<rusqlite::Result<_>>()
+                .ok()
+        })
+        .unwrap_or_default();
+    let colony = dir.join("colony.db");
+    let mut out = String::new();
+    for key in (0..FRAMES).map(|i| format!("k{i:04}")) {
+        if arrived.contains(&key) {
+            continue;
+        }
+        let mut lines = vec![format!("missing {key}:")];
+        let mut add = |what: &str, file: &std::path::Path, sql: &str| {
+            for row in rows(file, sql, &key) {
+                lines.push(format!("  {what}: {row}"));
+            }
+        };
+        add(
+            "inbox",
+            &dir.join("friend").join("cell.db"),
+            "SELECT id, state, at_ms FROM peer_inbox WHERE frame LIKE ?1",
+        );
+        add(
+            "log",
+            &colony,
+            "SELECT m.id, m.from_path, m.to_path, m.parent_message_id, m.created_at,
+                    coalesce(d.replays, 'closed'), m.headers
+             FROM message_log m LEFT JOIN delivery_open d ON d.message_id = m.id
+             WHERE m.body_payload LIKE ?1 ORDER BY m.created_at",
+        );
+        add(
+            "dead",
+            &colony,
+            "SELECT error_code, resolved_target, created_at, detail FROM dead_letters
+             WHERE message_json LIKE ?1",
+        );
+        add(
+            "book",
+            &dir.join("book").join("cell.db"),
+            "SELECT 'pending', key, state FROM pending WHERE key LIKE ?1",
+        );
+        out.push_str(&lines.join("\n"));
+        out.push('\n');
+    }
+    out
+}
 
 /// What one round measured.
 #[derive(Debug)]
@@ -528,9 +653,14 @@ struct Round {
     claimed_never_arrived: i64,
     laid_never_claimed: i64,
     laid_twice: i64,
+    /// GH #1200: the most open deliveries at the colony's replay cap seen
+    /// after any kill of the round.
+    at_replay_cap: i64,
     /// Replayed answers the book gave from its record, per life (each life's
     /// replays happen at its boot, after the kill before it).
     replays: Vec<i64>,
+    /// Where each lost frame stopped (empty when nothing is missing).
+    forensics: String,
 }
 
 /// One round: `KILLS` lives, each posting a share of fresh frames (plus the
@@ -538,6 +668,7 @@ struct Round {
 /// stream; then a last life that posts what is left and finishes.
 async fn round(seed: u64) -> Round {
     let dir = tempfile::tempdir().expect("tempdir");
+    let keep_dir = std::env::var("GH1043_KEEP").is_ok();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -547,6 +678,7 @@ async fn round(seed: u64) -> Round {
     let share = FRAMES / (KILLS + 1);
     let mut replays = Vec::new();
     let mut replays_before = 0;
+    let mut at_replay_cap = 0;
     for _ in 0..KILLS {
         let (mut child, addr) = life(dir.path()).await;
         for _ in 0..share {
@@ -573,6 +705,7 @@ async fn round(seed: u64) -> Round {
             }
         }
         kill(&mut child).await;
+        at_replay_cap = at_replay_cap.max(colony_count(dir.path(), AT_REPLAY_CAP));
         let total = count(dir.path(), REPLAYS);
         replays.push(total - replays_before);
         replays_before = total;
@@ -591,9 +724,14 @@ async fn round(seed: u64) -> Round {
             f.acked = post(&client, &addr, f).await;
         }
     }
-    // The chain runs out: done when every frame arrived, or when nothing
-    // moved for 3 s (a lost frame never comes).
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // The chain runs out: done when every frame arrived (and a 500 ms settle
+    // saw no double behind it), or when nothing moved for `WAIT` — a lost
+    // frame never comes. The quiet window is a failure marker, not a
+    // discriminator: a hand-on replayed at boot or a store round behind a
+    // busy writer can stand still for seconds under full-suite load, and a
+    // 3 s window read such a frame as lost (GH #1200: acked 300, arrived
+    // 299, the missing one neither laid nor claimed).
+    let deadline = Instant::now() + 2 * WAIT;
     let (mut last, mut since) = (-1, Instant::now());
     while Instant::now() < deadline {
         let n = count(dir.path(), "SELECT count(*) FROM arrived");
@@ -601,7 +739,7 @@ async fn round(seed: u64) -> Round {
             (last, since) = (n, Instant::now());
         }
         if (n as usize >= FRAMES && since.elapsed() > Duration::from_millis(500))
-            || since.elapsed() > Duration::from_secs(3)
+            || since.elapsed() > WAIT
         {
             break;
         }
@@ -609,9 +747,11 @@ async fn round(seed: u64) -> Round {
     }
     kill(&mut child).await;
     replays.push(count(dir.path(), REPLAYS) - replays_before);
-    Round {
+    let mut m = Round {
         seed,
+        forensics: forensics(dir.path()),
         replays,
+        at_replay_cap,
         acked: frames.iter().filter(|f| f.acked).count(),
         arrived_distinct: count(dir.path(), "SELECT count(DISTINCT key) FROM arrived"),
         arrived_rows: count(dir.path(), "SELECT count(*) FROM arrived"),
@@ -628,7 +768,12 @@ async fn round(seed: u64) -> Round {
             dir.path(),
             "SELECT count(*) FROM (SELECT key FROM pending GROUP BY key HAVING count(*) > 1)",
         ),
+    };
+    if keep_dir && !m.forensics.is_empty() {
+        m.forensics
+            .push_str(&format!("kept {}\n", dir.keep().display()));
     }
+    m
 }
 
 /// The lock: a receiving colony killed at random points of a peer stream,
@@ -658,7 +803,8 @@ async fn a_killed_peer_stream_delivers_every_acknowledged_frame_exactly_once() {
         let m = round(seed).await;
         println!(
             "GH1043 round={r} seed={} kills={KILLS} frames={FRAMES} acked={} arrived={} rows={} \
-             claimed_never_arrived={} laid_never_claimed={} laid_twice={} replays_per_life={:?}",
+             claimed_never_arrived={} laid_never_claimed={} laid_twice={} at_replay_cap={} \
+             replays_per_life={:?}",
             m.seed,
             m.acked,
             m.arrived_distinct,
@@ -666,8 +812,12 @@ async fn a_killed_peer_stream_delivers_every_acknowledged_frame_exactly_once() {
             m.claimed_never_arrived,
             m.laid_never_claimed,
             m.laid_twice,
+            m.at_replay_cap,
             m.replays
         );
+        if !m.forensics.is_empty() {
+            println!("{}", m.forensics);
+        }
         replayed += m.replays.iter().sum::<i64>();
         if m.acked != FRAMES
             || m.arrived_distinct != FRAMES as i64

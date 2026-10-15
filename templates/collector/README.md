@@ -1395,7 +1395,7 @@ It is revoked with the ids, by the same empty rendering, for the same reason.
 
 ## Pins
 
-- `crates/meclaw-cells/tests/collector_window.rs` -- the shipped `script_inline` against
+- `crates/meclaw-cells/tests/misc_1/collector_window.rs` -- the shipped `script_inline` against
   real stdin documents: assembly, the gate, the seam and its bound, the round idle exit,
   the mid-round deferral and the memory tool (the request, its window arguments, the
   answer as a tool result, the switched-off tier). Since 2.0.2 also what a tool result may
@@ -1416,35 +1416,35 @@ It is revoked with the ids, by the same empty rendering, for the same reason.
   the raw payload, the last `messages[]` entry is an assistant text turn, `hop.partial` is
   `"1"`. Since `4.2.0` also the second unconditional `system` slot: the tree
   of a window without advice carries `instructions.mode` emptied beside `consult`.
-- `crates/meclaw-cells/tests/gh834_a_turn_briefs_affinity_about_the_counterpart.rs` -- the
+- `crates/meclaw-cells/tests/assemble/gh834_a_turn_briefs_affinity_about_the_counterpart.rs` -- the
   brief leg over the shipped script: the request with the counterpart as subject, the fan-in
   that waits for it, the empty leg without a counterpart, no leg without the knob, the pair in
   the prompt with no `system`, an error as an empty leg, the derived id.
   `gh834_the_member_stamps_the_brief_and_the_answer_finds_the_generation.rs` -- the same
   road on a booted colony, member and affinity included.
-- `crates/meclaw-cells/tests/gh843_a_cut_answer_leaves_without_its_sidecar_and_says_so.rs` --
+- `crates/meclaw-cells/tests/assemble/gh843_a_cut_answer_leaves_without_its_sidecar_and_says_so.rs` --
   every answer carries `finish_reason` and `truncated`: a `length` finish through talky's
   splitter and cogny's direct edge is marked `"1"`, a `stop` answer is not, and the digest,
   the store report and the interim sentence carry both keys empty.
   `gh841_a_recall_round_closes_under_its_turn.rs` -- a `memory_recall` result walks home under
   its round and the round fires; a round lane without a turn id is parked with a stderr line.
-- `crates/meclaw-cells/tests/voice_duplex_the_collector_switches_to_advise_on_the_engine.rs`
+- `crates/meclaw-cells/tests/voice/voice_duplex_the_collector_switches_to_advise_on_the_engine.rs`
   -- the advise mode: `context.engine == 'duplex'` writes the charter, everything else
   writes the slot EMPTY, the channel node alone switches nothing, another engine name is not
   this one, and the charter in `instructions.reply` keeps its own path beside it.
-- `crates/meclaw-cells/tests/voice_duplex_a_delegation_never_reaches_the_memory.rs` -- the
+- `crates/meclaw-cells/tests/voice/voice_duplex_a_delegation_never_reaches_the_memory.rs` -- the
   second event lane: the row and its correlation, the fresh round with the whole budget, the
   frame on the wire.
-- `crates/meclaw-cells/tests/voice_duplex_a_turn_pair_is_one_episode.rs` -- the duplex turn:
+- `crates/meclaw-cells/tests/voice/voice_duplex_a_turn_pair_is_one_episode.rs` -- the duplex turn:
   two rows under one `turn_id`, the answer row sorting behind the question -- and the
   counter-pins, a question-only turn and an empty answer half writing exactly one row.
-- `crates/meclaw-cells/tests/gh278_the_ambient_recall_is_a_tool_result.rs` -- the channel
+- `crates/meclaw-cells/tests/misc_2/gh278_the_ambient_recall_is_a_tool_result.rs` -- the channel
   itself, since 2.1.0: the ambient bundle leaves the seam as the last `tool_call` /
   `tool_result` pair of `messages[]`, the call id is derived and therefore stable across a
   re-assembly of the same turn, `system.memory` carries the revocation and no data under
   every `memory_form`, and a model's OWN `memory_recall` still
   answers under its original `tool_call_id` without a synthetic pair.
-- `crates/meclaw-cells/tests/collector_colony.rs` -- a running colony with no memory hive
+- `crates/meclaw-cells/tests/misc_1/collector_colony.rs` -- a running colony with no memory hive
   in it at all: a runaway round that the seam ends, a lost tool result whose round a sweep
   closes, a mid-round turn that defers and rides with the next assembly, and a batching
   dispatcher whose tool answers the whole bundle in one message. Two more trees run the

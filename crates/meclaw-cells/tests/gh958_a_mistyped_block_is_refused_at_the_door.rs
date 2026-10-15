@@ -21,10 +21,7 @@
 #[path = "support/display_colony.rs"]
 mod display_colony;
 
-use std::time::{Duration, Instant};
-
-use display_colony::{Boot, MARKER, boot, have_python, library_ships, repo, to_screen};
-use meclaw_core::Body;
+use display_colony::{Boot, boot, have_python, library_ships, repo, to_screen};
 use meclaw_core::serde_json::{Value, json};
 
 const APP: &str = "/alex/apps/steps";
@@ -39,41 +36,6 @@ fn pane(children: Value) -> Value {
 fn view(view_id: &str, content: Value) -> Value {
     json!({"view_id": view_id, "region": "main", "kind": "component",
            "content": content, "components": [], "ttl_ms": 0, "messages": []})
-}
-
-/// The receipts that left the hive, as `(error_code, view_id, detail)`, until
-/// `n` refusals are in hand.
-async fn refusals(colony: &mut display_colony::Colony, n: usize) -> Vec<(String, String, String)> {
-    let deadline = Instant::now() + MARKER;
-    let mut out = Vec::new();
-    loop {
-        while let Ok(m) = colony.egress.try_recv() {
-            if m.headers.hop.get("route").and_then(Value::as_str) != Some("receipt") {
-                continue;
-            }
-            let Body::Inline(body) = &m.body else {
-                continue;
-            };
-            let r = &body["receipt"];
-            if r["error_code"].as_str().unwrap_or("").is_empty() {
-                continue;
-            }
-            out.push((
-                r["error_code"].as_str().unwrap_or("").to_string(),
-                r["view_id"].as_str().unwrap_or("").to_string(),
-                r["detail"].as_str().unwrap_or("").to_string(),
-            ));
-        }
-        if out.len() >= n {
-            return out;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "only {} of {n} refusals left the hive within 30s: {out:?}",
-            out.len()
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -120,7 +82,6 @@ async fn a_mistyped_block_is_refused_at_the_door() {
     ];
     for (id, content, _) in &bad {
         colony
-            .h
             .send(to_screen("in_view", APP, view(id, content.clone())))
             .await;
     }
@@ -143,7 +104,7 @@ async fn a_mistyped_block_is_refused_at_the_door() {
         );
     }
 
-    let got = refusals(&mut colony, bad.len()).await;
+    let got = colony.refusals(bad.len()).await;
     for (id, _, reason) in &bad {
         let hit = got
             .iter()

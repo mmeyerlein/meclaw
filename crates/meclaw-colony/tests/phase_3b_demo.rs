@@ -1,12 +1,34 @@
 //! Phase-3b demo: UBF body validation + content.header extraction
 //! + 3-hop direct-parent regression (closes the 3a gap from fixup 6-fix).
+//!
+//! Topology class (AGENTS.md rule 11): multi-thread runtime, event and
+//! invariant assertions only, no time window as a verdict. The arrival at `/c`
+//! is awaited as the event itself (the capture cell's channel) under the hang
+//! mark; that nothing further reached `/c` is read after the colony's
+//! quiescence barrier (`ColonyHandle::quiesce`), which every hop of the chain
+//! follows from.
 
 use meclaw_core::Uuid;
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, MessageBuilder, Path};
 use meclaw_testing::MessageBuilder as TestMessageBuilder;
-use meclaw_testing::topologies::phase_3b::build_phase_3b_topology;
-use std::time::Duration;
+use meclaw_testing::deadline::hang;
+use meclaw_testing::topologies::phase_3b::{Phase3bTopology, build_phase_3b_topology};
+
+/// The one message that reaches `/c`: its arrival is awaited as an event,
+/// and after quiescence nothing more may have followed it.
+async fn the_one_message_at_c(topo: &mut Phase3bTopology) -> meclaw_core::Message {
+    let msg = hang("the chain's message reaches /c", topo.c_rx.recv())
+        .await
+        .expect("the /c capture channel stays open while the colony runs");
+    topo.colony.quiesce().await;
+    let extra = topo.c_rx.try_recv().ok();
+    assert!(
+        extra.is_none(),
+        "exactly one message must reach /c; also got {extra:#?}"
+    );
+    msg
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase_3b_ubf_echo_propagates_header_through_chain() {
@@ -20,14 +42,7 @@ async fn phase_3b_ubf_echo_propagates_header_through_chain() {
         .build();
     topo.colony.send_from(Path::new("/"), src).await;
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let mut received = Vec::new();
-    while let Ok(m) = topo.c_rx.try_recv() {
-        received.push(m);
-    }
-    assert_eq!(received.len(), 1, "exactly one message must reach /c");
-    let msg = &received[0];
+    let msg = the_one_message_at_c(&mut topo).await;
     assert_eq!(
         msg.headers.context.get("session_id"),
         Some(&json!("test-session")),
@@ -52,7 +67,6 @@ async fn phase_3b_ubf_echo_propagates_header_through_chain() {
     assert_eq!(msgs[0]["origin"], json!("user"));
     assert_eq!(msgs[1]["origin"], json!("assistant"));
     assert_eq!(msgs[2]["origin"], json!("assistant"));
-    drop(received);
 
     topo.colony.shutdown().await;
 }
@@ -74,14 +88,7 @@ async fn phase_3b_three_hop_parent_message_id_is_direct_not_grandparent() {
     let src_id = src.id;
     topo.colony.send_from(Path::new("/"), src).await;
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let mut received = Vec::new();
-    while let Ok(m) = topo.c_rx.try_recv() {
-        received.push(m);
-    }
-    assert_eq!(received.len(), 1);
-    let msg = &received[0];
+    let msg = the_one_message_at_c(&mut topo).await;
     assert_eq!(msg.trace_id, trace, "trace_id constant across chain");
     // The 3a fixup 6-fix regression: parent_message_id at /c must be the
     // ID of the message /b emitted — NOT src_id (grandparent at /c) and
@@ -100,7 +107,6 @@ async fn phase_3b_three_hop_parent_message_id_is_direct_not_grandparent() {
         Some(fake_grandparent),
         "parent at /c must NOT be the fake grandparent (great-grandparent)"
     );
-    drop(received);
 
     topo.colony.shutdown().await;
 }

@@ -1,4 +1,4 @@
-# `builder-librarian@2.2.59`
+# `builder-librarian@2.2.71`
 
 Lexical retrieval over the builder's own knowledge base, as a hive of existing cell types
 -- no new cell type, no Rust. Three cells: `retrieve` (a `code` cell, the query/brief state
@@ -164,7 +164,7 @@ text as zero rows.
 **Since 2.2.0 every knob of this hive is a param of `./retrieve`, not an environment
 variable** ([#138](https://github.com/mmeyerlein/meclaw/issues/138), ruling R-0904-6). Each
 one exists three times with one value: under `params`, as a `contract.settings` entry, and
-as the literal the shipped script falls back to; `crates/meclaw-cells/tests/gh138_long_tail_params.rs`
+as the literal the shipped script falls back to; `crates/meclaw-cells/tests/misc_2/gh138_long_tail_params.rs`
 pins the three against each other. Retune one librarian without touching another:
 
 ```json
@@ -251,7 +251,7 @@ travel with the exported tree, so the gate cannot stand in the public CI -- it d
 failed on a missing file, which says nothing about whether the corpus drifted
 ([#234](https://github.com/mmeyerlein/meclaw/issues/234) removed it). The unskippable run is the
 maintainers' release-export gate (its rule R11), in the private tree that
-has the sources, before any export is built. `crates/meclaw-cells/tests/librarian_seed_corpus.rs`
+has the sources, before any export is built. `crates/meclaw-cells/tests/misc_8/librarian_seed_corpus.rs`
 invokes the same `--check` from `cargo test` wherever the generator is present, and skips
 where it is not -- which in a clone of the public tree is always, so a green run of that test
 asserts nothing about the corpus by itself. The corpus is current or the export is red.
@@ -329,7 +329,7 @@ about:
   stands: `--check` regenerates and byte-compares, run from the `corpus` station of
   `scripts/gate.sh` (every strand, the integration pass and the release; the export
   reads that station's verdict out of the release receipt as R11) and from
-  `crates/meclaw-cells/tests/librarian_seed_corpus.rs`. It is deliberately **not** in
+  `crates/meclaw-cells/tests/misc_8/librarian_seed_corpus.rs`. It is deliberately **not** in
   `.github/workflows/ci.yml`
   ([#234](https://github.com/mmeyerlein/meclaw/issues/234)): the generator lives under
   `workshop/`, which does not travel, so the step failed on a missing file and said

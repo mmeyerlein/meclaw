@@ -54,16 +54,13 @@
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
-#[path = "support/presenter_colony.rs"]
-mod presenter_colony;
+use crate::display_colony::presenter_colony;
 
 use display_colony::{SCREEN, body_of, copy_tree, hop_of, patch_json, read_json, repo, write_json};
-use meclaw_colony::{ColonyMsg, MutationOutcome};
-use meclaw_core::Uuid;
+use meclaw_colony::MutationOutcome;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::mock_http::MockResponse;
 use presenter_colony::{Dials, PRESENTER, Stage, boot, decision, guard, to_path, warm};
-use tokio::sync::oneshot;
 
 /// The member's round, as the builder's edge stamps it (`agent:<generation>`,
 /// `member:<ctx.member_person>`) -- already in the canonical (sorted) order a kept row
@@ -273,22 +270,30 @@ fn templates_dir() -> tempfile::TempDir {
     td
 }
 
+/// The data wait of a lock whose claim IS the end of the wait: a set that never comes
+/// (another round's rows only) waits for the stage's clock, and the withdrawal and the
+/// `no_data` row are the events the lock awaits.
+const DUE_SOON_MS: u64 = 5_000;
+
+/// The data wait of a lock whose claim is the data itself: past twice the scaled hang
+/// mark, so the stage's clock never closes the window before the answer is placed and a
+/// missing answer ends in `HANG:` with its account.
+///
+/// tv-bn M7b8 (TV-F7, 1/5 under CPUQuota 80): with one wait for both kinds of claim the
+/// lock raced the wall clock -- a resident answer later than `data_wait_ms` came to a
+/// closed turn, the window was withdrawn and the card stood empty
+/// ("the card carries the member's digest: null").
+fn never_due_ms() -> u64 {
+    let past = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG) * 2;
+    u64::try_from(past.as_millis()).expect("a wait in ms")
+}
+
 /// The two apps and their road, grown into the running member by one mutation; the
 /// returned directory holds the templates and lives as long as the test.
 async fn install_residents(s: &Stage) -> tempfile::TempDir {
     let td = templates_dir();
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::RescanTemplates {
-            templates_root: td.path().to_path_buf(),
-            ack: ack_tx,
-        })
+    s.c.rescan_templates(td.path())
         .await
-        .expect("the colony is up");
-    ack_rx
-        .await
-        .expect("the scan answers")
         .expect("the template scan succeeds");
     let diff = json!({
         "add_nodes": [
@@ -297,19 +302,7 @@ async fn install_residents(s: &Stage) -> tempfile::TempDir {
         ],
         "add_edges": resident_road(),
     });
-    let (ack_tx, ack_rx) = oneshot::channel();
-    s.c.h
-        .inbox_tx
-        .send(ColonyMsg::Mutation {
-            payload: json!({"scope": "/alex", "diff": diff}),
-            reply_to: None,
-            trace_id: Uuid::now_v7(),
-            parent_message_id: Uuid::now_v7(),
-            ack: ack_tx,
-        })
-        .await
-        .expect("the colony is up");
-    let outcome = ack_rx.await.expect("the mutation answers");
+    let outcome = s.c.apply_diff("/alex", diff).await;
     assert!(
         matches!(outcome, MutationOutcome::Committed { .. }),
         "growing the two apps and their rendered road is one ordinary mutation: {outcome:?}"
@@ -336,43 +329,40 @@ async fn wait_kept(s: &Stage, hive: &str, store: &str, n: usize) {
 
 /// A finished digest, kept with `round` the way `./format` hands it to `./shelf`.
 async fn keep_digest(s: &Stage, round: &str, lead: &str) {
-    s.c.h
-        .send(to_path(
-            DIGEST,
-            json!({"route": "test_keep"}),
-            json!({"digest_round": round}),
-            json!({"messages": [{"origin": "assistant", "type": "text",
+    s.c.send(to_path(
+        DIGEST,
+        json!({"route": "test_keep"}),
+        json!({"digest_round": round}),
+        json!({"messages": [{"origin": "assistant", "type": "text",
                                  "text": format!("Daily digest:\n{lead} More of it.")}]}),
-        ))
-        .await;
+    ))
+    .await;
 }
 
 /// A finished digest of a SCHEDULED run, handed in over the copy's `test_tick` lane (whose
 /// edge writes `digest_origin` 'schedule'). The sender also forges another round as
 /// `digest_round`: a scheduled run ignores it and is kept for its holder (OR-NL-158).
 async fn tick_digest(s: &Stage, lead: &str) {
-    s.c.h
-        .send(to_path(
-            DIGEST,
-            json!({"route": "test_tick"}),
-            json!({"digest_round": OTHER_ROUND, "digest_origin": "parent"}),
-            json!({"messages": [{"origin": "assistant", "type": "text",
+    s.c.send(to_path(
+        DIGEST,
+        json!({"route": "test_tick"}),
+        json!({"digest_round": OTHER_ROUND, "digest_origin": "parent"}),
+        json!({"messages": [{"origin": "assistant", "type": "text",
                                  "text": format!("Daily digest:\n{lead} More of it.")}]}),
-        ))
-        .await;
+    ))
+    .await;
 }
 
 /// The planner's final text, kept with the turn's question, id and round the way the
 /// planner hands it to `./archive`.
 async fn keep_answer(s: &Stage, round: &str, turn_id: &str, question: &str, answer: &str) {
-    s.c.h
-        .send(to_path(
-            RESEARCH,
-            json!({"route": "test_keep"}),
-            json!({"question": question, "turn_id": turn_id, "audience_set": round}),
-            json!({"messages": [{"origin": "assistant", "type": "text", "text": answer}]}),
-        ))
-        .await;
+    s.c.send(to_path(
+        RESEARCH,
+        json!({"route": "test_keep"}),
+        json!({"question": question, "turn_id": turn_id, "audience_set": round}),
+        json!({"messages": [{"origin": "assistant", "type": "text", "text": answer}]}),
+    ))
+    .await;
 }
 
 /// A sure verdict for `topic` with `lead`, every other asked key answered with its quiet
@@ -476,9 +466,11 @@ async fn a_digest_is_shown_only_to_its_round() {
         eprintln!("SKIP: the templates did not travel into this tree (GH #49)");
         return;
     }
+    // 1. Only another round's digest is kept: the window waits for the clock and is
+    //    withdrawn -- the end of the wait is what this half awaits.
     let mut s = boot(Dials {
         screen_audience: json!(["member:alex"]),
-        data_wait_ms: 5_000,
+        data_wait_ms: DUE_SOON_MS,
         // The shipped built-in topics: this lock answers every question they add.
         builtin_topics: Value::Null,
         ..Dials::default()
@@ -529,7 +521,22 @@ async fn a_digest_is_shown_only_to_its_round() {
     let row = s.journal_of("t1").await;
     assert_eq!(row["fallback"], json!("no_data"), "{row}");
 
-    // The member's own digest is kept: now the card stands, and only with it.
+    s.c.shutdown().await;
+
+    // 2. The member's own digest is kept beside the other round's: now the card stands,
+    //    and only with it. The answer is the awaited event, so no clock closes the window
+    //    before it (tv-bn M7b8, see `never_due_ms`).
+    let mut s = boot(Dials {
+        screen_audience: json!(["member:alex"]),
+        data_wait_ms: never_due_ms(),
+        builtin_topics: Value::Null,
+        ..Dials::default()
+    })
+    .await;
+    let _templates = install_residents(&s).await;
+    warm(&s).await;
+    keep_digest(&s, OTHER_ROUND, OTHER_LEAD).await;
+    wait_kept(&s, DIGEST, "store", 1).await;
     keep_digest(&s, ROUND, OUR_LEAD).await;
     wait_kept(&s, DIGEST, "store", 2).await;
 
@@ -554,6 +561,8 @@ async fn a_digest_is_shown_only_to_its_round() {
         card.to_string().contains(OUR_LEAD),
         "the card carries the member's digest: {card}"
     );
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    s.c.settle().await;
     assert!(
         !s.c.tree().await.to_string().contains(OTHER_LEAD),
         "another round's digest stands at web"
@@ -567,14 +576,17 @@ async fn a_digest_is_shown_only_to_its_round() {
 /// One boot of the member colony with `screen` as the presenter's `screen_audience`, the
 /// apps grown in, and one scheduled digest kept for its holder.
 ///
-/// `star_only` is the stage's `window_requires_star_data` (`null` = shipped, on).
+/// `star_only` is the stage's `window_requires_star_data` (`null` = shipped, on);
+/// `data_wait_ms` is [`DUE_SOON_MS`] where the lock awaits the end of the wait and
+/// [`never_due_ms`] where it awaits the data.
 async fn boot_with_a_scheduled_digest(
     screen: Value,
     star_only: Value,
+    data_wait_ms: u64,
 ) -> (Stage, tempfile::TempDir) {
     let s = boot(Dials {
         screen_audience: screen,
-        data_wait_ms: 5_000,
+        data_wait_ms,
         builtin_topics: Value::Null,
         window_requires_star_data: star_only,
         ..Dials::default()
@@ -600,7 +612,7 @@ async fn a_scheduled_digest_shows_on_the_member_screen_and_no_other() {
     // 1. The member's screen: the scheduled digest is the member's, read under the round
     //    the builder's read edge stamps, and drawn as the `digest` card.
     let (mut s, _templates) =
-        boot_with_a_scheduled_digest(json!(["member:alex"]), Value::Null).await;
+        boot_with_a_scheduled_digest(json!(["member:alex"]), Value::Null, never_due_ms()).await;
     s.turn_in("t1", "what did the digest say", round()).await;
     s.ask().await.release(verdict("digest", "last"));
     s.wait_drawn("show-digest-last").await;
@@ -650,8 +662,15 @@ async fn with_the_switch_on_no_digest_window_opens() {
 /// Case 2 of the digest lock under one setting of `window_requires_star_data`.
 async fn another_round(star_only: bool) {
     let dial = if star_only { json!(true) } else { Value::Null };
+    // Switch on, the set never stands and the clock's `no_data` is the awaited end; switch
+    // off, the member's digest is the awaited event (tv-bn M7b8, see `never_due_ms`).
+    let wait = if star_only {
+        DUE_SOON_MS
+    } else {
+        never_due_ms()
+    };
     let (mut s, _templates) =
-        boot_with_a_scheduled_digest(json!(["member:alex", "member:bob"]), dial).await;
+        boot_with_a_scheduled_digest(json!(["member:alex", "member:bob"]), dial, wait).await;
     s.turn_in("t1", "what did the digest say", round()).await;
     s.ask().await.release(verdict("digest", "last"));
     let (_, body) = answer_at_stage(&s, "daily-digest", "t1/last").await;
@@ -717,6 +736,8 @@ async fn a_research_answer_is_shown_only_to_its_round() {
     }
     let mut s = boot(Dials {
         screen_audience: json!(["member:alex"]),
+        // The answer is the awaited event (tv-bn M7b8, see `never_due_ms`).
+        data_wait_ms: never_due_ms(),
         // The shipped built-in topics: this lock answers every question they add.
         builtin_topics: Value::Null,
         ..Dials::default()
@@ -770,13 +791,18 @@ async fn a_research_answer_is_shown_only_to_its_round() {
         s.c.tree().await.to_string().contains(OUR_QUESTION)
     })
     .await;
+    let tree = s.c.tree().await;
     assert!(
-        s.c.tree()
-            .await
-            .to_string()
-            .contains("The roses opened today."),
-        "the answer stands beside its question"
+        tree.to_string().contains("The roses opened today."),
+        "the answer stands beside its question: {:#?}; journal {}",
+        tree.as_object().map(|m| m
+            .iter()
+            .filter(|(_, v)| v.to_string().contains(OUR_QUESTION))
+            .collect::<Vec<_>>()),
+        s.journal_of("t1").await
     );
+    // TV-A2: a claim of absence is judged after quiescence, not mid-flight (re-check tv-bn M7b3 M2).
+    s.c.settle().await;
     assert!(
         !s.c.tree().await.to_string().contains(OTHER_QUESTION),
         "another round's question stands at web"

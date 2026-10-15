@@ -1624,7 +1624,7 @@ pub(crate) fn sql_error_outcome(op: &'static str, e: &rusqlite::Error) -> OpOutc
     }
 }
 
-/// Classify a rusqlite error into one of the six store `error_code` values
+/// Classify a rusqlite error into a store `error_code`
 /// (cell-types.md Z.71). `type_mismatch` maps to a clean `ErrorCode::TypeMismatch`
 /// arm. `unknown_table` / `unknown_column` surface as `ErrorCode::Unknown`
 /// (SQLITE_ERROR) and are disambiguated by conservative substring match on the
@@ -1637,6 +1637,11 @@ fn classify_sql_error(e: &rusqlite::Error) -> (&'static str, String) {
     let msg = e.to_string();
     match e {
         rusqlite::Error::SqliteFailure(err, _) => match err.code {
+            // GH #1082: SQLite could not open a file the database needs (the
+            // database, its journal or a temp file) — under fd exhaustion every
+            // operation ends here. It is the store's open failure, not a refused
+            // statement, so it is named as one instead of `sql_error`.
+            rusqlite::ErrorCode::CannotOpen => ("store_degraded", msg),
             rusqlite::ErrorCode::ConstraintViolation => ("constraint_violation", msg),
             rusqlite::ErrorCode::TypeMismatch => ("type_mismatch", msg),
             // SQLITE_ERROR (ErrorCode::Unknown) carries "no such table/column" in
@@ -3160,5 +3165,23 @@ mod tests {
         let err = conn.execute("BOGUS SQL", []).unwrap_err();
         let (code, _) = classify_sql_error(&err);
         assert_eq!(code, "sql_error");
+    }
+
+    /// GH #1082: a file the database needs could not be opened (`SQLITE_CANTOPEN`)
+    /// is the store's open failure, not a statement the database refused. In the
+    /// lab colony that filed the issue the process had run out of file
+    /// descriptors (226 `cell.db` × 3 fds plus ~216 pipes against a soft limit of
+    /// 1024); `sql_error` sent the reader of the message log to the schema.
+    /// The error is built by hand because exhausting the fds of the test process
+    /// would starve every other test in it.
+    #[test]
+    fn an_unopenable_database_file_is_store_degraded() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some("unable to open database file".to_string()),
+        );
+        let (code, text) = classify_sql_error(&err);
+        assert_eq!(code, "store_degraded", "{text}");
+        assert!(text.contains("unable to open"), "the cause travels: {text}");
     }
 }

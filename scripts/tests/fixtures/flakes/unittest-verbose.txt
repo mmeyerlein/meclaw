@@ -1,0 +1,21 @@
+test_a_green_case (test_example.TheThing.test_a_green_case) ... ok
+test_a_flaky_case (test_example.TheThing.test_a_flaky_case) ... FAIL
+test_an_old_style_case (test_other.OldStyle) ... ERROR
+test_skipped_case (test_example.TheThing.test_skipped_case) ... skipped 'no engine'
+
+======================================================================
+ERROR: test_an_old_style_case (test_other.OldStyle)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+OSError: a port was busy
+
+======================================================================
+FAIL: test_a_flaky_case (test_example.TheThing.test_a_flaky_case)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.120s
+
+FAILED (failures=1, errors=1, skipped=1)

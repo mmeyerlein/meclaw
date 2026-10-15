@@ -142,22 +142,30 @@ mod tests {
     /// GH #867: nothing on the page needs `'unsafe-inline'` or `blob:` in a
     /// proxy's `script-src`. Every `<script>` has a `src`, the style is a file,
     /// and the worklet is loaded by URL rather than from a string.
+    ///
+    /// The page is read as markup, by the reader every page lock shares
+    /// (`meclaw_testing::page_scripts`): the string search this test did before
+    /// (`split("<script")`) let `<SCRIPT>`, an `onload=` handler, a `javascript:`
+    /// link and a self-closed `<script/>` through (re-check tv-bn M9e, B-M1).
     #[test]
     fn page_runs_under_script_src_self() {
         let page = html();
-        let scripts: Vec<&str> = page.split("<script").skip(1).collect();
-        assert_eq!(scripts.len(), 1, "one module script: {page}");
-        for tag in scripts {
-            let open = tag.split('>').next().unwrap_or_default();
-            assert!(
-                open.contains(" src=\"test.js\"") && open.contains("type=\"module\""),
-                "the one script is the module file, not inline text: {open}"
-            );
-        }
+        let read = meclaw_testing::page_scripts::assert_no_inline_code("index.html", page);
+        let lower = page.to_ascii_lowercase();
+        assert_eq!(
+            lower.matches("<script").count(),
+            1,
+            "one module script: {page}"
+        );
         assert!(
-            !page.contains("<style"),
+            page.contains("<script type=\"module\" src=\"test.js\"></script>"),
+            "the one script is the module file, not inline text: {page}"
+        );
+        assert!(
+            !lower.contains("<style"),
             "the style is test.css, not a block"
         );
+        assert_eq!(read.styles, 0, "the style is test.css, not a block");
         for (name, file) in [("index.html", page), ("test.js", script())] {
             assert!(!file.contains("blob:"), "{name} names a blob: URL");
             assert!(

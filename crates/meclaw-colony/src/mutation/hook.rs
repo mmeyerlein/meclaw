@@ -11,16 +11,26 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "test-hooks")]
 use tokio::sync::Notify;
 
+/// The parked hook: `(release, entered)`.
 #[cfg(feature = "test-hooks")]
-static AFTER_RENAME: OnceLock<Mutex<Option<Arc<Notify>>>> = OnceLock::new();
+type AfterRename = (Arc<Notify>, Arc<Notify>);
 
 #[cfg(feature = "test-hooks")]
-pub fn set_after_rename(n: Arc<Notify>) {
+static AFTER_RENAME: OnceLock<Mutex<Option<AfterRename>>> = OnceLock::new();
+
+/// Parks the next `handle_mutation` after rename(2) until `release` is
+/// notified. Returns the `entered` signal: it fires once the mutation sits in
+/// the hook -- after its durable in_flight insert -- so a test waits on an
+/// event instead of polling `colony.db` (GH #1208, re-check tv-p1a M1; TV-S1).
+#[cfg(feature = "test-hooks")]
+pub fn set_after_rename(release: Arc<Notify>) -> Arc<Notify> {
+    let entered = Arc::new(Notify::new());
     AFTER_RENAME
         .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap()
-        .replace(n);
+        .replace((release, entered.clone()));
+    entered
 }
 
 #[cfg(feature = "test-hooks")]
@@ -78,8 +88,15 @@ pub async fn park_after_rename() {
     #[cfg(feature = "test-hooks")]
     {
         let hook = AFTER_RENAME.get().and_then(|m| m.lock().unwrap().clone());
-        if let Some(n) = hook {
-            n.notified().await;
+        if let Some((release, entered)) = hook {
+            // Registered BEFORE `entered` fires: a release sent the moment the
+            // test sees `entered` is never lost (`notify_waiters` keeps no permit).
+            let released = release.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            // `notify_one` stores a permit: a test that starts waiting late still sees it.
+            entered.notify_one();
+            released.await;
         }
     }
     #[cfg(not(feature = "test-hooks"))]
@@ -100,14 +117,15 @@ mod tests {
     async fn after_rename_hook_parks_until_notified() {
         let _guard = HOOK_TEST_LOCK.lock().await;
         let notify = Arc::new(Notify::new());
-        set_after_rename(notify.clone());
+        let entered = set_after_rename(notify.clone());
 
         let park_task = tokio::spawn(async {
             park_after_rename().await;
             "released"
         });
-        // Give park a tick to start awaiting.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // GH #1208 (TV-S1): the hook says when it parks, no 50 ms window.
+        meclaw_testing::deadline::hang("park_after_rename enters the hook", entered.notified())
+            .await;
         assert!(!park_task.is_finished(), "park_after_rename must wait");
 
         notify.notify_waiters();

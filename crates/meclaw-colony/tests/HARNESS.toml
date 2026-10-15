@@ -1,0 +1,22 @@
+# Harness table of meclaw-colony: which integration-test file folds into which
+# test binary. Read by scripts/harness_fold.py (--plan/--apply/--unfold/--check).
+# A stem no rule matches goes to `misc`; a harness above max_files splits into
+# <name>_1.._n. First matching rule wins.
+max_files = 60
+keep = []
+
+[[rule]]
+match = "^phase_"
+harness = "phase"
+
+[[rule]]
+match = "^paket_"
+harness = "paket"
+
+[[rule]]
+match = "^(hardening|substrate|pre14|audit|a[0-9])_"
+harness = "hardening"
+
+[[rule]]
+match = "^gh[0-9]+_"
+harness = "gh"

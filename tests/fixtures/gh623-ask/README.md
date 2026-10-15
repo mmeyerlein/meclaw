@@ -20,11 +20,11 @@ paths above have no `/main` prefix.
 
 ```bash
 cp -r tests/fixtures/gh623-ask /tmp/ask-fixture
-cargo run -p meclaw-cli -- --root /tmp/ask-fixture --daemon --api 127.0.0.1:7777
+cargo run -p meclaw -- --root /tmp/ask-fixture --daemon --api 127.0.0.1:7777
 
 # in a second shell
-cargo run -p meclaw-cli -- ask --api 127.0.0.1:7777 --target /door "hello"
+cargo run -p meclaw -- ask --api 127.0.0.1:7777 --target /door "hello"
 # echo: hello
 ```
 
-Used by `crates/meclaw-cli/tests/gh623_ask_e2e.rs`.
+Used by `crates/meclaw/tests/misc/gh623_ask_prints_the_answer.rs`.

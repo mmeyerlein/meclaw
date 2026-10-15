@@ -20,11 +20,18 @@
 //! proof measured in Chromium alone says nothing about the device this screen is carried
 //! on.
 //!
-//! **Why `#[ignore]`.** Six boots, six pages, six sets of gestures: four to six minutes,
-//! a fifth of the integration pass's whole budget, for proofs that change between two
-//! strands about as often as the sheet does. The station `browser:display` plans this
-//! with scope `colony` in `integration` and `release` (GH #746) and runs it with
-//! `--run-ignored`; the sheet half carries the strand gate.
+//! **One test per line.** Each of the six lines is a test of its own with a colony of its
+//! own: nextest runs a test as a process, so six tests can run side by side where one
+//! test drove its six lines in a row. The Chromium lines do; the WebKit lines take turns
+//! in the nextest group `webkit` (software rendering takes every core of the host), and
+//! the names carry the engine so that the group's `test(/webkit/)` picks exactly those
+//! three (`.config/nextest.toml`). Every line builds its stage on a fresh colony, so no
+//! line measures what the gestures of the line before left behind.
+//!
+//! **Why `#[ignore]`.** Six boots, six pages, six sets of gestures: minutes, for proofs
+//! that change between two strands about as often as the sheet does. The station
+//! `browser:display` plans this with scope `colony` in `integration` and `release`
+//! (GH #746) and runs it with `--run-ignored`; the sheet half carries the strand gate.
 //!
 //! **Where the evidence lands.** Screenshots and one report per run under
 //! `target/beweis/display-browser/<engine>-<viewport>/`, so a red B-number can be looked
@@ -33,17 +40,31 @@
 //! and left the tree dirty -- and a dirty tree is a refused export (GH #775). Evidence a
 //! wave keeps is committed once, by hand; what a run produces belongs under `target/`.
 //!
-//! **Why SKIP and not RED.** The same tool guard as every other browser proof in this
-//! tree (R2b): no `playwright`, no browser bundle, no laboratory (`wkenv.sh`), no `node`
-//! -- the driver says `SKIP` on a line of its own, leaves with 3, and this test passes. A
-//! host that cannot measure is not a finding about the screen.
+//! **When SKIP and when RED.** Outside the gate, the same tool guard as every other
+//! browser proof in this tree (R2b): no `playwright`, no browser bundle, no laboratory
+//! (`wkenv.sh`), no `node` -- the driver says `SKIP` on a line of its own, leaves with 3,
+//! and this test passes. A host that cannot measure is not a finding about the screen.
+//! Inside the gate the station books the engines and the runner sets
+//! `MECLAW_REQUIRE_BROWSERS=1` (GH #1161): an engine that is absent or does not start is
+//! then `NO-ENGINE ...`, exit 1 and no report, and this test is red. Only a missing
+//! `node` stays a `SKIP` there.
 
 #[path = "support/display_colony.rs"]
 mod display_colony;
+// The verdict over one report lives beside the support of the colony, so that
+// `710_the_colony_lines_verdict_reds_a_stalled_compositor.rs` can pin its behaviour
+// on synthetic reports without a seventh test in this binary
+// (re-check tv-bn-i M1; `scripts/tests/test_nextest_groups.py` holds it at six).
+#[path = "support/colony_line.rs"]
+mod colony_line;
+// The Rust marker over the driver's child (orchestrator decision tv-bn-lb.2).
 
 use std::path::{Path, PathBuf};
 
-use display_colony::{Boot, Colony, boot, have_python, library_ships, repo};
+use colony_line::{Line, failures_of};
+use display_colony::{
+    Boot, Colony, Driver, Site, boot, browser_run, have_python, library_ships, repo,
+};
 use meclaw_core::serde_json::{Value, json};
 
 const DRIVER: &str = "workshop/tools/display-layout-browser.mjs";
@@ -52,9 +73,6 @@ const DRIVER: &str = "workshop/tools/display-layout-browser.mjs";
 /// the laboratory read its `SKIP` line as the Chromium run's own, and the lock proved
 /// nothing there (XB-M review I-1: build02 skipped every Chromium run).
 const WKENV: &str = "workshop/tools/wkenv.sh";
-/// `sh -c` with `$1` the laboratory, the rest the driver and its arguments.
-const WITH_LAB: &str =
-    "case \" $* \" in *\" --engine chromium \"*) ;; *) . \"$1\" ;; esac; shift; exec node \"$@\"";
 /// Where a run puts what its browsers saw. A WRITE, never a read: the guard above every
 /// run is on the DRIVER, so in a tree without `workshop/` nothing is ever written here
 /// either. Under `target/`, because a test writing into a committed folder makes the tree
@@ -63,13 +81,6 @@ const BEWEIS: &str = "target/beweis/display-browser";
 
 /// The application whose windows stand on the stage for the whole file.
 const APP: &str = "/alex/apps/probe";
-
-/// One line of befund 04 § E.3: the run's name, the engine, and the exit it looks at.
-struct Line {
-    run: &'static str,
-    engine: &'static str,
-    exit: &'static str,
-}
 
 const LINES: [Line; 6] = [
     Line {
@@ -202,40 +213,44 @@ async fn fill_the_stage(colony: &Colony, round: u64) {
 /// The driver goes through `sh` so that `wkenv.sh` is sourced first: Playwright's own
 /// wrapper sets `LD_LIBRARY_PATH`, so the laboratory has to be in the environment of the
 /// `node` process itself and cannot be handed over afterwards.
-async fn drive(line: &Line, url: &str, api: &str, out_dir: &Path) -> Option<Value> {
+async fn drive(colony: &Colony, line: &Line, out_dir: &Path) -> Option<Value> {
     // Emptied first: the shots of a line that did not finish would otherwise be moved
     // under the NEXT line's viewport and stand there as its evidence (measured after a
     // run the harness killed mid-line).
     let _ = std::fs::remove_dir_all(out_dir);
     std::fs::create_dir_all(out_dir).expect("the evidence directory");
-    let run = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(WITH_LAB)
-        .arg("sh")
-        .arg(repo(WKENV))
-        .arg(repo(DRIVER))
-        .arg(url)
+    // The driver on the line's exit, with the API: `MECLAW_DISPLAY_API` is where
+    // `POST /messages` and `GET /colony/messages` answer -- NOT the page's own origin: that
+    // port is the mount listener and answers 404 to every API route, and a proof that read
+    // "nothing changed" off a 404 was green on an answer nobody gave (measured, all six
+    // lines). The fixture puts it in (`Colony::drive`, killed on drop).
+    let with = Driver::default()
+        .script(DRIVER)
         .arg(out_dir)
-        .arg("--engine")
-        .arg(line.engine)
-        .arg("--profile")
-        .arg(line.exit)
-        .arg("--run")
-        .arg(line.run)
-        // The node process holds a browser. A dropped future does not take a child with
-        // it, so the browser would outlive the test that started it.
-        .kill_on_drop(true)
+        .args([
+            "--engine",
+            line.engine,
+            "--profile",
+            line.exit,
+            "--run",
+            line.run,
+        ])
         // The SCREEN, not the app: a `in_view` is a write at the screen's door, and the
         // fixture's API stamps the app as its sender. Addressed to the app it reached a
         // `code` cell that had no command to read and nothing arrived (measured).
-        .env("MECLAW_DISPLAY_NODE", display_colony::SCREEN)
-        // Where `POST /messages` and `GET /colony/messages` answer. NOT the page's own
-        // origin: that port is the mount listener and answers 404 to every API route --
-        // and a proof that read "nothing changed" off a 404 was green on an answer
-        // nobody gave (measured, all six lines).
-        .env("MECLAW_DISPLAY_API", api)
-        .output()
-        .await;
+        .env("MECLAW_DISPLAY_NODE", display_colony::SCREEN);
+    let cmd = colony.drive(Site::B710, line.exit, with);
+    // Under the Rust marker: a child that outlives the driver's own marker plus what runs
+    // outside it gets SIGTERM, then SIGKILL with its browser, and is reported as HANG
+    // with its stderr tail before the harness kill that prints nothing (M1-R).
+    let run = cmd
+        .run_marked(
+            &format!("the driver of line {} ({})", line.run, line.engine),
+            browser_run::colony_run(),
+            browser_run::outside(),
+        )
+        .await
+        .unwrap_or_else(|hung| panic!("{hung}"));
     let out = match run {
         Ok(out) => out,
         Err(e) => {
@@ -268,65 +283,6 @@ async fn drive(line: &Line, url: &str, api: &str, out_dir: &Path) -> Option<Valu
     Some(meclaw_core::serde_json::from_str(text).expect("the driver's report is JSON"))
 }
 
-/// Every check of one report, or a line of failures for the caller to collect.
-///
-/// A `skipped: true` is allowed and printed by name -- a proof this mode cannot see at all
-/// is honest about it. A failing check takes the whole `checks` block with it: a B-number
-/// without the values beside it cannot be fixed, and the values are what tell a sheet
-/// defect from a driver that measures the wrong thing.
-fn failures_of(line: &Line, report: &Value) -> Option<String> {
-    let checks = report["checks"]
-        .as_object()
-        .unwrap_or_else(|| panic!("{}: the report carries no checks: {report}", line.run));
-    assert!(
-        !checks.is_empty(),
-        "{}: the line measured nothing at all: {report}",
-        line.run
-    );
-    let mut failed: Vec<&str> = Vec::new();
-    let mut half = 0usize;
-    for (name, check) in checks {
-        if check["skipped"] == Value::Bool(true) {
-            println!(
-                "{} {} {name}: skipped -- {}",
-                line.run,
-                line.engine,
-                check["why"].as_str().unwrap_or("")
-            );
-        }
-        // A proof that measured only half of its sentence says so in `value.partial`.
-        // Printed by name, because a half measurement that only stands in a JSON file
-        // nobody reads in the gate looks exactly like a whole one.
-        if let Some(why) = check["value"].get("partial").and_then(Value::as_str) {
-            println!("{} {} {name}: half -- {why}", line.run, line.engine);
-            half += 1;
-        }
-        if check["ok"] != Value::Bool(true) {
-            failed.push(name);
-        }
-    }
-    println!(
-        "{} {} {} {}: {} proofs, {half} of them half, {} of them failing",
-        line.run,
-        line.engine,
-        line.exit,
-        report["viewport"].as_str().unwrap_or("?"),
-        checks.len(),
-        failed.len()
-    );
-    if failed.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "{} ({} {}): {} -- {}",
-        line.run,
-        line.engine,
-        report["viewport"].as_str().unwrap_or("?"),
-        failed.join(", "),
-        meclaw_core::serde_json::to_string_pretty(&report["checks"]).expect("json")
-    ))
-}
-
 // NOT built: a crowd of forty windows, so that a grid exit runs out of canvas by the
 // number of its rows (§ 6.3, OR-H0.10). It was written and measured, and it costs more
 // than it proves: forty writes are forty passes, and the first write of the stage that
@@ -343,12 +299,38 @@ fn evidence_dir(engine: &str, viewport: &str) -> PathBuf {
     repo(BEWEIS).join(format!("{engine}-{viewport}"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// integration + release: 4-6 min. Six boots, six pages, six sets of gestures -- a fifth
-// of the integration pass's budget. The station `browser:display` plans it with scope
-// `colony` in `integration` and `release` (GH #746) and runs it with `--run-ignored`.
-#[ignore = "integration + release: 4-6 min"]
-async fn the_colony_holds_in_both_engines() {
+/// Boot a colony of its own, build the stage on it, and measure ONE line against it.
+///
+/// The SKIP paths are the ones the six lines had together: no template library or no
+/// python, no driver in this tree, and the driver's own SKIP (no node, no playwright,
+/// no engine, no laboratory) -- each one a green test that printed why it measured
+/// nothing, never a red one (R2b).
+async fn hold_the_line(run: &str) {
+    let lines = &LINES;
+    let line = lines
+        .iter()
+        .find(|l| l.run == run)
+        .unwrap_or_else(|| panic!("{run} is not one of the lines"));
+    // `MECLAW_710_LINES=L4,L5` keeps only the named lines; every other test of this
+    // file says SKIP and measures nothing. For the targeted re-run of one flaky proof
+    // (GH #1031: B-23 on L5, ten runs and more); `-E 'test(/webkit_on_the_tv/)'` does
+    // the same through nextest. Unset, every line runs. A name that is no line, or an
+    // empty value, is a typo and panics: filtered down to nothing the test would report
+    // a green SKIP that measured no line at all.
+    if let Ok(v) = std::env::var("MECLAW_710_LINES") {
+        let names: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
+        for n in &names {
+            assert!(
+                LINES.iter().any(|l| l.run == n.as_str()),
+                "MECLAW_710_LINES={v:?}: {n:?} is not one of the lines {:?}",
+                LINES.iter().map(|l| l.run).collect::<Vec<_>>()
+            );
+        }
+        if !names.iter().any(|n| n == line.run) {
+            println!("SKIP {}: not named in MECLAW_710_LINES={v:?}", line.run);
+            return;
+        }
+    }
     if !library_ships() || !have_python() {
         println!("SKIP no template library or no python3 on this host");
         return;
@@ -363,11 +345,11 @@ async fn the_colony_holds_in_both_engines() {
     // of a gesture is a second pass nobody asked for.
     //
     // Linger and fade far longer than the run. The shipped dials of this support are
-    // small on purpose -- a lock that waits for a fade is a lock and not a nap -- but six
-    // browser lines take a minute and more, and with `linger_ms` at two seconds every
-    // window of the stage had gone `leaving` before the first engine opened the page.
-    // Measured: two windows of twelve still standing, and every proof that reads the
-    // canvas measuring an empty one.
+    // small on purpose -- a lock that waits for a fade is a lock and not a nap -- but a
+    // browser line takes a minute and more under load, and with `linger_ms` at two
+    // seconds every window of the stage had gone `leaving` before the engine opened the
+    // page. Measured: two windows of twelve still standing, and every proof that reads
+    // the canvas measuring an empty one.
     let colony = boot(Boot {
         linger_ms: 900_000,
         fade_ms: 900_000,
@@ -375,75 +357,77 @@ async fn the_colony_holds_in_both_engines() {
     })
     .await;
 
-    let api = colony.api_url();
-    let mut findings: Vec<String> = Vec::new();
-    let mut measured = 0usize;
-    let mut round = 0u64;
-    // `MECLAW_710_LINES=L4,L5` drives only the named lines, in their own order. For the
-    // targeted re-run of one flaky proof (GH #1031: B-23 on L5, ten runs and more), where
-    // the full six lines cost six minutes a run. Keep the line BEFORE the one you are
-    // after: from the second line on the stage already holds the windows B-03 wrote on
-    // the line before, and that is the state the release gate measures in. Unset, all six.
-    // A name that is no line, or an empty value, is a typo and panics: filtered down to
-    // nothing the test would report a green SKIP that measured no line at all.
-    let only: Option<Vec<String>> = std::env::var("MECLAW_710_LINES").ok().map(|v| {
-        let names: Vec<String> = v.split(',').map(|s| s.trim().to_string()).collect();
-        for n in &names {
-            assert!(
-                LINES.iter().any(|l| l.run == n.as_str()),
-                "MECLAW_710_LINES={v:?}: {n:?} is not one of the lines {:?}",
-                LINES.iter().map(|l| l.run).collect::<Vec<_>>()
-            );
-        }
-        names
-    });
-    for line in LINES
-        .iter()
-        .filter(|l| only.as_ref().is_none_or(|o| o.iter().any(|n| n == l.run)))
-    {
-        // The stage is built again for EVERY line. A tap is a real dismissal and the
-        // state it changes is the colony's: the gesture proofs of the line before leave
-        // windows put away, and the line after them would then measure a screen nobody
-        // built. Measured: after the three Chromium lines the conversation stood at
-        // level 0, and every WebKit proof about an open modal had no modal to look at.
-        // Every round carries its OWN `touched`: a write that repeats the touch of the
-        // one before it is a repeated write and lifts nothing (§ 4.8), so a stage
-        // rebuilt with the old numbers would leave the put-away standing.
-        round += 1;
-        fill_the_stage(&colony, round).await;
-        let url = colony.url(line.exit);
-        // The viewport is the driver's own word for the exit, so the directory a shot
-        // lands in is the one the report names.
-        let Some(report) = drive(line, &url, &api, &evidence_dir(line.engine, "pending")).await
-        else {
-            continue;
-        };
-        let viewport = report["viewport"].as_str().unwrap_or("?").to_string();
-        let home = evidence_dir(line.engine, &viewport);
-        std::fs::create_dir_all(&home).expect("the evidence directory");
-        for entry in std::fs::read_dir(evidence_dir(line.engine, "pending")).expect("read_dir") {
-            let from = entry.expect("entry").path();
-            let to = home.join(from.file_name().expect("a name"));
-            std::fs::rename(&from, &to).expect("the evidence moves under its viewport");
-        }
-        measured += 1;
-        if let Some(finding) = failures_of(line, &report) {
-            findings.push(finding);
-        }
+    fill_the_stage(&colony, 1).await;
+    // A waiting room of the line's own: the Chromium lines run side by side, and a
+    // shared one would be emptied by the line next door (`drive` empties it first).
+    // The viewport is the driver's own word for the exit, so the directory the shots
+    // then move to is the one the report names.
+    let pending = evidence_dir(line.engine, &format!("pending-{}", line.run));
+    let Some(report) = drive(&colony, line, &pending).await else {
+        let _ = std::fs::remove_dir_all(pending);
+        colony.shutdown().await;
+        println!(
+            "SKIP {} {}: this host measured nothing",
+            line.run, line.engine
+        );
+        return;
+    };
+    let viewport = report["viewport"].as_str().unwrap_or("?").to_string();
+    let home = evidence_dir(line.engine, &viewport);
+    std::fs::create_dir_all(&home).expect("the evidence directory");
+    for entry in std::fs::read_dir(&pending).expect("read_dir") {
+        let from = entry.expect("entry").path();
+        let to = home.join(from.file_name().expect("a name"));
+        std::fs::rename(&from, &to).expect("the evidence moves under its viewport");
     }
-    let _ = std::fs::remove_dir_all(evidence_dir("chromium", "pending"));
-    let _ = std::fs::remove_dir_all(evidence_dir("webkit", "pending"));
+    let _ = std::fs::remove_dir_all(pending);
 
     colony.shutdown().await;
 
-    if measured == 0 {
-        println!("SKIP no engine on this host measured anything");
-        return;
+    if let Some(finding) = failures_of(line, &report) {
+        panic!(
+            "{} carries a B-proof that does not hold:\n\n{finding}",
+            line.run
+        );
     }
-    assert!(
-        findings.is_empty(),
-        "{} of {measured} lines carry a B-proof that does not hold:\n\n{}",
-        findings.len(),
-        findings.join("\n\n")
-    );
+}
+
+// integration + release, one boot and one page each. The station `browser:display` plans
+// them with scope `colony` in `integration` and `release` (GH #746) and runs them with
+// `--run-ignored`.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "integration + release: one colony and one browser page (L1)"]
+async fn the_colony_holds_in_chromium_on_the_monitor() {
+    hold_the_line("L1").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "integration + release: one colony and one browser page (L2)"]
+async fn the_colony_holds_in_chromium_on_the_tv() {
+    hold_the_line("L2").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "integration + release: one colony and one browser page (L3)"]
+async fn the_colony_holds_in_chromium_on_the_phone() {
+    hold_the_line("L3").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "integration + release: one colony and one browser page (L4)"]
+async fn the_colony_holds_in_webkit_on_the_monitor() {
+    hold_the_line("L4").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "integration + release: one colony and one browser page (L5)"]
+async fn the_colony_holds_in_webkit_on_the_tv() {
+    hold_the_line("L5").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "integration + release: one colony and one browser page (L6)"]
+async fn the_colony_holds_in_webkit_on_the_phone() {
+    hold_the_line("L6").await;
 }

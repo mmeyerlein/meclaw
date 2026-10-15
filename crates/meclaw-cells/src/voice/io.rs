@@ -474,15 +474,18 @@ impl VoiceIoShared {
         self.shutdown.clone()
     }
 
-    /// A cascade half on the echo provider with nothing else configured, for a
-    /// unit test that drives one connection by hand (GH #836).
+    /// A cascade half with nothing else configured, on a recogniser the test
+    /// names, for a unit test that drives one connection by hand (GH #836). The
+    /// echo provider has no turns (a `hold` on it is refused with `wrong_mode`),
+    /// so a test about a take needs one that is not called `echo`.
     #[cfg(test)]
-    pub(crate) fn for_test(
+    pub(crate) fn for_test_with_stt(
         events_tx: mpsc::Sender<VoiceEvent>,
         external_timeout: Duration,
+        stt: Arc<dyn SttProvider>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            stt: Arc::new(crate::voice::providers::echo::EchoStt::new()),
+            stt,
             tts: None,
             duplex: None,
             spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
@@ -1210,6 +1213,13 @@ pub(crate) fn new_connection_slot() -> (
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hang mark of the waits below, and the far-away external and idle
+    /// timeouts of the halves under test: [`meclaw_testing::deadline::HANG`],
+    /// scaled with `MECLAW_TEST_TIME_FACTOR` (TV-Z3). Never a verdict on speed.
+    fn marker() -> Duration {
+        meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG)
+    }
     use crate::voice::providers::echo::EchoStt;
     use meclaw_colony::HandedConnection;
 
@@ -1236,7 +1246,6 @@ mod tests {
     /// update could still put on a free one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_mount_another_cell_holds_is_refused_and_the_half_stays_alive() {
-        const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
         // Somebody else is already on `voice`.
         let (_squatter_rx, _squatter) = surfaces
@@ -1258,8 +1267,8 @@ mod tests {
             Arc::new(EchoStt::new()),
             None,
             Mode::Auto,
-            MARKER,
-            MARKER,
+            marker(),
+            marker(),
             events_tx,
         );
         io.cell_path = Path::new("/v");
@@ -1267,9 +1276,8 @@ mod tests {
         let join = tokio::spawn(run_io(io, reconfig_rx));
 
         // Exactly one refusal, and it names the mount and the holder.
-        match tokio::time::timeout(MARKER, events_rx.recv())
+        match meclaw_testing::deadline::hang("the refusal is reported", events_rx.recv())
             .await
-            .expect("the refusal is reported")
             .expect("the channel is open")
         {
             VoiceEvent::MountFailed(detail) => {
@@ -1299,9 +1307,8 @@ mod tests {
             })
             .await
             .expect("the half still takes a command");
-        match tokio::time::timeout(MARKER, events_rx.recv())
+        match meclaw_testing::deadline::hang("the parked half answers", events_rx.recv())
             .await
-            .expect("the parked half answers within the failure marker")
             .expect("the channel is open")
         {
             VoiceEvent::ReleaseGraceExpired { token, .. } => assert_eq!(
@@ -1322,9 +1329,8 @@ mod tests {
         assert_eq!(table[0].mount, "voice");
 
         drop(reconfig_tx);
-        tokio::time::timeout(MARKER, join)
+        meclaw_testing::deadline::hang("the I/O task ends", join)
             .await
-            .expect("ends")
             .expect("no panic");
         assert_eq!(
             surfaces.table().await.len(),
@@ -1338,7 +1344,6 @@ mod tests {
     /// mount's prefix.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_mounted_voice_cell_registers_on_its_life_and_serves_a_handed_stream() {
-        const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
         let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(32);
         let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
@@ -1347,21 +1352,19 @@ mod tests {
             Arc::new(EchoStt::new()),
             None,
             Mode::Auto,
-            MARKER,
-            MARKER,
+            marker(),
+            marker(),
             events_tx,
         );
         io.cell_path = meclaw_core::Path::new("/v");
         io.surfaces = surfaces.clone();
         let join = tokio::spawn(run_io(io, reconfig_rx));
         // The mount is in the table before anything else happens.
-        tokio::time::timeout(MARKER, async {
-            while surfaces.table().await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await
-            }
+        meclaw_testing::wait::until("the mount is registered", || {
+            let surfaces = Arc::clone(&surfaces);
+            async move { !surfaces.table().await.is_empty() }
         })
-        .await
-        .expect("registered");
+        .await;
         assert_eq!(surfaces.table().await[0].mount, "voice");
         // A stream handed in is answered by the cell's router under /voice.
         let l = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1389,22 +1392,19 @@ mod tests {
             "a mount that was free is reported by nothing at all"
         );
         drop(reconfig_tx);
-        tokio::time::timeout(MARKER, join)
+        meclaw_testing::deadline::hang("the I/O task ends", join)
             .await
-            .expect("ends")
             .expect("no panic");
         // Waited out rather than read once: the mount leaves on the
         // [`MountGuard`]'s `Drop`, which cannot await and therefore hands the
         // removal to a task of its own. That is the shape every way out shares
         // — the substrate ABORTS this future rather than letting a line after
         // the loop run — and it is one scheduler turn away from here.
-        tokio::time::timeout(MARKER, async {
-            while !surfaces.table().await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await
-            }
+        meclaw_testing::wait::until("the mount leaves with the half", || {
+            let surfaces = Arc::clone(&surfaces);
+            async move { surfaces.table().await.is_empty() }
         })
-        .await
-        .expect("the mount leaves with the half");
+        .await;
     }
 
     /// A handed stream does not outlive the life that was serving it.
@@ -1425,7 +1425,6 @@ mod tests {
     async fn a_handed_connection_is_closed_when_the_handler_goes() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
         let events_tx = acknowledging_events();
         let (reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
@@ -1434,20 +1433,18 @@ mod tests {
             Arc::new(EchoStt::new()),
             None,
             Mode::Auto,
-            MARKER,
-            MARKER,
+            marker(),
+            marker(),
             events_tx,
         );
         io.cell_path = meclaw_core::Path::new("/v");
         io.surfaces = surfaces.clone();
         let join = tokio::spawn(run_io(io, reconfig_rx));
-        tokio::time::timeout(MARKER, async {
-            while surfaces.table().await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await
-            }
+        meclaw_testing::wait::until("the mount is registered", || {
+            let surfaces = Arc::clone(&surfaces);
+            async move { !surfaces.table().await.is_empty() }
         })
-        .await
-        .expect("registered");
+        .await;
 
         // One stream, handed over the way the colony's listener hands it.
         let l = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1476,9 +1473,8 @@ mod tests {
             .await
             .expect("write the request");
         let mut answer = [0u8; 512];
-        let read = tokio::time::timeout(MARKER, client.read(&mut answer))
+        let read = meclaw_testing::deadline::hang("the mount answers", client.read(&mut answer))
             .await
-            .expect("the mount answers within the failure marker")
             .expect("read");
         assert!(
             String::from_utf8_lossy(&answer[..read]).starts_with("HTTP/1.1 200 OK"),
@@ -1493,24 +1489,23 @@ mod tests {
             tokio_tungstenite::connect_async(format!("ws://{addr}/voice/ws?session=held"))
                 .await
                 .expect("the mount answers a websocket");
-        let _hello = tokio::time::timeout(MARKER, futures_util::StreamExt::next(&mut ws))
-            .await
-            .expect("hello arrives")
-            .expect("a frame")
-            .expect("not an error");
+        let _hello =
+            meclaw_testing::deadline::hang("hello arrives", futures_util::StreamExt::next(&mut ws))
+                .await
+                .expect("a frame")
+                .expect("not an error");
 
         // The handler goes. Both connections are this life's, so both end with
         // it — and the substrate would ABORT this future rather than let a line
         // after the loop run, which is why nothing here relies on one.
         drop(reconfig_tx);
-        tokio::time::timeout(MARKER, join)
+        meclaw_testing::deadline::hang("run_io returns", join)
             .await
-            .expect("run_io returns")
             .expect("no panic");
 
         // The upgraded socket is told, not merely dropped: a caller that reads
         // a close frame knows the call is over.
-        let closed_ws = tokio::time::timeout(MARKER, async {
+        let closed_ws = meclaw_testing::deadline::hang("the websocket hears about it", async {
             loop {
                 match futures_util::StreamExt::next(&mut ws).await {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(f))) => return Some(f),
@@ -1519,8 +1514,7 @@ mod tests {
                 }
             }
         })
-        .await
-        .expect("the websocket hears about it inside the failure marker");
+        .await;
         let frame = closed_ws.expect("a close FRAME, not a socket that merely stopped answering");
         assert_eq!(
             frame.map(|f| u16::from(f.code)),
@@ -1528,10 +1522,10 @@ mod tests {
             "the code is the one the ordinary end of this half uses"
         );
         let mut rest = Vec::new();
-        let closed = tokio::time::timeout(MARKER, client.read_to_end(&mut rest))
-            .await
-            .expect("the socket closes inside the failure marker")
-            .expect("read");
+        let closed =
+            meclaw_testing::deadline::hang("the socket closes", client.read_to_end(&mut rest))
+                .await
+                .expect("read");
         assert_eq!(
             closed, 0,
             "a connection of a life that is over must not stay open; got {rest:?}"
@@ -1549,7 +1543,6 @@ mod tests {
     async fn an_aborted_io_half_closes_the_sockets_it_was_serving() {
         use futures_util::StreamExt;
 
-        const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
         let events_tx = acknowledging_events();
         let (_reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
@@ -1558,20 +1551,18 @@ mod tests {
             Arc::new(EchoStt::new()),
             None,
             Mode::Auto,
-            MARKER,
-            MARKER,
+            marker(),
+            marker(),
             events_tx,
         );
         io.cell_path = meclaw_core::Path::new("/v");
         io.surfaces = surfaces.clone();
         let join = tokio::spawn(run_io(io, reconfig_rx));
-        tokio::time::timeout(MARKER, async {
-            while surfaces.table().await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await
-            }
+        meclaw_testing::wait::until("the mount is registered", || {
+            let surfaces = Arc::clone(&surfaces);
+            async move { !surfaces.table().await.is_empty() }
         })
-        .await
-        .expect("registered");
+        .await;
 
         let l = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1593,15 +1584,14 @@ mod tests {
             tokio_tungstenite::connect_async(format!("ws://{addr}/voice/ws?session=aborted"))
                 .await
                 .expect("the mount answers a websocket");
-        let _hello = tokio::time::timeout(MARKER, ws.next())
+        let _hello = meclaw_testing::deadline::hang("hello arrives", ws.next())
             .await
-            .expect("hello arrives")
             .expect("a frame")
             .expect("not an error");
 
         join.abort();
 
-        let frame = tokio::time::timeout(MARKER, async {
+        let frame = meclaw_testing::deadline::hang("the socket hears about the abort", async {
             loop {
                 match ws.next().await {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(f))) => return Some(f),
@@ -1611,7 +1601,6 @@ mod tests {
             }
         })
         .await
-        .expect("the socket hears about the abort inside the failure marker")
         .expect("a close FRAME, not a socket that merely stopped answering");
         assert_eq!(frame.map(|f| u16::from(f.code)), Some(1001));
         feeder.abort();
@@ -1632,7 +1621,6 @@ mod tests {
     /// without that arm running", and it covers all three causes at once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_aborted_io_half_takes_its_mount_off_the_table() {
-        const MARKER: Duration = Duration::from_secs(30);
         let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
         let events_tx = acknowledging_events();
         let (_reconfig_tx, reconfig_rx) = mpsc::channel::<VoiceReconfig>(8);
@@ -1641,31 +1629,30 @@ mod tests {
             Arc::new(EchoStt::new()),
             None,
             Mode::Auto,
-            MARKER,
-            MARKER,
+            marker(),
+            marker(),
             events_tx,
         );
         io.cell_path = meclaw_core::Path::new("/v");
         io.surfaces = surfaces.clone();
         let join = tokio::spawn(run_io(io, reconfig_rx));
-        tokio::time::timeout(MARKER, async {
-            while surfaces.table().await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await
-            }
+        meclaw_testing::wait::until("the mount is registered", || {
+            let surfaces = Arc::clone(&surfaces);
+            async move { !surfaces.table().await.is_empty() }
         })
-        .await
-        .expect("the mount is registered");
+        .await;
 
         // No `Round::Done`, no shutdown channel closed: the future is simply
         // gone.
         join.abort();
-        tokio::time::timeout(MARKER, async {
-            while !surfaces.table().await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await
-            }
-        })
-        .await
-        .expect("the mount leaves with the aborted half, and does not outlive it");
+        meclaw_testing::wait::until(
+            "the mount leaves with the aborted half, and does not outlive it",
+            || {
+                let surfaces = Arc::clone(&surfaces);
+                async move { surfaces.table().await.is_empty() }
+            },
+        )
+        .await;
     }
 
     /// GH #601 — a client that stops taking what is queued for it loses the
@@ -1686,7 +1673,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn gh601_a_client_that_stops_reading_is_dropped_by_count_and_reported() {
         /// The failure-marker window (30 s convention), not a budget.
-        const MARKER: Duration = Duration::from_secs(30);
         /// Two full buffers plus the burst behind them, with room to spare:
         /// the give-up needs `DISPATCH_QUEUE` commands queued behind a full
         /// connection channel, and nothing after it is sent at all.
@@ -1706,8 +1692,8 @@ mod tests {
             duplex_prewarm_ttl_ms: 0,
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
-            external_timeout: MARKER,
-            idle_timeout: MARKER,
+            external_timeout: marker(),
+            idle_timeout: marker(),
             audio_out_frame_ms: 20,
             speak_plain: false,
             release_grace_ms: 1500,
@@ -1736,10 +1722,12 @@ mod tests {
                 .await;
         }
 
-        let first = tokio::time::timeout(MARKER, events_rx.recv())
-            .await
-            .expect("the give-up is reported without waiting for a clock")
-            .expect("the handler seam is open");
+        let first = meclaw_testing::deadline::hang(
+            "the give-up is reported without waiting for a clock",
+            events_rx.recv(),
+        )
+        .await
+        .expect("the handler seam is open");
         let VoiceEvent::ClientTooSlow {
             session_id,
             dropped,
@@ -1755,10 +1743,10 @@ mod tests {
              longer fitted"
         );
 
-        let second = tokio::time::timeout(MARKER, events_rx.recv())
-            .await
-            .expect("and the session leaves the table")
-            .expect("the handler seam is open");
+        let second =
+            meclaw_testing::deadline::hang("the session leaves the table", events_rx.recv())
+                .await
+                .expect("the handler seam is open");
         assert!(
             matches!(&second, VoiceEvent::Disconnected { session_id } if session_id == "call-1"),
             "the disconnect follows the reason, not the other way round; got {second:?}"
@@ -1792,7 +1780,6 @@ mod tests {
     /// (GH #593).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_advise_reaches_the_connection_it_names() {
-        const MARKER: Duration = Duration::from_secs(30);
         let events_tx = acknowledging_events();
         let shared = Arc::new(VoiceIoShared {
             stt: Arc::new(EchoStt::new()),
@@ -1807,8 +1794,8 @@ mod tests {
             duplex_prewarm_ttl_ms: 0,
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
-            external_timeout: MARKER,
-            idle_timeout: MARKER,
+            external_timeout: marker(),
+            idle_timeout: marker(),
             audio_out_frame_ms: 20,
             speak_plain: false,
             release_grace_ms: 1500,

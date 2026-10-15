@@ -1,0 +1,1655 @@
+#!/usr/bin/env bash
+# meclaw -- THE gate. One entry point for every gate chain in this repo.
+#
+# WHY THIS EXISTS
+# ===============
+# There used to be three chains: a strand gate, a pre-push gate and the CI
+# workflow, each with its own hard-coded list of steps. They drifted, they
+# overlapped, and every one of them paid for work the diff did not ask for --
+# a Python-only change still compiled the workspace. This runner replaces all
+# three. It asks ONE resolver (`scripts/gate_plan.py`) which stations a diff
+# needs, runs them, and reports each one on a single line.
+#
+#     scripts/gate.sh <strand|integration|release|ci> [options]
+#
+#     --base REF     base of the diff (see MODES below)
+#     --only s1,s2   run exactly these stations
+#     --fail-fast    stop after the first RED (default: run everything)
+#     --plan-only    print the plan and a final `tests=true|false`, run nothing
+#     --archive DIR  additionally copy receipt and logs into DIR, and name DIR
+#                    in the receipt. `MECLAW_GATE_ARCHIVE` sets the default;
+#                    the flag wins. `--log-dir` is the same option under its
+#                    first name and stays.
+#     --log-dir DIR  see --archive
+#     --no-nice      do not wrap cargo stations in nice/ionice, and do not
+#                    cap the build width
+#     --lane         this run is on a build host (see A RUN ON A BUILD HOST);
+#                    needs --base
+#     --resync       force a full touch of every build input (see GHOST BINARIES)
+#     --no-precheck-stop
+#                    run the cargo stations even when `precheck` is RED
+#                    (see A RED FORM STATION STOPS THE CARGO STATIONS)
+#     --decide <station>=without:"OR-<id>: <reason>"
+#                    integration and release only: answer a station's
+#                    question with "go on without a fresh measurement". The
+#                    reason is required and goes into the receipt as
+#                    `owner_decisions`. Repeatable, one per asking station
+#                    (see A QUESTION FOR THE OWNER)
+#
+# MODES
+# =====
+#   strand       during a strand, before its commit. Base: --base, else
+#                `git merge-base master HEAD`; if that is HEAD itself, the
+#                diff is the dirty tree, or HEAD~1 when the tree is clean.
+#   integration  the once-per-wave pass over everything the wave changed.
+#   release      integration plus advisories, export selftest, export audit.
+#   ci           what the workflow runs. No disk/nice/flock hygiene (the
+#                runner is alone on that machine), no tree-sync and no stamp
+#                (the checkout is fresh, target/ starts empty, so there are no
+#                ghost binaries to chase), and no `tests` station: CI runs the
+#                suite in shards. Base: --base (the push event's `before`);
+#                an unknown or all-zero base means full scope.
+#
+# For integration and release the base is the master commit the public tree
+# was last rebuilt from -- read from the `github-main` ref's commit subject
+# ("export: public tree rebuilt from <sha>").
+#
+# OUTPUT
+# ======
+#   GATE <station> [<scope>] <secs>s <GREEN|RED|SKIP|NOTE|ASK> [reason]
+#   GATE-SUMMARY <mode> <rev> <green>/<total> <secs>s <GREEN|RED|ASK>
+#
+# Verdicts: GREEN the station passed. RED it failed. SKIP it could not run
+# (missing tool, or planned elsewhere) -- never a failure; a browser station
+# that cannot drive a browser here still counts in the total (`browser_short`). NOTE a finding to
+# read, not a judgement on the commit (advisories, tree-sync, lock-wait, and
+# `corpus-committed` in `strand`: there the committed corpus is allowed to be
+# behind the sources of a commit that has not been written yet; and
+# `slow-tests` over the mark in `strand`: a time moves with the host's load,
+# the integration pass grades it). ASK a
+# question for the owner, not a finding: the station cannot say whether the
+# commit is good without a measurement nobody has made yet (see A QUESTION
+# FOR THE OWNER). The summary is RED when any station is RED, else ASK when
+# any station asked, else GREEN.
+#
+# `stage-lock` is the other thing that may be running on this host: a twin
+# measurement takes a lock of its own while it works, and two integration
+# passes went red on timing tests under exactly that load (1 513 s, 1 385 s).
+# The runner PROBES that lock before the first cargo station -- never takes it,
+# never creates it, never turns red on it -- and says so when it is held.
+#
+# `master-moved` is the question a strand keeps asking by hand: how far has
+# master moved since the base this run plans against, and which files do both
+# sides touch. Twenty-one of thirty session-to-session messages on the busiest
+# day of the waves were about order and base commits. It is a strand note --
+# `integration` and `release` diff against the export base, not against master.
+#
+# `lock-wait` is the queue in front of the shared cargo lock, reported before
+# the first cargo station whenever it was a second or more -- so a station's
+# `secs` is the station, not the wait. The receipt carries it as
+# `lock_wait_secs` (0 when the run never waited).
+#
+# `<green>/<total>` counts the stations that were JUDGED: GREEN and RED only.
+# SKIP, NOTE and ASK appear in neither half -- they are on their own GATE line
+# and in the receipt, but a run with three notes is not a run with three
+# failures, and an open question is no judgement on the commit either way.
+# One exception: a browser station whose tree has no playwright counts in the
+# total (not in green), so the summary shows the missing proof (`13/14`).
+#
+# It runs each station ONCE and it does NOT restart the chain because one
+# finding was fixed -- fix everything it lists, then run it again as a whole
+# (docs/development-rules.md § 7).
+#
+# ARTEFACTS
+# =========
+# A gate directory lives under `target/`, and `target/` is what disk hygiene
+# clears when a wave's worktrees go. `lock_wait_secs` of 24 of 36 strand runs
+# of three waves is unrecoverable for exactly that reason -- so a wave points
+# `--archive` at its own `receipts/` directory and the receipt says where its
+# copy went.
+#
+#   <gate>/<mode>-<rev>.json         the receipt, rewritten after each station
+#   <gate>/last-<mode>.json          a copy of the newest receipt
+#   <gate>/logs/<mode>-<station>.log
+#   <target>/.gate-tree              which tree filled <target> last, written
+#                                    only after a cargo station came back green
+#
+# `<gate>` is `<target>/gate/<tree>`, NOT `<target>/gate`: <tree> is the
+# basename of the worktree the runner was started from. Several worktrees share
+# one target directory (see below) and every strand of a wave starts at the SAME
+# master commit, so `<mode>-<rev>.json` and `logs/<mode>-<station>.log` named the
+# very same files in all of them -- two runs overwrote each other's station logs
+# mid-run, and the main tree's `strand-tests.log` came back holding another
+# worktree's compile output and a nextest error that was not its own (measured
+# 2026-09-04). Everything a run WRITES lives under the per-tree directory: the
+# receipt, its `last-<mode>.json` copy, the logs, and what `--log-dir` copies
+# out. The tree STAMP stays shared on purpose -- it answers "which tree filled
+# <target> last", a question about the shared directory, not about one run.
+#
+# WHICH <target>, and why it is not simply `./target`: every worktree of this
+# repository shares ONE target directory. A private one per worktree costs a
+# full cold build each and fills the disk -- the measurement is in
+# `docs/development-rules.md` section 7 and only there -- and a linked worktree
+# that built its own also had no `target/debug/meclaw` for the scenario suites
+# to run against (measured 2026-09-04). So an
+# explicit CARGO_TARGET_DIR always wins; otherwise a LINKED worktree uses the
+# main worktree's `target/` and exports CARGO_TARGET_DIR so every cargo station
+# builds there too. The main worktree keeps `./target`. The runner prints the
+# directory it settled on as its first line.
+#
+# Beside `stations`, the receipt carries `plan`: the station names the resolver
+# chose for this diff, written down BEFORE `--only` cut the run down to a few of
+# them. So the two lists together answer a question `stations` alone cannot: a
+# name in `plan` and not in `stations` was left out of this run, a name in
+# neither was never part of the diff's scope. A reader of the receipt --
+# `make_export.py` among them -- therefore never has to read "out of scope" as
+# "left out".
+#
+# THE CARGO LOCK IS HELD FOR THE WHOLE RUN, NOT PER STATION
+# =========================================================
+# One shared target/ means one build at a time. While a run took the lock only
+# around each cargo command, another worktree built the same workspace members
+# from ITS sources in the gaps between the stations; cargo then handed this run
+# its own older sources back as fresh and linked against the foreign rlib.
+# Measured 2026-09-04, release run 4 with five strand gates of the wave running
+# in parallel: `error[E0063]: missing base_path` in `meclaw_core::
+# TransferBounds` -- a field that exists in one worktree of the wave only.
+#
+# So the lock is taken ONCE, immediately before the first `tree_sync` (that is,
+# before the first cargo station), and released when the run ends. It spans the
+# non-cargo stations in between as well, because they use the artefacts the
+# cargo stations produced: `scenarios:*` run `target/debug/meclaw`, so does
+# `recall-harness`, and `export-audit` builds in a target of its own but reads
+# this run's receipt. Stations BEFORE the first cargo one (the anchor gates,
+# corpus, shellcheck, gate-selftest) never touch target/ and stay unlocked, as
+# does every `ci` run and every `--plan-only` run.
+#
+# THE PRICE IS A QUEUE: parallel strands wait for each other instead of handing
+# each other foreign rlibs. `deny-advisories` once sat 2895 s in that queue.
+# That is the cost, and it is cheaper than a gate grading a build it did not
+# produce.
+#
+# `scripts/test-tier.sh` takes the same lock when it runs on its own, so the
+# runner tells it not to: `MECLAW_CARGO_LOCK_HELD=1` is exported with the lock.
+#
+# A RED FORM STATION STOPS THE CARGO STATIONS
+# ===========================================
+# `precheck` runs FIRST and BEFORE the lock precisely so a `cargo fmt` somebody
+# forgot does not cost the queue and the build. It did anyway: measured on the
+# proof strand of wave P (receipt `plans/welle-p-2026-09-19/receipts/g0-t1/`),
+# `precheck` was RED on a rustfmt finding and the run went on to queue for the
+# lock and pay `catalogue`, `fmt` and `tests` -- for a verdict the form station
+# already had in seconds.
+#
+# So a RED `precheck` SKIPS every station that needs a build: every cargo
+# station of the plan, plus the ones whose own `cargo` column is 0 but that
+# read what those stations produce (`scenarios:memory` and `scenarios:builder`
+# boot `target/debug/meclaw`, `export-audit` grades this run's receipt). They
+# are reported as `SKIP precheck red`, the lock is never taken, and the cheap
+# stations run on -- all findings still come out of ONE run. The summary stays
+# RED, because `precheck` is. `--only precheck` is untouched (there is nothing
+# else in that plan), and `--no-precheck-stop` runs the lot anyway, for the
+# investigation that wants the red form station AND the build.
+#
+# THE MODE REACHES THE STATIONS
+# =============================
+# `MECLAW_GATE_MODE=<mode>` is exported for every station. One test reads it: the
+# display drift lock asks the committed source mark in a strand and the living
+# description tree in a pass (GH #753, docs/development-rules.md section 10).
+#
+# TEST HOOKS (part of the interface, used by scripts/tests/test_gate_sh.py)
+# ========================================================================
+#   MECLAW_GATE_PLAN=<file.tsv>  use this plan instead of calling the resolver
+#   MECLAW_GATE_DRY=1            log every command, run none of them
+#   MECLAW_GATE_LOCK=<path>      the cargo lock file, read by this runner AND
+#                                by scripts/test-tier.sh. The tests point it at
+#                                a throw-away path so a real build on this host
+#                                cannot block the test suite.
+#   MECLAW_GATE_MIN_FREE_G=<n>   the disk floor in GB (default 60). The tests
+#                                set it to 0: a full disk must not turn the
+#                                self-test station red with a message about
+#                                a build it never runs.
+#   MECLAW_GATE_LANE_MIN_FREE_G=<n>  the floor with --lane, on the target
+#                                directory (default 60); below it the runner
+#                                wipes the target (A RUN ON A BUILD HOST).
+#                                The tests set it to 0 as well.
+#   MECLAW_GATE_LANE_RECEIPT=<path>  set by `strand.sh gate --host` for the
+#                                local half: the lane's receipt, carried into
+#                                this run's (A RUN ON A BUILD HOST).
+#   MECLAW_GATE_GH=<cmd>         the GitHub CLI the runner comments the #721
+#                                occurrence with (default `gh`). The tests
+#                                point it at a stub: no test of this suite
+#                                ever reaches GitHub.
+#   MECLAW_STAGE_LOCK=<path>     the lock a twin measurement holds while it
+#                                runs. Probed, never taken. No default: which
+#                                lock that is belongs to the host, not to this
+#                                file -- unset, no probe happens.
+#
+# THE ONE RETRY, AND WHY IT IS NOT A RETRY BUDGET
+# ===============================================
+# `scenarios:builder` loses an endpoint the registry was just told about in
+# about one run in three (GH #721, reproduced on a clean tree). It is a Python
+# station, so the nextest quarantine cannot hold it, and the answer was a hand
+# rule: rerun that one station, paste both lines, comment on the issue. Eight
+# occurrences in three waves; one release paid 1 558 s for two of them.
+#
+# The runner now does exactly that, once: a non-zero exit whose log carries
+# `registry lacks` runs the station's commands a second time, and THE SECOND
+# ROUND DECIDES. The scope says so (`retry 1 GH #721`), a NOTE line names the
+# endpoint, and an occurrence THAT CAME BACK GREEN is commented on #721 -- a
+# retry stays tied to its issue, as the rules demand. A station that is red
+# twice is a defect and not a flake: it keeps the line and sends nothing.
+# Nothing else in this runner is retried, and a red without that signature is
+# red.
+#
+# A QUESTION FOR THE OWNER (ASK)
+# ==============================
+# `persona-receipt` compares the committed persona report
+# (`workshop/evals/persona/last_run.json`) with a fingerprint of the sources
+# it was measured on. When the sources moved, or the report is missing or was
+# aborted, the report no longer describes this tree -- and that is NOT a
+# finding about the commit: the persona may be exactly as good as before, and
+# only a measurement can say. A strand gets a NOTE (a reminder before the
+# commit). A pass used to have two choices, both wrong: green would wave an
+# unmeasured persona through, red would block every wave on a measurement
+# that costs time or money -- and silently red is exactly what the owner ruled
+# out on 22.09. So a pass ASKS.
+#
+# The runner cannot ask interactively: every station runs with </dev/null, and
+# a wave's pass runs unattended. So it prints the question and ends. After the
+# summary line comes a block with three answers -- measure again locally,
+# measure again on a paid provider, or go on without -- and the exit code is 4.
+# The answer is a SECOND RUN: after a measurement, the committed report covers
+# the tree and the station is GREEN; for "without" the owner passes
+# `--decide persona-receipt=without:"OR-<id>: <reason>"`, the station becomes a NOTE
+# that names the reason, and the receipt carries it in `owner_decisions`.
+# Only "without" is a switch -- the other two answers are measurements, and a
+# switch for them would be a claim without one. A report that is current and
+# red is a finding: RED in a pass, and "without" never outvotes it. A question
+# and a red station in the same run print both: RED wins the summary and the
+# exit code, and the question is still printed, so one run lists everything.
+#
+# A RUN ON A BUILD HOST (--lane)
+# ===============================
+# `scripts/strand.sh gate --host <lane>` pushes the strand to a build host and
+# runs this runner there with `--lane` (GH #934). A build host runs no colony,
+# so the two caps below that protect a live colony's watchdog -- half the
+# cores for the build, four test threads, nice/ionice -- only cost time there:
+# the test station took 459 s at full width against 788 s capped on the same
+# commit (measured 2026-10-01). So `--lane` builds and tests at full width.
+# The disk that a cold build fills is the target directory (a tmpfs on a build
+# host), so a floor is checked there instead of on `/`: its own,
+# `MECLAW_GATE_LANE_MIN_FREE_G` (default 60 G, like the owner's machine but
+# measured on the target, not on `/`) -- the tmpfs holds 64 G and a warm
+# target about 50 G, so a warm target is emptied before every lane gate. Below that
+# floor the runner empties the target directory (only under `/srv/target` or
+# `MECLAW_LANE_ROOT`, otherwise exit 2), notes it in the station logs and
+# builds cold; still short after that, it refuses with exit 2. The cargo lock stays: one host is one lane is one run, and the lock
+# only ever guards against a second run by hand.
+#
+# A build host never gets the owner's `.env`, and no link to it. The kit
+# writes a key-free one into the host's tree instead (`gate_plan.py --print
+# lane-env`: non-secret model names and levels with constant placeholders),
+# so the stations whose runner reads one (`--print env-stations`) run there
+# like any other -- in their keyless class `none` only: a station argv with a
+# `--with <class>` is RED on a lane before its runner starts. `display-lab`
+# needs `node` on the host; without one it is RED `no-node (lane)`. And the
+# kit pushes the `github-main` ref along, which `export-audit` diffs against.
+# Since GH #942 a lane leaves nothing to the owner's machine: that machine
+# runs live and lab colonies, and one of them died at load 15 while strands
+# built beside it (2026-10-02). The old mechanism stays for a station listed
+# in `gate_plan.py --print lane-local` (empty today): reported here as
+# `SKIP <reason> (lane)`, run there by the kit, which hands the lane's
+# receipt over as `MECLAW_GATE_LANE_RECEIPT` -- its stations go into that
+# run's receipt (all but the ones it performs itself), and a RED or ASK among
+# them is the receipt's verdict.
+#
+# The other way round: while the lanes are armed (`strand.sh token init
+# --lanes ...`), a run OFF a lane with a cargo station is refused with exit 3
+# and `lanes active: use scripts/strand.sh test|gate --host <lane>`; only
+# `MECLAW_LANE_LOCAL_OK=<reason>` overrides, and the receipt names the reason
+# as the NOTE row `lane-local-ok`. The CI runner (`$CI`) is not refused; on
+# a host whose lanes are armed its receipt carries the NOTE row `lanes-ci`.
+#
+# And `--lane` needs `--base`: the host's copy of the
+# repository has no reliable `master`, so the kit computes the merge base
+# where it does and hands it over.
+#
+# Exit 0 = green. 1 = a station is RED. 2 = the runner refused to start. 3 =
+# lanes are armed and this run would build here. 4 =
+# ASK: a question for the owner is open and nothing is red. The strand kit's
+# token queue uses 3 as well.
+
+set -uo pipefail
+
+usage() {
+    # The header block above IS the help text: everything from the line after
+    # the shebang up to the first line that is not a comment.
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' \
+        "${BASH_SOURCE[0]}"
+}
+
+# --- arguments --------------------------------------------------------------
+mode=""; base=""; only=""; fail_fast=0; plan_only=0
+log_dir="${MECLAW_GATE_ARCHIVE:-}"
+no_nice=0; resync=0; no_precheck_stop=0; lane=0
+decides=()
+
+if [ $# -ge 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
+    usage
+    exit 0
+fi
+
+if [ $# -lt 1 ]; then
+    usage >&2
+    exit 2
+fi
+
+mode="$1"; shift
+case "$mode" in
+    strand|integration|release|ci) ;;
+    *) echo "gate: unknown mode: $mode (expected strand|integration|release|ci)" >&2
+       exit 2 ;;
+esac
+
+# `shift 2` on a one-element argv leaves $# at 0 in bash but errors under
+# `set -e` shells and, worse, `--base` with nothing after it used to hand the
+# resolver an EMPTY base -- which reads as "diff against nothing" and made the
+# runner sit in `git diff` forever. An option that wants a value says so.
+need_value() {
+    [ "$2" -ge 2 ] || { echo "gate: $1 needs a value" >&2; exit 2; }
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --base)      need_value "$1" "$#"; base="$2"; shift 2 ;;
+        --only)      need_value "$1" "$#"; only="$2"; shift 2 ;;
+        --archive)   need_value "$1" "$#"; log_dir="$2"; shift 2 ;;
+        --log-dir)   need_value "$1" "$#"; log_dir="$2"; shift 2 ;;
+        --fail-fast) fail_fast=1; shift ;;
+        --plan-only) plan_only=1; shift ;;
+        --no-nice)   no_nice=1; shift ;;
+        --lane)      lane=1; shift ;;
+        --resync)    resync=1; shift ;;
+        --no-precheck-stop) no_precheck_stop=1; shift ;;
+        --decide)    need_value "$1" "$#"; decides+=("$2"); shift 2 ;;
+        -h|--help)   usage; exit 0 ;;
+        *) echo "gate: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [ "$lane" = 1 ] && [ -z "$base" ]; then
+    echo "gate: --lane needs --base <sha> -- a build host has no reliable master;" \
+         "the kit computes the merge base where it does" >&2
+    exit 2
+fi
+
+# --- --decide (see A QUESTION FOR THE OWNER) ----------------------------------
+# Checked here, before anything runs: a mistyped answer found after an hour of
+# stations would be an hour lost, and an answer the runner silently ignored
+# would leave the owner believing a question was answered. Every refusal says
+# what was wrong with it, on its own line.
+ASKING_STATIONS="persona-receipt"
+ASK_EXIT=4
+for d in ${decides[@]+"${decides[@]}"}; do
+    case "$mode" in
+        integration|release) ;;
+        *) echo "gate: --decide answers a question only integration and release ask" \
+                "(this is $mode)" >&2
+           exit 2 ;;
+    esac
+    case "$d" in
+        *=*:*) ;;
+        *) echo "gate: --decide wants <station>=without:\"<reason>\", got: $d" >&2
+           exit 2 ;;
+    esac
+    st=${d%%=*}; rest=${d#*=}; ans=${rest%%:*}; why=${rest#*:}
+    case " $ASKING_STATIONS " in
+        *" $st "*) ;;
+        *) echo "gate: --decide names $st, which never asks (asking stations: $ASKING_STATIONS)" >&2
+           exit 2 ;;
+    esac
+    if [ "$ans" != without ]; then
+        echo "gate: --decide $st=$ans -- the only answer is 'without';" \
+             "the other two answers are measurements, not switches" >&2
+        exit 2
+    fi
+    if [ -z "${why//[[:space:]]/}" ]; then
+        echo "gate: --decide $st=without needs a reason -- the owner's call is written into the receipt" >&2
+        exit 2
+    fi
+    case "$why" in
+        *$'\t'*|*$'\n'*)
+            echo "gate: --decide $st: the reason must be one line without tabs" \
+                 "(it is one field of a tab-separated record)" >&2
+            exit 2 ;;
+    esac
+    # OR-DT.ZI.decide-or: an owner's answer cites the ruling that carries it.
+    if ! [[ $why =~ OR-[A-Za-z0-9_.-]*[A-Za-z0-9_] ]]; then
+        echo "gate: --decide $st=without needs the ruling id in the reason (OR-<id>)," \
+             "e.g. $st=without:\"OR-DT.W5.persona-paths: <reason>\"" >&2
+        exit 2
+    fi
+done
+
+# This file's directory with builtins only: an external `dirname` missing from
+# PATH made it the caller's cwd and the kit library came from there (M7w).
+case "${BASH_SOURCE[0]}" in */*) root=${BASH_SOURCE[0]%/*}/ ;; *) root=./ ;; esac
+root=$(cd -- "${root}.." && pwd) || exit 2
+cd "$root" || exit 1
+
+# --- the target directory (see ARTEFACTS above) -----------------------------
+# The rule, the ghost-binary guard and the porcelain reader live in
+# `scripts/cargo-target.sh`, because `scripts/test-tier.sh` starts cargo too
+# and used to answer the same question differently -- a private target/ per
+# linked worktree (GH #802, measured in `docs/development-rules.md` section 7).
+# shellcheck source=scripts/cargo-target.sh
+. "$root/scripts/cargo-target.sh" || exit 2
+meclaw_resolve_target_dir "$root"
+target_dir="$MECLAW_TARGET_DIR"
+echo "gate: target = $target_dir"
+
+# --- the .env the scenario stations expect ----------------------------------
+# The runners under `workshop/evals/**` read `<repo>/.env` and copy the keys
+# they need into every colony they boot. A LINKED worktree has no `.env` (the
+# file is gitignored and lives in the main tree only), so those stations came
+# back RED with 0 cases and a `FileNotFoundError .../wt-t7/.env` -- a run
+# failing on a file the tree cannot have (measured 2026-09-04). The runner
+# links it. It never READS it: a symlink is made from the path alone.
+link_main_env() {
+    local common main_env
+    [ "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" = ".git" ] && return 0
+    common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
+    [ -n "$common" ] || return 0
+    main_env="$(dirname -- "$common")/.env"
+    [ "$main_env" = "$root/.env" ] && return 0
+    [ -f "$main_env" ] || return 0          # no source: the stations may say so
+    if [ ! -e "$root/.env" ] && [ ! -L "$root/.env" ]; then
+        ln -s "$main_env" "$root/.env" 2>/dev/null || return 0
+    fi
+    # Only a link is reported as one -- a tree with its own real `.env` keeps it.
+    [ -L "$root/.env" ] && [ -e "$root/.env" ] && echo "gate: env = $main_env (linked)"
+    return 0
+}
+# A build host gets no link to the owner's `.env`; the kit writes the key-free
+# lane env there instead (see A RUN ON A BUILD HOST).
+[ "$lane" = 1 ] || link_main_env
+
+# Everything this run writes is namespaced by the tree it runs in -- see
+# ARTEFACTS. Worktrees have distinct directory names (the main tree is
+# `meclaw-core`), which is all the identity a receipt needs.
+gate_dir="$target_dir/gate/$(basename -- "$root")"
+logs_dir="$gate_dir/logs"
+echo "gate: receipts = $gate_dir"
+
+# The linter is installed per-user on the maintainer machine; the CI image
+# has it on PATH. Extending PATH unconditionally would shadow a system install.
+if ! command -v shellcheck >/dev/null 2>&1; then
+    PATH="$PATH:$HOME/.local/bin"
+    export PATH
+fi
+
+# --- the diff ---------------------------------------------------------------
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+
+rev=$(git rev-parse HEAD 2>/dev/null || echo "")
+# The full rev: the merge queue accepts a verdict only for its candidate, and
+# the summary line carries seven characters.
+echo "gate: rev = ${rev:-none}"
+
+# Porcelain is NOT one path per line -- renames and quoted paths are why the
+# reader is `meclaw_porcelain_paths` in `scripts/cargo-target.sh` and not a
+# `sed` over `git status`; the two measurements that killed the `sed` are
+# written out there. It lives beside the tree stamp because the stamp is
+# written from the same list, and two readers of one format are what drifts.
+
+# The full list -- tracked AND untracked. It feeds the diff and the tree stamp,
+# where the question is "which files must look newer than the artefacts".
+dirty_files=$(meclaw_dirty_files "$root")
+dirty_any=0
+[ -n "$dirty_files" ] && dirty_any=1
+
+# `dirty` in the RECEIPT is a narrower question -- "would an export of this tree
+# carry something that is not committed" -- and it has two subtractions.
+#
+#   * Untracked files do not count. The export takes tracked blobs only, so a
+#     stray scratch file proves nothing about the tree that would travel.
+#   * The resolver's IGNORED list does not count. The scenario stations REWRITE
+#     `workshop/evals/*/last_run.json` while the gate is running, so without
+#     this every release run ended `dirty: true` -- by construction, on its own
+#     artefacts -- and `make_export.py` refused (measured 2026-09-04).
+#
+# The tree stamp keeps the full list on purpose: a rewritten run artefact still
+# has to be touched, whatever the export thinks of it.
+dirty_tracked=$(git status --porcelain=v1 -z 2>/dev/null \
+    | meclaw_porcelain_paths tracked | sed '/^$/d')
+gate_ignored=$(python3 "$root/scripts/gate_plan.py" --print ignored 2>/dev/null || true)
+# `<name>\t<reason>` per line: what a lane leaves to the owner's machine.
+lane_local=""
+[ "$lane" = 1 ] && lane_local=$(python3 "$root/scripts/gate_plan.py" --print lane-local 2>/dev/null || true)
+if [ -n "$dirty_tracked" ] && [ -n "$gate_ignored" ]; then
+    dirty_tracked=$(printf '%s\n' "$dirty_tracked" | grep -vxF "$gate_ignored" || true)
+fi
+dirty=0
+[ -n "$dirty_tracked" ] && dirty=1
+
+github_main_base() {
+    local subject sha
+    subject=$(git log -1 --format=%s github-main 2>/dev/null || true)
+    sha=$(printf '%s' "$subject" | sed -n 's/^export: public tree rebuilt from \([0-9a-f]\{7,40\}\).*$/\1/p')
+    if [ -z "$sha" ]; then
+        echo "gate: cannot read the export base from the github-main ref." >&2
+        echo "      Its subject must look like:" >&2
+        echo "        export: public tree rebuilt from 885d75a" >&2
+        echo "      Pass it explicitly instead: scripts/gate.sh $mode --base <sha>" >&2
+        return 1
+    fi
+    git rev-parse --verify --quiet "$sha^{commit}" || {
+        echo "gate: github-main names $sha, which is not a commit here." >&2
+        return 1
+    }
+}
+
+full_scope=0
+if [ -z "$base" ]; then
+    case "$mode" in
+        strand)
+            base=$(git merge-base master HEAD 2>/dev/null || echo "")
+            if [ -z "$base" ] || [ "$base" = "$rev" ]; then
+                if [ "$dirty_any" = 1 ]; then
+                    base="$rev"          # the diff IS the dirty tree
+                else
+                    base=$(git rev-parse --verify --quiet HEAD~1 || echo "$EMPTY_TREE")
+                fi
+            fi
+            ;;
+        integration|release)
+            base=$(github_main_base) || exit 2
+            ;;
+        ci)
+            full_scope=1
+            ;;
+    esac
+fi
+
+if [ "$mode" = ci ] && [ -n "$base" ]; then
+    if [ "$base" = "${base//[^0]/}" ] || ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+        full_scope=1                     # first push on a branch, or a base we do not have
+        base=""
+    fi
+fi
+
+if [ "$full_scope" = 1 ]; then
+    changed=$(git ls-files)
+else
+    changed=$( { git diff --name-only "$base" HEAD 2>/dev/null
+                 printf '%s\n' "$dirty_files"; } | sed '/^$/d' | sort -u)
+fi
+
+# Say which commit the diff was taken against, and how wide it came out. The
+# plan is only ever as good as this base: a strand branched from a tip that
+# already carries half its own work plans for the other half, leaves the locks
+# that read the untouched files unrun, and still reports GREEN -- which is how
+# two `templates/assistant/config.json` locks reached the integration branch
+# red (GH #713). The number is the file count the resolver is about to read.
+changed_n=$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d ' ')
+changed_unit="files"
+[ "$changed_n" = 1 ] && changed_unit="file"
+if [ "$full_scope" = 1 ]; then
+    echo "gate: base = full tree ($changed_n $changed_unit)"
+else
+    echo "gate: base = $(git rev-parse --short "$base" 2>/dev/null || printf '%s' "$base") ($changed_n $changed_unit)"
+fi
+
+# --- the plan ---------------------------------------------------------------
+if [ -n "${MECLAW_GATE_PLAN:-}" ]; then
+    plan_tsv=$(cat "$MECLAW_GATE_PLAN")
+else
+    plan_tsv=$(printf '%s\n' "$changed" \
+        | python3 "$root/scripts/gate_plan.py" --mode "$mode" --files-from - --format tsv) \
+        || { echo "gate: the resolver refused this diff -- see above." >&2; exit 2; }
+fi
+
+# Fold the per-command rows into stations. A station with several commands
+# (corpus: regenerate, then check) is ONE gate line. Rows are matched by NAME
+# across the whole plan, not only against the row before: a resolver that ever
+# emits a station's commands non-adjacently must not silently get two gate
+# lines under one name, with the second overwriting the first one's log.
+st_names=(); st_scopes=(); st_cargo=(); st_cmds=()
+while IFS=$'\t' read -r n s c cmd cwd; do
+    [ -z "$n" ] && continue
+    at=-1
+    for j in ${st_names[@]+"${!st_names[@]}"}; do
+        [ "${st_names[$j]}" = "$n" ] && at=$j && break
+    done
+    if [ "$at" -ge 0 ]; then
+        st_cmds[at]="${st_cmds[at]}"$'\n'"$cmd"$'\t'"$cwd"
+        [ "$c" = 1 ] && st_cargo[at]=1
+    else
+        st_names+=("$n"); st_scopes+=("$s"); st_cargo+=("$c")
+        st_cmds+=("$cmd"$'\t'"$cwd")
+    fi
+done <<<"$plan_tsv"
+
+# The stations the RESOLVER planned for this diff, before `--only` narrows the
+# run (GH #769). They go into the receipt as `plan`, so a reader can tell a
+# station the diff never asked for from one that was skipped: `make_export.py`
+# read both as a gap, and an integration pass over a diff without a memory part
+# was red on R14 for a station it had never planned. It is the FULL list on
+# purpose -- a run narrowed by `--only` lists what it left out, so its receipt
+# never reads as complete.
+planned_names=$(printf '%s\n' ${st_names[@]+"${st_names[@]}"})
+
+# --only: an exact, order-preserving filter over the plan.
+if [ -n "$only" ]; then
+    IFS=',' read -r -a wanted <<<"$only"
+    for w in "${wanted[@]}"; do
+        found=0
+        for n in ${st_names[@]+"${st_names[@]}"}; do
+            [ "$n" = "$w" ] && found=1 && break
+        done
+        [ "$found" = 1 ] || { echo "gate: --only names an unplanned station: $w" >&2; exit 2; }
+    done
+    f_names=(); f_scopes=(); f_cargo=(); f_cmds=()
+    for i in "${!st_names[@]}"; do
+        for w in "${wanted[@]}"; do
+            if [ "${st_names[$i]}" = "$w" ]; then
+                f_names+=("${st_names[$i]}"); f_scopes+=("${st_scopes[$i]}")
+                f_cargo+=("${st_cargo[$i]}"); f_cmds+=("${st_cmds[$i]}")
+                break
+            fi
+        done
+    done
+    st_names=(${f_names[@]+"${f_names[@]}"}); st_scopes=(${f_scopes[@]+"${f_scopes[@]}"})
+    st_cargo=(${f_cargo[@]+"${f_cargo[@]}"}); st_cmds=(${f_cmds[@]+"${f_cmds[@]}"})
+fi
+
+has_tests=false
+has_cargo=0
+for i in ${st_names[@]+"${!st_names[@]}"}; do
+    [ "${st_names[$i]}" = "tests" ] && has_tests=true
+    [ "${st_cargo[$i]}" = 1 ] && has_cargo=1
+done
+
+if [ "$plan_only" = 1 ]; then
+    for i in ${st_names[@]+"${!st_names[@]}"}; do
+        while IFS=$'\t' read -r cmd cwd; do
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "${st_names[$i]}" "${st_scopes[$i]}" "${st_cargo[$i]}" "$cmd" "$cwd"
+        done <<<"${st_cmds[$i]}"
+    done
+    echo "tests=$has_tests"
+    exit 0
+fi
+
+# --- the lanes (see A RUN ON A BUILD HOST) ------------------------------------
+# While a wave builds on the lanes (`strand.sh token init --lanes ...`), this
+# machine builds nothing: it runs the owner's live and lab colonies, and a lab
+# colony died at load 15 while strands built beside it (2026-10-02, GH #942).
+# A run with a cargo station -- `--only clippy` is one -- is refused here,
+# before any station and before the receipt, with exit 3 like a missing cargo
+# token. The cheap stations, `--plan-only`, the CI runner (`$CI`, like the
+# tier -- not the mode `ci`, which run locally is local cargo all the same;
+# Review L Minor 1) and every run ON a lane are not touched. The one way out
+# names its reason, and the receipt carries it:
+# `MECLAW_LANE_LOCAL_OK=<reason>` (the orchestrator, on the coordinator's word).
+# The probe is `meclaw_lanes_active` in `scripts/cargo-target.sh`, the one the
+# tier asks as well. `$CI` still passes -- a CI job has its own machine and no
+# armed token file -- but where the lanes ARE armed, a `CI=1` typed on this
+# host is local cargo all the same, and the receipt says so with the NOTE row
+# `lanes-ci` (C1 finding, L Nit: the pass used to be silent).
+lane_local_ok=""
+lanes_ci=""
+if [ "$lane" = 0 ] && [ "$has_cargo" = 1 ] \
+   && meclaw_lanes_active "${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"; then
+    if [ -n "${CI:-}" ]; then
+        lanes_ci="lanes armed on this host, cargo runs here under CI"
+    elif [ -n "${MECLAW_LANE_LOCAL_OK:-}" ]; then
+        lane_local_ok="$MECLAW_LANE_LOCAL_OK"
+    else
+        echo "gate: lanes active: use scripts/strand.sh test|gate --host <lane>" \
+             "(this plan has a cargo station; MECLAW_LANE_LOCAL_OK=<reason> overrides)" >&2
+        exit 3
+    fi
+fi
+
+# The mode is part of a station's environment: the display drift lock compares its
+# copies against the committed source mark in a strand and against the living
+# description tree in a pass (GH #753).
+export MECLAW_GATE_MODE="$mode"
+
+# Empty the target directory of a lane (see the floor in the hygiene block
+# below). Only ever a path strictly under the lane root -- `/srv/target` or
+# `MECLAW_LANE_ROOT` -- never `/`, never empty: a wrong `CARGO_TARGET_DIR`
+# must cost a refused gate, not a disk. The line it leaves goes into every
+# cargo station log next to `# cargo hygiene`.
+lane_wipe_note=""
+# `read_floor_g <variable>`: the disk floor in G from the environment into
+# `min_free` (GH #1154 re-check m-1/m-2). Unset or empty: 60. Negative, not a
+# whole number or over nine digits (2^63 wrapped negative, re-check pd-legacy
+# m-4): 60 and a NOTE -- a negative floor switched the disk guard off without
+# a word. 0 stays the explicit off switch and says so.
+read_floor_g() {
+    local name=$1 raw=${!1-}
+    min_free=60
+    [ -z "$raw" ] && return 0
+    if [[ $raw =~ ^[0-9]{1,9}$ ]]; then
+        min_free=$((10#$raw))
+        [ "$min_free" -eq 0 ] && echo "gate: NOTE $name=$raw: disk guard off"
+        return 0
+    fi
+    echo "gate: NOTE $name=$raw ignored, floor 60G"
+}
+
+lane_wipe_target() {
+    local free="$1" floor="$2" t r ok=0 root_c
+    t=$(realpath -m -- "$target_dir" 2>/dev/null || true)
+    if [ -n "$t" ] && [ "$t" != / ]; then
+        for r in /srv/target "${MECLAW_LANE_ROOT:-}"; do
+            [ -n "$r" ] || continue
+            root_c=$(realpath -m -- "$r" 2>/dev/null || true)
+            if [ -z "$root_c" ] || [ "$root_c" = / ]; then continue; fi
+            case "$t" in "$root_c"/?*) ok=1 ;; esac
+        done
+    fi
+    if [ "$ok" != 1 ]; then
+        echo "gate: only ${free}G free on $target_dir -- need ${floor}G on a lane, and the target is" >&2
+        echo "      not under /srv/target or MECLAW_LANE_ROOT, so the runner will not wipe it." >&2
+        exit 2
+    fi
+    find "$t" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+    lane_wipe_note="# cargo hygiene: lane target wiped (${free} G free < ${floor} G)"
+    echo "gate: ${lane_wipe_note#\# cargo hygiene: } -- building cold"
+}
+
+# --- hygiene (not in ci: there the runner owns the machine) ------------------
+wrap=()
+lock_path=""
+if [ "$mode" != ci ]; then
+    if [ "$has_cargo" = 1 ]; then
+        # A live colony shares this disk. A cargo target directory that runs it
+        # dry takes the colony down with the build, so the gate refuses first.
+        read_floor_g MECLAW_GATE_MIN_FREE_G
+        # On a build host the target directory is what fills up, not `/`.
+        disk=/
+        if [ "$lane" = 1 ]; then
+            mkdir -p "$target_dir" 2>/dev/null || true
+            disk="$target_dir"
+            # A lane has its own floor, and below it the runner empties the
+            # target itself (OR-S3.L.7). WHY: the build host's target is a
+            # 64 G tmpfs and a warm target after one strand gate is about
+            # 50 G, so the 60 G floor above refused every second gate on a
+            # lane (measured on a build host, 2026-10-01). Nothing else lives
+            # there -- no colony to protect -- and a cold build costs about
+            # six minutes, a refused gate costs a hand on the host. The
+            # default is 60 G, not 10 G: a workspace test build needs about
+            # 50 G of deps plus 14 G incremental, and beside the rest of a
+            # warm target it ran the tmpfs out of space mid-build twice
+            # (ENOSPC, OR-S3-83/-84) -- a cold build is cheaper than that.
+            read_floor_g MECLAW_GATE_LANE_MIN_FREE_G
+            free_g=$(df -BG --output=avail "$disk" 2>/dev/null | tail -1 | tr -dc '0-9')
+            if [ -n "$free_g" ] && [ "$free_g" -lt "$min_free" ]; then
+                lane_wipe_target "$free_g" "$min_free"
+            fi
+        fi
+        free_g=$(df -BG --output=avail "$disk" 2>/dev/null | tail -1 | tr -dc '0-9')
+        if [ -n "$free_g" ] && [ "$free_g" -lt "$min_free" ]; then
+            echo "gate: only ${free_g}G free on $disk -- need ${min_free}G for a cargo station." >&2
+            echo "      Free some disk (delete stale target directories), then start the gate again." >&2
+            exit 2
+        fi
+    fi
+    # A live colony's watchdog reads a long CPU gap as a wedge; half the cores
+    # is the ceiling while it runs, and a tmpfs TMPDIR keeps the test fsyncs
+    # off the spinning parts of the machine.
+    # On a build host there is no colony: full width (A RUN ON A BUILD HOST).
+    if [ "$lane" = 1 ]; then
+        export NEXTEST_TEST_THREADS=${NEXTEST_TEST_THREADS:-$(nproc 2>/dev/null || echo 4)}
+    else
+        export NEXTEST_TEST_THREADS=${NEXTEST_TEST_THREADS:-4}
+    fi
+    export TMPDIR=/dev/shm/meclaw-tests
+    mkdir -p "$TMPDIR" 2>/dev/null || true
+    if [ "$no_nice" = 0 ] && [ "$lane" = 0 ]; then
+        # A shared machine builds at half width, like it tests at half width:
+        # a full-width cold build starves a colony sharing the host (measured
+        # 2026-09-04). nice/ionice alone did not stop it -- the watchdog reads
+        # the CPU gap, not the priority.
+        half=$(( $(nproc 2>/dev/null || echo 2) / 2 ))
+        [ "$half" -lt 1 ] && half=1
+        export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$half}
+    fi
+    [ "$no_nice" = 0 ] && [ "$lane" = 0 ] && wrap+=(nice -n 19 ionice -c3)
+    # The cargo lock. WHEN it is taken and for how long: see the header section
+    # "THE CARGO LOCK IS HELD FOR THE WHOLE RUN". WHERE it lives: on a
+    # descriptor of this shell (fd 9), never in a station's argv. `flock <file>
+    # <cmd>` hands the open descriptor to the command, and from there to every
+    # child it leaves behind: a test that spawns `sleep 300` and outlives its
+    # runner inherited the lock fd and made the next cargo station wait for it
+    # (measured 2026-09-04: 209 s and 263 s for a 0.5 s cargo-deny; `lsof` on
+    # the lock file named an orphaned `sleep` with PPID 1). So the subshell
+    # closes fd 9 before every exec. `flock --close` does NOT do this -- it
+    # closes the fd BEFORE the exec and thereby drops the lock immediately,
+    # which is no lock at all.
+    lock_path="${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}"
+fi
+
+# The lock a twin measurement holds while it runs. This runner never takes it,
+# and it has no default: the path is a property of the host that runs a twin,
+# and this file travels to hosts that do not.
+stage_lock_path="${MECLAW_STAGE_LOCK:-}"
+
+# The lock is taken at most once per run and released when the run ends.
+#
+# The QUEUE in front of it is reported, not swallowed. A wave once measured
+# 3211 s for `fmt` and almost all of it was the wait for another run's lock --
+# invisible, because nothing named it. The wait is its own NOTE line before the
+# first cargo station (`GATE lock-wait [<n>s behind other runs] <n>s NOTE`) and
+# its own `lock_wait_secs` field in the receipt. A NOTE is not a judgement, so
+# the summary count is unchanged.
+run_lock=0
+lock_wait_secs=0
+# Is a twin measurement loading this host right now? Only asked when the host
+# said which lock that is. `flock <file> <cmd>` CREATES the file, so the probe
+# asks whether it exists first: a run that left a lock file behind would be a
+# run that changed what it measured. And a host without `flock` answers 127,
+# which is not a holder -- without the tool there is nothing to ask.
+stage_lock_note() {
+    [ -n "$stage_lock_path" ] || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    [ -e "$stage_lock_path" ] || return 0
+    flock -n "$stage_lock_path" true 2>/dev/null && return 0
+    report stage-lock "$(basename -- "$stage_lock_path")" 0 NOTE "" \
+        "twin measurement running; timing tests may flake"
+    return 0
+}
+
+take_run_lock() {
+    [ "$run_lock" = 1 ] && return 0
+    [ -z "$lock_path" ] && return 0        # ci: the runner owns the machine
+    stage_lock_note
+    exec 9>"$lock_path" || {
+        echo "gate: cannot open the cargo lock $lock_path" >&2
+        exit 2
+    }
+    # Nanoseconds, truncated (GH #764). Two `date +%s` calls subtracted give
+    # floor(elapsed) or floor(elapsed)+1, depending on whether they straddle a
+    # tick -- so a run that waited for nothing reported one second whenever the
+    # two forks landed either side of one, which on a busy host is often enough
+    # to turn the self-test red over a lock nothing else can hold.
+    local w_start
+    w_start=$(date +%s%N)
+    lock_wait_secs=0
+    flock 9
+    lock_wait_secs=$(( ( $(date +%s%N) - w_start ) / 1000000000 ))
+    run_lock=1
+    # scripts/test-tier.sh takes this same lock when it runs on its own. Inside
+    # the gate the run already holds it, and a second flock would deadlock the
+    # runner against its own child.
+    export MECLAW_CARGO_LOCK_HELD=1
+    # Sub-second queues are noise; `report` is defined below and this runs from
+    # the station loop, long after both definitions.
+    [ "$lock_wait_secs" -ge 1 ] && \
+        report lock-wait "${lock_wait_secs}s behind other runs" "$lock_wait_secs" NOTE ""
+    return 0
+}
+release_run_lock() {
+    [ "$run_lock" = 1 ] || return 0
+    run_lock=0
+    unset MECLAW_CARGO_LOCK_HELD
+    exec 9>&-
+}
+
+# --- artefacts (gate_dir/logs_dir were settled with the target above) --------
+mkdir -p "$logs_dir"
+receipt="$gate_dir/$mode-${rev:-unknown}.json"
+rows_file=$(mktemp)
+# The owner's answers that were APPLIED in this run, one TSV line each
+# (station, decision, reason, time). Beside the rows, because the receipt is
+# rewritten after every station and must carry them from the moment they count.
+decisions_file=$(mktemp)
+trap 'rm -f "$rows_file" "$decisions_file"' EXIT
+: >"$rows_file"
+: >"$decisions_file"
+
+started=$(date -Is)
+t_start=$(date +%s)
+
+# write_receipt <verdict> [final]
+# Without `final` the run is still going and `finished` stays null -- a
+# timestamp on a receipt that is still being written would claim the run ended.
+write_receipt() {
+    local finished=""
+    [ "${2:-}" = final ] && finished=$(date -Is)
+    MECLAW_R_MODE="$mode" MECLAW_R_REV="$rev" MECLAW_R_BASE="$base" \
+    MECLAW_R_DIRTY="$dirty" MECLAW_R_STARTED="$started" \
+    MECLAW_R_LOCK_WAIT="$lock_wait_secs" MECLAW_R_ARCHIVE="$log_dir" \
+    MECLAW_R_PLAN="$planned_names" \
+    MECLAW_R_FINISHED="$finished" MECLAW_R_VERDICT="$1" \
+    MECLAW_R_ROWS="$rows_file" MECLAW_R_OUT="$receipt" \
+    MECLAW_R_DECISIONS="$decisions_file" \
+    MECLAW_R_LANE="${MECLAW_GATE_LANE_RECEIPT:-}" \
+    MECLAW_R_RUN_NAMES="$(printf '%s\n' ${st_names[@]+"${st_names[@]}"})" \
+    python3 - <<'PY'
+import json, os
+rows = []
+# The stations a lane ran for this run (see A RUN ON A BUILD HOST), minus the
+# ones this run performs itself.
+lane_verdict = ""
+if os.environ.get("MECLAW_R_LANE"):
+    with open(os.environ["MECLAW_R_LANE"]) as fh:
+        lane = json.load(fh)
+    here = set(os.environ.get("MECLAW_R_RUN_NAMES", "").split("\n"))
+    rows = [r for r in lane.get("stations", []) if r.get("name") not in here]
+    seen = {r.get("verdict") for r in rows} | {lane.get("verdict")}
+    lane_verdict = "RED" if "RED" in seen else "ASK" if "ASK" in seen else ""
+with open(os.environ["MECLAW_R_ROWS"]) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        name, scope, secs, verdict, log = line.split("\t")
+        rows.append({"name": name, "scope": scope, "secs": int(secs),
+                     "verdict": verdict, "log": log})
+decisions = []
+with open(os.environ["MECLAW_R_DECISIONS"]) as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        station, decision, reason, at = line.split("\t", 3)
+        decisions.append({"station": station, "decision": decision,
+                          "reason": reason, "at": at})
+doc = {
+    "mode": os.environ["MECLAW_R_MODE"],
+    "rev": os.environ["MECLAW_R_REV"],
+    "base": os.environ["MECLAW_R_BASE"],
+    "dirty": os.environ["MECLAW_R_DIRTY"] == "1",
+    # How long this run sat in the queue for the shared cargo lock. 0 = it did
+    # not wait. The station seconds never carried it; nothing did, until now.
+    "lock_wait_secs": int(os.environ.get("MECLAW_R_LOCK_WAIT") or 0),
+    # Where a copy of this receipt and its logs was put, or null. It is IN the
+    # receipt so the copy answers on its own where it came from, once the
+    # worktree it was written in no longer exists.
+    "archive": os.environ.get("MECLAW_R_ARCHIVE") or None,
+    # What the resolver planned for this diff, `--only` or not (GH #769): a
+    # station absent from `stations` but present here was skipped; one absent
+    # from both was never asked for.
+    "plan": [n for n in os.environ.get("MECLAW_R_PLAN", "").split("\n") if n],
+    "started": os.environ["MECLAW_R_STARTED"],
+    "finished": os.environ["MECLAW_R_FINISHED"] or None,
+    "stations": rows,
+    # RED beats ASK beats GREEN, over the lane's half too.
+    "verdict": (lane_verdict if lane_verdict == "RED"
+                or (lane_verdict == "ASK" and os.environ["MECLAW_R_VERDICT"] in ("GREEN", "RUNNING"))
+                else os.environ["MECLAW_R_VERDICT"]),
+    # The owner's answers to a station's question (`--decide`), as applied in
+    # this run. Always present and `[]` without one, so a reader never has to
+    # tell "nobody decided anything" from "a runner that did not know how".
+    "owner_decisions": decisions,
+}
+with open(os.environ["MECLAW_R_OUT"], "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+PY
+    cp -f "$receipt" "$gate_dir/last-$mode.json"
+}
+
+# `green`/`total` count JUDGEMENTS, so only GREEN and RED are in either half --
+# and a browser station without playwright, which is in the total (see the
+# header): a proof that could not run is not hidden from the summary.
+# A NOTE is a finding to read and a SKIP is a station that ran elsewhere or had
+# no tool; counting them in the denominator made a clean run report 9/12 and
+# read like three failures. Every station is still on its own GATE line and in
+# the receipt -- the summary just does not pretend to grade them.
+green=0; total=0; red=0; ask=0
+asked=()
+# The verdict of the run SO FAR. RED beats ASK beats GREEN. It is ASK, never
+# GREEN, while a question is open: `export-audit` reads this receipt as the
+# last station of the same run, and a receipt saying GREEN over an open
+# question is a green nobody gave.
+running_verdict() {
+    if [ "$red" -gt 0 ]; then echo RED
+    elif [ "$ask" -gt 0 ]; then echo ASK
+    else echo GREEN
+    fi
+}
+report() {   # name scope secs verdict log [reason]
+    local name="$1" scope="$2" secs="$3" verdict="$4" log="$5" reason="${6:-}"
+    printf 'GATE %s [%s] %ss %s%s\n' \
+        "$name" "$scope" "$secs" "$verdict" "${reason:+ $reason}"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$scope" "$secs" "$verdict" "$log" >>"$rows_file"
+    case "$verdict" in
+        GREEN) green=$((green + 1)); total=$((total + 1)) ;;
+        RED)   red=$((red + 1));     total=$((total + 1)) ;;
+        # A question is no judgement on the commit, so it is in neither half.
+        ASK)   ask=$((ask + 1)); asked+=("$name"$'\t'"$reason") ;;
+    esac
+    write_receipt "$(running_verdict)"
+}
+
+# A lane receipt (MECLAW_GATE_LANE_RECEIPT, see A RUN ON A BUILD HOST) is taken
+# for THIS run only: the same full rev, mode and base, a tree as clean or dirty
+# as this one, a finished verdict. Anything else carries no row -- the run is
+# RED with the reason, because the stations it would carry did not run over
+# this tree (review X F1). Checked once, before the first station.
+if [ -n "${MECLAW_GATE_LANE_RECEIPT:-}" ]; then
+    lane_refused=$(MECLAW_R_LANE="$MECLAW_GATE_LANE_RECEIPT" MECLAW_R_MODE="$mode" \
+        MECLAW_R_REV="$rev" MECLAW_R_BASE="$base" MECLAW_R_DIRTY="$dirty" python3 - <<'PY'
+import json, os
+try:
+    with open(os.environ["MECLAW_R_LANE"]) as fh:
+        lane = json.load(fh)
+    if not isinstance(lane, dict) or not isinstance(lane.get("stations"), list):
+        raise ValueError("no stations")
+except (OSError, ValueError) as exc:
+    print("unreadable: %s" % exc.__class__.__name__)
+    raise SystemExit(0)
+want = {"rev": os.environ["MECLAW_R_REV"], "mode": os.environ["MECLAW_R_MODE"],
+        "base": os.environ["MECLAW_R_BASE"]}
+for key, value in want.items():
+    if str(lane.get(key) or "") != value or (key == "rev" and len(value) != 40):
+        print("%s %s, this run %s" % (key, lane.get(key) or "(none)", value or "(none)"))
+        raise SystemExit(0)
+if bool(lane.get("dirty")) != (os.environ["MECLAW_R_DIRTY"] == "1"):
+    print("dirty %s, this run %s" % (bool(lane.get("dirty")),
+                                      os.environ["MECLAW_R_DIRTY"] == "1"))
+elif lane.get("verdict") not in ("GREEN", "RED", "ASK"):
+    print("verdict %s, not a finished run" % (lane.get("verdict") or "(none)"))
+PY
+)
+    if [ -n "$lane_refused" ]; then
+        echo "gate: lane receipt $MECLAW_GATE_LANE_RECEIPT not taken -- $lane_refused" >&2
+        unset MECLAW_GATE_LANE_RECEIPT
+        report lane-receipt "MECLAW_GATE_LANE_RECEIPT" 0 RED "" "$lane_refused"
+    fi
+fi
+
+# --- ghost binaries ---------------------------------------------------------
+# Several worktrees share one target/. cargo decides freshness by mtime and
+# gives workspace members the same metadata hash in every tree, so an artefact
+# built in tree A is handed back as fresh in tree B. The stamp records which
+# tree filled target/ last; a mismatch means the sources that differ between
+# the two trees must look newer than the artefacts.
+#
+# A GHOST IS NOT ONLY A TEST BINARY. The full touch used to cover the
+# integration test sources alone (`crates/**/tests/*.rs`), which leaves every
+# library rlib, every build script output and every binary of the workspace
+# untouched -- and those are compiled from `src/`, from `build.rs` and from the
+# manifests. Measured 2026-09-04, integration pass: target/ still held a
+# `meclaw-core` rlib compiled in a worktree that had since been DELETED, its
+# mtime newer than the master sources, so cargo took it for fresh and linked
+# every member against it; `cargo nextest run -p meclaw-cells` came back
+# `error[E0560]: TransferBounds has no field base_path` and 654 of 6495 tests
+# were red. A tests-only touch could not have invalidated that rlib -- no test
+# source is an input to it.
+#
+# So a FULL touch means every build input of every workspace member: all
+# `crates/**/*.rs` (src, tests, benches, examples, build.rs), every
+# `crates/*/Cargo.toml`, the root `Cargo.toml` and `Cargo.lock`. It is the
+# answer to "this target/ was filled by a tree I cannot diff against", and it
+# is cheap next to the alternative -- a gate grading a build it did not
+# produce.
+#
+# A FOREIGN TREE IS ALWAYS A FULL TOUCH. The targeted touch used to cover the
+# tree switch as well -- `git diff <stamp-sha> HEAD` plus both dirty lists --
+# and that is an UNDER-touch across worktrees even when the stamp's commit is
+# alive and the diff is empty. Two worktrees at the same commit hold two
+# BYTE-IDENTICAL copies of every source, and a test binary compiled from the
+# other copy is fresh by mtime, links, runs -- and carries the other tree's
+# `env!("CARGO_MANIFEST_DIR")`. Measured 2026-09-05: 17 red file tests reading
+# another worktree's fixtures, from a diff the sync had nothing to touch for.
+# The diff answers "which sources changed", never "which tree they belong to",
+# so the only honest answer to a foreign path is the full touch (GH #595).
+#
+# The TARGETED touch stays for the same tree at another commit: there the path
+# is ours, the stamp names a commit that still exists, and the diff between it
+# and HEAD plus both dirty lists is the exact set that can differ.
+# The mechanism -- the stamp file, the full touch and the targeted touch -- is
+# `meclaw_tree_sync` in `scripts/cargo-target.sh`; the WHY is above. What stays
+# here is when the runner asks for it and how the answer is reported.
+tree_synced=0
+tree_sync() {
+    [ "$tree_synced" = 1 ] && return 0
+    tree_synced=1
+    # ci gets a fresh checkout with an empty target/: nothing to sync against,
+    # and the NOTE line would be pure noise in every workflow log.
+    [ "$mode" = ci ] && return 0
+    [ -n "${MECLAW_GATE_DRY:-}" ] && return 0
+    local note
+    note=$(meclaw_tree_sync "$root" "$target_dir" "$rev" "$dirty_files" "$resync")
+    [ -n "$note" ] && report tree-sync "$note" 0 NOTE ""
+    return 0
+}
+
+# The stamp says which tree last TOUCHED target/ -- a red or interrupted build
+# fills it with artefacts just like a green one, and those artefacts are
+# exactly what the next tree would be handed as fresh. So it is written when
+# the FIRST cargo command of the run is dispatched, before the call and
+# regardless of what the call returns; once per run.
+stamp_written=0
+write_stamp() {
+    [ "$mode" = ci ] && return 0
+    [ "$stamp_written" = 1 ] && return 0
+    stamp_written=1
+    meclaw_write_stamp "$root" "$target_dir" "$rev" "$dirty_files"
+}
+
+# --- the one retry (GH #721) -------------------------------------------------
+# Everything about it lives in these four functions, so the station loop keeps
+# one call site and the rule keeps one home.
+BUILDER_FLAKE_STATION="scenarios:builder"
+BUILDER_FLAKE_SIGNATURE="registry lacks"
+BUILDER_FLAKE_ISSUE=721
+
+# Does this log carry the known signature?
+builder_flake_in() {
+    grep -qF "$BUILDER_FLAKE_SIGNATURE" "$1" 2>/dev/null
+}
+
+# The endpoint the registry lost, for the note and for the comment.
+builder_flake_endpoint() {
+    local ep
+    ep=$(sed -n "s/.*$BUILDER_FLAKE_SIGNATURE '\([^']*\)'.*/\1/p" "$1" 2>/dev/null | head -1)
+    printf '%s' "${ep:-unknown endpoint}"
+}
+
+# Run a station's commands again, into the same log. Only ever called for a
+# station with `cargo 0`, so there is no stamp and no wrap to repeat here.
+run_station_again() {   # cmds log -> the rc of the second round
+    local cmds="$1" log="$2" rc=0 cmd cwd argv
+    printf '\n# retry 1 (GH #%s): %s\n' \
+        "$BUILDER_FLAKE_ISSUE" "$BUILDER_FLAKE_SIGNATURE" >>"$log"
+    while IFS=$'\t' read -r cmd cwd; do
+        [ -z "$cmd" ] && continue
+        printf '$ %s\n' "$cmd" >>"$log"
+        [ -n "${MECLAW_GATE_DRY:-}" ] && continue
+        argv=()
+        eval "argv=( $cmd )"
+        ( [ "$run_lock" = 1 ] && exec 9>&-
+          if [ -n "$cwd" ]; then cd "$cwd" || exit 1; fi
+          "${argv[@]}" ) >>"$log" 2>&1 </dev/null
+        rc=$?
+        [ "$rc" -ne 0 ] && break
+    done <<<"$cmds"
+    return $rc
+}
+
+# The occurrence, on its own NOTE line and on the issue. A comment that cannot
+# be sent is said, not swallowed -- and it never changes the run's verdict.
+#
+# THE COMMENT GOES OUT FOR A FLAKE, NOT FOR A DEFECT. #721 collects runs where
+# the endpoint came back on the second round; a station that is red twice is
+# not one of those. Writing "passed on the retry" there would be an unattended
+# external action carrying a false statement, so a second red keeps the line
+# and drops the comment.
+builder_flake_note() {   # endpoint rc-of-the-second-round
+    local ep="$1" rc="$2" gh reason body
+    gh="${MECLAW_GATE_GH:-gh}"
+    if [ "$rc" -ne 0 ]; then
+        reason="comment skipped (the retry was red too)"
+    elif [ -n "${MECLAW_GATE_DRY:-}" ]; then
+        reason="comment skipped (dry run)"
+    elif ! command -v "$gh" >/dev/null 2>&1; then
+        reason="comment skipped (no gh)"
+    else
+        body="Seen again on \`${rev:0:7}\` (\`$mode\`): station \`$BUILDER_FLAKE_STATION\` \
+lost \`$ep\`, and the same station passed on the retry."
+        if "$gh" issue comment "$BUILDER_FLAKE_ISSUE" --body "$body" >/dev/null 2>&1; then
+            reason="commented on GH #$BUILDER_FLAKE_ISSUE"
+        else
+            reason="comment skipped (gh refused)"
+        fi
+    fi
+    report "$BUILDER_FLAKE_STATION-retry" "GH #$BUILDER_FLAKE_ISSUE $ep" 0 NOTE "" "$reason"
+}
+
+# --- the form station stops the cargo stations --------------------------------
+# See "A RED FORM STATION STOPS THE CARGO STATIONS" in the header. The list
+# names the stations whose own `cargo` column is 0 and that still cannot be
+# judged without the build: the two suites that boot `target/debug/meclaw`, and
+# the audit that grades this run's receipt -- which, after such a stop, is a
+# receipt the cargo stations are missing from. `persona-cases` belongs with the
+# suites: its runner self-test boots the binary against a stub. Everything with
+# `cargo 1` is covered by the column itself.
+PRECHECK_STOP_ALSO="scenarios:memory scenarios:builder export-audit persona-cases"
+precheck_red=0
+
+# Does this station need what a cargo station builds?
+needs_the_build() {   # name cargo
+    [ "$2" = 1 ] && return 0
+    case " $PRECHECK_STOP_ALSO " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# --- the notes of the form station -------------------------------------------
+# `precheck` grades in two levels: a RED finding is the station's verdict, a
+# NOTE is a finding to read. The runner prints a red station's log tail and
+# nothing else, so a green station's notes would sit in a file nobody opens --
+# which is the same as not having found them.
+precheck_notes() {   # log
+    [ -f "$1" ] || return 0
+    grep '^NOTE ' "$1" 2>/dev/null | sed 's/^/    | /'
+    return 0
+}
+
+# --- the persona receipt (see A QUESTION FOR THE OWNER) -----------------------
+# The checker (`workshop/evals/persona/fingerprint.py --check`) answers with an
+# exit code, and the codes are a CONTRACT with this arm: 0 covered, 3 stale,
+# 4 missing, 5 incomplete, 6 red. Everything else -- 1 is a crash, 2 a
+# malformed report -- is RED in every mode: a checker that could not look must
+# never read as a reminder or as a question.
+#
+# 3/4/5 say "no measurement describes this tree", which is not a finding about
+# the commit, so a pass ASKS instead of turning red; 6 says "the measurement
+# of this very tree is red", which is one. An aborted run (5) is a missing
+# measurement, not a verdict on the persona, so it asks too.
+#
+# Returns 1 when it reported RED, so the loop can honour --fail-fast.
+decision_for() {   # station -> the reason of its --decide, or nothing
+    local d st rest reason=""
+    for d in ${decides[@]+"${decides[@]}"}; do
+        st=${d%%=*}; rest=${d#*=}
+        # The last one given wins, like every other option of this runner.
+        [ "$st" = "$1" ] && reason=${rest#*:}
+    done
+    printf '%s' "$reason"
+}
+
+persona_receipt_report() {   # name scope secs log_rel log rc
+    local name="$1" scope="$2" secs="$3" log_rel="$4" log="$5" rc="$6" text why
+    text=$(sed -n 's/^PERSONA-RECEIPT [a-z]* //p' "$log" 2>/dev/null | tail -1)
+    [ -n "$text" ] || text="no PERSONA-RECEIPT line in $log_rel"
+    case "$rc" in
+        0|3|4|5|6) ;;
+        *)
+            report "$name" "$scope" "$secs" RED "$log_rel" "the checker failed (exit $rc)"
+            tail -n 20 "$log" | sed 's/^/    | /'
+            return 1 ;;
+    esac
+    if [ "$mode" = strand ]; then
+        # A strand gates before its commit, and the measurement is a separate
+        # job (it takes hours or money). The line is a reminder, not a verdict.
+        case "$rc" in
+            0) why="covers its sources" ;;
+            3) why="the persona sources moved ($text); measure and commit the report" ;;
+            4) why="no persona report yet; measure and commit one" ;;
+            5) why="the committed report is incomplete; measure and commit a full one" ;;
+            6) why="the committed report is red ($text)" ;;
+        esac
+        report "$name" "$scope" "$secs" NOTE "$log_rel" "$why"
+        return 0
+    fi
+    case "$rc" in
+        0)
+            report "$name" "$scope" "$secs" GREEN "$log_rel" ;;
+        6)
+            # A current, red measurement is a finding. "without" answers a
+            # missing measurement and never outvotes one that exists.
+            report "$name" "$scope" "$secs" RED "$log_rel" "$text"
+            tail -n 20 "$log" | sed 's/^/    | /'
+            return 1 ;;
+        *)
+            why=$(decision_for "$name")
+            if [ -n "$why" ]; then
+                printf '%s\t%s\t%s\t%s\n' "$name" without "$why" "$(date -Is)" \
+                    >>"$decisions_file"
+                report "$name" "$scope" "$secs" NOTE "$log_rel" "owner decided: without -- $why"
+            else
+                report "$name" "$scope" "$secs" ASK "$log_rel" "$text"
+            fi ;;
+    esac
+    return 0
+}
+
+# The question block after the summary line. The two measure commands stand
+# here as literal text, never assembled from a variable: the persona runner's
+# self-test holds its own `measure_commands()` against these lines, line by
+# line, so the command the owner is told to run is the command that exists.
+print_question() {   # station text
+    local st="$1" text="$2"
+    printf '  %s: %s\n' "$st" "$text"
+    if [ "$st" = persona-receipt ]; then
+        cat <<'ASK'
+  The committed persona report does not describe this tree. Three answers:
+    1. measure again on the local model (no model spend, about 1-2 hours; the hosted
+       embedder costs cents, so the runner asks for a budget as well):
+         LOCAL_LLM_MODEL=<model id served at LOCAL_LLM_BASE_URL> python3 workshop/evals/persona/run_persona.py --live --engine local --budget-eur <EUR>
+       then, if it is green, commit workshop/evals/persona/last_run.json and transcripts/, and run this gate again
+    2. measure again on a paid provider (costs money; design estimate 1.2-2.0 EUR a run,
+       the runner prints its own estimate and refuses to spend without a budget):
+         python3 workshop/evals/persona/run_persona.py --live --engine paid --budget-eur <EUR>
+       then, if it is green, commit the report and run this gate again
+ASK
+    fi
+    printf '    3. go on without a fresh measurement -- the owner'"'"'s call, written into the receipt:\n'
+    printf '         scripts/gate.sh %s --decide %s=without:"OR-<id>: <reason>"   (with this run'"'"'s other options)\n' \
+        "$mode" "$st"
+}
+
+# --- run --------------------------------------------------------------------
+# A browser station whose proofs cannot drive a browser here: no `node`, or no
+# `playwright` beside the drivers (`workshop/tools/node_modules`, the one npm
+# install of the tree, which a fresh lane worktree does not have). Its Rust
+# locks would SKIP inside and the station would read GREEN -- measured
+# 03.10. (OR-DP-83): `14/14 GREEN` on a lane, every browser proof skipped.
+# So it is reported as a SKIP that COUNTS in the total: no judgement on the
+# commit, but a summary that cannot read whole while a proof did not run.
+browser_short() {   # station -> reason, or empty
+    case "$1" in
+        browser:*) ;;
+        *) return 0 ;;
+    esac
+    if ! command -v node >/dev/null 2>&1; then
+        echo "no-node: the browser proofs did not run (counted)"
+    elif [ ! -d "$root/workshop/tools/node_modules/playwright" ]; then
+        echo "no-playwright: workshop/tools/node_modules is missing, the browser proofs did not run (counted)"
+    fi
+}
+
+missing_tool() {   # station -> reason, or empty when everything is there
+    case "$1" in
+        shellcheck)
+            command -v shellcheck >/dev/null 2>&1 || echo "shellcheck not installed" ;;
+        deny|deny-advisories)
+            command -v cargo-deny >/dev/null 2>&1 || echo "cargo-deny not installed" ;;
+    esac
+}
+
+# How far master has moved since the base, and what both sides touch. A strand
+# question only: see the header. `comm` needs both sides sorted, and the
+# intersection is the whole point -- a master that moved somewhere else costs
+# this strand nothing, and one that moved into its own files is a re-merge
+# waiting to happen.
+master_moved_note() {
+    [ "$mode" = strand ] || return 0
+    [ -n "$base" ] || return 0
+    git rev-parse --verify --quiet master >/dev/null 2>&1 || return 0
+    # `HEAD..master`, not `base..master`: what matters is what master carries
+    # and this branch does not. After a master->strand re-merge those commits
+    # are IN HEAD, and `base..master` would keep counting them -- a note that
+    # repeats itself after the answer is a note nobody reads twice.
+    local n both
+    n=$(git rev-list --count "HEAD..master" 2>/dev/null || echo 0)
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
+    both=$(comm -12 \
+        <(git diff --name-only "$base" master 2>/dev/null | sed '/^$/d' | sort -u) \
+        <(printf '%s\n' "$changed" | sed '/^$/d' | sort -u) | paste -sd' ' -)
+    local unit="commits"
+    [ "$n" = 1 ] && unit="commit"
+    report master-moved "$n $unit since the base" 0 NOTE "" \
+        "${both:+also in this diff: $both}"
+    return 0
+}
+master_moved_note
+[ -n "$lane_local_ok" ] \
+    && report lane-local-ok "local cargo while lanes are armed: $lane_local_ok" 0 NOTE "" "$lane_local_ok"
+[ -n "$lanes_ci" ] \
+    && report lanes-ci "CI=${CI:-}" 0 NOTE "" "$lanes_ci"
+
+# On a lane, `display-lab` needs `node` there (GH #942): asked once, here.
+# `MECLAW_GATE_NODE` names the binary -- a test hook, `node` otherwise.
+lane_node=1
+if [ "$lane" = 1 ] && ! command -v "${MECLAW_GATE_NODE:-node}" >/dev/null 2>&1; then
+    lane_node=0
+fi
+
+for i in ${st_names[@]+"${!st_names[@]}"}; do
+    name="${st_names[$i]}"; scope="${st_scopes[$i]}"; cargo="${st_cargo[$i]}"
+    log="$logs_dir/$mode-$name.log"
+    # The receipt names the log RELATIVE to the repo root when it lives under
+    # it (the main worktree), and absolutely when the target is elsewhere.
+    case "$log" in
+        "$root"/*) log_rel="${log#"$root"/}" ;;
+        *)         log_rel="$log" ;;
+    esac
+
+    # `ci` has no `tests` station (the shards run the suite), so `slow-tests`
+    # has no JUnit file to read either: the plan marks both `run: false`, and
+    # the TSV this loop reads does not carry that mark -- so both by name. The
+    # public CI of 0.62.0 went RED on exactly this ("no JUnit file").
+    if [ "$mode" = ci ] && [ "$name" = "tests" ]; then
+        report "$name" "$scope" 0 SKIP "" "planned-for-shards"
+        continue
+    fi
+    if [ "$mode" = ci ] && [ "$name" = "slow-tests" ]; then
+        report "$name" "$scope" 0 SKIP "" "no-tests-station-in-ci"
+        continue
+    fi
+
+    # A build host has no `.env`, no `node` and no `github-main` ref (A RUN ON
+    # A BUILD HOST); the kit runs these stations on the owner's machine after
+    # the remote run.
+    if [ "$lane" = 1 ]; then
+        why=$(printf '%s\n' "$lane_local" | awk -F'\t' -v n="$name" '$1 == n {print $2; exit}')
+        if [ -n "$why" ]; then
+            report "$name" "$scope" 0 SKIP "" "$why (lane)"
+            continue
+        fi
+        # No `node` on the host: RED, never a quiet skip and never a run on
+        # the owner's machine instead (GH #942).
+        if [ "$name" = display-lab ] && [ "$lane_node" = 0 ]; then
+            report "$name" "$scope" 0 RED "" \
+                "no-node (lane): install node on the build host, the runline tests call it"
+            continue
+        fi
+        # A paid suite class on a lane: the lane's `.env` carries no key, by
+        # contract (`gate_plan.py --print lane-env`), so a `--with llm|embed`
+        # there is refused before its runner starts -- never a network call.
+        paid=$(printf '%s\n' "${st_cmds[$i]}" \
+            | grep -oE -- "--with(=| +)'?[A-Za-z0-9_-]+" \
+            | sed -E "s/^--with(=| +)'?//" | grep -vx none | head -1 || true)
+        if [ -n "$paid" ]; then
+            report "$name" "$scope" 0 RED "" \
+                "--with $paid on a lane: a lane runs the keyless class none only"
+            continue
+        fi
+    fi
+
+    why=$(missing_tool "$name")
+    if [ -n "$why" ]; then
+        report "$name" "$scope" 0 SKIP "" "$why"
+        continue
+    fi
+    why=$(browser_short "$name")
+    if [ -n "$why" ]; then
+        total=$((total + 1))
+        report "$name" "$scope" 0 SKIP "" "$why"
+        continue
+    fi
+
+    # The form station had the verdict in seconds; nothing that needs a build
+    # is run for it, and the lock below is never reached.
+    if [ "$precheck_red" = 1 ] && [ "$no_precheck_stop" = 0 ] \
+       && needs_the_build "$name" "$cargo"; then
+        report "$name" "$scope" 0 SKIP "" "precheck red"
+        continue
+    fi
+
+    # The lock covers the tree sync as well: it touches sources so that cargo
+    # rebuilds them, and another tree building in between is exactly what that
+    # is meant to defend against.
+    if [ "$cargo" = 1 ]; then
+        take_run_lock
+        tree_sync
+    fi
+
+    : >"$log"
+    if [ "$cargo" = 1 ] && [ "$mode" != ci ]; then
+        # The conditions a build ran under belong in its log: half-width is a
+        # deliberate cap, not an accident, and a slow gate is a fair question.
+        printf '# cargo hygiene%s: CARGO_BUILD_JOBS=%s NEXTEST_TEST_THREADS=%s TMPDIR=%s\n' \
+            "$([ "$lane" = 1 ] && echo ' (lane)')" "${CARGO_BUILD_JOBS:-<unset>}" "${NEXTEST_TEST_THREADS:-<unset>}" \
+            "${TMPDIR:-<unset>}" >>"$log"
+        [ -n "$lane_wipe_note" ] && printf '%s\n' "$lane_wipe_note" >>"$log"
+    fi
+    s_start=$(date +%s)
+    rc=0
+    while IFS=$'\t' read -r cmd cwd; do
+        [ -z "$cmd" ] && continue
+        printf '$ %s\n' "$cmd" >>"$log"
+        [ -n "${MECLAW_GATE_DRY:-}" ] && continue
+        argv=()
+        eval "argv=( $cmd )"
+        # The resolver leaves `{receipt}` in the export-audit argv for us to
+        # fill in -- it cannot know where the runner puts its receipt.
+        for k in ${argv[@]+"${!argv[@]}"}; do
+            [ "${argv[$k]}" = "{receipt}" ] && argv[k]="$receipt"
+        done
+        # No per-station locking any more, and no exception for test-tier.sh:
+        # the run holds the lock from its first cargo station onwards, and the
+        # tier script skips its own flock when MECLAW_CARGO_LOCK_HELD is set.
+        if [ "$cargo" = 1 ] && [ ${#wrap[@]} -gt 0 ]; then
+            argv=("${wrap[@]}" "${argv[@]}")
+        fi
+        # Under the lock: no other tree may build between the stamp and the
+        # build it describes.
+        [ "$cargo" = 1 ] && [ -z "${MECLAW_GATE_DRY:-}" ] && write_stamp
+        # `exec 9>&-` FIRST: the station and everything it spawns must not hold
+        # the lock descriptor -- see the comment where lock_path is set.
+        # </dev/null: the command loop reads from a here-string, and a station
+        # command that reads stdin would eat the REST OF ITS OWN STATION. That
+        # is a station reporting GREEN over work it never did.
+        ( [ "$run_lock" = 1 ] && exec 9>&-
+          if [ -n "$cwd" ]; then cd "$cwd" || exit 1; fi
+          "${argv[@]}" ) >>"$log" 2>&1 </dev/null
+        rc=$?
+        [ "$rc" -ne 0 ] && break
+    done <<<"${st_cmds[$i]}"
+    s_secs=$(( $(date +%s) - s_start ))
+
+    # The one retry. See "THE ONE RETRY" in the header.
+    flake_endpoint=""
+    if [ "$name" = "$BUILDER_FLAKE_STATION" ] && [ "$rc" -ne 0 ] \
+       && builder_flake_in "$log"; then
+        flake_endpoint=$(builder_flake_endpoint "$log")
+        run_station_again "${st_cmds[$i]}" "$log"
+        rc=$?
+        s_secs=$(( $(date +%s) - s_start ))
+        scope="$scope, retry 1 GH #$BUILDER_FLAKE_ISSUE"
+    fi
+
+    if [ "$name" = "corpus-committed" ] && [ "$mode" = strand ]; then
+        # A strand gates BEFORE its commit, so the committed corpus is allowed
+        # to be behind the sources the strand just changed -- `corpus` is about
+        # to regenerate it. What is not allowed is committing without it, and
+        # that is what this line is for: a reminder to `git add`, not a
+        # judgement on a tree that is still being written (GH #596).
+        if [ "$rc" -eq 0 ]; then
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" "matches its sources"
+        else
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" \
+                "the corpus is stale; regenerate it and commit it with this change"
+        fi
+    elif [ "$name" = "slow-tests" ]; then
+        # The slow lock grades a time, and a time moves with the load of the
+        # host: at 12 threads two tests sat at 88-98 % of their mark, and a
+        # strand would go red over a test its diff never touched (GH #1046,
+        # review I1). So every mode NOTEs a test over the mark -- the name stays
+        # in the log, the wave owns the finding (TV-K5, ruling K6 2026-10-11:
+        # a perf signal, never a verdict; until then integration graded it). Exit 2 is a
+        # broken lock (no JUnit file, a filter it cannot read, a debt without
+        # an issue), which no load explains: RED in every mode. The station's
+        # last `SLOW-VERDICT` line is the reason, so the debt it carries stands
+        # in the GATE line and not only in the log.
+        slow_reason=$(sed -n 's/^SLOW-VERDICT //p' "$log" | tail -n 1)
+        if [ "$rc" -eq 0 ]; then
+            report "$name" "$scope" "$s_secs" GREEN "$log_rel" "$slow_reason"
+        elif [ "$rc" -eq 1 ]; then
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" \
+                "${slow_reason:+$slow_reason; }a finding of the wave, named in the log"
+        else
+            report "$name" "$scope" "$s_secs" RED "$log_rel" "$slow_reason"
+            tail -n 20 "$log" | sed 's/^/    | /'
+            if [ "$fail_fast" = 1 ]; then
+                echo "gate: --fail-fast -- stopping after $name." >&2
+                break
+            fi
+        fi
+    elif [ "$name" = "persona-receipt" ]; then
+        if ! persona_receipt_report "$name" "$scope" "$s_secs" "$log_rel" "$log" "$rc" \
+           && [ "$fail_fast" = 1 ]; then
+            echo "gate: --fail-fast -- stopping after $name." >&2
+            break
+        fi
+    elif [ "$name" = "deny-advisories" ]; then
+        # Advisories move without a commit: a finding here is about the
+        # dependencies, not about this tree. It is read, not blocking.
+        if [ "$rc" -eq 0 ]; then
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" "clean"
+        else
+            report "$name" "$scope" "$s_secs" NOTE "$log_rel" "findings -- read $log_rel"
+        fi
+    elif [ "$rc" -eq 0 ]; then
+        report "$name" "$scope" "$s_secs" GREEN "$log_rel"
+    else
+        report "$name" "$scope" "$s_secs" RED "$log_rel"
+        tail -n 20 "$log" | sed 's/^/    | /'
+        if [ "$fail_fast" = 1 ]; then
+            [ -n "$flake_endpoint" ] && builder_flake_note "$flake_endpoint" "$rc"
+            echo "gate: --fail-fast -- stopping after $name." >&2
+            break
+        fi
+    fi
+
+    [ -n "$flake_endpoint" ] && builder_flake_note "$flake_endpoint" "$rc"
+    if [ "$name" = precheck ]; then
+        precheck_notes "$log"
+        [ "$rc" -ne 0 ] && precheck_red=1
+    fi
+done
+
+# --- summary ----------------------------------------------------------------
+# The end of the run is the end of the lock -- also on the --fail-fast break.
+release_run_lock
+
+secs=$(( $(date +%s) - t_start ))
+verdict=$(running_verdict)
+write_receipt "$verdict" final
+
+if [ -n "$log_dir" ]; then
+    # A copy that silently fails leaves the wave without the receipt it asked
+    # for. It is not a gate finding, so it does not change the exit code -- but
+    # nobody gets to believe the receipt is there when it is not.
+    copied=1
+    mkdir -p "$log_dir/logs" || copied=0
+    cp -f "$receipt" "$gate_dir/last-$mode.json" "$log_dir/" || copied=0
+    # A run whose every station was SKIP has no logs at all; an unmatched glob
+    # would then look like a copy failure.
+    if compgen -G "$logs_dir/$mode-*.log" >/dev/null; then
+        cp -f "$logs_dir"/"$mode"-*.log "$log_dir/logs/" || copied=0
+    fi
+    [ "$copied" = 1 ] || \
+        echo "gate: could not copy receipt/logs to $log_dir (the run itself stands)" >&2
+fi
+
+printf 'GATE-SUMMARY %s %s %s/%s %ss %s\n' \
+    "$mode" "${rev:0:7}" "$green" "$total" "$secs" "$verdict"
+
+# The question comes after the summary, and it comes even when the run is
+# red: every finding and every open question out of ONE run.
+if [ "$ask" -gt 0 ]; then
+    if [ "$verdict" = RED ]; then
+        echo "gate: ASK as well -- a question for the owner, not a finding."
+    else
+        echo "gate: ASK -- a question for the owner, not a finding."
+    fi
+    for a in "${asked[@]}"; do
+        print_question "${a%%$'\t'*}" "${a#*$'\t'}"
+    done
+fi
+
+# An answer to a question this run never asked changes nothing and is not in
+# the receipt -- said out loud, so nobody believes it was applied.
+for d in ${decides[@]+"${decides[@]}"}; do
+    st=${d%%=*}
+    grep -q "^$st"$'\t' "$decisions_file" 2>/dev/null || \
+        echo "gate: --decide $st unused -- the station did not ask in this run" >&2
+done
+
+if [ "$verdict" = RED ]; then
+    echo "gate: RED -- fix everything listed, then run the gate again as a whole."
+    exit 1
+fi
+[ "$verdict" = ASK ] && exit "$ASK_EXIT"
+exit 0

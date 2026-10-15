@@ -455,7 +455,8 @@ pub fn import_document(
     conn: &rusqlite::Connection,
     args: &Map<String, Value>,
 ) -> Result<TransferOutcome, String> {
-    let tx = match conn.unchecked_transaction() {
+    // IMMEDIATE for the reason `import_documents` gives.
+    let tx = match immediate(conn) {
         Ok(t) => t,
         Err(e) => return Ok(TransferOutcome::Sql(e)),
     };
@@ -700,6 +701,20 @@ fn import_one(
     })
 }
 
+/// The import transaction, opened `BEGIN IMMEDIATE` rather than rusqlite's
+/// default DEFERRED: [`import_one`] reads first (`resolve_table`, `columns_of`,
+/// the `SELECT 1` duplicate probe) and writes after, and SQLite never calls the
+/// busy handler for a read-to-write upgrade. The transfer slot is answered for
+/// every cell type with a `cell.db`, a `store` among them, and a store's
+/// `cell.db` has a second writer (`mutation::seed_rows::apply_entries` opens
+/// its own connection on a live cell): a deferred import racing it failed at
+/// once with "database is locked" instead of waiting out the GH #98 busy
+/// budget (pin `gh98_an_import_racing_another_writer_waits_for_the_write_lock`,
+/// red on the deferred form). Same class as `persist::migrations::migrate`.
+fn immediate(conn: &rusqlite::Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+}
+
 /// GH #261 — every part of one directory, in ONE transaction.
 ///
 /// A `import … from:` call is a DOCUMENT, and a document applies whole or not
@@ -711,7 +726,7 @@ fn import_one(
 /// SQL failure had the same shape: a constraint, a trigger of a maintained FTS
 /// index, a full disk.
 ///
-/// So the whole walk runs inside one `unchecked_transaction`, on the cell's own
+/// So the whole walk runs inside one transaction ([`immediate`]), on the cell's own
 /// connection, inside ONE `db.call` — a transaction that spanned two calls
 /// would leave the connection in a `BEGIN` any other message could commit or
 /// roll back. Dropping the transaction on any refusal rolls back every table of
@@ -723,7 +738,7 @@ fn import_documents(
     conn: &rusqlite::Connection,
     calls: Vec<Map<String, Value>>,
 ) -> Result<TransferOutcome, String> {
-    let tx = match conn.unchecked_transaction() {
+    let tx = match immediate(conn) {
         Ok(t) => t,
         Err(e) => return Ok(TransferOutcome::Sql(e)),
     };
@@ -1683,7 +1698,7 @@ pub(crate) async fn handle_transfer_slot(
     let Some(slot) = body.get(TRANSFER_SLOT) else {
         return false;
     };
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let reply_to = msg.reply_to.clone();
     let target = reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
@@ -1832,7 +1847,7 @@ async fn emit_transfer_reply(
     payload: Value,
     error_code: Option<&str>,
     error_text: Option<String>,
-    started: std::time::Instant,
+    started: tokio::time::Instant,
 ) {
     let mut header = Map::new();
     header.insert("operation".into(), Value::from(operation));
@@ -2048,6 +2063,97 @@ mod tests {
             policy: meclaw_core::TransferPolicy::All,
             base_path: None,
         }
+    }
+
+    static OTHER_WRITER: std::sync::Mutex<Option<rusqlite::Connection>> =
+        std::sync::Mutex::new(None);
+
+    fn let_the_other_writer_commit(_attempt: i32) -> bool {
+        if let Some(other) = OTHER_WRITER.lock().unwrap().take() {
+            other.execute_batch("COMMIT").unwrap();
+        }
+        true
+    }
+
+    /// GH #98, the transfer half: an import reads the target (`resolve_table`,
+    /// `columns_of`, the duplicate probe) before its first `INSERT`. In a
+    /// DEFERRED transaction that is a read-to-write upgrade, for which SQLite
+    /// never calls the busy handler -- an import next to a second writer on
+    /// the same `cell.db` (`seed_rows` on a live store) failed at once with
+    /// "database is locked". Deterministic: the busy handler itself releases
+    /// the other writer, so the import lands only if the handler is called.
+    #[test]
+    fn gh98_an_import_racing_another_writer_waits_for_the_write_lock() {
+        let td = tempfile::TempDir::new().unwrap();
+        let path = td.path().join("cell.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute_batch("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);")
+            .unwrap();
+        let other = rusqlite::Connection::open(&path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        *OTHER_WRITER.lock().unwrap() = Some(other);
+        conn.busy_handler(Some(let_the_other_writer_commit))
+            .unwrap();
+
+        let call = one_note().as_object().unwrap().clone();
+        match import_documents(&conn, vec![call.clone()]).unwrap() {
+            TransferOutcome::Done { rows_affected, .. } => assert_eq!(rows_affected, 1),
+            TransferOutcome::Sql(e) => panic!("the import waits for the other writer: {e}"),
+            _ => panic!("the import must land"),
+        }
+        // The single-part path opens the same transaction.
+        let other = rusqlite::Connection::open(&path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        *OTHER_WRITER.lock().unwrap() = Some(other);
+        let mut second = call;
+        second.insert("rows".into(), json!([{"id": "b", "body": "second"}]));
+        match import_document(&conn, &second).unwrap() {
+            TransferOutcome::Done { rows_affected, .. } => assert_eq!(rows_affected, 1),
+            TransferOutcome::Sql(e) => panic!("the import waits for the other writer: {e}"),
+            _ => panic!("the import must land"),
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    static OTHER_SINGLE_WRITER: std::sync::Mutex<Option<rusqlite::Connection>> =
+        std::sync::Mutex::new(None);
+
+    fn let_the_other_single_writer_commit(_attempt: i32) -> bool {
+        if let Some(other) = OTHER_SINGLE_WRITER.lock().unwrap().take() {
+            other.execute_batch("COMMIT").unwrap();
+        }
+        true
+    }
+
+    /// GH #98, the single-part import on its own (re-check legacy-a2 fix3 H2):
+    /// `import_document` opens its own transaction, so it is pinned apart from
+    /// `import_documents` -- red on a DEFERRED transaction there, whatever the
+    /// batch path does. Its own writer slot keeps it free of the other pin.
+    #[test]
+    fn gh98_a_single_part_import_racing_another_writer_waits_for_the_write_lock() {
+        let td = tempfile::TempDir::new().unwrap();
+        let path = td.path().join("cell.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute_batch("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);")
+            .unwrap();
+        let other = rusqlite::Connection::open(&path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        *OTHER_SINGLE_WRITER.lock().unwrap() = Some(other);
+        conn.busy_handler(Some(let_the_other_single_writer_commit))
+            .unwrap();
+
+        let call = one_note().as_object().unwrap().clone();
+        match import_document(&conn, &call).unwrap() {
+            TransferOutcome::Done { rows_affected, .. } => assert_eq!(rows_affected, 1),
+            TransferOutcome::Sql(e) => panic!("the import waits for the other writer: {e}"),
+            _ => panic!("the import must land"),
+        }
+        assert!(conn.is_autocommit(), "no transaction is left open");
     }
 
     fn one_note() -> Value {

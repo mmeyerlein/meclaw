@@ -465,7 +465,7 @@ async fn transit_hop_trace_chain_is_gapless() {
 
     // Three hops: external→/source, /source→/hive, /hive→/sink.
     let db_path = h.tempdir_path().join("colony.db");
-    wait_for_message_log_count(&db_path, &trace_id, 3, Duration::from_secs(5)).await;
+    wait_for_message_log_count(&h, &trace_id, 3).await;
     h.shutdown().await;
 
     assert_trace_gapless_with_hive_hop(&db_path, &trace_id, "/hive");
@@ -549,7 +549,7 @@ async fn transit_hop_trace_chain_is_gapless_over_hive_chain() {
 
     // Four hops: external→/source, /source→/a, /a→/a/b, /a/b→/sink.
     let db_path = h.tempdir_path().join("colony.db");
-    wait_for_message_log_count(&db_path, &trace_id, 4, Duration::from_secs(5)).await;
+    wait_for_message_log_count(&h, &trace_id, 4).await;
     h.shutdown().await;
 
     // Both hive hops are logged.

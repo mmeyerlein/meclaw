@@ -347,26 +347,8 @@ impl VoiceClient {
         sample_rate: u32,
         chunk_ms: u64,
     ) -> Result<Instant, String> {
-        if sample_rate == 0 {
-            return Err("sample_rate must not be zero".to_string());
-        }
-        let chunk_ms = chunk_ms.max(1);
-        let bytes_per_chunk = (sample_rate as usize * 2 * chunk_ms as usize / 1000).max(2);
-        let started = Instant::now();
-        let mut last = started;
-        for (i, chunk) in pcm.chunks(bytes_per_chunk).enumerate() {
-            // Pace against the stream's own start, not against the previous
-            // sleep: per-chunk sleeps accumulate their own overshoot, and over
-            // a ten-second file that drift is larger than what is measured.
-            let due = started + Duration::from_millis(chunk_ms * i as u64);
-            let now = Instant::now();
-            if due > now {
-                tokio::time::sleep(due - now).await;
-            }
-            self.send_audio(chunk).await?;
-            last = Instant::now();
-        }
-        Ok(last)
+        pace_pcm(self, pcm, sample_rate, chunk_ms).await?;
+        Ok(Instant::now())
     }
 
     /// The next frame, or an error when nothing arrives within `timeout`.
@@ -475,6 +457,43 @@ fn ws_authority(url: &str) -> Result<String, String> {
     } else {
         Ok(format!("{authority}:80"))
     }
+}
+
+/// Where [`pace_pcm`] puts each chunk: the socket in production, a recorder in
+/// the in-process pacing test (TV-Z7: the pacing is timed without a socket).
+trait PcmSink {
+    async fn put_chunk(&mut self, chunk: &[u8]) -> Result<(), String>;
+}
+
+impl PcmSink for VoiceClient {
+    async fn put_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
+        self.send_audio(chunk).await
+    }
+}
+
+/// Sends `pcm` in `chunk_ms` chunks, each due `chunk_ms * i` after the first.
+///
+/// Paces against the stream's own start, not against the previous sleep:
+/// per-chunk sleeps accumulate their own overshoot, and over a ten-second file
+/// that drift is larger than what is measured. On `tokio::time` (GH #1208), so
+/// a paused clock times it exactly.
+async fn pace_pcm<S: PcmSink>(
+    sink: &mut S,
+    pcm: &[u8],
+    sample_rate: u32,
+    chunk_ms: u64,
+) -> Result<(), String> {
+    if sample_rate == 0 {
+        return Err("sample_rate must not be zero".to_string());
+    }
+    let chunk_ms = chunk_ms.max(1);
+    let bytes_per_chunk = (sample_rate as usize * 2 * chunk_ms as usize / 1000).max(2);
+    let started = tokio::time::Instant::now();
+    for (i, chunk) in pcm.chunks(bytes_per_chunk).enumerate() {
+        tokio::time::sleep_until(started + Duration::from_millis(chunk_ms * i as u64)).await;
+        sink.put_chunk(chunk).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -644,31 +663,51 @@ mod tests {
         assert_eq!(got[2].1.as_audio(), Some([2u8; 4].as_slice()));
     }
 
-    #[tokio::test]
-    async fn streaming_pcm_takes_about_as_long_as_the_audio_lasts() {
+    /// Records the virtual instant of every chunk.
+    struct Stamps(Vec<(tokio::time::Instant, usize)>);
+
+    impl PcmSink for Stamps {
+        async fn put_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
+            self.0.push((tokio::time::Instant::now(), chunk.len()));
+            Ok(())
+        }
+    }
+
+    /// TV-Z7: the pacing without a socket, exact in virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn pcm_pacing_puts_each_chunk_at_its_own_offset() {
+        // 300 ms of 16 kHz mono PCM16, sent in 20 ms chunks.
+        let pcm = vec![0u8; 16_000 * 2 * 300 / 1000];
+        let t0 = tokio::time::Instant::now();
+        let mut stamps = Stamps(Vec::new());
+        pace_pcm(&mut stamps, &pcm, 16_000, 20).await.expect("pace");
+        assert_eq!(stamps.0.len(), 15, "300 ms in 20 ms chunks is 15 chunks");
+        for (i, (at, len)) in stamps.0.iter().enumerate() {
+            assert_eq!(*at - t0, Duration::from_millis(20 * i as u64), "chunk {i}");
+            assert_eq!(*len, 640, "20 ms of 16 kHz PCM16");
+        }
+    }
+
+    /// Over the socket only the event: every chunk arrives, in order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn streaming_pcm_delivers_every_chunk_in_order() {
         let port = free_port();
         let _srv = mini_ws_server(port, hello_json(), true).await;
         let (mut client, _) = VoiceClient::connect(&format!("ws://127.0.0.1:{port}/ws"))
             .await
             .expect("connect");
-        // 300 ms of 16 kHz mono PCM16, sent in 20 ms chunks.
-        let pcm = vec![0u8; 16_000 * 2 * 300 / 1000];
-        let started = Instant::now();
-        let last = client
+        let pcm: Vec<u8> = (0..15u8).flat_map(|i| [i; 640]).collect();
+        client
             .stream_pcm_realtime(&pcm, 16_000, 20)
             .await
             .expect("stream");
-        let elapsed = last.duration_since(started);
-        assert!(
-            elapsed >= Duration::from_millis(260),
-            "real time means it does not race ahead: {elapsed:?}"
-        );
-        assert!(
-            elapsed < Duration::from_millis(900),
-            "and it does not crawl: {elapsed:?}"
-        );
-        let frames = client.drain_for(Duration::from_millis(200)).await;
-        assert_eq!(frames.len(), 15, "300 ms in 20 ms chunks is 15 frames");
+        for i in 0..15u8 {
+            let frame = client
+                .next_frame(crate::deadline::scaled(crate::deadline::HANG))
+                .await
+                .expect("echoed chunk");
+            assert_eq!(frame.as_audio(), Some([i; 640].as_slice()), "chunk {i}");
+        }
     }
 
     #[test]
