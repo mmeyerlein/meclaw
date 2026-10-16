@@ -889,7 +889,7 @@ async fn a_pass_that_must_not_wait_learns_of_a_hung_scan_at_once() {
         let scan = scan_hives_paced(
             &mut gate,
             td.path(),
-            paths,
+            paths.clone(),
             &silent,
             "hive-scan",
             Duration::from_millis(100),
@@ -903,15 +903,38 @@ async fn a_pass_that_must_not_wait_learns_of_a_hung_scan_at_once() {
     let first = first.expect_err("the first scan times out on /h1");
     assert_eq!(first.hive.as_deref(), Some("/h1"));
 
-    // The read of /h1 is still held: an answer now is one that did not wait.
-    let stuck = gate
-        .still_stuck("slot-rebuild")
-        .expect("the hung scan is still in flight");
+    // The read of /h1 is still held. The pass decides as the colony's slot
+    // rebuild does: refuse on the answer, or scan -- and a scan here waits
+    // behind the hung read for its whole timeout. On the paused clock that
+    // wait is exact, so "asking does not wait" is a verdict, not a constant
+    // (re-check RC3 M1: `after` is set to zero by `still_stuck` itself).
+    let silent = WorkPulse::silent();
+    let asked = tokio::time::Instant::now();
+    let pass = match gate.still_stuck("slot-rebuild") {
+        Some(stuck) => Err(stuck),
+        None => {
+            run_clock(
+                "a pass that scans behind the hung read of /h1",
+                scan_hives_paced(
+                    &mut gate,
+                    td.path(),
+                    paths,
+                    &silent,
+                    "slot-rebuild",
+                    Duration::from_millis(100),
+                    |_| {},
+                    |scan| collect_sealed_hives(scan.root(), scan.paths()),
+                ),
+            )
+            .await
+        }
+    };
     assert_eq!(
-        stuck.after,
+        asked.elapsed(),
         Duration::ZERO,
-        "asking does not wait: {stuck:?}"
+        "asking does not wait behind the hung read: {pass:?}"
     );
+    let stuck = pass.expect_err("the hung scan is still in flight");
     assert_eq!(stuck.what, "slot-rebuild");
     assert_eq!(stuck.behind, Some("hive-scan"));
     assert_eq!(stuck.hive.as_deref(), Some("/h1"));

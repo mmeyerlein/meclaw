@@ -2438,9 +2438,13 @@ class _Run:
             except OSError:
                 return rc, ""
 
+        # B schlank (OR-TV-13, K12): T2 on this lane about 30 % busy, measured
+        # here on the run's host; a dispatch without the flag keeps every flake red.
+        t2_lane = flakes.production_lane() if self.d.get("t2_production") else None
         try:
             return flakes.triage_station(
                 name, kind, results, run_cmd, isolation_issues(self.d), base_argv=base, ignored=ignored,
+                t2_lane=t2_lane,
                 expired=lambda: self.clock() - iso_t0 >= budget, proof=proof,
                 threads=_station_threads(st, env), clock_tests=flakes.clock_tests(
                     results, self.tree) if kind == "unittest" else ())

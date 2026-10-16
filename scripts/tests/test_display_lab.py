@@ -35,7 +35,7 @@ import sys
 import time
 import unittest
 import urllib.parse
-from scripts.tests import kit_time, store_isolation
+from scripts.tests import kit_time, private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "display_lab_patches.json"
@@ -48,8 +48,9 @@ def setUpModule():
     # sits in ROOT_FILES because `scripts/tests/test_gate_plan.py` names it --
     # so in the published tree it must skip cleanly instead of failing on a
     # library that was never shipped.
-    if not LAB.is_dir():
-        raise unittest.SkipTest("workshop/tools/display-lab/ is not in this tree")
+    # `require` (GH #1199): a skip in the export tree, a failure in the private
+    # tree, where the directory can not go quiet (re-check RC-K3 I3).
+    private_tree.require("workshop/tools/display-lab")
     store_isolation.isolate()
 
 # The tools the library owes, with the interpreter each one is run by.

@@ -40,6 +40,10 @@ struct Warm {
 
 impl Warm {
     fn boot(script: &str) -> Self {
+        Self::boot_as(script, false)
+    }
+
+    fn boot_as(script: &str, persistent: bool) -> Self {
         let mut child = Command::new("python3")
             .arg("-c")
             .arg(HARNESS)
@@ -49,7 +53,7 @@ impl Warm {
             .spawn()
             .expect("python3");
         let mut stdin = child.stdin.take().expect("stdin");
-        let boot = json!({"script": script, "persistent": false});
+        let boot = json!({"script": script, "persistent": persistent});
         writeln!(stdin, "{boot}").expect("boot frame");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         Self {
@@ -109,4 +113,37 @@ pub fn run(script: &str, document: &str) -> Option<Output> {
             .or_insert_with(|| Warm::boot(script));
         Some(warm.run(document))
     })
+}
+
+/// One child of the `resident` runner (GH #1225): `persistent: true` in the
+/// boot frame, so the script's globals -- `_MEM` of `./intake` -- live from
+/// one message to the next the way they do in a colony. Owned by its caller
+/// (one per hive, never the thread's warm table), and [`Resident::restart`]
+/// is the child kill a deploy or a `script_timeout` is.
+pub struct Resident {
+    script: String,
+    warm: Warm,
+}
+
+impl Resident {
+    pub fn boot(script: &str) -> Self {
+        Self {
+            script: script.to_string(),
+            warm: Warm::boot_as(script, true),
+        }
+    }
+
+    /// `None` when the document cannot travel as one line.
+    pub fn run(&mut self, document: &str) -> Option<Output> {
+        if document.contains('\n') {
+            return None;
+        }
+        Some(self.warm.run(document))
+    }
+
+    /// The child killed and booted again: its globals start empty.
+    pub fn restart(&mut self) {
+        let _ = self.warm.child.kill();
+        self.warm = Warm::boot_as(&self.script, true);
+    }
 }

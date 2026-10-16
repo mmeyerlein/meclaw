@@ -21,6 +21,9 @@ measures it instead and prints a Markdown table of about ten rows:
   manager (probed once per run over ssh). A lane that does not falls back to
   `--load <nproc>` busy loops, with a `NOTE throttle:` line in the header.
   `--runs N` is `--stress-count N`. This is the script's own systemd call;
+  `--production-load` (K12, the fix acceptance and T2 by hand) is the lane
+  about 30 % busy instead: load1 measured, `--load` up to 0.3 x vCPU, full
+  quota; a lane already fuller is refused, exit 2 (wait, or take another);
   the pool guard (`pipeline/pool.py`) stays as it is.
 * The static scan reads each test's source file for wall-clock constructs:
   sleeps, short timeouts (< 30 s, the error-marker convention), `Instant::now`,
@@ -59,11 +62,11 @@ measures it instead and prints a Markdown table of about ten rows:
 Usage:
     scripts/flake_triage.py --host build03 --stress-count 30 --load 12 \\
         'meclaw-cells::gh1001_web_write_cost' 'gh1001_write_cost_does_not_grow_with_untouched_objects' ...
-    scripts/flake_triage.py --host build03 --throttle 80 --runs 5 <binary_id> <name> ...
+    scripts/flake_triage.py --host build03 --production-load --runs 5 <binary_id> <name> ...   (fix acceptance, OR-TV-13/K12)
     scripts/flake_triage.py --scan-only <binary_id> <name> ...
     scripts/flake_triage.py -C <worktree> ...   (as git -C: run as if started there)
     scripts/flake_triage.py --log <test.log> <binary_id> <name> ...   (table from an existing log)
-    scripts/flake_triage.py --unittest --throttle 80 --runs 5 scripts.tests.test_kit_time.TestHang ...
+    scripts/flake_triage.py --unittest --host build03 --production-load --runs 5 scripts.tests.test_kit_time.TestHang ...
 
 Tests come as pairs `<binary_id> <name>`. The exit is 0 when every test ran
 green in every iteration, 1 when one went red or ran fewer than
@@ -390,14 +393,9 @@ def lane_target(lane, lanes_file=None):
 
 
 def load_command(n, cap_s):
-    """The remote shell line: n niced busy loops, gone at stdin EOF or after cap_s.
-
-    It prints `LOAD <pid> ...` once every loop runs, so the caller can check
-    that they live (GH #1180 re-check: a failed ssh used to be silent)."""
-    inner = (f"trap 'kill 0' EXIT; p=; for i in $(seq {int(n)}); do "
-             f"nice -n 19 sh -c 'while :; do :; done' & p=\"$p $!\"; done; "
-             f"echo LOAD$p; cat >/dev/null")
-    return f"timeout {int(cap_s)} sh -c {shlex.quote(inner)}"
+    """The remote shell line: n niced busy loops, gone at stdin EOF or after
+    cap_s -- the gate triage's own line (`flakes.busy_loop_command`)."""
+    return flakes.busy_loop_command(n, cap_s)
 
 
 def _shell(target, cmd, env=None, unset=()):
@@ -442,6 +440,24 @@ def _throttle(target, pct, load):
     _, nproc = lane_probe(target)
     return False, max(load, nproc), \
         f"NOTE throttle: cpu controller not delegated on {target} -- fallback --load {nproc}"
+
+
+def plan_production_load(target, asked_load=0, throttle=0, factor=None):
+    """`(n, note)` of `--production-load` (K12): the busy loops that bring the
+    lane to about 30 % busy -- load1 measured over ssh, `flakes.lane_loops`,
+    the measurement in the header. A lane already fuller is a LoadError (wait,
+    or take another lane), and so is any other load or a quota beside it."""
+    if asked_load or throttle or factor is not None:
+        raise LoadError("--production-load sets the load itself: no --load, --throttle "
+                        "or --time-factor beside it (K12: full quota)")
+    load1, nproc = lane_probe(target)
+    n = flakes.lane_loops(load1, nproc)
+    pct = round(flakes.T2_LANE_BUSY * 100)
+    if n is None:
+        raise LoadError(f"lane {target} is busier than {pct} %: load1 {load1:.1f} of {nproc} vCPU "
+                        f"-- wait, or take another lane (K12)")
+    return n, (f"production load: lane about {pct} % busy -- load1 {load1:.1f} of {nproc} vCPU "
+               f"measured, {n} busy loops (K12)")
 
 
 def time_factor_env(raw, throttle):
@@ -817,6 +833,13 @@ def isolated():
     return bool(sys.flags.isolated)
 
 
+def lane_of(a):
+    """The lane this run is on ("" for `--host local`): it picks the member
+    lease of a batch holder (re-check RC-K3 M4)."""
+    host = getattr(a, "host", "") or ""
+    return "" if host == LOCAL else host
+
+
 def holder_of(a):
     """The lease key of this run (`<wave>/<strand>[:<holder>]`): the one chain
     `gitenv.strand_of` (GH #1199 f) over the tree's HEAD file, without the git
@@ -831,7 +854,7 @@ def refused(a, msg):
     line on stderr AND stdout (one log or two), in `--out`, at the lease --
     never only a stderr line a background wrapper may not keep."""
     return progress.refuse("flake_triage", msg, out=sys.stdout, err=sys.stderr,
-                           holder=holder_of(a), also=a.out)
+                           holder=holder_of(a), also=a.out, lane=lane_of(a))
 
 
 def store_or_reason(path):
@@ -885,14 +908,14 @@ def no_pass(a, n):
     the holder and the branch; exit 1 (not run is RED, kit find (i))."""
     return progress.refuse("flake_triage", "no test ran in any of %d passes -- holder %r (branch %r)"
                            % (n, holder_of(a), head_branch() or ""), out=sys.stdout, err=sys.stderr,
-                           holder=holder_of(a), also=a.out, code=1, word="NO PASS")
+                           holder=holder_of(a), also=a.out, code=1, word="NO PASS", lane=lane_of(a))
 
 
 def say_pass(a, i, n, done, red):
     """One pass line per run into the log at once (flushed) and at the lease."""
     line = progress.pass_line(i, n, done, red)
     progress.emit(line, sys.stderr, sys.stdout)
-    progress.beat(holder_of(a), line)
+    progress.beat(holder_of(a), line, lane=lane_of(a))
 
 
 def main_unittest(a):
@@ -925,7 +948,9 @@ def main_unittest(a):
                 opt_out = _lanes.test_run_env()[1]
                 if opt_out:
                     header.append(opt_out)
-            if a.throttle:
+            if a.production_load:
+                n_load, note = plan_production_load(target, a.load, a.throttle, a.time_factor)
+            elif a.throttle:
                 prefix, n_load, note = plan_throttle_local(a.throttle, a.load, target)
             load = start_load(a.host, n_load, a.load_cap, target=target)
         except (LoadError, _lanes.LaneError) as e:
@@ -1060,6 +1085,9 @@ def main(argv=None):
                          "mark x F, never a verdict; a finite number from 1 to MAX_TIME_FACTOR "
                          "(deadline.rs), named in the header")
     ap.add_argument("--load", type=int, default=0, help="busy loops on the lane during the run")
+    ap.add_argument("--production-load", action="store_true",
+                    help="the lane about 30 %% busy (K12): load1 measured, busy loops up to "
+                         "0.3 x vCPU, full quota; a fuller lane is refused (wait or take another)")
     ap.add_argument("--load-cap", type=int, default=3600, help="seconds the load lives at most")
     ap.add_argument("--scan-only", action="store_true")
     ap.add_argument("--log", help="build the table from this log instead of running")
@@ -1076,9 +1104,10 @@ def main(argv=None):
     if a.stress_count < 1 and not (a.scan_only or a.log):
         # Re-check fix5 M2: zero runs prove nothing -- `short_runs(.., 0)` named no case.
         return refused(a, f"--stress-count {a.stress_count}: at least one run")
-    if not (a.scan_only or a.log) and not isolated():
+    if not (a.scan_only or a.log) and a.host != LOCAL and not isolated():
         # V2-A8: started as `python3 scripts/flake_triage.py`, the run reached
         # the lane's narrow point (LaneError, exit 2) after the token check.
+        # `--host local` reaches no lane, so no narrow point (re-check v2-fix-e M4).
         return refused(a, "started without -I: the lane's narrow point runs only in the kit's "
                           "Python -- start scripts/flake_triage.py itself (#!/usr/bin/python3 -I) "
                           "or /usr/bin/python3 -I scripts/flake_triage.py")
@@ -1104,6 +1133,11 @@ def main(argv=None):
         try:
             if a.throttle < 0:
                 raise LoadError(f"--throttle {a.throttle}: a positive percent")
+            if a.production_load:
+                target = lane_target(a.host)
+                if not target:
+                    raise LoadError(f"no ssh target for lane {a.host}")
+                n_load, note = plan_production_load(target, a.load, a.throttle, a.time_factor)
             factor = time_factor_env(a.time_factor, a.throttle)
             if a.throttle:
                 quota, n_load, note = plan_throttle(a.host, a.throttle, a.load)

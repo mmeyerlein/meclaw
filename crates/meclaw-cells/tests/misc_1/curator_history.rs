@@ -194,13 +194,16 @@ impl Hive {
             params.insert((*key).to_string(), value.clone());
         }
         let db = rusqlite::Connection::open_in_memory().expect("sqlite");
-        let schema: BTreeMap<String, BTreeMap<String, String>> =
-            sj::from_value(cells["ledger"]["params"]["schema"].clone()).expect("schema");
-        meclaw_cells::store::ddl::apply_schema_ddl(&db, &schema).expect("ddl");
+        // GH #1225: the store's own reading of the ledger params -- a column
+        // in the object form (`{type, default}`, `wall.turn_at`) carries its
+        // SQL DEFAULT exactly as the store cell builds it.
+        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
+            .expect("the ledger params parse");
+        meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &ledger).expect("ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
-            &schema,
+            &ledger.schema,
         )
         .expect("seed");
         Self {

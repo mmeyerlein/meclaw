@@ -1,4 +1,4 @@
-# `member@2.5.30`
+# `member@2.5.31`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and three edges.
@@ -835,7 +835,7 @@ steal each other's updates.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.2.0"}],
+  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.2.1"}],
   "add_edges": [
     {"from": "./channels/telegram", "to": "./channels",
      "condition": "!has(hop.error_code)",
@@ -879,7 +879,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.30` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.31` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1115,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.30"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.5.31"}]
 }}
 ```
 
@@ -1124,7 +1124,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.17"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.18"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1213,7 +1213,7 @@ in front of a channel, can write it. The channel's ingress edge then turns it in
 the named agent takes the turn from there, and the door stays silent. A turn that carries the
 name of one of the member's agents never reaches the door, so the door has nothing to hand on.
 
-`crates/meclaw-cells/tests/misc_7/gh835_a_door_takes_the_turn_nobody_addressed.rs` measures all of
+`crates/meclaw-cells/tests/misc_6/gh835_a_door_takes_the_turn_nobody_addressed.rs` measures all of
 it on a booted colony with two rendered generations. It checks the door, a named agent, an
 unknown name and a member without a door, and it holds the rendered manifest to
 `examples/organism/grow-member-door.json` byte for byte.

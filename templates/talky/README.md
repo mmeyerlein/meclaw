@@ -1,4 +1,4 @@
-# `talky@6.7.8`
+# `talky@6.8.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -65,13 +65,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.1.2"}}
+{"cell": {"type": "ref", "template": "collector@5.1.3"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.7.8` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.8.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -692,7 +692,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.7.8",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.8.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1040,27 +1040,43 @@ it is the second digit.
 never leave it -- and a receiver that wants to know whether a quoted field is what the person
 said cannot look them up. The check therefore runs here, where the words are. The splitter's
 knob `sidecar_verify` names, per section, the fields to check and their source:
-`{"<section>": {"<field>": "turn" | "turn+recall" | "answer", "mode": "drop" | "mark",
-"items": "<array field>"}}`. `turn` is the turns this round answers -- the person's and a
-peer's, each on its own; `turn+recall` adds the memory bundle of the round; `answer` is the
-answer as its reader gets it. The splitter stamps the section's rule on `hop.sidecar_verify`
-(and, for an `answer` field, hands the answer text along as `verify_answer`), the
+`{"<section>": {"<field>": "turn" | "turn+recall" | "answer" | "source", "mode": "drop" |
+"mark", "items": "<array field>"}}`. `turn` is the turns this round answers -- the person's and
+a peer's, each on its own; `turn+recall` adds the memory bundle of the round; `answer` is the
+answer as its reader gets it; `source` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225))
+is the rows of the source the item names in its own `source` field: `person` (the person's
+rows of the round and of the person's episode the round answers, so an advice, a delegation or
+a round an app or a timer started still checks a quote of the person), `peer:<ref>` (that
+participant's rows), or `agent:<name>` -- `self` for the model's own answer, `cogny` for the
+reasoning core's advice, `voice` for a delegation, `app:<id>` and `timer:<id>` for the rows
+their frames `[app <id>]` and `[timer <id>]` mark. The `memory` section asks every fact and its
+topic for that field (the offer of the memory hive), and the memory hive files a fact under
+exactly the source it names. An item with no source is refused as `source_missing`, one with a
+form the check does not know as `source_unknown`, a quote not in the rows of the named source
+as `quote_not_in_source` -- never moved to another source. The splitter stamps the section's
+rule on `hop.sidecar_verify` (and, for an `answer` or `source` field, hands the answer text
+along as `verify_answer`), the
 `./splitter -> ./curator` edge takes every stamped section, and `./curator` checks each item of
 the section's array (`items`, else its first list): both sides casefolded, NFC, curly quotes and
 dashes folded, whitespace collapsed, punctuation at the edges stripped, then the quote has to
 stand in one source at word boundaries -- under three words only as a whole source, and no fuzzy
 match counts. A passing item gains `"verified": [<fields>]`; a failing one is dropped, or with
-`"mode": "mark"` kept with `"failed": [{"field", "reason"}]`. The section leaves on `sidecar`
+`"mode": "mark"` kept with `"failed": [{"field", "reason"}]` -- the memory hive files such a fact
+nowhere and receipts it as `verify_failed`. The section leaves on `sidecar`
 as before, without the rule and the answer text, even when no item survived -- "annotated,
 nothing proven" is not "not annotated". Every failed item leaves as one report on `error`
-(`hop.error_source` `sidecar_verify`, `hop.reject_reason` `quote_missing` or
-`quote_not_in_source`, `hop.section`, `hop.field`, `hop.session_id`, `hop.turn_id`,
+(`hop.error_source` `sidecar_verify`, `hop.reject_reason` `quote_missing`,
+`quote_not_in_source`, `source_missing`, `source_unknown` or `store_error`, `hop.section`, `hop.field`, `hop.session_id`, `hop.turn_id`,
 `hop.episode_turn_id`) and never with the item's words: a class is all a count needs. The
 answer path does not wait for any of it -- the check runs on the section, beside the answer.
 `verified` and `failed` are the check's stamp and nobody else's: once the knob is set, the
 splitter takes a model's own `verified`/`failed` off every section payload and off the objects of
 its arrays, named by the knob or not, so a reader that trusts the stamp never trusts the model.
-Empty, the knob stamps nothing, strips nothing, and every section goes the way it went before.
+The knob ships one rule ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)):
+`{"memory": {"items": "facts", "quote": "source"}}` -- every fact of the `memory` section is
+checked at the source it names, because this composite is where the attribution is made; a
+tree that sets the knob replaces the rule, and `{}` switches the check off. Empty, the knob
+stamps nothing, strips nothing, and every section goes the way it went before.
 
 **One fence, sections, and a cell that knows none of them**
 ([#604](https://github.com/mmeyerlein/meclaw/issues/604), built in
@@ -1327,7 +1343,7 @@ below names the CELL the knob belongs to, because that is what an
 | `turn_write` | param | `"1"` | curator/writer (the collector's until `6.0.0`, GH #889) -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
 | `role`, `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window` | param | `role` `"talky"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889), by the talky role's presets since GH #892; the full table is in the curator's README |
 | `tools` | param | `["web_search", "web_fetch", "history_search", "history_read", "history_outline"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two search tools and not `["*"]`, plus the model's own wall, which `./curator` answers inside (since `6.1.0`, GH #893). The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
-| `sidecar_verify` | param | `{}` | splitter -- the word-for-word check of quoted fields, per section (GH #1079): `{"<section>": {"<field>": "turn" | "turn+recall" | "answer", "mode"?, "items"?}}`; a section named here goes through `./curator`, which drops (or marks) every item whose quote does not stand in its source and reports each on `error`. Empty checks nothing. See [Quotes are checked word for word](#the-sidecar-inline-extraction) |
+| `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the word-for-word check of quoted fields, per section (GH #1079): `{"<section>": {"<field>": "turn" | "turn+recall" | "answer" | "source", "mode"?, "items"?}}` (`source`, GH #1225: the rows of the source the item names itself); a section named here goes through `./curator`, which drops (or marks) every item whose quote does not stand in its source and reports each on `error`. Empty checks nothing. See [Quotes are checked word for word](#the-sidecar-inline-extraction) |
 | `reasoning_effort` | param | `null` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)). Unset sends no reasoning field, so the request is byte for byte the one from before the declaration; set, it reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |
 | `async_tools` | param | `""` | dispatcher -- tools that answer on their own lane instead of inside the round, as a JSON array or one comma-separated string. Since `dispatcher@1.2.0` it is a param of THIS composite's own dispatcher (GH #138), so the surface's list and a sibling core's list are two statements and not one. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |
@@ -1486,7 +1502,7 @@ unit, plainfile for a local run).
   two golden manifests over the instantiated tree (the sub-unit refs produce the same
   bytes the copies did) plus the stamp pin: a cell inside a referenced sub-unit carries
   its OWN template and names `talky` above it.
-- `crates/meclaw-cells/tests/misc_9/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
+- `crates/meclaw-cells/tests/misc_8/w9a_per_turn_colony.rs` -- the per-turn lane in a colony
   that carries this composite and the memory hive's real write path, wired straight
   at the hive's writer port with nothing in between (GH #298 removed the `memory-drain`
   from this path): the turn AND the answer are `episodes` rows before anything closes,

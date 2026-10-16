@@ -3,6 +3,7 @@
 
 #[path = "../support/gh929_file_road.rs"]
 pub mod file_road;
+pub mod gh1225_every_fact_of_an_agent_round_keeps_its_source;
 pub mod gh929_every_budget_segment_fits_its_reserve;
 pub mod gh946_a_round_change_close_fits_its_budget;
 pub mod gh953_a_round_change_closes_after_the_last_answer;

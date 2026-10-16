@@ -1,4 +1,4 @@
-# `memory-hive@3.14.6`
+# `memory-hive@3.14.7`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Sixteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -172,7 +172,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     written the wrong way round, and the scan of the night takes it back itself — same revert,
     same receipt key in the run's books (`reopenings`), and the closure is not put in front of
     the judge at all, because the round does not buy an opinion about a row it just cleared.
-  Pinned by `crates/meclaw-cells/tests/misc_9/w4_extract_replaces.rs` (free) and by scenario C14
+  Pinned by `crates/meclaw-cells/tests/misc_8/w4_extract_replaces.rs` (free) and by scenario C14
   (free, the real window with the close pass's answer handed in, both gate halves). The paid
   twin C15 went with the batch lane it drove (#298) — a live model on this lane is measured by
   the conversation-guide harness now, not by a scenario of its own.
@@ -258,7 +258,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   that travels back into the next payload as `known_different` so a refused pair is not retried
   every night, and the revert that has been the same since P2 — one `delete` on the alias row plus
   the next re-derive. The keyword index keeps reading the **written** claim, so recall on the
-  original wording survives a merge. Pinned by `crates/meclaw-cells/tests/misc_9/w6_claim_aliases.rs`
+  original wording survives a merge. Pinned by `crates/meclaw-cells/tests/misc_8/w6_claim_aliases.rs`
   plus the scenarios C17 (free, the whole yoga form end to end) and C18 (`--with llm`, a real
   judge on a rewording pair and a quantity trap in one payload).
 - **The canonicalisation round (0.2.0 P5, rulings Q1/Q3/Q5)**: the nightly run is the
@@ -377,7 +377,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing, and since [#261](https://github.com/mmeyerlein/meclaw/issues/261) exactly ONE message of it: the receipt of an applied import, for the whole directory rather than per part (`hop.export_of` counts the tables applied, `hop.rows_written` the rows that were new, `hop.export_final` is always `'1'` because a directory is applied whole or not at all) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
 | `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve and in `sidecar[]` the section this hive asks for in return: one `{section, required, schema, instruction}` with `section: "memory"` and `required: true` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)). All three slots are `required: true` in the emitted body — `schemas` carries `contract.version` `1.1.0` for the new one — and `sidecar[]` is filled on EVERY answer of the cell, the `tools_missing` one included, because a section is not a response to a name. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. `verify_failed` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) is for facts the curator's word-for-word check refused and kept (`sidecar_verify` with `"mode": "mark"`, the item carries `failed`): such a fact is filed under no source -- a quote of the advice labelled `person` would otherwise become the person's -- and the receipt counts them, never echoing. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -928,6 +928,22 @@ An episode hit from a peer turn is shown as `peer <ref>`.
 The per-turn contract tells a front model the same: a turn marked `[peer <ref> · <name>]` is
 recorded as what that participant stated (`inline-contract.md`).
 
+### Every fact names its source ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225))
+
+The `memory` section asks every fact and its topic for `source`: `person`, `peer:<ref>` (the bare
+reference above still reads as a peer's) or `agent:<name>` -- `self` for the model's own words,
+`cogny` for the reasoning core's advice, `voice` for a delegation, `app:<id>` and `timer:<id>`
+for a round an app or a timer started. Before, a round with no person row of its own bound its
+facts to the newest person turn, and a quote of the advice or of the model's own promise was
+filed as something the person said. `extract-glue` now files each named fact under exactly that
+source: `person` on the newest person turn the block may answer, column `source` empty as for
+the own side; `peer:<ref>` like the bare reference; `agent:<name>` in column `source` as
+`agent:<name>`, on the turn the block answers (else the newest one it may answer), never as the
+own side and never as a peer's self-statement (`subject` stays as written). A name nobody answers
+to is dropped on `reject` (`unknown_source`) and never moved to another source; a fact without a
+`source` takes the old road byte for byte. Recall renders an agent's fact like any statement with
+a source, `agent:<name> says: <claim>`. The store schema does not change.
+
 ## A peer known by name ([#1039](https://github.com/mmeyerlein/meclaw/issues/1039))
 
 Until 3.11.0 a peer was a reference and nothing else. In a six-month synthetic history 174 of 235
@@ -1221,7 +1237,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.14.6` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.14.7` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1628,7 +1644,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.30",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.31",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

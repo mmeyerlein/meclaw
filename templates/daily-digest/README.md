@@ -1,4 +1,4 @@
-# `daily-digest@2.2.3`
+# `daily-digest@2.2.4`
 
 Scheduled fetch-and-forward: timer → web_fetch → format (code) → Telegram proxy.
 

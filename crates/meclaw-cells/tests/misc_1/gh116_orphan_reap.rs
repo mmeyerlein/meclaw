@@ -11,13 +11,10 @@
 use meclaw_cells::orphan_journal::{
     self, JournalRecord, OrphanJournal, RecordState, read_identity,
 };
+use meclaw_testing::{deadline, wait};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 const FIXTURE: &str = env!("CARGO_BIN_EXE_orphan_journal_fixture");
-
-/// Failure-marker budget (30 s convention): generous, because it only bounds
-/// "did the thing ever happen", never a semantic timing claim.
-const MARKER: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Is this pid a live, non-zombie process?
 fn is_running(pid: u32) -> bool {
@@ -66,9 +63,8 @@ async fn a_hard_daemon_crash_leaves_an_orphan_that_the_next_boot_reaps() {
 
     let stdout = daemon.stdout.take().expect("stdout piped");
     let mut lines = BufReader::new(stdout).lines();
-    let line = tokio::time::timeout(MARKER, lines.next_line())
+    let line = deadline::hang("the fixture prints its child's pid", lines.next_line())
         .await
-        .expect("fixture printed a pid within the marker budget")
         .expect("stdout readable")
         .expect("fixture printed a line");
     let child_pid: u32 = line.trim().parse().expect("the line is a pid");
@@ -94,15 +90,15 @@ async fn a_hard_daemon_crash_leaves_an_orphan_that_the_next_boot_reaps() {
     );
     assert_eq!(report.skipped, 0, "nothing was refused: {report:?}");
 
-    // THE PROOF: the process is gone.
-    let deadline = std::time::Instant::now() + MARKER;
-    while is_running(child_pid) && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(
-        !is_running(child_pid),
-        "pid {child_pid} still runs after the boot reap"
-    );
+    // THE PROOF: the process is gone. The kill is a signal, and its delivery is
+    // the kernel's; the wait is for that event under the hang mark (TV-Z3), so
+    // a reap that never killed fails as `HANG:` naming the pid, never as a
+    // window that ran out.
+    wait::until(
+        &format!("pid {child_pid} is gone after the boot reap"),
+        || async { !is_running(child_pid) },
+    )
+    .await;
 
     // And the journal says so — by appending, never by rewriting.
     let recs = orphan_journal::read_records(&path);

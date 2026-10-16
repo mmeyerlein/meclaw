@@ -263,7 +263,7 @@ No re-grow. The declaration from step 2 is in `colony.db`, not in the process.
 
 The reaper's harder cases — a child that really did outlive its parent, and a
 recycled pid that must *not* be killed — are pinned in
-`crates/meclaw-cells/tests/misc_2/gh116_orphan_reap.rs`, which hard-kills a real daemon
+`crates/meclaw-cells/tests/misc_1/gh116_orphan_reap.rs`, which hard-kills a real daemon
 and drives a real boot reap. The lease cases are in
 `crates/meclaw/tests/misc/gh121_root_lease.rs`.
 
@@ -344,4 +344,4 @@ templates that ship, and that the refusal arrives as `target_blocked` on its own
 lane without an `http_status` and without a dead letter. Steps 6 and 7 are
 process-level facts about the daemon and are pinned where they live:
 `crates/meclaw/tests/misc/gh121_root_lease.rs` and
-`crates/meclaw-cells/tests/misc_2/gh116_orphan_reap.rs`, both with real processes.
+`crates/meclaw-cells/tests/misc_1/gh116_orphan_reap.rs`, both with real processes.

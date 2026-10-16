@@ -53,11 +53,10 @@ use meclaw_cells::timer::TimerCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
-use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{ColonyHandle, deadline, wait};
 use mock_openai::{MockOpenAI, canned_chat_completion};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -387,11 +386,10 @@ fn hop_of(m: &Message, key: &str) -> String {
         .to_string()
 }
 
+/// The next message at the sink, under the hang mark: a run that stands still
+/// fails with `HANG:` -- a marker, never a verdict (TV-Z3).
 async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
-        .await
-        .ok()
-        .flatten()
+    deadline::hang("a message reaches the sink", rx.recv()).await
 }
 
 /// One episodes row, as the hive's writer left it.
@@ -450,26 +448,35 @@ fn turn_id_of(session: &str, index: usize) -> String {
     format!("{session}#{tag}-{index}")
 }
 
-/// Polls the hive store's own `cell.db` until it holds `n` episodes.
-/// 30 s failure marker, robust under cargo parallel load.
-fn await_episodes(db: &std::path::Path, n: usize) -> Vec<Episode> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
+/// Waits until the hive store's own `cell.db` holds `n` episodes, under the
+/// hang mark of `meclaw_testing::wait` (TV-Z3): a run that stands still fails
+/// as `HANG:` with the rows seen last -- a marker, never a verdict. The wait
+/// yields to the runtime between reads; it never parks a worker thread.
+async fn await_episodes(db: &std::path::Path, n: usize) -> Vec<Episode> {
+    wait::until_some(&format!("the store holds {n} episodes"), || async move {
         let rows = episodes(db);
-        if rows.len() >= n {
-            return rows;
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("{} of {n} episodes after 30s: {rows:?}", rows.len());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+        (rows.len() >= n).then_some(rows)
+    })
+    .await
 }
 
-fn dlq_count(root: &std::path::Path) -> i64 {
-    let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
-    conn.query_row("SELECT COUNT(*) FROM dead_letters", [], |r| r.get(0))
-        .expect("dead_letters count")
+/// `(error_code, resolved_target)` of every dead letter the colony recorded,
+/// taken through the colony (`drain_dead_letters`), never read from its
+/// database file (TV-A3).
+async fn dead_letters(h: &ColonyHandle) -> Vec<(String, String)> {
+    deadline::hang(
+        "the colony hands over its dead letters",
+        h.drain_dead_letters(),
+    )
+    .await
+    .into_iter()
+    .map(|d| {
+        (
+            d.reason.as_code().to_string(),
+            d.resolved_target.as_str().to_string(),
+        )
+    })
+    .collect()
 }
 
 /// The track, end to end. Two turns, two answers -- every one of them an
@@ -496,7 +503,7 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     // FRESHNESS: the exchange is memory while the session is still open. Two
     // emissions of the curator's writer (GH #889), one per participant turn --
     // no batch, no adapter.
-    let rows = await_episodes(&db, 2);
+    let rows = await_episodes(&db, 2).await;
     assert_eq!(
         rows,
         vec![
@@ -520,7 +527,7 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     // it already wrote is where the memory starts doubling.
     h.send(turn("and i cook keto")).await;
     recv_bounded(&mut sink_rx).await.expect("the second answer");
-    let rows = await_episodes(&db, 4);
+    let rows = await_episodes(&db, 4).await;
     assert_eq!(
         rows.iter().map(|e| e.turn_id.clone()).collect::<Vec<_>>(),
         (0..4).map(|i| turn_id_of(&session, i)).collect::<Vec<_>>(),
@@ -540,12 +547,17 @@ async fn a_turn_is_an_episode_before_the_session_ever_closes() {
     h.send(sweep()).await;
     let close = recv_bounded(&mut sink_rx).await.expect("the close batch");
     assert_eq!(hop_of(&close, "route"), "write", "{close:?}");
+    // Read once the colony settled (TV-A2): a write that follows from the close
+    // has reached the store by now, or never will -- so "did not move" is a
+    // statement about the close, not about how long the test looked.
+    h.quiesce().await;
     assert_eq!(
         episodes(&db).len(),
         4,
         "the row count did not move over the close"
     );
-    assert_eq!(dlq_count(td.path()), 0, "nothing dead-letters on the way");
+    let dlq = dead_letters(&h).await;
+    assert!(dlq.is_empty(), "nothing dead-letters on the way: {dlq:?}");
 
     h.shutdown().await;
 }

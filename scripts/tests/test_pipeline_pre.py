@@ -560,6 +560,186 @@ class LaneHalf(Fixture):
                          p["test_targets"])
         self.assertNotIn("ignored_only", p)
 
+    def _harness(self):
+        write(self.root, "crates/meclaw-demo/tests/misc/main.rs", "mod gh1_a;\nmod gh2_b;\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh1_a.rs", "#[test]\nfn a() {}\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh2_b.rs", "#[test]\nfn b() {}\n")
+
+    def _commit(self, msg):
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", msg)
+        return git(self.root, "rev-parse", "HEAD")
+
+    def _misc_lane(self, paths, base):
+        return pre.lane_commands(pre.plan(paths, self.root, base=base))[1:]
+
+    def test_pre_runs_only_the_changed_module_of_a_folded_harness(self):
+        """GH #1130: adding a test folds it into its harness, so the diff names
+        `main.rs` (one `mod` line more) and the new module. The lane half ran
+        the WHOLE harness binary (misc_2 + misc_3: 646 tests, 45 s of run on
+        build03); a main.rs whose change against the base is that `mod` line
+        alone touches no other module, so pre builds the binary and runs the
+        module with the term of `gate_plan.test_file_unit`. The gate's rule 3
+        still runs the whole binary (main.rs is the unit `<h>/main`)."""
+        write(self.root, "crates/meclaw-demo/tests/misc/main.rs", "mod gh1_a;\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh1_a.rs", "#[test]\nfn a() {}\n")
+        base = self._commit("harness")
+        self._harness()
+        paths = ["crates/meclaw-demo/tests/misc/main.rs", "crates/meclaw-demo/tests/misc/gh2_b.rs"]
+        p = pre.plan(paths, self.root, base=base)
+        self.assertEqual([("meclaw-demo", "misc")], p["test_targets"])
+        self.assertEqual(
+            [["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=warn",
+              "-p", "meclaw-demo", "--test", "misc",
+              "-E", "(binary_id(=meclaw-demo::misc) & test(/^gh2_b::/))"]],
+            self._misc_lane(paths, base))
+
+    def test_pre_narrows_a_folded_harness_when_the_diff_also_names_a_script(self):
+        """Delta PF1: the unittest loop of `plan` bound each path's basename to
+        `base`, the merge base `main_rs_folds_only` reads. A diff with a path
+        under scripts/ next to a folded harness asked git for `test_x.py:<main.rs>`
+        and ran the whole binary; the merge base must survive the loop."""
+        write(self.root, "crates/meclaw-demo/tests/misc/main.rs", "mod gh1_a;\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh1_a.rs", "#[test]\nfn a() {}\n")
+        base = self._commit("harness")
+        self._harness()
+        write(self.root, "scripts/tests/test_x.py", "import unittest\n")
+        paths = ["crates/meclaw-demo/tests/misc/main.rs", "crates/meclaw-demo/tests/misc/gh2_b.rs",
+                 "scripts/tests/test_x.py"]
+        p = pre.plan(paths, self.root, base=base)
+        self.assertEqual(["scripts.tests.test_x"], p["unittests"])
+        self.assertEqual({"meclaw-demo::misc": ["gh2_b"]}, p["test_modules"])
+
+    def test_pre_runs_the_whole_harness_when_main_rs_changes_more_than_mod_lines(self):
+        """Re-check RC-P1 I1: 30 of 44 harness main.rs carry more than `mod`
+        lines (`#[path = "../mock_openai.rs"]`, `../support/*.rs`, `pub use`).
+        A diff that changes such a line AND a module ran only the module, where
+        pre ran the whole harness before and the gate's rule 3 runs it whole:
+        the users of the moved helper ran nowhere before the gate. Narrowing
+        needs a main.rs that differs from the base in `mod` lines of the named
+        modules only; a non-mod line, a new main.rs or no base -> whole."""
+        whole = [["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=warn",
+                  "-p", "meclaw-demo", "--test", "misc"]]
+        write(self.root, "crates/meclaw-demo/tests/misc/main.rs",
+              '#[path = "../support/a.rs"]\nmod support;\nmod gh1_a;\n')
+        write(self.root, "crates/meclaw-demo/tests/support/a.rs", "pub fn a() {}\n")
+        write(self.root, "crates/meclaw-demo/tests/support/b.rs", "pub fn b() {}\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh1_a.rs", "#[test]\nfn a() {}\n")
+        base = self._commit("harness")
+        paths = ["crates/meclaw-demo/tests/misc/main.rs", "crates/meclaw-demo/tests/misc/gh2_b.rs"]
+        write(self.root, "crates/meclaw-demo/tests/misc/gh2_b.rs", "#[test]\nfn b() {}\n")
+        for label, main_rs, b in (
+                ("path line moved", '#[path = "../support/b.rs"]\nmod support;\nmod gh1_a;\nmod gh2_b;\n', base),
+                ("mod line of a module the diff does not name",
+                 '#[path = "../support/a.rs"]\nmod support;\nmod gh2_b;\n', base),
+                ("no base", '#[path = "../support/a.rs"]\nmod support;\nmod gh1_a;\nmod gh2_b;\n', None)):
+            with self.subTest(label):
+                write(self.root, "crates/meclaw-demo/tests/misc/main.rs", main_rs)
+                self.assertEqual(whole, self._misc_lane(paths, b))
+                self.assertEqual({}, pre.plan(paths, self.root, base=b)["test_modules"])
+        # the same harness, only `mod gh2_b;` added: narrowed
+        write(self.root, "crates/meclaw-demo/tests/misc/main.rs",
+              '#[path = "../support/a.rs"]\nmod support;\nmod gh1_a;\nmod gh2_b;\n')
+        self.assertEqual({"meclaw-demo::misc": ["gh2_b"]},
+                         pre.plan(paths, self.root, base=base)["test_modules"])
+
+    def test_pre_runs_the_whole_harness_when_main_rs_is_new(self):
+        # a new harness: main.rs is not in the base, no line of it is proven a fold
+        base = git(self.root, "rev-parse", "HEAD")
+        self._harness()
+        p = pre.plan(["crates/meclaw-demo/tests/misc/main.rs",
+                      "crates/meclaw-demo/tests/misc/gh2_b.rs"], self.root, base=base)
+        self.assertEqual({}, p["test_modules"])
+
+    def test_pre_runs_the_whole_binary_when_the_diff_names_a_helper_and_a_module(self):
+        """Re-check RC-P1 I2: a helper module runs its harness whole (its users'
+        test names do not start `<helper>::`, W5 delta C1). With a test module
+        of the same harness in the diff the whole binary must win -- a narrowed
+        `-E` for the test module would drop the helper's users."""
+        write(self.root, "crates/meclaw-demo/tests/misc/main.rs",
+              "mod helper;\nmod gh1_a;\nmod gh2_b;\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/helper.rs", "pub fn h() {}\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh1_a.rs",
+              "use crate::helper;\n#[test]\nfn a() { helper::h() }\n")
+        write(self.root, "crates/meclaw-demo/tests/misc/gh2_b.rs", "#[test]\nfn b() {}\n")
+        p = pre.plan(["crates/meclaw-demo/tests/misc/helper.rs",
+                      "crates/meclaw-demo/tests/misc/gh2_b.rs"], self.root)
+        self.assertEqual({}, p["test_modules"])
+        self.assertEqual([["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=warn",
+                           "-p", "meclaw-demo", "--test", "misc"]], pre.lane_commands(p)[1:])
+
+    def test_pre_plans_no_binary_for_a_file_in_a_directory_without_main_rs(self):
+        """Re-check RC-P1 M1: `tests/support/*.rs` is shared code, no binary of
+        its own; planning it would ask for `--test support`, a binary that does
+        not exist (a false red in pre)."""
+        write(self.root, "crates/meclaw-demo/tests/support/x.rs", "pub fn x() {}\n")
+        p = pre.plan(["crates/meclaw-demo/tests/support/x.rs"], self.root)
+        self.assertEqual([], p["test_targets"])
+        self.assertEqual({}, p["test_modules"])
+
+    def test_pre_runs_a_changed_module_without_its_main_rs(self):
+        # an edited module alone named no target: its tests never ran in pre
+        self._harness()
+        p = pre.plan(["crates/meclaw-demo/tests/misc/gh1_a.rs"], self.root)
+        self.assertEqual([("meclaw-demo", "misc")], p["test_targets"])
+        self.assertEqual(["-E", "(binary_id(=meclaw-demo::misc) & test(/^gh1_a::/))"],
+                         pre.lane_commands(p)[1][-2:])
+
+    def test_pre_runs_the_whole_harness_for_main_rs_alone_or_an_unfolded_module(self):
+        # no module to name: the whole binary, as rule 3 selects it
+        self._harness()
+        write(self.root, "crates/meclaw-demo/tests/misc/gh3_c.rs", "#[test]\nfn c() {}\n")
+        for paths in (["crates/meclaw-demo/tests/misc/main.rs"],
+                      ["crates/meclaw-demo/tests/misc/gh3_c.rs"]):
+            with self.subTest(paths=paths):
+                p = pre.plan(paths, self.root)
+                self.assertEqual([("meclaw-demo", "misc")], p["test_targets"])
+                self.assertEqual(["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=warn",
+                                  "-p", "meclaw-demo", "--test", "misc"],
+                                 pre.lane_commands(p)[1])
+
+    def test_pre_narrows_one_binary_and_keeps_its_neighbour_whole(self):
+        self._harness()
+        p = pre.plan(["crates/meclaw-demo/tests/misc/gh2_b.rs",
+                      "crates/meclaw-demo/tests/misc/gh1_a.rs",
+                      "crates/meclaw-demo/tests/gh1_case.rs"], self.root)
+        self.assertEqual([("meclaw-demo", "gh1_case"), ("meclaw-demo", "misc")],
+                         p["test_targets"])
+        self.assertEqual(
+            ["--test", "gh1_case", "--test", "misc", "-E",
+             "binary_id(=meclaw-demo::gh1_case) | (binary_id(=meclaw-demo::misc) & test(/^gh1_a::/))"
+             " | (binary_id(=meclaw-demo::misc) & test(/^gh2_b::/))"],
+            pre.lane_commands(p)[1][7:])
+
+    def test_the_lane_filter_is_the_narrowed_expression(self):
+        """`lane_sync.sh test` takes the filterset as its own word: a second
+        `-E` among the options would be OR-ed by nextest and run the whole
+        binary again."""
+        seen = []
+
+        class Hold:
+            def __init__(self, *a, **kw):
+                self.stdout = io.StringIO("held tok\n")
+                self.stdin, self.stderr = io.StringIO(), io.StringIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def exec_(argv, env=None, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+        term = "(binary_id(=meclaw-demo::misc) & test(/^gh2_b::/))"
+        run = pre.ssh_runner("lx", "s1", str(self.root), exec_=exec_, popen=Hold)
+        rc, _ = run(["cargo", "nextest", "run", "--no-fail-fast", "-p", "meclaw-demo",
+                     "--test", "misc", "-E", term, "--features", "f/x"])
+        run.release()
+        self.assertEqual(0, rc)
+        test = [a for a in seen if a[1] == "test"][0]
+        self.assertEqual(term, test[4])
+        self.assertNotIn("-E", test[5:])
+        self.assertEqual(["--no-fail-fast", "--features", "f/x", "--test", "misc"], test[5:])
+
     def test_pre_test_binaries_run_with_no_tests_warn(self):
         p = {"lane_half": True, "crates": ["meclaw-demo"],
              "test_targets": [("meclaw-demo", "gh1_case")]}

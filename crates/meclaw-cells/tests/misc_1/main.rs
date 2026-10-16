@@ -60,6 +60,7 @@ pub mod gh1097_time_ceilings_follow_one_chain;
 pub mod gh1098_one_token_estimate_and_marked_cuts;
 pub mod gh1102_a_channel_credential_road_commits;
 pub mod gh1103_a_brokered_channel_takes_its_hive_s_handles;
+pub mod gh116_orphan_reap;
 #[path = "../mock_mcp.rs"]
 pub mod mock_mcp;
 #[path = "../mock_openai.rs"]

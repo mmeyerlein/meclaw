@@ -360,8 +360,7 @@ class CascadeTest(VersionsCase):
 
     def test_cascade_grep_rules_match_dev_rules_4a(self):
         rules = SCRIPTS.parent / "docs" / "development-rules.md"
-        if not rules.is_file():
-            self.skipTest("no docs/development-rules.md in this tree")
+        private_tree.require("docs/development-rules.md", repo=SCRIPTS.parent)
         text = rules.read_text(encoding="utf-8")
         section = text.split("### 4a.", 1)[1].split("\n### ", 1)[0]
         greps = re.findall(r"grep -rnE '([^']+)' ((?:[a-z]+/ ?)+)", section)

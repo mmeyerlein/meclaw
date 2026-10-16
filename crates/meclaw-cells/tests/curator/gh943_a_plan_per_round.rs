@@ -1535,6 +1535,10 @@ fn gh949_a_handover_leaf_bound_to_nobody_falls_at_any_rebuild() {
     let mut h = small_talky(&[]);
     let (t, says, reply) = EA_TURNS[0];
     turn_in(&mut h, ROUND_EA, t, says, reply, json!({}));
+    // Two leaves at one path stand only in a ledger from before the unique
+    // index `slots_path` (GH #1225): the index goes first.
+    h.db.execute_batch("DROP INDEX slots_path")
+        .expect("a ledger from before the index");
     let mut hashes = Vec::new();
     for text in ["cw949 handover of nobody.", "cw949 a leaf laid since."] {
         let leaf = json!({"path": "history.handover", "text": text});

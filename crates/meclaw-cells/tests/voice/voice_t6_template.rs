@@ -126,7 +126,13 @@ fn the_template_declares_a_long_running_voice_cell() {
         "a cell holding a socket is not bounded by a message timeout"
     );
     assert_eq!(tpl["name"], json!("voice"));
-    assert_eq!(tpl["version"], json!("2.6.1"));
+    assert!(
+        tpl["version"].as_str().is_some_and(
+            |v| v.split('.').count() == 3 && v.split('.').all(|p| p.parse::<u32>().is_ok())
+        ),
+        "a semver the merge point raises, never a literal here: {}",
+        tpl["version"]
+    );
     // ADR-0031: the shipped instance is reached under a mount name, and the
     // name is a declared setting like every other knob.
     assert_eq!(cfg["params"]["mount"], json!("voice"));
@@ -409,7 +415,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.6.1"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.6.2"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -792,7 +798,7 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
     ack_rx
         .await
         .expect("rescan acked")
-        .expect("the library must register voice@2.6.1");
+        .expect("the library must register the shipped voice");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     h.inbox_tx
@@ -836,24 +842,38 @@ async fn the_readme_manifest_grows_the_channel_it_describes() {
         ),
     }
 
-    let db = rusqlite::Connection::open(td.path().join("colony.db")).expect("open colony.db");
-    let grown: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM registry WHERE path = '/channels/voice'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("query the registry");
+    // The colony's own answer about its graph (`ReadGraph`, the in-memory
+    // registry and edge table), never its database file (TV-A3): the committed
+    // mutation's ack is the event, the read comes after it.
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    h.inbox_tx
+        .send(meclaw_colony::ColonyMsg::ReadGraph {
+            scope: meclaw_core::Path::new("/"),
+            ack: ack_tx,
+        })
+        .await
+        .expect("graph read sent");
+    let graph = meclaw_testing::deadline::hang("the colony answers a graph read", ack_rx)
+        .await
+        .expect("graph read acked");
+    let grown = graph
+        .nodes
+        .iter()
+        .filter(|n| n.path == "/channels/voice")
+        .count();
     assert_eq!(grown, 1, "the channel is registered at /channels/voice");
 
-    let mut stmt = db
-        .prepare("SELECT from_path, to_path, COALESCE(condition,'') FROM edges")
-        .expect("prepare");
-    let edges: Vec<(String, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .expect("query the edges")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("rows");
+    let edges: Vec<(String, String, String)> = graph
+        .edges
+        .iter()
+        .map(|e| {
+            (
+                e.from.clone(),
+                e.to.clone(),
+                e.condition.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
 
     let documented = binding_manifest(&readme);
     for edge in documented["diff"]["add_edges"]

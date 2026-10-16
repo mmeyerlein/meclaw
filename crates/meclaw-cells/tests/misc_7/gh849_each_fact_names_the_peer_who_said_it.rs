@@ -514,8 +514,9 @@ fn the_contract_asks_each_fact_for_its_source() {
         block.contains("`source`") && block.contains("[peer <ref> · <name>]"),
         "the block asks for the reference out of the frame: {block}"
     );
-    // The offered schema declares it, optional -- an own-side fact has none,
-    // and a required key would be rendered into every example.
+    // The offered schema declares it. Optional until GH #1225, because an
+    // own-side fact had none; since then every fact names its source (the own
+    // side is `person`), so it is REQUIRED and rendered into every example.
     let out = meclaw_testing::emit_one(
         &shipped_script(SCHEMAS),
         &json!({"tools": ["*"], "messages": []}),
@@ -523,7 +524,7 @@ fn the_contract_asks_each_fact_for_its_source() {
     let item = &out["sidecar"][0]["schema"]["properties"]["facts"]["items"];
     assert_eq!(item["properties"]["source"]["type"], "string", "{item}");
     assert!(
-        !item["required"]
+        item["required"]
             .as_array()
             .expect("required")
             .iter()
@@ -533,11 +534,14 @@ fn the_contract_asks_each_fact_for_its_source() {
 }
 
 #[test]
-fn a_named_source_that_is_the_agent_or_the_member_is_dropped() {
-    // A group page on which the member spoke next to A. Neither the agent nor
-    // the member is a peer: the own side has no `source`, so a fact that names
-    // one of them names nobody the page can vouch for. Dropped and receipted,
-    // never filed as the member's own statement or under the agent.
+fn a_named_member_is_dropped_and_a_named_agent_never_becomes_the_member() {
+    // A group page on which the member spoke next to A. The member is no peer,
+    // and `member:alex` is no source form: a fact that names it names nobody
+    // the page can vouch for -- dropped and receipted, never filed as the
+    // member's own statement. Until GH #1225 a fact naming the agent was
+    // dropped the same way; since then `agent:<name>` is a source form of its
+    // own, so it is filed under exactly that agent, on the newest turn the
+    // block may answer -- still never as the member's, never as A's.
     let page = json!([
         ep("ep-a", "peer", A, "2026-09-20T10:00:02Z"),
         ep("ep-u", "user", "member:alex", "2026-09-20T10:00:01Z"),
@@ -558,7 +562,14 @@ fn a_named_source_that_is_the_agent_or_the_member_is_dropped() {
         .collect();
     assert_eq!(
         filed,
-        [(&json!("A drives on Saturday"), &json!("ep-a"), &json!(A))],
+        [
+            (&json!("A drives on Saturday"), &json!("ep-a"), &json!(A)),
+            (
+                &json!("the helper books the train"),
+                &json!("ep-a"),
+                &json!("agent:helper")
+            )
+        ],
         "{:?}",
         r.apply
     );
@@ -567,7 +578,7 @@ fn a_named_source_that_is_the_agent_or_the_member_is_dropped() {
         rej.iter().filter(|(w, _)| w == "unknown_source").collect();
     assert_eq!(unknown.len(), 1, "{:?}", r.meet);
     assert!(
-        unknown[0].1.contains("dropped 2 fact(s)"),
+        unknown[0].1.contains("dropped 1 fact(s)"),
         "{}",
         unknown[0].1
     );

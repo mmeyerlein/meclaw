@@ -59,7 +59,7 @@ def _empty():
         "repo": None, "lane": None, "run": None, "rounds": [], "secs": None,
         "critical_path_s": None, "lane_seconds": None, "cache_hits": 0,
         "cache_known": 0, "fingerprint": None, "minimum": None, "plan_reason": {},
-        "testing_ruling": None,
+        "testing_ruling": None, "load_flake": [],
     }
 
 
@@ -151,7 +151,7 @@ def project(rows, ledgers=()):
                 "tests": tests.get(name), "parts": parts.get(name, 0),
             }
             for extra in ("reason", "in_total", "isolated", "exit", "cached_parts", "legacy",
-                          "cause"):
+                          "cause", "load_flake"):
                 if extra in data:
                     station[extra] = data[extra]
             rnd["stations"] = [s for s in rnd["stations"] if s["name"] != name] + [station]
@@ -182,6 +182,9 @@ def project(rows, ledgers=()):
         rnd["verdict"] = _round_verdict(rnd["stations"])
     doc["rounds"] = [rounds[n] for n in sorted(rounds)]
     doc["stations"] = [last[name] for name in order]
+    # B schlank (OR-TV-13): every test a NOTE `load-flake` station names, with
+    # its triage proof -- red only under full load, an observation.
+    doc["load_flake"] = [dict(e) for st in doc["stations"] for e in st.get("load_flake") or ()]
     doc["cache_hits"] = hits
     return doc
 

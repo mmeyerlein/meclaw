@@ -22,7 +22,11 @@
         "final": "int",
         "episode_idx": "int",
         "at": "text",
-        "audience_set": "text"
+        "audience_set": "text",
+        "turn_at": {
+          "type": "text",
+          "default": ""
+        }
       },
       "calls": {
         "call_id": "text",
@@ -109,6 +113,98 @@
         "on": [
           "source",
           "cand_id"
+        ],
+        "unique": true
+      },
+      "wall_seq": {
+        "table": "wall",
+        "on": [
+          "seq"
+        ],
+        "unique": false
+      },
+      "wall_session_turn": {
+        "table": "wall",
+        "on": [
+          "session_id",
+          "turn_id"
+        ],
+        "unique": false
+      },
+      "wall_session_kind": {
+        "table": "wall",
+        "on": [
+          "session_id",
+          "kind"
+        ],
+        "unique": false
+      },
+      "wall_hash": {
+        "table": "wall",
+        "on": [
+          "hash"
+        ],
+        "unique": false
+      },
+      "blocks_hash": {
+        "table": "blocks",
+        "on": [
+          "hash"
+        ],
+        "unique": false
+      },
+      "marks_kind_seq": {
+        "table": "marks",
+        "on": [
+          "kind",
+          "seq"
+        ],
+        "unique": false
+      },
+      "marks_session_turn": {
+        "table": "marks",
+        "on": [
+          "session_id",
+          "turn_id"
+        ],
+        "unique": false
+      },
+      "calls_call_id": {
+        "table": "calls",
+        "on": [
+          "call_id"
+        ],
+        "unique": false
+      },
+      "summaries_covers": {
+        "table": "summaries",
+        "on": [
+          "covers_to_seq"
+        ],
+        "unique": false
+      },
+      "slots_path": {
+        "table": "slots",
+        "on": [
+          "path"
+        ],
+        "unique": true
+      },
+      "wall_episode": {
+        "table": "wall",
+        "on": [
+          "session_id",
+          "audience_set",
+          "episode_idx"
+        ],
+        "unique": true
+      },
+      "pins_round": {
+        "table": "pins",
+        "on": [
+          "hash",
+          "source",
+          "audience_set"
         ],
         "unique": true
       }

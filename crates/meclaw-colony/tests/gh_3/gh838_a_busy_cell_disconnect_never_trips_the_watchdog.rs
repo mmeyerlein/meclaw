@@ -589,9 +589,12 @@ async fn a_disconnect_waiting_on_a_busy_cell_keeps_the_watchdog_quiet() {
         }
         other => panic!("expected Rejected{{term_timeout}}, got {other:?}"),
     }
-    assert!(
-        took >= Duration::from_millis(TERM_MS),
-        "the wait lasts the term-timeout, took {took:?}"
+    // Virtual time: the term-timeout is exact, so is the wait (re-check RC-T4
+    // M1: a lower bound alone let a deadline that came late pass).
+    assert_eq!(
+        took,
+        Duration::from_millis(TERM_MS),
+        "the wait lasts exactly the term-timeout ({TERM_MS} ms)"
     );
 
     // Every trip that happened INSIDE the mutation (it carries the work item the
@@ -669,9 +672,12 @@ async fn every_disconnected_cell_shares_one_term_timeout() {
             "expected Rejected{{term_timeout}} at one term-timeout, got {other:?} after {took:?}"
         ),
     }
-    assert!(
-        took < Duration::from_millis(TERM_MS * 13 / 10),
-        "four disconnected cells cost one term-timeout ({TERM_MS} ms), took {took:?}"
+    // Virtual time: the shared deadline is exact, so is the answer (re-check
+    // RC3 M3: a bound with a real-time margin let a deadline 20 % late pass).
+    assert_eq!(
+        took,
+        Duration::from_millis(TERM_MS),
+        "four disconnected cells cost exactly one term-timeout ({TERM_MS} ms)"
     );
 
     shutdown(c).await;
@@ -783,10 +789,11 @@ async fn a_move_waits_for_every_relocated_cell_before_it_respawns_one() {
 async fn the_rollback_after_a_term_timeout_waits_a_grace_not_a_second_term() {
     let _guard = TERM_TIMEOUT_TEST_LOCK.lock().await;
     const TERM_MS: u64 = 1_500;
-    // The colony's `ROLLBACK_GRACE` (250 ms) plus a margin for the supervisor's
-    // timers in virtual time; a second term-timeout would put the mutation at
-    // 2 × 1 500 ms, far outside it.
-    const GRACE_AND_MARGIN_MS: u64 = 250 + 500;
+    // The colony's `ROLLBACK_GRACE`. Virtual time: the term-timeout and the
+    // grace after it are exact, the supervisor's timers add nothing to them
+    // (re-check RC3 M3: the old margin of 500 ms let a grace twice as long
+    // pass).
+    const ROLLBACK_GRACE_MS: u64 = 250;
     set_term_timeout_ms_for_test(TERM_MS);
 
     let td = TempDir::new().unwrap();
@@ -835,18 +842,15 @@ async fn the_rollback_after_a_term_timeout_waits_a_grace_not_a_second_term() {
         "the disconnect waits the term-timeout, took {took:?}"
     );
     // The fresh cell never acks, so the rollback spends its whole grace. Without
-    // this floor a rollback that handed the spent deadline through (no wait,
+    // the grace in this check a rollback that handed the spent deadline through (no wait,
     // `remove_dir_all` over an open cell.db -- the #276 hazard OR-SN.K.1 rules
     // out) would stay green: the label ticks at the start of the wait either way
     // (review of K, m1).
-    assert!(
-        took >= Duration::from_millis(TERM_MS + 250),
-        "the rollback waits its grace (250 ms) for the fresh cell, took {took:?}"
-    );
-    assert!(
-        took < Duration::from_millis(TERM_MS + GRACE_AND_MARGIN_MS),
-        "the rollback waits a grace for the fresh cell, not a second term-timeout \
-         ({TERM_MS} ms); the mutation took {took:?}"
+    assert_eq!(
+        took,
+        Duration::from_millis(TERM_MS + ROLLBACK_GRACE_MS),
+        "the rollback waits exactly its grace ({ROLLBACK_GRACE_MS} ms) for the fresh \
+         cell, not a second term-timeout ({TERM_MS} ms)"
     );
     assert_no_fatal_trip_inside_the_mutation(&mut trip_rx);
     assert_the_wait_named(&mut label_rx, "/fresh");

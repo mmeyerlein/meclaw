@@ -3352,6 +3352,29 @@ def _tests_referencing_example(repo, name):
 
 # --- the test filter --------------------------------------------------------
 
+def test_file_unit(path, repo=None):
+    """`(crate, unit)` rule 3 runs for the integration-test file `path`: the
+    flat stem for `tests/<stem>.rs`; for `tests/<harness>/<mod>.rs` (#1119)
+    `<harness>/<mod>` when main.rs folds the module, else `<harness>/main` --
+    also for main.rs itself and for a helper module, whose users run too
+    (W5 delta C1). `_binary_id(crate, unit)` is its nextest term. The one
+    mapping of a test file to its unit; `pipeline/pre.py` plans with it too
+    (GH #1130)."""
+    crate, parts = _crate_of(path), path.split("/")
+    # `tests/<stem>.rs` flat, `tests/<harness>/<stem>.rs` folded (#1119)
+    stem = (parts[3].removesuffix(".rs") if len(parts) == 4
+            else parts[3] + "/" + parts[4].removesuffix(".rs"))
+    if len(parts) == 5 and not stem.endswith("/main"):
+        main_p = os.path.join(REPO_ROOT if repo is None else repo, *parts[:4], "main.rs")
+        if os.path.isfile(main_p):
+            with open(main_p, encoding="utf-8", errors="replace") as fh:
+                stem = _folded_unit(fh.read(), parts[3], parts[4].removesuffix(".rs"))
+            if not stem.endswith("/main") and _folded_helper(
+                    repo, crate, parts[3], parts[4].removesuffix(".rs")):
+                stem = parts[3] + "/main"  # a helper: its users run too (W5 delta C1)
+    return crate, stem
+
+
 def _term_rules(files, repo):
     """The ONE rule source behind `test_terms` and `test_select` (W6 x W3).
 
@@ -3378,22 +3401,11 @@ def _term_rules(files, repo):
             continue
         crate = _crate_of(p)
         parts = p.split("/")
-        # `tests/<stem>.rs` flat, `tests/<harness>/<stem>.rs` folded (#1119)
-        stem = (parts[3].removesuffix(".rs") if len(parts) == 4
-                else parts[3] + "/" + parts[4].removesuffix(".rs"))
-        # The FILE's own unit, before any rewrite to `<h>/main` below: a
-        # foreign harness `#[path]`s the file, not the harness (re-check N-C1).
-        file_stem = stem
-        if len(parts) == 5 and not stem.endswith("/main"):
-            main_p = os.path.join(REPO_ROOT if repo is None else repo,
-                                  *parts[:4], "main.rs")
-            if os.path.isfile(main_p):
-                with open(main_p, encoding="utf-8", errors="replace") as fh:
-                    stem = _folded_unit(fh.read(), parts[3],
-                                        parts[4].removesuffix(".rs"))
-                if not stem.endswith("/main") and _folded_helper(
-                        repo, crate, parts[3], parts[4].removesuffix(".rs")):
-                    stem = parts[3] + "/main"  # a helper: its users run too (W5 delta C1)
+        # The FILE's own unit, before any rewrite to `<h>/main`: a foreign
+        # harness `#[path]`s the file, not the harness (re-check N-C1).
+        file_stem = (parts[3].removesuffix(".rs") if len(parts) == 4
+                     else parts[3] + "/" + parts[4].removesuffix(".rs"))
+        stem = test_file_unit(p, repo)[1]
         # A path the diff names may be GONE -- `git diff --name-only`
         # lists deletions. An id for a binary that does not exist is not
         # an over-selection, it is a filterset nextest refuses to parse.

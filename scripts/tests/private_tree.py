@@ -76,7 +76,9 @@ def private(*paths):
     """Decorator form of `require` for a test method or a TestCase class.
 
     On a class every `test*` method is wrapped, so the check runs inside the
-    test (a skip or a failure of that test), never at import."""
+    test (a skip or a failure of that test), never at import. A `setUpClass`
+    of the class itself checks first too: it is where a class loads the
+    private input it reads (an import from `workshop/`, the export script)."""
     def wrap(fn):
         @functools.wraps(fn)
         def inner(*args, **kwargs):
@@ -89,6 +91,9 @@ def private(*paths):
             for name in list(vars(obj)):
                 if name.startswith("test") and callable(getattr(obj, name)):
                     setattr(obj, name, wrap(getattr(obj, name)))
+            set_up = vars(obj).get("setUpClass")
+            if isinstance(set_up, classmethod):
+                obj.setUpClass = classmethod(wrap(set_up.__func__))
             return obj
         return wrap(obj)
     return deco

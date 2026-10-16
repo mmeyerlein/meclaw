@@ -263,9 +263,131 @@ class CheckRequiredPinsTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("skip", out)
 
+    def write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    # m1 (re-check v2-fix-d 7149751a2): half (b) proved file + `fn`, not that
+    # the derived nextest term selects the test. A pinned `fn` in a nested
+    # `mod`, or a module file the harness never declares, stayed green while
+    # the pin ran 0 tests.
+    def test_a_folded_pin_in_a_nested_mod_is_red(self):
+        # `pub mod m;` folds: the term is `test(=m::pinned)`, the test is `m::inner::pinned`.
+        self.tree()
+        self.write("crates/x/tests/h/m.rs", "mod inner {\n    #[test]\n    fn pinned() {}\n}\n")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/x/tests/h/m.rs", out)
+        self.assertIn("inner", out)
+
+    def test_a_flat_pin_in_a_nested_mod_is_red(self):
+        self.tree()
+        self.write("crates/x/tests/flat.rs", "mod tests {\n    #[test]\n    fn pinned() {}\n}\n")
+        (self.root / ".config/required-pins.toml").write_text(
+            TABLE.replace("crates/x/tests/h/m.rs", "crates/x/tests/flat.rs"), encoding="utf-8")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        # M5 RC-R2: `"tests"` stood in the path of every message; the mod name does not.
+        self.assertIn("sits in `mod tests`", out)
+
+    def test_a_module_file_the_harness_does_not_declare_is_red(self):
+        self.tree()
+        self.write("crates/x/tests/h/main.rs", "mod other;\n")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/x/tests/h/main.rs", out)
+
+    # Re-check RC-R2 M2-M4: the edges of half (b).
+    def test_a_same_named_helper_at_the_top_does_not_hide_a_nested_test_pin(self):
+        # M2: `test(=pinned)` selects 0 tests -- the top-level `fn pinned` is no test.
+        self.tree()
+        self.write("crates/x/tests/flat.rs",
+                   "mod tests {\n    #[test]\n    fn pinned() {}\n}\nfn pinned() {}\n")
+        (self.root / ".config/required-pins.toml").write_text(
+            TABLE.replace("crates/x/tests/h/m.rs", "crates/x/tests/flat.rs"), encoding="utf-8")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("sits in `mod tests`", out)
+
+    def test_a_nested_helper_beside_a_top_level_test_pin_is_green(self):
+        # Gegen-Pin M2: only the test fns count, a helper in a `mod` does not.
+        self.tree()
+        self.write("crates/x/tests/flat.rs",
+                   "#[test]\nfn pinned() {}\nmod util {\n    fn pinned() {}\n}\n")
+        (self.root / ".config/required-pins.toml").write_text(
+            TABLE.replace("crates/x/tests/h/m.rs", "crates/x/tests/flat.rs"), encoding="utf-8")
+        code, out = self.run_check()
+        self.assertEqual(code, 0, out)
+
+    def test_a_string_that_names_the_module_file_declares_nothing(self):
+        # M3: only `#[path = ".../m.rs"]` on a `mod` item declares the file.
+        self.tree()
+        self.write("crates/x/tests/h/main.rs", 'mod other;\nconst P: &str = "x/m.rs";\n')
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("declares no `mod m;`", out)
+
+    def test_a_path_attribute_on_a_mod_item_declares_the_file(self):
+        # Gegen-Pin M3: `#[path]` moves the module off `<m>.rs`; the harness runs by name.
+        self.tree()
+        self.write("crates/x/tests/h/main.rs", '#[path = "m.rs"]\nmod moved;\n')
+        code, out = self.run_check()
+        self.assertEqual(code, 0, out)
+
+    def test_a_fnless_pin_on_a_module_file_the_harness_does_not_declare_is_red(self):
+        # M4: the fn-less branch of check_test asks the term as well.
+        self.tree()
+        self.write("crates/x/tests/h/main.rs", "mod other;\n")
+        (self.root / ".config/required-pins.toml").write_text(
+            TABLE.replace('fn = "pinned"\n', ""), encoding="utf-8")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("declares no `mod m;`", out)
+
+    def test_an_unfolded_pin_selects_by_name_at_any_depth(self):
+        # Gegen-Pin: `#[cfg(unix)] mod m;` does not fold, the term matches
+        # `(^|::)pinned$` at any depth -- a nested `mod` is selected there.
+        self.tree()
+        self.write("crates/x/tests/h/main.rs", "#[cfg(unix)]\nmod m;\n")
+        self.write("crates/x/tests/h/m.rs", "mod inner {\n    #[test]\n    fn pinned() {}\n}\n")
+        code, out = self.run_check()
+        self.assertEqual(code, 0, out)
+
     def test_the_real_tree_is_green(self):
         code, out = self.run_check(REPO)
         self.assertEqual(code, 0, out)
+
+
+class TheUnfoldedPinTermTest(unittest.TestCase):
+    """m2 (re-check v2-fix-d 7149751a2): the unfolded form of `required_pin_term`
+    and its branch in `_selects_unit` had no test."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name)
+        for rel, text in {"crates/x/tests/h/main.rs": "#[cfg(unix)]\nmod m;\n",
+                          "crates/x/tests/h/m.rs": "#[test]\nfn pinned() {}\n"}.items():
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        self.test = {"file": "crates/x/tests/h/m.rs", "fn": "pinned"}
+
+    def test_an_unfolded_module_pins_the_harness_by_name(self):
+        self.assertEqual(gate_plan.required_pin_term(self.test, str(self.root)),
+                         "(binary_id(=x::h) & test(/(^|::)pinned$/))")
+
+    def test_an_unfolded_module_without_fn_runs_the_whole_harness(self):
+        self.assertEqual(gate_plan.required_pin_term({"file": "crates/x/tests/h/m.rs"},
+                                                     str(self.root)),
+                         "binary_id(=x::h)")
+
+    def test_the_unfolded_term_reaches_its_harness_only(self):
+        term = gate_plan.required_pin_term(self.test, str(self.root))
+        self.assertTrue(gate_plan._selects_unit(term, "x", "h/other_browser", None))
+        self.assertFalse(gate_plan._selects_unit(term, "y", "h/other_browser", None))
+        self.assertFalse(gate_plan._selects_unit(term, "x", "g/m_browser", None))
 
 
 if __name__ == "__main__":

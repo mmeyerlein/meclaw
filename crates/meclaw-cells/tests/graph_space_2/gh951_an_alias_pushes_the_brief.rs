@@ -370,9 +370,12 @@ fn reply_for(step: Option<u32>) -> String {
         Some(4) => with_block(
             "Noted. (r951-4)",
             json!({"memory": {
+                // GH #1225: the shipped knob checks each fact's quote at
+                // the source it names -- the person's words of this turn.
                 "facts": [{"subject": THING, "predicate": "located_in", "claim": PLACE,
-                           "fact_kind": "world", "valid_from": null}],
-                "topic": {"movement": "start", "name": "the kettle"}}}),
+                           "fact_kind": "world", "valid_from": null,
+                           "quote": "I put it away after breakfast", "source": "person"}],
+                "topic": {"movement": "start", "name": "the kettle", "source": "person"}}}),
         ),
         Some(n) => format!("Noted. (r951-{n})"),
         None => road::REPLY.to_string(),

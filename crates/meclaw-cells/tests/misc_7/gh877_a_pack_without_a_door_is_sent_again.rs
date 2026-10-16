@@ -18,8 +18,10 @@
 //!   context, the curator hands the context back on its receipt, and the
 //!   member's `./assistants -> ./affinity` edge brings it home as
 //!   `in_pack_ack` -- only a CLEAN receipt writes the hash;
-//! * a pack sent before the door exists is sent again after the door is drawn,
-//!   exactly once (the lock), and `talky-chat` gets its own pack;
+//! * a pack sent before the door exists is sent again after the door is drawn
+//!   (the lock): every pack that reaches the curator names the row and its
+//!   hash, the clean receipt books it, and a run over the booked row sends
+//!   none (at least once, not counted); `talky-chat` gets its own pack;
 //! * a refused receipt books nothing and parks its hash, an anonymous one is
 //!   dropped; a pack nobody confirms goes again on the next tick, then after a
 //!   doubling wait under a six-hour cap -- at most five packs in twenty ticks
@@ -41,6 +43,7 @@ use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::timer::TimerCellFactory;
+use meclaw_colony::api_dto::MessageLogFilter;
 use meclaw_colony::config::HiveParams;
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_colony::{
@@ -52,9 +55,9 @@ use meclaw_core::{Body, Headers, JsonValue, Message, MessageBuilder, Path, Uuid}
 use meclaw_testing::ColonyHandle;
 use meclaw_testing::code_wire::{code_stdin, emit_all, run_shipped_script, shipped_script};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{deadline, wait};
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 // ══════════════════════════════════════════════════════════ the shipped tree
@@ -246,11 +249,12 @@ fn store_args(m: &Value) -> Value {
 
 /// One `entities` round of the shipped push over ONE subscriber row, exactly
 /// as the store's answer brings it back (`json` columns arrive as TEXT); the
-/// entity's `recorded_at` is the knob that moves the pack's hash.
-fn entities_round(retry: &str, recorded_at: &str) -> Vec<Value> {
+/// entity's `recorded_at` is the knob that moves the pack's hash, and
+/// `booked` is the hash the row's last clean receipt stored (`""`: none).
+fn entities_round(retry: &str, recorded_at: &str, booked: &str) -> Vec<Value> {
     let sub = json!({"id": "sub:/g|entity:alex", "cell_path": "/g", "subject": "entity:alex",
                      "audience": "member:alex", "channel": "*", "slots": "[\"identity\"]",
-                     "pack_hash": "", "retry": retry});
+                     "pack_hash": booked, "retry": retry});
     emit_all(
         &shipped_script(repo(PUSH).to_str().expect("utf-8")),
         &json!({
@@ -287,7 +291,7 @@ fn a_send_books_no_delivery_and_names_the_row_it_serves() {
     if affinity_shipped().is_none() {
         return;
     }
-    let out = entities_round("", RECORDED);
+    let out = entities_round("", RECORDED, "");
     let briefs: Vec<&Value> = out
         .iter()
         .filter(|m| m["header"]["route"] == "brief")
@@ -324,17 +328,17 @@ fn a_send_books_no_delivery_and_names_the_row_it_serves() {
     );
 }
 
-/// The wall clock, in the seconds the push script stamps `retry.at` with.
-fn epoch_now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("after 1970")
-        .as_secs_f64()
-}
+/// A `retry.at` whose wait is over whatever the script's clock reads (the
+/// epoch), and one whose wait has not begun (the year 5138: far ahead of any
+/// clock, inside what the script can still stamp). The script reads its own
+/// wall clock and the test holds none: a note is due or not by construction,
+/// never by a margin against the machine's speed.
+const LONG_AGO: f64 = 0.0;
+const FAR_AHEAD: f64 = 1.0e11;
 
 /// The hash the push computes for the stand-in row, read off its own pack.
 fn fresh_hash(recorded_at: &str) -> String {
-    let out = entities_round("", recorded_at);
+    let out = entities_round("", recorded_at, "");
     let brief = out
         .iter()
         .find(|m| m["header"]["route"] == "brief")
@@ -350,7 +354,7 @@ fn fresh_hash(recorded_at: &str) -> String {
 /// thing a round may emit beside them is its resend watchdog (GH #1096), the
 /// clock order for the earliest due moment, which is not a send.
 fn round_with(retry: Value) -> Option<Value> {
-    let out: Vec<Value> = entities_round(&retry.to_string(), RECORDED)
+    let out: Vec<Value> = entities_round(&retry.to_string(), RECORDED, "")
         .into_iter()
         .filter(|m| m["header"]["route"] != "clock")
         .collect();
@@ -395,8 +399,7 @@ fn an_unconfirmed_pack_is_retried_with_a_doubling_gap_under_a_cap() {
         300.0,
         "the first wait is five minutes: {first}"
     );
-    let t = epoch_now();
-    let second = round_with(json!({"hash": hash, "tries": 1, "at": t - 300.0, "gap": 300.0}))
+    let second = round_with(json!({"hash": hash, "tries": 1, "at": LONG_AGO, "gap": 300.0}))
         .expect("the first resend goes once its five minutes are over");
     assert_eq!(second["tries"], 2, "{second}");
     assert_eq!(
@@ -405,20 +408,19 @@ fn an_unconfirmed_pack_is_retried_with_a_doubling_gap_under_a_cap() {
         "the next wait is twice it: {second}"
     );
     // A note written before GH #1096 (`gap` 0) starts at the first wait.
-    let t = epoch_now();
-    let legacy = round_with(json!({"hash": hash, "tries": 1, "at": t - 1.0, "gap": 0}))
+    let legacy = round_with(json!({"hash": hash, "tries": 1, "at": LONG_AGO, "gap": 0}))
         .expect("a legacy note is due");
     assert_eq!(secs(&legacy["gap"]), 300.0, "{legacy}");
 
     // Not yet due: silent -- but the watchdog is armed for the moment it is.
-    let t = epoch_now();
     assert!(
-        round_with(json!({"hash": hash, "tries": 2, "at": t - 300.0, "gap": 600.0})).is_none(),
+        round_with(json!({"hash": hash, "tries": 2, "at": FAR_AHEAD, "gap": 600.0})).is_none(),
         "a try inside its wait must stay silent"
     );
     let armed: Vec<Value> = entities_round(
-        &json!({"hash": hash, "tries": 2, "at": t - 300.0, "gap": 600.0}).to_string(),
+        &json!({"hash": hash, "tries": 2, "at": FAR_AHEAD, "gap": 600.0}).to_string(),
         RECORDED,
+        "",
     )
     .into_iter()
     .filter(|m| m["header"]["route"] == "clock")
@@ -431,15 +433,13 @@ fn an_unconfirmed_pack_is_retried_with_a_doubling_gap_under_a_cap() {
     assert_eq!(armed[0]["op"], "add");
     assert_eq!(armed[0]["schedule_name"], "affinity-push");
     assert_eq!(armed[0]["rearm"], true);
-    let t = epoch_now();
-    let third = round_with(json!({"hash": hash, "tries": 2, "at": t - 601.0, "gap": 600.0}))
+    let third = round_with(json!({"hash": hash, "tries": 2, "at": LONG_AGO, "gap": 600.0}))
         .expect("a try whose wait is over goes again");
     assert_eq!(third["tries"], 3, "{third}");
     assert_eq!(secs(&third["gap"]), 1200.0, "each wait doubles: {third}");
 
     // The cap: a wait never grows past it, and a capped try still goes.
-    let t = epoch_now();
-    let capped = round_with(json!({"hash": hash, "tries": 9, "at": t - CAP - 1.0, "gap": CAP}))
+    let capped = round_with(json!({"hash": hash, "tries": 9, "at": LONG_AGO, "gap": CAP}))
         .expect("a capped try still goes once its wait is over");
     assert_eq!(
         secs(&capped["gap"]),
@@ -448,21 +448,50 @@ fn an_unconfirmed_pack_is_retried_with_a_doubling_gap_under_a_cap() {
     );
 
     // A new hash starts over: sent at once, first try, no wait.
-    let t = epoch_now();
     let other = "cd".repeat(32);
-    let reset = round_with(json!({"hash": other, "tries": 7, "at": t, "gap": CAP}))
+    let reset = round_with(json!({"hash": other, "tries": 7, "at": FAR_AHEAD, "gap": CAP}))
         .expect("a changed pack goes at once, whatever the old one's wait");
     assert_eq!(reset["hash"], hash, "{reset}");
     assert_eq!(reset["tries"], 1, "a new hash resets the count: {reset}");
 
     // Parked by a refusal: silent while the hash stands, sent once it moves.
     assert!(
-        round_with(json!({"hash": hash, "parked": "slot_unknown", "at": t})).is_none(),
+        round_with(json!({"hash": hash, "parked": "slot_unknown", "at": LONG_AGO})).is_none(),
         "a refused pack is parked until it changes"
     );
     assert!(
-        round_with(json!({"hash": other, "parked": "slot_unknown", "at": t})).is_some(),
+        round_with(json!({"hash": other, "parked": "slot_unknown", "at": LONG_AGO})).is_some(),
         "a parked hash that is no longer the pack's hash parks nothing"
+    );
+}
+
+/// Review I3: after the clean receipt there is no further resend. The receipt
+/// books `pack_hash` and leaves the `retry` note standing, so the only thing
+/// that keeps a booked row from the watchdog is the push's idempotence: a
+/// row whose stored hash IS the fresh hash is skipped before its note is
+/// read. Probed with a note that is due by construction (`at` the epoch): a
+/// booked row stays silent -- no pack, no write, no watchdog -- where the
+/// same note on an unbooked row goes again.
+#[test]
+fn a_booked_pack_is_not_sent_again_though_its_note_is_due() {
+    if affinity_shipped().is_none() {
+        return;
+    }
+    let hash = fresh_hash(RECORDED);
+    let due = json!({"hash": hash, "tries": 1, "at": LONG_AGO, "gap": 300.0}).to_string();
+
+    let unbooked = entities_round(&due, RECORDED, "");
+    assert!(
+        unbooked.iter().any(|m| m["header"]["route"] == "brief"),
+        "the control: the same due note on an unbooked row is sent again: {unbooked:?}"
+    );
+
+    let booked = entities_round(&due, RECORDED, &hash);
+    assert!(
+        booked.is_empty(),
+        "a row whose receipt booked the hash it would send stays silent -- no `brief`, \
+         no `subscribers` write, no `clock` order -- or every booked row goes again \
+         once its wait is over, doubling up to the cap, for ever: {booked:?}"
     );
 }
 
@@ -476,29 +505,37 @@ fn twenty_ticks_without_a_receipt_send_at_most_five_packs() {
         return;
     }
     // GH #1096: a tick just past the first wait (`retry_first_s`, 300 s), so
-    // the first resend is due on the very next one.
+    // the first resend is due on the very next one. The ticks are virtual: the
+    // test keeps when the last pack went (`sent_v`) and the wait the script
+    // wrote after it (`gap`), and hands the script a note that is due or not
+    // by construction. What is judged is the script's answer to it -- a pack
+    // exactly when its wait is over, and the wait doubling after each.
     const TICK: f64 = 301.0;
-    let mut state = Value::String(String::new());
-    let mut sent_at_v: f64 = 0.0;
+    let mut note: Option<Value> = None;
+    let mut sent_v: f64 = 0.0;
     let mut sends: Vec<usize> = Vec::new();
     for k in 0..20usize {
         let tv = k as f64 * TICK;
-        let wall = epoch_now();
-        let retry = match state.as_object() {
+        let (retry, due) = match note.as_ref().and_then(Value::as_object) {
             Some(o) => {
+                let due = tv - sent_v >= secs(&o["gap"]);
                 let mut o = o.clone();
-                o.insert("at".into(), json!(wall - (tv - sent_at_v)));
-                Value::Object(o).to_string()
+                o.insert("at".into(), json!(if due { LONG_AGO } else { FAR_AHEAD }));
+                (Value::Object(o).to_string(), due)
             }
-            None => String::new(),
+            None => (String::new(), true),
         };
-        let out = entities_round(&retry, RECORDED);
+        let out = entities_round(&retry, RECORDED, "");
         let writes = subscriber_writes(&out);
+        assert_eq!(
+            writes.len(),
+            usize::from(due),
+            "tick {k}: a pack exactly when its wait is over (note {retry}): {out:?}"
+        );
         if let Some(w) = writes.first() {
             sends.push(k);
-            let next = w["set"]["retry"].clone();
-            sent_at_v = tv + (secs(&next["at"]) - wall);
-            state = next;
+            sent_v = tv;
+            note = Some(w["set"]["retry"].clone());
         }
     }
     assert!(
@@ -623,6 +660,135 @@ fn an_ack_without_pack_sub_is_dropped() {
             String::from_utf8_lossy(&out.stderr).contains("pack_ack dropped"),
             "and the drop is said, not swallowed: {context} -> {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// The first wait these runs are configured with (`params.retry_first_s`).
+const TRANSIENT_FIRST_S: i64 = 6;
+/// A second first wait, far from the first: two runs that differ only in this
+/// knob order moments at least the difference apart -- the proof that the
+/// order sits the first wait ahead, with no clock of the test's own.
+const TRANSIENT_FAR_S: i64 = 6 * 3600;
+
+/// One run of the shipped push over `hop` (its `context` the one every push
+/// edge sets), with the default first wait of these runs.
+fn push_run(hop: Value, phase: &str) -> Vec<Value> {
+    push_run_with(hop, phase, TRANSIENT_FIRST_S)
+}
+
+/// The moment a watchdog order names, in epoch milliseconds.
+fn order_at_ms(order: &Value) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(order["at"].as_str().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("the order names its moment: {order} ({e})"))
+        .timestamp_millis()
+}
+
+/// One run of the shipped push over `hop` with `retry_first_s` = `first_s`.
+fn push_run_with(hop: Value, phase: &str, first_s: i64) -> Vec<Value> {
+    emit_all(
+        &shipped_script(repo(PUSH).to_str().expect("utf-8")),
+        &json!({
+            "target": "/affinity/push",
+            "header": {"hop": hop,
+                       "context": {"affinity_origin": "push", "aff_phase": phase,
+                                   "aff_carry": ""}},
+            "ttl": 64,
+            "params": {"retry_first_s": first_s},
+            "messages": [],
+        }),
+    )
+}
+
+/// The resend watchdog orders among one run's messages.
+fn watchdog_orders(out: &[Value]) -> Vec<&Value> {
+    out.iter()
+        .filter(|m| m["header"]["route"] == "clock" && m["schedule_name"] == "affinity-push")
+        .collect()
+}
+
+/// Release gate 0.64.3, station `export-tree-tests`: under I/O pressure a
+/// cell.db write outlasts `query_timeout_ms` and the cell answers
+/// `query_timeout`. When that answer reached `./push` -- the clock refusing the
+/// watchdog order, or the store refusing a read of a resend run -- the run left
+/// on the error lane with NOTHING armed, so a pack nobody had confirmed was
+/// never sent again (the lock below went silent for its whole hang mark). A
+/// timed-out query is transient: the run still says it on the error lane, and
+/// orders the watchdog again for the first wait, so the resend survives it.
+#[test]
+fn a_timed_out_query_leaves_the_resend_armed() {
+    if affinity_shipped().is_none() {
+        return;
+    }
+    let cases = [
+        (
+            json!({"msg_type": "timer_op_error", "error_code": "query_timeout"}),
+            "",
+        ),
+        (
+            json!({"route": "astore", "operation": "select", "error_code": "query_timeout"}),
+            "subs",
+        ),
+    ];
+    for (hop, phase) in cases {
+        let out = push_run(hop.clone(), phase);
+        assert!(
+            out.iter().any(|m| m["header"]["route"] == "error"),
+            "the refusal is still said on the error lane: {hop} -> {out:?}"
+        );
+        let orders = watchdog_orders(&out);
+        assert_eq!(
+            orders.len(),
+            1,
+            "a transient refusal re-arms the resend watchdog: {hop} -> {out:?}"
+        );
+        let order = orders[0];
+        assert_eq!(order["op"], "add", "{order}");
+        assert_eq!(order["rearm"], true, "{order}");
+        assert_eq!(order["emit_to"], "../push", "{order}");
+        // The same refusal under a far first wait, run AFTER the first: its
+        // moment lies at least the difference of the two waits later. An order
+        // for now (or for any wait that ignores the knob) puts both moments
+        // side by side, an order that waits the first wait sets them apart.
+        let far = push_run_with(hop.clone(), phase, TRANSIENT_FAR_S);
+        let far_orders = watchdog_orders(&far);
+        assert_eq!(far_orders.len(), 1, "{hop} -> {far:?}");
+        let gap_ms = order_at_ms(far_orders[0]) - order_at_ms(order);
+        assert!(
+            gap_ms >= (TRANSIENT_FAR_S - TRANSIENT_FIRST_S) * 1000,
+            "the order waits the first wait -- an order for now would spin on an overloaded \
+             cell: {order} vs {} (gap {gap_ms} ms)",
+            far_orders[0]
+        );
+    }
+}
+
+/// A refusal that is not transient arms nothing: the same order would meet the
+/// same refusal again (the reason the error lane exists).
+#[test]
+fn a_lasting_refusal_arms_nothing() {
+    if affinity_shipped().is_none() {
+        return;
+    }
+    let cases = [
+        (
+            json!({"msg_type": "timer_op_error", "error_code": "schedule_id_exists"}),
+            "",
+        ),
+        (
+            json!({"route": "astore", "operation": "select", "error_code": "no_such_table"}),
+            "subs",
+        ),
+    ];
+    for (hop, phase) in cases {
+        let out = push_run(hop.clone(), phase);
+        assert!(
+            out.iter().any(|m| m["header"]["route"] == "error"),
+            "{hop} -> {out:?}"
+        );
+        assert!(
+            watchdog_orders(&out).is_empty(),
+            "a lasting refusal must not re-arm: {hop} -> {out:?}"
         );
     }
 }
@@ -1102,21 +1268,67 @@ fn hop_of(m: &Message, key: &str) -> String {
         .to_string()
 }
 
-/// The next message on `rx` whose `hop.route` matches; 30 s is the failure
-/// marker convention.
-async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
-    let mut seen: Vec<String> = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let Ok(Some(m)) = tokio::time::timeout(left, rx.recv()).await else {
-            panic!("no `{route}` arrived within 30s; saw {seen:?}");
-        };
-        if hop_of(&m, "route") == route {
-            return m;
-        }
-        seen.push(hop_of(&m, "route"));
+fn text_of(m: &Message) -> String {
+    match &m.body {
+        Body::Inline(v) => v["messages"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        Body::Blob(_) => String::new(),
     }
+}
+
+/// The next message on `rx` whose `hop.route` matches, under the hang mark
+/// (`deadline::HANG`, never a verdict); a hang names the routes seen instead.
+async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
+    let seen = std::cell::RefCell::new(Vec::<String>::new());
+    deadline::hang_with(
+        &format!("no `{route}` arrived"),
+        async {
+            loop {
+                let m = rx.recv().await.expect("the capture cell outlives the wait");
+                if hop_of(&m, "route") == route {
+                    return m;
+                }
+                seen.borrow_mut().push(hop_of(&m, "route"));
+            }
+        },
+        || seen.borrow().clone(),
+    )
+    .await
+}
+
+/// The next pack on the tap, under the hang mark. A hang carries the error
+/// lane: a pack that never comes is a refusal somewhere on its way, and the
+/// release gate 0.64.3 hang said only `saw []`.
+async fn recv_pack(s: &mut Sinks) -> Message {
+    let Sinks { sink, push } = s;
+    deadline::hang_with(
+        "no pack left affinity",
+        async {
+            loop {
+                let m = push.recv().await.expect("the tap outlives the wait");
+                if hop_of(&m, "route") == "answer" {
+                    return m;
+                }
+            }
+        },
+        || {
+            let mut lane = Vec::new();
+            while let Ok(m) = sink.try_recv() {
+                lane.push(format!("{}: {}", hop_of(&m, "route"), text_of(&m)));
+            }
+            lane
+        },
+    )
+    .await
+}
+
+/// Every pack still waiting on the tap, taken off it (a zero-wait read).
+fn packs_on_the_tap(s: &mut Sinks) -> Vec<Message> {
+    std::iter::from_fn(|| s.push.try_recv().ok())
+        .filter(|m| hop_of(m, "route") == "answer")
+        .collect()
 }
 
 async fn subscribe(h: &ColonyHandle, sink: &mut mpsc::Receiver<Message>, op: Value) {
@@ -1126,13 +1338,7 @@ async fn subscribe(h: &ColonyHandle, sink: &mut mpsc::Receiver<Message>, op: Val
     ))
     .await;
     let ack = recv_route(sink, "ack").await;
-    let text = match &ack.body {
-        Body::Inline(v) => v["messages"][0]["text"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
-        Body::Blob(_) => String::new(),
-    };
+    let text = text_of(&ack);
     assert!(
         text.contains("accepted"),
         "the subscription has to exist before a tick can serve it: {text}"
@@ -1179,47 +1385,36 @@ fn row_of(td: &tempfile::TempDir, id: &str) -> Option<Vec<String>> {
         .find(|r| r[0] == id && r[1] == "active")
 }
 
-/// `(from_path, to_path, headers)` of every logged message.
-fn log_rows(td: &tempfile::TempDir) -> Vec<(String, String, Value)> {
-    rows(
-        &td.path().join("colony.db"),
-        "SELECT from_path, to_path, headers FROM message_log ORDER BY created_at",
-    )
+/// `(from_path, to_path, headers)` of every logged message addressed under
+/// `to_prefix`, read through the colony (`ColonyMsg::ReadMessages`), never
+/// its database file.
+async fn log_rows(h: &ColonyHandle, to_prefix: &str) -> Vec<(String, String, Value)> {
+    h.read_log(MessageLogFilter {
+        to_path_prefix: Some(to_prefix.to_string()),
+        ..Default::default()
+    })
+    .await
     .into_iter()
     .map(|r| {
-        let headers = meclaw_core::serde_json::from_str::<Value>(&r[2]).unwrap_or(Value::Null);
-        (r[0].clone(), r[1].clone(), headers)
+        let headers =
+            meclaw_core::serde_json::from_str::<Value>(&r.headers_json).unwrap_or(Value::Null);
+        (r.from_path, r.to_path, headers)
     })
     .collect()
 }
 
-fn logged(td: &tempfile::TempDir, to_path: &str, route: &str) -> Vec<Value> {
-    log_rows(td)
+async fn logged(h: &ColonyHandle, to_path: &str, route: &str) -> Vec<Value> {
+    log_rows(h, to_path)
+        .await
         .into_iter()
-        .filter(|(_, to, h)| to == to_path && h["hop"]["route"] == route)
-        .map(|(_, _, h)| h)
+        .filter(|(_, to, hd)| to == to_path && hd["hop"]["route"] == route)
+        .map(|(_, _, hd)| hd)
         .collect()
 }
 
-/// Poll `probe` until it yields, or fail after 30 s naming `what`.
+/// Poll `probe` until it yields, under the hang mark naming `what`.
 async fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Some(v) = probe() {
-            return v;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "{what}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Hold `probe` true for `window`, failing the moment it is not.
-async fn stays(what: &str, window: Duration, mut probe: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + window;
-    while tokio::time::Instant::now() < deadline {
-        assert!(probe(), "{what}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait::until_some(what, || std::future::ready(probe())).await
 }
 
 /// The `retry` note of the ACTIVE row under `id`, parsed (`Null` while none).
@@ -1235,11 +1430,11 @@ fn retry_of(td: &tempfile::TempDir, id: &str) -> Value {
 
 /// One manual tick, returned only once it has RUN -- its entities read came
 /// back to `./push`, which is where the push decides.
-async fn tick_and_wait(h: &ColonyHandle, td: &tempfile::TempDir) {
-    let before = logged_entities_echoes(td);
+async fn tick_and_wait(h: &ColonyHandle) {
+    let before = logged_entities_echoes(h).await;
     h.send(to("/ticker", "tick")).await;
-    eventually("a tick never ran", || {
-        (logged_entities_echoes(td) > before).then_some(())
+    wait::until("a tick never ran", || async move {
+        logged_entities_echoes(h).await > before
     })
     .await;
 }
@@ -1269,7 +1464,7 @@ async fn an_errored_ack_parks_the_pack_until_it_changes() {
     .await;
 
     // GH #1096: the subscribe is a write, and the write runs the push.
-    let first = recv_route(&mut s.push, "answer").await;
+    let first = recv_pack(&mut s).await;
     assert_eq!(hop_of(&first, "pack_sub"), id, "{:?}", first.headers.hop);
     // The refused receipt reached the push cell and parked its hash on the
     // row -- read in the store's own `cell.db`, the receiver of the write.
@@ -1289,25 +1484,34 @@ async fn an_errored_ack_parks_the_pack_until_it_changes() {
         row_of(&td, &id)
     );
 
-    // The next tick runs over the same record and sends nothing.
-    tick_and_wait(&h, &td).await;
-    let quiet = tokio::time::timeout(Duration::from_secs(2), s.push.recv()).await;
+    // The next tick runs over the same record and sends nothing: once it has
+    // run and the colony is quiet, the tap holds no pack beyond the first
+    // (absence at quiescence, development-rules § 11).
+    h.quiesce().await;
+    let before = packs_on_the_tap(&mut s);
+    tick_and_wait(&h).await;
+    h.quiesce().await;
+    let again = packs_on_the_tap(&mut s);
     assert!(
-        quiet.is_err(),
-        "a parked pack went again: {:?}",
-        quiet.map(|m| m.map(|m| m.headers.hop.clone()))
+        again.is_empty(),
+        "a parked pack went again: {:?} (before the tick: {})",
+        again
+            .iter()
+            .map(|m| m.headers.hop.clone())
+            .collect::<Vec<_>>(),
+        before.len()
     );
 
     h.shutdown().await;
 }
 
 /// The lock of review I-1, at the receiver: a subscriber whose receipt never
-/// comes (no door behind it -- the tap is the only place its pack lands) gets
-/// at most five packs, and the second as soon as its first wait is over. Before
+/// comes (no door behind it -- the tap is the only place its pack lands) is
+/// sent again by the watchdog alone, each try doubling the wait. Before
 /// the fix round every tick sent the same pack again, without end; since
 /// GH #1096 there is no tick and the resend watchdog is the only driver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_subscriber_that_never_confirms_gets_at_most_five_packs_in_twenty_ticks() {
+async fn a_subscriber_that_never_confirms_is_resent_by_the_watchdog_with_a_doubling_wait() {
     let Some(affinity) = affinity_shipped() else {
         return;
     };
@@ -1329,32 +1533,29 @@ async fn a_subscriber_that_never_confirms_gets_at_most_five_packs_in_twenty_tick
 
     // GH #1096: no ticks. The subscribe runs the push, and the resend
     // watchdog alone drives every further try -- one second first
-    // (`retry_first_s` in this tree), then doubling: 0, 1, 3, 7, 15 s.
-    let start = tokio::time::Instant::now();
-    let mut packs = 0usize;
-    let mut second_at = None;
-    while let Ok(Some(m)) = tokio::time::timeout(
-        (start + Duration::from_secs(20)).saturating_duration_since(tokio::time::Instant::now()),
-        s.push.recv(),
-    )
-    .await
-    {
-        if hop_of(&m, "route") == "answer" {
-            assert_eq!(hop_of(&m, "subscriber"), nobody, "{:?}", m.headers.hop);
-            packs += 1;
-            if packs == 2 {
-                second_at = Some(start.elapsed());
-            }
-        }
+    // (`retry_first_s` in this tree), then doubling. The claim is on events:
+    // each further pack arrives without a tick, and the try it writes doubles
+    // the wait before the next. How many packs fit in N seconds is the pure
+    // function's (`twenty_ticks_without_a_receipt_send_at_most_five_packs`).
+    let id = derived_id(nobody, SUBJECT);
+    for tries in 1..=3_i64 {
+        let m = recv_pack(&mut s).await;
+        assert_eq!(hop_of(&m, "subscriber"), nobody, "{:?}", m.headers.hop);
+        // The note may already be a later try's when it is read; whichever it
+        // is, its wait is the first one doubled once per try before it.
+        let note = eventually(&format!("try {tries} was never noted on the row"), || {
+            let r = retry_of(&td, &id);
+            (r["tries"].as_i64().unwrap_or(0) >= tries).then_some(r)
+        })
+        .await;
+        let noted = note["tries"].as_i64().unwrap_or(0);
+        assert_eq!(
+            secs(&note["gap"]),
+            f64::powi(2.0, i32::try_from(noted - 1).unwrap_or(0)),
+            "try {noted} waits the first wait doubled {} time(s): {note}",
+            noted - 1
+        );
     }
-    assert!(
-        second_at.is_some_and(|t| t < Duration::from_secs(10)),
-        "the watchdog never sent the first resend: {packs} pack(s), second at {second_at:?}"
-    );
-    assert!(
-        packs <= 5,
-        "a subscriber that never confirms got {packs} packs in twenty seconds"
-    );
 
     h.shutdown().await;
 }
@@ -1735,24 +1936,19 @@ fn curator_path(rel: &str, rim: &str) -> String {
     format!("/{}/{rim}/curator", rel.trim_start_matches("main/"))
 }
 
-fn now_utc() -> String {
-    // The same second-resolution RFC 3339 form `./push` stamps `sent_at` in,
-    // so the two compare as strings.
-    let out = std::process::Command::new("python3")
-        .args([
-            "-c",
-            "import datetime;print(datetime.datetime.now(datetime.timezone.utc)\
-             .strftime('%Y-%m-%dT%H:%M:%SZ'))",
-        ])
-        .output()
-        .expect("python3");
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
 /// THE LOCK (GH #877, Variante A). A pack sent before the generation has its
-/// door is not booked; drawing the door and ticking again delivers it EXACTLY
-/// once, the clean receipt books it with a `sent_at` after the door, and a
-/// third tick over the same record is silent.
+/// door is not booked; once the door is drawn the resend watchdog delivers it,
+/// the clean receipt books it, and a later run over the same record is silent.
+/// Delivery is at least once (re-check I1, 0.64.3 class): a receipt whose
+/// booking runs into `query_timeout` re-arms the watchdog and the row goes
+/// again, rightly -- so the lock counts no packs, it proves that every pack
+/// names the row and its hash and that a run over the booked row adds none.
+///
+/// Lifted to the event format after release gate 0.64.3 (`export-tree-tests`,
+/// hang at the first pack, `saw []`): every wait is a hang mark, absence is
+/// proved at quiescence, the log is read through the colony. The order of
+/// door and resend is not a verdict any more: a resend that fires before the
+/// door meets no edge and the next one, after a doubled wait, lands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pack_without_a_door_is_sent_again() {
     let (Some(affinity), Some(assistant)) = (affinity_shipped(), generation_shipped()) else {
@@ -1775,8 +1971,9 @@ async fn a_pack_without_a_door_is_sent_again() {
 
     // 1. The push before the door -- the subscribe's own (GH #1096). The pack
     //    LEAVES affinity (caught on the tap), meets no edge into the
-    //    generation, and the row stays unbooked.
-    let early = recv_route(&mut s.push, "answer").await;
+    //    generation, and once the colony is quiet the row is still unbooked:
+    //    a send writes neither the hash nor `sent_at`.
+    let early = recv_pack(&mut s).await;
     assert_eq!(
         hop_of(&early, "subscriber"),
         subscriber,
@@ -1784,21 +1981,18 @@ async fn a_pack_without_a_door_is_sent_again() {
         early.headers.hop
     );
     assert_eq!(hop_of(&early, "pack_sub"), id, "{:?}", early.headers.hop);
-    stays(
-        "a pack that met no door was booked as delivered (Gate F10)",
-        Duration::from_secs(2),
-        || row_of(&td, &id).is_some_and(|r| r[2].is_empty() && r[3].is_empty()),
-    )
-    .await;
+    h.quiesce().await;
     assert!(
-        logged(&td, &talky, "in_pack").is_empty(),
+        row_of(&td, &id).is_some_and(|r| r[2].is_empty() && r[3].is_empty()),
+        "a pack that met no door was booked as delivered (Gate F10): {:?}",
+        row_of(&td, &id)
+    );
+    assert!(
+        logged(&h, &talky, "in_pack").await.is_empty(),
         "no door, no delivery: the talky curator got a pack before it had a door"
     );
 
-    // 2. The door. The whole second passes so that a `sent_at` stamped by the
-    //    first tick could never pass for one stamped after the door.
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let door_at = now_utc();
+    // 2. The door.
     let outcome = mutate(
         &h,
         json!({"scope": "/", "diff": {"add_edges": identity_door()}}),
@@ -1809,11 +2003,8 @@ async fn a_pack_without_a_door_is_sent_again() {
         "the rendered identity door must commit: {outcome:?}"
     );
 
-    // 3. The resend watchdog fires when the first wait is over, finds the row
-    //    unbooked -- a change -- and delivers. Its send is taken off the tap
-    //    here, so that step 4 hears only what the third run says.
-    let resent = recv_route(&mut s.push, "answer").await;
-    assert_eq!(hop_of(&resent, "pack_sub"), id, "{:?}", resent.headers.hop);
+    // 3. The resend watchdog fires when the wait is over, finds the row
+    //    unbooked -- a change -- and delivers through the door.
     let slots = eventually("the pack never reached the talky curator's ledger", || {
         let slots = curator_pack_slots(&td, &rel, "talky");
         holds_identity(&slots).then_some(slots)
@@ -1824,69 +2015,73 @@ async fn a_pack_without_a_door_is_sent_again() {
         row_of(&td, &id).filter(|r| r[2].len() == 64)
     })
     .await;
+    // No wall clock (re-check I2): that nothing was booked before the door is
+    // step 1's event at quiescence; `sent_at` is only required to be set.
     assert!(
-        booked[3].as_str() >= door_at.as_str(),
-        "sent_at {} must lie after the door ({door_at}) -- it is the moment the receipt \
-         came back, not the moment of a send nobody received",
-        booked[3]
+        !booked[3].is_empty(),
+        "a booked row carries sent_at: {booked:?}"
     );
-    let receipts = logged(&td, "/affinity", "in_pack_ack");
+    h.quiesce().await;
+    let receipts = logged(&h, "/affinity", "in_pack_ack").await;
     assert!(
         receipts
             .iter()
-            .any(|h| h["hop"]["error_code"] == "" && h["context"]["pack_sub"] == id.as_str()),
+            .any(|r| r["hop"]["error_code"] == "" && r["context"]["pack_sub"] == id.as_str()),
         "a clean receipt naming the row reached affinity: {receipts:?}"
     );
     assert!(
-        receipts.iter().all(|h| h["hop"]["error_code"] == ""),
+        receipts.iter().all(|r| r["hop"]["error_code"] == ""),
         "and no rim refused the pack: {receipts:?}"
     );
-    assert_eq!(
-        logged(&td, &talky, "in_pack").len(),
-        1,
-        "exactly one pack reached the talky curator"
+    let delivered = logged(&h, &talky, "in_pack").await;
+    assert!(
+        !delivered.is_empty(),
+        "the booked row came from a pack at the talky curator"
+    );
+    assert!(
+        delivered
+            .iter()
+            .all(|r| r["context"]["pack_sub"] == id.as_str()
+                && r["context"]["pack_hash"] == booked[2].as_str()),
+        "every pack at the talky curator names the row and the hash it booked \
+         (row {id}, hash {}): {delivered:?}",
+        booked[2]
     );
 
-    // 4. A third tick over the same record: it runs (its entities read comes
-    //    back to ./push) and sends nothing.
-    let reads_before = logged_entities_echoes(&td);
-    h.send(to("/ticker", "tick")).await;
-    eventually("the third tick never ran", || {
-        (logged_entities_echoes(&td) > reads_before).then_some(())
-    })
-    .await;
-    let quiet = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let m = s.push.recv().await?;
-            if hop_of(&m, "route") == "answer" {
-                return Some(m);
-            }
-        }
-    })
-    .await;
+    // 4. A run over the same record: it runs (its entities read comes back to
+    //    ./push) and, once the colony is quiet, has sent nothing.
+    let earlier = packs_on_the_tap(&mut s);
+    tick_and_wait(&h).await;
+    h.quiesce().await;
+    let after = packs_on_the_tap(&mut s);
     assert!(
-        !matches!(quiet, Ok(Some(_))),
-        "a tick over a booked record must send nothing: {:?}",
-        quiet.ok().flatten().map(|m| m.headers.hop.clone())
+        after.is_empty(),
+        "a run over a booked record must send nothing: {:?} (packs before it: {})",
+        after
+            .iter()
+            .map(|m| m.headers.hop.clone())
+            .collect::<Vec<_>>(),
+        earlier.len()
     );
     assert_eq!(
-        logged(&td, &talky, "in_pack").len(),
-        1,
-        "still exactly one pack at the talky curator after the third tick"
+        logged(&h, &talky, "in_pack").await.len(),
+        delivered.len(),
+        "a run over the booked row sends no pack: the talky curator got none after it"
     );
 
     h.shutdown().await;
 }
 
 /// How many times the store's `entities` answer has come back to `./push` --
-/// one per tick that found an active subscriber.
-fn logged_entities_echoes(td: &tempfile::TempDir) -> usize {
-    log_rows(td)
+/// one per run that found an active subscriber.
+async fn logged_entities_echoes(h: &ColonyHandle) -> usize {
+    log_rows(h, "/affinity/push")
+        .await
         .into_iter()
-        .filter(|(from, to, h)| {
+        .filter(|(from, to, hd)| {
             from == "/affinity/store"
                 && to == "/affinity/push"
-                && h["context"]["aff_phase"] == "entities"
+                && hd["context"]["aff_phase"] == "entities"
         })
         .count()
 }
@@ -1928,14 +2123,20 @@ async fn talky_chat_gets_its_identity_pack() {
         assert!(holds_identity(&slots), "{rim}: {slots:?}");
     }
     let chat_rim = format!("/{}/talky-chat", rel.trim_start_matches("main/"));
-    let home = eventually("the talky-chat receipt never reached the container", || {
-        log_rows(&td)
-            .into_iter()
-            .find(|(from, to, h)| {
-                from == &chat_rim && to == "/assistants" && h["hop"]["route"] == "pack_ack"
-            })
-            .map(|(_, _, h)| h)
-    })
+    let chat_rim = &chat_rim;
+    let hc = &h;
+    let home = wait::until_some(
+        "the talky-chat receipt never reached the container",
+        || async move {
+            log_rows(hc, "/assistants")
+                .await
+                .into_iter()
+                .find(|(from, to, hd)| {
+                    from == chat_rim && to == "/assistants" && hd["hop"]["route"] == "pack_ack"
+                })
+                .map(|(_, _, hd)| hd)
+        },
+    )
     .await;
     assert_eq!(home["hop"]["error_code"], "", "{home}");
     assert_eq!(
@@ -1947,8 +2148,11 @@ async fn talky_chat_gets_its_identity_pack() {
         row_of(&td, &id).filter(|r| r[2].len() == 64)
     })
     .await;
+    h.quiesce().await;
     assert_eq!(
-        logged(&td, &curator_path(&rel, "talky-chat"), "in_pack").len(),
+        logged(&h, &curator_path(&rel, "talky-chat"), "in_pack")
+            .await
+            .len(),
         1,
         "exactly one pack reached the talky-chat curator"
     );

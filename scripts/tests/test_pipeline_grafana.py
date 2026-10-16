@@ -12,7 +12,7 @@ import pathlib
 import sys
 import unittest
 from unittest import mock
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 GRAFANA = REPO / "workshop" / "grafana"
@@ -26,9 +26,12 @@ _STARTED = []
 
 
 def setUpModule():  # noqa: N802 -- unittest's name
+    # isolated first: a skip in the export tree still leaves no caller's metrics
+    # URL (test_pipeline_metrics calls every setUpModule in one process)
     store_isolation.isolate()
-    if not GRAFANA.is_dir():
-        raise unittest.SkipTest("workshop/grafana/ is not in this tree")
+    # `require` (GH #1199): a skip in the export tree, a failure in the private
+    # tree, where the directory can not go quiet (re-check RC-K3 I3).
+    private_tree.require("workshop/grafana")
     _METRICS_URL.start()
     _STARTED.append(True)
 

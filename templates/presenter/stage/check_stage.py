@@ -1660,6 +1660,26 @@ def t_clock(s, t):
     t.check("another refusal leaves as error",
             [(e["header"]["route"], e["header"].get("error_code")) for e in out],
             [("error", "clock_refused")])
+    # GH #877 class: an `add` that ran out of the clock's `query_timeout_ms` stored
+    # nothing, so no deadline stands. It is said, and the deadline is ordered again --
+    # once: a second loss of the same order is said and orders nothing.
+    standing = (c.s.ram().get("due") or {}).get("sid") or ""
+    t.check("a deadline stands before the loss", bool(standing), True)
+    out = c.run({"route": "in_tick_error", "msg_type": "timer_op_error",
+                 "error_code": "query_timeout", "schedule_id": standing})
+    t.check("a timed-out add is said",
+            [(e["header"]["route"], e["header"].get("error_code")) for e in out
+             if e["header"]["route"] == "error"],
+            [("error", "clock_refused")])
+    t.check("a timed-out add is ordered again", [op for op, _ in clock(out)], ["add"])
+    again = clock(out)[0][1] if clock(out) else ""
+    out = c.run({"route": "in_tick_error", "msg_type": "timer_op_error",
+                 "error_code": "query_timeout", "schedule_id": again})
+    t.check("a second loss of the same order orders nothing", clock(out), [])
+    # A timed-out op about an order a later one replaced changes nothing.
+    out = c.run({"route": "in_tick_error", "msg_type": "timer_op_error",
+                 "error_code": "query_timeout", "schedule_id": first[0][1]})
+    t.check("a timeout about a replaced order orders nothing", clock(out), [])
     # An order whose moment has NOT passed is still removed when the deadline moves.
     c2 = Cell(s)
     c2.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},

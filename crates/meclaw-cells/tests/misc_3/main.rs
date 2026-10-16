@@ -1,7 +1,6 @@
 //! Test harness `misc_3` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh300_the_four_point_contract;
 pub mod gh302_assistant_wires_channels_once;
 pub mod gh302_meclaw_os_shell;
 pub mod gh302_member_holds_the_memory;

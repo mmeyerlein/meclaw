@@ -1,9 +1,6 @@
 //! Test harness `misc_7` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh822_an_old_affinity_export_boots_twice;
-pub mod gh835_a_door_takes_the_turn_nobody_addressed;
-pub mod gh839_a_foreign_pointer_never_crosses;
 pub mod gh840_a_peer_url_outside_egress_is_refused;
 pub mod gh844_a_big_script_does_not_import_from_its_temp_dir;
 pub mod gh847_a_peer_turn_reaches_the_wire_framed;
@@ -32,6 +29,7 @@ pub mod gh86_resolved_system_leaf_reaches_the_wire;
 pub mod gh872_a_seeded_rebirth_pushes_its_first_pack;
 pub mod gh873_a_closure_does_not_cross_an_audience;
 pub mod gh877_a_pack_without_a_door_is_sent_again;
+pub mod gh877_b_a_timed_out_query_re_arms_the_sweep;
 pub mod gh888_the_ledger_rebuilds_what_the_provider_received;
 pub mod gh889_a_turn_runs_collector_curator_brain;
 pub mod gh890_the_cache_says_when_it_goes_cold;
@@ -58,6 +56,9 @@ pub mod gh957_a_decisions_cell_changes_its_model_by_overlay;
 pub mod gh957_a_decisions_cell_speaks_the_decisions_wire;
 pub mod gh957_the_provider_list_is_closed;
 pub mod gh957_the_registry_keeps_providers_apart;
+pub mod gh958_the_catalogue_is_the_one_source;
+pub mod gh959_the_stage_rules_hold;
+pub mod gh95_text_id_residue_is_loud_at_read;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../llm/mock_responses.rs"]

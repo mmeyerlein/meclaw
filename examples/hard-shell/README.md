@@ -187,7 +187,7 @@ recycled since is skipped loudly (`pid reuse: recorded start_id …, live proces
 started at …`), so the worst case is a leftover process, never somebody else's.
 There is no pattern matching anywhere in it -- no `pkill`, no name sweep.
 
-Pinned in `crates/meclaw-cells/tests/misc_2/gh116_orphan_reap.rs`, which hard-kills a
+Pinned in `crates/meclaw-cells/tests/misc_1/gh116_orphan_reap.rs`, which hard-kills a
 real daemon, confirms the child outlived it, and drives the boot reap. Its
 sibling cases point a record at the *test runner itself* with a mutated start
 time: a careless reaper would kill the test binary, and that is exactly what
@@ -230,4 +230,4 @@ its own lane, naming the address and its range, without an `http_status` and
 without a dead letter. Moments 2 and 3 are process-level facts about the daemon
 rather than properties of this tree, and they are pinned where they live --
 `crates/meclaw/tests/misc/gh121_root_lease.rs` and
-`crates/meclaw-cells/tests/misc_2/gh116_orphan_reap.rs`, both with real processes.
+`crates/meclaw-cells/tests/misc_1/gh116_orphan_reap.rs`, both with real processes.

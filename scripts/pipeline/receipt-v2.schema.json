@@ -74,6 +74,14 @@
         "null"
       ]
     },
+    "load_flake": {
+      "description": "B schlank (OR-TV-13): every test a NOTE load-flake station names -- red only under the gate's full load, green in T1-T4 with T2 on the lane about 30 % busy (K12) -- with its triage proof (station, test, count, green, triage, t2_lane, seed).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["station", "test", "triage"]
+      }
+    },
     "narrowing": {
       "description": "What the tests of a merge or integration were: tests=narrowed|full-suite|floor|none, stage, since (base sha), wave, map, why (re-check H2 M1).",
       "type": [
@@ -192,6 +200,9 @@
           },
           "cause": {
             "type": "string"
+          },
+          "load_flake": {
+            "type": "array"
           }
         }
       }
@@ -344,6 +355,9 @@
                 },
                 "cause": {
                   "type": "string"
+                },
+                "load_flake": {
+                  "type": "array"
                 }
               }
             }

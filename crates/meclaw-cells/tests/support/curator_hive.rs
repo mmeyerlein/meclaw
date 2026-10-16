@@ -208,7 +208,29 @@ pub struct Hive {
     /// M-1, a claim taken over while a refused bundle is on its way back).
     /// Taken when it strikes, before `refuse_phase` is looked at.
     pub sql_at_phase: Option<(String, String)>,
+    /// GH #1225: the cells of [`RESIDENT_CELLS`] run as the colony runs them,
+    /// `runner_mode: resident` -- one child per hive whose globals live from
+    /// message to message (`_MEM` of `./intake`), never the thread's warm
+    /// child that starts every message empty.
+    resident: BTreeMap<String, warm_python::Resident>,
+    /// The runs of each resident cell so far, by the `cur_phase` of the
+    /// message it got (`""` for a lane).
+    runs: BTreeMap<(String, String), usize>,
+    /// GH #1225: `(cell, cur_phase, n)` -- the child of the resident `cell`
+    /// is killed and booted again right before its `n`-th run (1-based) on a
+    /// message of that phase: a deploy between two steps of a chain. Taken
+    /// when it strikes.
+    pub restart_at: Option<(String, String, usize)>,
+    /// GH #1225: `(leg, error_code)` -- the store refuses every leg of the next
+    /// ledger message whose tool_call id is `leg` (or starts with it, when it
+    /// ends in `*`) with that code, and runs the other legs: one read or
+    /// write of a bundle failing. An entry is taken in the message it struck;
+    /// set `ledger_may_refuse` with it.
+    pub refuse_legs: Vec<(String, String)>,
 }
+
+/// GH #1225: the cells the hive runs `resident`, the way they ship.
+pub const RESIDENT_CELLS: [&str; 1] = ["intake"];
 
 // Folded, this module is `pub` at a harness root, so clippy::new_without_default
 // applies to `Hive::new` (W5 clippy).
@@ -258,26 +280,39 @@ impl Hive {
             params.insert((*key).to_string(), value.clone());
         }
         let db = rusqlite::Connection::open_in_memory().expect("sqlite");
-        let schema: BTreeMap<String, BTreeMap<String, String>> =
-            sj::from_value(cells["ledger"]["params"]["schema"].clone()).expect("schema");
-        meclaw_cells::store::ddl::apply_schema_ddl(&db, &schema).expect("ddl");
+        // GH #1225: the store's own reading of the ledger params -- a column
+        // in the object form (`{type, default}`, `wall.turn_at`) carries its
+        // SQL DEFAULT exactly as the store cell builds it.
+        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
+            .expect("the ledger params parse");
+        meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &ledger).expect("ddl");
         // GH #915/#943: the named indexes right after the schema and before the
         // seed, in the store's own order (`store::factory`: schema -> indexes
         // -> seed). The unique index on `state.key` is what turns the insert of
         // a round's first row into a compare-and-set.
-        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
-            .expect("the ledger params parse");
         meclaw_cells::store::ddl::apply_index_ddl(&db, &ledger.indexes).expect("index ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
-            &schema,
+            &ledger.schema,
         )
         .expect("seed");
+        let mut resident = BTreeMap::new();
+        for name in RESIDENT_CELLS {
+            let cfg = &cells[name];
+            if cfg["params"]["runner_mode"] == "resident" {
+                let script = cfg["params"]["script_inline"].as_str().expect("script");
+                resident.insert(name.to_string(), warm_python::Resident::boot(script));
+            }
+        }
         Self {
             edges,
             cells,
             db,
+            resident,
+            runs: BTreeMap::new(),
+            restart_at: None,
+            refuse_legs: Vec::new(),
             out: Vec::new(),
             clock: Vec::new(),
             summ: VecDeque::new(),
@@ -289,9 +324,17 @@ impl Hive {
         }
     }
 
+    /// GH #1225: the child of the resident `cell` killed and booted again --
+    /// its RAM is gone, the ledger is what it was.
+    pub fn restart(&mut self, cell: &str) {
+        self.resident
+            .get_mut(cell)
+            .unwrap_or_else(|| panic!("{cell} does not run resident"))
+            .restart();
+    }
+
     fn run_cell(&mut self, name: &str, msg: &Msg) -> Vec<Msg> {
         let cfg = &self.cells[name];
-        let script = cfg["params"]["script_inline"].as_str().expect("script");
         let mut params = obj(cfg["params"].clone());
         params.remove("script_inline");
         let doc = json!({
@@ -300,8 +343,41 @@ impl Hive {
                          "reply_to": msg.reply_to},
             "body": msg.body,
             "params": params,
-        });
-        let out = run_python(script, &doc.to_string());
+        })
+        .to_string();
+        let mut warm = None;
+        if self.resident.contains_key(name) {
+            let phase = msg
+                .context
+                .get("cur_phase")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let n = self
+                .runs
+                .entry((name.to_string(), phase.clone()))
+                .or_insert(0);
+            *n += 1;
+            let n = *n;
+            if self
+                .restart_at
+                .as_ref()
+                .is_some_and(|(c, p, at)| c == name && *p == phase && *at == n)
+            {
+                self.restart_at = None;
+                self.restart(name);
+            }
+            warm = self.resident.get_mut(name).and_then(|r| r.run(&doc));
+        }
+        let out = match warm {
+            Some(out) => out,
+            None => run_python(
+                self.cells[name]["params"]["script_inline"]
+                    .as_str()
+                    .expect("script"),
+                &doc,
+            ),
+        };
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         assert!(out.status.success(), "{name} exited non-zero: {err}");
         if !err.trim().is_empty() {
@@ -378,7 +454,51 @@ impl Hive {
                 reply_to: String::new(),
             };
         }
-        let (body, hop) = if calls.len() == 1 {
+        let struck: Vec<(String, String)> = self
+            .refuse_legs
+            .iter()
+            .filter(|(leg, _)| calls.iter().any(|c| leg_matches(leg, &c["id"])))
+            .cloned()
+            .collect();
+        self.refuse_legs.retain(|e| !struck.contains(e));
+        let refused_as = |id: &Value| {
+            struck
+                .iter()
+                .find(|(leg, _)| leg_matches(leg, id))
+                .map(|(_, code)| code.clone())
+        };
+        let (body, hop) = if !struck.is_empty() {
+            // GH #1225: the struck legs refused, every other one run -- in
+            // the bundle form, so each leg answers under its own id.
+            let legs: Vec<BundleLeg> = calls
+                .iter()
+                .map(|c| {
+                    let id = c["id"].as_str().unwrap_or("").to_string();
+                    let args: Value =
+                        sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
+                    if let Some(code) = refused_as(&c["id"]) {
+                        return BundleLeg::refusal(
+                            args["operation"].as_str().unwrap_or("error"),
+                            id,
+                            0,
+                            &code,
+                            "refused by the test".to_string(),
+                        );
+                    }
+                    match dispatch(&self.db, &args) {
+                        Ok(outcome) => BundleLeg::from_outcome(&outcome, id, 0),
+                        Err(e) => BundleLeg::refusal(
+                            args["operation"].as_str().unwrap_or("error"),
+                            id,
+                            0,
+                            "invalid_input",
+                            e,
+                        ),
+                    }
+                })
+                .collect();
+            build_bundle_result(&legs, 0)
+        } else if calls.len() == 1 {
             let c = &calls[0];
             let args: Value = sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
             match dispatch(&self.db, &args) {
@@ -500,6 +620,25 @@ impl Hive {
 
     /// A message arriving on the hive path on lane `route`.
     pub fn lane(&mut self, route: &str, context: Value, hop: Value, body: Value) {
+        let msg = Self::lane_msg(route, context, hop, body);
+        self.pump(".", msg);
+    }
+
+    /// Several messages arriving on the hive path at once, `(route, context,
+    /// hop, body)` each, run to rest through ONE FIFO queue (GH #1225): two
+    /// slot writes in flight both read before either writes, as two
+    /// deliveries do.
+    pub fn lanes_together(&mut self, lanes: Vec<(&str, Value, Value, Value)>) {
+        let starts = lanes
+            .into_iter()
+            .map(|(route, context, hop, body)| {
+                (".".to_string(), Self::lane_msg(route, context, hop, body))
+            })
+            .collect();
+        self.pump_many(starts);
+    }
+
+    fn lane_msg(route: &str, context: Value, hop: Value, body: Value) -> Msg {
         let mut hop = obj(hop);
         hop.insert("route".into(), json!(route));
         // GH #925: every lane message of a colony carries the audience of its
@@ -509,13 +648,12 @@ impl Hive {
         context
             .entry("audience_set")
             .or_insert_with(|| json!(ROUND_E));
-        let msg = Msg {
+        Msg {
             context,
             hop,
             body: obj(body),
             reply_to: String::new(),
-        };
-        self.pump(".", msg);
+        }
     }
 
     /// The strike of an order the clock holds, as the timer emits it: a
@@ -854,6 +992,16 @@ impl Hive {
                 ],
             )
             .unwrap();
+    }
+}
+
+/// GH #1225: a `refuse_legs` entry against a tool_call id -- equal, or a
+/// prefix when the entry ends in `*`.
+fn leg_matches(leg: &str, id: &Value) -> bool {
+    let id = id.as_str().unwrap_or("");
+    match leg.strip_suffix('*') {
+        Some(prefix) => id.starts_with(prefix),
+        None => id == leg,
     }
 }
 

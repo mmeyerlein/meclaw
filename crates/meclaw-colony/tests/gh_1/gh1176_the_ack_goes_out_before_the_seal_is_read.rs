@@ -11,18 +11,22 @@
 //! The probe is real, not a seam: after boot the sealed hive `/mem`'s
 //! `config.json` becomes a FIFO that a writer thread serves one read at a
 //! time. The order is decided by events, never by the clock (AGENTS.md rule
-//! 11): the writer serves the reads the ack depends on -- the validation's
-//! seal walk and contract walk, and the post-state drains -- and holds every
-//! further read until the test has the ack in hand. A seal read the ack waited
-//! for would stay held, the colony's own read timeout would refuse the diff
-//! (`hive_config_timeout`), and the commit assert names it. After the ack the
-//! slot rebuild must read `/mem` twice -- once for the seal, once for the
-//! connect points of the sealed hive.
+//! 11): the writer holds the colony's ack itself and stamps every read, the
+//! moment its reader has opened the FIFO, with whether the ack was out by
+//! then. It serves the reads the ack depends on -- the validation's seal walk
+//! and contract walk, and the post-state drains -- and holds every further
+//! read that comes before the ack. A read beyond those before the ack is the
+//! verdict once it is served -- at once when the ack does not wait for it,
+//! after the colony's own read timeout when it does (the diff is then refused
+//! with `hive_config_timeout`, or the ack waited for the slot rebuild).
+//! After the ack the slot rebuild must read `/mem` twice -- once for the
+//! seal, once for the connect points of the sealed hive.
 //!
 //! Each read gets its own FIFO: before the writer closes its end, a fresh FIFO
 //! is renamed over the path, so the next open can never meet the reader that
 //! is still draining the previous copy (two copies in one read do not parse,
-//! and the diff was refused with `hive_config_unreadable` under load).
+//! and the diff was refused with `hive_config_unreadable` under load). The
+//! second test pins that mechanism with a reader the test holds itself.
 
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, bootstrap_from_filesystem,
@@ -36,7 +40,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc as std_mpsc;
 use tokio::sync::{mpsc, oneshot};
 
 /// The reads of `/mem` the ack depends on: the validation's seal walk and
@@ -48,6 +51,10 @@ const ACK_READS: usize = 3;
 /// `O_NONBLOCK` (Linux): the closing reader opens the FIFO without waiting
 /// for a writer, so it releases a writer blocked in its open.
 const O_NONBLOCK: i32 = 0o4000;
+
+/// `ENXIO` (Linux): a non-blocking open for writing of a FIFO no reader has
+/// open.
+const ENXIO: i32 = 6;
 
 const MEM_CONFIG: &str =
     r#"{"cell":{"type":"hive"},"params":{"ports":["glue"],"graph":{"edges":[]}}}"#;
@@ -80,59 +87,137 @@ fn echo_cell(td: &std::path::Path, rel: &str, emitted_target: &str) {
 }
 
 fn mkfifo(path: &Path) {
+    if let Err(e) = make_fifo(path) {
+        panic!("{e}");
+    }
+}
+
+/// `mkfifo` as a result, for the writer thread: it outlives a test whose
+/// verdict already fell, and must not add a panic of its own then.
+fn make_fifo(path: &Path) -> Result<(), String> {
     let made = std::process::Command::new("mkfifo")
         .arg(path)
         .status()
-        .expect("mkfifo runs");
-    assert!(made.success(), "mkfifo {}", path.display());
+        .map_err(|e| format!("mkfifo runs: {e}"))?;
+    if made.success() {
+        Ok(())
+    } else {
+        Err(format!("mkfifo {}", path.display()))
+    }
 }
 
-/// Serves `cfg` one read per FIFO. Every served read is reported on `served`
-/// as `true` when the test held the ack before the read was served. The
-/// first [`ACK_READS`] reads are served at once; every further read waits
-/// for `ack_seen`.
+/// Writes one copy into the open end `w`. A fresh FIFO takes the path before
+/// this end closes: the reader still draining this copy keeps the old one to
+/// itself, and the next open meets only a new reader. A reader that gave up
+/// (the colony's own read timeout) is gone; the write then fails, and the
+/// read was counted at its open.
+fn write_copy(mut w: std::fs::File, cfg: &Path, spare: &Path, n: usize) -> Result<(), String> {
+    let _ = w.write_all(MEM_CONFIG.as_bytes());
+    let next = spare.join(format!("mem-config-{n}"));
+    make_fifo(&next)?;
+    std::fs::rename(&next, cfg).map_err(|e| format!("the fresh FIFO takes the path: {e}"))?;
+    drop(w);
+    Ok(())
+}
+
+/// Serves `cfg` one read per FIFO and reports each served read on `served`,
+/// stamped the moment its reader opened the FIFO: `true` when the colony had
+/// sent its ack by then. The report follows the copy and its rename, so a
+/// test that stops on it finds the writer on its way to the newest FIFO.
+/// The writer holds the ack receiver itself, so the stamp is the colony's own
+/// order -- an ack sent before a read began is seen at that read, with no hop
+/// through the test in between (re-check RC3 M2: a stamp taken before the
+/// blocking open counted a read after the ack as one before it, so
+/// `before_ack <= ACK_READS` held by construction). The first
+/// [`ACK_READS`] reads are served at once; a further read that comes before
+/// the ack is held until the ack is out. The ack goes on to the test on
+/// `outcome` before the first read stamped after it.
 fn serve_reads(
     cfg: PathBuf,
     spare: PathBuf,
     served: mpsc::UnboundedSender<bool>,
-    ack_seen: std_mpsc::Receiver<()>,
+    ack: oneshot::Receiver<MutationOutcome>,
+    outcome: mpsc::UnboundedSender<MutationOutcome>,
     stop: Arc<AtomicBool>,
 ) {
     let mut count = 0usize;
-    let mut acked = false;
+    // `None` once the ack is out and handed on.
+    let mut pending = Some(ack);
     loop {
-        if !acked {
-            if count >= ACK_READS {
-                // Held: this read is not one the ack may wait for.
-                if ack_seen.recv().is_err() {
-                    return;
-                }
-                acked = true;
-            } else if ack_seen.try_recv().is_ok() {
-                acked = true;
-            }
-        }
         // Blocks until a reader has opened the FIFO.
-        let Ok(mut w) = std::fs::OpenOptions::new().write(true).open(&cfg) else {
+        let Ok(w) = std::fs::OpenOptions::new().write(true).open(&cfg) else {
             return;
         };
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        let copied = w.write_all(MEM_CONFIG.as_bytes()).is_ok();
-        // A fresh FIFO takes the path before this end closes: the reader
-        // still draining this copy keeps the old one to itself.
-        let next = spare.join(format!("mem-config-{count}"));
-        mkfifo(&next);
-        std::fs::rename(&next, &cfg).expect("the fresh FIFO takes the path");
-        drop(w);
-        if copied {
-            count += 1;
-            if served.send(acked).is_err() {
+        if let Some(rx) = pending.as_mut()
+            && let Ok(o) = rx.try_recv()
+        {
+            pending = None;
+            let _ = outcome.send(o);
+        }
+        count += 1;
+        let after = pending.is_none();
+        if count > ACK_READS
+            && let Some(rx) = pending.take()
+        {
+            // Held: this read is not one the ack may wait for.
+            let Ok(o) = rx.blocking_recv() else {
+                return;
+            };
+            let _ = outcome.send(o);
+        }
+        if let Err(e) = write_copy(w, &cfg, &spare, count) {
+            // The test is gone: its verdict fell and took the TempDir with it
+            // (re-check RC-T4 M2). One red, not a second panic on top of it.
+            if served.is_closed() {
                 return;
             }
+            panic!("the writer serves read {count}: {e}");
+        }
+        if served.send(after).is_err() {
+            return;
         }
     }
+}
+
+/// Re-check RC3 M5: the reader of the previous copy is held open by the test
+/// and has not read a byte, so it would take a second copy if the next open
+/// could reach it -- no race decides it. With the fresh FIFO renamed over the
+/// path, an open for the next read finds no reader at all.
+#[test]
+fn the_next_open_never_meets_the_reader_of_the_previous_copy() {
+    let td = tempfile::TempDir::new().unwrap();
+    let cfg = td.path().join("config.json");
+    mkfifo(&cfg);
+    let spare = td.path().join("fifos");
+    std::fs::create_dir_all(&spare).unwrap();
+
+    // The reader opens without waiting for a writer, and reads nothing yet.
+    let mut reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&cfg)
+        .expect("the reader opens the FIFO");
+    let w = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cfg)
+        .expect("a reader is there, the writer opens at once");
+    write_copy(w, &cfg, &spare, 1).expect("the writer serves the first copy");
+
+    let next = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&cfg);
+    assert_eq!(
+        next.as_ref().err().and_then(std::io::Error::raw_os_error),
+        Some(ENXIO),
+        "the open for the next read must not reach the reader of the previous copy: {next:?}"
+    );
+    let mut got = String::new();
+    std::io::Read::read_to_string(&mut reader, &mut got).expect("the copy and its end");
+    assert_eq!(got, MEM_CONFIG, "the reader gets exactly one copy");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -167,14 +252,14 @@ async fn the_ack_goes_out_before_the_post_state_seal_is_read() {
     std::fs::create_dir_all(&spare).unwrap();
 
     let (served_tx, mut served_rx) = mpsc::unbounded_channel();
-    let (ack_seen_tx, ack_seen_rx) = std_mpsc::channel();
+    let (ack_tx, ack_rx) = oneshot::channel();
+    let (outcome_tx, mut outcome_rx) = mpsc::unbounded_channel();
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let (cfg, stop) = (cfg.clone(), stop.clone());
-        std::thread::spawn(move || serve_reads(cfg, spare, served_tx, ack_seen_rx, stop))
+        std::thread::spawn(move || serve_reads(cfg, spare, served_tx, ack_rx, outcome_tx, stop))
     };
 
-    let (ack_tx, ack_rx) = oneshot::channel();
     h.inbox_tx
         .send(ColonyMsg::Mutation {
             payload: json!({"diff": {"add_edges": [{"from": "./caller", "to": "./sink"}]}}),
@@ -185,23 +270,15 @@ async fn the_ack_goes_out_before_the_post_state_seal_is_read() {
         })
         .await
         .unwrap();
-    let outcome = deadline::hang("the colony answers the mutation", ack_rx)
-        .await
-        .unwrap();
-    ack_seen_tx.send(()).expect("the writer thread is alive");
-    // A held read the ack waited for ends in the colony's own read timeout:
-    // `hive_config_timeout` here means the seal was read before the ack.
-    assert!(
-        matches!(outcome, MutationOutcome::Committed { .. }),
-        "the diff commits without waiting for a read beyond validation and drains: {outcome:?}"
-    );
 
     // The slot rebuild runs on the loop's next pass, after the ack: the seal
-    // and the connect points of `/mem`, read after the ack, not before it.
+    // and the connect points of `/mem`, read after the ack, not before it. A
+    // read before the ack beyond validation and drains is the verdict as soon
+    // as it is served, whether the ack waits for it or not.
     let (mut before_ack, mut after_ack) = (0usize, 0usize);
     while after_ack < 2 {
         let after = deadline::hang_with(
-            "the slot rebuild reads `/mem` twice after the ack",
+            "the colony answers and its slot rebuild reads `/mem` twice after the ack",
             served_rx.recv(),
             || (before_ack, after_ack),
         )
@@ -211,12 +288,21 @@ async fn the_ack_goes_out_before_the_post_state_seal_is_read() {
             after_ack += 1;
         } else {
             before_ack += 1;
+            assert!(
+                before_ack <= ACK_READS,
+                "only validation and drains read `/mem` before the ack: read {before_ack} \
+                 came before it"
+            );
         }
     }
+    let outcome = outcome_rx
+        .try_recv()
+        .expect("a read stamped after the ack: the writer handed the ack on before it");
+    // A held read the ack waited for ends in the colony's own read timeout:
+    // `hive_config_timeout` here means the seal was read before the ack.
     assert!(
-        before_ack <= ACK_READS,
-        "only validation and drains read `/mem` before the ack: {before_ack} reads \
-         before the ack, {after_ack} after"
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "the diff commits without waiting for a read beyond validation and drains: {outcome:?}"
     );
     // Release the writer: it is blocked in open until a reader comes.
     stop.store(true, Ordering::SeqCst);

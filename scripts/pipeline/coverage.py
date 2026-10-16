@@ -500,7 +500,7 @@ def _refused(args, msg, code):
     on stderr AND stdout and at the lease; `code` is never 0."""
     from . import progress
     return progress.refuse("coverage build", msg, out=sys.stdout, err=sys.stderr,
-                           holder=_holder(args), code=code)
+                           holder=_holder(args), code=code, lane=getattr(args, "lane", "") or "")
 
 
 def _pass(args, done, red):
@@ -508,7 +508,7 @@ def _pass(args, done, red):
     from . import progress
     line = progress.pass_line(done, 1, done, red)
     progress.emit(line, sys.stderr, sys.stdout)
-    progress.beat(_holder(args), line)
+    progress.beat(_holder(args), line, lane=getattr(args, "lane", "") or "")
 
 
 def _cmd_coverage(args):

@@ -621,14 +621,15 @@ fn the_models_window_bounds_the_compress_line() {
     assert_eq!(h.state("context_window"), "32000");
 }
 
-/// A talky over its aim: first the old tool results shrink, and only when
-/// that is not enough does the summary go. `window` is the model's window
+/// A talky over its aim: first the old tool results shrink, then the oldest
+/// rounds beyond `keep_recent` go to the summary (GH #1225, K-2), and only
+/// when no round can go does the summary. `window` is the model's window
 /// (`context_window`, the tap reports none here), the aim `rebuild_to` of it.
-fn under_pressure(window: i64) -> (Hive, String) {
+fn under_pressure(window: i64, keep_recent: i64) -> (Hive, String) {
     let mut h = hive_of(
         "talky",
         &[
-            ("policy", "keep_recent", json!(2)),
+            ("policy", "keep_recent", json!(keep_recent)),
             ("policy", "context_window", json!(window)),
             ("policy", "keep_rounds", json!(1)),
         ],
@@ -679,7 +680,7 @@ fn old_tool_results_shrink_before_segments() {
     ));
     let r2 = id(&tool_result("c2", &"B".repeat(3000)));
     // Room enough: nothing shrinks.
-    let (h, _) = under_pressure(100_000);
+    let (h, _) = under_pressure(100_000, 2);
     assert_eq!(h.plan()["shrunk"], json!([]));
     // Over the aim by one tool result: the older one shrinks, the summary stays.
     // GH #1085 (fix review G1 M4): a summary still to be made has no estimate
@@ -689,7 +690,7 @@ fn old_tool_results_shrink_before_segments() {
     // Fable review #5 the plan counts at the row's `chars_per_token`, three
     // without a row (`content_budget`), so the same characters weigh 4/3 as
     // many tokens and the window is 2943 x 4 / 3 = 3924.
-    let (mut h, first) = under_pressure(3924);
+    let (mut h, first) = under_pressure(3924, 2);
     assert_eq!(h.plan()["shrunk"], json!([r1.clone()]));
     assert_ne!(h.plan()["summary"], json!(""), "the summary is kept");
     let call = h.curate("s", "r4", 0, json!([user("next")]), mode("x"));
@@ -713,13 +714,36 @@ fn old_tool_results_shrink_before_segments() {
         "the block itself is untouched"
     );
     assert_eq!(listed_messages(&h, &call), call.messages());
-    // Still over after that: the summary is given up, and said. The first
-    // window below the one above at which that happens (the old 3000 less the
-    // same 2857 would be 143 -- searched, not guessed, since a window that small moves
-    // other marks too).
-    let h = [2400, 2000, 1600, 1200, 800, 400, 143]
+    // Still over after that: today's oldest round beyond `keep_recent` goes to
+    // the summary (GH #1225, K-2), and the summary stays -- given up, the round
+    // moved would stand without a condensate (OR-KF.KD-P.6). The first window
+    // below the one above at which that happens (searched, not guessed, since
+    // a window that small moves other marks too).
+    let windows = [2400, 2000, 1600, 1200, 800, 400, 143];
+    let mut h = windows
         .into_iter()
-        .map(|window| under_pressure(window).0)
+        .map(|window| under_pressure(window, 2).0)
+        .find(|h| h.stderr.iter().any(|l| l.contains("go to the summary")))
+        .expect("some window below the aim moves a round to the summary");
+    assert_ne!(h.plan()["summary"], json!(""), "the summary stays");
+    assert!(
+        !h.stderr
+            .iter()
+            .any(|l| l.contains("the summary is given up")),
+        "{:?}",
+        h.stderr
+    );
+    let call = h.curate("s", "r5", 0, json!([user("then")]), mode("x"));
+    assert!(
+        !texts(&call).iter().any(|t| t.contains("look twice")),
+        "r1 is below the cover: {:?}",
+        texts(&call)
+    );
+    // No round left to move -- `keep_recent` holds all of today: the summary
+    // is given up, and said.
+    let h = windows
+        .into_iter()
+        .map(|window| under_pressure(window, 3).0)
         .find(|h| h.plan()["summary"] == json!(""))
         .expect("some window below the aim gives the summary up");
     assert_eq!(h.plan()["shrunk"], json!([r1]));
@@ -1196,8 +1220,13 @@ fn window_section_writes_marks() {
     let a = id(&user("a"));
     let section = json!({"release": [format!("[#{a}]"), "#GGGGGGGGGGGG"], "pin": [a.clone()]});
     h.section(&c, "window", section.clone());
+    // The turn's tap ran without a model package: its `curate` and
+    // `no_package` marks (GH #1225 K-3) are not the section's.
+    let theirs = "kind NOT IN ('curate', 'no_package')";
     assert_eq!(
-        h.rows("SELECT kind, value, session_id, turn_id FROM marks ORDER BY seq"),
+        h.rows(&format!(
+            "SELECT kind, value, session_id, turn_id FROM marks WHERE {theirs} ORDER BY seq"
+        )),
         vec![
             vec![json!("release"), json!(a.clone()), json!("s1"), json!("t2")],
             vec![json!("pin"), json!(a.clone()), json!("s1"), json!("t2")]
@@ -1207,7 +1236,10 @@ fn window_section_writes_marks() {
     assert!(h.stderr.join("").contains("is not a block id"));
     // The same section twice writes nothing twice.
     h.section(&c, "window", section);
-    assert_eq!(h.rows("SELECT COUNT(*) FROM marks")[0][0], json!(2));
+    assert_eq!(
+        h.rows(&format!("SELECT COUNT(*) FROM marks WHERE {theirs}"))[0][0],
+        json!(2)
+    );
     // A gap is its own cell's since GH #895: `./push` marks it, once, in its
     // own form -- the intake's door does not take the section.
     h.section(&c, "gap", json!({"query": "the owner's birthday"}));
@@ -2335,7 +2367,11 @@ fn the_handover_leaf_shows_only_under_the_audience_bound_to_its_hash() {
         "where we left off"
     );
     // Two slot rows at the path (both flows inserted): the bound one only.
+    // Only a ledger from before the unique index `slots_path` can hold them
+    // (GH #1225), so the index goes first.
     let mut h = Hive::new();
+    h.db.execute_batch("DROP INDEX slots_path")
+        .expect("a ledger from before the index");
     leaf(&mut h, "history.handover", "SECRET of a");
     let mine = leaf(&mut h, "history.handover", "note of b");
     assert_eq!(mine, other);
@@ -2792,11 +2828,10 @@ fn a_summary_is_made_of_what_the_round_may_see_and_carries_their_meet() {
     // `summaries` row a failed leg of this bundle may leave behind.
     // The binding is the round's own (GH #943).
     let aud_key = key_in("summary_audience", &ea);
-    assert_eq!(
-        ops["s-unaud"],
-        json!({"operation": "delete", "table": "state", "where": {"key": aud_key}}),
-        "{ops:?}"
-    );
+    // GH #1225 (K-5): in ONE step -- an insert that replaces the row of its
+    // key, never a delete beside it.
+    assert!(!ops.contains_key("s-unaud"), "{ops:?}");
+    assert_eq!(ops["s-aud"]["replace"], json!({"key": aud_key}), "{ops:?}");
     assert_eq!(ops["s-aud"]["row"]["key"], json!(aud_key), "{ops:?}");
     assert_eq!(
         ops["s-aud"]["row"]["value"],

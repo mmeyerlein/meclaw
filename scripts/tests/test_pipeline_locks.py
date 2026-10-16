@@ -17,7 +17,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
@@ -1039,8 +1039,7 @@ class TheFeatureUnityLock(unittest.TestCase):
     def test_this_repository_has_one_feature_set_per_shared_dependency(self):
         """The real tree, every run: the S6 measurement holds only while it is quiet."""
         repo = str(SCRIPTS.parent)
-        if not os.path.isfile(os.path.join(repo, "crates", "meclaw-colony", "Cargo.toml")):
-            self.skipTest("not the meclaw-core tree")
+        private_tree.require("crates/meclaw-colony/Cargo.toml", repo=repo)
         found = locks.check_feature_unity_lock(["Cargo.toml"], repo)
         self.assertEqual([], [locks.render(f) for f in found])
 

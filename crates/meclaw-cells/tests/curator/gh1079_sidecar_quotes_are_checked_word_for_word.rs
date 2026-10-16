@@ -15,8 +15,10 @@
 //! it on -- each failed item as one `reject` without its words, which leaves
 //! the talky on its `error` lane.
 //!
-//! What is pinned here: the knob ships empty and empty is byte for byte the
-//! behaviour before it; the answer path does not move; a stamped section is
+//! What is pinned here: the knob ships exactly one rule -- since GH #1225 the
+//! `quote` of every `memory` fact is checked at the source the fact names --
+//! and an empty knob is byte for byte the behaviour before it; the answer
+//! path does not move; a stamped section is
 //! routed through the curator in both composites; a refusal carries no text;
 //! and the whole road on three synthetic turns. The intake's rule itself
 //! (normal form, sources, modes) is pinned in `curator_cells.rs`.
@@ -185,10 +187,19 @@ fn sidecar_verify_empty_knob_is_byte_identical() {
     if !shipped() {
         return;
     }
+    // GH #1225 (R-KF-5): the talky makes the attribution, so the knob ships
+    // one rule and nothing beside it -- the memory section's facts, their
+    // quote, at the source each fact names. Byte-identity below is the
+    // empty knob's, which a tree still sets to switch the check off.
+    let shipped_rule = json!({"memory": {"items": "facts", "quote": "source"}});
+    let cfg = read_json(&repo(SPLITTER));
     assert_eq!(
-        read_json(&repo(SPLITTER))["params"]["sidecar_verify"],
-        json!({}),
-        "the knob ships empty"
+        cfg["params"]["sidecar_verify"], shipped_rule,
+        "the knob ships the source rule for memory, and only it"
+    );
+    assert_eq!(
+        cfg["contract"]["settings"]["sidecar_verify"]["default"], shipped_rule,
+        "the contract names the shipped default"
     );
     // The answer shapes of gh379, gh534 and gh1036: a block of two sections,
     // the legacy fence, no block, a block that does not read, a block beside a
@@ -383,7 +394,12 @@ fn sidecar_verify_stamps_the_rule_and_the_answer_text() {
     let c = &cfg["contract"];
     assert_eq!(c["version"], "1.1.0");
     assert_eq!(c["settings"]["sidecar_verify"]["type"], "object");
-    assert_eq!(c["settings"]["sidecar_verify"]["default"], json!({}));
+    // GH #1225: the default is the shipped source rule (pinned whole in
+    // `sidecar_verify_empty_knob_is_byte_identical`).
+    assert_eq!(
+        c["settings"]["sidecar_verify"]["default"],
+        json!({"memory": {"items": "facts", "quote": "source"}})
+    );
     assert_eq!(c["emits"]["hop"]["sidecar_verify"]["type"], "string");
     assert_eq!(c["emits"]["body"]["verify_answer"]["type"], "string");
 }

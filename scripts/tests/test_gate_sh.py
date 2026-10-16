@@ -36,7 +36,7 @@ import time
 import unittest
 import unittest.mock
 from scripts.pipeline import cpus
-from scripts.tests import kit_time, kit_tree, store_isolation
+from scripts.tests import kit_time, kit_tree, private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The runner the cases below pin. `scripts/gate.sh` is the shell in front of
@@ -907,8 +907,7 @@ class TestPersonaReceipt(GateShTestCase):
 
     def test_the_real_checker_speaks_the_arms_codes(self):
         path = REPO / "workshop" / "evals" / "persona" / "fingerprint.py"
-        if not path.exists():
-            self.skipTest("workshop/evals/persona/fingerprint.py is private and absent")
+        private_tree.require("workshop/evals/persona/fingerprint.py")
         spec = importlib.util.spec_from_file_location("persona_fingerprint", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -3184,11 +3183,11 @@ class TestLane(GateShTestCase):
 
 
 # The export audit lives in the private tree only; a public clone has no file
-# to test, and the case says so instead of failing.
+# to test, and the case says so (`private_tree`: a skip there, red here).
 MAKE_EXPORT = pathlib.Path(__file__).resolve().parents[2] / "plans" / "export-fixtures" / "make_export.py"
 
 
-@unittest.skipUnless(MAKE_EXPORT.is_file(), "the export audit is not part of this tree")
+@private_tree.private(private_tree.MARKER)
 class TestMakeExportLaneReceipt(unittest.TestCase):
     """GH #942: R9 (`cargo check --workspace --all-targets`) from a lane.
 

@@ -24,13 +24,13 @@
 //! Guarded like every other template-reading test (GH #49).
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_colony::api_dto::MessageLogFilter;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
-use meclaw_testing::ColonyHandle;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{ColonyHandle, deadline, wait};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -182,9 +182,9 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094); 2.5.24 only pins \
          `memory-hive@3.14.0` (GH #1095); 2.5.25 only pins \
          `memory-hive@3.14.1` (GH #1095); 2.5.26 only pins \
-         `access@2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
-         `memory-hive@3.14.2` and `telegram-connector@2.2.0` (GH #1096, #1097, #1098, #1099); 2.5.27 only pins \
-         `affinity@3.10.3`, `assistant\u{40}3.7.16`, `firewall@2.4.2` and \
+         `access\u{40}2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
+         `memory-hive@3.14.2` and `telegram-connector\u{40}2.2.0` (GH #1096, #1097, #1098, #1099); 2.5.27 only pins \
+         `affinity\u{40}3.10.3`, `assistant\u{40}3.7.16`, `firewall@2.4.2` and \
          `memory-hive` 3.14.3 (Dev-Tempo cascade, GH #1126). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"
@@ -422,51 +422,53 @@ fn hop_of(m: &Message, key: &str) -> String {
         .to_string()
 }
 
+/// The next message at the sink, under the hang mark: a run that stands still
+/// fails with `HANG:` -- a marker, never a verdict (TV-Z3).
 async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    deadline::hang("a message reaches the sink", rx.recv()).await
+}
+
+/// `(error_code, resolved_target)` of every dead letter the colony recorded
+/// since the last take -- taken through the colony (`drain_dead_letters`),
+/// never read from its database file (TV-A3).
+async fn dead_letters(h: &ColonyHandle) -> Vec<(String, String)> {
+    deadline::hang(
+        "the colony hands over its dead letters",
+        h.drain_dead_letters(),
+    )
+    .await
+    .into_iter()
+    .map(|d| {
+        (
+            d.reason.as_code().to_string(),
+            d.resolved_target.as_str().to_string(),
+        )
+    })
+    .collect()
+}
+
+/// `(to_path, headers)` of every logged message, read through the colony
+/// (`ReadMessages`), never from its database file (TV-A3).
+async fn log_rows(h: &ColonyHandle) -> Vec<(String, String)> {
+    h.read_log(MessageLogFilter::default())
         .await
-        .ok()
-        .flatten()
-}
-
-/// `(error_code, resolved_target)` of every dead letter.
-fn dead_letters(root: &std::path::Path) -> Vec<(String, String)> {
-    let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
-    let mut st = conn
-        .prepare("SELECT error_code, resolved_target FROM dead_letters")
-        .expect("dead_letters");
-    st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .expect("query")
-        .filter_map(Result::ok)
+        .into_iter()
+        .map(|row| (row.to_path, row.headers_json))
         .collect()
 }
 
-/// `(to_path, headers)` of every logged message.
-fn log_rows(root: &std::path::Path) -> Vec<(String, String)> {
-    let conn = rusqlite::Connection::open(root.join("colony.db")).expect("colony.db");
-    let mut st = conn
-        .prepare("SELECT to_path, headers FROM message_log")
-        .expect("message_log");
-    st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .expect("query")
-        .filter_map(Result::ok)
-        .collect()
-}
-
-/// Poll the message log until `pred` holds, or give up. Thirty seconds is the
-/// failure-marker convention of this repo, not a timing discriminator.
+/// Waits until a logged message satisfies `pred` and returns the log then.
+/// The wait is the hang mark of `meclaw_testing::wait`, never a verdict.
 async fn wait_for_log(
-    root: &std::path::Path,
+    h: &ColonyHandle,
     pred: impl Fn(&(String, String)) -> bool,
 ) -> Vec<(String, String)> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let rows = log_rows(root);
-        if rows.iter().any(&pred) || std::time::Instant::now() > deadline {
-            return rows;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let pred = &pred;
+    wait::until_some("a logged message matches", || async move {
+        let rows = log_rows(h).await;
+        rows.iter().any(pred).then_some(rows)
+    })
+    .await
 }
 
 fn skip() -> bool {
@@ -541,7 +543,7 @@ async fn the_member_half_carries_the_withdrawal_to_the_container_and_no_further(
     h.send(inject("in_drop")).await;
 
     // Delivered AT the container: that half is the member's and it is what 1.8.0 added.
-    let rows = wait_for_log(td.path(), |(to, headers)| {
+    let rows = wait_for_log(&h, |(to, headers)| {
         to.ends_with("/person/channels") && headers.contains("\"withdraw\"")
     })
     .await;
@@ -554,13 +556,17 @@ async fn the_member_half_carries_the_withdrawal_to_the_container_and_no_further(
          have. Log:\n{rows:#?}"
     );
 
-    // And no further, because nothing drew the mutation's half.
-    let stray = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+    // And no further, because nothing drew the mutation's half. Absence is read
+    // once the colony settled (TV-A2): no mailbox, ticket or output holds work,
+    // so a delivery that follows from the withdrawal has reached the sink by
+    // now, or never will -- no window is waited out.
+    h.quiesce().await;
+    let stray = rx.try_recv();
     assert!(
         stray.is_err(),
         "nothing reaches the screen without the mutation's down-edge: {stray:?}"
     );
-    let dlq = dead_letters(td.path());
+    let dlq = dead_letters(&h).await;
     assert!(
         dlq.iter()
             .any(|(code, target)| code == "hive_no_route" && target.ends_with("/person/channels")),

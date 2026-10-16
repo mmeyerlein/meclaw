@@ -2454,8 +2454,7 @@ class Classify(unittest.TestCase):
         is what R15 of the export observes before the CI does.
         """
         gen = REPO / "workshop" / "tools" / "build_librarian_seed.py"
-        if not gen.is_file():
-            self.skipTest("generator not in this tree")
+        private_tree.require("workshop/tools/build_librarian_seed.py")
         text = gen.read_text(encoding="utf-8")
 
         wanted = re.compile(r'^(?:docs/|templates/|examples/|workshop/|README\.md$)')
@@ -2618,8 +2617,7 @@ class PersonaStations(unittest.TestCase):
 
     def test_every_persona_source_pattern_matches_a_file(self):
         """Private tree only: templates/egon and templates/slack-agent do not travel."""
-        if not (REPO / "workshop").is_dir():
-            self.skipTest("published tree: workshop/ does not travel")
+        private_tree.require("workshop")
         import os
         files = []
         for dirpath, _dirs, names in os.walk(str(REPO / "templates")):
@@ -2720,8 +2718,7 @@ class RuntimeReadsInTheTree(unittest.TestCase):
     SEED = "(binary_id(=meclaw-cells::misc_8) & test(/^librarian_seed_corpus::/))"
 
     def setUp(self):
-        if not (REPO / "crates/meclaw-cells/tests/misc_8/librarian_seed_corpus.rs").is_file():
-            self.skipTest("no librarian_seed_corpus in this tree")
+        private_tree.require("crates/meclaw-cells/tests/misc_8/librarian_seed_corpus.rs")
 
     def test_a_spec_page_the_seed_generator_reads_runs_the_seed_lock(self):
         """`docs/cell-types.en.md` is named by no test -- the seed test reads it
@@ -2753,8 +2750,7 @@ class RuntimeReadsInTheTree(unittest.TestCase):
     # `git ls-files` of the private tree: the export audit runs this module
     # in a published tree without a repository (R15, exit 1). Marker `plans/`
     # as in IncludeTargetsStayInReach (GH #1168).
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "published tree: the real-tree walk is a private-tree guard")
+    @private_tree.private()
     def test_a_file_only_the_crates_walkers_reach_stays_unread(self):
         """tb-s1c M-1: gh523 and gh230 walk the bare `crates`, so every crate
         fixture has them as planned readers -- but gh523 reads json|rs|manifest
@@ -3249,8 +3245,7 @@ class IncludeTargetsStayInReach(unittest.TestCase):
     # published tree without a repository, where both died at the first git
     # call (R15, exit 1). The marker is `plans/`, as for the gh466 reader: in
     # the private tree a missed includer must still go red.
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "published tree: the real-tree walk is a private-tree guard")
+    @private_tree.private()
     def test_every_include_target_is_planned_with_its_includer(self):
         found = include_targets(REPO)
         # not vacuous (re-check S1b m-6): the schema include rule 10 was made for
@@ -3330,8 +3325,7 @@ class RuleEightReadersInTheTree(unittest.TestCase):
     # Successor of test_every_runtime_read_is_planned_with_its_reader, so it
     # carries its published-tree skip (GH #1168): `git ls-files` of the
     # private tree, no repository in the export audit (R15, exit 1).
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "published tree: the real-tree walk is a private-tree guard")
+    @private_tree.private()
     def test_every_rule_8_read_is_planned_with_its_reader(self):
         files = subprocess.run(["git", "-C", str(REPO), "ls-files"], capture_output=True,
                                text=True, check=True).stdout.splitlines()
@@ -3355,8 +3349,7 @@ class TemplateReadersInTheTree(unittest.TestCase):
     (measured in the report); a sample would miss exactly the rare helper."""
 
     # `git ls-files` of the private tree, as RuleEightReadersInTheTree.
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "published tree: the real-tree walk is a private-tree guard")
+    @private_tree.private()
     def test_every_template_and_example_reader_is_planned_with_its_users(self):
         files = subprocess.run(["git", "-C", str(REPO), "ls-files"], capture_output=True,
                                text=True, check=True).stdout.splitlines()
@@ -4741,8 +4734,7 @@ class ScenarioFilterFollowsTheTree(unittest.TestCase):
         there the resolver drops that operator on purpose (the two tests
         above lock both directions on throw-away trees).
         """
-        if not (REPO / "crates" / "meclaw-cells" / "tests" / "slack_live.rs").exists():
-            self.skipTest("slack_live.rs not in this tree (public clone)")
+        private_tree.require("crates/meclaw-cells/tests/slack_live.rs")
         self.assertEqual(gp.scenario_for(None), gp.SCENARIO)
 
     def test_the_tests_scope_subtracts_only_what_exists(self):
@@ -5354,8 +5346,7 @@ class ProseCommentsReadNothing(unittest.TestCase):
     # published tree there is no reader to find and this half failed there
     # (export audit R15, exit 1). The marker is `plans/`, not the file
     # itself: in the private tree a deleted reader must still go red.
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "published tree: the gh466 reader does not ship")
+    @private_tree.private()
     def test_the_real_resolver_reader_still_reads_it(self):
         gp._SOURCE_CACHE.clear()
         self.addCleanup(gp._SOURCE_CACHE.clear)
@@ -5534,8 +5525,7 @@ class ExportSelftestSelection(unittest.TestCase):
         self.assertIn("export-selftest",
                       self.planned(["plans/p5.5-fixtures/german_scan.py"]))
 
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "the export tree carries no plans/ (german_scan.py, make_export.py)")
+    @private_tree.private("plans/p5.5-fixtures/german_scan.py", "plans/export-fixtures/make_export.py")
     def test_a_moved_exemption_path_plans_it(self):
         """`test_drift_gate.py` checks that each declared string exemption
         names one tracked file (harness-free). A rename or deletion of that
@@ -5556,22 +5546,19 @@ class ExportSelftestSelection(unittest.TestCase):
     # `test_export_tree_tests.py`). Strand plan without the station, station red.
     GH230 = "crates/meclaw-colony/tests/gh_1/gh230_corpus_constraint_claims.rs"
 
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "the export tree carries no plans/ (make_export.py)")
+    @private_tree.private("plans/export-fixtures/make_export.py")
     def test_a_renamed_pinned_crate_test_plans_it(self):
         """Pin 1 of I-1: `git mv` lists the old and the new path."""
         for path in (self.GH230, "crates/meclaw-colony/tests/gh_1/gh230_renamed_probe.rs"):
             self.assertIn("export-selftest", self.planned([path]), path)
 
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "the export tree carries no plans/ (make_export.py)")
+    @private_tree.private("plans/export-fixtures/make_export.py")
     def test_a_renamed_docs_map_source_plans_it(self):
         """Pin 2 of I-1: a DOCS_MAP source `build_index` resolves in HEAD."""
         for path in ("docs/costs.en.md", "docs/costs-renamed.en.md"):
             self.assertIn("export-selftest", self.planned([path]), path)
 
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "the export tree carries no plans/ (make_export.py)")
+    @private_tree.private("plans/export-fixtures/make_export.py")
     def test_every_shipping_root_plans_it(self):
         """One path per kind of input: ROOT_FILES outside scripts/ (.github,
         .config, .cargo, root files), the TREE_DIRS, a public template, the
@@ -5584,16 +5571,14 @@ class ExportSelftestSelection(unittest.TestCase):
                      "zz_new_root_file.txt"):
             self.assertIn("export-selftest", self.planned([path]), path)
 
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "the export tree carries no plans/ (make_export.py)")
+    @private_tree.private("plans/export-fixtures/make_export.py")
     def test_the_seed_generator_of_r16_plans_it(self):
         """`build_index` reads R16 from `workshop/tools/build_librarian_seed.py`,
         a private path under FORBIDDEN_PREFIX."""
         self.assertIn("export-selftest",
                       self.planned(["workshop/tools/build_librarian_seed.py"]))
 
-    @unittest.skipUnless((REPO / "plans").is_dir(),
-                         "the export tree carries no plans/ (make_export.py)")
+    @private_tree.private("plans/export-fixtures/make_export.py")
     def test_the_never_shipping_prefixes_come_from_make_export(self):
         """One list: the planner reads FORBIDDEN_PREFIX from `make_export.py`
         of its own tree, it does not copy it."""

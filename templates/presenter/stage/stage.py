@@ -1246,6 +1246,29 @@ def clock_ops(r, now, struck=""):
     return ops
 
 
+# GH #877 class (release gate 0.64.3): an `add` that runs out of the clock's
+# `query_timeout_ms` under database load stored nothing, so no deadline stands and a turn
+# waiting on it never times out. Only the order this cell gave last (`ram()["due"]`, the
+# answer names it back, GH #904) is such a loss -- a refusal about an order a later one
+# replaced changes nothing. The deadline is ordered again ONCE: a second loss of the same
+# order is said and orders nothing, so a host too loaded for any write cannot turn
+# refusals into a loop.
+CLOCK_TRANSIENT = ("query_timeout",)
+
+
+def lost_deadline(hop, now):
+    r = ram()
+    sid = str(hop.get("schedule_id") or "")
+    due = r.get("due") or {}
+    if str(hop.get("error_code") or "") not in CLOCK_TRANSIENT or not sid \
+            or due.get("sid") != sid or r.get("due_lost") == sid:
+        return []
+    r["due"] = None
+    ops = clock_ops(r, now)
+    r["due_lost"] = (r.get("due") or {}).get("sid") or sid
+    return ops
+
+
 # ---------------------------------------------------------------------------
 # Lanes
 
@@ -2072,8 +2095,9 @@ def handle(doc):
         # struck on the way). The order is gone, which is what the remove wanted: no fault.
         if str(hop.get("error_code") or "") == "schedule_not_found":
             return []
-        return [error("clock_refused", str(body.get("detail") or hop.get("error_code")
+        said = [error("clock_refused", str(body.get("detail") or hop.get("error_code")
                                              or "the clock refused an order"))]
+        return said + lost_deadline(hop, now)
     if route == "show_topics":
         return lane_show_topics(body, hop, ctx, params)
     if route == "show_data":

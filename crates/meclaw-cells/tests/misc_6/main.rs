@@ -1,8 +1,6 @@
 //! Test harness `misc_6` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh691_the_dossier_budget_counts_axes_not_rows;
-pub mod gh694_an_application_brings_its_own_tile;
 pub mod gh694_one_canvas_and_a_dock;
 pub mod gh694_one_state_many_exits;
 pub mod gh694_one_subject_one_window;
@@ -58,5 +56,8 @@ pub mod gh767_the_screen_names_the_cell_that_answers_a_page;
 pub mod gh767_the_state_of_a_page_reaches_the_sheet;
 pub mod gh79_write_parent_message;
 pub mod gh803_a_grown_child_hears_the_lanes_its_level_carries;
+pub mod gh822_an_old_affinity_export_boots_twice;
+pub mod gh835_a_door_takes_the_turn_nobody_addressed;
+pub mod gh839_a_foreign_pointer_never_crosses;
 #[path = "../support/mod.rs"]
 pub mod support;

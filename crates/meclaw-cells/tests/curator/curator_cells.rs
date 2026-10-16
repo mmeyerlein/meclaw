@@ -67,13 +67,40 @@ fn script_of(name: &str) -> String {
 /// Run a program under python3, the program itself on stdin (a single argv
 /// string is capped at 128 KiB; same harness as `collector_window.rs`).
 fn run_python(script: &str, stdin_doc: &str) -> std::process::Output {
+    run_python_at(script, stdin_doc, None)
+}
+
+/// [`run_python`] with the wall clock of the program held at `wall` (RFC 3339,
+/// UTC) when given: `datetime.datetime.now` answers that instant and nothing
+/// else, so a claim about a moment the cell computes from "now" is exact
+/// instead of bracketed by the test machine's clock (TV-Z1: an injected clock,
+/// never a verdict on elapsed real time).
+fn run_python_at(script: &str, stdin_doc: &str, wall: Option<&str>) -> std::process::Output {
+    let clock = match wall {
+        None => String::new(),
+        Some(at) => format!(
+            concat!(
+                "import datetime as _dt\n",
+                "_WALL = _dt.datetime.fromisoformat({})\n",
+                "class _HeldWall(_dt.datetime):\n",
+                "    @classmethod\n",
+                "    def now(cls, tz=None):\n",
+                "        t = cls.fromtimestamp(_WALL.timestamp(), _dt.timezone.utc)\n",
+                "        return t.astimezone(tz) if tz is not None else t.replace(tzinfo=None)\n",
+                "_dt.datetime = _HeldWall\n"
+            ),
+            sj::to_string(at).unwrap(),
+        ),
+    };
     let src = format!(
         concat!(
             "import sys, io\n",
+            "{}",
             "_script = {}\n",
             "sys.stdin = io.StringIO({})\n",
             "exec(compile(_script, 'cell', 'exec'), globals())\n"
         ),
+        clock,
         sj::to_string(script).unwrap(),
         sj::to_string(stdin_doc).unwrap(),
     );
@@ -131,6 +158,8 @@ struct Hive {
     clock: Vec<Msg>,
     summ: VecDeque<Msg>,
     stderr: Vec<String>,
+    /// The held wall clock of every cell run, `None` = the machine's own.
+    wall: Option<&'static str>,
 }
 
 impl Hive {
@@ -183,19 +212,20 @@ impl Hive {
             params.insert((*key).to_string(), value.clone());
         }
         let db = rusqlite::Connection::open_in_memory().expect("sqlite");
-        let schema: BTreeMap<String, BTreeMap<String, String>> =
-            sj::from_value(cells["ledger"]["params"]["schema"].clone()).expect("schema");
-        meclaw_cells::store::ddl::apply_schema_ddl(&db, &schema).expect("ddl");
+        // GH #1225: the store's own reading of the ledger params -- a column
+        // in the object form (`{type, default}`, `wall.turn_at`) carries its
+        // SQL DEFAULT exactly as the store cell builds it.
+        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
+            .expect("the ledger params parse");
+        meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &ledger).expect("ddl");
         // GH #915/#943: the named indexes between schema and seed, as the
         // store builds them (the unique `state.key` makes a round's first row
         // a compare-and-set).
-        let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
-            .expect("the ledger params parse");
         meclaw_cells::store::ddl::apply_index_ddl(&db, &ledger.indexes).expect("index ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
-            &schema,
+            &ledger.schema,
         )
         .expect("seed");
         Self {
@@ -206,6 +236,7 @@ impl Hive {
             clock: Vec::new(),
             summ: VecDeque::new(),
             stderr: Vec::new(),
+            wall: None,
         }
     }
 
@@ -221,7 +252,7 @@ impl Hive {
             "body": msg.body,
             "params": params,
         });
-        let out = run_python(script, &doc.to_string());
+        let out = run_python_at(script, &doc.to_string(), self.wall);
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         assert!(out.status.success(), "{name} exited non-zero: {err}");
         if !err.trim().is_empty() {
@@ -623,7 +654,26 @@ fn curator_template_shape() {
     }
     let t = read_json(&repo("templates/curator/template.json"));
     assert_eq!(t["name"], "curator");
-    assert_eq!(t["version"], "1.11.5");
+    // The version is the merge point's to move (`versions.assign`), not a
+    // literal here: three numeric parts, and the one the composites pin --
+    // the cascade moves both together.
+    let v = t["version"].as_str().expect("a version");
+    let parts: Vec<&str> = v.split('.').collect();
+    assert!(
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        "x.y.z: {v}"
+    );
+    for composite in ["talky", "cogny"] {
+        let cell = read_json(&repo(&format!("templates/{composite}/curator/config.json")));
+        assert_eq!(
+            cell["cell"]["template"],
+            format!("curator@{v}"),
+            "{composite}"
+        );
+    }
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -712,7 +762,7 @@ fn curator_template_shape() {
     let expect = json!({
         "blocks": ["hash", "kind", "chars", "body", "first_seen"],
         "wall": ["seq", "session_id", "turn_id", "iter", "kind", "hash", "nth", "final",
-                 "episode_idx", "at", "audience_set"],
+                 "episode_idx", "at", "audience_set", "turn_at"],
         "calls": ["call_id", "session_id", "turn_id", "iter", "trigger", "started_at", "model",
                   "tokens_prompt", "tokens_completion", "tokens_cached", "tokens_cache_write",
                   "cost", "cache_expires_at", "system_hash", "actions", "audience_set"],
@@ -1690,14 +1740,20 @@ fn a_stale_fire_is_dropped() {
     );
 }
 
+/// The held tap of [`at_in_past_rebuilds_now`]: a quarter second into a second.
+const HELD_TAP: &str = "2026-01-01T00:00:00.250+00:00";
+
 #[test]
 fn at_in_past_rebuilds_now() {
     if !shipped() {
         return;
     }
     let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]);
+    // The tap's "now" is held (an injected clock, TV-Z1), a quarter second into
+    // a second, so the claim is exact: the earliest second the timer accepts is
+    // one second after the tap, ROUNDED UP to the whole second.
+    h.wall = Some(HELD_TAP);
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
-    let before = chrono::Utc::now();
     turn(
         &mut h,
         "s1",
@@ -1706,21 +1762,56 @@ fn at_in_past_rebuilds_now() {
         "a2",
         json!({"cache_expires_at": "2000-01-01T00:00:00Z"}),
     );
-    let after = chrono::Utc::now();
     let add = last_add(&h);
     let at = add.body["at"].as_str().unwrap().to_string();
-    let t = chrono::DateTime::parse_from_rfc3339(&at)
-        .expect("rfc3339")
-        .with_timezone(&chrono::Utc);
-    // The earliest second the timer accepts: at least a second after the tap,
-    // at most that second rounded up.
-    assert!(
-        t >= before + chrono::Duration::seconds(1) && t <= after + chrono::Duration::seconds(2),
-        "the earliest second: {at} (tap between {before} and {after})"
+    assert_eq!(
+        at, "2026-01-01T00:00:02Z",
+        "the earliest second: tap {HELD_TAP} + 1 s, rounded up to the second"
     );
     assert_eq!(add.body["emit_body"]["reason"], "cache");
     h.fire(&add);
     assert_eq!(h.summ.len(), 1, "a cold cache is rebuilt");
+}
+
+/// GH #877 class (release gate 0.64.3): an `add` that runs out of the
+/// clock's `query_timeout_ms` stores nothing, so the round's order is lost and
+/// the cache moment never strikes -- before, the refusal was said on stderr
+/// and armed nothing. The order cannot be rebuilt from the refusal (it names
+/// the id, not the moment), so the round is treated as `at_in_past`: the
+/// rebuild runs now. A lasting refusal still parks.
+#[test]
+fn a_timed_out_order_rebuilds_now() {
+    if !shipped() {
+        return;
+    }
+    for (code, rebuilds) in [("query_timeout", 1), ("schedule_id_exists", 0)] {
+        let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]);
+        turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
+        turn(
+            &mut h,
+            "s1",
+            "t2",
+            "q2",
+            "a2",
+            json!({"cache_expires_at": "2999-01-01T00:00:00Z"}),
+        );
+        let add = last_add(&h);
+        assert_eq!(add.body["emit_body"]["reason"], "cache", "{:?}", add.body);
+        assert!(h.summ.is_empty(), "no rebuild before the refusal");
+        let refusal = Msg {
+            context: add.context.clone(),
+            hop: obj(json!({"msg_type": "timer_op_error", "error_code": code,
+                            "schedule_id": add.body["schedule_id"]})),
+            body: Map::new(),
+            reply_to: String::new(),
+        };
+        h.pump("./clock", refusal);
+        assert_eq!(
+            h.summ.len(),
+            rebuilds,
+            "{code}: a lost order rebuilds now, a lasting refusal parks"
+        );
+    }
 }
 
 #[test]
@@ -2566,8 +2657,14 @@ fn the_round_is_written_on_every_row_it_causes() {
         h.rows("SELECT DISTINCT audience_set FROM wall"),
         vec![vec![json!(ROUND_AE)]]
     );
+    // The tap's own bookkeeping without a model package (`curate`,
+    // `no_package`, GH #1225 K-3) is not what this round causes; that every
+    // mark carries the round, theirs included, the next assertion holds.
     assert_eq!(
-        h.rows("SELECT kind, value FROM marks ORDER BY kind"),
+        h.rows(
+            "SELECT kind, value FROM marks WHERE kind NOT IN ('curate', 'no_package') \
+             ORDER BY kind"
+        ),
         vec![
             vec![json!("correction"), json!("")],
             vec![json!("pin"), json!("0123456789ab")],
@@ -2922,8 +3019,13 @@ fn an_ask_and_a_correction_are_marked_once_off_the_tap() {
     for _ in 0..2 {
         h.tap(&call, "stop", json!({}), json!([said(CORRECTED)]));
     }
+    // Without a model package the tap also marks its call (`curate`) and the
+    // stand-in row (`no_package`, GH #1225 K-3); this test counts the rest.
     let marks = |h: &Hive| {
-        h.rows("SELECT kind, value, session_id, turn_id, audience_set FROM marks ORDER BY seq")
+        h.rows(
+            "SELECT kind, value, session_id, turn_id, audience_set FROM marks \
+             WHERE kind NOT IN ('curate', 'no_package') ORDER BY seq",
+        )
     };
     let want = vec![
         vec![

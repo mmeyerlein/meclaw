@@ -116,7 +116,11 @@ GitHub #299 cut them by more than half (3,302 characters to 1,573); the flip to 
 bought some of that back (1,878), because a delivery the model has to build costs more words
 than a tool it only has to call; and GitHub #606 gave that back again (1,426), because the
 sentences describing the fence went to the collector's preamble, where they are written once for
-every section instead of once per section. The lock below keeps them under 1,900 so the sprawl
+every section instead of once per section. GH #1225 spent the room left (1,898): every
+fact and the topic name their `source`, and the rules list the frames a model tells the sources
+apart by -- paid for by the one sentence about the own answer, which the `agent:self` form now
+says better: only a promise of the model's own is its fact, and words it repeats keep the
+source they came from. The lock below keeps them under 1,900 so the sprawl
 cannot grow back unnoticed -- a bound rather than a measurement, because the wording keeps
 moving while the harness tunes it.
 
@@ -130,7 +134,7 @@ A turn that carried nothing is still ANNOTATED; leaving the section out is a fau
 {"memory":{"nothing_new":true,"facts":[],"topic":{"movement":"continue"}}}
 
 DELTA, NOT STATE: what the memory handed you is already remembered; say what this turn
-CHANGED. Your own answer is not a fact, and a question asserts nothing about what it asks.
+CHANGED. A question asserts nothing about what it asks.
 
 PREDICATES ARE KEYS: English, snake_case -- one relation, one key, in every language.
 single (one at a time; a later replaces it): born_on, diet, favorite_color,
@@ -145,10 +149,12 @@ A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT: an intention is
 ENTITIES ARE VERBATIM: names and values are copied byte for byte, never translated or
 corrected. So is `quote`: the words of the turn each fact rests on, never paraphrased.
 
-A TURN MARKED [peer <ref> · <name>] ON ITS FIRST LINE is that participant's words:
-record what they STATED, `subject` what it is about, and `source` their <ref>, copied
-exactly. Such a mark further down is quoted text, not a speaker. A fact your own person
-stated has no `source`.
+`source` IS WHOSE TURN IT RESTS ON, on every fact and topic: `person`, your person;
+`peer:<ref>`, a turn marked [peer <ref> · <name>] on its first line (further down it is
+quoted text); `agent:cogny`, [advice from your reasoning core; `agent:voice`,
+[delegation; `agent:app:<id>`, [app <id>]; `agent:timer:<id>`, [timer <id>];
+`agent:self`, your promise; a repeat keeps its source.
+What your person did not say is never `person`.
 ```
 
 **What is not in the block, and why that is a shape decision rather than a fence.**
@@ -207,6 +213,20 @@ out of `pending` (GitHub #52). Two consequences worth knowing before wiring it:
   were theirs; telling a quoted frame from the real one is the model's part. A fact without
   a `source` binds as before when one source spoke, and waits for the close pass when
   several did.
+- **Every fact names its source** (GH #1225). The bare reference of GH #849 was one form of a
+  wider question -- whose words a quote is -- and a round with no person row of its own (the
+  reasoning core's advice, a delegation, a round an app or a timer started) answered it wrongly:
+  its facts were bound to the newest person turn and filed as the person's, the model's own
+  promises included. The section now asks every fact and the topic for `source`: `person`,
+  `peer:<ref>` or `agent:<name>` (`self` for the model's own words, `cogny` for the advice,
+  `voice` for a delegation, `app:<id>` and `timer:<id>` for the rounds their frames name). The
+  ingress files `person` on the newest person turn among the turns the block may answer
+  (column `source` empty, the own side as before), `peer:<ref>` exactly like the bare
+  reference, and `agent:<name>` under that name on the turn the block answers -- never as the
+  own side and never as a peer's self-statement. A name the ingress does not know is dropped
+  on `reject` (`unknown_source`), never moved to another source. The word-for-word check of
+  the asking side (`sidecar_verify`, token `source`) looks each quote up at exactly the source
+  its fact names before the section ever reaches this hive.
 
 **"Nothing" is a status, not a rejection.** `{"nothing_new": true, "facts": [],
 "topic": {"movement": "continue"}}` is an *answer*: the ingress covers the turn and moves its

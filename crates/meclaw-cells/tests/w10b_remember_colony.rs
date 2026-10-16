@@ -708,8 +708,10 @@ const FACTS: &str = "SELECT episode_id, subject, predicate, claim, fact_kind, \
                      IFNULL(valid_until,'') FROM facts";
 
 /// The annotation the model writes into its own answer: the payload the tool
-/// call used to carry, in the fence the shipped contract asks for.
-const SIDECAR: &str = r#"{"facts":[{"subject":"user","predicate":"Favorite Editor","claim":"Helix","fact_kind":"world","confidence":90}],"topic":{"movement":"start","name":"editors"}}"#;
+/// call used to carry, in the fence the shipped contract asks for -- since
+/// GH #1225 with the source each fact rests on and its quote, which the
+/// talky's shipped knob checks there.
+const SIDECAR: &str = r#"{"facts":[{"subject":"user","predicate":"Favorite Editor","claim":"Helix","fact_kind":"world","confidence":90,"quote":"my favourite editor is Helix","source":"person"}],"topic":{"movement":"start","name":"editors","source":"person"}}"#;
 
 /// Claim 1: one turn, one annotation, and the fact hangs on the episode of the
 /// turn it answered -- while the answer is already in the channel, without the

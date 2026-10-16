@@ -81,7 +81,9 @@ class ProgressLineInTheLog(FreshStore):
             def run(argv, hang_s):
                 seen.append(log.read_text())   # the log as a reader sees it now
                 return subprocess.CompletedProcess(argv, 0, "", UNITTEST_OK)
+            # a local series in any interpreter (re-check v2-fix-e M4: no lane, no -I)
             with open(log, "w") as fh, mock.patch("sys.stdout", fh), mock.patch("sys.stderr", fh), \
+                    mock.patch.object(ft, "isolated", return_value=False), \
                     mock.patch.object(ft, "_run_unittest", run):
                 rc = ft.main(["--unittest", "--host", "local", "--runs", "2", "--no-shuffle", "m.T.test_x"])
             self.assertEqual(0, rc, log.read_text())
@@ -89,6 +91,18 @@ class ProgressLineInTheLog(FreshStore):
             self.assertNotRegex(seen[0], PASS_LINE % (1, 2, 1, 0))
             self.assertRegex(seen[1], PASS_LINE % (1, 2, 1, 0))
             self.assertRegex(log.read_text(), PASS_LINE % (2, 2, 2, 0))
+
+    def test_a_local_python_series_runs_without_dash_i(self):
+        """Re-check v2-fix-e M4: `--host local` reaches no lane, so no narrow
+        point -- the -I refusal is for lane runs only."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ft, "isolated", return_value=False), \
+                mock.patch.object(ft, "_run_unittest",
+                                  lambda argv, hang_s: subprocess.CompletedProcess(argv, 0, "", UNITTEST_OK)), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = ft.main(["--unittest", "--host", "local", "--runs", "1", "--no-shuffle", "m.T.test_x"])
+        self.assertEqual(0, rc, err.getvalue())
+        self.assertNotIn("REFUSED", out.getvalue() + err.getvalue())
 
     def _nextest_series(self, out, err, child):
         """`flake_triage.py <bin> <test> --runs 2` (nextest class) with `child`
@@ -258,6 +272,7 @@ class LoudRefusal(FreshStore):
     def test_a_lane_error_before_the_start_is_a_loud_refusal_not_a_traceback(self):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(ft, "lane_target", side_effect=lane.LaneError(2, "no lane file")), \
+                mock.patch.object(ft, "isolated", return_value=True), \
                 mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
             rc = ft.main(["--unittest", "--host", "lane-b", "--runs", "1", "--strand", "s", "m.T"])
         self.assertEqual(2, rc)
@@ -304,7 +319,9 @@ class LoudRefusal(FreshStore):
     def test_strand_test_without_a_lane_refuses_on_both_streams_and_at_the_lease(self):
         db = _held("welle-x/st-a")
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(schedule, "lease_lane", return_value=schedule.LeaseResult(0)):
+        # the holder is read from the cwd's repository: this tree, whatever the runner's cwd
+        with mock.patch.object(schedule, "lease_lane", return_value=schedule.LeaseResult(0)), \
+                mock.patch.object(gate.os, "getcwd", return_value=str(REPO)):
             rc = gate.run_test(["expr", "--wave", "welle-x", "--strand", "st-a"], out, err)
         self.assertNotEqual(0, rc)
         for stream in (out, err):
@@ -366,6 +383,49 @@ class LivenessInTokenWho(FreshStore):
         line, out = _holder_line(db, "welle-x/lv-g", T0 + 300)
         self.assertIn("progress 1 min ago", line, out)
 
+    def test_a_series_without_a_pass_shows_no_pass_not_no(self):
+        """Re-check v2-fix-e M2 (a): the state is the whole word, not its first half."""
+        db = _held("welle-x/lv-n")
+        progress.refuse("flake_triage", "no test ran", out=io.StringIO(), err=io.StringIO(),
+                        holder="welle-x/lv-n", now=T0 + 60, code=1, word="NO PASS")
+        line, out = _holder_line(db, "welle-x/lv-n", T0 + 180)
+        self.assertIn("NO PASS 2 min ago: flake_triage: NO PASS -- no test ran", line, out)
+        _held("welle-x/lv-m")
+        progress.refuse("pipeline test", "strand: no lane", out=io.StringIO(), err=io.StringIO(),
+                        holder="welle-x/lv-m", now=T0 + 60, word="REFUSED (exit 3)")
+        line, out = _holder_line(db, "welle-x/lv-m", T0 + 180)
+        self.assertIn("REFUSED 2 min ago: pipeline test: REFUSED (exit 3) -- strand: no lane", line, out)
+
+    def test_a_batch_holder_notes_its_progress_at_the_member_lease(self):
+        """Re-check v2-fix-e M2 (b): `merge --batch` runs as `<wave>/S1+S2` on the
+        lease of a member (`schedule._batch_speaker`); its beat lands there."""
+        db = _held("welle-x/bt-a")
+        self.assertTrue(progress.beat("welle-x/bt-a+bt-b", "GATE fmt 1s GREEN", now=T0 + 60))
+        line, out = _holder_line(db, "welle-x/bt-a", T0 + 180)
+        self.assertIn("progress 2 min ago", line, out)
+
+    def test_a_batch_holder_with_two_member_leases_notes_at_the_lane_it_runs_on(self):
+        """Re-check RC-K3 M4: both members of `<wave>/S1+S2` hold a lane; without
+        the lane wish the beat landed at the first member, whatever lane the run
+        was on. The caller names its lane, as the merge path does."""
+        db = store.open()
+        with tempfile.TemporaryDirectory() as tmp:
+            lanes_file = pathlib.Path(tmp) / "lanes"
+            lanes_file.write_text("north b@north.example.invalid\nsouth b@south.example.invalid\n")
+            self.assertEqual(0, schedule.lease_init(db, lanes="north,south", lanes_file=str(lanes_file),
+                                                    now=T0).code)
+        self.assertEqual("north", schedule.lease_take(db, "welle-x/bt-a", lane="north", now=T0).lane)
+        self.assertEqual("south", schedule.lease_take(db, "welle-x/bt-b", lane="south", now=T0).lane)
+        self.assertTrue(progress.beat("welle-x/bt-a+bt-b", "GATE fmt 1s GREEN", now=T0 + 60, lane="south"))
+        line, out = _holder_line(db, "welle-x/bt-b", T0 + 180)
+        self.assertIn("progress 2 min ago", line, out)
+        line, out = _holder_line(db, "welle-x/bt-a", T0 + 180)
+        self.assertIn("no progress since take", line, out)
+        self.assertEqual(3, progress.refuse("pipeline test", "strand: no lane", holder="welle-x/bt-a+bt-b",
+                                            db=db, now=T0 + 120, code=3, lane="north"))
+        line, out = _holder_line(db, "welle-x/bt-a", T0 + 180)
+        self.assertIn("REFUSED 1 min ago", line, out)
+
     def test_a_beat_without_a_lease_or_a_store_writes_nothing(self):
         self.assertFalse(progress.beat("welle-x/nobody", "pass", now=T0))
         self.assertFalse(progress.beat("", "pass", now=T0))
@@ -390,6 +450,7 @@ class LeaseNotFound(FreshStore):
             calls.append(cmd)
             return completed or subprocess.CompletedProcess(cmd, 0, "", "")
         with mock.patch.object(ft, "lane_target", return_value="lane@test"), \
+                mock.patch.object(ft, "isolated", return_value=True), \
                 mock.patch.object(ft.subprocess, "run", run), \
                 mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
             rc = ft.main(argv)

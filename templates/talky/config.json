@@ -133,7 +133,7 @@
         },
         {
           "route": "error",
-          "because": "a normalised failure report. The parent MUST wire it -- unwired it dead-letters, loudly. Since GH #1079 it also carries the refusals of the word-for-word check (the splitter's knob `sidecar_verify`): one report per item of a section whose quoted field did not stand in its source, `hop.error_source` `sidecar_verify`, `hop.error_code` = `hop.reject_reason` (`quote_missing` or `quote_not_in_source`), `hop.section`, `hop.field`, `hop.episode_turn_id` beside `session_id` and `turn_id` -- never the item's words. A parent counts them by class; the section itself leaves on `sidecar` without the item"
+          "because": "a normalised failure report. The parent MUST wire it -- unwired it dead-letters, loudly. Since GH #1079 it also carries the refusals of the word-for-word check (the splitter's knob `sidecar_verify`): one report per item of a section whose quoted field did not stand in its source, `hop.error_source` `sidecar_verify`, `hop.error_code` = `hop.reject_reason` (`quote_missing` or `quote_not_in_source`; since GH #1225, for an item checked at the source it names itself, also `source_missing`, `source_unknown` or `store_error`), `hop.section`, `hop.field`, `hop.episode_turn_id` beside `session_id` and `turn_id` -- never the item's words. A parent counts them by class; the section itself leaves on `sidecar` without the item"
         },
         {
           "route": "model_refused",

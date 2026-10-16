@@ -43,6 +43,21 @@ use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::{emit_all, emit_one, shipped_script};
 use std::path::PathBuf;
 
+/// The version a shipped `template.json` declares, so that nothing here is a
+/// literal the merge point's cascade can silently falsify.
+fn version_of(template: &str) -> String {
+    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(format!("templates/{template}/template.json"));
+    let raw = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let v: Value =
+        meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    v["version"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{} declares no version", p.display()))
+        .to_string()
+}
+
 const RECIPES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/builder/recipes/config.json"
@@ -102,7 +117,7 @@ fn run_classify(args: Value) -> Value {
 fn wish(person: Option<&str>) -> Value {
     let mut params = json!({
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.2.0", "assistant": AGENT,
+        "template": "telegram-connector@2.2.1", "assistant": AGENT,
         "bind_chat": "4711"});
     if let Some(p) = person {
         params["ctx"] = json!({"member_person": p});
@@ -255,8 +270,10 @@ fn a_person_that_would_break_the_round_is_asked_again() {
 /// the design lane, where the composer asks the same question out of the brief.
 #[test]
 fn a_grow_sentence_without_a_person_falls_to_the_design_lane_not_to_an_error() {
-    let sentence =
-        format!("grow a channel named telegram from telegram-connector@2.2.0 under {MEMBER_DIR}");
+    let sentence = format!(
+        "grow a channel named telegram from telegram-connector@{} under {MEMBER_DIR}",
+        version_of("telegram-connector")
+    );
     let out = run_classify(json!({"request": sentence, "assistant": AGENT}));
     assert_eq!(
         out["header"]["route"],

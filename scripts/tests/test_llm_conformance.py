@@ -35,7 +35,7 @@ import re
 import sys
 import tempfile
 import unittest
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TOOL_DIR = REPO / "workshop" / "tools" / "llm-conformance"
@@ -50,8 +50,9 @@ def setUpModule():
     # so in the published tree it must skip cleanly instead of failing on a
     # tool that was never shipped. Hence the import here, not at the top.
     global conformance, fake_provider
-    if not TOOL_DIR.is_dir():
-        raise unittest.SkipTest("workshop/tools/llm-conformance/ is not in this tree")
+    # `require` (GH #1199): a skip in the export tree, a failure in the private
+    # tree, where the directory can not go quiet (re-check RC-K3 I3).
+    private_tree.require("workshop/tools/llm-conformance")
     store_isolation.isolate()
     sys.path.insert(0, str(TOOL_DIR))
     import conformance as _conformance

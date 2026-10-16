@@ -1,4 +1,4 @@
-# `access@2.5.2`
+# `access@2.5.3`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -12,7 +12,7 @@ Six cells:
 | `store` | `store` | policy, grants, grant_events, cred_refs, usage, audit |
 | `policy` | `code` | the ONLY place a verdict is made -- deterministic, never a model |
 | `invoke` | `code` | grant check, address resolution, and the one edge into the connector |
-| `sweep` | `code` | TTL bookkeeping: writes the `expired` events |
+| `sweep` | `code` | TTL bookkeeping: writes the `expired` events. A `query_timeout` from its clock or its store is transient: said on the error lane, and the sweep watchdog is ordered again 60 s ahead |
 | `clock` | `timer` | the TTL watchdog: one one-shot at the next `expires_at`, re-armed by `sweep` (R-AG-1, no tick) |
 | `vault` | `vault` | the credential VALUES, sealed at rest. Interior and unaddressable from outside; `params.broker` names `./invoke` as the only cell it answers, and two edges reach it (GH #421) -- what comes back is a sealed box, never a plaintext |
 
@@ -798,7 +798,7 @@ path:
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "access", "template": "access@2.5.2",
+ "nodes": [{"name": "access", "template": "access@2.5.3",
             "override_params": {
               "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
               "sweep":  {"sweep_rows": 500},

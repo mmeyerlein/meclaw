@@ -39,7 +39,7 @@ import time
 import unittest
 import uuid
 from scripts.pipeline import lane
-from scripts.tests import fake_ssh, kit_time, kit_tree, store_isolation
+from scripts.tests import fake_ssh, kit_time, kit_tree, private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 STRAND_SH = REPO / "scripts" / "strand.sh"
@@ -544,6 +544,160 @@ class TestChdirOption(StrandShTestCase):
         res = run_strand(self.repo, "-C", cwd=self.outside)
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
         self.assertIn("strand: -C needs a value", res.stderr)
+
+
+class TestUnittestEntry(StrandShTestCase):
+    """Kit gap KX (wave validation 2, 15.10.): the kit's Python unittests had no
+    kit way -- `python3 -I -m unittest` finds `scripts` only with the tree's
+    root as cwd, and an agent shell cannot keep a `cd` (a wrapper is a manual
+    step). `test --unittest <module|test id|file>` runs them from the root of
+    the `-C` tree, on this host, without a lane or a token: one log, one
+    `TEST [unittest ...]` line."""
+
+    PROBE = ("import unittest\n"
+             "from scripts.tests import probe_helper   # found from the root only\n\n\n"
+             "class Probe(unittest.TestCase):\n"
+             "    def test_green(self):\n"
+             "        self.assertEqual(1, probe_helper.ONE)\n\n"
+             "    def test_other(self):\n"
+             "        self.assertEqual(%s, probe_helper.ONE)\n")
+
+    def setUp(self):
+        super().setUp()
+        tests = self.repo / "scripts" / "tests"
+        (tests / "probe_helper.py").write_text("ONE = 1\n")
+        (tests / "test_probe.py").write_text(self.PROBE % "1")
+        (tests / "test_probe_red.py").write_text(self.PROBE % "2")
+        self.outside = pathlib.Path(self._tmp.name) / "elsewhere"
+        self.outside.mkdir()
+        # no store to reach: the run needs no lane and no token
+        self.env = {"MECLAW_PIPELINE_DB": str(self.outside / "no" / "such" / "p.db")}
+
+    def unittest(self, *args, at=None):
+        return run_strand(self.repo, "-C", str(at or self.repo), "test", "--unittest", *args,
+                          cwd=self.outside, extra_env=self.env)
+
+    def log_of(self, res):
+        m = re.search(r"(?m)^log: (\S+)$", res.stdout)
+        self.assertIsNotNone(m, res.stdout + res.stderr)
+        return pathlib.Path(m.group(1)).read_text()
+
+    def test_a_file_runs_from_the_root_of_the_tree_whatever_the_cwd(self):
+        # -C below the root: a file is taken from there, the run starts at the
+        # root (the helper import finds `scripts` from the root only)
+        res = self.unittest("scripts/tests/test_probe.py", at=self.repo / "scripts" / "tests")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no such file", res.stderr)
+        res = self.unittest("../../scripts/tests/test_probe.py", at=self.repo / "scripts" / "tests")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_probe\] 2/2 \(skipped 0\) \d+s GREEN$")
+        self.assertIn("Ran 2 tests", self.log_of(res))
+
+    def test_a_dotted_test_id_runs_alone(self):
+        res = self.unittest("scripts.tests.test_probe.Probe.test_green")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_probe\.Probe\.test_green\] "
+                                     r"1/1 \(skipped 0\) \d+s GREEN$")
+
+    def test_a_red_test_is_red_with_its_name_and_the_log(self):
+        res = self.unittest("scripts/tests/test_probe_red.py", "scripts.tests.test_probe")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_probe_red "
+                                     r"scripts\.tests\.test_probe\] 3/4 \(skipped 0\) \d+s RED$")
+        self.assertIn("test_other", res.stdout)
+        self.assertIn("FAILED (failures=1)", self.log_of(res))
+
+    def test_a_file_outside_the_tree_or_no_test_is_exit_2(self):
+        (self.outside / "test_x.py").write_text(self.PROBE % "1")
+        res = self.unittest(str(self.outside / "test_x.py"))
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("outside the tree", res.stderr)
+        res = self.unittest()
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("test --unittest needs", res.stderr)
+
+    def test_a_foreign_tree_runs_its_own_code_not_the_kit_trees(self):
+        # re-check RC-K3 I1: the kit of one tree (`<kit>/scripts/strand.sh`)
+        # on another tree (`-C <other>`) imports from the other tree; the
+        # helper exists there only, so a run from the kit tree's root is red
+        other = pathlib.Path(self._tmp.name) / "other"
+        (other / "scripts" / "tests").mkdir(parents=True)
+        for name in ("scripts/__init__.py", "scripts/tests/__init__.py"):
+            (other / name).write_text("")
+        (other / "scripts" / "tests" / "only_here.py").write_text("MARKER = 'other'\n")
+        (other / "scripts" / "tests" / "test_foreign.py").write_text(
+            "import unittest\n"
+            "import scripts\n"
+            "from scripts.tests import only_here   # in the -C tree only\n\n\n"
+            "class Foreign(unittest.TestCase):\n"
+            "    def test_marker(self):\n"
+            "        self.assertEqual('other', only_here.MARKER)\n"
+            "        self.assertTrue(scripts.__file__.startswith(%r), scripts.__file__)\n"
+            % (str(other) + "/"))
+        _git(other, "init", "-q")
+        _git(other, "add", "scripts")
+        _git(other, "commit", "-q", "-m", "other")
+        self.assertFalse((self.repo / "scripts" / "tests" / "only_here.py").exists())
+        res = self.unittest("scripts.tests.test_foreign", at=other)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_foreign\] "
+                                     r"1/1 \(skipped 0\) \d+s GREEN$")
+        # the count of tests per name comes from the -C tree too: there
+        # test_probe is script-style, in the kit tree it holds two tests
+        (other / "scripts" / "tests" / "test_probe.py").write_text("def main():\n    return 0\n")
+        _git(other, "add", "scripts")
+        _git(other, "commit", "-q", "-m", "script-style")
+        res = self.unittest("scripts.tests.test_foreign", "scripts.tests.test_probe", at=other)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no test in scripts.tests.test_probe", res.stdout)
+
+    def test_a_name_without_a_test_is_red_alone_and_among_many(self):
+        # re-check RC-K3 I2: a script-style test_*.py (main(), no TestCase)
+        # loads no test; among >= 5 modules it shared a shard and vanished
+        # from a GREEN line, alone it was unittest's exit 5
+        tests = self.repo / "scripts" / "tests"
+        (tests / "test_main_style.py").write_text(
+            "def main():\n    raise SystemExit(1)   # never reached by unittest\n")
+        res = self.unittest("scripts/tests/test_main_style.py")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no test in scripts.tests.test_main_style", res.stdout)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_main_style\] .* RED$")
+        mods = ["scripts.tests.test_main_style"]
+        for k in range(5):
+            (tests / ("test_real_%d.py" % k)).write_text(self.PROBE % "1")
+            mods.append("scripts.tests.test_real_%d" % k)
+        res = self.unittest(*mods)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn("no test in scripts.tests.test_main_style", res.stdout)
+        self.assertNotIn("no test in scripts.tests.test_real_", res.stdout)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_main_style .*\] "
+                                     r"10/10 \(skipped 0\) \d+s RED$")
+
+    def test_a_skipped_test_is_counted_apart_green_or_red_one_shard_or_many(self):
+        # re-check RC-K3 M1: a skip is neither passed nor failed, in one form
+        tests = self.repo / "scripts" / "tests"
+        (tests / "test_skips.py").write_text(
+            "import unittest\n\n\n"
+            "class S(unittest.TestCase):\n"
+            "    def test_runs(self):\n"
+            "        pass\n\n"
+            "    def test_skipped(self):\n"
+            "        self.skipTest('probe')\n")
+        res = self.unittest("scripts.tests.test_skips")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_skips\] "
+                                     r"1/2 \(skipped 1\) \d+s GREEN$")
+        res = self.unittest("scripts.tests.test_skips", "scripts.tests.test_probe")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)\] 3/4 \(skipped 1\) \d+s GREEN$")
+        res = self.unittest("scripts.tests.test_skips", "scripts.tests.test_probe_red")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)\] 2/4 \(skipped 1\) \d+s RED$")
+        env = dict(self.env, MECLAW_SELFTEST_SHARDS="1")
+        res = run_strand(self.repo, "-C", str(self.repo), "test", "--unittest", "scripts.tests.test_skips",
+                         "scripts.tests.test_probe_red", cwd=self.outside, extra_env=env)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stdout, r"(?m)\] 2/4 \(skipped 1\) \d+s RED$")
 
 
 class TestPipelineChdirOption(StrandShTestCase):
@@ -3483,8 +3637,7 @@ class TestPreamble(unittest.TestCase):
     }
 
     def setUp(self):
-        if not self.PREAMBLE.is_file():
-            self.skipTest("plans/ is not part of the public tree")
+        private_tree.require("plans/PREAMBLE.md")
         self.text = self.PREAMBLE.read_text()
 
     def test_the_pass_close_frees_only_an_admission_lease(self):

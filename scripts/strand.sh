@@ -12,6 +12,9 @@
 #     scripts/strand.sh test '<nextest filterset>' [--host <lane>] [--holder <n>] [nextest args]
 #         (a second lease is --holder <n>, never --strand <s>:<n> -- refused, GH #1146)
 #         (GH277_WRITE_GOLDEN=1 / MECLAW_GH935_BLESS=1 travel; the goldens come back)
+#     scripts/strand.sh test --unittest <module|test id|file.py> ...
+#         (the kit's Python unittests from the root of this tree, on this host:
+#         no lane, no token; one log, one line TEST [unittest ...])
 #     scripts/strand.sh report [--strand <name>]
 #     scripts/strand.sh close [--strand <name>] [--wave <dir>] [--do]
 #     scripts/strand.sh merge [--strand <name> | --batch <s1,s2>] [--wave <dir>] [--host <lane>]
@@ -1485,7 +1488,7 @@ cmd_gate() {
 
 # `test '<filterset>' [options]`: `pipeline.py test`, every argument as given.
 cmd_test() {
-    case "${1:-}" in -h|--help) usage; return 0 ;; esac
+    case "${1:-}" in -h|--help) usage; return 0 ;; --unittest) shift; cmd_test_unittest "$@"; return $? ;; esac
     # A detached tree (GH #1199 f): the wave of `--strand <name>` comes from
     # the context as for `gate`/`token` (`wave_dir`); every word goes on as given.
     local prev="" arg strand_in="" wave_in="" root wave extra=()
@@ -1501,6 +1504,85 @@ cmd_test() {
         extra=(--wave "$wave")
     fi
     "${KIT_PY[@]}" "$(pipeline_py)" test ${extra[@]+"${extra[@]}"} "$@"
+}
+
+# `test --unittest <module|test id|file.py> ...`: the kit's Python unittests
+# (kit gap KX, wave validation 2). `python3 -I -m unittest` finds `scripts`
+# only with the tree's root as cwd, and an agent shell cannot keep a `cd` -- a
+# wrapper was a manual step. The run starts at the root of this tree (`-C`)
+# through `selftest_shard.py unittest`, the gate-selftest station's runner,
+# on this host: no lane, no token, no store. A file is taken from the cwd and
+# becomes its dotted module. Every name must hold a test: one that loads none
+# (a script-style `test_*.py` with `main()`, a namespace package's module)
+# would vanish in a shard of the others and leave the line GREEN (re-check
+# RC-K3 I2), so it is named (`no test in <name>`) and the run is RED. One
+# log; the line `TEST [unittest <args>] <passed>/<ran> (skipped <k>) <secs>s
+# GREEN|RED` -- a skipped test is neither passed nor failed --, then
+# `log: <path>`; RED adds the log's tail. Exit 0 GREEN, 1 RED (also a name
+# without a test), 2 a usage error, 128 + signal when the runner was stopped.
+cmd_test_unittest() {
+    local top arg rel mods=() log rc start secs ran failed skipped tail empty sumline counted shardlogs
+    [ $# -ge 1 ] || die "test --unittest needs a module, a test id or a file"
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || die "test --unittest: not in a git tree"
+    for arg in "$@"; do
+        case "$arg" in
+            -*) die "test --unittest: unknown option $arg (modules, test ids or files)" ;;
+            *.py)
+                [ -f "$arg" ] || die "test --unittest: no such file: $arg"
+                rel=$(realpath --relative-to="$top" -- "$arg") || die "test --unittest: cannot resolve $arg"
+                case "$rel" in ../*) die "test --unittest: $arg is outside the tree $top" ;; esac
+                rel=${rel%.py}
+                mods+=("${rel//\//.}") ;;
+            *) mods+=("$arg") ;;
+        esac
+    done
+    log="${TMPDIR:-/tmp}/strand-unittest/${top##*/}-$(date +%Y%m%dT%H%M%S)-$$.log"
+    mkdir -p -- "${log%/*}" || die "test --unittest: cannot create ${log%/*}"
+    start=$SECONDS
+    (cd -- "$top" && "${KIT_PY[@]}" "$KIT_DIR/pipeline/selftest_shard.py" unittest "${mods[@]}") \
+        >"$log" 2>&1
+    rc=$?
+    secs=$((SECONDS - start))
+    # The names that load no test, from the same root as the run (a name
+    # that does not load at all is left to the run, which reports it red).
+    empty=$("${KIT_PY[@]}" - "$top" "${mods[@]}" <<'PY'
+import os, sys, unittest
+os.chdir(sys.argv[1])
+sys.path.insert(0, sys.argv[1])
+loader = unittest.TestLoader()
+for name in sys.argv[2:]:
+    try:
+        if loader.loadTestsFromName(name).countTestCases() == 0:
+            print(name)
+    except Exception:
+        pass
+PY
+    )
+    ran=$(sed -n 's/^Ran \([0-9]*\) tests\{0,1\} in .*/\1/p' "$log" | tail -n 1)
+    # failed = failures + errors + unexpected successes of the last summary
+    sumline=$(sed -n 's/^\(OK\|FAILED\)\( (.*)\)\{0,1\}$/&/p' "$log" | tail -n 1)
+    failed=$(printf '%s\n' "$sumline" | grep -oE '(failures|errors|unexpected successes)=[0-9]+' \
+        | awk -F= '{s += $2} END {print s + 0}')
+    # skipped: from the shards' own logs when the runner split the run (its
+    # combined summary carries no skip count), else from this log
+    shardlogs=("${log%.log}".shard-*.log)
+    [ -e "${shardlogs[0]}" ] || shardlogs=("$log")
+    skipped=$(sed -n 's/^\(OK\|FAILED\) (.*skipped=\([0-9]*\).*)$/\2/p' "${shardlogs[@]}" \
+        | awk '{s += $1} END {print s + 0}')
+    if [ -n "$empty" ]; then
+        while IFS= read -r counted; do
+            printf 'no test in %s (a script-style file is not a unittest module)\n' "$counted"
+        done <<<"$empty" | tee -a "$log"
+        [ "$rc" = 0 ] && rc=1
+    fi
+    [ "$rc" = 5 ] && rc=1    # unittest's "no tests ran" is a red run here
+    tail=$( [ "$rc" = 0 ] || tail -n 20 "$log")
+    [ -n "$tail" ] && printf '%s\n' "$tail"
+    printf 'TEST [unittest %s] %s/%s (skipped %s) %ss %s\n' "${mods[*]}" \
+        "$(( ${ran:-0} - failed - skipped ))" "${ran:-0}" "$skipped" \
+        "$secs" "$( [ "$rc" = 0 ] && echo GREEN || echo RED)" | tee -a "$log"
+    printf 'log: %s\n' "$log"
+    return "$rc"
 }
 
 # `token <verb> [options]`: `pipeline.py lanes <verb> [options]`. The one thing

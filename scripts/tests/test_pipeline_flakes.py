@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO))
 
 from scripts.pipeline import (cache, cli, events, executor, flakes, gate, hang_dump,  # noqa: E402
                               metrics, receipt, store)
-from scripts.tests import store_isolation  # noqa: E402
+from scripts.tests import private_tree, store_isolation  # noqa: E402
 
 FIX = pathlib.Path(__file__).resolve().parent / "fixtures" / "flakes"
 AT = "2026-10-08T12:00:00Z"
@@ -994,8 +994,7 @@ class TheIssueDuty(StoreCase):
     def test_the_real_export_audit_yields_name_patterns(self):
         """In the private tree the real audit parses; in the public tree it is absent."""
         audit = REPO / "plans" / "export-fixtures" / "make_export.py"
-        if not audit.is_file():
-            self.skipTest("the export audit is not in this tree")
+        private_tree.require("plans/export-fixtures/make_export.py")
         with mock.patch.object(flakes, "R5_AUDIT", audit):
             patterns = flakes.r5_name_patterns()
         self.assertTrue(patterns)
@@ -1350,6 +1349,51 @@ class TheExecutorHook(unittest.TestCase):
                          [("wobbly_mod.T.test_wobbles", 3, "FLAKY")])   # T1, T2, T3
         self.assertLess(names.index("flake_isolated"), names.index("station_ended"))
         self.assertLess(names.index("station_ended"), names.index("pass_ended"))
+
+    def run_lane(self, module, proven):
+        """The station of `run_station` with the gate's T2 lane asked (`t2_production`)
+        and a fake `production_lane` (no real load in a test): T2 runs through it,
+        `proven` says it ran at 30 %."""
+        (self.tree / f"{module}.py").write_text(FLAKY_MODULE.replace("{red_first}", "True"))
+        d = self.dispatch(module)
+        d["t2_production"] = True
+        asked = []
+
+        def lane():
+            def t2(run, spent):
+                asked.append("t2")
+                return run(), "load1 1.6 of 12 vCPU + 2 busy loops", proven
+            return t2
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(flakes, "production_lane", side_effect=lane):
+            executor.run(d, out, err)
+        evs = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        return evs, err, asked
+
+    def test_a_flake_green_at_thirty_percent_ends_a_note_load_flake(self):
+        """B schlank (OR-TV-13, K12): the executor runs T2 through the lane at
+        30 %, and a test green in every step ends the station NOTE."""
+        evs, err, asked = self.run_lane("lane_mod", True)
+        self.assertEqual(asked, ["t2"])
+        ended = [e["data"] for e in evs if e["event"] == "station_ended"]
+        self.assertEqual(ended[0]["verdict"], "NOTE", (ended, err.getvalue()))
+        self.assertEqual([(e["test"], e["t2_lane"]) for e in ended[0]["load_flake"]],
+                         [("lane_mod.T.test_wobbles", "load1 1.6 of 12 vCPU + 2 busy loops")])
+        passed = [e["data"] for e in evs if e["event"] == "pass_ended"]
+        self.assertEqual(passed[0]["verdict"], "GREEN", passed)
+
+    def test_an_unproven_lane_keeps_the_flake_red(self):
+        evs, err, asked = self.run_lane("unproven_mod", False)
+        self.assertEqual(asked, ["t2"])
+        ended = [e["data"] for e in evs if e["event"] == "station_ended"]
+        self.assertEqual(ended[0]["verdict"], "FLAKY", (ended, err.getvalue()))
+        self.assertNotIn("load_flake", ended[0])
+
+    def test_without_the_gate_flag_no_lane_is_asked(self):
+        (self.tree / "plain_mod.py").write_text(FLAKY_MODULE.replace("{red_first}", "True"))
+        with mock.patch.object(flakes, "production_lane") as lane:
+            executor.run(self.dispatch("plain_mod"), io.StringIO(), io.StringIO())
+        lane.assert_not_called()
 
     def test_a_defect_stays_red_after_its_isolation(self):
         evs, err = self.run_station("broken_mod", "True", always=True)
@@ -2228,6 +2272,296 @@ class TheTriage(unittest.TestCase):
         self.assertEqual((out["verdict"], out["reason"]), ("RED", flakes.BUDGET_SPENT))
 
 
+WINDOW = BIN + "::tests::the_window_reopens"   # the qualified name the triage reports
+
+
+class FakeLane:
+    """A lane for `flakes.production_lane`: `probe()` answers the measured load1
+    values in turn (the last one stays), `spawn(n)` records the loops it was
+    asked for (None: they did not start), `sleep` records the waits."""
+
+    def __init__(self, loads, nproc=12, starts=True):
+        self.loads, self.nproc, self.starts = list(loads), nproc, starts
+        self.spawned, self.stopped, self.slept = [], 0, []
+
+    def probe(self):
+        load1 = self.loads.pop(0) if len(self.loads) > 1 else self.loads[0]
+        return load1, self.nproc
+
+    def spawn(self, n):
+        self.spawned.append(n)
+        if not self.starts:
+            return None
+
+        def stop():
+            self.stopped += 1
+        return stop
+
+    def sleep(self, s):
+        self.slept.append(s)
+
+    def t2(self, **kw):
+        return flakes.production_lane(probe=self.probe, spawn=self.spawn, sleep=self.sleep, **kw)
+
+
+class TheSlimTriage(unittest.TestCase):
+    """Owner's ruling "B schlank" (2026-10-16, OR-TV-13) with its precision K12:
+    only a flake red at production load blocks, and production load is the lane
+    about 30 % busy (measured load1 plus busy loops, full quota). T2 runs once
+    there; red at 30 % or in T1/T3/T4 counts red; green in every step is the NOTE
+    `load-flake` -- it never makes the summary red, and the receipt names it."""
+
+    def triage(self, results, answers, kind="nextest", lane=None, **kw):
+        base = (["cargo-nextest", "nextest", "run", "--profile", "t1", "-E", "all()"]
+                if kind == "nextest" else ["python3", "-m", "unittest"])
+        lane = lane or FakeLane([1.6])
+        return flakes.triage_station("tests", kind, results, answers, {}, base_argv=base,
+                                     threads=4, seed=4242, t2_lane=lane.t2(), **kw)
+
+    @staticmethod
+    def end(out, exit=100):
+        ended = {"station": "tests", "verdict": "RED", "exit": exit, "secs": 1.0,
+                 "scope": "s", "reason": "x"}
+        return flakes.end_station(ended, out)
+
+    def test_production_load_is_the_lane_thirty_percent_busy(self):
+        self.assertEqual(flakes.T2_LANE_BUSY, 0.30)
+        self.assertEqual(flakes.LOAD_FLAKE, "load-flake")
+        self.assertFalse(hasattr(flakes, "T2_THROTTLE"))   # K12: never a CPU quota
+
+    def test_lane_loops_top_the_measured_load_up_to_thirty_percent(self):
+        """max(0, round(0.3 x vCPU - load1)); a lane already fuller is None."""
+        for load1, nproc, want in ((1.6, 12, 2), (0.0, 12, 4), (0.0, 24, 7), (3.6, 12, 0),
+                                   (4.0, 12, 0), (2.1, 12, 2), (0.0, 1, 0)):
+            self.assertEqual(flakes.lane_loops(load1, nproc), want, (load1, nproc))
+        for load1, nproc in ((4.2, 12), (13.0, 12), (8.0, 24)):
+            self.assertIsNone(flakes.lane_loops(load1, nproc), (load1, nproc))
+
+    def test_the_gate_dispatch_asks_the_lane(self):
+        """Every gate dispatch carries the T2 lane flag to the executor (`t2_production`)."""
+        class P:
+            @staticmethod
+            def store(label, fn, *args):
+                return None
+        d = {"stations": []}
+        with mock.patch.object(gate.plan, "resolve_base", side_effect=RuntimeError("no base")):
+            gate._flake_dispatch(P(), None, d, str(REPO), "strand", None)
+        self.assertIs(d["t2_production"], True)
+        self.assertNotIn("t2_throttle", d)
+
+    def test_only_t2_runs_with_the_loops_at_full_quota(self):
+        lane = FakeLane([1.6])
+        a = Answers("nextest")
+        out = self.triage(red_part(), a, lane=lane)
+        self.assertEqual(a.steps(), ["t1", "t2"])        # each step once
+        self.assertEqual((lane.spawned, lane.stopped, lane.slept), ([2], 1, []))
+        self.assertFalse(any("systemd-run" in c[1] or "CPUQuota" in " ".join(c[1])
+                             for c in a.calls))
+        self.assertEqual(out["events"][0]["t2_lane"], "load1 1.6 of 12 vCPU + 2 busy loops")
+
+    def test_the_loops_stop_when_t2_raises(self):
+        lane = FakeLane([1.6])
+
+        def run():
+            raise RuntimeError("boom")
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            lane.t2()(run, lambda: False)
+        self.assertEqual(lane.stopped, 1)
+
+    def test_a_lane_over_thirty_percent_is_waited_for(self):
+        """K12: a lane already fuller is waited for, then topped up."""
+        lane = FakeLane([6.0, 5.0, 2.0])
+        ok, word, proven = lane.t2()(lambda: True, lambda: False)
+        self.assertEqual((ok, proven), (True, True))
+        self.assertEqual(lane.slept, [flakes.T2_WAIT_STEP_S] * 2)
+        self.assertEqual(lane.spawned, [2])
+        self.assertEqual(word, "load1 2.0 of 12 vCPU + 2 busy loops")
+
+    def test_a_lane_still_over_after_the_wait_runs_t2_at_its_load(self):
+        """After `T2_WAIT_S` T2 runs at the measured load, no loops: a green
+        there is green at 30 % too (proven), a red stays red."""
+        lane = FakeLane([6.0])
+        ok, word, proven = lane.t2()(lambda: True, lambda: False)
+        n = flakes.T2_WAIT_S // flakes.T2_WAIT_STEP_S
+        self.assertEqual((ok, proven, lane.spawned, len(lane.slept)), (True, True, [], n))
+        self.assertEqual(word, "lane over 30 %%: load1 6.0 of 12 vCPU after %d s wait"
+                         % flakes.T2_WAIT_S)
+        a = Answers("nextest", red_steps={"t2"})
+        final = self.end(self.triage(red_part(), a, lane=FakeLane([6.0])))[-1][1]
+        self.assertEqual((final["verdict"], final["cause"]), ("FLAKY", flakes.CAUSE_T2))
+        self.assertTrue(executor.ends_red(final))
+
+    def test_a_spent_budget_ends_the_wait_red(self):
+        a = Answers("nextest")
+        calls = []
+
+        def expired():
+            calls.append(1)
+            return len(calls) > 1      # T1 runs, the wait for T2 spends the budget
+        out = self.triage(red_part(), a, lane=FakeLane([6.0]), expired=expired)
+        self.assertEqual((out["verdict"], out["reason"]), ("RED", flakes.BUDGET_SPENT))
+        self.assertEqual(a.steps(), ["t1"])
+
+    def test_loops_that_do_not_start_keep_the_flake_red(self):
+        """Fail-closed: no proof of the 30 % lane, no load-flake."""
+        a = Answers("nextest")
+        out = self.triage(red_part(), a, lane=FakeLane([1.6], starts=False))
+        self.assertFalse(out.get("load_flake"))
+        self.assertEqual(out["events"][0]["t2_lane"],
+                         "load1 1.6 of 12 vCPU, 2 busy loops did not start")
+        final = self.end(out)[-1][1]
+        self.assertEqual((final["verdict"], final["cause"]), ("FLAKY", flakes.CAUSE_NONE))
+        self.assertTrue(executor.ends_red(final))
+
+    def test_a_failed_probe_keeps_the_flake_red(self):
+        def probe():
+            raise OSError("no loadavg")
+        t2 = flakes.production_lane(probe=probe, spawn=None, sleep=None)
+        ok, word, proven = t2(lambda: True, lambda: False)
+        self.assertEqual((ok, proven), (True, False))
+        self.assertIn("no probe", word)
+
+    def test_loops_that_fail_to_spawn_keep_the_flake_red(self):
+        """Fail-closed (re-check M3): a spawn that raises is an unproven lane, T2 still runs."""
+        def spawn(n):
+            raise FileNotFoundError("sh")
+        t2 = flakes.production_lane(probe=lambda: (1.6, 12), spawn=spawn, sleep=None)
+        ok, word, proven = t2(lambda: True, lambda: False)
+        self.assertEqual((ok, proven), (True, False))
+        self.assertEqual(word, "load1 1.6 of 12 vCPU, 2 busy loops did not start: sh")
+
+    def test_all_green_at_thirty_percent_is_a_note_load_flake(self):
+        a = Answers("nextest")
+        out = self.triage(red_part(), a)
+        self.assertEqual(out["verdict"], "FLAKY")
+        self.assertTrue(out["load_flake"])
+        lines = self.end(out)
+        final = lines[-1][1]
+        self.assertEqual(final["verdict"], "NOTE", final)
+        self.assertTrue(final["reason"].startswith(flakes.LOAD_FLAKE + ": "), final)
+        self.assertIn(WINDOW, final["reason"])
+        self.assertFalse(executor.ends_red(final))
+        self.assertEqual([e["test"] for e in final["load_flake"]], [WINDOW])
+        proof = final["load_flake"][0]
+        self.assertEqual(proof["triage"], {"t1": "GREEN", "t2": "GREEN"})
+        self.assertEqual(proof["t2_lane"], "load1 1.6 of 12 vCPU + 2 busy loops")
+        # the isolation stays a flake in the register: an observation, not a pass
+        self.assertEqual([b["verdict"] for e, b in lines if e == "flake_isolated"], ["FLAKY"])
+
+    def test_red_at_thirty_percent_counts_red(self):
+        a = Answers("nextest", red_steps={"t2"})
+        out = self.triage(red_part(), a)
+        self.assertFalse(out.get("load_flake"))
+        final = self.end(out)[-1][1]
+        self.assertEqual((final["verdict"], final["cause"]), ("FLAKY", flakes.CAUSE_T2))
+        self.assertTrue(executor.ends_red(final))
+        self.assertNotIn("load_flake", final)
+
+    def test_t3_or_t4_red_counts_red_at_thirty_percent(self):
+        a = Answers("unittest", red_steps={"t3"})
+        final = self.end(self.triage(ut_red(), a, kind="unittest"), exit=1)[-1][1]
+        self.assertEqual(final["cause"], flakes.CAUSE_T3)
+        self.assertTrue(executor.ends_red(final))
+        test = "scripts.tests.test_x.TheX.test_y"
+        a = Answers("unittest", red_steps={"t4"}, red_shift="month")
+        out = self.triage(ut_red(test), a, kind="unittest", clock_tests={test},
+                          clock_reader=True)
+        final = self.end(out, exit=1)[-1][1]
+        self.assertEqual(final["cause"], flakes.CAUSE_T4)
+        self.assertTrue(executor.ends_red(final))
+
+    def test_t1_red_stays_a_defect(self):
+        a = Answers("nextest", red_steps={"t1"})
+        final = self.end(self.triage(red_part(), a))[-1][1]
+        self.assertEqual(final["verdict"], "RED")
+        self.assertIn(flakes.DEFECT, final["reason"])
+
+    def test_without_a_lane_all_green_stays_red(self):
+        """Fail-closed: a triage without the gate's lane proves no production
+        load, so the old reading holds -- FLAKY, red, no `load-flake`."""
+        a = Answers("nextest")
+        base = ["cargo-nextest", "nextest", "run", "--profile", "t1", "-E", "all()"]
+        out = flakes.triage_station("tests", "nextest", red_part(), a, {}, base_argv=base,
+                                    threads=4, seed=4242)
+        self.assertFalse(out.get("load_flake"))
+        final = self.end(out)[-1][1]
+        self.assertEqual((final["verdict"], final["cause"]), ("FLAKY", flakes.CAUSE_NONE))
+        self.assertTrue(executor.ends_red(final))
+        self.assertNotIn("t2_lane", out["events"][0])
+
+    def test_one_red_at_thirty_percent_keeps_the_station_red(self):
+        """Two red tests: one green everywhere, one red at 30 % -- the
+        station is no load-flake, it counts red."""
+        results = [dict(red_part()[0], failed_names=["tests::a", "tests::b"],
+                        tests={"passed": 38, "failed": 2, "skipped": 0})]
+
+        names = []
+
+        def answer(argv, env=None):
+            expr = argv[argv.index("-E") + 1]
+            if "--test-threads" not in argv:      # T1 names its test
+                names.append(expr)
+                return (0, TRIAGE_NX_GREEN)
+            if "tests::b" in names[-1]:           # T2 of tests::b: red at 30 %
+                return (100, TRIAGE_NX_MANY_RED)
+            return (0, TRIAGE_NX_MANY_GREEN)
+
+        out = self.triage(results, answer)
+        self.assertFalse(out.get("load_flake"), out)
+        final = self.end(out)[-1][1]
+        self.assertTrue(executor.ends_red(final), final)
+
+    def test_a_legacy_flake_stays_legacy(self):
+        a = Answers("nextest")
+        out = self.triage(red_part(), a)
+        ended = {"station": "tests", "verdict": "RED", "exit": 100, "secs": 1.0,
+                 "scope": "s", "reason": "x"}
+        final = flakes.end_station(ended, out, legacy={WINDOW})[-1][1]
+        self.assertEqual((final["verdict"], final.get("legacy")), ("FLAKY", True))
+
+
+class TheLoadFlakeReceipt(unittest.TestCase):
+    """The receipt field `load_flake`: the tests a NOTE load-flake station names,
+    with their triage proof; the round stays green."""
+
+    def rows(self):
+        proof = {"station": "tests", "test": "tests::the_window_reopens", "count": 2,
+                 "green": 2, "triage": {"t1": "GREEN", "t2": "GREEN"},
+                 "t2_lane": "load1 1.6 of 12 vCPU + 2 busy loops"}
+        return [
+            {"event": "pass_planned", "at": AT, "run": "r1",
+             "data": {"run": "r1", "mode": "strand", "repo": "meclaw", "rev": "a" * 40,
+                      "base": "b" * 40, "stations": ["tests"], "reason": {},
+                      "cache_known": 0, "dirty": False}},
+            {"event": "station_ended", "at": AT, "run": "r1",
+             "data": {"run": "r1", "station": "tests", "verdict": "NOTE", "secs": 1.0,
+                      "exit": 100, "scope": "s", "isolated": 1,
+                      "reason": "load-flake: tests::the_window_reopens",
+                      "load_flake": [proof]}},
+            {"event": "pass_ended", "at": AT, "run": "r1",
+             "data": {"run": "r1", "verdict": "GREEN", "secs": 1.0, "lane_seconds": 1.0,
+                      "critical_path_s": 1.0, "rounds": 1, "cache_hits": 0,
+                      "stations": 1}},
+        ]
+
+    def test_the_receipt_names_every_load_flake_with_its_proof(self):
+        doc = receipt.project(self.rows())
+        self.assertEqual([e["test"] for e in doc["load_flake"]], ["tests::the_window_reopens"])
+        self.assertEqual(doc["load_flake"][0]["triage"], {"t1": "GREEN", "t2": "GREEN"})
+        self.assertEqual(doc["stations"][0]["load_flake"][0]["t2_lane"],
+                         "load1 1.6 of 12 vCPU + 2 busy loops")
+        self.assertEqual(doc["rounds"][0]["verdict"], "GREEN")
+        self.assertEqual(receipt.validate(doc), [])
+
+    def test_a_receipt_without_a_load_flake_has_an_empty_list(self):
+        rows = self.rows()
+        rows[1]["data"].pop("load_flake")
+        rows[1]["data"]["verdict"] = "GREEN"
+        doc = receipt.project(rows)
+        self.assertEqual(doc["load_flake"], [])
+        self.assertEqual(receipt.validate(doc), [])
+
+
 class TheFlakyCount(unittest.TestCase):
     """TV-F1/TV-F4: FLAKY counts red; only a legacy test, unchanged in the diff, is green."""
 
@@ -2445,9 +2779,12 @@ class TheQuarantineArming(StoreCase):
         self.assertEqual(flakes.release_expired(self.db, later), [self.T])
         self.assertEqual(flakes.dispatch_expired(self.db, later), [self.T])
         self.assertEqual(flakes.quarantine_station_verdict(0, [self.T])[0], "RED")
+        # B schlank (OR-TV-13): five green runs on one lane about 30 % busy (K12), no quiet series
+        self.assertEqual((flakes.FIX_QUIET, flakes.FIX_LOAD), (0, 5))
         with self.assertRaisesRegex(ValueError, "a fix is measured"):
-            flakes.record_fix(self.db, self.T, quiet=20, load=19, at=later)
-        flakes.record_fix(self.db, self.T, quiet=20, load=20, at=later)
+            flakes.record_fix(self.db, self.T, quiet=0, load=4, at=later)
+        note = flakes.record_fix(self.db, self.T, quiet=0, load=5, at=later)
+        self.assertIn("load=5", note)
         self.assertEqual(flakes.dispatch_expired(self.db, later), [])
 
     def test_a_closed_observation_issue_is_reopened(self):

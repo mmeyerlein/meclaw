@@ -17,7 +17,7 @@ import sys
 import tempfile
 import unittest
 
-from scripts.tests import kit_time, store_isolation
+from scripts.tests import kit_time, private_tree, store_isolation
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -419,7 +419,8 @@ class TestPublicTree(unittest.TestCase):
             # kit_time: every kit deadline (TV-Z3); fake_ssh: the guard's ssh stub
             # comes from the one maker (re-check tv-bn M7e) -- both travel (M7h)
             for name in ("__init__.py", "store_isolation.py", "side_effect_guard.py",
-                         "kit_time.py", "fake_ssh.py", pathlib.Path(__file__).name):
+                         "kit_time.py", "fake_ssh.py", "private_tree.py",
+                         pathlib.Path(__file__).name):
                 shutil.copy(here / name, tests / name)
             # scripts/tests/__init__.py imports the pipeline package, which travels
             shutil.copytree(here.parent / "pipeline", tests.parent / "pipeline",
@@ -442,8 +443,9 @@ class TestPublicTree(unittest.TestCase):
 def setUpModule():
     # `workshop/` never travels with the export (R2c); this module does (ROOT_FILES),
     # so the published tree skips it instead of failing on drivers never shipped.
-    if not TOOLS.is_dir():
-        raise unittest.SkipTest("workshop/tools/ is not in this tree")
+    # `require` (GH #1199): a skip in the export tree, a failure in the private
+    # tree, where the directory can not go quiet (re-check RC-K3 I3).
+    private_tree.require("workshop/tools")
     store_isolation.isolate()
 
 

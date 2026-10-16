@@ -828,8 +828,7 @@ class ReasoningEffort(unittest.TestCase):
 
     def with_module(self, files):
         real = REPO / self.MODULE
-        if not real.is_file():
-            self.skipTest("the private check module is not in this tree")
+        private_tree.require(self.MODULE)
         files = dict(files)
         files[self.MODULE] = real.read_text(encoding="utf-8")
         return tree(self, files)
@@ -930,12 +929,12 @@ class SheetNumbersMatchTheLock(unittest.TestCase):
     keep waving through what the lock then stopped.
     """
 
-    LOCK = (REPO / "crates" / "meclaw-cells" / "tests"
+    # under misc_5/ since the harness fold (GH #1119): the old path skipped quietly
+    LOCK = (REPO / "crates" / "meclaw-cells" / "tests" / "misc_5"
             / "gh669_every_class_the_screen_writes_has_a_rule.rs")
 
     def test_the_two_numbers_are_the_ones_the_lock_asserts(self):
-        if not self.LOCK.is_file():
-            self.skipTest("the lock is not in this tree")
+        private_tree.require(str(self.LOCK.relative_to(REPO)))
         text = self.LOCK.read_text(encoding="utf-8")
         ceiling = re.search(r"raw < (\d[\d_]*)", text)
         air = re.search(r"(\d[\d_]*) - raw >= (\d[\d_]*)", text)

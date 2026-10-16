@@ -1,9 +1,6 @@
 //! Test harness `misc_8` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh958_the_catalogue_is_the_one_source;
-pub mod gh959_the_stage_rules_hold;
-pub mod gh95_text_id_residue_is_loud_at_read;
 pub mod gh960_an_app_with_shows_reaches_the_presenter;
 pub mod gh960_shows_is_checked_at_install;
 pub mod gh963_installing_the_presenter_announces_its_decider;
@@ -64,3 +61,7 @@ pub mod w1_currency_marker;
 pub mod w1_session_guard;
 pub mod w2_statement_chain;
 pub mod w2_statement_identity;
+pub mod w4_extract_replaces;
+pub mod w6_claim_aliases;
+pub mod w9a_per_turn_colony;
+pub mod x2_hive_fixture_drift;

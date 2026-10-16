@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.64.2, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.64.3, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,14 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.64.3: the curator ages a replayed conversation by its own turns, cuts an overflow inside a segment instead of
+  refusing the call, rebuilds without a model package and checks every sidecar fact at the source it names; its
+  policy and intake write in one step, never read a refused store leg as empty, and the pin set sent last stands;
+  memory-hive files a fact under exactly the source it names; a `query_timeout` from the clock or the store no
+  longer leaves a watchdog-driven cell without its watchdog; in the kit, `pre` runs only the harness modules a
+  diff names, `strand.sh test --unittest` runs the Python self-tests from the root of a tree, `token who` tells a
+  series without a passing run apart, and the required-pins check proves that each pin selects its test; four
+  lifted tests judge what they claim; the gate triage blocks only on a flake red at a lane about 30 % busy.
 - v0.64.2: `rustls` 0.23.46 closes four advisories (lock only); a row that must exist once is written in one
   step, and the display, the presenter and the collector keep a row when its rewrite fails; a one-shot `--apply`
   waits out the shutdown drain and exits non-zero when it does not end cleanly; `affected_scope` no longer rescans

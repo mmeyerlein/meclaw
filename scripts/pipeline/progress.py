@@ -72,8 +72,12 @@ def emit(text, *streams):
         print(text, file=s, flush=True)
 
 
-def _write(db, holder, text, state, now):
+def _write(db, holder, text, state, now, lane=""):
     with store.tx(db):
+        # a batch `<wave>/S1+S2` runs on a member's lease (re-check v2-fix-e M2):
+        # the member on the caller's lane, as the merge path picks it (RC-K3 M4)
+        st = schedule._load(db)
+        holder = schedule._batch_speaker(st, holder, lane or "") if st else holder
         row = db.execute("SELECT since FROM lease_entries WHERE pool = ? AND holder = ? "
                          "AND resource IS NOT NULL", (schedule.POOL, holder)).fetchone()
         if row is None:
@@ -84,10 +88,11 @@ def _write(db, holder, text, state, now):
     return True
 
 
-def beat(holder, text, state="progress", db=None, now=None, path=None):
+def beat(holder, text, state="progress", db=None, now=None, path=None, lane=""):
     """Note `text` at the current lease of `holder` (state `progress` or a
     refusal word); True when a lease took it. Without a store file nothing is
-    created -- no store, no lease."""
+    created -- no store, no lease. `lane`: the lane the run is on, which picks
+    the member lease of a batch holder."""
     if not holder:
         return False
     own = db is None
@@ -101,7 +106,7 @@ def beat(holder, text, state="progress", db=None, now=None, path=None):
             return False
     try:
         schedule._ensure(db)
-        return bool(store.retry_write(_write, db, holder, text, state, schedule._now(now)))
+        return bool(store.retry_write(_write, db, holder, text, state, schedule._now(now), lane))
     except (sqlite3.Error, store.StoreWriteError):
         return False
     finally:
@@ -110,7 +115,7 @@ def beat(holder, text, state="progress", db=None, now=None, path=None):
 
 
 def refuse(entry, msg, out=None, err=None, holder=None, also=None, db=None, now=None, code=2,
-           word="REFUSED"):
+           word="REFUSED", lane=""):
     """The loud refusal: `<entry>: REFUSED -- <msg>` on stderr and stdout (once
     when they are one file), appended to `also` (the caller's result file),
     noted at the lease of `holder`; returns `code` (never 0)."""
@@ -122,7 +127,9 @@ def refuse(entry, msg, out=None, err=None, holder=None, also=None, db=None, now=
                 fh.write(text + "\n")
         except OSError:
             pass
-    beat(holder, text, state=word.split(" ")[0].lower(), db=db, now=now)
+    # the whole word, without its exit note: `NO PASS`, not `NO` (re-check v2-fix-e M2)
+    beat(holder, text, state=re.sub(r"\s*\(.*\)$", "", word).lower(), db=db, now=now,
+         lane=lane)
     return code or 2
 
 

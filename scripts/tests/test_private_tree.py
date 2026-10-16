@@ -7,6 +7,7 @@ marker is the export script and never travels.
 """
 import importlib.util
 import pathlib
+import re
 import tempfile
 import unittest
 
@@ -67,6 +68,83 @@ class Decorator(unittest.TestCase):
             self.assertEqual([], result.skipped)
         else:
             self.assertEqual(1, len(result.skipped), result.skipped)
+
+    def test_a_decorated_class_checks_before_its_set_up_class(self):
+        """A class whose setUpClass loads the private input (an import from
+        workshop/, the export script) dies in setUpClass in the export tree
+        unless the check runs first -- an error, not the named skip."""
+        seen = []
+
+        @private_tree.private("no/such/path-1199")
+        class Probe(unittest.TestCase):
+            @classmethod
+            def setUpClass(cls):
+                seen.append("set up")
+
+            def test_reads(self):
+                seen.append("ran")
+
+        result = unittest.TestResult()
+        unittest.TestSuite([Probe("test_reads")]).run(result)
+        self.assertEqual([], seen)
+        if private_tree.is_private():
+            self.assertEqual(1, len(result.errors), result.errors)
+            self.assertIn("private-tree input missing", result.errors[0][1])
+            self.assertEqual([], result.skipped)
+        else:
+            self.assertEqual(1, len(result.skipped), result.skipped)
+            self.assertEqual([], result.errors)
+
+
+# A skip call of a kit self-test, and a path predicate of its own within two
+# lines of it: the second mechanism beside `require` (re-check v2-fix-x A-M2).
+SKIP_CALL = re.compile(r"\bskip(Test|Unless|If)\(|\bSkipTest\(")
+PATH_PREDICATE = re.compile(
+    r"\.(is_dir|exists|is_file)\(\)|\btravels\(\)|os\.path\.(isdir|exists|isfile)\(")
+
+
+def adhoc_path_skips(tests):
+    """`<file>:<line>` of every skip in `tests/test_*.py` that decides on a path
+    predicate of its own. `/proc` is a fact of the host, not of the tree."""
+    found = []
+    for path in sorted(pathlib.Path(tests).glob("test_*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if not SKIP_CALL.search(line) or line.lstrip().startswith("#"):
+                continue
+            window = "\n".join(lines[max(0, i - 2):i + 2])
+            if PATH_PREDICATE.search(window) and "/proc" not in window:
+                found.append("%s:%d" % (path.name, i + 1))
+    return found
+
+
+class OneMechanism(unittest.TestCase):
+    """GH #1199 A-M2: a test that skips on its own path check goes quiet in the
+    private tree when the file moves; `require` fails there instead."""
+
+    def test_no_kit_self_test_skips_on_a_path_check_of_its_own(self):
+        self.assertEqual([], adhoc_path_skips(pathlib.Path(__file__).parent))
+
+    def test_the_scan_sees_each_form_of_a_path_skip(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="private-tree-scan-"))
+        # the forms spelled apart, so this file does not carry them itself
+        skip, unless = "self.skip" + "Test", "@unittest.skip" + "Unless"
+        raise_skip = "raise unittest.Skip" + "Test"
+        (root / "test_forms.py").write_text("\n".join((
+            "    if not (REPO / 'plans').is_dir():",
+            "        %s('x')" % skip,
+            "%s(travels(), 'x')" % unless,
+            "    if not os.path.isfile(p): %s('x')" % skip,
+            "", "", "",
+            "    if not open('/proc/pressure/cpu').read(): %s('x')" % skip,
+            "    private_tree.require('plans/x.md')",
+            "", "", "",
+            "def setUpModule():",
+            "    if not TOOLS.is_dir():",
+            "        %s('x')" % raise_skip, "")), encoding="utf-8")
+        self.assertEqual(["test_forms.py:2", "test_forms.py:3", "test_forms.py:4",
+                          "test_forms.py:15"],
+                         adhoc_path_skips(root))
 
 
 class TheRealTree(unittest.TestCase):

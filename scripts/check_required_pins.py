@@ -12,7 +12,11 @@ mapping. This script holds the three together:
     (a) every marker id has a row, and every row has a marker
         (no orphan on either side);
     (b) every pinned test exists: the file is a test unit of the tree, and
-        the named function is a test in that file;
+        the named function is a test in that file -- one the derived nextest
+        term selects: an exact term (`test(=<fn>)`, `test(=<mod>::<fn>)`)
+        needs the fn outside any inline `mod`, and a module file of an
+        unfolded harness needs its `mod` declaration in `main.rs`, else the
+        pin runs 0 tests (re-check v2-fix-d m1);
     and every row is well formed: an id, a `paths` glob list, a `tests`
     list and a `why` sentence, the id used once.
 
@@ -94,6 +98,128 @@ def _fn_is_test(text, name):
     return False, False
 
 
+_FN_QUALIFIERS = frozenset(("pub", "async", "unsafe", "const", "extern"))
+
+
+def _attrs_name_test(code, i):
+    """Does an attribute of the item whose `fn` stands at `code[i]` name
+    `test` as its last path segment (`#[test]`, `#[tokio::test(..)]`), as
+    TEST_ATTR_RE reads a line? Walks back over qualifiers (`pub(crate)`,
+    `async`, `extern "C"`) and every `#[..]` above."""
+    j = i - 1
+    while j >= 0 and (code[j] in _FN_QUALIFIERS or code[j].startswith('"')):
+        j -= 1
+    if j >= 0 and code[j] == ")":  # pub(crate) / pub(in a::b)
+        while j >= 0 and code[j] != "(":
+            j -= 1
+        j -= 1
+        while j >= 0 and code[j] in _FN_QUALIFIERS:
+            j -= 1
+    while j >= 1 and code[j] == "]":
+        depth, k = 0, j
+        while k >= 0:
+            depth += {"]": 1, "[": -1}.get(code[k], 0)
+            if depth == 0:
+                break
+            k -= 1
+        if k < 1 or code[k - 1] != "#":
+            return False
+        path = []
+        for tok in code[k + 1:j]:
+            if tok in ("(", "=", "]"):
+                break
+            path.append(tok)
+        if path and path[-1] == "test":
+            return True
+        j = k - 2
+    return False
+
+
+def _fn_mods(text, name):
+    """The inline `mod` path around each TEST `fn <name>` of `text`, as tuples
+    -- `()` at the file's top level; None when the lexer doubts or a brace
+    does not balance (`gate_plan._rust_code`). A non-test fn of that name
+    selects nothing and does not count (re-check RC-R2 M2)."""
+    code = gate_plan._rust_code(text)
+    if code is None:
+        return None
+    stack, pending, out = [], None, []
+    for i, tok in enumerate(code):
+        if tok == "mod" and i + 2 < len(code) and code[i + 2] == "{":
+            pending = code[i + 1]
+        elif tok == "{":
+            stack.append(pending)
+            pending = None
+        elif tok == "}":
+            if not stack:
+                return None
+            stack.pop()
+        elif (tok == "fn" and i + 1 < len(code) and code[i + 1] == name
+              and _attrs_name_test(code, i)):
+            out.append(tuple(m for m in stack if m))
+    return out if not stack else None
+
+
+def _path_attr_on_mod(code, i):
+    """Is the literal `code[i]` the value of `path = ".."` in an attribute
+    whose item is a `mod <name>;` (more attributes in between)? A string
+    elsewhere -- `const P: &str = "x/m.rs";` -- declares nothing (RC-R2 M3)."""
+    if i < 2 or code[i - 1] != "=" or code[i - 2] != "path":
+        return False
+    for k in range(i + 1, len(code)):
+        if code[k] in (";", "{", "}", "fn"):
+            return False
+        if code[k] == "mod":
+            return k + 2 < len(code) and code[k + 2] == ";"
+    return False
+
+
+def _declares_mod(main_text, mod):
+    """Does the harness `main.rs` compile `<mod>.rs`: a `mod <mod>;` at its top
+    level (any attribute), or a `#[path = "...<mod>.rs"]` on a top-level
+    `mod` item?"""
+    code = gate_plan._rust_code(main_text)
+    if code is None:
+        return True  # the folding reader doubts too; no finding from a doubt
+    depth = 0
+    for i, tok in enumerate(code):
+        if tok == "{":
+            depth += 1
+        elif tok == "}":
+            depth -= 1
+        elif (depth == 0 and tok == "mod" and i + 2 < len(code)
+              and code[i + 1] == mod and code[i + 2] == ";"):
+            return True
+        elif (depth == 0 and tok.startswith('"') and tok[1:-1].split("/")[-1] == mod + ".rs"
+              and _path_attr_on_mod(code, i)):
+            return True
+    return False
+
+
+def _term_selects(root, rel, name, text, where):
+    """Findings when the term of `{file: rel, fn: name}` selects no test (m1)."""
+    parts = rel.split("/")
+    if len(parts) == 5 and parts[4] != "main.rs":
+        harness, mod = parts[3], parts[4].removesuffix(".rs")
+        main_rel = "/".join(parts[:4] + ["main.rs"])
+        main_text = _read(os.path.join(root, main_rel)) or ""
+        if gate_plan._folded_unit(main_text, harness, mod).endswith("/main"):
+            if not _declares_mod(main_text, mod):
+                return ["%s: %s declares no `mod %s;` -- %s is not compiled, the pin runs 0 tests"
+                        % (where, main_rel, mod, rel)]
+            return []  # unfolded: the term matches the name at any depth
+    if name is None:
+        return []
+    mods = _fn_mods(text, name)
+    if mods is None:
+        return ["%s: %s does not lex -- the term of fn %s cannot be proven" % (where, rel, name)]
+    if mods and () not in mods:
+        return ["%s: fn %s in %s sits in `mod %s` -- the term %s selects 0 tests"
+                % (where, name, rel, "::".join(mods[0]), gate_plan.required_pin_term(
+                    {"file": rel, "fn": name}, root))]
+    return []
+
+
 def check_test(root, test, where):
     """Findings of one `[[pin.tests]]` entry (half b)."""
     if not isinstance(test, dict) or not isinstance(test.get("file"), str):
@@ -106,13 +232,13 @@ def check_test(root, test, where):
     if name is None:
         if not any(TEST_ATTR_RE.match(line) for line in text.splitlines()):
             return ["%s: %s holds no test" % (where, rel)]
-        return []
+        return _term_selects(root, rel, name, text, where)
     found, is_test = _fn_is_test(text, name)
     if not found:
         return ["%s: %s has no fn %s" % (where, rel, name)]
     if not is_test:
         return ["%s: fn %s in %s is no test" % (where, name, rel)]
-    return []
+    return _term_selects(root, rel, name, text, where)
 
 
 def check(root):

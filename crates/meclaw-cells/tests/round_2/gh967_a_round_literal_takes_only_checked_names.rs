@@ -16,6 +16,21 @@
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::{emit_one, shipped_script};
 
+/// The version a shipped `template.json` declares, so that nothing here is a
+/// literal the merge point's cascade can silently falsify.
+fn version_of(template: &str) -> String {
+    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(format!("templates/{template}/template.json"));
+    let raw = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let v: Value =
+        meclaw_core::serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    v["version"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{} declares no version", p.display()))
+        .to_string()
+}
+
 const RECIPES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/builder/recipes/config.json"
@@ -64,7 +79,7 @@ fn payload(out: &Value) -> Value {
 fn channel_wish(assistant: &str, person: &str) -> Value {
     json!({"recipe": "grow_level", "request": "…", "params": {
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.2.0", "assistant": assistant,
+        "template": "telegram-connector@2.2.1", "assistant": assistant,
         "bind_chat": "4711", "ctx": {"member_person": person}}})
 }
 
@@ -145,8 +160,10 @@ fn a_round_literal_takes_only_checked_names() {
 /// lane, whose composer asks the question.
 #[test]
 fn told_checks_the_person_like_the_main_lane() {
-    let sentence =
-        format!("grow a channel named telegram from telegram-connector@2.2.0 under {MEMBER_DIR}");
+    let sentence = format!(
+        "grow a channel named telegram from telegram-connector@{} under {MEMBER_DIR}",
+        version_of("telegram-connector")
+    );
     for bad in BAD {
         let out = run_classify(json!({"request": sentence, "assistant": "scribe",
                                       "ctx": {"member_person": bad}}));

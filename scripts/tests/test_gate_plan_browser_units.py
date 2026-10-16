@@ -74,7 +74,7 @@ def webkit_part(st):
 DRIVERS = REPO / "workshop" / "tools"
 
 
-@unittest.skipUnless(DRIVERS.is_dir(), "public tree: no browser drivers, no browser units")
+@private_tree.private("workshop/tools")
 class TheRealTree(unittest.TestCase):
 
     def test_the_eight_and_the_marker_three_are_browser_units(self):

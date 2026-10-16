@@ -316,11 +316,15 @@ async fn a_turn_that_never_answers_stops_typing_by_itself() {
     let log = meclaw_testing::log_recorder::global();
     let (addr, mut api) = bot_api().await;
     let mut cell = cell_against(addr);
-    // The ceiling leaves the first round trip a whole hang floor before the
-    // keeper may stop, so a repeat is owed on any host; the keeper's own clock
-    // decides when it ends, the test only waits for it to say so.
+    // The ceiling leaves the first round trip a whole hang floor, scaled,
+    // before the keeper may stop, so a repeat is owed on any host; the
+    // keeper's own clock decides when it ends, the test only waits for it to
+    // say so. A first round trip past that floor is a hang and is named as one
+    // below (re-check RC2 M1, as OR-HB.1 for gh1037/gh146) -- only when the
+    // hang mark below has run out too, so a keeper that stops early on its
+    // own is judged on its content (re-check RC-T4 I1).
     let interval = Duration::from_millis(500);
-    let max_total = interval + deadline::FLOOR;
+    let max_total = interval + deadline::scaled(deadline::FLOOR);
     cell.set_typing_cadence(TypingCadence {
         interval,
         max_total,
@@ -347,6 +351,9 @@ async fn a_turn_that_never_answers_stops_typing_by_itself() {
         }
     });
 
+    // The hang mark, never a verdict: the wall clock from the turn on, read
+    // only to name a lone tick a hang once a whole floor has passed.
+    let hang_mark = tokio::time::Instant::now();
     cell.handle_event(
         ProxyEvent::UserMessage {
             update_id: 1,
@@ -380,6 +387,26 @@ async fn a_turn_that_never_answers_stops_typing_by_itself() {
         .find_map(|f| f.strip_prefix("ticks="))
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("the keeper's stop line names its ticks: {stop}"));
+    // One tick only AND the scaled floor has passed since the turn: the
+    // first round trip ate the whole floor, so no repeat was owed -- a hang of
+    // the host, never a verdict on the keeper. Two signals, as OR-HB.1: a
+    // keeper that stops after one tick inside the floor is a keeper defect and
+    // falls through to the content verdict right below.
+    let floor = deadline::scaled(deadline::FLOOR);
+    if ticks <= 1 && hang_mark.elapsed() >= floor {
+        panic!(
+            "HANG: the first round trip did not fit the ceiling, the hang floor scaled \
+             ({} ms), so no repeat was owed: {stop}",
+            floor.as_millis()
+        );
+    }
+    assert!(
+        ticks > 1,
+        "GH #515: the keeper stopped after {ticks} tick(s) although its first round trip \
+         fit the ceiling ({} ms of floor left a repeat owed) - it must keep the sign of \
+         life up until max_total: {stop}",
+        floor.as_millis()
+    );
 
     let mut actions = Vec::new();
     while let Ok(r) = seen.try_recv() {

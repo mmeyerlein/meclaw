@@ -47,16 +47,14 @@
 //! ship the templates is skipped, never judged.
 
 use meclaw_cells::code::CodeCellFactory;
-use meclaw_colony::{
-    CellFactory, CellFactoryRegistry, DeadLetterReason, bootstrap_from_filesystem,
-};
+use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
-use meclaw_testing::{ColonyHandle, emit_all, shipped_script};
+use meclaw_testing::{ColonyHandle, deadline, emit_all, shipped_script, wait};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// A path inside this repository, from the crate's manifest directory.
@@ -122,7 +120,7 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
 fn wish(scope: &str, name: &str, door: bool) -> Value {
     let mut params = json!({
         "scope": scope, "level": "assistant", "name": name,
-        "template": "assistant@3.7.17",
+        "template": "assistant@3.7.18",
         "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                 "model_surface": "${MODEL_SURFACE}"},
         "override_params": {"cogny/brain": {"temperature": 0.2}}
@@ -480,26 +478,21 @@ fn inject(addressed_to: &str) -> Message {
         .build()
 }
 
-/// Failure-marker timeout: generous on purpose (30 s convention), robust against
-/// cargo-parallel load.
+/// The next message at the sink, under the hang mark: a run that stands still
+/// fails with `HANG:` -- a marker, never a verdict (TV-Z3).
 async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
-        .await
-        .ok()
-        .flatten()
+    deadline::hang("a message reaches the sink", rx.recv()).await
 }
 
-/// The settle before a "nobody else answered" assertion — a semantic
-/// discriminator, argued rather than made generous (the `gh286` reading): every
-/// edge out of the container is decided in ONE `apply_edges` call on ONE
-/// message, so a second generation being handed the same turn is not a slow
-/// second round, it is already in flight when the first answer arrives. The
-/// wait only lets an in-flight delivery land, and it starts AFTER the positive
-/// receipt.
-const SETTLE: Duration = Duration::from_millis(750);
-
 /// Boot the tree, send one turn, hand back the first thing that reached the sink
-/// and — after the settle — whatever else did, plus the dead letters.
+/// and — once the colony settled — whatever else did, plus the dead letters.
+///
+/// "Nobody else answered" is read after the quiescence barrier (TV-A2), never
+/// after a wait: every edge out of the container is decided in ONE
+/// `apply_edges` call on ONE message, so a second generation handed the same
+/// turn is work the colony still holds (a mailbox, a ticket, an output) when the
+/// first answer arrives. `quiesce` returns once none holds any, so a second
+/// answer has reached the sink by then, or never will.
 async fn round(with_door: bool, addressed_to: &str) -> (Message, Vec<Message>) {
     let Some((member, assistant)) = shipped() else {
         panic!("guarded by the caller");
@@ -511,7 +504,7 @@ async fn round(with_door: bool, addressed_to: &str) -> (Message, Vec<Message>) {
     let first = recv_bounded(&mut rx)
         .await
         .expect("the round has to reach the sink -- every surface double answers");
-    tokio::time::sleep(SETTLE).await;
+    h.quiesce().await;
     let mut more = Vec::new();
     while let Ok(m) = rx.try_recv() {
         more.push(m);
@@ -639,32 +632,34 @@ async fn without_a_door_the_unaddressed_turn_is_hive_no_route() {
     let (h, mut rx) = boot(&td).await;
     h.send(inject("")).await;
 
-    // The dead letter IS the positive receipt here: poll the queue, bounded,
-    // until it names the container.
+    // The dead letter IS the positive receipt here: the queue is taken through
+    // the colony until it names the container, under the hang mark (TV-Z3) --
+    // a turn that never dies there fails as `HANG:` with every letter seen.
     let container = format!("{MEMBER}/assistants");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    let mut seen = Vec::new();
-    let found = loop {
-        let batch = h.drain_dead_letters().await;
-        let hit = batch.iter().any(|d| {
-            d.resolved_target.as_str() == container
-                && matches!(d.reason, DeadLetterReason::HiveNoRoute)
-        });
-        seen.extend(
-            batch
-                .iter()
-                .map(|d| (d.resolved_target.as_str().to_string(), d.reason.as_code())),
-        );
-        if hit || tokio::time::Instant::now() >= deadline {
-            break hit;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert!(
-        found,
-        "a turn that names no agent, in a member without a door, has to die at the \
-         container as hive_no_route -- dead letters seen: {seen:?}"
-    );
+    let seen = RefCell::new(Vec::new());
+    wait::until_with(
+        "the unaddressed turn dies at the container as hive_no_route",
+        || {
+            let (h, container, seen) = (&h, &container, &seen);
+            async move {
+                let batch = h.drain_dead_letters().await;
+                let mut seen = seen.borrow_mut();
+                seen.extend(
+                    batch
+                        .iter()
+                        .map(|d| (d.resolved_target.as_str().to_string(), d.reason.as_code())),
+                );
+                seen.iter()
+                    .any(|(target, code)| target == container && *code == "hive_no_route")
+            }
+        },
+        || seen.borrow().clone(),
+    )
+    .await;
+    // And no generation answered it, read once the colony settled (TV-A2): an
+    // answer that follows from the turn has reached the sink by now, or never
+    // will.
+    h.quiesce().await;
     assert!(
         rx.try_recv().is_err(),
         "and no generation answered it: the strict guards stay strict"

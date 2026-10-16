@@ -495,9 +495,13 @@ async fn a_turn_runs_the_whole_composite_round() {
 /// collector exactly as before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_annotated_answer_splits_into_the_reply_and_the_sidecar() {
+    // GH #1225: the knob ships the source rule, so the fact names whose
+    // words it rests on and quotes them, as the shipped offer asks.
     let block = "{\"facts\": [{\"subject\": \"user\", \"predicate\": \"lives_in\", \
-                 \"claim\": \"Berlin\", \"fact_kind\": \"world\"}], \
-                 \"topic\": {\"movement\": \"start\", \"name\": \"where the user lives\"}}";
+                 \"claim\": \"Berlin\", \"fact_kind\": \"world\", \
+                 \"quote\": \"ich wohne in Berlin\", \"source\": \"person\"}], \
+                 \"topic\": {\"movement\": \"start\", \"name\": \"where the user lives\", \
+                 \"source\": \"person\"}}";
     let answer_with_block = format!("Notiert, Berlin.\n\n```sidecar\n{{\"memory\": {block}}}\n```");
     let mock = MockOpenAI::start(vec![canned_chat_completion(&answer_with_block, "stop")]).await;
     let td = tempfile::TempDir::new().unwrap();

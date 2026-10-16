@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from scripts.tests import kit_time, store_isolation
+from scripts.tests import kit_time, private_tree, store_isolation
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -318,8 +318,7 @@ class ForeignCorpusTests(unittest.TestCase):
         return len([r for r in red if r["foreign"]]), len(red)
 
     def setUp(self):
-        if not (REPO / "plans" / "welle-h2-2026-09-18").is_dir():
-            self.skipTest("the measured waves are not in this tree")
+        private_tree.require("plans/welle-h2-2026-09-18")
 
     def test_h2_counts_the_three_builder_runs_and_no_mixed_one(self):
         self.assertEqual(self._share("welle-h2-2026-09-18"), (3, 6))
@@ -1175,8 +1174,7 @@ class HistoryColumnTests(unittest.TestCase):
         written for -- the lines older than Q12 and Q13 carry `–` there."""
         from retro import render
         committed = REPO / "plans" / "retro" / "RETRO.md"
-        if not committed.is_file():
-            self.skipTest("plans/retro/RETRO.md not in this tree")
+        private_tree.require("plans/retro/RETRO.md")
         table = [l for l in committed.read_text(encoding="utf-8").splitlines()
                  if l.startswith("|")]
         self.assertEqual(table[0], wr.history_head()[-2])
@@ -1291,8 +1289,7 @@ class CheckAndReadmeTests(unittest.TestCase):
     def test_the_committed_readme_matches_the_thresholds_file(self):
         """The README is generated, so a hand edit to either half is drift."""
         committed = REPO / "plans" / "retro" / "README.md"
-        if not committed.is_file():
-            self.skipTest("plans/retro/README.md not in this tree")
+        private_tree.require("plans/retro/README.md")
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         wr.main(["--readme", "--root", tmp.name])
@@ -1389,8 +1386,7 @@ class StoreColumnTests(unittest.TestCase):
             self.assertIn(f"| {m['id']} | {m['title']} |", readme)
         # the committed history carries the columns (private tree only)
         committed = REPO / "plans" / "retro" / "RETRO.md"
-        if not committed.is_file():
-            self.skipTest("plans/retro/RETRO.md not in this tree")
+        private_tree.require("plans/retro/RETRO.md")
         self.assertIn("| Q13 | Q14 | Q15 | Q16 | Q17 |", committed.read_text(encoding="utf-8"))
 
 

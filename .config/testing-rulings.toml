@@ -80,3 +80,23 @@ bans = []
 paths = []
 loosens = ["docs/development-rules.md"]
 expires = "2026-10-20"
+
+[[ruling]]
+id = "OR-TV-12"
+date = "2026-10-16"
+by = "coordinator"
+text = "Tightening of scripts/testing_bans.py: a wall-clock read hidden behind a helper function (for example a test helper that returns SystemTime::now) is recognised as the clock ban it stands for. Added lines are judged by it from here on. The inventory baseline in .config/testing-bans.baseline.json is written once at the stock the sharper detection measures (the statements were there before, only unseen); this is a measurement, not a new violation, and no existing statement has to be lifted for it. From that count the ratchet sinks again as before. No ban or pattern is removed and no scope narrows."
+bans = []
+paths = []
+loosens = ["scripts/testing_bans.py", ".config/testing-bans.baseline.json"]
+expires = "2026-10-23"
+
+[[ruling]]
+id = "OR-TV-13"
+date = "2026-10-16"
+by = "owner"
+text = "Flake path B (lean), changes OR-TV-2 and replaces TV-F6: a test that fails in a gate is triaged once alone (T1), once on a lane at about 30 % total CPU load with the test at full quota (T2), once in random order (T3) and once with a shifted clock (T4). Red in T1, T2, T3 or T4 is RED and fixed by section 11 (lift an old test as a whole, fix a new one at its cause, never loosen). Red only under full load is a NOTE load-flake: it does not block, it is kept as an observation and fixed when its file is touched anyway. A fix is accepted with its mutant red to green plus 5 green runs at about 30 % lane load on one lane; error paths are pinned by injected faults. Runs at 80 % with time factor 3 and overbooked runs leave the blocking path. Production never runs above about 30 % CPU; load beyond that judges the machine, not the code."
+bans = []
+paths = []
+loosens = ["docs/development-rules.md"]
+expires = "2026-10-23"

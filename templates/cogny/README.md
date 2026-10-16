@@ -1,4 +1,4 @@
-# `cogny@5.9.6`
+# `cogny@5.10.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.1.2"},
+{"cell": {"type": "ref", "template": "collector@5.1.3"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.11.5"},
+{"cell": {"type": "ref", "template": "curator@1.11.6"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.9.6` above it in its provenance chain.
+`cogny@5.10.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -673,7 +673,7 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `defer_turns` | param | `"0"` (#894) | collector -- a turn that lands in another errand's open tool round opens a round of its own instead of waiting for the next one: this core's session is the conversation that consults it, so a second errand or the asker's `reply_to_consult` would otherwise wait for a round nobody opens and come back under the other errand's `consult_id`. The collector's own default, `"1"`, is the telephone model of a channel voice |
 | `role`, `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `context_window` | param | `role` `"consult"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889), by the consult role's presets since GH #892; the full table is in the curator's README |
 | `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
-| `sidecar_verify` | param | `{}` | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)), and it stays **empty** at this core: the splitter and its edges are the talky's, so a section named here goes to `./curator` and is checked there, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
+| `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079); since [#1225](https://github.com/mmeyerlein/meclaw/issues/1225) also the token `source`, the rows of the source each item names itself). The splitter, its knob and its edges are the talky's byte for byte, so the shipped rule stamps this core's `memory` section too -- and this core's curator does not check it: a core keeps no memory, its `memory` stays a topic mark at `./curator` (`pass_sections` empty there), and the intake says on stderr that the rule is ignored. A tree that names another section here gets it checked at `./curator`, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
 | `async_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
 | `handoff_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. Since #894 that is `ask_requester`: the answer to the core's question arrives as its next errand. `escalate_to_deep` is gone since 4.4.0, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
 
@@ -698,7 +698,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.9.6", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.10.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

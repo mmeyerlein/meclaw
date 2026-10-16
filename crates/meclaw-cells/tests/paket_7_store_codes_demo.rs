@@ -361,7 +361,7 @@ fn documented_family_one_codes(root: &std::path::Path) -> std::collections::BTre
     let line = doc
         .lines()
         .find(|l| l.starts_with("1. SQL level gives a regular `tool_result` turn"))
-        .expect("cell-types.en.md § store carries the family-1 line");
+        .unwrap_or_else(|| panic!("{} § store carries the family-1 line", doc_path.display()));
     let open = line.find('(').expect("family-1 line opens its code list");
     let close = line[open..]
         .find(", GH #915")
@@ -422,5 +422,37 @@ fn the_public_clone_reads_the_family_one_list_under_the_plain_name() {
         documented_family_one_codes(public.path()),
         documented_family_one_codes(&repo_root()),
         "the public clone reads the same family-1 list as the private tree"
+    );
+}
+
+#[test]
+fn a_missing_family_one_line_names_the_file_that_was_read() {
+    // Delta-check 2843dd16c: the expect message said "cell-types.en.md" while
+    // the public clone reads docs/cell-types.md -- a red there pointed at a
+    // file the clone does not have. The message names `doc_path` instead.
+    let public = tempfile::tempdir().expect("temp dir for the public layout");
+    std::fs::create_dir_all(public.path().join("docs")).expect("docs/ in the public layout");
+    std::fs::write(
+        public.path().join("docs/cell-types.md"),
+        "# Cell types\n\nno family-1 line here\n",
+    )
+    .expect("catalogue without the family-1 line");
+    let root = public.path().to_path_buf();
+    let panic = std::panic::catch_unwind(move || documented_family_one_codes(&root))
+        .expect_err("a catalogue without the family-1 line is a red");
+    let message = panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .expect("the panic carries a message");
+    let read = public.path().join("docs/cell-types.md");
+    assert!(
+        message.contains(&read.display().to_string()),
+        "the message names the file that was read ({}): {message}",
+        read.display()
+    );
+    assert!(
+        !message.contains("cell-types.en.md"),
+        "the message names no file the public clone lacks: {message}"
     );
 }

@@ -1,4 +1,4 @@
-# `builder@1.26.52`
+# `builder@1.26.53`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -944,7 +944,7 @@ rather than read by its truthiness; `null` is an absent key. The sentence form h
 member's door* (or *as its door*) both render `door: true`. The words are read as a request, not
 as a noun anywhere in the sentence: *… next to the member's door* and *…, not as the door* render
 none. An explicit `door` argument beats the words, as it does for `birth`. The worked example is `examples/organism/grow-member-door.json`, held to the renderer
-byte for byte by `crates/meclaw-cells/tests/misc_7/gh835_a_door_takes_the_turn_nobody_addressed.rs`.
+byte for byte by `crates/meclaw-cells/tests/misc_6/gh835_a_door_takes_the_turn_nobody_addressed.rs`.
 
 ### A grown brain is a subscriber of the colony's model registry
 

@@ -1,4 +1,4 @@
-# `collector@5.1.2`
+# `collector@5.1.3`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -237,7 +237,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.1.2",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.1.3",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -470,10 +470,10 @@ instead. The memory hive's offer renders its head like this:
 ```
 ## memory (required)
 ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
-{"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the person's words this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>"}],"topic":{"movement":"start|continue|end","name":""}}}
+{"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.1.2`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.1.3`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -519,7 +519,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.1.2` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.1.3` (the curator decides what fits, R-IG-1).
 
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
 

@@ -3,6 +3,7 @@ import contextlib
 import io
 import os
 import pathlib
+import re
 import sys
 import subprocess
 import tempfile
@@ -567,6 +568,87 @@ class Argv(unittest.TestCase):
         self.assertIn("seq 8", loads[0][-1])
         self.assertIn("NOTE throttle: cpu controller not delegated on lane@test -- fallback --load 8", out)
         self.assertIn("load: 8 busy loops on lane@test", out)
+
+    def _production_run(self, load1, nproc, extra=()):
+        """main() with `--production-load --runs 5` on a fake lane at `load1` of
+        `nproc` vCPU (K12); returns (rc, stdout + stderr, runs, loads)."""
+        class Proc:
+            stdin, returncode = io.StringIO(), None
+            poll = wait = terminate = lambda self, *a, **k: None
+        saved = (ft.lane_target, ft.lane_probe, ft.alive, ft.subprocess.Popen, ft.subprocess.run)
+        runs, loads, out = [], [], io.StringIO()
+        try:
+            ft.lane_target = lambda lane, lanes_file=None: "lane@test"
+            ft.lane_probe = lambda target: (load1, nproc)
+            ft.alive = lambda target, pids: len(pids)
+
+            def popen(argv, **k):
+                loads.append(argv)
+                n = int(re.search(r"seq (\d+)", argv[-1]).group(1))
+                proc = Proc()
+                proc.stdout = io.StringIO("LOAD " + " ".join(str(10 + i) for i in range(n)) + "\n")
+                return proc
+            ft.subprocess.Popen = popen
+            ft.subprocess.run = lambda argv, **k: runs.append((argv, k.get("env"))) or \
+                ft.subprocess.CompletedProcess(argv, 0, "", "")
+            with mock.patch("sys.stdout", out), mock.patch("sys.stderr", out):
+                rc = ft.main(["--production-load", "--runs", "5", *extra, *CASE_A])
+        finally:
+            ft.lane_target, ft.lane_probe, ft.alive, ft.subprocess.Popen, ft.subprocess.run = saved
+        return rc, out.getvalue(), runs, loads
+
+    def test_production_load_tops_the_lane_up_to_thirty_percent(self):
+        """K12: the lane about 30 % busy -- load1 1.6 measured on 12 vCPU gets
+        round(3.6 - 1.6) = 2 busy loops, full quota (no CPUQuota), and the
+        header names the measurement."""
+        rc, out, runs, loads = self._production_run(1.6, 12)
+        (argv, env), = runs
+        self.assertNotIn("MECLAW_LANE_CPU_QUOTA", env or {})
+        self.assertEqual(argv[argv.index("--stress-count") + 1], "5")
+        self.assertEqual(len(loads), 1)
+        self.assertIn("$(seq 2)", loads[0][-1])
+        self.assertIn("production load: lane about 30 % busy -- load1 1.6 of 12 vCPU measured, "
+                      "2 busy loops (K12)", out)
+        self.assertIn("load: 2 busy loops on lane@test (12 cores)", out)
+
+    def test_a_lane_already_at_thirty_percent_gets_no_loops(self):
+        rc, out, runs, loads = self._production_run(4.0, 12)
+        self.assertEqual((len(runs), loads), (1, []))
+        self.assertIn("load1 4.0 of 12 vCPU measured, 0 busy loops", out)
+
+    def test_a_lane_busier_than_thirty_percent_is_refused(self):
+        """K12: a lane already fuller is no measurement at 30 % -- exit 2 before
+        any load or run: wait, or take another lane."""
+        rc, out, runs, loads = self._production_run(5.0, 12)
+        self.assertEqual((rc, runs, loads), (2, [], []))
+        self.assertIn("lane lane@test is busier than 30 %: load1 5.0 of 12 vCPU "
+                      "-- wait, or take another lane (K12)", out)
+
+    def test_production_load_takes_no_other_load_or_quota(self):
+        for extra in (("--load", "4"), ("--throttle", "30"), ("--time-factor", "3")):
+            rc, out, runs, loads = self._production_run(1.6, 12, extra)
+            self.assertEqual((rc, runs, loads), (2, [], []), extra)
+            self.assertIn("--production-load sets the load itself", out, extra)
+
+    def test_the_python_class_refuses_a_lane_busier_than_thirty_percent(self):
+        out = io.StringIO()
+        with mock.patch.object(ft, "lane_probe", lambda target: (9.0, 12)), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", out):
+            rc = ft.main(["--unittest", "--host", "local", "--production-load", "--runs", "1",
+                          "scripts.tests.test_flake_triage.T.test_green"])
+        self.assertEqual(rc, 2, out.getvalue())
+        self.assertIn("busier than 30 %", out.getvalue())
+
+    def test_the_python_class_takes_no_time_factor_beside_production_load(self):
+        """Re-check M4: the unittest path refuses `--time-factor` beside
+        `--production-load` like the nextest path (K12: full quota)."""
+        out = io.StringIO()
+        with mock.patch.object(ft, "lane_probe", lambda target: (1.6, 12)), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", out):
+            rc = ft.main(["--unittest", "--host", "local", "--production-load", "--runs", "1",
+                          "--time-factor", "3", "scripts.tests.test_flake_triage.T.test_green"])
+        self.assertEqual(rc, 2, out.getvalue())
+        self.assertIn("--production-load sets the load itself", out.getvalue())
 
 
 class RunLog(unittest.TestCase):

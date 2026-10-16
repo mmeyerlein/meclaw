@@ -951,6 +951,8 @@ def _flake_dispatch(p, db, d, repo, mode, base):
     d["quarantine"] = p.store("flake quarantine", _flake_quarantine, db) or []
     d["flake_issues"] = p.store("flake issues", flakes.dispatch_issues, db) or {}
     d["quarantine_expired"] = p.store("flake expiries", _flake_expired, db) or []
+    # B schlank (OR-TV-13, K12): the triage's T2 runs on the lane about 30 % busy.
+    d["t2_production"] = True
     try:
         legacy_base, full = plan.resolve_base(repo, mode, base or None)
         d["flaky_legacy"] = [] if full else flakes.legacy_tests(repo, legacy_base)
@@ -1961,14 +1963,15 @@ class TestProgress:
     caller's streams and noted at the lease (`token who`). `clock` is the kit
     clock (epoch seconds)."""
 
-    def __init__(self, out, holder, n, clock=time.time, err=None):
+    def __init__(self, out, holder, n, clock=time.time, err=None, lane=""):
         self.out, self.err, self.holder, self.n, self.clock = out, err, holder, max(int(n), 1), clock
+        self.lane = lane
         self.done = self.red = 0
 
     def _say(self):
         line = progress.pass_line(self.done, self.n, self.done, self.red, now=self.clock())
         progress.emit(line, self.err, self.out)
-        progress.beat(self.holder, line, now=self.clock())
+        progress.beat(self.holder, line, now=self.clock(), lane=self.lane)
 
     def start(self):
         self._say()
@@ -2054,7 +2057,7 @@ def _test(argv, out, err):
         print("strand: test log %s" % log, file=out, flush=True)
 
         t0 = int(time.time())
-        prog = TestProgress(out, holder, _stress_count(extra), err=err)
+        prog = TestProgress(out, holder, _stress_count(extra), err=err, lane=host)
         prog.start()
         # The test on the lane is W1's `lane_sync.sh test` (one truth): the tier
         # in the build path with the lane's width and class, the guards, the

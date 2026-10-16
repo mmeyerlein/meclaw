@@ -26,8 +26,18 @@ LANE (the held lane, warm, <= 100 s), only for a Rust diff: `cargo check
 --tests -p <crates>` -- a compile error in a test in seconds -- and the test
 binaries of the changed test files with cargo targets `-p <crate> --test
 <stem>`, never a bare filterset (`nextest run -E` alone builds every test
-binary of the workspace). Without a lane the half is skipped with a NOTE and
-the stamp says `lane_half: false`.
+binary of the workspace). A harness (#1119) the diff names modules of runs
+those modules only, each with its unit term (`gate_plan.test_file_unit`,
+GH #1130): adding a test touches main.rs and the module, and the whole
+harness ran -- misc_2 + misc_3 are 646 tests, 45 s of run on build03. With
+main.rs in the diff that is narrower than the gate's rule 3 (main.rs is the
+unit `<h>/main` there, the whole binary), so pre narrows only while main.rs
+differs from the base in `mod` lines of the named modules alone -- a moved
+`#[path]` helper, a `pub use`, a new main.rs or no base run the whole binary
+(re-check RC-P1 I1). main.rs alone, a module main.rs does not fold or a
+helper runs the whole binary too, and the whole binary wins over a module of
+it. Without a lane the half is skipped with a NOTE and the stamp says
+`lane_half: false`.
 
 THE STAMP
 =========
@@ -140,8 +150,36 @@ def git_dir(repo):
 
 # --- the plan ---------------------------------------------------------------
 
-def plan(paths, repo):
-    """`{classes, crates, lane_half, unittests, test_targets}` of a diff."""
+_MOD_LINE = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
+
+
+def main_rs_folds_only(repo, base, path, mods):
+    """True when the harness `path` (a main.rs) differs from `base` in blank
+    lines and `mod <m>;` lines of the modules `mods` alone -- the shape of
+    "add a test". Anything else may change what every module of the harness
+    sees (a `#[path]` helper, a `pub use`, an attribute), so the caller runs
+    the whole binary: no base, a main.rs the base lacks, any other line
+    (re-check RC-P1 I1)."""
+    if not base or subprocess.run(
+            ["git", "-C", repo, "cat-file", "-e", "%s:%s" % (base, path)],
+            capture_output=True, env=gitenv.without_repo_env(os.environ)).returncode:
+        return False
+    in_hunk = False
+    for line in _git(repo, "diff", "--no-renames", "-U0", base, "--", path).split("\n"):
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if not in_hunk or line[:1] not in ("+", "-") or not line[1:].strip():
+            continue
+        m = _MOD_LINE.fullmatch(line[1:].strip())
+        if not m or m.group(1) not in mods:
+            return False
+    return True
+
+
+def plan(paths, repo, base=None):
+    """`{classes, crates, lane_half, unittests, test_targets, test_modules}` of
+    a diff against `base` (the merge base; it proves a main.rs change a fold)."""
     import gate_plan
     classes = set(gate_plan.classify(paths))
     try:
@@ -152,22 +190,47 @@ def plan(paths, repo):
     unittests = []
     if "gate_infra" in classes or any(p.startswith("scripts/") for p in paths):
         for p in paths:
-            base = os.path.basename(p)
-            if (p.startswith("scripts/tests/") and base.startswith("test_")
+            name = os.path.basename(p)
+            if (p.startswith("scripts/tests/") and name.startswith("test_")
                     and p.endswith(".py") and p.count("/") == 2
                     and os.path.isfile(os.path.join(repo, p))):
-                unittests.append("scripts.tests." + base[:-3])
-    targets = []
+                unittests.append("scripts.tests." + name[:-3])
+    targets, whole, modules, mains = set(), set(), {}, {}
     for p in paths:
         parts = p.split("/")
-        if (len(parts) == 4 and parts[0] == "crates" and parts[2] == "tests"
-                and parts[3].endswith(".rs") and os.path.isfile(os.path.join(repo, p))):
-            targets.append((parts[1], parts[3][:-3]))
-        elif (len(parts) == 5 and parts[0] == "crates" and parts[2] == "tests"
-              and parts[4] == "main.rs"):
-            targets.append((parts[1], parts[3]))
+        if not (parts[0] == "crates" and len(parts) in (4, 5) and parts[2] == "tests"
+                and parts[-1].endswith(".rs")):
+            continue
+        if len(parts) == 4:
+            if os.path.isfile(os.path.join(repo, p)):
+                targets.add((parts[1], parts[3][:-3]))
+                whole.add((parts[1], parts[3][:-3]))
+            continue
+        if parts[4] == "main.rs":
+            # main.rs builds its harness; it runs whole only when the diff
+            # names no module of it (a new test is main.rs + its module)
+            targets.add((parts[1], parts[3]))
+            mains[(parts[1], parts[3])] = p
+            continue
+        # a module of a harness (#1119): the unit rule 3 runs (GH #1130), a
+        # file in a directory without main.rs is no binary of its own
+        if not (os.path.isfile(os.path.join(repo, p))
+                and os.path.isfile(os.path.join(repo, *parts[:4], "main.rs"))):
+            continue
+        crate, unit = gate_plan.test_file_unit(p, repo)
+        harness, mod = unit.split("/", 1)
+        targets.add((crate, harness))
+        if mod == "main":
+            whole.add((crate, harness))
+        else:
+            modules.setdefault((crate, harness), set()).add(mod)
+    for t, mods in modules.items():
+        if t in mains and not main_rs_folds_only(repo, base, mains[t], mods):
+            whole.add(t)
+    narrow = {"%s::%s" % t: sorted(m) for t, m in modules.items() if t not in whole}
     return {"classes": sorted(classes), "crates": crates, "lane_half": lane_half,
-            "unittests": sorted(set(unittests)), "test_targets": sorted(set(targets))}
+            "unittests": sorted(set(unittests)), "test_targets": sorted(targets),
+            "test_modules": narrow}
 
 
 def lane_commands(p, repo=None):
@@ -216,6 +279,17 @@ def _lane_commands(p):
         argv = ["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=warn", "-p", crate]
         for stem in sorted(by_crate[crate]):
             argv += ["--test", stem]
+        # GH #1130: a harness the diff names modules of runs those modules
+        # only, with rule 3's term; `--test` keeps the build to these binaries
+        narrow = p.get("test_modules") or {}
+        if any("%s::%s" % (crate, s) in narrow for s in by_crate[crate]):
+            import gate_plan
+            terms = []
+            for stem in sorted(by_crate[crate]):
+                mods = narrow.get("%s::%s" % (crate, stem))
+                terms += ([gate_plan._binary_id(crate, "%s/%s" % (stem, m)) for m in mods]
+                          if mods else [gate_plan._binary_id(crate, stem)])
+            argv += ["-E", " | ".join(terms)]
         cmds.append(argv)
     return cmds
 
@@ -530,10 +604,15 @@ def ssh_runner(lane_target, strand, repo, exec_=subprocess.run, popen=subprocess
                 return res.returncode, "lane push failed: " + res.stderr.strip()[-200:]
             state["pushed"] = True
         if argv[1] == "nextest":
-            pairs, crate, opts, i = [], None, [], 3
+            pairs, crate, opts, expr, i = [], None, [], None, 3
             while i < len(argv):
                 if argv[i] == "-p":
                     crate = argv[i + 1]
+                    i += 1
+                elif argv[i] == "-E":
+                    # the narrowed filterset (GH #1130) is lane_sync's own
+                    # word: a second `-E` among the options would be OR-ed
+                    expr = argv[i + 1]
                     i += 1
                 elif argv[i] == "--test":
                     if crate is None:
@@ -547,7 +626,7 @@ def ssh_runner(lane_target, strand, repo, exec_=subprocess.run, popen=subprocess
             if not pairs:
                 # an empty filterset would run nothing -- or everything
                 return 2, "error: no (-p, --test) pair in %s" % " ".join(argv)
-            expr = " | ".join("binary_id(=%s::%s)" % cs for cs in pairs)
+            expr = expr or " | ".join("binary_id(=%s::%s)" % cs for cs in pairs)
             cmd = [sync, "test", lane_target, strand, expr] + opts
             for _, stem in pairs:
                 cmd += ["--test", stem]
@@ -882,7 +961,7 @@ def run_pre(repo, base=None, runner=None, allow_bump=None, strand=None, lane=Non
     repo = os.path.abspath(repo)
     base = base or locks.merge_base(repo)
     paths = diff_paths(repo, base)
-    p = plan(paths, repo)
+    p = plan(paths, repo, base=base)
     ctx = {"base": base, "mode": "pre", "allow_bump": allow_bump}
     cmds = lane_commands(p, repo)
     if fast:

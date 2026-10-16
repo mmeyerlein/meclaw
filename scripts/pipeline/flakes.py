@@ -33,12 +33,15 @@ one run, and they take nextest keys only.
 """
 
 import json
+import math
 import os
 import pathlib
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
+import time
 import tomllib
 import xml.etree.ElementTree as ET
 from datetime import timedelta
@@ -55,8 +58,12 @@ RATE_THRESHOLD = 0.05  # auto quarantine from this flaky/runs rate on (with an i
 QUARANTINE_DAYS = 14   # the longest a quarantine may run (VG TV-F3)
 QUARANTINE_MAX = 8     # active entries at most; the ninth is refused (VG TV-F3)
 QUARANTINE_FULL = "quarantine full"
-FIX_QUIET = 20         # a measured fix: no red in this many quiet runs ...
-FIX_LOAD = 20          # ... and in this many under load (VG TV-F6)
+# A measured fix (owner's ruling "B schlank", OR-TV-13, replaces VG TV-F6's
+# twenty quiet plus twenty loaded): the mutant red then green (the strand's log),
+# and this many green runs on one lane about 30 % busy, at full quota
+# (`flake_triage.py --production-load --runs 5`, K12); no quiet series.
+FIX_QUIET = 0
+FIX_LOAD = 5
 LEGACY_FILE = ".config/flaky-legacy.toml"
 OBSERVATION_LABEL = "observation"
 ISOLATION_CAP = 5      # every kind: more red tests than this is a defect, not a flake
@@ -645,6 +652,19 @@ CAUSE_T4 = "time"
 CAUSE_NONE = "not reproduced"
 DEFECT = "defect"
 T2_MODULE_FROM = 200     # more tests than this in the binary: T2 runs the module `<stem>::`
+# Owner's ruling "B schlank" (2026-10-16, OR-TV-13) with its precision K12:
+# only a flake red at production load blocks, and production load is the lane
+# about 30 % busy -- its measured load1 (background and others' load together)
+# plus busy loops up to this share of its vCPU, never a CPU quota and never on
+# top. T2 runs once there at full quota; a lane already fuller is waited for
+# (at most `T2_WAIT_S`, every `T2_WAIT_STEP_S`). A test green in every step is
+# the NOTE `LOAD_FLAKE` -- red only under the gate's full load -- and never
+# makes the summary red.
+T2_LANE_BUSY = 0.30
+T2_WAIT_S = 300
+T2_WAIT_STEP_S = 15
+T2_LOOP_CAP_S = 3600     # the busy loops die after this in any case (`timeout`)
+LOAD_FLAKE = "load-flake"
 # T4: the injected kit clock (`clock=`) reads this variable -- one day on, then
 # across a month's and a year's end (VG TV-F2).
 CLOCK_ENV = "MECLAW_TEST_CLOCK_SHIFT"
@@ -694,6 +714,93 @@ def t2_nextest_argv(base_argv, binary_id, name, threads, size):
     return argv + ["-E", expr]
 
 
+def lane_loops(load1, nproc, busy=T2_LANE_BUSY):
+    """The busy loops that bring a lane at `load1` on `nproc` vCPU to about
+    `busy` of it: max(0, round(busy x nproc - load1)), halves up -- None when
+    the lane is already fuller than that (wait, or take another lane)."""
+    n = math.floor(round(busy * nproc - float(load1), 6) + 0.5)   # 0.3 x 12 is 3.5999..96
+    return None if n < 0 else int(n)
+
+
+def busy_loop_command(n, cap_s):
+    """The shell line of n niced busy loops, gone at stdin EOF or after cap_s.
+
+    It prints `LOAD <pid> ...` once every loop runs, so the caller can check
+    that they live (GH #1180 re-check: a failed ssh used to be silent)."""
+    inner = (f"trap 'kill 0' EXIT; p=; for i in $(seq {int(n)}); do "
+             f"nice -n 19 sh -c 'while :; do :; done' & p=\"$p $!\"; done; "
+             f"echo LOAD$p; cat >/dev/null")
+    return f"timeout {int(cap_s)} sh -c {shlex.quote(inner)}"
+
+
+def _local_probe():
+    """`(load1, nproc)` of this host -- the gate's executor runs on its lane; the
+    vCPU from the kit's one CPU source (`cpus.threads`, GH #1199)."""
+    from . import cpus
+    return os.getloadavg()[0], cpus.threads() or 1
+
+
+def _local_loops(n, cap_s=T2_LOOP_CAP_S):
+    """Start n busy loops here; `stop()` ends them, None when fewer than n run."""
+    proc = subprocess.Popen(["sh", "-c", busy_loop_command(n, cap_s)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+
+    def stop():
+        try:
+            proc.stdin.close()
+            proc.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+    line = proc.stdout.readline().split()
+    if line[:1] != ["LOAD"] or len(line) - 1 != n or proc.poll() is not None:
+        stop()
+        return None
+    return stop
+
+
+def production_lane(probe=_local_probe, spawn=_local_loops, sleep=time.sleep,
+                    wait_s=T2_WAIT_S, step_s=T2_WAIT_STEP_S):
+    """THE T2 load of the gate triage (K12): `t2(run, spent) -> (ok, word, proven)`.
+
+    Measures the lane (`probe() -> (load1, nproc)`), waits while it is fuller
+    than `T2_LANE_BUSY` (at most `wait_s`, or until `spent()`), starts the
+    `lane_loops` busy loops (`spawn(n) -> stop | None`), runs T2 once at full
+    quota and stops them. `word` names load1, vCPU and the loops for the
+    receipt. `proven` says T2 ran at least at production load: a lane still
+    fuller after the wait is (a green there is green at 30 % too, a red stays
+    red); a probe that fails or loops that do not start are not -- the flake
+    then stays red (fail-closed)."""
+    def t2(run, spent):
+        waited = 0
+        try:
+            load1, nproc = probe()
+            while lane_loops(load1, nproc) is None and waited < wait_s and not spent():
+                sleep(step_s)
+                waited += step_s
+                load1, nproc = probe()
+        except OSError as e:
+            return run(), "no probe: %s" % e, False
+        n = lane_loops(load1, nproc)
+        if n is None:
+            return run(), "lane over %d %%: load1 %.1f of %d vCPU after %d s wait" % (
+                round(T2_LANE_BUSY * 100), load1, nproc, waited), True
+        try:
+            stop = spawn(n) if n else None
+        except OSError as e:     # no `sh`, no fork: unproven, the flake stays red
+            return run(), "load1 %.1f of %d vCPU, %d busy loops did not start: %s" % (
+                load1, nproc, n, e), False
+        if n and stop is None:
+            return run(), "load1 %.1f of %d vCPU, %d busy loops did not start" % (
+                load1, nproc, n), False
+        try:
+            ok = run()
+        finally:
+            if stop is not None:
+                stop()
+        return ok, "load1 %.1f of %d vCPU + %d busy loops" % (load1, nproc, n), True
+    return t2
+
+
 def t3_unittest_argv(module, seed):
     """T3: the test's module in a random order, the seed on the command line."""
     from . import lane   # the kit's one Python (re-check tv-bn M7m M2)
@@ -716,7 +823,7 @@ def clock_tests(test_results, tree):
 
 def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=ISOLATION_CAP,
                    base_argv=None, ignored=(), expired=None, proof=None, threads=None,
-                   seed=None, clock_tests=(), clock_reader=None):
+                   seed=None, clock_tests=(), clock_reader=None, t2_lane=None):
     """THE hook between a red station's end and its `station_ended` (OR-TV-2).
 
     Every red test is triaged instead of run ten times (VG TV-F2): T1 alone
@@ -734,6 +841,13 @@ def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=
     wait`; T2 green, T3 red -> FLAKY `order/state`; T4 red -> FLAKY `time`;
     all green -> FLAKY `not reproduced` -- still a finding: FLAKY counts red
     (TV-F1) unless the test is on the legacy list (`end_station`).
+
+    `t2_lane` (B schlank, OR-TV-13, K12) is the `production_lane` of T2: T2
+    runs once on the lane about 30 % busy, every step once. A test green in
+    every step with T2 proven at that load carries `load_flake: true`; when
+    every test of the station does, the result does too and `end_station` ends
+    the station NOTE `load-flake`. Without it (None) or unproven no test is a
+    load-flake -- the station stays FLAKY and red.
 
     `run_cmd(argv[, env]) -> (rc, output)`; `proof(test, rc, output)` says a
     run really ran the test (Delta I2); `expired()` is the station's budget,
@@ -792,11 +906,16 @@ def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=
         else:
             t1 = scenario_isolation_argv(c["test"], base)
             t2, t3 = list(base), None
-        steps, cause = {}, None
+        steps, cause, lane_word = {}, None, None
         try:
             steps["t1"] = "GREEN" if run(t1) else "RED"
             if steps["t1"] == "GREEN":
-                steps["t2"] = "GREEN" if run(t2) else "RED"
+                if t2_lane is not None:
+                    ok, word, proven = t2_lane(lambda: run(t2), spent)
+                    lane_word = (word, proven)
+                else:
+                    ok = run(t2)
+                steps["t2"] = "GREEN" if ok else "RED"
                 if steps["t2"] == "RED":
                     cause = CAUSE_T2
             if cause is None and steps["t1"] == "GREEN" and t3 is not None:
@@ -819,10 +938,14 @@ def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=
                     "events": [dict(e, verdict="RED") for e in evs]}
         ev = {"station": station, "test": c["test"], "count": runs["n"], "green": runs["green"],
               "triage": steps}
+        if lane_word is not None:
+            ev["t2_lane"] = lane_word[0]
         if steps["t1"] == "RED":
             ev["verdict"] = "RED"
         else:
             ev.update(verdict="FLAKY", cause=cause or CAUSE_NONE)
+            if lane_word is not None and lane_word[1] and cause is None:
+                ev["load_flake"] = True
         if "t3" in steps:
             ev["seed"] = int(seed)
         gh721 = station == GH721_STATION and GH721_SIGNATURE in c["error"]
@@ -842,8 +965,11 @@ def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=
     else:
         issues = list(dict.fromkeys(e["issue"] for e in evs))
         reason = "flaky: " + ", ".join(f"GH #{i}" for i in issues)
-    return {"verdict": "FLAKY", "isolated": len(evs), "reason": reason,
-            "events": evs, "kind": kind, "cause": causes}
+    out = {"verdict": "FLAKY", "isolated": len(evs), "reason": reason,
+           "events": evs, "kind": kind, "cause": causes}
+    if all(e.get("load_flake") for e in evs):
+        out["load_flake"] = True
+    return out
 
 
 # The tail `finding.red_reason` puts on a RED reason: `at <where> -- log <path>`.
@@ -877,7 +1003,10 @@ def end_station(ended, result, legacy=()):
     A FLAKY end carries its `cause` (TV-F5) and counts red (TV-F1) -- except
     when every test of it is in `legacy` (the kern's `legacy_tests`: on
     `.config/flaky-legacy.toml` and unchanged in this diff, TV-F4): then it
-    carries `legacy: true` and counts green."""
+    carries `legacy: true` and counts green; or when the triage proved every
+    test green with T2 on the lane about 30 % busy (`load_flake`, B schlank,
+    OR-TV-13, K12): then it ends NOTE `load-flake: <tests>` with the proof of each
+    under `load_flake` -- an observation, never red."""
     if ended.get("verdict") != "RED" or result is None:
         return [("station_ended", dict(ended))]
     final = dict(ended, verdict=result["verdict"], isolated=result["isolated"])
@@ -904,6 +1033,11 @@ def end_station(ended, result, legacy=()):
         tests = [e["test"] for e in result["events"]]
         if tests and set(tests) <= set(legacy or ()):
             final["legacy"] = True
+        elif tests and result.get("load_flake"):
+            final.update(verdict="NOTE", reason="%s: %s" % (LOAD_FLAKE, ", ".join(tests)),
+                         load_flake=[{k: e[k] for k in ("station", "test", "count", "green",
+                                                         "triage", "t2_lane", "seed")
+                                      if k in e} for e in result["events"]])
     evs = [dict(e) for e in result["events"]]
     if final["verdict"] == "RED":
         # The station stays RED, so no isolation of it may count as a flake in
@@ -1183,8 +1317,8 @@ def quarantine(db, test, issue, owner=None, cause=None, days=QUARANTINE_DAYS, at
 
 
 def record_fix(db, test, quiet, load, evidence="", at=None):
-    """A measured fix (VG TV-F6): no red in `quiet` quiet and `load` loaded runs,
-    at least `FIX_QUIET` + `FIX_LOAD`. Ends the quarantine and clears its
+    """A measured fix (OR-TV-13): no red in `load` runs on a lane about 30 % busy (and
+    `quiet` quiet ones), at least `FIX_LOAD` + `FIX_QUIET`. Ends the quarantine and clears its
     expiry duty; fewer runs raise -- a longer wait is never a fix."""
     if int(quiet) < FIX_QUIET or int(load) < FIX_LOAD:
         raise ValueError("a fix is measured: at least %d quiet and %d loaded runs without red"
@@ -2063,10 +2197,11 @@ def register(sub):
     q.add_argument("--days", type=int, default=QUARANTINE_DAYS)
     q.add_argument("--owner", required=True, help="who answers for the quarantine")
     q.add_argument("--cause", required=True, help="cause class: " + ", ".join(CAUSES + (CAUSE_T2,)))
-    fx = fs.add_parser("fixed", help="record a measured fix (VG TV-F6)")
+    fx = fs.add_parser("fixed", help="record a measured fix (OR-TV-13)")
     fx.add_argument("test")
-    fx.add_argument("--quiet", type=int, required=True, help=f"green quiet runs (>= {FIX_QUIET})")
-    fx.add_argument("--load", type=int, required=True, help=f"green loaded runs (>= {FIX_LOAD})")
+    fx.add_argument("--quiet", type=int, default=FIX_QUIET, help=f"green quiet runs (>= {FIX_QUIET})")
+    fx.add_argument("--load", type=int, required=True,
+                    help=f"green runs on one lane about 30 %% busy, full quota (>= {FIX_LOAD})")
     fx.add_argument("--evidence", default="", help="where the runs are (receipt, log)")
     fs.add_parser("release", help="end a quarantine now").add_argument("test")
     i = fs.add_parser("issue", help="comment on or open the issue a flaky test owes")
