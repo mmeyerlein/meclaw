@@ -32,11 +32,22 @@ FINGERPRINT = {"rustc": "rustc 1.80.0", "cargo": "cargo 1.80.0", "nextest": "0.9
 
 
 
+# The probes' toolchain of this module (`setUpModule`): the root of a HOME whose
+# `.cargo/bin` answers for rustc and cargo.
+_TOOLCHAIN = {}
+
+
 def build_env(**extra):
     """A known stations' environment (PATH, HOME) plus `extra`
-    (`test_lane_fingerprint.clean_env`)."""
-    from scripts.tests.test_lane_fingerprint import clean_env
-    return clean_env(**extra)
+    (`test_lane_fingerprint.clean_env`), with a HOME whose `.cargo/bin` answers
+    for rustc and cargo (`test_lane_fingerprint.toolchain_env`; the script puts it
+    first on its PATH, HOME is out of `build_env`). The fixture tree pins 1.80.0:
+    the host's rustup proxy answered from the host's store, which has it, and on
+    the public runner (stable and the tree's 1.98.0) the probe said "toolchain
+    not installed" and keyed nothing -- five cases red in ci 38987085222 (v0.65.0),
+    green here. What these cases pin is the key, never the host's toolchains."""
+    from scripts.tests.test_lane_fingerprint import toolchain_env
+    return toolchain_env(_TOOLCHAIN["root"].name, **extra)
 
 
 def _git(root, *args):
@@ -909,9 +920,11 @@ class TreeIndex(unittest.TestCase):
 
 def setUpModule():
     store_isolation.isolate()
+    _TOOLCHAIN["root"] = tempfile.TemporaryDirectory()
 
 
 def tearDownModule():
+    _TOOLCHAIN.pop("root").cleanup()
     store_isolation.restore()
 
 

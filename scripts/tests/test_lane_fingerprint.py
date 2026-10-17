@@ -747,6 +747,17 @@ class TestBuildEnvironment(unittest.TestCase):
         # case skipped there), and the host's answered nothing where HOME held no
         # store (review v2-r3-kit I2, gate aba3473).
         rustc = self.fake_rustc("9.9.9")
+        # And the probes answer from a toolchain of the case's own (`scratch_home`: the
+        # script puts its `.cargo/bin` first on PATH; HOME is excluded, the keys are the
+        # same): with the host's rustup proxy the RUSTUP_TOOLCHAIN=nightly row asked the
+        # host's store for nightly -- green where it has one, exit 3 "toolchain not
+        # installed" on the public runner (stable and the tree's 1.98.0; ci 38987085222,
+        # v0.65.0). What the case pins is the key, never the host's toolchains.
+        home = self.scratch_home()
+
+        def build(**extra):
+            return self.build(**dict({"HOME": home}, **extra))
+
         target = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_"
         for name, value in (("RUSTC", "/opt/other/rustc"), ("CARGO_BUILD_RUSTC", "/opt/other/rustc"),
                             ("RUSTC_BOOTSTRAP", "1"), ("RUSTC_WORKSPACE_WRAPPER", "clippy-driver"),
@@ -770,7 +781,7 @@ class TestBuildEnvironment(unittest.TestCase):
                             # a name nobody ever listed, nor any prefix of it
                             ("ZQX_INVENTED_BY_THE_PIN", "1"), ("zqx.invented-too", "1")):
             with self.subTest(name=name):
-                self.assertEqual(self.with_({name: value}), self.build(**{name: value})["build_env"])
+                self.assertEqual(self.with_({name: value}), build(**{name: value})["build_env"])
         # the closed exclusion list: each line a name or glob and its one reason; none of them
         # ever changes the answer
         rows = excluded()
@@ -780,14 +791,14 @@ class TestBuildEnvironment(unittest.TestCase):
                 self.assertGreaterEqual(len(reason.split()), 3, pattern)
                 # HOME: a directory of its own -- rustup creates `$HOME/.rustup` (a relative "1" left one in the tree)
                 value = self.scratch_home() if pattern == "HOME" else "1"
-                self.assertEqual(self.base(), self.build(**{pattern.replace("*", "ZQX"): value})["build_env"])
+                self.assertEqual(self.base(), build(**{pattern.replace("*", "ZQX"): value})["build_env"])
         for name in ("CARGO_INCREMENTAL", "CARGO_BUILD_JOBS", "RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER",
                      "RUST_TEST_THREADS", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_HOME",
                      "CARGO_LOG", "CARGO_TERM_COLOR", "CARGO_NET_OFFLINE", "CARGO_HTTP_TIMEOUT",
                      "CARGO_REGISTRY_TOKEN", "CARGO_REGISTRIES_X_TOKEN", "SSH_CONNECTION",
                      "CLAUDE_CODE_SESSION_ID", "PWD", "SHLVL", "MECLAW_GATE_ARCHIVE"):
             with self.subTest(out=name):
-                self.assertEqual(self.base(), self.build(**{name: "1"})["build_env"])
+                self.assertEqual(self.base(), build(**{name: "1"})["build_env"])
         mold = "-C link-arg=-fuse-ld=mold"
         for extra, linker in (({target + "RUSTFLAGS": mold}, "mold"), ({target + "LINKER": "clang"}, "clang"),
                               # cargo's order: RUSTFLAGS before the target's, the target's before build's
@@ -796,11 +807,11 @@ class TestBuildEnvironment(unittest.TestCase):
                               ({target + "LINKER": "clang", "RUSTFLAGS": "-C linker=gcc"}, "gcc")):
             extra = dict(extra, RUSTC=rustc)
             with self.subTest(extra=extra):
-                got = self.build(**extra)
+                got = build(**extra)
                 self.assertEqual(linker, got["linker"])
                 self.assertEqual(self.with_(extra), got["build_env"])
         # a target name and no triple to read it with: no linker, no key (fail-closed)
-        self.assertIsNone(self.build(**{target + "LINKER": "clang", "RUSTC": "/nonexistent/rustc"})["linker"])
+        self.assertIsNone(build(**{target + "LINKER": "clang", "RUSTC": "/nonexistent/rustc"})["linker"])
 
     def test_a_relative_value_writes_nothing_into_the_callers_tree(self):
         """M7y: the probes of the script resolve a relative HOME against the cwd;

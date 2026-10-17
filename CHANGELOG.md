@@ -12,6 +12,10 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Development
+
+- Kit selftests: the build-environment and cache-key cases of the lane fingerprint answer from a toolchain of their own instead of the host's rustup store, so they pass on a runner that has only stable and the pinned toolchain ([#1199](https://github.com/mmeyerlein/meclaw/issues/1199)).
+
 ## [0.65.0] — 2026-10-17
 
 ### Changed
