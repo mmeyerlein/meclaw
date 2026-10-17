@@ -39,6 +39,7 @@ import sys
 import urllib.request
 
 from . import events as _events
+from . import schedule as _schedule
 from . import store as _store
 
 FOREIGN_LOAD_MAX = 2.0
@@ -379,7 +380,9 @@ def measure_atoms(args) -> list[dict]:
     """Re-measure the atoms of `--only` on the lane; one result per atom (and A5 diff)."""
     lane = args.lane
     runner = ssh_runner(lane_target(lane))
-    tree = args.tree or f"{args.root}/wt/{args.strand}"
+    # the gate's one rule for a lane tree (GH #1199): measured is the core's tree
+    tree = args.tree or _schedule.tree_under(args.root, _schedule.admission_tree(
+        False, _schedule.lane_tree_name(_schedule.CORE_REPO, args.strand), ""))
     target_dir = args.target_dir or f"{args.root}/bench/{args.strand}/target"
     log_dir = f"{args.root}/bench/{args.strand}/logs/measure-{now().replace(':', '')}"
     only = [s.strip() for s in args.only.split(",")] if args.only else list(ATOMS)

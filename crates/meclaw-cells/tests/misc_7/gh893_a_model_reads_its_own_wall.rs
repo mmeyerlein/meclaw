@@ -67,7 +67,11 @@ const HISTORY_TOOLS: [&str; 3] = ["history_search", "history_read", "history_out
 /// crossed from one wall into the other would show it.
 const TALKY_SAID: &str = "The lighthouse keeper is called Ada Quill.";
 const COGNY_SAID: &str = "The harbour master is called Brann Holt.";
-const QUERY: &str = r#"{"query":"is called"}"#;
+// T5-11 (GH #1248): talky and cogny see their menus folded (`fold_tools`), so
+// the history tools stand as ONE family `history` and a model calls it with
+// `{op, args}`; the dispatcher unfolds the call into `history_search`.
+const HISTORY_FAMILY: &str = "history";
+const QUERY: &str = r#"{"op":"search","args":{"query":"is called"}}"#;
 
 const TALKY_CALL: &str = "call-893-talky";
 const COGNY_CALL: &str = "call-893-cogny";
@@ -565,8 +569,9 @@ fn ledger_tools(root: &std::path::Path, composite: &str) -> Vec<String> {
     names
 }
 
-/// Waits until the three history tools stand in the curator's menu -- the boot
-/// receipt asks, the curator answers. The hang mark is the abort, never a verdict.
+/// Waits until the history tools (cogny: their family) stand in the curator's
+/// menu -- the boot receipt asks, the curator answers. The hang mark is the
+/// abort, never a verdict.
 async fn await_menu(h: &ColonyHandle, root: &std::path::Path, composite: &str) {
     let desc = format!(
         "{composite}: the curator's menu offers the history tools -- the menu answer \
@@ -576,7 +581,7 @@ async fn await_menu(h: &ColonyHandle, root: &std::path::Path, composite: &str) {
         &desc,
         || {
             let names = ledger_tools(root, composite);
-            let ready = HISTORY_TOOLS.iter().all(|t| names.iter().any(|n| n == t));
+            let ready = names.iter().any(|n| n == HISTORY_FAMILY);
             async move { ready.then_some(()) }
         },
         || async move {
@@ -665,8 +670,8 @@ async fn deliveries_of(h: &ColonyHandle, to: &str, route: &str, call_id: &str) -
 
 // ═══════════════════════════════════════════════════════════════════════ pins
 
-/// The shipped talky and cogny, each with a wall of its own: both menus offer
-/// the three tools, the talky's `history_search` is answered out of its own
+/// The shipped talky and cogny, each with a wall of its own: talky's menu offers
+/// their family (both fold, T5-10/T5-11), the talky's `history_search` is answered out of its own
 /// curator under the call id and never leaves the composite, and the same
 /// search in the core finds the core's block and nothing of the talky's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -676,12 +681,12 @@ async fn a_model_reads_its_own_wall_and_never_another() {
         return;
     }
     let talky_brain = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(TALKY_CALL, "history_search", QUERY)]),
+        canned_tool_calls(vec![(TALKY_CALL, "history", QUERY)]),
         canned_chat_completion("Ada Quill keeps it.", "stop"),
     ])
     .await;
     let cogny_brain = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(COGNY_CALL, "history_search", QUERY)]),
+        canned_tool_calls(vec![(COGNY_CALL, "history", QUERY)]),
         canned_chat_completion("Brann Holt is the harbour master.", "stop"),
     ])
     .await;
@@ -709,13 +714,22 @@ async fn a_model_reads_its_own_wall_and_never_another() {
     for (who, reqs) in [("talky", &talky_reqs), ("cogny", &cogny_reqs)] {
         assert_eq!(reqs.len(), 2, "{who}: one tool round is two provider calls");
         let names = offered(&reqs[0]);
+        assert!(
+            names.iter().any(|n| n == HISTORY_FAMILY),
+            "{who}: the family `{HISTORY_FAMILY}` is not offered: {names:?}"
+        );
         for t in HISTORY_TOOLS {
             assert!(
-                names.iter().any(|n| n == t),
-                "{who}: `{t}` is not offered: {names:?}"
+                !names.iter().any(|n| n == t),
+                "{who}: folded, `{t}` is no entry of its own: {names:?}"
             );
         }
     }
+    let folded = offered(&cogny_reqs[0]);
+    assert!(
+        !folded.iter().any(|n| HISTORY_TOOLS.contains(&n.as_str())),
+        "cogny folds: no single history op on the core's menu: {folded:?}"
+    );
 
     // 2. talky reads its wall: the result under the call id, naming the sown
     //    block by its id and its words.
@@ -779,7 +793,7 @@ async fn a_call_without_a_round_is_refused_with_missing_audience() {
         return;
     }
     let talky_brain = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(NO_ROUND_CALL, "history_search", QUERY)]),
+        canned_tool_calls(vec![(NO_ROUND_CALL, "history", QUERY)]),
         canned_chat_completion("I cannot look that up.", "stop"),
     ])
     .await;

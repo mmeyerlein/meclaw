@@ -117,7 +117,7 @@
     },
     "query_timeout_ms": 5000,
     "transfer": {
-      "base_path": "/tmp/meclaw-member-export"
+      "base_path": "export"
     }
   },
   "contract": {

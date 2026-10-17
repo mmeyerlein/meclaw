@@ -271,6 +271,18 @@ pub enum ColonyWriteOp {
         /// Optional ack sender; fires after `tx.commit()`.
         ack: Option<tokio::sync::oneshot::Sender<()>>,
     },
+    /// #1233 (T6-09): the receipts running stores answered on their seed lane,
+    /// written into the mutation's ledger row as `payload_json.seed_receipts` —
+    /// the digest of what landed sits next to the declaration that ordered it.
+    /// Ack fires after `tx.commit()`.
+    MutationLogSeedReceipts {
+        /// Mutation ID (primary key).
+        id: String,
+        /// The receipts as a JSON array.
+        receipts_json: String,
+        /// Optional ack sender; fires after `tx.commit()`.
+        ack: Option<tokio::sync::oneshot::Sender<()>>,
+    },
     /// Phase 11 11-A: insert or update a template row; ack fires after `tx.commit()`.
     UpsertTemplate {
         /// Template ID (UUID v7).
@@ -973,6 +985,20 @@ fn apply_op(
             tx.execute(
                 "UPDATE mutation_log SET status=?, committed_at=?, failure_reason=? WHERE id=?",
                 rusqlite::params![status, committed_at, failure_reason, id],
+            )?;
+            if let Some(a) = ack {
+                acks.push(a);
+            }
+        }
+        ColonyWriteOp::MutationLogSeedReceipts {
+            id,
+            receipts_json,
+            ack,
+        } => {
+            tx.execute(
+                "UPDATE mutation_log SET payload_json = \
+                 json_set(payload_json, '$.seed_receipts', json(?1)) WHERE id = ?2",
+                rusqlite::params![receipts_json, id],
             )?;
             if let Some(a) = ack {
                 acks.push(a);

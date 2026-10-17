@@ -262,8 +262,13 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         "channels/display/judge",
         "assistants/scribe/talky/brain",
         "assistants/scribe/talky/curator/summarizer",
+        "assistants/scribe/talky/decide",
         "assistants/scribe/talky-chat/brain",
         "assistants/scribe/talky-chat/curator/summarizer",
+        "assistants/scribe/talky-chat/decide",
+        // GH #1248 (T4-09): the quick voice of each talky takes its grant.
+        "assistants/scribe/talky/quick",
+        "assistants/scribe/talky-chat/quick",
         "assistants/scribe/cogny/brain",
         "assistants/scribe/cogny/curator/summarizer",
         "apps/presenter/decide",

@@ -1614,6 +1614,82 @@ class CorpusTest(unittest.TestCase):
         self.assertEqual(merge.regenerate_corpus(self.tree("True", 0)), [])
 
 
+def rerere_init(case):
+    """An empty repository on `master` whose config turns rerere on with
+    `rerere.autoupdate` -- the main tree's config of OR-TM-11."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    root = tmp.name
+    git(root, "init", "-q", "-b", "master")
+    for key, value in (("user.name", "t"), ("user.email", "t@example.invalid"),
+                       ("commit.gpgsign", "false"), ("rerere.enabled", "true"),
+                       ("rerere.autoupdate", "true")):
+        git(root, "config", key, value)
+    return root
+
+
+def rerere_repo(case, rel, ours, theirs, recorded):
+    """A `rerere_init` repository in which `side` and `master` changed `rel` to
+    `theirs` / `ours`, and rerere holds a recorded resolution `recorded` of
+    exactly that conflict; master is back at its tip, the tree clean."""
+    root = rerere_init(case)
+    write(root, rel, "base\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-qb", "side")
+    write(root, rel, theirs)
+    git(root, "commit", "-qam", "side")
+    git(root, "checkout", "-q", "master")
+    write(root, rel, ours)
+    git(root, "commit", "-qam", "master")
+    rerere_record(case, root, ["merge", "--no-ff", "--no-commit", "side"], rel, recorded)
+    return root
+
+
+def rerere_record(case, root, argv, rel, recorded):
+    """Run the conflicting `argv`, resolve `rel` to `recorded`, commit (rerere
+    records it) and reset to the tip again; the record must exist."""
+    tip = git(root, "rev-parse", "HEAD")
+    res = subprocess.run(["git", "-C", root] + argv, capture_output=True, text=True)
+    case.assertNotEqual(res.returncode, 0, "the recording run must conflict")
+    write(root, rel, recorded)
+    git(root, "add", "--", rel)
+    git(root, "commit", "-qm", "recorded resolution")
+    git(root, "reset", "-q", "--hard", tip)
+    cache = os.path.join(root, ".git", "rr-cache")
+    case.assertTrue(os.path.isdir(cache) and os.listdir(cache), "rerere recorded nothing")
+
+
+class RerereTest(unittest.TestCase):
+    """OR-TM-11 (H4 merge refused, 17.10.): with `rerere.autoupdate` in the
+    repository config git staged the corpus "using previous resolution",
+    `merge_into` saw no unmerged path and the corpus rule never ran. The kit's
+    merges decide from their own conflict, never from a recorded resolution."""
+
+    CORPUS = merge.CORPUS[0]
+
+    def unmerged(self, root):
+        return git(root, "diff", "--name-only", "--diff-filter=U").split()
+
+    def test_the_corpus_conflict_is_seen_and_regenerated_despite_a_recorded_resolution(self):
+        root = rerere_repo(self, self.CORPUS, "master\n", "side\n", "OLD-RESOLUTION\n")
+        merge.merge_into(root, ["side"])
+        self.assertEqual(read(root, self.CORPUS), "master\n")
+        self.assertEqual(self.unmerged(root), [])
+        self.assertEqual(git(root, "diff", "--cached", "--name-only"), "")
+        self.assertTrue(os.path.exists(os.path.join(root, ".git", "MERGE_HEAD")))
+
+    def test_a_content_conflict_refuses_naming_its_path_despite_a_recorded_resolution(self):
+        rel = "templates/a/foo.txt"
+        root = rerere_repo(self, rel, "master\n", "side\n", "OLD-RESOLUTION\n")
+        with self.assertRaisesRegex(merge.Refused, r"^conflict in templates/a/foo\.txt$") as ctx:
+            merge.merge_into(root, ["side"])
+        self.assertEqual((ctx.exception.reason, ctx.exception.text),
+                         ("merge_conflict", "conflict in %s" % rel))
+        self.assertEqual(read(root, rel), "master\n")
+        self.assertEqual(git(root, "status", "--porcelain"), "")
+
+
 class ReceiptVerdictTest(MergeCase):
 
     def test_merge_refuses_receipt_red_with_green_summary(self):
@@ -1815,6 +1891,670 @@ class CandidateTest(MergeCase):
         self.assertEqual([(e["strand"], e["reason"]) for e in refused], [("S1", "gate_red")])
         self.assertEqual(f.events("merge_done"), [])
         self.assertEqual(f.gh_calls(), [])
+
+
+def changelog(unreleased, released="- Released.\n"):
+    """A CHANGELOG with `unreleased` as the body of `[Unreleased]` and a released 0.64.3."""
+    return ("# Changelog\n\n## [Unreleased]\n\n%s## [0.64.3] - 2026-10-16\n\n### Fixed\n\n%s"
+            % (unreleased, released))
+
+
+class UnreleasedConflictTest(MergeCase):
+    """OR-TM-7 (K15): a conflict of pure additions under `## [Unreleased]` in
+    CHANGELOG.md is resolved by the merge itself -- both sides kept, master
+    first, one heading per kind, the order of the entries otherwise kept; the
+    resolution is one line in the merge receipt and the journal. Anything else
+    is refused as before: a conflict outside `[Unreleased]`, a side that changes
+    or drops an existing line, a conflict in any other file."""
+
+    def conflict(self, base, master, strand, more_master=None, more_strand=None):
+        """Base on master, the strand from it, then master moves; returns master's head."""
+        f = self.f
+        f.master_commit({"CHANGELOG.md": base}, "base")
+        f.strand("S1", 101, dict({"CHANGELOG.md": strand}, **(more_strand or {})))
+        return f.master_commit(dict({"CHANGELOG.md": master}, **(more_master or {})))
+
+    def assert_refused(self, head, master_text):
+        f = self.f
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("merge_conflict", err)
+        self.assertNotIn("merge: resolved", err)
+        self.assertEqual(f.head(), head)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), master_text)
+        self.assertEqual(git(f.root, "status", "--porcelain"), "")
+        self.assertEqual(f.state_of("S1"), "refused")
+        self.assertEqual(f.events("merge_done"), [])
+
+    # (a) both sides append to `### Fixed`
+    def test_a_both_sides_append_to_fixed_keep_both_lines_under_one_heading(self):
+        f = self.f
+        self.conflict(changelog("### Fixed\n\n- old\n\n"),
+                      changelog("### Fixed\n\n- old\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- old\n- strand fix\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(f.state_of("S1"), "merged")
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog("### Fixed\n\n- old\n- master fix\n- strand fix\n\n"))
+
+    def test_a_both_sides_open_fixed_one_heading(self):
+        f = self.f
+        self.conflict(changelog(""),
+                      changelog("### Fixed\n\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- strand fix\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog("### Fixed\n\n- master fix\n- strand fix\n\n"))
+
+    # (b) different sub-headings
+    def test_b_different_headings_keep_both_sections_master_first(self):
+        f = self.f
+        self.conflict(changelog(""),
+                      changelog("### Added\n\n- master feature\n\n"),
+                      changelog("### Fixed\n\n- strand fix\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog(
+            "### Added\n\n- master feature\n\n### Fixed\n\n- strand fix\n\n"))
+
+    # (c) a side changes or drops an existing line
+    def test_c_strand_rewording_an_existing_line_is_refused(self):
+        master = changelog("### Fixed\n\n- old\n- master fix\n\n")
+        head = self.conflict(changelog("### Fixed\n\n- old\n\n"), master,
+                             changelog("### Fixed\n\n- old, reworded\n\n"))
+        self.assert_refused(head, master)
+
+    def test_c_master_dropping_an_existing_line_is_refused(self):
+        master = changelog("### Fixed\n\n- older\n\n")
+        head = self.conflict(changelog("### Fixed\n\n- old\n- older\n\n"), master,
+                             changelog("### Fixed\n\n- old\n- strand fix\n- older\n\n"))
+        self.assert_refused(head, master)
+
+    # (d) a conflict below `[Unreleased]`
+    def test_d_conflict_in_a_released_section_is_refused(self):
+        master = changelog("### Fixed\n\n- old\n- master fix\n\n", released="- Released, master.\n")
+        head = self.conflict(changelog("### Fixed\n\n- old\n\n"), master,
+                             changelog("### Fixed\n\n- old\n- strand fix\n\n",
+                                       released="- Released, strand.\n"))
+        self.assert_refused(head, master)
+
+    # (e) a conflict in another file as well
+    def test_e_conflict_in_another_file_too_is_refused(self):
+        master = changelog("### Fixed\n\n- old\n- master fix\n\n")
+        head = self.conflict(changelog("### Fixed\n\n- old\n\n"), master,
+                             changelog("### Fixed\n\n- old\n- strand fix\n\n"),
+                             more_master={"docs/other.md": "Other, master.\n"},
+                             more_strand={"docs/other.md": "Other, strand.\n"})
+        self.assert_refused(head, master)
+
+    def test_e_refused_merge_resolves_nothing_halfway(self):
+        f = self.f
+        master = changelog("### Fixed\n\n- old\n- master fix\n\n")
+        head = self.conflict(changelog("### Fixed\n\n- old\n\n"), master,
+                             changelog("### Fixed\n\n- old\n- strand fix\n\n"),
+                             more_master={"docs/other.md": "Other, master.\n"},
+                             more_strand={"docs/other.md": "Other, strand.\n"})
+        cand = os.path.join(f.tmp, "cand")
+        git(f.root, "worktree", "add", "-q", "--detach", cand, head)
+        with self.assertRaisesRegex(merge.Refused,
+                                    r"^conflict in CHANGELOG\.md, docs/other\.md$") as ctx:
+            merge.merge_into(cand, [f.head("welle-test/S1")])
+        self.assertEqual(ctx.exception.reason, "merge_conflict")
+        self.assertEqual(git(cand, "status", "--porcelain"), "")
+        self.assertFalse(os.path.exists(os.path.join(git(cand, "rev-parse", "--git-dir"),
+                                                     "MERGE_HEAD")))
+        self.assertEqual(read(cand, "CHANGELOG.md"), master)
+
+    # (f) the resolution is one line in the receipt and the journal
+    def test_f_resolution_line_in_receipt_and_journal(self):
+        f = self.f
+        self.conflict(changelog("### Fixed\n\n- old\n\n"),
+                      changelog("### Fixed\n\n- old\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- old\n- strand fix\n- strand fix two\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        line = "CHANGELOG.md [Unreleased]: both sides kept, master +1, strand +2 entries"
+        self.assertIn("merge: resolved %s\n" % line, err)
+        self.assertEqual(merge_receipt(f, "S1")["resolved"], line)
+        self.assertEqual([e.get("resolved") for e in f.events("merge_done")], [line])
+        self.assertEqual([e.get("resolved") for e in f.events("merge_gated")], [line])
+
+    def test_f_clean_merge_has_no_resolution_line(self):
+        f = self.f
+        self.a_strand()
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("resolved", merge_receipt(f, "S1"))
+        self.assertNotIn("merge: resolved", err)
+
+    # the generated corpus next to [Unreleased]: both resolve
+    def test_corpus_and_unreleased_conflict_resolve_together(self):
+        f = self.f
+        self.conflict(changelog("### Fixed\n\n- old\n\n"),
+                      changelog("### Fixed\n\n- old\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- old\n- strand fix\n\n"),
+                      more_master={merge.CORPUS[0]: "{\"master\": 1}\n"},
+                      more_strand={merge.CORPUS[0]: "{\"strand\": 1}\n"})
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, merge.CORPUS[0]), "{\"master\": 1}\n")
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog("### Fixed\n\n- old\n- master fix\n- strand fix\n\n"))
+
+    # the side that changed the text outside `[Unreleased]` keeps it -- outside
+    # the released sections, which stay master's (OR-TM-12)
+    def test_strand_only_change_outside_the_released_sections_is_kept(self):
+        f = self.f
+        head = "# Changelog\n\nAll notable changes.\n"
+        self.conflict(changelog("### Fixed\n\n- old\n\n"),
+                      changelog("### Fixed\n\n- old\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- old\n- strand fix\n\n")
+                      .replace("# Changelog\n", head, 1))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("merge: resolved", err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog("### Fixed\n\n- old\n- master fix\n- strand fix\n\n")
+                         .replace("# Changelog\n", head, 1))
+
+    def test_strand_only_change_in_a_released_section_is_refused(self):
+        # OR-TM-12: a released section stays byte for byte master's, also when
+        # the union would keep the strand's side of the text outside the body
+        f = self.f
+        master = changelog("### Fixed\n\n- old\n- master fix\n\n")
+        head = self.conflict(changelog("### Fixed\n\n- old\n\n"), master,
+                             changelog("### Fixed\n\n- old\n- strand fix\n\n",
+                                       released="- Released, typo fixed.\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("released_changed", err)
+        self.assertEqual(f.head(), head)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), master)
+        self.assertEqual(git(f.root, "status", "--porcelain"), "")
+        self.assertEqual(f.state_of("S1"), "refused")
+
+    # an entry set inside the list stays at its anchor
+    def test_entry_inside_the_list_stays_at_its_anchor(self):
+        f = self.f
+        self.conflict(changelog("### Fixed\n\n- a\n- b\n\n"),
+                      changelog("### Fixed\n\n- a\n- m\n- b\n\n"),
+                      changelog("### Fixed\n\n- a\n- s\n- b\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog("### Fixed\n\n- a\n- m\n- s\n- b\n\n"))
+
+    # never reformat: a body the form would not write back byte for byte
+    def test_body_without_blank_line_after_heading_is_refused(self):
+        master = changelog("### Fixed\n- old\n- master fix\n\n")
+        head = self.conflict(changelog("### Fixed\n- old\n\n"), master,
+                             changelog("### Fixed\n- old\n- strand fix\n\n"))
+        self.assert_refused(head, master)
+
+    # one heading per kind, also when the two sides open different gaps
+    def test_heading_stands_once_when_master_opens_more_sections(self):
+        f = self.f
+        self.conflict(changelog(""),
+                      changelog("### Added\n\n- master feature\n\n### Fixed\n\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- strand fix\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        text = read(f.root, "CHANGELOG.md")
+        self.assertEqual(text, changelog(
+            "### Added\n\n- master feature\n\n### Fixed\n\n- master fix\n- strand fix\n\n"))
+        self.assertEqual(text.split("## [0.64.3]")[0].count("### Fixed"), 1)
+
+    # an identical addition of both sides stands once
+    def test_identical_addition_of_both_sides_stands_once(self):
+        f = self.f
+        self.conflict(changelog("### Added\n\n- x\n\n### Fixed\n\n- y\n\n"),
+                      changelog("### Added\n\n- x\n- master feature\n\n### Fixed\n\n- y\n- same\n\n"),
+                      changelog("### Added\n\n- x\n- strand feature\n\n### Fixed\n\n- y\n- same\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        text = read(f.root, "CHANGELOG.md")
+        self.assertEqual(text, changelog(
+            "### Added\n\n- x\n- master feature\n- strand feature\n\n### Fixed\n\n- y\n- same\n\n"))
+        self.assertEqual(text.count("- same"), 1)
+
+    # Re-check stack fr I3, OR-V2.v2-r3-unreldup.1: a `### ` heading twice in
+    # the body -- the union keyed by heading alone kept one `### Fixed` and lost
+    # the entries of the other without a word, so it was refused; keyed by
+    # heading and occurrence, both sections stand and the union is exact
+    def test_a_heading_twice_in_the_body_loses_no_entry(self):
+        f = self.f
+        body = "### Added\n\n- a\n%s\n### Fixed\n\n- f1\n\n### Fixed\n\n- f2\n\n"
+        self.conflict(changelog(body % ""), changelog(body % "- master feature\n"),
+                      changelog(body % "- strand feature\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog(body % "- master feature\n- strand feature\n"))
+
+    # the body master carries since the 0.65.0 merges (H5 10:59 merge_conflict):
+    # `### Added` and `### Fixed` twice each, both sides append to `### Changed`
+    H5_BODY = ("### Added\n\n- a1\n\n### Fixed\n\n- f1\n\n### Fixed\n\n- f2\n\n"
+               "### Development\n\n- d\n\n### Breaking\n\n- b\n\n### Added\n\n- a2\n\n"
+               "### Changed\n\n- c%s\n\n")
+
+    def test_h5_body_with_headings_twice_keeps_both_lines_master_first(self):
+        f = self.f
+        self.conflict(changelog(self.H5_BODY % ""),
+                      changelog(self.H5_BODY % "\n- master change"),
+                      changelog(self.H5_BODY % "\n- strand change"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("merge: resolved CHANGELOG.md [Unreleased]: both sides kept, "
+                      "master +1, strand +1 entries\n", err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog(self.H5_BODY % "\n- master change\n- strand change"))
+
+    def test_addition_under_the_second_fixed_stays_under_the_second(self):
+        f = self.f
+        body = ("### Fixed\n\n- f1%s\n\n### Added\n\n- a\n\n### Fixed\n\n- f2%s\n\n"
+                "### Changed\n\n- c%s\n\n")
+        self.conflict(changelog(body % ("", "", "")),
+                      changelog(body % ("\n- m1", "", "\n- mc")),
+                      changelog(body % ("", "\n- s2", "\n- sc")))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog(body % ("\n- m1", "\n- s2", "\n- mc\n- sc")))
+
+    def test_heading_twice_and_a_base_entry_moved_is_refused(self):
+        # the strand moves `- f1` from the first `### Fixed` to the second: the
+        # sections stay apart, so the first lost a base line -- refused
+        body = "### Fixed\n\n%s\n\n### Added\n\n- a\n\n### Fixed\n\n%s\n\n### Changed\n\n- c%s\n\n"
+        master = changelog(body % ("- f0\n- f1", "- f2", "\n- master change"))
+        head = self.conflict(changelog(body % ("- f0\n- f1", "- f2", "")), master,
+                             changelog(body % ("- f0", "- f2\n- f1", "\n- strand change")))
+        self.assert_refused(head, master)
+
+    def test_a_heading_both_sides_add_a_second_time_stands_once(self):
+        # both open the same further `### Fixed` at the end: one section, both entries
+        f = self.f
+        body = "### Fixed\n\n- f1\n\n### Added\n\n- a\n\n%s"
+        self.conflict(changelog(body % ""),
+                      changelog(body % "### Fixed\n\n- master fix\n\n"),
+                      changelog(body % "### Fixed\n\n- strand fix\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog(body % "### Fixed\n\n- master fix\n- strand fix\n\n"))
+
+    # Re-check stack fr m3: the docstring guarantees of the resolver, one pin each
+    def test_a_second_unreleased_section_is_refused(self):
+        # `_unreleased`: exactly one `## [Unreleased]` -- else the first was
+        # resolved and the second stood beside it
+        second = "## [Unreleased]\n\n- z\n\n"
+        master = changelog("### Added\n\n- a\n- master feature\n\n" + second)
+        head = self.conflict(changelog("### Added\n\n- a\n\n" + second), master,
+                             changelog("### Added\n\n- a\n- strand feature\n\n" + second))
+        self.assert_refused(head, master)
+
+    def test_the_resolution_line_counts_entries_not_lines(self):
+        # `_entries`: "master +N, strand +M entries" counts list entries -- a
+        # wrapped entry and a `#### ` sub-heading are one entry and none
+        f = self.f
+        self.conflict(changelog("### Fixed\n\n- old\n\n"),
+                      changelog("### Fixed\n\n- old\n- master fix\n\n"),
+                      changelog("### Fixed\n\n- old\n- strand fix,\n  wrapped\n#### Detail\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        line = "CHANGELOG.md [Unreleased]: both sides kept, master +1, strand +1 entries"
+        self.assertIn("merge: resolved %s\n" % line, err)
+        self.assertEqual(merge_receipt(f, "S1")["resolved"], line)
+
+    def test_the_preamble_keeps_master_first(self):
+        # `_join(bp, op, tp)`: lines above the first `### ` heading -- master's
+        # addition first, then the strand's, as in every section
+        f = self.f
+        self.conflict(changelog("- p\n\n### Added\n\n- a\n\n"),
+                      changelog("- p\n- master note\n\n### Added\n\n- a\n\n"),
+                      changelog("- p\n- strand note\n\n### Added\n\n- a\n\n"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"),
+                         changelog("- p\n- master note\n- strand note\n\n### Added\n\n- a\n\n"))
+
+    # any conflict of a batch is still refused (OR-V2.v2-r3-unreleased.1)
+    def test_batch_with_an_unreleased_conflict_is_refused(self):
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n")}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": changelog("### Fixed\n\n- old\n- strand fix\n\n")})
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        master = changelog("### Fixed\n\n- old\n- master fix\n\n")
+        head = f.master_commit({"CHANGELOG.md": master})
+        rc, _, err = f.merge(["S1", "S2"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertNotIn("merge: resolved", err)
+        self.assertEqual([(e["strand"], e["reason"]) for e in f.events("merge_refused")],
+                         [("S1", "batch_conflict"), ("S2", "batch_conflict")])
+        self.assertEqual(f.gate_calls(), [])
+        self.assertEqual(f.head(), head)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), master)
+        self.assertEqual(git(f.root, "status", "--porcelain"), "")
+        self.assertEqual(f.events("merge_done"), [])
+
+    # Stapel-m1: the resolver's refusals stay refusals, never a crash that
+    # leaves the merge row `queued` (`heads`/`pre` None, a side without the file)
+    def test_a_release_cut_on_master_is_refused_by_the_resolver(self):
+        # H1: master moves the body to `## [0.65.0]`, the strand appends to `### Added`
+        master = ("# Changelog\n\n## [Unreleased]\n\n## [0.65.0] - 2026-10-17\n\n### Added\n\n"
+                  "- a\n- master feature\n\n## [0.64.3] - 2026-10-16\n\n### Fixed\n\n- Released.\n")
+        head = self.conflict(changelog("### Added\n\n- a\n\n"), master,
+                             changelog("### Added\n\n- a\n- strand feature\n\n"))
+        self.assert_refused(head, master)
+        self.assertEqual([e["reason"] for e in self.f.events("merge_refused")], ["merge_conflict"])
+
+    def test_a_changed_preamble_line_is_refused_by_the_resolver(self):
+        # P1: the strand rewords a line above the first `### ` heading
+        master = changelog("- p\n\n### Added\n\n- a\n- master feature\n\n")
+        head = self.conflict(changelog("- p\n\n### Added\n\n- a\n\n"), master,
+                             changelog("- p changed\n\n### Added\n\n- a\n- strand feature\n\n"))
+        self.assert_refused(head, master)
+        self.assertEqual([e["reason"] for e in self.f.events("merge_refused")], ["merge_conflict"])
+
+    def test_a_strand_deleting_the_changelog_is_refused_by_the_resolver(self):
+        # T1: modify/delete -- the strand's stage of CHANGELOG.md does not exist
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog("### Added\n\n- a\n\n")}, "base")
+        rec = f.strand("S1", 101, {"templates/a/x.txt": "x\n"}, receipt=False, stamp=False,
+                       report=False)
+        git(rec["wt"], "rm", "-q", "CHANGELOG.md")
+        git(rec["wt"], "commit", "-q", "-m", "S1: drop changelog")
+        tip = git(rec["wt"], "rev-parse", "HEAD")
+        f.report("S1", rec["branch"], 101, [rec["commits"][0][:8], tip[:8]])
+        f.stamp(rec["wt"])
+        f.receipt("S1", RUN_DIR % tip[:8], "strand", tip, "GREEN")
+        master = changelog("### Added\n\n- a\n- master feature\n\n")
+        head = f.master_commit({"CHANGELOG.md": master})
+        self.assert_refused(head, master)
+        self.assertEqual([e["reason"] for e in f.events("merge_refused")], ["merge_conflict"])
+
+    def test_a_heading_master_inserts_before_its_namesake_is_refused(self):
+        # re-check v2-r3-unreldup minor: master opens a `### Fixed` above the
+        # existing one, so every later occurrence index moves by one; the
+        # section that was `### Fixed` #0 now holds other lines -- fail closed
+        body = "%s### Fixed\n\n- f1\n\n### Added\n\n- a%s\n\n"
+        master = changelog(body % ("### Fixed\n\n- m0\n\n", "\n- master feature"))
+        head = self.conflict(changelog(body % ("", "")), master,
+                             changelog(body % ("", "\n- strand feature")))
+        self.assert_refused(head, master)
+        self.assertEqual([e["reason"] for e in self.f.events("merge_refused")], ["merge_conflict"])
+
+
+def released_cut(unreleased, body):
+    """master after a release cut: `body` is `## [0.65.0]`, `unreleased` the new
+    `[Unreleased]` body, `[0.64.3]` as in `changelog`."""
+    return ("# Changelog\n\n## [Unreleased]\n\n%s## [0.65.0] - 2026-10-17\n\n%s"
+            "## [0.64.3] - 2026-10-16\n\n### Fixed\n\n- Released.\n" % (unreleased, body))
+
+
+class ReleasedSectionTest(MergeCase):
+    """OR-TM-12 (K17, H4 merge c3f784b25): a strand branched before a release cut
+    merges without a conflict, and git sets its `[Unreleased]` lines into the
+    released `## [0.65.0]` (the context of the renamed heading). The merge checks
+    every released `## [x.y.z]` of CHANGELOG.md against master before the commit:
+    pure additions move under `[Unreleased]` (master first, into the section of
+    the same heading and occurrence, one resolution line); any other change
+    refuses with `released_changed`."""
+
+    BODY = ("### Breaking\n\n- b1\n- The boot reads no cell's `cell.db` any more (#1231).\n\n"
+            "### Added\n\n- a1\n- a2\n\n")
+    KIT = "### Development\n\n- kit line\n\n"
+
+    def h4(self, strand):
+        """Base before the cut, the strand from it, then master cuts the release."""
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog(self.BODY)}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": strand})
+        master = released_cut(self.KIT, self.BODY)
+        return f.master_commit({"CHANGELOG.md": master}, "release cut"), master
+
+    def test_h4_additions_of_a_strand_from_before_the_cut_move_to_unreleased(self):
+        f = self.f
+        strand = changelog(self.BODY.replace("(#1231).\n", "(#1231).\n- strand breaking\n")
+                           .replace("- a2\n", "- a2\n- strand added\n"))
+        self.h4(strand)
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(f.state_of("S1"), "merged")
+        self.assertEqual(read(f.root, "CHANGELOG.md"), released_cut(
+            self.KIT + "### Breaking\n\n- strand breaking\n\n### Added\n\n- strand added\n\n",
+            self.BODY))
+        line = "CHANGELOG.md [0.65.0]: strand +2 entries moved to [Unreleased]"
+        self.assertIn("merge: resolved %s\n" % line, err)
+        self.assertEqual(merge_receipt(f, "S1")["resolved"], line)
+        self.assertEqual([e.get("resolved") for e in f.events("merge_done")], [line])
+
+    def test_h4_addition_under_a_heading_unreleased_has_joins_it_after_master(self):
+        f = self.f
+        # a heading of its own at the end of the body: git sets it into [0.65.0] too
+        strand = changelog(self.BODY + "### Development\n\n- strand dev\n\n")
+        self.h4(strand)
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), released_cut(
+            "### Development\n\n- kit line\n- strand dev\n\n", self.BODY))
+
+    def test_h4_rewritten_released_line_is_refused_and_master_stays(self):
+        f = self.f
+        strand = changelog(self.BODY.replace("(#1231).\n", "(#1231), reworded.\n- strand breaking\n"))
+        head, master = self.h4(strand)
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("released_changed", err)
+        self.assertIn("[0.65.0]", err)
+        self.assertNotIn("merge: resolved", err)
+        self.assertEqual(f.head(), head)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), master)
+        self.assertEqual(git(f.root, "status", "--porcelain"), "")
+        self.assertEqual(f.state_of("S1"), "refused")
+        self.assertEqual([e["reason"] for e in f.events("merge_refused")], ["released_changed"])
+        self.assertEqual(f.events("merge_done"), [])
+
+    def test_a_refusal_leaves_the_candidate_clean(self):
+        f = self.f
+        strand = changelog(self.BODY.replace("- a1\n", "- a1, reworded\n"))
+        head, master = self.h4(strand)
+        cand = os.path.join(f.tmp, "cand")
+        git(f.root, "worktree", "add", "-q", "--detach", cand, head)
+        with self.assertRaisesRegex(merge.Refused, r"^CHANGELOG\.md \[0\.65\.0\] differs") as ctx:
+            merge.merge_into(cand, [f.head("welle-test/S1")])
+        self.assertEqual(ctx.exception.reason, "released_changed")
+        self.assertEqual(git(cand, "status", "--porcelain"), "")
+        self.assertFalse(os.path.exists(os.path.join(git(cand, "rev-parse", "--git-dir"),
+                                                     "MERGE_HEAD")))
+        self.assertEqual(read(cand, "CHANGELOG.md"), master)
+
+    def test_a_released_section_the_strand_drops_is_refused(self):
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n")}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- old\n"})
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertEqual([e["reason"] for e in f.events("merge_refused")], ["released_changed"])
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog("### Fixed\n\n- old\n\n"))
+
+    def test_a_changed_heading_line_of_a_released_section_is_refused(self):
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n")}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n")
+                             .replace("- 2026-10-16", "- 2026-10-15")})
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("[0.64.3]", err)
+        self.assertEqual([e["reason"] for e in f.events("merge_refused")], ["released_changed"])
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog("### Fixed\n\n- old\n\n"))
+
+    def test_a_batch_with_a_changed_released_section_is_refused_for_every_strand(self):
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n")}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n",
+                                                       released="- Released, typo.\n")})
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        head = f.head()
+        rc, _, err = f.merge(["S1", "S2"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertEqual([(e["strand"], e["reason"]) for e in f.events("merge_refused")],
+                         [("S1", "released_changed"), ("S2", "released_changed")])
+        self.assertEqual(f.gate_calls(), [])
+        self.assertEqual(f.head(), head)
+        self.assertEqual(git(f.root, "status", "--porcelain"), "")
+        self.assertEqual([f.state_of("S1"), f.state_of("S2")], ["refused", "refused"])
+
+    def test_a_new_released_section_of_the_strand_is_its_release_cut(self):
+        # a release strand cuts `[0.65.0]` itself: master has no such section
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog(self.BODY)}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": released_cut("", self.BODY)})
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("merge: resolved", err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), released_cut("", self.BODY))
+
+    # re-check fr d4d5b5375: the guarantees of `keep_released`, one pin each
+    def released_change(self, strand_released, base=None, master=None):
+        """Base, the strand changing `[0.64.3]` to `strand_released`, master moved."""
+        f = self.f
+        base = base or changelog("### Fixed\n\n- old\n\n")
+        f.master_commit({"CHANGELOG.md": base}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": changelog(
+            _unreleased_of(base), released=strand_released)})
+        master = master or base.replace("- old\n", "- old\n- master fix\n", 1)
+        return f.master_commit({"CHANGELOG.md": master}), master
+
+    def assert_released_refused(self, head, master, *said):
+        f = self.f
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("released_changed", err)
+        for text in said:
+            self.assertIn(text, err)
+        self.assertNotIn("merge: resolved", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(f.head(), head)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), master)
+        self.assertEqual(git(f.root, "status", "--porcelain"), "")
+        self.assertEqual(f.state_of("S1"), "refused")
+        self.assertEqual([e["reason"] for e in f.events("merge_refused")], ["released_changed"])
+        self.assertEqual(f.events("merge_done"), [])
+
+    def test_a_move_after_the_union_is_one_line_with_both_parts(self):
+        # I1: a conflict under [Unreleased] (both append to `### Fixed`) and a
+        # strand line in `[0.64.3]`: the union resolves, the line moves, and
+        # the resolution line names both -- in the receipt and the journal
+        f = self.f
+        f.master_commit({"CHANGELOG.md": changelog("### Fixed\n\n- old\n\n")}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": changelog(
+            "### Fixed\n\n- old\n- strand fix\n\n", released="- Released.\n- strand late\n")})
+        f.master_commit({"CHANGELOG.md": changelog("### Fixed\n\n- old\n- master fix\n\n")})
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog(
+            "### Fixed\n\n- old\n- master fix\n- strand fix\n- strand late\n\n"))
+        line = ("CHANGELOG.md [Unreleased]: both sides kept, master +1, strand +1 entries; "
+                "CHANGELOG.md [0.64.3]: strand +1 entries moved to [Unreleased]")
+        self.assertIn("merge: resolved %s\n" % line, err)
+        self.assertEqual(merge_receipt(f, "S1")["resolved"], line)
+        self.assertEqual([e.get("resolved") for e in f.events("merge_done")], [line])
+
+    def test_a_changed_preamble_of_a_released_section_is_refused(self):
+        # M1 (a): a line above the first `### ` of `[0.64.3]` reworded
+        base = changelog("### Fixed\n\n- old\n\n").replace(
+            "2026-10-16\n\n", "2026-10-16\n\nA note.\n\n")
+        f = self.f
+        f.master_commit({"CHANGELOG.md": base}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": base.replace("A note.", "A note, reworded.")})
+        master = base.replace("- old\n", "- old\n- master fix\n", 1)
+        head = f.master_commit({"CHANGELOG.md": master})
+        self.assert_released_refused(head, master, "[0.64.3]")
+
+    def test_a_heading_the_strand_drops_from_a_released_section_is_refused(self):
+        # M1 (a): `### Added` and its entry gone from `[0.64.3]` -- refused,
+        # never silently put back
+        head, master = self.released_change(
+            "- Released.\n", base=changelog("### Fixed\n\n- old\n\n",
+                                            released="- Released.\n\n### Added\n\n- r\n"))
+        self.assert_released_refused(head, master, "[0.64.3]")
+
+    def test_an_entry_unreleased_already_carries_moves_once(self):
+        # M1 (b): the strand adds `- master fix` (which master's [Unreleased]
+        # has) and `- strand late` to `[0.64.3]`: the first stands once
+        f = self.f
+        self.released_change("- Released.\n- master fix\n- strand late\n")
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog(
+            "### Fixed\n\n- old\n- master fix\n- strand late\n\n"))
+
+    def test_headings_twice_in_unreleased_take_a_move(self):
+        # M3 after v2-r3-unreldup: master's body with `### Added`/`### Fixed`
+        # twice is no reason to refuse; `### Fixed` #0 of `[0.64.3]` joins
+        # `### Fixed` #0 of [Unreleased]
+        f = self.f
+        body = UnreleasedConflictTest.H5_BODY % ""
+        self.released_change("- Released.\n- strand late\n", base=changelog(body),
+                             master=changelog(UnreleasedConflictTest.H5_BODY % "\n- mc"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog(
+            (UnreleasedConflictTest.H5_BODY % "\n- mc").replace("- f1\n", "- f1\n- strand late\n")))
+        self.assertIn("merge: resolved CHANGELOG.md [0.64.3]: strand +1 entries moved "
+                      "to [Unreleased]\n", err)
+
+    def test_an_addition_under_a_second_heading_joins_the_second_one_in_unreleased(self):
+        # re-check fr4 d0f8f69e8 I1: the move goes by heading AND occurrence --
+        # `### Fixed` #1 of `[0.64.3]` joins `### Fixed` #1 of [Unreleased]
+        # (master's body with `### Added`/`### Fixed` twice), not #0
+        f = self.f
+        released = "- r1\n\n### Fixed\n\n- r2\n"
+        body = UnreleasedConflictTest.H5_BODY % ""
+        master = changelog(UnreleasedConflictTest.H5_BODY % "\n- mc", released=released)
+        self.released_change(released + "- strand late\n",
+                             base=changelog(body, released=released), master=master)
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(read(f.root, "CHANGELOG.md"), changelog(
+            (UnreleasedConflictTest.H5_BODY % "\n- mc").replace("- f2\n", "- f2\n- strand late\n"),
+            released=released))
+        self.assertIn("merge: resolved CHANGELOG.md [0.64.3]: strand +1 entries moved "
+                      "to [Unreleased]\n", err)
+
+    def test_an_unreleased_body_the_merge_cannot_write_back_is_named_with_its_line(self):
+        # M3: the refusal names the cause -- here line 6 of master's
+        # [Unreleased] (`- old` right below its heading)
+        base = changelog("### Fixed\n\n- old\n\n").replace("### Fixed\n\n", "### Fixed\n", 1)
+        head, master = self.released_change(
+            "- Released.\n- strand late\n", base=base,
+            master=base.replace("# Changelog\n", "# Changelog\n\nIntro.\n"))
+        self.assert_released_refused(
+            head, master, "[0.64.3]", "[Unreleased] at CHANGELOG.md:8 (`- old`)")
+
+    def test_unreleased_twice_is_named_with_both_lines(self):
+        # M3: two `## [Unreleased]` -- the refusal names both lines
+        second = "## [Unreleased]\n\n- z\n\n"
+        base = changelog("### Fixed\n\n- old\n\n" + second)
+        head, master = self.released_change("- Released.\n- strand late\n", base=base)
+        self.assert_released_refused(
+            head, master, "[0.64.3]", "[Unreleased] twice (CHANGELOG.md:3, :10)")
+
+    def test_no_unreleased_is_named(self):
+        # M3: the strand dropped `## [Unreleased]` -- nothing to take the move
+        f = self.f
+        base = changelog("### Fixed\n\n- old\n\n")
+        f.master_commit({"CHANGELOG.md": base}, "base")
+        f.strand("S1", 101, {"CHANGELOG.md": base.replace("## [Unreleased]\n\n", "").replace(
+            "- Released.\n", "- Released.\n- strand late\n")})
+        self.assert_released_refused(f.head(), base, "[0.64.3]", "no [Unreleased]")
+
+
+def _unreleased_of(text):
+    """The `[Unreleased]` body of a `changelog(...)` text."""
+    return text.split("## [Unreleased]\n\n", 1)[1].split("## [0.64.3]", 1)[0]
 
 
 class FastForwardTest(MergeCase):
@@ -2417,6 +3157,256 @@ class GoldenLaneTest(MergeCase):
 
 
 
+# The merge gate's admission under `merge --wait`, real (OR-TM-6): as
+# `gate._run_lane` admits it -- `--wait-admission` takes a queue place, the
+# merge priority comes from MECLAW_GATE_MODE=merge (K14). A queued first
+# admission logs the queue; then the lane run named by ADMIT_TEST_FREE ends
+# (its lease goes back) and the gate comes back for its offer, as its wait does
+# after the ring. Queued without `--wait-admission` -> exit 3, no summary.
+MERGE_ADMIT_GATE = """import json, os, subprocess, sys
+scripts, tree, holder, log = sys.argv[1:5]
+wait = "--wait-admission" in sys.argv[5:]
+sys.path.insert(0, scripts)
+from pipeline import schedule, store
+schedule._lane_tree_probe = lambda ln: []   # the lanes here do not exist
+db = store.open()
+st = {"name": "precheck", "scope": "precheck", "cargo": 0, "stage": ["S", "I", "R"],
+      "needs": {"cpu": 1, "cargo": 0}, "inputs": [], "cmds": [{"argv": ["true"], "cwd": ""}],
+      "env": "none", "reason": [], "timeout_min": 10, "after": [], "run": True, "keep_ws": True}
+plan = {"mode": "strand", "rev": "a" * 40, "base": "b" * 40, "stations": [st],
+        "plan_reason": {"precheck": ["t"]}}
+merge = os.environ.get("MECLAW_GATE_MODE", "") == "merge"
+
+
+def admit():
+    return schedule.admit(db, plan, repo="meclaw", mode="strand", strand=holder,
+                          wave=holder.split("/")[0], base="b" * 40, lane_pref=None, now=None,
+                          wait=wait, queue=wait or not merge, merge=merge)
+
+
+def note(**kw):
+    with open(log, "a") as fh:
+        fh.write(json.dumps(dict(kw, holder=holder)) + "\\n")
+
+
+adm = admit()
+if isinstance(adm, schedule.Queued):
+    note(queued=[r["holder"] for r in db.execute(
+        "SELECT holder FROM lease_entries WHERE resource IS NULL ORDER BY seq")])
+    if not wait:
+        sys.stderr.write("gate: queued -- %s\\n" % adm.reason)
+        sys.exit(3)
+    free = os.environ["ADMIT_TEST_FREE"]
+    schedule.lease_release(db, free, branch=free)
+    adm = admit()
+    if isinstance(adm, schedule.Queued):
+        note(queued=adm.reason)
+        sys.exit(3)
+note(lane=adm.lane)
+schedule.close(db, adm, {"verdict": "GREEN"})
+rev = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True,
+                     text=True).stdout.strip()
+print("gate: rev = %s" % rev)
+print("GATE-SUMMARY strand %s 1/1 1s GREEN" % rev[:7])
+"""
+
+
+class MergeWaitLaneTest(MergeCase):
+    """OR-TM-6 (K15, 16.10. 20:03): `merge --wait` -- or the `token take` before
+    it (workaround K13-3) -- kept a lane lease while the merge waited for the
+    merge lease `tree:master`: two of four lanes leased and idle, strand gates
+    in the queue. A merge that waits holds no lane: the lane lease of its gate
+    holder (the branch, for a batch each member) goes back when the wait starts
+    (`merge.give_back_lanes`), a lease whose run lives stays until that run
+    ends; the candidate gate takes a lane only under the merge lease, ahead of
+    the waiting strands (K14). The workaround is superfluous."""
+
+    HOLDER = "welle-test/S1"
+    waiting_merge = MergeWaitTest.waiting_merge
+
+    def setUp(self):
+        super().setUp()
+        f = self.f
+        from pipeline import schedule
+        self.schedule = schedule
+        env = mock.patch.dict(os.environ, {"MECLAW_TOKEN_WAIT_SECS": "3600"})
+        env.start()
+        self.addCleanup(env.stop)
+        # The lanes here do not exist: their lane tree holds no process.
+        self.addCleanup(setattr, schedule, "_lane_tree_probe", schedule._lane_tree_probe)
+        schedule._lane_tree_probe = lambda ln: []
+        write(f.tmp, "lanes", "lane-a test@lane-a.invalid\nlane-b test@lane-b.invalid\n")
+        res = schedule.lease_init(f.db, lanes=["lane-a", "lane-b"],
+                                  lanes_file=os.path.join(f.tmp, "lanes"))
+        self.assertEqual(res.code, 0, res.err)
+        schedule.sync_runners(f.db, [_Runner("lane-a"), _Runner("lane-b")],
+                              states={"lane-a": "idle", "lane-b": "idle"})
+
+    def take(self, holder, lane=None, pid=None):
+        return self.schedule.lease_take(self.f.db, holder, lane=lane, pid=pid).code
+
+    def holders(self):
+        st = self.schedule._load(self.f.db)
+        return sorted((h["strand"], h.get("lane")) for h in st["holders"])
+
+    def wait_behind_s9(self, names):
+        """`merge --wait names` behind S9's merge lease, until it said its wait."""
+        self.assertTrue(merge.take_tree(self.f.db, "meclaw", "S9"))
+        th, got, out_, err = self.waiting_merge(names)
+        th.start()
+        self.assertTrue(err.queued.wait(kit_time.HANG), "HANG: the merge never queued")
+        return th, got, out_, err
+
+    def land(self, th, got, err):
+        self.assertTrue(merge.release_tree(self.f.db, "meclaw", "S9"))
+        th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: the release did not wake merge --wait")
+        self.assertEqual(got, [0], err.getvalue())
+
+    def test_a_waiting_merge_gives_back_the_lane_of_its_strand(self):
+        # (a) the K13-3 workaround: `token take` on the strand before `merge --wait`
+        self.a_strand()
+        self.assertEqual(self.take(self.HOLDER, lane="lane-a"), 0)
+        th, got, _, err = self.wait_behind_s9(["S1"])
+        self.assertEqual(self.holders(), [], err.getvalue())
+        self.assertIn("merge: lane lane-a of welle-test/S1 given back while the merge waits "
+                      "for tree:master@meclaw", err.getvalue())
+        # the lane works meanwhile: a strand gate takes it
+        self.assertEqual(self.take("welle-test/Y", lane="lane-a"), 0)
+        self.land(th, got, err)
+        self.assertEqual(self.holders(), [("welle-test/Y", "lane-a")])
+
+    def test_a_waiting_batch_gives_back_the_lanes_of_its_members(self):
+        # (a) a batch `<wave>/S1+S2` speaks for its members' leases (_batch_speaker)
+        self.a_strand()
+        self.f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        self.assertEqual(self.take(self.HOLDER, lane="lane-a"), 0)
+        self.assertEqual(self.take("welle-test/S2", lane="lane-b"), 0)
+        th, got, _, err = self.wait_behind_s9(["S1", "S2"])
+        self.assertEqual(self.holders(), [], err.getvalue())
+        self.land(th, got, err)
+
+    def test_a_locked_give_back_journals_merge_queued_once(self):
+        # Re-check stack m1: `waits` runs under `schedule.while_locked`, whose
+        # `fn` must be safe to repeat. The give-back was the round's first write
+        # after the `merge_queued` events -- a store that answered locked there
+        # repeated the first round and journaled `merge_queued` twice. The
+        # give-back (idempotent: after it the holder has no lane) goes first.
+        self.a_strand()
+        self.assertEqual(self.take(self.HOLDER, lane="lane-a"), 0)
+        real, refused = merge.schedule.lease_release, []
+
+        def release(*args, **kw):
+            if not refused:
+                refused.append(args[1])
+                raise sqlite3.OperationalError("database is locked")
+            return real(*args, **kw)
+        with mock.patch.object(merge.schedule, "lease_release", side_effect=release), \
+                mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            th, got, _, err = self.wait_behind_s9(["S1"])
+            self.assertEqual(self.holders(), [], err.getvalue())
+            self.land(th, got, err)
+        self.assertEqual([self.HOLDER], refused, "the give-back answered locked once")
+        self.assertEqual(["S1"], [e["strand"] for e in self.f.events("merge_queued")],
+                         "one merge_queued per strand: the repeated round wrote none again")
+
+    def test_a_merge_refused_before_the_wait_keeps_its_lane(self):
+        # Re-check stack fr I1: a strand whose own preconditions fail (here: no
+        # strand receipt) is refused before any wait (PREAMBLE § 6 rule 5,
+        # `lease_resolves`); the lane goes back only while the merge waits.
+        # The give-back ran before that refusal: lane gone, a "given back while
+        # the merge waits" line for a merge that never waited.
+        self.a_strand(receipt=False)
+        self.assertEqual(self.take(self.HOLDER, lane="lane-a"), 0)
+        self.assertTrue(merge.take_tree(self.f.db, "meclaw", "S9"))
+        with mock.patch.dict(os.environ, {"MECLAW_ADMISSION_WAIT_SECS": "60",
+                                          "MECLAW_TOKEN_WAIT_SECS": "60"}):
+            th, got, _, err = self.waiting_merge(["S1"])
+            th.start()
+            th.join(kit_time.HANG)
+        self.assertFalse(th.is_alive(), "HANG: the refusal waited")
+        self.assertEqual(got, [merge.REFUSE_EXIT], err.getvalue())
+        self.assertIn("no_strand_receipt", err.getvalue())
+        self.assertNotIn("given back while the merge waits", err.getvalue())
+        self.assertEqual(self.holders(), [(self.HOLDER, "lane-a")], err.getvalue())
+        self.assertEqual([], self.f.events("merge_queued"), "a refused merge never queued")
+
+    def test_a_locked_event_of_a_batch_journals_each_member_once(self):
+        # Re-check stack fr m2: the first round journals `merge_queued` for each
+        # member under `schedule.while_locked`, whose `fn` must be safe to
+        # repeat. One write transaction per event: the second member's answered
+        # locked, the round repeated with `first` still true -- the first
+        # member's event stood twice. The round's events are one transaction.
+        self.a_strand()
+        self.f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        real, refused = merge.events.emit, []
+
+        def emit(db, name, kind, data, **kw):
+            if name == "merge_queued" and data.get("strand") == "S2" and not refused:
+                refused.append(data["strand"])
+                raise sqlite3.OperationalError("database is locked")
+            return real(db, name, kind, data, **kw)
+        with mock.patch.object(merge.events, "emit", side_effect=emit), \
+                mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            th, got, _, err = self.wait_behind_s9(["S1", "S2"])
+            self.land(th, got, err)
+        self.assertEqual(["S2"], refused, "the second member's event answered locked once")
+        self.assertEqual(["S1", "S2"], [e["strand"] for e in self.f.events("merge_queued")],
+                         "one merge_queued per member: the repeated round wrote each once")
+
+    def test_a_lane_whose_run_lives_stays_while_the_merge_waits(self):
+        # Error path: the release refuses a lease with a live pid (GH #1228) --
+        # the merge never ends a run; the lease stays and the merge says so.
+        self.a_strand()
+        # the run on the lane: a live process outside the merge's own line
+        run = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                               stdin=subprocess.PIPE)
+        self.addCleanup(run.wait)
+        self.addCleanup(run.stdin.close)
+        self.assertEqual(self.take(self.HOLDER, lane="lane-a", pid=run.pid), 0)
+        th, got, _, err = self.wait_behind_s9(["S1"])
+        self.assertEqual(self.holders(), [(self.HOLDER, "lane-a")], err.getvalue())
+        self.assertIn("merge: lane lane-a of welle-test/S1 stays while the merge waits",
+                      err.getvalue())
+        self.land(th, got, err)
+        self.assertEqual(self.holders(), [(self.HOLDER, "lane-a")])
+
+    def lane_under_the_merge_lease(self, workaround):
+        """(b)/(c): S9 merges, X and Y run strand gates on lane-b/lane-a, Z waits
+        for a lane. Under the merge lease the candidate gate queues ahead of Z
+        and gets lane-a when Y's run ends."""
+        f = self.f
+        self.a_strand()
+        if workaround:
+            self.assertEqual(self.take(self.HOLDER, lane="lane-a"), 0)
+        self.assertEqual(self.take("welle-test/X", lane="lane-b", pid=os.getpid()), 0)
+        th, got, _, err = self.wait_behind_s9(["S1"])
+        self.assertEqual(self.take("welle-test/Y", lane="lane-a"), 0, err.getvalue())
+        self.assertEqual(self.take("welle-test/Z"), 3)
+        self.assertEqual(self.holders(), [("welle-test/X", "lane-b"), ("welle-test/Y", "lane-a")])
+        write(f.tmp, "merge_admit_gate.py", MERGE_ADMIT_GATE)
+        log = os.path.join(f.tmp, "admit.jsonl")
+        cmd = "%s %s %s {tree} {holder} %s {wait}" % (
+            sys.executable, os.path.join(f.tmp, "merge_admit_gate.py"), SCRIPTS, log)
+        with mock.patch.dict(os.environ, {"MECLAW_PIPELINE_FAKE_GATE": "",
+                                          "MECLAW_MERGE_GATE_CMD": cmd,
+                                          "ADMIT_TEST_FREE": "welle-test/Y"}):
+            self.land(th, got, err)
+        with open(log, encoding="utf-8") as fh:
+            admitted = [json.loads(line) for line in fh if line.strip()]
+        self.assertEqual(admitted, [{"queued": [self.HOLDER, "welle-test/Z"], "holder": self.HOLDER},
+                                    {"lane": "lane-a", "holder": self.HOLDER}], err.getvalue())
+        self.assertEqual(self.holders(), [("welle-test/X", "lane-b")])
+
+    def test_under_the_merge_lease_the_gate_takes_its_lane_ahead_of_the_strands(self):
+        # (b) the lane given back is taken again only under the merge lease, with merge priority
+        self.lane_under_the_merge_lease(workaround=True)
+
+    def test_token_take_before_merge_wait_is_superfluous(self):
+        # (c) without the workaround the merge lands the same way
+        self.lane_under_the_merge_lease(workaround=False)
+
+
 class GateRevTest(MergeCase):
     """F1: the merge gate must have gated THE candidate -- fail closed otherwise."""
 
@@ -2677,6 +3667,207 @@ class MergeQueueZiTest(MergeCase):
         self.assertEqual(merge.close_issues(merge.Strand(f.root, "S1", WAVE), out_=out), 0)
         self.assertIn("gh issue comment 101 --body ", out.getvalue())
         self.assertNotIn("gh issue close", out.getvalue())
+
+
+class BatchCloseTest(MergeCase):
+    """OR-TM-13 (welle-val2 v2-r3-close): the merge of a batch left the issues
+    of its components open. A component's strand file comes to master with
+    the batch and carries the same issues; it is no foreign carrier when the
+    head of its branch came with THIS merge -- an ancestor of a later parent
+    of the merge commit, not of the first one (master before the merge)."""
+
+    def integrate(self, s, name, *refs):
+        """The batch head merges `refs` without fast-forward, as T2B did."""
+        git(s["wt"], "merge", "-q", "--no-ff", "-m", "%s: integrate" % name, *refs)
+        s["tip"] = git(s["wt"], "rev-parse", "HEAD")
+        self.f.stamp(s["wt"])
+        self.f.receipt(name, RUN_DIR % s["tip"][:8], "strand", s["tip"], "GREEN")
+        return s
+
+    def a_batch(self, name, issues, files):
+        """A strand on several issues: strand file and report name all of them."""
+        s = self.f.strand(name, issues[0], files)
+        write(self.f.wdir, "straenge/%s.json" % name, json.dumps(
+            {"strand": name, "issue": issues, "title": "Batch %s" % name, "kind": {}}) + "\n")
+        self.f.report(name, s["branch"], ", #".join(str(i) for i in issues),
+                      [c[:8] for c in s["commits"]])
+        return s
+
+    def closed(self):
+        return [c[2] for c in self.f.gh_calls() if c[:2] == ["issue", "close"]]
+
+    def dry_close(self, name):
+        out = io.StringIO()
+        self.assertEqual(merge.close_issues(merge.Strand(self.f.root, name, WAVE), out_=out), 0)
+        return out.getvalue()
+
+    def test_batch_merge_closes_the_issues_of_its_components(self):
+        # T2B (a7b255021) left #1240..#1249 open: K-RECUR, K-KATALOG, ... carry them too.
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        f.strand("C2", 202, {"templates/b/c2.txt": "c2\n"})
+        t = self.a_batch("T", [201, 202], {"templates/a/t.txt": "t\n"})
+        self.integrate(t, "T", "welle-test/C1", "welle-test/C2")
+        rc, out, err = f.merge(["T"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(sorted(self.closed()), ["201", "202"])
+        self.assertNotIn("left open", out + err)
+        dry = self.dry_close("T")
+        for issue in ("201", "202"):
+            self.assertIn("gh issue close %s --comment " % issue, dry)
+        self.assertNotIn("left open", dry)
+
+    def test_an_issue_an_unmerged_strand_carries_too_stays_open(self):
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        f.strand("S2", 1126, {"templates/b/s2.txt": "s2\n"})
+        t = self.a_batch("T", [201, 1126], {"templates/a/t.txt": "t\n"})
+        self.integrate(t, "T", "welle-test/C1")
+        rc, out, err = f.merge(["T"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.closed(), ["201"])
+        self.assertIn("close: #1126 left open -- the wave issue (strand S2 carries it too)", out)
+
+    def test_an_issue_a_strand_merged_before_carries_too_stays_open(self):
+        # The wave issue (#1199): carried by a strand that came to master
+        # before this merge -- its head is an ancestor of the first parent,
+        # and of the batch head too, which integrated master since.
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        t = self.a_batch("T", [201, 1126], {"templates/a/t.txt": "t\n"})
+        f.strand("S0", 1126, {"templates/b/s0.txt": "s0\n"})
+        rc, _, err = f.merge(["S0"])
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(f.head("welle-test/S0"))
+        self.integrate(t, "T", "welle-test/C1", "master")
+        rc, out, err = f.merge(["T"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.closed(), ["201"])
+        self.assertIn("close: #1126 left open -- the wave issue (strand S0 carries it too)", out)
+
+    def test_one_issue_in_two_strand_files_both_heads_in_the_merge_is_closed(self):
+        # K-SEALED + K-WARDEN (9cf8f3d7c) left #1252 open: both files carry it.
+        f = self.f
+        f.strand("SEALED", 301, {"templates/a/sealed.txt": "sealed\n"})
+        f.strand("WARDEN", 301, {"templates/b/warden.txt": "warden\n"},
+                 base="welle-test/SEALED")
+        rc, out, err = f.merge(["WARDEN"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.closed(), ["301"])
+        self.assertNotIn("left open", out + err)
+
+    def test_a_component_branch_gone_or_moved_after_the_merge_stays_a_carrier(self):
+        # Fail-safe: without the branch head of this merge the carrier is foreign.
+        f = self.f
+        c1 = f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        c2 = f.strand("C2", 202, {"templates/b/c2.txt": "c2\n"})
+        t = self.a_batch("T", [201, 202], {"templates/a/t.txt": "t\n"})
+        self.integrate(t, "T", "welle-test/C1", "welle-test/C2")
+        rc, _, err = f.merge(["T"], close=False)
+        self.assertEqual(rc, 0, err)
+        write(c1["wt"], "templates/a/c1.txt", "c1 moved on\n")
+        git(c1["wt"], "commit", "-q", "-am", "C1: after the merge")
+        git(f.root, "worktree", "remove", "--force", c2["wt"])
+        git(f.root, "branch", "-D", "welle-test/C2")
+        dry = self.dry_close("T")
+        self.assertIn("close: #201 left open -- the wave issue (strand C1 carries it too)", dry)
+        self.assertIn("close: #202 left open -- the wave issue (strand C2 carries it too)", dry)
+        self.assertNotIn("gh issue close", dry)
+
+    def test_a_git_error_on_the_first_parent_check_keeps_the_carrier_foreign(self):
+        # Fix round 1, I1: only `returncode == 1` reads "not an ancestor";
+        # rc 128 against the first parent left an earlier carrier "below a
+        # later parent only" and closed the wave issue.
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        t = self.a_batch("T", [201, 1126], {"templates/a/t.txt": "t\n"})
+        f.strand("S0", 1126, {"templates/b/s0.txt": "s0\n"})
+        rc, _, err = f.merge(["S0"], close=False)
+        self.assertEqual(rc, 0, err)
+        self.integrate(t, "T", "welle-test/C1", "master")
+        rc, _, err = f.merge(["T"], close=False)
+        self.assertEqual(rc, 0, err)
+        strand = merge.Strand(f.root, "T", WAVE)
+        first = merge.merge_parents(f.root, strand.report, "T")[0]
+        real = merge.git
+
+        def failing(cwd, *args, **kw):
+            if args[:2] == ("merge-base", "--is-ancestor") and args[3] == first:
+                return subprocess.CompletedProcess(["git"] + list(args), 128, "",
+                                                   "fatal: injected")
+            return real(cwd, *args, **kw)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(merge, "git", failing):
+            self.assertEqual(merge.close_issues(strand, out_=out, err=err), 0)
+        self.assertIn("close: #1126 left open -- the wave issue (strand S0 carries it too)",
+                      out.getvalue())
+        self.assertNotIn("gh issue close 1126 ", out.getvalue())
+        reasons = [line for line in err.getvalue().splitlines() if "rc 128" in line]
+        self.assertTrue(any("welle-test/S0" in line for line in reasons), err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_a_hand_close_after_master_moved_on_reads_the_merge_of_the_strand(self):
+        # Fix round 1, I2 (a): the parents are those of T's own merge commit,
+        # not of the current master -- a later merge U changes nothing.
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        t = self.a_batch("T", [201], {"templates/a/t.txt": "t\n"})
+        self.integrate(t, "T", "welle-test/C1")
+        rc, _, err = f.merge(["T"], close=False)
+        self.assertEqual(rc, 0, err)
+        f.strand("U", 999, {"templates/c/u.txt": "u\n"})
+        rc, _, err = f.merge(["U"], close=False)
+        self.assertEqual(rc, 0, err)
+        dry = self.dry_close("T")
+        self.assertIn("gh issue close 201 --comment ", dry)
+        self.assertNotIn("left open", dry)
+
+    def test_a_carrier_merged_after_the_strand_stays_foreign_at_a_hand_close(self):
+        # Fix round 1, I2 (a): S9 carries 201 too and came to master AFTER
+        # T's merge -- foreign for T, whatever the current master's last merge is.
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        t = self.a_batch("T", [201], {"templates/a/t.txt": "t\n"})
+        self.integrate(t, "T", "welle-test/C1")
+        rc, _, err = f.merge(["T"], close=False)
+        self.assertEqual(rc, 0, err)
+        f.strand("S9", 201, {"templates/c/s9.txt": "s9\n"})
+        rc, _, err = f.merge(["S9"], close=False)
+        self.assertEqual(rc, 0, err)
+        dry = self.dry_close("T")
+        self.assertIn("close: #201 left open -- the wave issue (strand S9 carries it too)", dry)
+        self.assertNotIn("gh issue close", dry)
+
+    def test_an_octopus_batch_counts_every_later_parent(self):
+        # Fix round 1, I2 (b): `--batch A,B` -- B is the third parent.
+        f = self.f
+        f.strand("A", 301, {"templates/a/a.txt": "a\n"})
+        f.strand("B", 301, {"templates/b/b.txt": "b\n"})
+        rc, out, err = f.merge(["A", "B"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(f.parents()), 3, "an octopus merge expected")
+        self.assertNotIn("left open", out + err)
+        self.assertIn("301", self.closed())
+
+    def test_a_report_without_branch_finds_no_merge(self):
+        # Fix round 1, M2: "" is in every subject -- an empty branch took the
+        # newest foreign merge; now it matches none (fail-safe).
+        f = self.f
+        f.strand("C1", 201, {"templates/a/c1.txt": "c1\n"})
+        rc, _, err = f.merge(["C1"], close=False)
+        self.assertEqual(rc, 0, err)
+        strand = merge.Strand(f.root, "C1", WAVE)
+        bare = strand.report + ".nobranch"
+        with open(strand.report, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("branch: welle-test/C1\n", text)
+        with open(bare, "w", encoding="utf-8") as fh:
+            fh.write(text.replace("branch: welle-test/C1\n", ""))
+        self.assertEqual(merge.merge_parents(f.root, bare, "ZZZ-unrelated"), [])
+        with self.assertRaisesRegex(merge.Refused, r"^neither the branch  nor a merge of it") as got:
+            merge.close_info(f.root, bare, strand.archive, "ZZZ-unrelated")
+        self.assertEqual(got.exception.reason, "no_branch")
 
 
 class InheritedRepositoryTest(MergeCase):

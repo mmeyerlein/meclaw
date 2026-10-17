@@ -506,7 +506,15 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// around the two cells its seed checks in (`store`, `vault`), so the
 /// instantiation stamps four (`invoke`, `policy`, `sweep`, `clock`).
 /// COMPUTED in the strand (no cargo there); the builder's gate measures it.
-const TEMPLATE_BORN_ROWS: usize = 89;
+///
+/// Moved 89 -> 93 with GH #1247: every `talky` grew `route` and `decide`,
+/// the route stamp of each turn (2 x 2). Measured red in the strand's run of
+/// the gate's filterset (93 against 89).
+///
+/// Moved 93 -> 95 with GH #1248: every `talky` grew `quick`, the second
+/// model cell behind its curator (2 x 1). Measured red in the strand's run
+/// (95 against 93).
+const TEMPLATE_BORN_ROWS: usize = 95;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -855,7 +863,27 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// (`./meter -> ./clock`, the order). Two talkies, one keeper each, and one
 /// argus: 2 x 3 + 1 x 1. Measured red in the strand's gate at 468 with two
 /// keeper edges; the import arm of fix round 1 adds 2 x 1.
-const EDGES: usize = 470;
+///
+/// Moved 470 -> 489 with GH #1247 (the talky route/decide cells): every
+/// `talky` eight edges more -- `./session-keeper -> ./route` on the turn,
+/// `./route -> ./decide` and `./decide -> ./route`, `. -> ./decide` on the
+/// model answer, `./decide -> .` on a refusal, `./route -> ./collector` on
+/// the stamp, and the departure pair `./curator -> ./collector` and
+/// `./curator -> .` for `consult`/`research` -- and every `curator` one more
+/// (`./intake -> ./push` on `push_round`). Two talkies and three curators:
+/// 2 x 8 + 3 x 1. Measured red in the strand's test run (489 against 470).
+///
+/// Moved 489 -> 501 with GH #1248 (the quick voice): every `talky` six edges
+/// more -- `. -> ./quick` on the model answer, `./curator -> ./quick` on the
+/// round, `./quick -> ./splitter`, `./quick -> ./curator`, `./quick -> ./errors`
+/// and `./quick -> .` on a refusal. Two talkies: 2 x 6.
+///
+/// Moved 501 -> 503 with GH #1255: every `talky` one edge more (`./splitter ->
+/// .` on `answer_check`, the sent answer for its declared checker); `cogny`'s
+/// splitter copy draws none. Two talkies: 2 x 1. First measured red in the
+/// strand's gate (472 against 470), carried onto 489 by the rebase and onto
+/// 501 by the merge with GH #1248.
+const EDGES: usize = 503;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

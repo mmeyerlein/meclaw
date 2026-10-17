@@ -144,8 +144,8 @@ const SCRIPTED: &[Scripted] = &[
 /// type, with a `${...}` token sitting inside it. Cell, key, and the literal it
 /// ships.
 const TYPED: &[(&str, &str, &str)] = &[
-    ("tools/edit", "base_path", "/tmp"),
-    ("tools/file", "base_path", "/tmp"),
+    ("tools/edit", "base_path", "workspace"),
+    ("tools/file", "base_path", "workspace"),
     ("vault", "key_source", "auto"),
     ("vault", "credential_name", "vault_key"),
     ("talky/brain", "credential_grant_id", ""),

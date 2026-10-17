@@ -84,6 +84,22 @@ station would grade it anyway:
                     commits them 100644 and runs them with bash/python3
                     (PREAMBLE § 6.13). A script the merge base already carries
                     unchanged is not this diff's.
+    wave-name       an added line of code (`turnaround.PY_READERS`, every
+                    crate file of `REUSE_TESTS`) that names a file a commit
+                    after the gate may change (`turnaround.allowlisted`, each
+                    such file of every `plans/welle-*` on disk that section
+                    Live of `plans/README.md` does not name as closed by
+                    `wave close`, `wave.live_closed`) by a needle of
+                    the merge's own reader rule (`turnaround._needles`, matched
+                    by `_bounded`): the wave directory whole, a directory of
+                    it (`plans/<wave>/berichte`, `.../berichte/*.md`,
+                    `<wave>/straenge/`), the file's path or its file name.
+                    That file reads it, so each such commit voided the receipt
+                    and the pre stamp (`receipt_not_branch_head`; class K-R2,
+                    a doc comment in `writer.rs`, then a test comment in the
+                    batch merge 17.10.). A placeholder (`<wave>`, `<S>`) or a
+                    file no commit after the gate changes names none. Added
+                    lines only.
 
 NOTE -- read, do not stop. These are the review findings that repeat, and a
 note before the review is a fix round saved:
@@ -704,6 +720,103 @@ def check_recheck_mode(files, repo):
                       % (path, path))
 
 
+def _turnaround():
+    from pipeline import turnaround
+    return turnaround
+
+
+def _wave_reader_scope(path):
+    """Code `turnaround` reads as a reader of `plans/`: `PY_READERS` (Python and
+    shell under `scripts/`, Python under `workshop/`) and `REUSE_TESTS` (every
+    crate file, Rust tests and `src/` alike)."""
+    ta = _turnaround()
+    globs = [g.split(")", 1)[1] if g.startswith(":(") else g
+             for g in ta.PY_READERS + ta.REUSE_TESTS]
+    gp = ta._gate_plan()
+    return any(gp._matches(path, g) for g in globs)
+
+
+def _wave_dirs(repo):
+    """The open wave directories under `plans/` -- the `plans/welle-*` of
+    `turnaround.NEUTRAL` but the closed ones (`_closed_waves`); none without
+    `plans/` (the published tree). The merge judges the post-gate commits of
+    its own wave, a closed one gets none (re-check fr4 d0f8f69e8 M1)."""
+    import fnmatch
+    globs = {g.split("/")[1] for g in _turnaround().NEUTRAL}
+    try:
+        names = os.listdir(os.path.join(repo, "plans"))
+    except OSError:
+        return []
+    closed = _closed_waves(repo)
+    return sorted(n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs)
+                  and os.path.isdir(os.path.join(repo, "plans", n)) and n not in closed)
+
+
+def _closed_waves(repo):
+    """The waves `wave close` closed: the Built rows of section Live in
+    `plans/README.md` (`wave.live_closed`); none when the file or its table is
+    unreadable -- a wave without such a row counts as open (fail-closed)."""
+    from pipeline import wave
+    try:
+        with open(os.path.join(repo, "plans", "README.md"), encoding="utf-8") as fh:
+            return set(wave.live_closed(fh.read()))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return set()
+
+
+def _post_gate_needles(repo, waves):
+    """`[(needle, whole, file, regex)]`: the needles `turnaround._needles` reads
+    for each file of `waves` a commit after the gate may change
+    (`turnaround.allowlisted`), on disk -- one entry per needle, with the first
+    such file it reads, the longest needle first (a finding names the most
+    specific one)."""
+    ta = _turnaround()
+    first = {}
+    for wave in waves:
+        top = os.path.join(repo, "plans", wave)
+        for d, dirs, names in os.walk(top):
+            dirs.sort()
+            for name in sorted(names):
+                rel = os.path.relpath(os.path.join(d, name), repo).replace(os.sep, "/")
+                if ta.allowlisted(rel):
+                    for needle in ta._needles(rel):
+                        first.setdefault(needle, rel)
+    return [(n, whole, rel, re.compile(ta._bounded(n, whole)))
+            for (n, whole), rel in sorted(first.items(), key=lambda x: (-len(x[0][0]), x[0]))]
+
+
+def check_wave_name(files, repo):
+    """Fund 4 (class K-R2), re-check fr d4d5b5375 I2: an added line of code that
+    `turnaround` reads as a reader of a post-gate file of an open wave
+    (`_wave_dirs`)."""
+    paths = [p for p in files if _wave_reader_scope(p)
+             and os.path.isfile(os.path.join(repo, p))]
+    waves = _wave_dirs(repo) if paths else []
+    if not waves:
+        return
+    needles = _post_gate_needles(repo, waves)
+    added = _testing_bans().added_lines(repo, _base(repo), paths)
+    for path in paths:
+        if path not in added:
+            continue
+        text = _read(os.path.join(repo, path)) or ""
+        for n, line in enumerate(text.splitlines(), 1):
+            if added[path] is not None and n not in added[path]:
+                continue
+            hit = next(((needle, whole, rel) for needle, whole, rel, r in needles
+                        if needle in line and r.search(line)), None)
+            if hit is None:
+                continue
+            needle, whole, rel = hit
+            what = ("every file of plans/%s/" % needle) if whole else rel
+            yield Finding(
+                "RED", "wave-name",
+                "%s:%d names `%s` as the merge's reader rule reads it (turnaround rule 8): "
+                "a reader of %s, so each commit of it after the gate voids the receipt "
+                "and the pre stamp -- write a placeholder (`<wave>`, `<S>`) or name a "
+                "file no commit after the gate changes" % (path, n, needle, what))
+
+
 def _tree_entry(repo, rev, path):
     """`(mode, blob)` of `path` in commit `rev`, or in the index for None."""
     args = (["ls-files", "-s"] if rev is None else ["ls-tree", rev]) + ["--", path]
@@ -922,7 +1035,7 @@ NATIVE_CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_fil
                  check_testing_rules, check_changelog_mark,
                  check_since_sentence, check_since_doc, check_run_artefact,
                  check_plan_cap, check_name_pattern, check_kdf_off_worker,
-                 check_recheck_mode)
+                 check_recheck_mode, check_wave_name)
 
 
 def _lock_check(name, fn):

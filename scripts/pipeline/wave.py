@@ -516,6 +516,8 @@ def close(wave, root=None, db_path=None, issues=(), dry_run=False, bump=False,
 
 LIVE_ROW = re.compile(r"^\| *`(?P<dir>[^`]+)/` *\| *(?P<rest>.*)$")
 RUNNING = re.compile(r"^\*\*Running since (\d{4}-\d{2}-\d{2}):\*\*\s*")
+# the mark `live_close` writes -- a row of any other form is not a closed wave
+BUILT = re.compile(r"^\*\*Built (\d{4}-\d{2}-\d{2}):\*\*\s*")
 NEW_BUILT_TEXT = "Description pending."
 
 
@@ -551,6 +553,14 @@ def live_running(text):
     the one reader of the row; `strand.sh wave_dir` asks it through
     `pipeline wave running` (re-check v2-kit c23 M-5)."""
     return [d for _i, d, rest in _live_rows(text.split("\n")) if RUNNING.match(rest)]
+
+
+def live_closed(text):
+    """Every wave directory section Live names as `**Built <date>:**` -- the row
+    `wave close` writes (`live_close`); the one reader of a closed wave, precheck
+    `wave-name` asks it (re-check fr4 d0f8f69e8 M1). ValueError without the
+    table."""
+    return [d for _i, d, rest in _live_rows(text.split("\n")) if BUILT.match(rest)]
 
 
 def live_open(text, wave, title, date):

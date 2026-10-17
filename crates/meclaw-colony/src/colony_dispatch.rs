@@ -1119,7 +1119,7 @@ pub(crate) fn templates_prologue<'a>(
     } else {
         colony_db.read_templates().unwrap_or_default()
     };
-    let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
+    let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
         templates_rows
             .clone()
             .into_iter()
@@ -1131,6 +1131,12 @@ pub(crate) fn templates_prologue<'a>(
             })
             .collect(),
     );
+    // GH #1236 (C-1): a twin's library seed comes from the registry book, read
+    // here for the one endpoint that stages.
+    if endpoint.as_str() == "/colony/mutations" {
+        templates_snapshot
+            .keep_instance_provenance(crate::mutation::twin::registry_book(colony_db));
+    }
     (templates_snapshot, templates_rows, rescan_future)
 }
 
@@ -1652,7 +1658,9 @@ fn build_mutation_reply(
 /// A manifest is a different question and gets a different slot; the slot holds
 /// an OBJECT, as `ledger` does.
 ///
-/// `failed_at` is 1-based (an operator counts entries, not indices), `remaining`
+/// `failed_at` is 1-based (an operator counts entries, not indices) — or `0`
+/// when the door refused the sender for the whole manifest before any entry
+/// was applied (`sender_out_of_scope`, the position rides in `details`); `remaining`
 /// counts the entries that were NEVER LOOKED AT, and `applied` counts the ones
 /// that committed and STAY committed — there is no rollback. No new
 /// `error_code` string is minted here: the slot carries the refusing entry's
@@ -1845,6 +1853,8 @@ pub(crate) async fn run_mutation_door(
     blob_inline_max_bytes: usize,
     env_source: Option<&std::path::Path>,
     death_ack_wait_tx: Option<&tokio::sync::mpsc::Sender<()>>,
+    // #1233 (T6-09): where the running-store seed orders of the knock go.
+    seed_lane: &mut Vec<crate::mutation::seed_rows::SeedOrder>,
     pulse: &crate::watchdog::WorkPulse, // GH #439 — passed straight through to the mutation path
 ) -> crate::mutation::MutationDoorOutcome {
     use crate::mutation::MutationDoorOutcome;
@@ -1876,6 +1886,7 @@ pub(crate) async fn run_mutation_door(
                 blob_inline_max_bytes,
                 env_source,
                 death_ack_wait_tx,
+                &mut *seed_lane,
                 pulse,
             )
             .await,
@@ -1914,6 +1925,7 @@ pub(crate) async fn run_mutation_door(
                 // The single form has no next entry, so nothing needs to hear
                 // what it registered (GH #440).
                 None,
+                seed_lane,
                 pulse,
             )
             .await,
@@ -2077,6 +2089,9 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     // drain passes: a receipt there would be new work the drain then has to
     // wait for, the same reason GH #47 refuses a source emission in the drain.
     mutation_receipt: Option<(&meclaw_core::Path, u32)>,
+    // #1233 (T6-10): the loop's wait table for knocks whose running stores
+    // still owe their seed receipt.
+    seed_waits: &mut crate::mutation::seed_rows::SeedWaits,
 ) -> crate::colony::RouteAction {
     // GH #432 — the door resolves a blob body BEFORE it dispatches.
     //
@@ -2136,6 +2151,14 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
     read_pulse.tick();
 
     match endpoint.as_str() {
+        // #1233 (T6-10): a running store's answer on its seed lane comes back to
+        // the door; it releases a parked knock, it is never a knock itself.
+        "/colony/mutations" if body.get(crate::mutation::seed_rows::RECEIPT_SLOT).is_some() => {
+            match seed_waits.receive(&sender, &body, writer_tx).await {
+                Some((to, reply_body)) => emit_reply_or_done(to, reply_body),
+                None => crate::colony::RouteAction::Done,
+            }
+        }
         "/colony/mutations" => {
             // GH #553: read before the body moves into the door (see
             // `receipt_scope_of`).
@@ -2143,6 +2166,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             // GH #1231 (T6-02): the door binds the sender BEFORE it opens; a
             // refusal takes the same reply and receipt path as any verdict.
             let refusal = door_sender_refusal(edges, hive_scopes, &sender, &body);
+            let mut seed_orders = Vec::new();
             let outcome = if let Some(refused) = refusal {
                 refused
             } else {
@@ -2173,6 +2197,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                     blob_inline_max_bytes,
                     env_source,
                     None, // /colony/mutations dispatch path: no test sync hook
+                    &mut seed_orders,
                     pulse,
                 )
                 .await
@@ -2194,7 +2219,25 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                 );
             }
             let reply_body = mutation_door_reply(&outcome);
-            emit_reply_or_done(reply_to, reply_body)
+            // #1233 (T6-10): the reply waits for the receipts of every running
+            // store the knock seeded.
+            if seed_orders.is_empty() {
+                emit_reply_or_done(reply_to, reply_body)
+            } else {
+                match seed_waits
+                    .park(
+                        seed_orders,
+                        crate::mutation::seed_rows::SeedWaiter::Reply(reply_to, reply_body),
+                        inbox_self_tx,
+                        writer_tx,
+                        trace_id,
+                    )
+                    .await
+                {
+                    Some((to, b)) => emit_reply_or_done(to, b),
+                    None => crate::colony::RouteAction::Done,
+                }
+            }
         }
         "/colony/registry" => {
             let reply_body = build_registry_read_reply(registry, &body);
@@ -3008,6 +3051,7 @@ mod tests {
             &crate::watchdog::WorkPulse::silent(),
             // GH #553: these unit tests are not about receipts.
             None,
+            &mut crate::mutation::seed_rows::SeedWaits::default(),
         )
         .await;
 
@@ -3290,6 +3334,7 @@ mod tests {
             &crate::watchdog::WorkPulse::silent(),
             // GH #553: these unit tests are not about receipts.
             None,
+            &mut crate::mutation::seed_rows::SeedWaits::default(),
         )
         .await;
 

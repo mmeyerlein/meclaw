@@ -136,6 +136,39 @@ fn io_err_to_resolve(e: std::io::Error) -> ResolveErr {
     }
 }
 
+/// The declared `params.base_path` of a `file`/`edit` cell, checked on the
+/// filesystem: it must canonicalise to a directory (U11 — the same check in
+/// `validate_params` and `spawn_cell`, so validate never accepts a root the
+/// spawn refuses).
+pub(crate) fn canonical_root(root: &StdPath) -> Result<PathBuf, String> {
+    let canon = root
+        .canonicalize()
+        .map_err(|e| format!("base_path canonicalize failed ({root:?}): {e}"))?;
+    if !canon.is_dir() {
+        return Err(format!("base_path is not a directory: {canon:?}"));
+    }
+    Ok(canon)
+}
+
+/// GH #1234 (T6-12) — the root a `file`/`edit` cell works in, at its spawn,
+/// and the directory a `bash` cell's commands start in (`params.cwd`, T6-15).
+/// An absolute root must already exist ([`canonical_root`]); a relative one is
+/// a directory of the hive that encloses `cell_dir`, created here with the
+/// marker the boot walker never descends into (`create_cell_root`), so two tool
+/// cells of one hive that name the same root share it and two hives never do.
+/// The shipped tool surface rooted both at `/tmp` before: one directory for
+/// every assistant on the machine.
+pub(crate) fn spawn_root(declared: &StdPath, cell_dir: &StdPath) -> Result<PathBuf, String> {
+    if declared.is_absolute() {
+        return canonical_root(declared);
+    }
+    let anchored = meclaw_colony::anchor_cell_root(cell_dir, declared);
+    meclaw_colony::create_cell_root(&anchored).map_err(|e| {
+        format!("base_path {anchored:?} could not be created in the enclosing hive: {e}")
+    })?;
+    canonical_root(&anchored)
+}
+
 /// Resolve `rel` for read/list/stat: must exist, canonicalize follows
 /// symlinks; final canonical path must be under `base.canonicalize()`.
 ///

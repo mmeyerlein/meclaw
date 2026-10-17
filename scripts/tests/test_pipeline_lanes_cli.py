@@ -956,6 +956,28 @@ class TestTokenLanes(TokenTestCase):
         self.assertEqual(3, res.returncode, res.stdout + res.stderr)
         self.assertEqual(["%s/rel-3c:2" % WAVE, "welle-x/s1"], self.waiting())
 
+    def test_take_strand_from_a_tree_with_the_strand_file_waits_as_a_release(self):
+        # Re-check Kette FR2 m2: one rule for the class tree. `take --strand <S>`
+        # read the strand file only in the strand's own tree, `gate --strand <S>`
+        # always in its tree (gate.py `release_tree`) -- from the main tree, which
+        # carries `plans/<wave>/straenge/<S>.json` too, the gate waited as a
+        # release and the take as program. The class reads the file; the place
+        # keeps no tree there (only the strand's own tree keeps a waiter's place).
+        self.arm("--lanes", "north")
+        d = self.main / "plans" / ("%s-2026-10-16" % WAVE) / "straenge"
+        d.mkdir(parents=True)
+        (d / "rel-3c.json").write_text(json.dumps({"strand": "rel-3c", "release": True}))
+        self.assertEqual("lane north", self.take_lane("welle-x/a", "north").stdout.strip())
+        self.assertEqual(3, self.take_lane("welle-x/s1", "north", minutes=1).returncode)
+        res = self.take_lane("%s/rel-3c" % WAVE, "north", minutes=2)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["%s/rel-3c" % WAVE, "welle-x/s1"], self.waiting())
+        self.assertTrue(schedule._release_class("%s/rel-3c" % WAVE, str(self.main), "strand"),
+                        "the gate's class from the same tree (gate.py: release_tree = the tree)")
+        with self._db() as db:
+            self.assertEqual("", db.execute("SELECT tree FROM lease_entries WHERE holder = ?",
+                                            ("%s/rel-3c" % WAVE,)).fetchone()["tree"] or "")
+
     def test_take_wait_wakes_on_the_release_not_on_a_clock(self):
         # Review A I3 / C M7: no retry clock -- the waiter blocks on the pool's
         # wake file, and the release wakes it at once. The watchdog of a round

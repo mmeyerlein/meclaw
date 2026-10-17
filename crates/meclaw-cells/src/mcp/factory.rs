@@ -52,6 +52,17 @@ impl CellFactory for McpCellFactory {
         McpParams::parse(params).map(|_| ())
     }
 
+    /// GH #1235 (OR-programm-tm.H5.orch-4): `auth.bearer` is a secret param
+    /// like `llm.api_key` (T6-22) and takes no `${VAR}`; the grant is
+    /// `auth.bearer_grant_id`.
+    fn validate_declared_params(&self, declared: &JsonValue) -> Result<(), String> {
+        crate::credential::refuse_env_secret(
+            "auth.bearer",
+            declared.get("auth").and_then(|a| a.get("bearer")),
+            "auth.bearer_grant_id",
+        )
+    }
+
     /// Spawn an `mcp` cell instance.
     ///
     /// **Corridor duty (phase-5 tripwire)**: the `make_build` closure runs on the
@@ -223,7 +234,11 @@ fn make_build(
     // credential/identity material and is taken from birth. Only
     // external_timeout_ms + query_timeout_ms are overlay-effective and get
     // rebuilt per (re)spawn from the cell.db overlay (β restore) below.
-    let McpParams { transport, .. } = McpParams::parse(&params)?;
+    let McpParams {
+        transport,
+        bearer_grant,
+        ..
+    } = McpParams::parse(&params)?;
     let provider_key = provider_key_from_path(&path);
 
     // Owned clones moved into the multi-call closure.
@@ -232,6 +247,7 @@ fn make_build(
     let outputs_cap = outputs_tx;
     let cell_dir_cap = cell_dir;
     let transport_cap = transport;
+    let grant_cap = bearer_grant;
     let provider_key_cap = provider_key;
     let colony_inbox_cap = colony_inbox_tx;
     let blob_cap = blob_store;
@@ -269,12 +285,27 @@ fn make_build(
         let cell = match &transport_cap {
             McpTransport::Http { endpoint, bearer } => {
                 let client = McpClient::new(endpoint, bearer.clone()).expect("McpClient::new");
-                McpCell::new(
+                let cell = McpCell::new(
                     client,
                     external_timeout_ms,
                     query_timeout_ms,
                     provider_key_cap.clone(),
-                )
+                );
+                // GH #1235: a granted cell asks the vault for its bearer and
+                // runs no handshake before the box (parse refuses a token
+                // next to the grant, so this client carries none).
+                match &grant_cap {
+                    Some(grant) => cell.with_credential(
+                        path_cap.clone(),
+                        grant,
+                        crate::proxy::io::CredentialWait {
+                            wait_ms: crate::credential::default_credential_wait_ms(),
+                            backoff_max_ms:
+                                crate::credential_rounds::default_credential_backoff_max_ms(),
+                        },
+                    ),
+                    None => cell,
+                }
             }
             McpTransport::Stdio { spec } => McpCell::new_stdio(
                 spec.clone(),

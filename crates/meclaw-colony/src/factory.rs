@@ -67,8 +67,10 @@ pub struct ContractView {
     /// GH #314 — `contract.transfer`: whether this cell's database answers the
     /// `transfer` slot at all. `All` by default, for the same reason.
     pub transfer: meclaw_core::TransferPolicy,
-    /// GH #555 — `params.transfer.base_path`: the one absolute directory this
-    /// cell writes its own seed files into and reads them back from. `None`
+    /// GH #555 — `params.transfer.base_path`: the one directory this cell
+    /// writes its own seed files into and reads them back from. As declared it
+    /// may be relative (GH #1234); every spawn site anchors it in the enclosing
+    /// hive first ([`Self::anchor_transfer_root`]). `None`
     /// when the cell names none, which is what every cell said before this key
     /// existed. The only field of this view that comes from `params` rather
     /// than from the `contract` block — see
@@ -77,6 +79,11 @@ pub struct ContractView {
     /// GH #617 — whether this cell may emit with a carried trace and a carried
     /// budget. `false` by default, so a cell that says nothing is unchanged.
     pub ingress_carries_trace: bool,
+    /// GH #1253 — the colony's shutdown drain, read-only. Not from `config.json`:
+    /// the colony sets it at every spawn site; the default never drains, so a
+    /// view built by hand keeps the behaviour it had. Read by the source cells
+    /// that persist "done" before they emit (`timer`, the Telegram `proxy`).
+    pub drain: crate::DrainView,
 }
 
 impl ContractView {
@@ -94,6 +101,99 @@ impl ContractView {
             base_path: self.transfer_base_path.clone(),
         }
     }
+
+    /// GH #1234 (T6-11) — anchor a relative transfer root in the hive that
+    /// encloses `cell_dir` and create it there; an absolute root stays as
+    /// declared and is not created (GH #555: a fence is a promise about where).
+    ///
+    /// Called at every spawn site, beside the `validate_emits` resolution,
+    /// because only the spawn knows the cell's final directory: the boot plan
+    /// and the mutation staging see a config, the staging one under
+    /// `.staging/`. The shipped stores fenced into `/tmp/...`, one directory
+    /// for every member of every colony on the host — a read path between
+    /// cells no edge carries. A failed create is not refused here: the first
+    /// `to`/`from` answers `transfer_io_error`, as for any missing fence.
+    pub fn anchor_transfer_root(&mut self, cell_dir: &std::path::Path) {
+        let Some(declared) = self.transfer_base_path.as_deref() else {
+            return;
+        };
+        if declared.is_absolute() {
+            return;
+        }
+        let anchored = anchor_cell_root(cell_dir, declared);
+        if let Err(e) = create_cell_root(&anchored) {
+            tracing::warn!(
+                root = %anchored.display(),
+                "params.transfer.base_path could not be created in the enclosing hive: {e}"
+            );
+        }
+        self.transfer_base_path = Some(std::sync::Arc::from(anchored.as_path()));
+    }
+}
+
+/// GH #1234 — the one rule for a root a cell declares for its own files
+/// (`params.transfer.base_path`, `params.base_path` of `file`/`edit`): absolute,
+/// or relative to the hive that encloses the cell. Pure: it reads the string
+/// and asks the filesystem nothing, so `--validate` and the mutation door
+/// accept a root the spawn has yet to create.
+///
+/// A relative root is plain names only — no `..`, no `.`, not empty — because
+/// it has to stay inside the enclosing hive: a root that climbs out is shared
+/// with whatever lives there. `Err` is the tail of a sentence the caller
+/// prefixes with its key.
+pub fn check_cell_root(declared: &str) -> Result<(), String> {
+    let path = std::path::Path::new(declared);
+    if path.is_absolute() {
+        return Ok(());
+    }
+    let plain = path
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if declared.is_empty() || !plain {
+        return Err(format!(
+            "must be absolute, or relative inside the enclosing hive \
+             (plain names, no `..`), got: {declared:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// GH #1234 — where a declared root lies for the cell living in `cell_dir`:
+/// an absolute root verbatim, a relative one in the enclosing hive directory
+/// (the parent of `cell_dir`). That directory lies inside the colony root,
+/// where the boot walker reads; [`create_cell_root`] marks it so that what a
+/// cell writes there never becomes a node. Pure; the caller creates it.
+pub fn anchor_cell_root(
+    cell_dir: &std::path::Path,
+    declared: &std::path::Path,
+) -> std::path::PathBuf {
+    if declared.is_absolute() {
+        return declared.to_path_buf();
+    }
+    cell_dir.parent().unwrap_or(cell_dir).join(declared)
+}
+
+/// GH #1234 — the file that marks a directory as a cell's own root, not
+/// topology. The boot walker (`walk_cell_directories`) steps into no directory
+/// that carries it: a relative root lies in its hive inside the colony root,
+/// and a `config.json` a cell writes there (a project the coder pipeline
+/// builds, a file an assistant saves) failed the whole next boot as
+/// `InvalidJson` (re-check H4 part A, I1). Empty; never removed.
+pub const CELL_ROOT_MARKER: &str = ".meclaw-cell-root";
+
+/// GH #1234 — create a relative root anchored by [`anchor_cell_root`] and
+/// leave [`CELL_ROOT_MARKER`] in it. Idempotent: an existing root and marker
+/// stay as they are, nothing is truncated. Every spawn site that creates such
+/// a root goes through here (`anchor_transfer_root`, and `spawn_root` of the
+/// `file`/`edit`/`bash` cells). An absolute root is never passed in: it lies
+/// outside the colony root and gets no marker.
+pub fn create_cell_root(anchored: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(anchored)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(anchored.join(CELL_ROOT_MARKER))
+        .map(drop)
 }
 
 /// What a `CellFactory` returns for `spawn_cell`.
@@ -219,6 +319,29 @@ pub trait CellFactory: Send + Sync {
     ///
     /// Default: `None` — nothing beyond the cell.db base setup.
     fn connection_setup(&self) -> Option<crate::db_conn::ReopenSetup> {
+        None
+    }
+
+    /// GH #1236 — the param a model twin of this type waits for its
+    /// original's handover under, and the wait in ms, derived from the twin's
+    /// own staged config: its backstop as the spawn resolves it
+    /// (`backstop_ms`, `resolve_message_timeout` over `cell.message_timeout`
+    /// and the colony default; `None` = no backstop) and its `params` with the
+    /// entry's override on top. A value those params name stands. The colony
+    /// names neither a number nor the param (no hardcoding, OR H2b.7): the
+    /// bound a type knows for one turn of the original still running at the
+    /// swap, and the param it reads it from, are the type's to state. Called
+    /// on the staging path before the config is patched; a pure look at
+    /// values, no I/O, like `validate_declared_params`. A wait of `0` is a twin
+    /// that does not wait, and is asked for no handover.
+    ///
+    /// Default: `None` — the type has no handover, and its twin is born
+    /// without a wait.
+    fn handover_wait(
+        &self,
+        _backstop_ms: Option<u64>,
+        _params: &JsonValue,
+    ) -> Option<(&'static str, u64)> {
         None
     }
 

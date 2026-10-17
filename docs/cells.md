@@ -17,12 +17,13 @@ A bridge to a provider, consuming and emitting the universal body format. Exactl
 "params": {
   "provider": "openai",
   "model": "openai/gpt-4o-mini",
-  "api_key": "${OPENROUTER_API_KEY}",
+  "api_key": "",
+  "credential_grant_id": "grant:openrouter@main/brain",
   "base_url": "https://openrouter.ai/api/v1"
 }
 ```
 
-`base_url` is the line that decides the provider: any OpenAI-compatible endpoint fits, and the `${VAR}` in `api_key` is substituted from `.env` by the colony before the cell is handed its params.
+`base_url` is the line that decides the provider: any OpenAI-compatible endpoint fits, and the key arrives sealed from the vault under `credential_grant_id`; a secret param refuses a `${VAR}` token at the boot.
 
 ### [`store`](cell-types.md#store-typed-persistent-storage)
 

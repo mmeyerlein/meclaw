@@ -1,0 +1,201 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 13000
+  },
+  "params": {
+    "provider": "decisions",
+    "requirement": "Answers a fixed set of typed choices about one short spoken or typed request: which way it should be answered (small talk, a quick answer, careful reasoning or deep research), what the person wants, and which needs and tool families it has. It needs a fast, cheap decider that returns a calibrated probability per answer, never generated text. It runs on every turn while the person waits for the answer, so an answer must come back within a few hundred milliseconds and cost next to nothing.",
+    "model": "",
+    "api_key": "",
+    "credential_grant_id": "",
+    "credential_wait_ms": 30000,
+    "base_url": "",
+    "base_url_allow": [],
+    "external_timeout_ms": 3000,
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The decider's model id, set by the model registry's overlay or the instance's `override_params`. Empty as shipped: every turn's stamp is then `talk` with `p` 0, because the decider answers with an error. Changed at runtime by the model registry's overlay."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "The decider's key. Leave it EMPTY when `credential_grant_id` is set: the empty key is the switch, because the cell asks for a credential only while it holds none, and a key in its config counts as one. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The grant this decider presents to get its bearer credential SEALED from the member's own access hive, the same param with the same meaning as on talky's `./brain` (GH #560, GH #976). It ships EMPTY, which is no grant at all: the decider then spends `api_key`. Set it, with an EMPTY `api_key`, through `override_params` of the declaration that installs the talky: the request leaves on `credential_request` from `./decide` and the sealed box comes back on `in_sealed` at `./decide` (both declared at the talky rim). Immutable at run time."
+      },
+      "credential_wait_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "How long one sealed credential round may take before every parked call gets its `credential_pending` error, which `./route` reads as `talk`. Only meaningful together with `credential_grant_id`."
+      },
+      "base_url": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "The decider's endpoint, set like `model`."
+      },
+      "base_url_allow": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "The origins (`scheme://host[:port]`) a push of the model registry may move `base_url` to. Empty as shipped, so a push that carries an endpoint is refused (`model_refused`) until the set that installs the talky lists the endpoint of its decisions rows here (`override_params`). Immutable at run time."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "decision": {
+          "type": "object",
+          "required": false
+        },
+        "decide": {
+          "type": "object",
+          "required": false
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "latency_ms": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cached": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "cost": {
+          "type": "number",
+          "required": false
+        },
+        "cache_expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
+          "type": "number",
+          "required": false
+        },
+        "dropped": {
+          "type": "array",
+          "required": false
+        },
+        "unverified": {
+          "type": "array",
+          "required": false
+        },
+        "refused_subscriber": {
+          "type": "string",
+          "required": false
+        },
+        "refused_model": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "decide": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "talky's decider (GH #1247): ONE call per turn from `./route` over a fixed set of questions -- the class of the turn, its intent, its needs and its tool families -- answered as one `decision` with a confidence per answer.",
+    "use_when": "Always, as part of talky; born with `provider: decisions`, which never changes after spawn.",
+    "not_in_scope": "It sees the turn's text and the descriptions of the options -- never memory, never the window. No tools, no chat model: the registry never hands this cell one."
+  }
+}

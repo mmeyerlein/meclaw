@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.65.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.66.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,16 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.66.0: a talky turn leaves with a route stamp, and the curator hands a talk or simple turn to a quick model cell
+  behind it, gives a complex one a bridge sentence and names the wait of a research one while the talk goes on; an
+  `llm` cell speaks the native Anthropic Messages wire (images, effort and thinking, cache breakpoints) and the
+  registry carries measured response times, a quick tier and a `claude-haiku-5-5` row; tool menus fold into one tool
+  per family with `help`; memory-hive turns recurring questions into prewarm candidates; a `bash`, `code` or
+  `harness` cell without a sandbox runs under the default-deny profile, a secret param takes no `${VAR}`, and
+  workspaces and transfer fences are relative to the cell's own hive (breaking); seed rows reach a running store as a
+  message; a model swap no longer opens the original's `cell.db` or reads its `config.json`, and a model twin takes
+  its seed from the library package; a shutdown no longer loses a timer strike or a Telegram message; every shipped
+  LLM cell and example names its app; the answer talky sends reaches the checker the composite declares.
 - v0.65.0: a cell can no longer read the message log through `/colony/trace`, mutates only inside its own hive
   subtree unless an edge to the mutation door is drawn, and the boot reads no cell's `cell.db` any more (breaking);
   an `llm` cell hands its state to a successor by message, and a twin parks its turns until the handover is

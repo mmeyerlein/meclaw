@@ -417,6 +417,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
         "thirty-two",
         "thirty-three",
         "thirty-four",
+        "thirty-five",
     ];
     for (name, n) in rendered_counts() {
         let word = words.get(n - 1).copied().unwrap_or("?");
@@ -442,7 +443,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.36"}}));
+                   "template": "org@2.1.37"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -458,7 +459,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.36"}}));
+                   "template": "org@2.1.37"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -624,7 +625,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@2.5.32", "door": true});
+                        "template": "member@2.6.0", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));
@@ -843,7 +844,7 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
 /// — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@3.7.19",
+           "name": "scribe", "template": "assistant@3.8.0",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},
@@ -1001,9 +1002,11 @@ fn the_grants_travel_in_the_same_declaration_as_the_lanes() {
         assert_eq!(row["target"], json!("./access/store"));
         assert_eq!(
             row["rows"].as_array().expect("rows").len(),
-            6,
+            10,
             "ONE grant per consumer (GH #1061: the three brains and their three \
-             curators; the search tool stays anonymous without a search credential): the answer edge is addressed by \
+             curators, GH #1247: the two surfaces' deciders, GH #1248: their two \
+             quick voices; the search tool stays anonymous without a search \
+             credential): the answer edge is addressed by \
              `hop.grant_id`, and two brains sharing a handle would each be \
              handed the other's sealed box"
         );
@@ -1044,5 +1047,26 @@ fn a_generation_grown_without_the_block_is_the_one_the_level_always_grew() {
     assert!(
         overrides["talky/brain"].is_null(),
         "no key is taken away from a generation that was not asked about"
+    );
+}
+
+/// GH #1255 (T3B-N1) -- a surface's splitter raises the sent answer on
+/// `answer_check` and the generation carries it out over its own edge
+/// (`templates/assistant`), but the member only binds `./assistants ->
+/// ./apps`. Without the exit from the generation up into the container, a
+/// member grown by this recipe with the knob set lost the message at the
+/// container (`hive_no_route`). The exit is a plain one, like `sidecar`.
+#[test]
+fn a_grown_generation_carries_the_sent_answer_up_to_its_container() {
+    let mut params = credentialled_wish();
+    params["credential"] = Value::Null;
+    let d = grow(params);
+    let edges = d["diff"]["add_edges"].as_array().expect("add_edges");
+    let exit = json!({"from": "./scribe", "to": ".",
+                      "condition": "has(hop.route) && hop.route == 'answer_check'"});
+    assert!(
+        edges.contains(&exit),
+        "the rendered level draws no `answer_check` exit from the generation up \
+         into its container: {edges:?}"
     );
 }

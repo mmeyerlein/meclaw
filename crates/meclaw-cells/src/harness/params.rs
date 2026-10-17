@@ -74,9 +74,11 @@ pub struct HarnessParams {
     pub query_timeout_ms: u64,
     /// Grace between "please stop" and SIGKILL for the child's process group.
     pub kill_grace_ms: u64,
-    /// Process sandbox for the harness child (GH #85). `None` means the
-    /// pre-#85 behaviour: the child keeps the daemon's rights, contained only
-    /// by `env_clear`, the passthrough allow-list and the cwd clamp.
+    /// Process sandbox for the harness child (GH #85). A colony never spawns
+    /// one with `None` since GH #1235: the boot and every instantiation put
+    /// the default-deny block in when the params declare none. `None` is the
+    /// unsandboxed child of a direct construction (tests), contained only by
+    /// `env_clear`, the passthrough allow-list and the cwd clamp.
     pub sandbox: Option<crate::sandbox::SandboxProfile>,
 }
 

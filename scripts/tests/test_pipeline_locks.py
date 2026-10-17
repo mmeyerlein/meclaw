@@ -22,7 +22,7 @@ from scripts.tests import private_tree, store_isolation
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from pipeline import locks  # noqa: E402
+from pipeline import locks, versions  # noqa: E402
 import precheck  # noqa: E402
 
 SCAFFOLD = "workshop/evals/builder-scenarios/scaffolds/intake-min/main/os/config.json"
@@ -251,6 +251,84 @@ class PinLock(Tree):
                           (".md", frozenset(versions.PROSE_SURFACES))},
                          {(suffix, frozenset(tops)) for suffix, tops in locks.NET_CLASSES})
         self.assertEqual(versions.FROZEN, locks.FROZEN)
+
+
+class PinReadersReadTheTreesOwnFiles(Tree):
+    """GH #1199 (K19 17.10.): on build04 pin-lock read four ignored
+    `workshop/workspace/builder-scenarios/*` an older run had left in the lane tree
+    (`git clean` without -x keeps them) and called `member@2.5.33 not provided` after
+    the bump to 2.6.0. A pin reader reads what git lists, an ignored rest stays where
+    it is and is no pin of the tree."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.root, ".gitignore", "workshop/workspace/\nsets/local-*.json\n")
+        write(self.root, "workshop/evals/kept.json", '{"template": "meclaw-os@2.2.44"}\n')
+        init_repo(self.root)
+        for rel in ("workshop/workspace/builder-scenarios/s1/config.json", "sets/local-x.json"):
+            write(self.root, rel, '{"template": "meclaw-os@2.2.33"}\n')
+        # an ignored template directory is no template of the tree either: it carries the
+        # tree's name with an older version -- read, it would win (sorted, the last one)
+        # and turn the tree's own pin red (re-check I1, mutant RC8)
+        write(self.root, "templates/stale/template.json",
+              json.dumps({"name": "meclaw-os", "version": "2.2.33"}, indent=2) + "\n")
+        write(self.root, ".git/info/exclude", "templates/stale/\n")
+
+    def test_an_ignored_rest_with_a_foreign_pin_is_green_and_stays(self):
+        self.assertEqual([], locks.check_pin_lock([], self.root))
+        self.assertEqual([], locks.check_scenario_pin_lock([], self.root))
+        self.assertEqual({"meclaw-os": "2.2.44"}, locks.template_versions(self.root))
+        self.assertEqual({"meclaw-os": "meclaw-os"}, versions.template_dirs(self.root))
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.root, "workshop/workspace/builder-scenarios/s1/config.json")))
+
+    def test_a_tracked_or_untracked_stale_pin_stays_red(self):
+        write(self.root, "workshop/evals/kept.json", '{"template": "meclaw-os@2.2.43"}\n')
+        write(self.root, "sets/new.json", '{"template": "meclaw-os@2.2.42"}\n')
+        found = locks.check_pin_lock([], self.root)
+        self.assertEqual([("RED", "sets/new.json"), ("RED", "workshop/evals/kept.json")],
+                         sorted((f.verdict, f.path) for f in found))
+
+    def test_the_cascade_leaves_an_ignored_rest_as_it_is(self):
+        # re-check I1, mutant RC1: the cascade raises what git lists, an ignored rest
+        # with the old pin stays as it is
+        rest = "workshop/workspace/builder-scenarios/s2/config.json"
+        write(self.root, rest, '{"template": "meclaw-os@2.2.44"}\n')
+        changed = versions.cascade(self.root, {"meclaw-os": ("2.2.44", "2.2.45")})
+        self.assertEqual(["workshop/evals/kept.json"], sorted({c["path"] for c in changed}))
+        with open(os.path.join(self.root, "workshop/evals/kept.json"), encoding="utf-8") as fh:
+            self.assertIn("meclaw-os@2.2.45", fh.read())
+        with open(os.path.join(self.root, rest), encoding="utf-8") as fh:
+            self.assertEqual('{"template": "meclaw-os@2.2.44"}\n', fh.read())
+
+    def test_a_git_tree_git_cannot_list_is_red_never_a_walk(self):
+        # re-check M5: a git error in a tree WITH .git (safe.directory, the 30-s
+        # timeout) is RED with its reason -- no quiet fall back to the walk
+        with mock.patch.object(locks, "_git", return_value=None):
+            for check in (locks.check_pin_lock, locks.check_scenario_pin_lock,
+                          locks.check_set_drift_lock, locks.check_pin_drift_lock,
+                          locks.check_out_link_lock):
+                with self.subTest(check=check.__name__):
+                    found = check([], self.root)
+                    self.assertEqual(["RED"], [f.verdict for f in found])
+                    self.assertRegex(found[0].text, "git cannot list the tree")
+                    self.assertIn("ls-files", found[0].fix)
+            with self.assertRaisesRegex(locks.Unlisted, "git cannot list the tree"):
+                versions.template_dirs(self.root)
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.root, "workshop/workspace/builder-scenarios/s1/config.json")))
+
+    def test_a_tree_without_git_is_walked_with_no_process(self):
+        # no git repository at all (cascade_dry's throwaway copy, an unpacked export,
+        # a fixture): the walk reads everything, and no process runs (VG TV-K3)
+        other = os.path.join(self.root, "copy")
+        shutil.copytree(self.root, other, ignore=shutil.ignore_patterns(".git", "copy"))
+        with spawned() as procs:
+            rels = locks.listed(other, "workshop")
+            dirs = locks.template_dirs(other)
+        self.assertEqual([], procs)
+        self.assertIn("workshop/workspace/builder-scenarios/s1/config.json", rels)
+        self.assertEqual(["meclaw-os", "stale"], dirs)
 
 
 class ScenarioPinLock(Tree):

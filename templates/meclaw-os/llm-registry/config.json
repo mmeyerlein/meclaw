@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "llm-registry@2.9.0"
+    "template": "llm-registry@2.10.0"
   },
   "override_params": {
     "translate": {

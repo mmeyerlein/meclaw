@@ -240,9 +240,19 @@ async fn boot(td: &tempfile::TempDir) -> ColonyHandle {
         types.contains("code") && types.contains("store") && types.contains("llm"),
         "the library copy named no real cell types — it failed: {types:?}"
     );
+    // #1233: `seed_rows` into a running store travel on the store's seed lane
+    // and the door answers `committed` after the store's receipt, so the store
+    // is the one real cell here; an inert one would never answer.
     let fs: Vec<(String, Arc<dyn CellFactory>)> = types
         .into_iter()
-        .map(|t| (t, Arc::new(InertCellFactory) as Arc<dyn CellFactory>))
+        .map(|t| {
+            let f: Arc<dyn CellFactory> = if t == "store" {
+                Arc::new(meclaw_cells::store::StoreCellFactory)
+            } else {
+                Arc::new(InertCellFactory)
+            };
+            (t, f)
+        })
         .collect();
     let h = ColonyHandle::new_with_factories_at(td, fs.clone());
     let mut registry = CellFactoryRegistry::new();

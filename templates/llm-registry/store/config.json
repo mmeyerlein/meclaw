@@ -18,6 +18,10 @@
           "type": "int",
           "default": 0
         },
+        "response_ms": {
+          "type": "int",
+          "default": 0
+        },
         "input_soft": {
           "type": "int",
           "default": 0

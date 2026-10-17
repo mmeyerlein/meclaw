@@ -518,9 +518,15 @@ fn build_member(td: &tempfile::TempDir, stubs: &Stubs) -> std::path::PathBuf {
         &main.join(format!("apps/{PROBE_APP}")),
         0,
     );
+    // GH #1235 (T6-16): the sink is a `code` cell, and without `params.sandbox`
+    // it boots under the default-deny profile, which cannot append to its log;
+    // it declares the test root, nothing more.
     override_params_on_disk(
         &main.join(format!("apps/{PROBE_APP}/sink")),
-        &json!({"log_path": log.to_string_lossy()}),
+        &json!({"log_path": log.to_string_lossy(),
+                "sandbox": {"trust": "restricted", "network": "deny",
+                            "filesystem": {"runtime": true,
+                                           "write": [root.to_string_lossy()]}}}),
     );
     let mut edges = member_edges();
     edges.extend(install_edges());

@@ -1,7 +1,7 @@
 {
   "model_id": "google/gemini-3.8-flash",
   "endpoint_class": "openrouter",
-  "measured_at": "2026-10-05T06:35:54Z",
+  "measured_at": "2026-10-16T19:12:21Z",
   "tool_version": "1",
   "params": {
     "temperature": "taken",
@@ -24,7 +24,7 @@
     "tools",
     "top_p"
   ],
-  "reasoning_field": "reasoning_details",
+  "reasoning_field": "reasoning",
   "checks": {
     "K1": {
       "status": "green",
@@ -48,7 +48,7 @@
     },
     "K6": {
       "status": "green",
-      "note": "form reasoning, trace in reasoning_details"
+      "note": "reasoning exhausted at max_tokens 64; form reasoning, trace in reasoning"
     },
     "K7": {
       "status": "green",
@@ -56,12 +56,12 @@
     },
     "K8": {
       "status": "green",
-      "note": "max_tokens 4096->32; params ['temperature']; expected_dropped []"
+      "note": "max_tokens 65536->32; params ['temperature']; expected_dropped []"
     },
     "K9": {
       "status": "green",
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 0.000858
+  "cost_usd": 0.064593
 }

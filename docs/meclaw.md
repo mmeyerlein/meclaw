@@ -80,15 +80,17 @@ examples/swarm/              the colony root, one --root, one process
   "cell": { "type": "llm" },
   "params": {
     "model": "openai/gpt-4o-mini",
-    "api_key": "${OPENROUTER_API_KEY}"
+    "api_key": "",
+    "credential_grant_id": "grant:openrouter@main/brain"
   }
 }
 ```
 
 `cell.type` picks the factory in the binary and is immutable. `params` is handed to the cell 1:1
 and the colony does not interpret it, because what the keys mean is the cell type's business.
-`${OPENROUTER_API_KEY}` binds at every read, so the secret stays in `.env`, and the file carries
-no name field because the directory it sits in is the address.
+The key comes sealed from the vault under `credential_grant_id`, so no secret sits in the file or
+in the colony's environment, and the file carries no name field because the directory it sits in
+is the address.
 
 ## A mutation
 

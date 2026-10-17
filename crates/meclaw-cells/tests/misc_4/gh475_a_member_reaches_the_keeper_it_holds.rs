@@ -67,12 +67,13 @@
 //!   brain in `talky`'s graph, so a session is opened by a turn arriving, not by
 //!   a turn being answered. The brain double swallows what the curator hands
 //!   it (GH #889: collector -> curator -> brain), and the round ends there.
-//! * The fence the four stores write inside is set on this colony's own copy of
-//!   the library rather than on the host: since GH #555 the writer is the
-//!   substrate, and the shipped default (`/tmp/meclaw-member-export`) is an
-//!   absolute path outside this tempdir — a test that wrote there would measure
-//!   the machine it runs on. There is no sandbox left to relax and no cell left
-//!   to substitute.
+//! * The fence the four stores write inside is the SHIPPED one (GH #1234,
+//!   T6-13): a relative `export` in each store's own hive, inside this
+//!   colony's tempdir. Until then the library carried
+//!   `/tmp/meclaw-member-export`, one directory for the whole machine, and this
+//!   file had to set every fence by hand. Since GH #555 the writer is the
+//!   substrate; there is no sandbox left to relax and no cell left to
+//!   substitute.
 //!
 //! `llm` is the ONLY cell type this file substitutes. Every other type a
 //! generation and a member carry is the shipped factory — `code`, `store`,
@@ -112,7 +113,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 const MEMBER: &str = "alex";
 /// The generation the session is opened in and the export is addressed to.
 const SCRIBE: &str = "scribe";
@@ -160,7 +160,21 @@ fn shipped() -> bool {
 /// through a delivery and a restart, so they are written correctly rather than
 /// left as `unimplemented!()` — a panic on either path would take the whole
 /// colony task with it.
+///
+/// Every message it swallows is handed back as `ColonyMsg::WorkDone`, the
+/// per-delivery ticket a real `cell_task` returns (GH #47). A silent double
+/// holds that ticket forever, and `ColonyHandle::quiesce()` -- the absence
+/// barrier this file proves its "and no other" claims with since GH #1257 --
+/// never settles: measured, `HANG: the colony settles (waited 30 s)` at the
+/// first quiesce after the turn reached the brain.
 struct InertCellFactory;
+
+/// Drain one mailbox of the inert double, returning each delivery's ticket.
+async fn swallow(path: Path, mut rx: mpsc::Receiver<Message>, inbox: mpsc::Sender<ColonyMsg>) {
+    while rx.recv().await.is_some() {
+        let _ = inbox.send(ColonyMsg::WorkDone { path: path.clone() }).await;
+    }
+}
 
 impl CellFactory for InertCellFactory {
     fn validate_params(&self, _params: &JsonValue) -> Result<(), String> {
@@ -174,12 +188,12 @@ impl CellFactory for InertCellFactory {
     #[allow(clippy::too_many_arguments)]
     fn spawn_cell(
         self: Arc<Self>,
-        _path: Path,
+        path: Path,
         _params: JsonValue,
         _outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
         _cell_dir: std::path::PathBuf,
         _contract: meclaw_colony::ContractView,
-        _colony_inbox_tx: mpsc::Sender<ColonyMsg>,
+        colony_inbox_tx: mpsc::Sender<ColonyMsg>,
         _idle_timeout: Option<Duration>,
         _cell_timeout: i64,
         _message_timeout: Option<Duration>,
@@ -189,20 +203,22 @@ impl CellFactory for InertCellFactory {
         let capacity = mailbox_capacity.max(1);
         let (sender, receiver) = mpsc::channel::<Message>(capacity);
 
-        let wake: WakeFn = Box::new(|mut rx: mpsc::Receiver<Message>| {
-            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let (wake_path, wake_inbox) = (path.clone(), colony_inbox_tx.clone());
+        let wake: WakeFn = Box::new(move |rx: mpsc::Receiver<Message>| {
+            tokio::spawn(swallow(wake_path.clone(), rx, wake_inbox.clone()));
             let (stop_tx, _stop_rx) = oneshot::channel::<()>();
             let (_death_ack_tx, death_ack_rx) = oneshot::channel::<()>();
             (stop_tx, death_ack_rx)
         });
 
         let respawn: RespawnFn = Box::new(move || {
-            let (tx, mut rx) = mpsc::channel::<Message>(capacity);
+            let (tx, rx) = mpsc::channel::<Message>(capacity);
             let (peace_tx, peace_rx) = oneshot::channel::<()>();
             let (_backstop_tx, backstop_rx) = oneshot::channel::<()>();
+            let (path, inbox) = (path.clone(), colony_inbox_tx.clone());
             let join = tokio::spawn(async move {
                 let _peace_keep = peace_tx;
-                while rx.recv().await.is_some() {}
+                swallow(path, rx, inbox).await;
             });
             (tx, join, peace_rx, backstop_rx)
         });
@@ -435,11 +451,7 @@ sys.stdout.write(json.dumps([]))
 
 /// The shell the member is grown into: a members container, and a flag cell that
 /// takes every lane the member level raises.
-async fn boot(
-    td: &tempfile::TempDir,
-    flag_dir: &std::path::Path,
-    fence: &std::path::Path,
-) -> ColonyHandle {
+async fn boot(td: &tempfile::TempDir, flag_dir: &std::path::Path) -> ColonyHandle {
     let root = td.path();
     copy_tree(&repo("templates"), &root.join("templates"));
     // The keeper's nightly close sweep, pushed to a date this run cannot reach.
@@ -452,17 +464,8 @@ async fn boot(
     // is the proof that the timer plans on what it finds there).
     meclaw_testing::quiet_keeper_night(&root.join("templates/session-keeper"));
     // GH #555 — the keeper four levels down writes its OWN ledger, inside the
-    // fence its store declares. A generation is grown from the library rather
-    // than from a manifest this file writes (that is the whole of GH #476), so
-    // the fence is set on the library copy this colony instantiates from: the
-    // shipped default is an absolute path outside this tempdir, and a test that
-    // wrote there would measure the machine it runs on.
-    {
-        let p = root.join("templates/session-keeper/sessions/config.json");
-        let mut cfg: Value = from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-        cfg["params"]["transfer"]["base_path"] = json!(fence.to_str().unwrap());
-        write_json(&p, &cfg);
-    }
+    // fence its store declares; since T6-13 (GH #1234) that fence is the
+    // shipped relative one, inside the keeper's own hive.
     std::fs::create_dir_all(flag_dir).unwrap();
     let lanes = [
         "answer",
@@ -566,20 +569,11 @@ fn container_edges() -> Vec<Value> {
     from_str(&String::from_utf8_lossy(&out.stdout)).expect("edges are json")
 }
 
-fn member_manifest(export_dir: &std::path::Path) -> Value {
-    // Since GH #555 an instance says ONE thing about files: the fence each
-    // holder's own store writes inside. There is no cell to relax and no
-    // sandbox to substitute — the writer is the substrate.
-    let mut over = json!({"memory-hive/clock": quiet_night(),
-                          "affinity/clock": quiet_push()});
-    for (hive, cell) in [
-        ("memory-hive", "store"),
-        ("affinity", "store"),
-        ("firewall", "rules"),
-    ] {
-        over[format!("{hive}/{cell}")] =
-            json!({"transfer": {"base_path": export_dir.to_str().unwrap()}});
-    }
+fn member_manifest() -> Value {
+    // Since T6-13 (GH #1234) an instance says nothing about files: each
+    // holder's store writes inside the shipped relative fence of its own hive.
+    let over = json!({"memory-hive/clock": quiet_night(),
+                      "affinity/clock": quiet_push()});
     json!({"manifest": [{
         // The declaration stands AT the container it grows into (GH #503),
         // which is the form `build_import.py` writes and the form
@@ -587,7 +581,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@2.5.32",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.6.0",
                            "override_params": over}],
             "add_edges": container_edges(),
         }
@@ -677,7 +671,7 @@ fn assistant_manifest(name: &str) -> Value {
         "ctx": {"model": "double/no-network", "model_fast": "double/no-network",
                 "model_surface": "double/no-network"},
         "diff": {
-            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@3.7.19"}],
+            "add_nodes": [{"name": format!("assistants/{name}"), "template": "assistant@3.8.0"}],
             "add_edges": add_edges,
         }
     }]})
@@ -699,17 +693,56 @@ async fn dead_letters(h: &ColonyHandle) -> Vec<(String, String, String)> {
         .collect()
 }
 
-async fn wait_for(p: &std::path::Path, what: &str, h: &ColonyHandle) {
-    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    while std::time::Instant::now() < deadline && !p.exists() {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        p.exists(),
-        "{what} never arrived at {} -- dead letters: {:?}",
-        p.display(),
-        dead_letters(h).await
-    );
+/// The `export_done` receipts the member level has raised so far, in arrival
+/// order, as the `hop.export_hive` each one names.
+fn walks_done(flags: &std::path::Path) -> Vec<String> {
+    lane_entries(&lane_file(flags, "export_done"))
+        .iter()
+        .map(|e| e["hop"]["export_hive"].as_str().unwrap_or("?").to_string())
+        .collect()
+}
+
+/// Wait until the member level has said `export_done` `want` times in total,
+/// and hand back the hives the LAST `fresh` receipts name, sorted.
+///
+/// GH #1257: the event a walk ends with, not the files it leaves. A holder's
+/// store stages every seed file as `<table>.jsonl.part`, `sync_all`s it and
+/// renames it into place, marker last (`meclaw-colony` `db_transfer.rs`
+/// `write_whole`), and its porter raises `export_done` only after the store
+/// answered -- so after the receipt the walk touches its fence no more. A file
+/// on disk is no such signal when a walk REWRITES a directory: the export of
+/// step 3 walks the three member holders a second time, their markers from
+/// step 2 already stand, and the copy at step 3 listed a `.part` the second
+/// walk renamed before `std::fs::copy` reached it (`copy_tree`, NotFound;
+/// coverage map 5058217b9, load-flake in the H2b gate).
+async fn wait_walks(
+    flags: &std::path::Path,
+    want: usize,
+    fresh: usize,
+    what: &str,
+    h: &ColonyHandle,
+) -> Vec<String> {
+    meclaw_testing::wait::until_some_with(
+        what,
+        || {
+            let done = walks_done(flags);
+            async move {
+                (done.len() >= want).then(|| {
+                    let mut last = done[done.len() - fresh..].to_vec();
+                    last.sort();
+                    last
+                })
+            }
+        },
+        || async {
+            format!(
+                "export_done so far: {:?} -- dead letters: {:?}",
+                walks_done(flags),
+                dead_letters(h).await
+            )
+        },
+    )
+    .await
 }
 
 /// The recorder's append log for one lane.
@@ -735,22 +768,22 @@ async fn wait_rows(
     what: &str,
     h: &ColonyHandle,
 ) -> Vec<Vec<String>> {
-    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    loop {
-        let got = rows(db, sql);
-        if got.len() >= want {
-            return got;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!(
-                "{what}: {} holds {} row(s), expected {want} -- dead letters: {:?}",
+    meclaw_testing::wait::until_some_with(
+        what,
+        || {
+            let got = rows(db, sql);
+            async move { (got.len() >= want).then_some(got) }
+        },
+        || async {
+            format!(
+                "{} holds {} row(s), expected {want} -- dead letters: {:?}",
                 db.display(),
-                got.len(),
+                rows(db, sql).len(),
                 dead_letters(h).await
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+            )
+        },
+    )
+    .await
 }
 
 fn send_at(
@@ -785,11 +818,13 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
 
     let td = tempfile::TempDir::new().unwrap();
     let flags = td.path().join("flags");
+    // The directory an operator collects the holders' exports into for
+    // `build_import.py` (step 5).
     let export_dir = td.path().join("exports");
     std::fs::create_dir_all(&export_dir).unwrap();
-    let h = boot(&td, &flags, &export_dir).await;
+    let h = boot(&td, &flags).await;
 
-    let outcome = apply(&h, member_manifest(&export_dir)).await;
+    let outcome = apply(&h, member_manifest()).await;
     assert!(
         outcome.is_committed(),
         "growing the shipped member must commit; got {outcome:?}"
@@ -803,6 +838,23 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     }
 
     let base = format!("/members/{MEMBER}");
+    // T6-13 (GH #1234): each holder's store exports into the shipped relative
+    // fence `export` of its OWN hive, inside this colony -- no fence is shared.
+    let member_dir = td.path().join(format!("main/members/{MEMBER}"));
+    let fence = |hive: &str| member_dir.join(hive).join("export");
+    let keeper_fence = |talky: &str| fence(&format!("assistants/{SCRIBE}/{talky}/session-keeper"));
+    // The holder directories a fence holds, without the cell-root marker.
+    let holders = |dir: &std::path::Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|n| !n.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
     let keeper_db = |agent: &str| {
         td.path().join(format!(
             "main/members/{MEMBER}/assistants/{agent}/talky/session-keeper/sessions/cell.db"
@@ -850,6 +902,9 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
         "the keeper mints `<channel>-<opened_at>`; this file never names a \
          session and reads the one the keeper wrote: {session}"
     );
+    // Absence across several hops is proven after quiescence (TV-A2), not
+    // after a window: everything that follows from the turn has settled.
+    h.quiesce().await;
     assert!(
         rows(&keeper_db(COACH), "SELECT session_id FROM sessions").is_empty(),
         "the turn was addressed to one generation and opened a session in the \
@@ -858,28 +913,35 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
 
     // ── 2. an export that names nobody reaches three holders, and no fourth ──
     h.send(send_at(&base, "in_export", &[], &[])).await;
+    let walked = wait_walks(
+        &flags,
+        3,
+        3,
+        "the three walks of the export that names no generation",
+        &h,
+    )
+    .await;
+    assert_eq!(walked, vec!["affinity", "firewall", "memory-hive"]);
+    // A keeper walk would be several hops behind the three receipts: settle
+    // first, so the absence below is proven rather than raced (TV-A2).
+    h.quiesce().await;
     for hive in ["memory-hive", "affinity", "firewall"] {
-        wait_for(
-            &export_dir.join(hive).join("seed/export_final.json"),
-            &format!("{hive}'s completeness marker"),
-            &h,
-        )
-        .await;
+        assert!(
+            fence(hive)
+                .join(hive)
+                .join("seed/export_final.json")
+                .is_file(),
+            "{hive} said export_done and its completeness marker is not in its own hive"
+        );
+        assert_eq!(
+            holders(&fence(hive)),
+            vec![hive.to_string()],
+            "a fence holds its own holder's document and no other's"
+        );
     }
-    let mut wrote: Vec<String> = std::fs::read_dir(&export_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    wrote.sort();
-    assert_eq!(
-        wrote,
-        vec!["affinity", "firewall", "memory-hive"],
-        "an export that names no generation is the export member@1.4.0 always \
-         did: three holders, and the guard on the fourth edge is what keeps it \
-         that way"
-    );
     assert!(
-        !export_dir.join("talky").exists() && !export_dir.join("talky-chat").exists(),
+        holders(&keeper_fence("talky")).is_empty()
+            && holders(&keeper_fence("talky-chat")).is_empty(),
         "a keeper walked without being named. Two generations of one person hold \
          two session ledgers under one hive name, and two walks into one \
          directory would keep whichever finished last and say nothing about the \
@@ -905,19 +967,43 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     // Since `session-keeper@2.2.2` (GH #712) each keeper of the generation files
     // under its own path, and the export reaches both: the spoken keeper, which
     // holds the session the turn opened, and the typed one, which holds none.
+    // The export walks the three member holders AGAIN, into the very
+    // directories step 2 left behind -- so the copy below waits for all FIVE
+    // receipts of this export, not for files that already stood (GH #1257).
+    let walked = wait_walks(
+        &flags,
+        3 + 5,
+        5,
+        "the five walks of the export that names `scribe`",
+        &h,
+    )
+    .await;
+    assert_eq!(
+        walked,
+        vec![
+            "affinity",
+            "firewall",
+            "memory-hive",
+            "talky-chat/session-keeper",
+            "talky/session-keeper"
+        ],
+        "an export that names a generation walks the three holders of the \
+         member and both keepers of that generation, each once"
+    );
+    h.quiesce().await;
     for talky in ["talky", "talky-chat"] {
-        wait_for(
-            &export_dir
+        assert!(
+            keeper_fence(talky)
                 .join(talky)
-                .join("session-keeper/seed/export_final.json"),
-            &format!("the completeness marker of {talky}'s session keeper"),
-            &h,
-        )
-        .await;
+                .join("session-keeper/seed/export_final.json")
+                .is_file(),
+            "{talky}'s session keeper said export_done without its completeness marker"
+        );
     }
-    let ledger =
-        std::fs::read_to_string(export_dir.join("talky/session-keeper/seed/sessions.jsonl"))
-            .expect("the keeper's ledger is on disk beside the other three documents");
+    let ledger = std::fs::read_to_string(
+        keeper_fence("talky").join("talky/session-keeper/seed/sessions.jsonl"),
+    )
+    .expect("the keeper's ledger is on disk beside the other three documents");
     let lines: Vec<&str> = ledger.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         lines.len(),
@@ -938,11 +1024,20 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     );
     assert_eq!(row["channel"], CHANNEL);
 
-    let mut wrote: Vec<String> = std::fs::read_dir(&export_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    wrote.sort();
+    // The operator's step before an import: collect each holder's document
+    // from the fence of its own hive into one directory.
+    for hive in ["memory-hive", "affinity", "firewall"] {
+        copy_tree(&fence(hive).join(hive), &export_dir.join(hive));
+    }
+    for talky in ["talky", "talky-chat"] {
+        assert_eq!(
+            holders(&keeper_fence(talky)),
+            vec![talky.to_string()],
+            "the keeper of {talky} writes its own ledger into its own fence"
+        );
+        copy_tree(&keeper_fence(talky).join(talky), &export_dir.join(talky));
+    }
+    let wrote = holders(&export_dir);
     assert_eq!(
         wrote,
         vec!["affinity", "firewall", "memory-hive", "talky", "talky-chat"],
@@ -1050,27 +1145,25 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
         .await;
     }
 
-    let deadline = std::time::Instant::now() + RECV_TIMEOUT;
-    let mut receipt = None;
-    while receipt.is_none() && std::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
-            Ok(Some(m)) => {
-                // The receipt of the spoken keeper's part: the typed keeper's
-                // part is empty and answers with a receipt of its own.
+    // The receipt of the spoken keeper's part: the typed keeper's part is empty
+    // and answers with a receipt of its own. Awaited as the event it is, under
+    // the hang mark.
+    let receipt = meclaw_testing::deadline::hang(
+        "an import receipt of `talky/session-keeper` leaving the generation the \
+         part was addressed to",
+        async {
+            while let Some(m) = rx.recv().await {
                 if m.headers.hop.get("route").and_then(|v| v.as_str()) == Some("dump")
                     && m.headers.hop.get("port_hive").and_then(|v| v.as_str())
                         == Some("talky/session-keeper")
                 {
-                    receipt = Some(m);
+                    return m;
                 }
             }
-            Ok(None) => break,
-            Err(_) => {}
-        }
-    }
-    let receipt = receipt.unwrap_or_else(|| {
-        panic!("no import receipt left the generation the part was addressed to")
-    });
+            panic!("the probe on {COACH}'s dump lane closed before a receipt arrived")
+        },
+    )
+    .await;
     assert_eq!(
         receipt.headers.hop.get("rows_written"),
         Some(&json!(1)),
@@ -1082,7 +1175,7 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
     );
 
     // ── 6. addressed, not broadcast ─────────────────────────────────────────
-    let arrived = wait_rows(
+    wait_rows(
         &keeper_db(COACH),
         "SELECT session_id, channel FROM sessions",
         1,
@@ -1090,8 +1183,14 @@ async fn an_export_that_names_a_generation_reaches_that_generations_session_keep
         &h,
     )
     .await;
+    // "Exactly one row" in each ledger is an absence claim (no second row, no
+    // fork): settle first, then read (TV-A2).
+    h.quiesce().await;
     assert_eq!(
-        arrived,
+        rows(
+            &keeper_db(COACH),
+            "SELECT session_id, channel FROM sessions"
+        ),
         vec![vec![session.clone(), CHANNEL.to_string()]],
         "the second generation is now carrying the conversation the first one \
          held -- one row, the same generation, and no fork"

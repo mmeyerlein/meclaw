@@ -309,13 +309,31 @@ pub(crate) fn read_relocated_node(
     // mutation-side tokens that were resolved once at instantiation and have no
     // filesystem-side producer.
     let substituted = super::substitute::substitute_env_only(&parsed, env)?;
-    let cfg: crate::config::ParsedConfig = meclaw_core::serde_json::from_value(substituted)
+    let mut cfg: crate::config::ParsedConfig = meclaw_core::serde_json::from_value(substituted)
         .map_err(|e| {
             MutationError::Schema(format!(
                 "move_nodes: {} is not a cell config: {e}",
                 cfg_path.display()
             ))
         })?;
+    // GH #1235 (T6-16): the same default-deny block the boot puts into the
+    // runtime view (`bootstrap::plan_bootstrap_with_env`). A relocated
+    // `bash`/`code`/`harness` cell without `params.sandbox` would otherwise
+    // run with the daemon's rights until the next boot; the file stays as its
+    // owner wrote it.
+    if crate::mutation::stage::sandbox_enforcing(&cfg.cell.cell_type)
+        && cfg.params.get("sandbox").is_none()
+    {
+        if cfg.params.is_null() {
+            cfg.params = JsonValue::Object(Default::default());
+        }
+        if let Some(obj) = cfg.params.as_object_mut() {
+            obj.insert(
+                "sandbox".into(),
+                crate::mutation::stage::default_sandbox_block(),
+            );
+        }
+    }
     let contract_view =
         crate::bootstrap::compile_spawn_view(&cfg.contract, &cfg.params).map_err(|e| {
             MutationError::Schema(format!(
@@ -583,5 +601,30 @@ mod tests {
             &free_ground,
         )
         .expect("a real source and a free target is the whole happy path");
+    }
+
+    /// GH #1235 (T6-16): `move_nodes` spawns from the node's own
+    /// `config.json`, the third path besides the boot and the mutation door.
+    /// A hand-written `code` cell without `params.sandbox` moves under the
+    /// same default-deny block the boot hands it, in the runtime view only.
+    #[test]
+    fn a_relocated_code_cell_without_a_profile_spawns_under_the_default_deny_block() {
+        let td = tempfile::TempDir::new().unwrap();
+        let on_disk = r#"{"cell":{"type":"code"},"params":{"runner":"python3"},
+            "contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#;
+        std::fs::write(td.path().join("config.json"), on_disk).unwrap();
+        let node = read_relocated_node(td.path(), &Default::default())
+            .expect("a hand-written code cell is relocatable");
+        assert_eq!(
+            node.params.get("sandbox"),
+            Some(&crate::mutation::stage::default_sandbox_block()),
+            "a relocated cell that enforces a sandbox spawns under the default-deny block"
+        );
+        assert_eq!(node.params["runner"], "python3", "the declared params stay");
+        assert_eq!(
+            std::fs::read_to_string(td.path().join("config.json")).unwrap(),
+            on_disk,
+            "the relocation read writes no config.json"
+        );
     }
 }

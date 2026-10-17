@@ -285,6 +285,7 @@ fn resolved(
         table: "policy".to_string(),
         columns: declared_columns("policy"),
         rows,
+        message_timeout: None,
     }
 }
 

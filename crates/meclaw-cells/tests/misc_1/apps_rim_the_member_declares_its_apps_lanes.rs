@@ -174,8 +174,10 @@ fn the_member_declares_the_observer_lanes_on_its_apps_container() {
     // declared the same way and for the same reason — the lane docks on the
     // container, both its ends are inside this level — and it differs in exactly
     // one place, which the next test measures: the edge INTO the container is
-    // the level's, because the rim cannot know the section names.
-    for route in ["turn", "partial", "sidecar"] {
+    // the level's, because the rim cannot know the section names. `answer_check`
+    // (GH #1255) is the sections' twin: the sent answer for the app that checks
+    // it, docking on the same container, drawn into it by the level the same way.
+    for route in ["turn", "partial", "sidecar", "answer_check"] {
         let l = lane(&c.emits, route, "templates/member (emits)");
         assert_eq!(
             l.at,
@@ -238,6 +240,7 @@ fn the_member_draws_no_observer_edge_of_its_own() {
         into,
         vec![
             (".".to_string(), Some("mutation_committed".to_string())),
+            ("./assistants".to_string(), Some("answer_check".to_string())),
             ("./assistants".to_string(), Some("sidecar".to_string())),
             ("./channels".to_string(), Some("event".to_string())),
             ("./channels".to_string(), Some("receipt".to_string())),
@@ -254,7 +257,9 @@ fn the_member_draws_no_observer_edge_of_its_own() {
          edges `./firewall -> ./apps` (pass→turn), `./assistants -> ./apps` (answer) and \
          `./channels -> ./apps` (partial) stay the installing mutation's — those lanes \
          exist whether or not anybody listens — see `templates/member/README.md` \
-         § Installing an app"
+         § Installing an app. Since GH #1255 `answer_check` rides beside the sidecar edge \
+         for the same reason: the splitter raises it only for a section the member's own \
+         knob names, so a member that set none carries nothing on it"
     );
 
     for banned in ["pass", "turn", "answer", "partial"] {
@@ -506,7 +511,7 @@ fn the_versions_moved_with_the_declarations() {
              `memory-hive@3.14.1` (GH #1095), the third digit; 2.5.26 only pins \
              `access\u{40}2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
              `memory-hive@3.14.2` and `telegram-connector\u{40}2.2.0` (GH #1096, #1097, #1098, #1099), the third digit; 2.5.27 only pins \
-             `affinity\u{40}3.10.3`, `assistant\u{40}3.7.16`, `firewall@2.4.2` and \
+             `affinity\u{40}3.10.3`, `assistant\u{40}3.7.16`, `firewall\u{40}2.4.2` and \
              `memory-hive` 3.14.3 (Dev-Tempo cascade, GH #1126), the third digit; every \
              number after that is the merge point's"
         );
@@ -594,7 +599,7 @@ fn the_versions_moved_with_the_declarations() {
              `talky@6.7.3`, `cogny@5.9.2` and `tools@1.4.7` (GH #1085), the third digit; 3.7.13 only pins \
              `cogny@5.9.3` and `talky@6.7.4` (GH #1085, no window of a role's own), the third digit; 3.7.14 only pins \
              `cogny@5.9.4` and `talky@6.7.5` (GH #1094), the third digit; 3.7.15 only pins \
-             `cogny\u{40}5.9.5`, `talky@6.7.6` and `tools@1.4.8` (GH #1097), the third digit; 3.7.16 only pins \
+             `cogny\u{40}5.9.5`, `talky@6.7.6` and `tools\u{40}1.4.8` (GH #1097), the third digit; 3.7.16 only pins \
              `talky\u{40}6.7.7` (Dev-Tempo cascade, GH #1126), the third digit"
         );
     }

@@ -191,9 +191,11 @@ def junit_parts(path):
     return out
 
 
-_UT_LINE = re.compile(r"^(\w+) \(([\w.]+)\)(?:\s*\.\.\.\s*(.*))?$")
+# The id's module path may hold a hyphen: `plans.export-fixtures.<mod>` imports
+# (the export audit's selftests), and its runs were none of a test (v2-r3-cistore).
+_UT_LINE = re.compile(r"^(\w+) \(([\w.-]+)\)(?:\s*\.\.\.\s*(.*))?$")
 # Python 3.12 names an unexpected success in a block of its own, like a FAIL.
-_UT_HEAD = re.compile(r"^(FAIL|ERROR|UNEXPECTED SUCCESS): (\w+) \(([\w.]+)\)")
+_UT_HEAD = re.compile(r"^(FAIL|ERROR|UNEXPECTED SUCCESS): (\w+) \(([\w.-]+)\)")
 # Only a trailing ` ... <status>` is one: a docstring line may hold `...` itself
 # (`@...`, "waits for x..."), and the first `...` read it as a red status
 # (tv-kit D: a green test counted red in 5 of 5 runs). Only the exact status

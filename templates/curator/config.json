@@ -84,6 +84,18 @@
           "because": "the call: `messages[]` the window, `system` only when a family changed (each changed family one `$replace` root), `tool_scope` unchanged, the hop of `in_curate` unchanged plus `curator_call`. The parent's edge onto the model promotes `curator_call`, `turn_id`, `session_id` and `iter` into context, so the tap comes back with them"
         },
         {
+          "route": "quick",
+          "because": "the call of a turn stamped `talk` or `simple` (GH #1247): the short window of the role `quick` -- the last four elements, no memory rows, no sidecar contract, every system family whole -- and `tool_scope` allowing only the stamp's `families`. The hop as on `brain`, plus `curator_call`; one `route` mark beside the call record"
+        },
+        {
+          "route": "consult",
+          "because": "the call of a turn stamped `complex` (GH #1247, R-WP-5): the whole errand for the backend, no system part, `hop.consult_id` (`k-<curator_call>`) and `hop.consult_class` = `consult`. The answer comes back on the parent's `in_advice` and leaves on `brain`; until then the session's calls carry `system.consult.pending`"
+        },
+        {
+          "route": "research",
+          "because": "as `consult`, for a turn stamped `research` (R-WP-9: one mechanism), `hop.consult_class` = `research`"
+        },
+        {
           "route": "turn_write",
           "because": "one participant turn (the person's, the model's final answer, a peer's) for whoever keeps episodes, one per message, in the collector's per-turn contract: `hop.turn_id` `<session_id>#<tag>-<index>` (`tag` the first 8 hex of sha256 over the turn's canonical round, `[]` for none; the index counts from 0 per session and round, so it neither reveals turns of other rounds nor collides between them, GH #932), `hop.turn_index`, `hop.happened_at`. Off with `./writer` `turn_write` = \"0\""
         },
@@ -294,7 +306,7 @@
         {
           "from": "./policy",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'brain'",
+          "condition": "has(hop.route) && (hop.route == 'brain' || hop.route == 'quick' || hop.route == 'consult' || hop.route == 'research')",
           "modifier": {
             "delete_context": [
               "cur_origin",
@@ -402,6 +414,11 @@
           "from": "./policy",
           "to": "./push",
           "condition": "has(hop.route) && (hop.route == 'push_ask' || hop.route == 'push_gap')"
+        },
+        {
+          "from": "./intake",
+          "to": "./push",
+          "condition": "has(hop.route) && hop.route == 'push_round'"
         },
         {
           "from": "./push",

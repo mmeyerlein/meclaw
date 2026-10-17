@@ -1,11 +1,11 @@
 {
-  "id": "gen-1791182150-iDmM6FWllQzWtaHoVoVF",
+  "id": "gen-1792177841-YP3hkgbempazRkcv7E71",
   "object": "chat.completion",
-  "created": 1791182150,
+  "created": 1792177841,
   "model": "google/gemini-3.8-flash",
   "provider": "Google",
   "system_fingerprint": null,
-  "service_tier": "provisioned",
+  "service_tier": "default",
   "choices": [
     {
       "index": 0,
@@ -21,7 +21,7 @@
           {
             "type": "function",
             "index": 0,
-            "id": "call_3598914",
+            "id": "call_557989",
             "function": {
               "name": "echo",
               "arguments": "{\"text\":\"ping\"}"
@@ -31,9 +31,9 @@
         "reasoning_details": [
           {
             "type": "reasoning.encrypted",
-            "data": "AY89a1828d0tZnHz/ZYdtc+hJUmd1/G1g3iRaGMLbe9kZItBy1R+yXjDiZ7qsMrW5ZQGeyo/nZPEvB9BOCcQRWpAkr+CHuka2mfbwU7IMNdiBed7jGZR8wq+3WbxubDRid1dOw0vhZpGl9hBYZXYtYDg5LWs45b8+8I6RAw8G3W+ysM6qCVyNCY/liz3p4NT0oBof5XKvrRFWrxX0lX24FJrdqrYkyC/olkVWl1sqGv5GK0kBUEd",
+            "data": "AY89a1+CWsUoTXykVRW2C7Jw44KPXQgq4JSNVYPlEytJpuuzNVub75ONbY+qY4Rsi2HbyD6QuAR99bzVeYOR7JCdPdhTTw8WVdU7Xi0y633jVNuMUMEYCuWr7KVAROT+YrSpRyLwOGuB+BkpUhWGPQ/FNRb5VDS+rsS6EH2fJbS/n5V5gLQqBP87+2Ez8UrmXGnQBjWbg9eOOK8XU2v772/lDWFidJyd/NgQQv6A8r5imKBatwuy3SXUv8fe0aKus4EAgdOb4ZPWe3wrxKWRQP9Mm0PR+T8m",
             "format": "google-gemini-v1",
-            "id": "call_3598914",
+            "id": "call_557989",
             "index": 0
           }
         ]
@@ -42,9 +42,9 @@
   ],
   "usage": {
     "prompt_tokens": 43,
-    "completion_tokens": 35,
-    "total_tokens": 78,
-    "cost": 0.000161865,
+    "completion_tokens": 40,
+    "total_tokens": 83,
+    "cost": 0.0001804275,
     "is_byok": false,
     "prompt_tokens_details": {
       "cached_tokens": 0,
@@ -53,12 +53,12 @@
       "video_tokens": 0
     },
     "cost_details": {
-      "upstream_inference_cost": 0.0001635,
+      "upstream_inference_cost": 0.00018225,
       "upstream_inference_prompt_cost": 3.225e-05,
-      "upstream_inference_completions_cost": 0.00013125
+      "upstream_inference_completions_cost": 0.00015
     },
     "completion_tokens_details": {
-      "reasoning_tokens": 21,
+      "reasoning_tokens": 26,
       "image_tokens": 0,
       "audio_tokens": 0
     }

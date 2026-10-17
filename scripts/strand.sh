@@ -23,7 +23,9 @@
 #         (in a strand worktree the strand comes from the branch, as for gate/report)
 #         (the one way into master: lease tree:master, tested candidate, versions
 #          at the merge point; exit 3 = queued behind another merge;
-#          --wait blocks in the queue until the lease is released instead)
+#          --wait blocks in the queue until the lease is released instead,
+#          holding no lane: a lane lease of the strand goes back while it waits,
+#          the candidate gate takes a lane under the lease -- no token take first)
 #     scripts/strand.sh revert <merge-sha|name> --reason <text> [--wave <dir>] [--host <lane>]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
 #     scripts/strand.sh lanes status [<lane>]

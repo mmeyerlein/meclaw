@@ -292,9 +292,13 @@ fn target_config(base_url: &str) -> Value {
             "provider": "openai",
             "base_url": base_url,
             "model": MODEL_BIRTH,
-            "api_key": "${OPENROUTER_API_KEY}",
+            // GH #1235 (T6-22): no `${VAR}` secret; a stub literal (no
+            // secret, register 353) reaches the mock provider.
+            "api_key": "test-key",
             "external_timeout_ms": 20000,
-            "max_tokens": 64
+            "max_tokens": 64,
+            "x_title": "meclaw-lab gh462",
+            "http_referer": "https://meclaw.ai"
         },
         "contract": {
             "version": "1.0.0",

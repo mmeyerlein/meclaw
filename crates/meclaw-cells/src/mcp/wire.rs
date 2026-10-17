@@ -54,6 +54,15 @@ impl McpClient {
         })
     }
 
+    /// GH #1235: the same client with the bearer the vault delivered sealed.
+    /// An empty token is no token (GH #268).
+    #[must_use]
+    pub fn with_bearer(&self, bearer: &str) -> Self {
+        let mut c = self.clone();
+        c.bearer = Some(bearer.to_string()).filter(|s| !s.is_empty());
+        c
+    }
+
     /// Send a single JSON-RPC request and decode the response. A-Timeout
     /// is mandatory (`tokio::time::timeout`). `Timeout` → `McpError::Timeout`;
     /// reqwest/HTTP/decode errors → `McpError::Transport`;

@@ -1,0 +1,54 @@
+{
+  "model_id": "claude-haiku-5-5",
+  "endpoint_class": "anthropic",
+  "measured_at": "2026-10-17T06:24:25Z",
+  "tool_version": "1",
+  "params": {
+    "temperature": "refused",
+    "top_p": "refused",
+    "reasoning": "taken",
+    "reasoning_effort": "taken",
+    "thinking_token_budget": "refused"
+  },
+  "listing": null,
+  "reasoning_field": null,
+  "checks": {
+    "K1": {
+      "status": "green",
+      "note": ""
+    },
+    "K2": {
+      "status": "green",
+      "note": ""
+    },
+    "K3": {
+      "status": "green",
+      "note": "temperature=refused, top_p=refused, reasoning=taken, reasoning_effort=taken, thinking_token_budget=refused; temperature: refused (`temperature` is deprecated for this model.); top_p: refused (`top_p` is deprecated for this model.); thinking_token_budget: refused (\"thinking.type.enabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior.)"
+    },
+    "K4": {
+      "status": "n/a",
+      "note": "anthropic endpoint: no listing"
+    },
+    "K5": {
+      "status": "green",
+      "note": "max_tokens 512, reasoning low"
+    },
+    "K6": {
+      "status": "green",
+      "note": "form reasoning, trace in no field"
+    },
+    "K7": {
+      "status": "green",
+      "note": "JSON, no `stream` in the body"
+    },
+    "K8": {
+      "status": "n/a",
+      "note": "no --requests-dir"
+    },
+    "K9": {
+      "status": "green",
+      "note": "measured.json + responses/basic,reasoning,tool"
+    }
+  },
+  "cost_usd": 0.01277
+}

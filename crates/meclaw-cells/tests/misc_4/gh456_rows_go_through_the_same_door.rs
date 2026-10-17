@@ -258,6 +258,63 @@ async fn a_row_enters_a_running_store_and_the_ledger_says_so() {
     h.shutdown().await;
 }
 
+/// #1233 (T6-09, T6-10): a RUNNING store takes its rows as a message on its own
+/// seed lane — the door no longer opens a second connection into its `cell.db`.
+/// The store answers with a digest receipt, the door writes that receipt into
+/// `mutation_log` and answers `committed` only once every receipt is in. So the
+/// ledger, read right after `committed`, already names what landed, and the
+/// store's very next `select` answers with the row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_running_store_takes_its_rows_by_message_and_the_door_waits_for_the_receipt() {
+    let rig = Rig {
+        td: tempfile::TempDir::new().expect("tempdir"),
+    };
+    let (h, mut sink_rx) = boot(&rig).await;
+    assert!(
+        rule_ids(&h, &mut sink_rx).await.is_empty(),
+        "the store starts empty and is awake from here on"
+    );
+
+    let out = mutate(&h, seed_rows("policy", json!([policy_row("r1")]))).await;
+    let id = committed_id(&out);
+
+    // Through the colony's own audit read (TV-A3: the log writer is not raced).
+    let row = h
+        .mutations_audit(None)
+        .await
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("the audit names no mutation {id}"));
+    assert_eq!(row.status, "committed");
+    let payload: Value =
+        meclaw_core::serde_json::from_str(&row.payload_json).expect("payload json");
+    let receipts = payload["seed_receipts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("committed without the store's receipt: {payload}"));
+    assert_eq!(
+        receipts.len(),
+        1,
+        "one receipt per running store: {payload}"
+    );
+    let r = &receipts[0];
+    assert_eq!(r["target"], json!(format!("/{NODE}")), "{r}");
+    assert_eq!(r["table"], json!("policy"), "{r}");
+    assert_eq!(r["inserted"], json!(1), "{r}");
+    assert_eq!(r["already_present"], json!(0), "{r}");
+    assert_eq!(
+        r["digest"].as_str().map(str::len),
+        Some(64),
+        "the digest the store computed over what it wrote: {r}"
+    );
+
+    assert_eq!(
+        rule_ids(&h, &mut sink_rx).await,
+        vec!["r1".to_string()],
+        "a reader right after `committed` sees the row"
+    );
+    h.shutdown().await;
+}
+
 /// The other half of the running-colony case: a store that has never been awake
 /// takes rows too, and wakes up holding them. The table it stands up is the one
 /// its `params.schema` declares, so the store's own DDL finds it and leaves it.

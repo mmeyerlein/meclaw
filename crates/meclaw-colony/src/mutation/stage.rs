@@ -77,6 +77,12 @@ pub struct StagedDir {
     /// and both of those live in here rather than in a second copy of the spawn
     /// loop.
     pub relocation: Option<Relocation>,
+    /// GH #1236 (re-check H2b M-1): `Some(original)` iff this entry is the
+    /// model twin of `original` that waits for its handover -- the decision
+    /// staging took ([`crate::mutation::twin::arm_handover`]). The colony asks
+    /// exactly these originals for their handover and spares exactly them the
+    /// peace-stop; it reads no param value for it.
+    pub twin_of: Option<meclaw_core::Path>,
 }
 
 /// GH #169: what a [`StagedDir`] needs to know when its directory is being
@@ -206,6 +212,10 @@ pub fn build_staging_tree_from_templates(
     // runs; `WorkPulse::silent()` is the no-op for every caller without a
     // heartbeat.
     pulse: &crate::watchdog::WorkPulse,
+    // GH #1236 (re-check H2b C-1/I-1): the colony's own facts about the
+    // originals of this diff's swaps -- their registered type and the
+    // backstop default -- so recognising a twin opens no file of the original.
+    twins: &crate::mutation::twin::TwinFacts,
 ) -> Result<
     (
         Vec<StagedDir>,
@@ -288,6 +298,7 @@ pub fn build_staging_tree_from_templates(
                 // by the copy above.
                 provenance: None,
                 // GH #169: an instantiation, not a relocation.
+                twin_of: None,
                 relocation: None,
             });
             continue;
@@ -363,12 +374,15 @@ pub fn build_staging_tree_from_templates(
         let provenance = provenance_of(tpl);
         // GH #1034: grown here and named by a `swap_nodes[].with` of the same
         // diff, an `llm` cell is the twin of the one it replaces and takes what
-        // it does not bring itself -- the budget before the patch validates the
-        // params, the seed before the seed, the system rows after it.
-        let twin = super::twin::resolve(root, scope, diff, name, &staging_path);
-        if let Some(original) = &twin {
-            super::twin::inherit_budget(original, &staging_path, n)?;
-        }
+        // it does not bring itself -- the seed before the seed; its system rows
+        // and budget arrive with the original's handover, which it is born
+        // waiting for (GH #1236: the colony never opens the original's cell.db).
+        let twin = super::twin::resolve(root, scope, diff, name, &staging_path, templates, twins);
+        let twin_of = match &twin {
+            Some(original) => super::twin::arm_handover(&staging_path, n, factories, twins)?
+                .then(|| original.path.clone()),
+            None => None,
+        };
         // add_nodes: fresh `cell.id` minted inside patch_and_substitute_config.
         let (
             cell_type,
@@ -380,14 +394,10 @@ pub fn build_staging_tree_from_templates(
             mailbox_size,
             header_view,
         ) = patch_and_substitute_config(&staging_path, env, ctx, n, Some(&provenance), factories)?;
-        let own_seed = twin
-            .as_ref()
-            .map(|original| super::twin::carry_seed(original, &staging_path))
-            .transpose()?;
-        seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
-        if let (Some(original), Some(own_seed)) = (&twin, own_seed) {
-            super::twin::carry_system(original, &staging_path, own_seed)?;
+        if let Some(original) = &twin {
+            super::twin::carry_seed(original, &staging_path)?;
         }
+        seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
             staging_path,
@@ -405,6 +415,7 @@ pub fn build_staging_tree_from_templates(
             preexisting_target: false,
             provenance: Some(provenance),
             // GH #169: an instantiation, not a relocation.
+            twin_of,
             relocation: None,
         });
     }
@@ -489,10 +500,14 @@ pub fn build_staging_tree_from_templates(
         });
         // GH #1034: the with-side of a swap of an `llm` cell is its twin
         // (`with.params` counts as declared, like a template param).
-        let twin = super::twin::resolve(root, scope, diff, name, &staging_path);
-        if let Some(original) = &twin {
-            super::twin::inherit_budget(original, &staging_path, &override_node)?;
-        }
+        let twin = super::twin::resolve(root, scope, diff, name, &staging_path, templates, twins);
+        let twin_of = match &twin {
+            Some(original) => {
+                super::twin::arm_handover(&staging_path, &override_node, factories, twins)?
+                    .then(|| original.path.clone())
+            }
+            None => None,
+        };
         let (
             cell_type,
             params,
@@ -510,14 +525,10 @@ pub fn build_staging_tree_from_templates(
             Some(&provenance),
             factories,
         )?;
-        let own_seed = twin
-            .as_ref()
-            .map(|original| super::twin::carry_seed(original, &staging_path))
-            .transpose()?;
-        seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
-        if let (Some(original), Some(own_seed)) = (&twin, own_seed) {
-            super::twin::carry_system(original, &staging_path, own_seed)?;
+        if let Some(original) = &twin {
+            super::twin::carry_seed(original, &staging_path)?;
         }
+        seed_cell_db_if_present(&staging_path, &cell_type, factories)?;
         let absolute_path = super::resolve_scoped_path(scope, name);
         out.push(StagedDir {
             staging_path,
@@ -542,6 +553,7 @@ pub fn build_staging_tree_from_templates(
             preexisting_target: false,
             provenance: Some(provenance),
             // GH #169: an instantiation, not a relocation.
+            twin_of,
             relocation: None,
         });
     }
@@ -810,27 +822,28 @@ pub(crate) fn patch_and_substitute_config(
         .get("params")
         .cloned()
         .unwrap_or(JsonValue::Object(Default::default()));
-    // GH #85 -- the default-deny cut, and it is PROSPECTIVE. `provenance` is
-    // `Some` exactly on the paths that instantiate a node from a template, so
-    // this fills the hole in the node being BORN and touches nothing that is
-    // already on disk. Same shape as the GH #20 secret cut: instantiation
-    // starts writing something new, existing instances keep running unchanged.
-    //
-    // Written into both views because the block is a literal: the runtime view
-    // is what the cell about to spawn sees, and the disk view is what the
-    // operator can read back and edit.
-    if provenance.is_some() && sandbox_enforcing(&cell_type) && params.get("sandbox").is_none() {
+    // GH #85 -- the default-deny cut. The runtime view gets the block on every
+    // path, since GH #1235 also on an `adopt` (`provenance` `None`): the boot
+    // puts the same block into a hand-written tree's runtime view
+    // (`bootstrap::plan_bootstrap`), and an adopted node must not run without
+    // a boundary until the next boot. The disk view gets it only when a
+    // template births the node (`provenance` `Some`): the block is a literal
+    // the operator can read back and edit there, while an adopted
+    // `config.json` stays as its owner wrote it, as at the boot.
+    if sandbox_enforcing(&cell_type) && params.get("sandbox").is_none() {
         let block = default_sandbox_block();
         if let Some(obj) = params.as_object_mut() {
             obj.insert("sandbox".into(), block.clone());
         }
-        cfg.as_object_mut()
-            .and_then(|c| {
-                c.entry("params")
-                    .or_insert_with(|| JsonValue::Object(Default::default()))
-                    .as_object_mut()
-            })
-            .map(|p| p.insert("sandbox".into(), block));
+        if provenance.is_some() {
+            cfg.as_object_mut()
+                .and_then(|c| {
+                    c.entry("params")
+                        .or_insert_with(|| JsonValue::Object(Default::default()))
+                        .as_object_mut()
+                })
+                .map(|p| p.insert("sandbox".into(), block));
+        }
     }
     // GH #404 -- the boot-parity cut for `params`. `plan_bootstrap` calls
     // `CellFactory::validate_params` for every cell it plans; instantiation did
@@ -1362,6 +1375,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1416,6 +1430,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1455,6 +1470,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1498,6 +1514,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let cfg: JsonValue = meclaw_core::serde_json::from_str(
@@ -1512,6 +1529,52 @@ mod tests {
         assert!(
             staged[0].provenance.is_none(),
             "an adopt is not a template instantiation — it stamps nothing new"
+        );
+    }
+
+    /// GH #1235 (OR-programm-tm.H5.1): an adopted `code` node without
+    /// `params.sandbox` runs under the default-deny block from the adopt on,
+    /// not from the next boot; its `config.json` stays as its owner wrote it.
+    #[test]
+    fn an_adopted_code_cell_without_a_profile_runs_under_the_default_deny_block() {
+        let td = TempDir::new().unwrap();
+        let root_cell = td.path().join("main");
+        std::fs::create_dir_all(&root_cell).unwrap();
+        std::fs::write(root_cell.join("config.json"), r#"{"cell":{"type":"hive"}}"#).unwrap();
+        let existing = root_cell.join("kept");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(
+            existing.join("config.json"),
+            r#"{"cell":{"type":"code"},"params":{"runner":"python3"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        )
+        .unwrap();
+        let (_tpl, registry) = make_registry(&td, "echo", "echo");
+        let diff = json!({"add_nodes": [{"name":"kept","adopt":{"cell_type":"code"}}]});
+        let (staged, _subtrees) = build_staging_tree_from_templates(
+            td.path(),
+            "mid-adopt-default-deny",
+            "/",
+            &diff,
+            &registry,
+            &HashMap::new(),
+            &HashMap::new(),
+            &Default::default(),
+            &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            staged[0].params.get("sandbox"),
+            Some(&default_sandbox_block()),
+            "an adopted cell that enforces a sandbox runs under the default-deny block"
+        );
+        let cfg: JsonValue = meclaw_core::serde_json::from_str(
+            &std::fs::read_to_string(staged[0].staging_path.join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            cfg["params"].get("sandbox").is_none(),
+            "an adopt writes no block into the owner's config.json: {cfg}"
         );
     }
 
@@ -1540,6 +1603,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -1581,6 +1645,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -1619,6 +1684,7 @@ mod tests {
             &ctx,
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -1660,6 +1726,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap_err();
         assert!(
@@ -1703,6 +1770,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let cell_db = staged[0].staging_path.join("cell.db");
@@ -1766,6 +1834,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
 
@@ -1855,6 +1924,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         assert!(
@@ -1901,6 +1971,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let by_name = |n: &str| {
@@ -1956,6 +2027,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         let mut seen = 0;
@@ -2028,6 +2100,7 @@ mod tests {
             &HashMap::new(),
             &Default::default(),
             &pulse,
+            &Default::default(),
         )
         .expect("staging must succeed");
 

@@ -1,6 +1,6 @@
 {
   "cell": {
     "type": "ref",
-    "template": "affinity@3.10.5"
+    "template": "affinity@3.11.0"
   }
 }

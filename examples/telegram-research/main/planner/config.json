@@ -12,7 +12,9 @@
     "temperature": 0.2,
     "system_order": [
       "identity"
-    ]
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
   },
   "contract": {
     "version": "1.0.0",
@@ -26,7 +28,7 @@
       "api_key": {
         "type": "string",
         "secret": true,
-        "default": "set OPENROUTER_API_KEY in your .env",
+        "default": "deposit cred:openrouter with --vault-add; the key comes by the grant in credential_grant_id, never from .env",
         "description": "Provider API key"
       }
     },

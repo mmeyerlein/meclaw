@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.12.0"
+    "template": "curator@1.13.0"
   },
   "override_params": {
     "writer": {

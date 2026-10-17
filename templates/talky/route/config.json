@@ -1,0 +1,116 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "warm",
+    "max_concurrency": 2,
+    "external_timeout_ms": 2000,
+    "classes": {
+      "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool",
+      "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation",
+      "complex": "needs careful reasoning, planning or several steps before it can be answered",
+      "research": "needs a deep search over many sources before it can be answered"
+    },
+    "fallback_class": "talk",
+    "intents": {
+      "chat": "to talk, share or be heard",
+      "question": "to know something",
+      "task": "to get something done",
+      "other": "none of these"
+    },
+    "needs": {
+      "tool": "a tool call",
+      "reasoning": "careful step-by-step reasoning",
+      "research": "a deep search over many sources"
+    },
+    "families": {
+      "web": "searching or reading the web",
+      "history": "earlier conversations with this person"
+    },
+    "threshold": 0.6,
+    "yes_threshold": 0.5,
+    "late_ms": 1500,
+    "script_inline": "\"\"\"The `route` cell of talky: every turn asks the decider once, the answer becomes ONE stamp.\n\nThe rule (R-WP-1 a, R-WP-9): this cell classifies a turn BEFORE the round is built and\nRECOMMENDS a path; the curator decides. The classes are params (`classes`, four as\nshipped: talk, simple, complex, research), so another colony asks its own route question\nwith the same mechanism. The stamp has exactly seven keys,\n`{turn_id, path, p, intent, needs, families, duration}`, because the collector's\n`in_route` lane reads that form and nothing else.\n\nTwo lanes, no state: `in_turn` (the keeper's turn) leaves as one `decide` call with the\nmoment it was asked on the hop, and `in_decision` (the decider's answer, the moment\ncarried back through context by the composite's edges) leaves as one `stamp`. Unsure\n(the chosen class below `threshold`), an error of the decider, or an answer later than\n`late_ms`: the stamp says `fallback_class` (talk) with no needs and no families, so a\nslow or broken decider costs a turn nothing but the recommendation.\n\"\"\"\n\nimport json\nimport sys\nimport time\n\n\ndef now_ms():\n    return int(time.time() * 1000)\n\n\ndef emission(route, body, **header):\n    head = {\"route\": route}\n    head.update(header)\n    out = {\"header\": head, \"messages\": []}\n    out.update(body)\n    return out\n\n\ndef text_of(body):\n    said = []\n    for m in body.get(\"messages\") or []:\n        if isinstance(m, dict) and m.get(\"type\", \"text\") == \"text\" \\\n                and m.get(\"origin\", \"user\") != \"assistant\" \\\n                and isinstance(m.get(\"text\"), str):\n            said.append(m[\"text\"])\n    return \" \".join(s for s in said if s.strip()).strip()\n\n\ndef options(params, key):\n    v = params.get(key)\n    if isinstance(v, str):\n        try:\n            v = json.loads(v)\n        except ValueError:\n            v = None\n    if not isinstance(v, dict):\n        return {}\n    return {str(k): str(d) for k, d in v.items() if isinstance(k, str) and k}\n\n\ndef number(params, key, default):\n    v = params.get(key)\n    if isinstance(v, bool) or not isinstance(v, (int, float)):\n        try:\n            v = float(v)\n        except (TypeError, ValueError):\n            return default\n    return float(v)\n\n\ndef questions(params):\n    \"\"\"`path` over the classes; `intent` over the intents; one yes/no per need and family.\n\n    A choice needs two options (the decisions wire refuses one with `decide_invalid`,\n    and with it the whole call), so a list of fewer than two is not asked.\"\"\"\n    qs = {}\n    classes = options(params, \"classes\")\n    if len(classes) >= 2:\n        qs[\"path\"] = {\"kind\": \"choice\",\n                      \"instructions\": \"Which way should this request be answered?\",\n                      \"options\": classes}\n    intents = options(params, \"intents\")\n    if len(intents) >= 2:\n        qs[\"intent\"] = {\"kind\": \"choice\",\n                        \"instructions\": \"What does the person want with this request?\",\n                        \"options\": intents}\n    for name, describe in sorted(options(params, \"needs\").items()):\n        qs[\"needs.\" + name] = {\"kind\": \"yes_no\",\n                               \"instructions\": \"Does answering it need %s?\" % describe}\n    for name, describe in sorted(options(params, \"families\").items()):\n        qs[\"families.\" + name] = {\"kind\": \"yes_no\",\n                                  \"instructions\": \"Would answering it use %s?\" % describe}\n    return qs\n\n\ndef choice_of(answers, key):\n    a = answers.get(key) if isinstance(answers, dict) else None\n    if not isinstance(a, dict) or not isinstance(a.get(\"choice\"), str):\n        return None, 0.0\n    p = a.get(\"p\")\n    if isinstance(p, dict):\n        p = p.get(a[\"choice\"])\n    if isinstance(p, bool) or not isinstance(p, (int, float)):\n        p = 0.0\n    return a[\"choice\"], float(p)\n\n\ndef yes_of(answers, key):\n    a = answers.get(key) if isinstance(answers, dict) else None\n    y = a.get(\"yes\") if isinstance(a, dict) else None\n    if isinstance(y, bool) or not isinstance(y, (int, float)):\n        return 0.0\n    return float(y)\n\n\ndef stamp(turn_id, path, p, intent, needs, families, duration, fallback=\"\"):\n    \"\"\"The stamp. A fallback stamp carries `p` 0 (no confidence stands behind the\n    fallback class) and says why on the hop, never inside the seven keys.\"\"\"\n    head = {\"turn_id\": turn_id, \"path\": path}\n    if fallback:\n        head[\"fallback\"] = fallback\n    return emission(\"stamp\", {\"stamp\": {\"turn_id\": turn_id, \"path\": path, \"p\": p,\n                                        \"intent\": intent, \"needs\": needs,\n                                        \"families\": families, \"duration\": duration}},\n                    **head)\n\n\ndef lane_decision(body, hop, ctx, params, now):\n    turn_id = str(ctx.get(\"turn_id\") or hop.get(\"turn_id\") or \"\")\n    fallback = str(params.get(\"fallback_class\") or \"talk\")\n    try:\n        duration = max(0, now - int(str(hop.get(\"asked_at\"))))\n    except (TypeError, ValueError):\n        duration = 0\n    if hop.get(\"finish_reason\") == \"error\" or hop.get(\"error_code\"):\n        return [stamp(turn_id, fallback, 0.0, \"\", [], [], duration, \"error\")]\n    d = body.get(\"decision\") if isinstance(body.get(\"decision\"), dict) else body\n    answers = d.get(\"answers\") if isinstance(d, dict) else None\n    classes = options(params, \"classes\")\n    path, p = choice_of(answers, \"path\")\n    intent, _ = choice_of(answers, \"intent\")\n    if intent not in options(params, \"intents\"):\n        intent = \"\"\n    yes = number(params, \"yes_threshold\", 0.5)\n    needs = [n for n in sorted(options(params, \"needs\"))\n             if yes_of(answers, \"needs.\" + n) >= yes]\n    families = [f for f in sorted(options(params, \"families\"))\n                if yes_of(answers, \"families.\" + f) >= yes]\n    late = number(params, \"late_ms\", 0)\n    if late > 0 and duration > late:\n        return [stamp(turn_id, fallback, 0.0, intent, [], [], duration, \"late\")]\n    if path not in classes or p < number(params, \"threshold\", 0.6):\n        return [stamp(turn_id, fallback, 0.0, intent, [], [], duration, \"unsure\")]\n    return [stamp(turn_id, path, p, intent, needs, families, duration)]\n\n\ndef handle(doc):\n    body = doc.get(\"body\") or {}\n    params = doc.get(\"params\") or {}\n    header = (doc.get(\"envelope\") or {}).get(\"header\") or {}\n    hop = header.get(\"hop\") or {}\n    ctx = header.get(\"context\") or {}\n    route = str(hop.get(\"route\") or \"\")\n    now = now_ms()\n    if route == \"in_decision\":\n        return lane_decision(body, hop, ctx, params, now)\n    if route == \"in_turn\":\n        text = text_of(body)\n        qs = questions(params)\n        if not text or \"path\" not in qs:\n            # Nothing to ask about (a turn without text, or fewer than two classes):\n            # the turn still leaves with its stamp, on the fallback, at once.\n            return [stamp(str(ctx.get(\"turn_id\") or hop.get(\"turn_id\") or \"\"),\n                          str(params.get(\"fallback_class\") or \"talk\"), 0.0, \"\", [], [], 0,\n                          \"no_text\")]\n        return [emission(\"decide\", {\"decide\": {\"state\": text, \"questions\": qs}},\n                         asked_at=str(now))]\n    return []\n\n\nout = handle(json.load(sys.stdin))\nsys.stdout.write(json.dumps(out[0] if len(out) == 1 else out))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "multi_send_capable": true,
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "decide": {
+          "type": "object",
+          "required": false,
+          "description": "the one call to `./decide`: the turn's text as `state` and the questions (`path`, `intent`, `needs.<n>`, `families.<f>`)"
+        },
+        "stamp": {
+          "type": "object",
+          "required": false,
+          "description": "the route stamp `{turn_id, path, p, intent, needs, families, duration}` -- exactly these seven keys"
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "decide",
+            "stamp"
+          ],
+          "required": true
+        },
+        "asked_at": {
+          "type": "string",
+          "required": false,
+          "description": "on `decide`: the moment of the ask in ms since the epoch, carried back through context so the stamp can say how long the decider took"
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false,
+          "description": "on `stamp`: the channel turn the stamp belongs to"
+        },
+        "path": {
+          "type": "string",
+          "required": false,
+          "description": "on `stamp`: the recommended class, the same as `stamp.path`, for an edge to test"
+        },
+        "fallback": {
+          "type": "string",
+          "required": false,
+          "description": "on a fallback `stamp`: why it is the fallback class -- `unsure`, `error`, `late` or `no_text`; absent on a stamp the decider stands behind"
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "decision": {
+          "type": "object",
+          "required": false
+        },
+        "detail": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The assistant's route cell: every turn of talky is asked ONE question set at `./decide` before the round is built, and the answer leaves as ONE route stamp `{turn_id, path, p, intent, needs, families, duration}` -- a recommendation, which the curator decides on (R-WP-1). Four classes as params: talk, simple, complex, research.",
+    "use_when": "Inside talky, beside the collector on the keeper's `turn`. Another composite asks its own route question by giving `classes`, `intents`, `needs` and `families` of its own.",
+    "not_in_scope": "No decision about the round: it never holds a turn back, never picks a model and never cuts a tool menu -- the curator does. No state: the moment of the ask rides on the hop and back through context.",
+    "emits_meaning": "route decide: the call to the decider. route stamp: the stamp, with `hop.turn_id` and `hop.path` beside it. Unsure (the chosen class below `threshold`), an error of the decider, an answer later than `late_ms` or a turn without text: `fallback_class` (talk) with `p` 0, no needs, no families, and `hop.fallback` saying which of the four it was.",
+    "consumes_meaning": "`in_turn`: the keeper's turn (its user text is the state of the call). `in_decision`: the decider's `decision` (`answers`), or its error (`hop.finish_reason` `error` / `hop.error_code`)."
+  }
+}

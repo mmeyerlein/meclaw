@@ -648,8 +648,12 @@ pub enum ColonyMsg {
     /// tables full — a reboot apply crash is classification-neutral).
     BeginInitialApply {
         /// Ack channel — fires after the durable marker commit (FirstBoot)
-        /// resp. immediately (reboot).
-        ack: oneshot::Sender<()>,
+        /// resp. immediately (reboot). GH #1253: it carries the colony's
+        /// drain view, so every cell the apply spawns (and every respawn it
+        /// builds) reads the drain the colony task flips — the boot is the one
+        /// spawn site outside the task, and this handshake is its first
+        /// contact with it.
+        ack: oneshot::Sender<crate::DrainView>,
     },
     /// Phase 11 slice 11-E: internally triggers the same path as the boot scan.
     /// The CLI flag `--rescan-templates` and (phase 12) an HTTP POST send this message.
@@ -2143,6 +2147,11 @@ pub struct ColonyTaskConfig {
     /// (default, production) → nothing is sent. Same opt-in pattern as
     /// `death_ack_wait_tx`.
     pub overflow_probe: Option<mpsc::UnboundedSender<crate::overflow::OverflowProbe>>,
+    /// GH #1253: the colony task flips this once, at drain entry. Cells read it
+    /// through the [`crate::DrainView`] on their `ContractView`; the boot path
+    /// gets its view with the [`ColonyMsg::BeginInitialApply`] receipt, and
+    /// [`crate::apply_bootstrap_plan`] wraps the registry with it.
+    pub drain_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl ColonyTaskConfig {
@@ -2180,6 +2189,7 @@ impl ColonyTaskConfig {
             egress_policy: EgressPolicy::All,
             death_ack_wait_tx: None,
             overflow_probe: None,
+            drain_tx: crate::DrainView::pair().0,
         }
     }
 
@@ -2352,8 +2362,8 @@ async fn run_shutdown_teardown(
     env_source: &Option<std::path::PathBuf>,
     egress_tx: &Option<mpsc::Sender<Message>>,
     egress_policy: EgressPolicy,
-    death_ack_wait_tx: &Option<mpsc::Sender<()>>,
     mutation_pulse: &crate::watchdog::WorkPulse,
+    seed_waits: &mut crate::mutation::seed_rows::SeedWaits,
     is_reboot: bool,
     ack: oneshot::Sender<()>,
     mut settles: Vec<oneshot::Sender<()>>,
@@ -2599,6 +2609,24 @@ async fn run_shutdown_teardown(
                             msg,
                             sender,
                         } => {
+                            // #1233 (OR-programm-tm.H3.orch-1): a cell's build
+                            // order meets the same closed door as in the drain
+                            // (GH #47) — the teardown cannot wait for a seed
+                            // receipt, so it starts no mutation at all.
+                            if endpoint.as_str() == "/colony/mutations" {
+                                push_dead_letter(
+                                    dead_letters,
+                                    DeadLetter {
+                                        sender_path: sender.clone(),
+                                        original_target: endpoint.clone(),
+                                        resolved_target: endpoint,
+                                        message: msg,
+                                        reason:
+                                            crate::dead_letter::DeadLetterReason::ShutdownDraining,
+                                    },
+                                );
+                                continue;
+                            }
                             // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
                             // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
                             // `&ColonyDb` across an .await boundary. GH #571: the
@@ -2647,6 +2675,9 @@ async fn run_shutdown_teardown(
                                 // emissions), and the next boot leaves one
                                 // anyway.
                                 None,
+                                // #1233: the loop's own table; no knock
+                                // reaches the dispatcher here (refused above).
+                                seed_waits,
                             )
                             .await;
                             enqueue_dispatch_follow(&mut work, dead_letters, follow);
@@ -2806,8 +2837,11 @@ async fn run_shutdown_teardown(
             }
             ColonyMsg::BeginInitialApply { ack } => {
                 // Shutdown-drain: no marker write — the boot is
-                // aborting anyway; just unblock the waiting apply.
-                let _ = ack.send(());
+                // aborting anyway; just unblock the waiting apply. GH #1253:
+                // the colony is past its drain entry, so the view says so.
+                let (drained_tx, drained) = crate::DrainView::pair();
+                drained_tx.send_replace(true);
+                let _ = ack.send(drained);
             }
             ColonyMsg::KeepTemplateVersions { ack, .. } => {
                 // Shutdown-drain: the boot is over or aborting; the next boot
@@ -2859,113 +2893,20 @@ async fn run_shutdown_teardown(
             ColonyMsg::ReadMessages { ack, .. } => {
                 drop(ack);
             }
-            ColonyMsg::Mutation {
-                payload,
-                reply_to,
-                trace_id,
-                parent_message_id,
-                ack,
-            } => {
-                // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
-                // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
-                let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
-                    colony_db
-                        .read_templates()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|r| crate::templates::TemplateEntry {
-                            template_id: r.template_id,
-                            name: r.name,
-                            version: r.version,
-                            filesystem_path: std::path::PathBuf::from(r.filesystem_path),
-                        })
-                        .collect(),
-                );
-                let outcome = handle_mutation(
-                    registry,
-                    hive_scopes,
-                    edges,
-                    node_contracts,
-                    dead_letters,
-                    in_flight,
-                    &colony_db.writer_tx,
-                    templates_snapshot,
-                    factories,
-                    root,
-                    eda_templates_root,
-                    inbox_self_tx,
-                    outputs_tx,
-                    payload,
-                    reply_to,
-                    trace_id,
-                    parent_message_id,
-                    colony_config.idle_timeout_default_ms,
-                    colony_config.message_timeout_default_ms,
-                    colony_config.mailbox_default_capacity,
-                    colony_config.restart_max_retries,
-                    colony_config.strict_validation,
-                    blob_store.clone(),
-                    colony_config.blob_inline_max_bytes,
-                    env_source.as_deref(),
-                    death_ack_wait_tx.as_ref(),
-                    None,
-                    mutation_pulse,
-                )
-                .await;
-                let _ = ack.send(outcome);
+            // #1233 (OR-programm-tm.H3.orch-1): the teardown takes no mutation.
+            // Rows into a running store travel on its seed lane and the answer
+            // waits for the store's receipt; here the inbox is already closed,
+            // so no order could arrive, and writing the rows directly would be
+            // a second connection into a live cell's `cell.db` (cell boundaries
+            // are hard). So the drain's refusal (GH #47), before anything is
+            // staged: nothing to roll back, nothing written.
+            ColonyMsg::Mutation { ack, .. } => {
+                let _ = ack.send(refuse_because_draining());
             }
-            ColonyMsg::MutationDoor {
-                payload,
-                reply_to,
-                trace_id,
-                parent_message_id,
-                ack,
-            } => {
-                // Same snapshot discipline as the Mutation arm above.
-                let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
-                    colony_db
-                        .read_templates()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|r| crate::templates::TemplateEntry {
-                            template_id: r.template_id,
-                            name: r.name,
-                            version: r.version,
-                            filesystem_path: std::path::PathBuf::from(r.filesystem_path),
-                        })
-                        .collect(),
-                );
-                let outcome = crate::colony_dispatch::run_mutation_door(
-                    registry,
-                    hive_scopes,
-                    edges,
-                    node_contracts,
-                    dead_letters,
-                    in_flight,
-                    &colony_db.writer_tx,
-                    templates_snapshot,
-                    factories,
-                    root,
-                    eda_templates_root,
-                    inbox_self_tx,
-                    outputs_tx,
-                    payload,
-                    reply_to,
-                    trace_id,
-                    parent_message_id,
-                    colony_config.idle_timeout_default_ms,
-                    colony_config.message_timeout_default_ms,
-                    colony_config.mailbox_default_capacity,
-                    colony_config.restart_max_retries,
-                    colony_config.strict_validation,
-                    blob_store.clone(),
-                    colony_config.blob_inline_max_bytes,
-                    env_source.as_deref(),
-                    death_ack_wait_tx.as_ref(),
-                    mutation_pulse,
-                )
-                .await;
-                let _ = ack.send(outcome);
+            ColonyMsg::MutationDoor { ack, .. } => {
+                let _ = ack.send(crate::mutation::MutationDoorOutcome::Single(
+                    refuse_because_draining(),
+                ));
             }
             ColonyMsg::Sleep { path, receiver } => {
                 handle_sleep(registry, dead_letters, inbox_self_tx, path, receiver).await;
@@ -3067,7 +3008,14 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         egress_policy,
         death_ack_wait_tx,
         overflow_probe,
+        drain_tx,
     } = cfg;
+    // GH #1253: every cell this task spawns (mutation, teardown, manifest)
+    // reads the drain this task flips at drain entry.
+    let factories = crate::with_drain_view(
+        factories,
+        &crate::DrainView::from_receiver(drain_tx.subscribe()),
+    );
     #[cfg(debug_assertions)]
     meclaw_core::init_validator();
     let mut registry: HashMap<Path, RegistryEntry> = HashMap::new();
@@ -3280,6 +3228,12 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // time; without it the number of concurrent scans of `colony.db` was bounded
     // by nothing but the number of open connections.
     let log_reads = std::sync::Arc::new(tokio::sync::Semaphore::new(LOG_READ_PERMITS));
+
+    // #1233 (T6-10): knocks that wait for the seed receipts of running stores,
+    // and the scratch list a knock reports its orders into. The loop never
+    // blocks on either — the last receipt releases the answer.
+    let mut seed_waits = crate::mutation::seed_rows::SeedWaits::default();
+    let mut seed_orders: Vec<crate::mutation::seed_rows::SeedOrder> = Vec::new();
 
     loop {
         // Deep-Audit F3: emit a liveness tick. `try_send` never blocks the loop; a
@@ -3537,8 +3491,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &env_source,
                         &egress_tx,
                         egress_policy,
-                        &death_ack_wait_tx,
                         &mutation_pulse,
+                        &mut seed_waits,
                         is_reboot,
                         ack,
                         std::mem::take(&mut settles),
@@ -3583,8 +3537,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &env_source,
                         &egress_tx,
                         egress_policy,
-                        &death_ack_wait_tx,
                         &mutation_pulse,
+                        &mut seed_waits,
                         is_reboot,
                         ack,
                         std::mem::take(&mut settles),
@@ -3638,8 +3592,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 &env_source,
                                 &egress_tx,
                                 egress_policy,
-                                &death_ack_wait_tx,
                                 &mutation_pulse,
+                                &mut seed_waits,
                                 is_reboot,
                                 ack,
                                 std::mem::take(&mut settles),
@@ -3655,6 +3609,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // empty, and one nobody adopted never would — settle it
                         // (a colony that never saw its boot apply ends here).
                         settle_unstarted_overflows(&registry, &mut in_flight);
+                        // GH #1253: tell the source cells first — a timer or a
+                        // Telegram proxy that sees the drain holds its strike or
+                        // update back, unpersisted, for the next start.
+                        drain_tx.send_replace(true);
                         phase = LoopPhase::Draining {
                             deadline: tokio::time::Instant::now()
                                 + std::time::Duration::from_millis(budget),
@@ -3695,8 +3653,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             &env_source,
                             &egress_tx,
                             egress_policy,
-                            &death_ack_wait_tx,
                             &mutation_pulse,
+                            &mut seed_waits,
                             is_reboot,
                             ack,
                             std::mem::take(&mut settles),
@@ -3851,6 +3809,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                         // GH #553: the receipt target, or None
                                         // when this colony asked for none.
                                         receipt_target.as_ref().map(|t| (t, colony_config.message_default_ttl)),
+                                        &mut seed_waits,
                                     ).await;
                                     enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                     // GH #285: a cell-emitted mutation may change a slot declaration too.
@@ -4049,7 +4008,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // on the reboot path too, the registration window exists
                         // there as well.
                         initial_apply_pending = true;
-                        let _ = ack.send(());
+                        // GH #1253: the boot spawns with this colony's drain.
+                        let _ = ack.send(crate::DrainView::from_receiver(drain_tx.subscribe()));
                     }
                     ColonyMsg::KeepTemplateVersions { templates_root, ack } => {
                         fence(&colony_db.writer_tx).await;
@@ -4214,7 +4174,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         let receipt_scope = receipt_scope_of(&payload);
                         // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
                         // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
-                        let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
+                        let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                             colony_db.read_templates().unwrap_or_default().into_iter()
                                 .map(|r| crate::templates::TemplateEntry {
                                     template_id: r.template_id,
@@ -4223,6 +4183,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     filesystem_path: std::path::PathBuf::from(r.filesystem_path),
                                 }).collect(),
                         );
+                        // GH #1236 (C-1): a twin's library seed comes from the registry book.
+                        templates_snapshot.keep_instance_provenance(crate::mutation::twin::registry_book(&colony_db));
                         let outcome = handle_mutation(
                             &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
                             &colony_db.writer_tx, templates_snapshot, &factories, &root, &eda_templates_root, &inbox_self_tx,
@@ -4238,6 +4200,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             env_source.as_deref(),
                             death_ack_wait_tx.as_ref(),
                             None,
+                            &mut seed_orders,
                             &mutation_pulse,
                         ).await;
                         // GH #285: a mutation may add a hive, fill a slot, or
@@ -4255,7 +4218,17 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 colony_config.message_default_ttl,
                             ));
                         }
-                        let _ = ack.send(outcome);
+                        // #1233 (T6-10): `committed` waits for the receipts of
+                        // every running store this mutation seeded.
+                        if seed_orders.is_empty() {
+                            let _ = ack.send(outcome);
+                        } else {
+                            let _ = seed_waits.park(
+                                std::mem::take(&mut seed_orders),
+                                crate::mutation::seed_rows::SeedWaiter::Mutation(ack, outcome),
+                                &inbox_self_tx, &colony_db.writer_tx, trace_id,
+                            ).await;
+                        }
                     }
                     ColonyMsg::MutationDoor { payload, reply_to, trace_id, parent_message_id, ack } => {
                         if matches!(phase, LoopPhase::Draining { .. }) {
@@ -4275,7 +4248,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         let receipt_scope = receipt_scope_of(&payload);
                         // Phase-11 T16: Templates-Snapshot SYNCHRON (ColonyDb is
                         // !Sync → no &ColonyDb across an .await boundary).
-                        let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
+                        let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
                             colony_db.read_templates().unwrap_or_default().into_iter()
                                 .map(|r| crate::templates::TemplateEntry {
                                     template_id: r.template_id,
@@ -4284,6 +4257,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     filesystem_path: std::path::PathBuf::from(r.filesystem_path),
                                 }).collect(),
                         );
+                        // GH #1236 (C-1): a twin's library seed comes from the registry book.
+                        templates_snapshot.keep_instance_provenance(crate::mutation::twin::registry_book(&colony_db));
                         let outcome = crate::colony_dispatch::run_mutation_door(
                             &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
                             &colony_db.writer_tx, templates_snapshot, &factories, &root, &eda_templates_root, &inbox_self_tx,
@@ -4298,6 +4273,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             colony_config.blob_inline_max_bytes,
                             env_source.as_deref(),
                             death_ack_wait_tx.as_ref(),
+                            &mut seed_orders,
                             &mutation_pulse,
                         ).await;
                         // GH #285: a mutation may add a hive, fill a slot, or
@@ -4316,7 +4292,16 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 colony_config.message_default_ttl,
                             ));
                         }
-                        let _ = ack.send(outcome);
+                        // #1233 (T6-10): see the Mutation arm above.
+                        if seed_orders.is_empty() {
+                            let _ = ack.send(outcome);
+                        } else {
+                            let _ = seed_waits.park(
+                                std::mem::take(&mut seed_orders),
+                                crate::mutation::seed_rows::SeedWaiter::Door(ack, outcome),
+                                &inbox_self_tx, &colony_db.writer_tx, trace_id,
+                            ).await;
+                        }
                     }
                     ColonyMsg::Sleep { path, receiver } => {
                         // GH #47: a sleeping cell answers nothing more; a later wake
@@ -4402,8 +4387,23 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 // a timer at one tick per second would make quiescence
                 // unreachable by construction. A follow-on emission (it has a
                 // parent) is exactly the work being drained and passes through.
+                // GH #1253: except a timer or a proxy. Both persist "done" before
+                // they emit (completion mark, Telegram cursor confirmed upstream),
+                // so a refusal here lost the work for good. A timer and the
+                // Telegram proxy see the drain (`DrainView`) and hold back whatever
+                // they have not persisted yet; what still reaches this arm from
+                // them passed that check before the flip, at most one strike or
+                // poll batch per cell, so carrying it as drain work keeps the
+                // convergence GH #47 is about. The other proxy platforms take
+                // ingress at the pace of the outside world, not by construction
+                // like a ticking timer; a message of theirs in the drain is
+                // carried too, and the drain deadline bounds it.
+                let holds_back_in_drain = registry
+                    .get(&em.sender_path)
+                    .is_some_and(|e| matches!(e.cell_type.as_str(), "timer" | "proxy"));
                 if em.parent_message_id.is_none()
                     && matches!(phase, LoopPhase::Draining { .. })
+                    && !holds_back_in_drain
                 {
                     let (_hop, body) = split_content_header(em.content.clone());
                     let refused = MessageBuilder::new(em.target.clone())
@@ -4804,6 +4804,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                     // GH #553: the receipt target, or None when
                                     // this colony asked for none.
                                     receipt_target.as_ref().map(|t| (t, colony_config.message_default_ttl)),
+                                    &mut seed_waits,
                                 ).await;
                                 enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
                                 // GH #285: a cell-emitted mutation may change a slot declaration too.
@@ -4819,6 +4820,18 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         }
                     }
                 }
+            }
+            // #1233 (OR-programm-tm.H3.6): the seed wait table's deadline. A
+            // store that never answers its lane (dead, failed, its order in the
+            // DLQ: normal operation) would hold the door's answer forever. ONE
+            // timer on the earliest deadline, re-armed every pass, releases the
+            // knock `committed` with a `seed_receipt_timeout` receipt per store
+            // still open. Disarmed while nothing waits, so a colony without a
+            // parked knock selects exactly as before.
+            _ = crate::mutation::seed_rows::until(seed_waits.next_deadline()),
+                if seed_waits.next_deadline().is_some() => {
+                beat(&heartbeat_tx, crate::watchdog::Beat::Working);
+                seed_waits.expire(&inbox_self_tx, &colony_db.writer_tx).await;
             }
             // Deep-Audit F3: heartbeat wake. Last in the biased select → fires only
             // when inbox/outputs are idle, waking the loop twice per supervisor
@@ -6193,6 +6206,8 @@ pub(crate) async fn handle_manifest(
     blob_inline_max_bytes: usize,
     env_source: Option<&std::path::Path>,
     death_ack_wait_tx: Option<&mpsc::Sender<()>>,
+    // #1233 (T6-09): every entry reports its running-store seed orders here.
+    seed_lane: &mut Vec<crate::mutation::seed_rows::SeedOrder>,
     pulse: &crate::watchdog::WorkPulse, // GH #439 — refined per entry below
 ) -> crate::mutation::ManifestOutcome {
     use crate::mutation::{ManifestOutcome, MutationOutcome};
@@ -6244,6 +6259,7 @@ pub(crate) async fn handle_manifest(
             env_source,
             death_ack_wait_tx,
             Some(&mut registered),
+            &mut *seed_lane,
             &entry_pulse,
         )
         .await;
@@ -6254,13 +6270,7 @@ pub(crate) async fn handle_manifest(
             } => {
                 changes.extend(entry_changes);
                 if !registered.is_empty() {
-                    templates = crate::templates::TemplatesRegistry::from_entries(
-                        templates
-                            .entries_iter()
-                            .cloned()
-                            .chain(registered)
-                            .collect(),
-                    );
+                    templates = templates.with_registered(registered);
                 }
                 ids.push(id);
             }
@@ -6325,6 +6335,12 @@ pub(crate) async fn handle_mutation(
     // commit — same id, same name, same version, same path — so the snapshot
     // and `colony.db` cannot disagree.
     registered_templates_out: Option<&mut Vec<crate::templates::TemplateEntry>>,
+    // #1233 (T6-09): where the `seed_rows` bound for RUNNING stores are reported
+    // once the mutation committed — the caller sends them on each store's seed
+    // lane and answers only after every receipt (`SeedWaits`). Every mutation
+    // path has one: the teardown refuses mutations instead of writing directly
+    // (H3, OR-H3.orch-1), so there is no direct-write fallback.
+    seed_lane: &mut Vec<crate::mutation::seed_rows::SeedOrder>,
     pulse: &crate::watchdog::WorkPulse, // GH #439 — the heartbeat this mutation beats on while it works
 ) -> crate::mutation::MutationOutcome {
     use crate::mutation::MutationOutcome;
@@ -6587,16 +6603,10 @@ pub(crate) async fn handle_mutation(
     let mut templates = if registered.is_empty() {
         templates
     } else {
-        crate::templates::TemplatesRegistry::from_entries(
-            templates
-                .entries_iter()
-                .cloned()
-                .chain(
-                    registered
-                        .iter()
-                        .map(|(tid, t)| crate::templates::entry_from_scanned(tid.clone(), t)),
-                )
-                .collect(),
+        templates.with_registered(
+            registered
+                .iter()
+                .map(|(tid, t)| crate::templates::entry_from_scanned(tid.clone(), t)),
         )
     };
 
@@ -8337,6 +8347,15 @@ pub(crate) async fn handle_mutation(
     // GH #682: `staged_replaces` is the staged half of every `replace_nodes`
     // entry — built and refused pre-destructively in `apply_mutation`; its
     // rename/registry/edge arm is apply step 9d below.
+    // GH #1236 (re-check H2b C-1/I-1): what staging needs to recognise a
+    // model twin, from the colony's own books -- the registered type of each
+    // swap original and the backstop default the spawn resolves against.
+    let twins = crate::mutation::twin::TwinFacts::of(
+        &diff_subst,
+        &scope,
+        registry,
+        message_timeout_default_ms,
+    );
     let (staged, staged_subtrees, staged_replaces) = match crate::mutation::apply::apply_mutation(
         root,
         &id,
@@ -8353,6 +8372,7 @@ pub(crate) async fn handle_mutation(
         // synchronous — the pulse has to reach into it or only the cheap half
         // of a 65-cell build order is audible.
         &pulse,
+        &twins,
     ) {
         Ok(s) => s,
         Err(crate::mutation::MutationError::LiveTreeMutated(detail)) => {
@@ -8581,6 +8601,7 @@ pub(crate) async fn handle_mutation(
             // origin — the node's provenance is already in its own
             // `config.json` and in the row that just moved with it.
             provenance: None,
+            twin_of: None,
             relocation: Some(crate::mutation::stage::Relocation {
                 from: mv.from.clone(),
                 cell_id,
@@ -9746,6 +9767,8 @@ pub(crate) async fn handle_mutation(
         let mut contract_view = sd.contract_view.clone();
         contract_view.validate_emits =
             crate::bootstrap_apply::resolve_validate_emits(strict_validation);
+        // GH #1234: a relative transfer root lives in this cell's own hive.
+        contract_view.anchor_transfer_root(&sd.final_path);
         // Hardening Slice 1 (Task 1.4): per-cell contract data for the colony's
         // `node_contracts` map — built BEFORE `contract_view` moves into
         // `spawn_cell`, inserted AFTER the registry insert of each spawn path
@@ -10136,6 +10159,8 @@ pub(crate) async fn handle_mutation(
             let mut contract_view = cell.contract_view.clone();
             contract_view.validate_emits =
                 crate::bootstrap_apply::resolve_validate_emits(strict_validation);
+            // GH #1234: a relative transfer root lives in this cell's own hive.
+            contract_view.anchor_transfer_root(&cell.final_path);
             // F1-KH2 kind discriminator: declared on the trait, so the kind is
             // known WITHOUT building a task (an eager `spawn_cell` would be a
             // real transient side effect — the same hazard the P3-C1 activity
@@ -10504,6 +10529,47 @@ pub(crate) async fn handle_mutation(
         }
     }
 
+    // GH #1236 (T6-07): every waiting twin's handover is asked for HERE, before
+    // the flip below. The swap left the original edge-less, so the flip makes
+    // it inactive: a message routed to an inactive cell is dead-lettered
+    // `cell_inactive` and never wakes it, and the biased stop arm of the cell
+    // task (`stop > recv`) would drop an export still queued behind a
+    // peace-stop. So the export lands in the original's mailbox while it is
+    // still active (woken if it sleeps), and the flip makes it inactive
+    // WITHOUT a peace-stop: it answers what its mailbox holds and parks by its
+    // idle timeout. Neither `cell.db` is opened here -- the original answers on
+    // its own connection, `reply_to` the twin, and the twin imports on its own
+    // (GH #1232).
+    // Re-check H2b M-1: the pairs are staging's twin decision
+    // (`StagedDir::twin_of`), not a param value -- an original that is no
+    // `llm` cell is never asked, whatever its successor's template declares.
+    let handovers: Vec<(Path, Path)> = staged
+        .iter()
+        .filter_map(|sd| Some((sd.twin_of.clone()?, sd.absolute_path.clone())))
+        .collect();
+    for (original, twin) in &handovers {
+        let ask = meclaw_core::MessageBuilder::new(original.clone())
+            .reply_to(twin.clone())
+            .trace_id(trace_id)
+            .parent_message_id(parent_message_id)
+            .body(meclaw_core::Body::Inline(
+                meclaw_core::serde_json::json!({"handover": {"operation": "export"}}),
+            ))
+            .build();
+        let _ = route_with_log(
+            &mut *registry,
+            hive_scopes,
+            dead_letters,
+            in_flight,
+            log_tx,
+            Path::new("/colony"),
+            ask,
+            &blob_store,
+            blob_inline_max_bytes,
+        )
+        .await;
+    }
+
     // Rollback tracking for `entry.active` flips done in this hook. Each entry
     // is `(path, prior_active)` — the value to restore on a term-timeout
     // rollback (a true→false disconnect restores `true`; a false→true reconnect
@@ -10529,6 +10595,7 @@ pub(crate) async fn handle_mutation(
             // Trigger a peace-stop for a running (Awake) task. If there is a live
             // stop_tx, also move the death_ack_rx into the side-map for the wait.
             if matches!(entry.status, CellStatus::Awake)
+                && !handovers.iter().any(|(original, _)| original == node)
                 && let Some(stop) = entry.stop_tx.take()
             {
                 let _ = stop.send(());
@@ -10835,6 +10902,17 @@ pub(crate) async fn handle_mutation(
     // refusal that could still happen has happened. Idempotent by declaration: a
     // row already present, column for column, is counted and not written twice,
     // so re-applying the same manifest is a no-op.
+    // #1233 (T6-09): a store this mutation staged has never been born and takes
+    // its rows straight into the staged `cell.db` (birth is substrate right);
+    // every RUNNING store gets its rows as a message on its own seed lane after
+    // the commit, so the door no longer opens a second connection into a live
+    // cell's database.
+    let (resolved_seed_rows, lane_orders) = crate::mutation::seed_rows::SeedOrder::split(
+        resolved_seed_rows,
+        &registered_by_this_mutation,
+        &id,
+        message_timeout_default_ms,
+    );
     if !resolved_seed_rows.is_empty() {
         // GH #1077: every target is a `store` (resolve refused anything else),
         // so the connection carries what the store's own connection carries.
@@ -10996,6 +11074,9 @@ pub(crate) async fn handle_mutation(
         .flat_map(|lift| lift.changes.iter().cloned())
         .collect();
     changes.sort_by(|a, b| a.path.cmp(&b.path));
+    // #1233 (T6-10): reported only here, on the committed path — a refusal above
+    // sends no row anywhere.
+    seed_lane.extend(lane_orders);
     MutationOutcome::Committed { id, changes }
 }
 

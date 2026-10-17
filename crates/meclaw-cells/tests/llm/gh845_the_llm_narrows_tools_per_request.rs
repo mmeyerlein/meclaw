@@ -236,3 +236,38 @@ async fn a_null_scope_is_no_scope() {
     let got: Vec<Option<Vec<String>>> = wire_bodies(&mock).await.iter().map(names).collect();
     assert_eq!(got, vec![Some(vec!["a".to_string(), "x".to_string()])]);
 }
+
+/// R-WM-1: the `hint` level shows a family by its name, the first sentence of
+/// its description and the schema `{op: string}` — the rest of a family comes
+/// through `help`. A hint narrows nothing and widens nothing: an entry it does
+/// not name stays whole, and the menu order stays (OR-SN-31).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hint_shows_a_family_by_name_first_sentence_and_op() {
+    let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
+    let mut rig = Rig::new(&mock);
+    let file = json!({"type": "function", "function": {"name": "file",
+        "description": "Reads and writes files. Ops: read, write, list.\nArgs per op follow.",
+        "parameters": {"type": "object", "properties": {
+            "op": {"type": "string", "enum": ["read", "write", "list"]},
+            "path": {"type": "string"}}}}});
+    let web = json!({"type": "function", "function": {"name": "web",
+        "description": "Searches the web. Returns links.",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}});
+    let mut tools = serde_json::Map::new();
+    tools.insert("file".into(), json!({"text": file.to_string()}));
+    tools.insert("web".into(), json!({"text": web.to_string()}));
+    rig.send(json!({"system": {"tools": Value::Object(tools)},
+        "messages": turn("1"), "tool_scope": {"hint": ["file"]}}))
+        .await;
+    let bodies = wire_bodies(&mock).await;
+    assert_eq!(
+        bodies[0]["tools"],
+        json!([
+            {"type": "function", "function": {"name": "file",
+                "description": "Reads and writes files.",
+                "parameters": {"type": "object",
+                    "properties": {"op": {"type": "string"}}, "required": ["op"]}}},
+            web,
+        ])
+    );
+}

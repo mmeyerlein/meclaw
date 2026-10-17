@@ -9,7 +9,9 @@
     "api_key": "",
     "base_url": "${EXAMPLE_PROVIDER_BASE_URL:-https://api.openai.com/v1}",
     "credential_grant_id": "grant:example-provider-primary@member-example",
-    "external_timeout_ms": 20000
+    "external_timeout_ms": 20000,
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
   },
   "contract": {
     "version": "1.0.0",

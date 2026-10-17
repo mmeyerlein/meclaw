@@ -1,4 +1,4 @@
-# `tools@1.4.8`
+# `tools@1.5.0`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -560,14 +560,18 @@ why the key is written down here.
 
 **The file root is not on this list any more, and that is the point of #138.**
 `TOOLS_FILE_ROOT` bound `params.base_path` of both the `file` and the `edit` occupant until
-1.4.1; since then each carries the literal `/tmp` and a mutation repoints both with
+1.4.1; since then each carries a literal and a mutation repoints both with
 `override_params`. A sandbox root is per-INSTANCE by nature -- two assistants in one colony
 must not reach the same directory just because they were grown from the same template -- and
-an environment variable could not say that. The shipped default is still a real reach and
-still the honest part: `base_path` must name a directory that EXISTS or the cell refuses to
-spawn, and the only directory that exists on every machine is the scratch one. So an
-assistant nobody repointed is rooted at `/tmp`, nobody's mistake and nothing anywhere
-reports it -- which is why it is written down here rather than discovered:
+an environment variable could not say that. Until
+[#1234](https://github.com/mmeyerlein/meclaw/issues/1234) the literal was `/tmp`, because an
+absolute root must EXIST or the cell refuses to spawn, and the only directory that exists on
+every machine is the scratch one -- so every assistant nobody repointed shared it. The shipped
+literal is now the relative `workspace`: a directory of THIS tools hive, created at the spawn,
+the same one for `file` and `edit` and a different one for every other assistant. The spawn
+puts the empty marker `.meclaw-cell-root` into it, and the boot walker steps into no directory
+that carries the marker, so nothing written there becomes a node -- not even a `config.json` the
+assistant saves into the workspace. An absolute root still works as before:
 
 ```json
 {"add_nodes": [{"name": "tools", "template": "tools",

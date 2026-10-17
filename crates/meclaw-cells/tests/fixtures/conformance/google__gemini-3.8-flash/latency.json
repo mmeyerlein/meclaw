@@ -1,0 +1,14 @@
+{
+  "wire": "chat",
+  "n": 20,
+  "sent": 20,
+  "window_tokens": 4000,
+  "reasoning": "mandatory_low",
+  "tool_calls": 20,
+  "hits": 20,
+  "hit_rate": 1.0,
+  "p50_ms": 2148.9,
+  "p95_ms": 16450.4,
+  "prompt_tokens_p50": 4008,
+  "misses": []
+}

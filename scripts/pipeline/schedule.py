@@ -1086,6 +1086,23 @@ def with_measured(stations, measured):
     return out
 
 
+# The repository whose lane trees keep the plain worktree name (`wt/<basename>`):
+# the core's trees were named so before GH #1199 and keep their path.
+CORE_REPO = "meclaw"
+
+
+def lane_tree_name(repo_id, worktree):
+    """The name of `worktree`'s tree on a lane (`wt/<name>`, `refs/heads/lane/<name>`,
+    `<name>.lock`), unique per repository (GH #1199, OR-TM-14): the core's
+    worktree basename as before, a satellite's `<repo>@<basename>`. Two repositories
+    with the same worktree basename shared one lane tree -- coding's `pass2` overwrote
+    orga's `pass2` on build04. The one rule of the gate's admission, guard and push
+    (`gate`), of `--plan-only`'s measure and of `measure minimum`'s default tree."""
+    base = os.path.basename(str(worktree).rstrip("/"))
+    repo_id = (repo_id or CORE_REPO).strip()
+    return base if repo_id == CORE_REPO else "%s@%s" % (repo_id, base)
+
+
 def admission_tree(cargo, tree_name, holder):
     """The tree a pass runs in, relative to its lane's root: `tree` for a cargo pass,
     else `wt/<the tree's name>` (the holder's, `/` as `-`, when the gate names none).
@@ -1141,8 +1158,10 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
         holder_key = _batch_speaker(st, holder_key, lane_pref or "")
     ctx = _Ctx(db, now, branch=holder_key)
     ctx.lane_procs = lane_procs or {}
-    held_lane, left = None, None
+    held_lane, left, release = None, None, False
     if pool_lanes:
+        # re-check Kette FR2 m1: one class places the caller and queues it
+        release = _release_class(holder_key, release_tree or wait_tree or "", mode)
         _prune(st, ctx, holder_key, want=lane_pref or "")
         mine = _holder(st, holder_key)
         busy = _live_run_of(mine, ctx) if mine else None
@@ -1160,7 +1179,7 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                 raise ScheduleError("%s holds lane %s, not %s -- release it first, then take %s"
                                     % (holder_key, held_lane, lane_pref, lane_pref))
         else:
-            left = _lanes_left(st, _ahead_of(st, holder_key, merge))
+            left = _lanes_left(st, _ahead_of(st, holder_key, merge, release))
 
     if lane_pref:
         order = [lane_pref]
@@ -1263,8 +1282,7 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                     else "a merge gate does not wait for an offer"))
             msg = _enqueue(st, ctx, holder_key, lane_pref or "", wait_tree or "",
                            wait="gate --wait-admission" if wait else False, merge=merge,
-                           release=_release_class(holder_key, release_tree or wait_tree or "",
-                                                  mode))
+                           release=release)
             _save(db, st, ctx)
             return Queued(msg)
         if pool_lanes:
@@ -1314,7 +1332,8 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                 mine["ttl_min"] = max(mine.get("ttl_min") or st["ttl_min"], ttl_min)
                 mine["run"] = run
             else:
-                _grant(st, ctx, holder_key, lane_name, "", ttl_min=ttl_min, run=run, merge=merge)
+                _grant(st, ctx, holder_key, lane_name, "", ttl_min=ttl_min, run=run, merge=merge,
+                       release=release)
                 lease_taken = True
         _save(db, st, ctx)
 
@@ -1987,6 +2006,10 @@ MERGE_STREAK_MAX = 3
 # the class (lease re-check m2): `_release_class` also asks the pass.
 RELEASE_NAME = re.compile(r"rel(?:[-_0-9]|$)")
 
+# A wave directory's date suffix: the wave is the directory without it
+# (`strand.sh` `wave_name`, re-check Kette FR2 m3).
+WAVE_DATE = re.compile(r"-[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
 
 # Lease re-check m2: the release class has its own cap, like the merges'. Merges
 # and release grants in a row while a program strand waits count together; after
@@ -2008,7 +2031,7 @@ def _release_class(key, tree="", mode=""):
     re-check m2: the name alone is no class -- a program strand `rel-notes` would
     lead the program. The name follows the convention (`_release_path`) AND the
     pass says so: a release gate (`mode` release), or the strand file
-    `plans/<wave>[-*]/straenge/<strand>.json` in the caller's `tree` declares
+    `plans/<wave>[-YYYY-MM-DD]/straenge/<strand>.json` in the caller's `tree` declares
     `"release": true`. The answer is taken once, when the waiter queues
     (`_enqueue`), and kept as its class (`lease_classes`)."""
     if not _release_path(key):
@@ -2023,6 +2046,11 @@ def _release_class(key, tree="", mode=""):
     dirs = [glob.escape(wave), glob.escape(wave) + "-*"] if wave else ["*"]
     paths = [p for d in dirs for p in glob.glob(os.path.join(
         glob.escape(tree), "plans", d, "straenge", glob.escape(strand) + ".json"))]
+    # re-check Kette FR2 m3: `<wave>-*` also matched the wave `<wave>-2-<date>`;
+    # the kit's rule names the wave -- the directory without `-YYYY-MM-DD`
+    # (`strand.sh` `wave_name`)
+    paths = [p for p in paths if not wave or WAVE_DATE.sub(
+        "", os.path.basename(os.path.dirname(os.path.dirname(p)))) == wave]
     for path in sorted(paths):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -2053,13 +2081,16 @@ def _queue_order(waiting, streak, release_streak=0):
     return order
 
 
-def _ahead_of(st, key, merge=False):
+def _ahead_of(st, key, merge=False, release=False):
     """The waiters ahead of `key` in offer order -- for a caller not yet queued,
-    where its entry would stand (a merge goes ahead of the strands, K14)."""
+    where its entry would stand (a merge goes ahead of the strands, K14; a
+    release ahead of the program, re-check Kette FR2 m1)."""
     names = [w["strand"] for w in st["waiting"]]
     if key in names:
         return st["waiting"][:names.index(key)]
     probe = {"strand": key, "merge": True} if merge else {"strand": key}
+    if release:
+        probe["release"] = True
     order = _queue_order(st["waiting"] + [probe], st.get("merge_streak", 0),
                          st.get("release_streak", 0))
     return order[:next(i for i, w in enumerate(order) if w is probe)]
@@ -2585,8 +2616,11 @@ def _prune(st, ctx, key, want=None):
         _mark_offers(st, ctx)
 
 
-def _grant(st, ctx, key, lane, tree, ttl_min=None, run=None, merge=False):
-    release = any(w.get("release") for w in st["waiting"] if w["strand"] == key)
+def _grant(st, ctx, key, lane, tree, ttl_min=None, run=None, merge=False, release=False):
+    # re-check stack I1: a caller not yet queued hands its class (`release`,
+    # the one `_ahead_of` placed it by) -- without a queue entry its grant
+    # counted as program and reset the release streak
+    release = release or any(w.get("release") for w in st["waiting"] if w["strand"] == key)
     st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
     # K14: count the merges granted in a row while others wait; anything else ends the streak
     others = any(not w.get("merge") for w in st["waiting"])
@@ -3155,8 +3189,9 @@ def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=Non
     without a queue place -- like the merge gate's admission (kit find (h)),
     a caller that never comes back for an offer must not hold one.
     `release_tree`: the caller's tree for the release class alone (a second
-    holder `S:n` in the strand's own tree, re-check Kette Minor 2) -- `tree`
-    also keeps a waiter's place and ends a holder whose tree is gone."""
+    holder `S:n` in the strand's own tree, re-check Kette Minor 2; `--strand`
+    from any tree, the rule of `gate --strand`, FR2 m2) -- `tree` also keeps a
+    waiter's place and ends a holder whose tree is gone."""
     _ensure(db)
     ctx = _Ctx(db, _now(now), branch, path)
     key, want = holder, lane or ""
@@ -3194,20 +3229,23 @@ def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=Non
                 if mine.get("lane"):
                     ctx.print("lane %s" % mine["lane"])
                 return ctx.result(0, mine.get("lane"))
-            names = [w["strand"] for w in st["waiting"]]
-            pos = names.index(key) if key in names else len(names)
+            # re-check Kette FR2 m1: a caller not yet queued stands where its
+            # class puts it (`_ahead_of`), not behind every waiter
+            release = _release_class(key, tree or release_tree)
+            ahead = _ahead_of(st, key, release=release)
             free = st["max"] - len(st["holders"])
             got = None
             if st.get("lanes"):
-                left = _lanes_left(st, st["waiting"][:pos])
+                left = _lanes_left(st, ahead)
                 if not want:
                     left = _admission_order(db, left)
                 got = want if want in left else (None if want else (left[0] if left else None))
                 granted = got is not None
             else:
-                granted = pos < free
+                granted = len(ahead) < free
             if granted:
-                entry = _grant(st, ctx, key, got or "", tree, ttl_min=ttl_min, run=run)
+                entry = _grant(st, ctx, key, got or "", tree, ttl_min=ttl_min, run=run,
+                               release=release)
                 entry["hold_min"] = ttl_min  # held on purpose: no idle reclaim
                 _enter_pid(entry, pid)
                 _save(db, st, ctx)
@@ -3221,8 +3259,7 @@ def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=Non
                     ("lane %s is leased to another strand or a waiter ahead" % want) if want
                     else "every lane is leased to another strand or a waiter ahead"))
                 return ctx.result(3)
-            msg = _enqueue(st, ctx, key, want, tree, wait=wait,
-                           release=_release_class(key, tree or release_tree))
+            msg = _enqueue(st, ctx, key, want, tree, wait=wait, release=release)
             _save(db, st, ctx)
             ctx.say(msg)
             return ctx.result(3)
@@ -3756,9 +3793,10 @@ def _run_verb(argv, env, cwd):
             res = lease_take(db, key, lane=opts["lane"] or None, ttl=opts["ttl"],
                              tree=tree if branch == key else "", now=now, branch=branch,
                              path=db_path, wait=opts["wait"], pid=opts["pid"],
-                             # re-check Kette Minor 2: `--holder <n>` in the strand's
-                             # own tree keeps the release class of the strand
-                             release_tree=tree if branch == key.split(":", 1)[0] else "")
+                             # re-check Kette Minor 2 / FR2 m2: the class reads the
+                             # strand file in the caller's tree -- any tree, like
+                             # `gate --strand`; the place keeps `tree` alone
+                             release_tree=tree)
     finally:
         db.close()
     if res.code == 0 and verb in WAKE_VERBS:

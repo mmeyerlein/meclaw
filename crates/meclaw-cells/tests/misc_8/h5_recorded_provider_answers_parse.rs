@@ -14,6 +14,12 @@
 //! named in `EXPECTED_RED` with the `meta.error.kind` they must produce, so
 //! every validation rule of the cell is replayed from a file as well. At least
 //! one recording must exist, or the replay proves nothing.
+//!
+//! GH #1243: a recording of the native Messages wire (`"type": "message"`,
+//! the `claude-haiku-5-5` row) replays through a cell born with
+//! `provider: "anthropic"`; its `stop_reason`, `usage` and `thinking` blocks
+//! stand where the chat wire has `finish_reason`, `prompt_tokens` and the
+//! trace fields.
 
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
@@ -77,6 +83,47 @@ fn recordings() -> Vec<(String, PathBuf)> {
 /// the turn -- read as a trace it made the replay red for a correct cell.
 const TRACE_LABELS: &[&str] = &["id", "type", "format", "index"];
 
+/// GH #1243: a native answer in the chat wire's message form -- its text
+/// blocks as `content`, its `tool_use` blocks as `tool_calls`, its thinking
+/// blocks under the first trace field -- so the same checks read it.
+fn native_message(answer: &Value) -> Value {
+    let blocks = |kind: &str| -> Vec<Value> {
+        answer["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == kind)
+            .cloned()
+            .collect()
+    };
+    let text: String = blocks("text")
+        .iter()
+        .filter_map(|b| b["text"].as_str().map(str::to_string))
+        .collect();
+    let thinking: Vec<Value> = blocks("thinking")
+        .iter()
+        .map(|b| b["thinking"].clone())
+        .collect();
+    let mut message = serde_json::Map::new();
+    message.insert("content".to_string(), Value::String(text));
+    message.insert("tool_calls".to_string(), Value::Array(blocks("tool_use")));
+    message.insert(TRACE_FIELDS[0].to_string(), Value::Array(thinking));
+    Value::Object(message)
+}
+
+/// GH #1243: the native `stop_reason` in the chat wire's terms, as the cell
+/// maps it (`translate_anthropic::parse_messages_response`).
+fn native_finish(answer: &Value) -> String {
+    match answer["stop_reason"].as_str().unwrap_or("") {
+        "end_turn" | "stop_sequence" => "stop",
+        "max_tokens" | "model_context_window_exceeded" => "length",
+        "tool_use" => "tool_calls",
+        "refusal" => "content_filter",
+        other => other,
+    }
+    .to_string()
+}
+
 /// Every non-empty string a thinking field holds (the trace text itself).
 fn trace_texts(v: &Value, out: &mut Vec<String>) {
     match v {
@@ -128,12 +175,23 @@ async fn h5_recorded_provider_answers_parse() {
     for (rel, path) in files {
         let raw = std::fs::read(&path).unwrap();
         let answer: Value = serde_json::from_slice(&raw).expect("a json recording");
-        let message = &answer["choices"][0]["message"];
-        let finish = answer["choices"][0]["finish_reason"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let t = h5::one_turn(MockResponse::ok_json(&raw), serde_json::json!({})).await;
+        let native = answer["type"] == "message";
+        let (message, finish, extra) = if native {
+            (
+                native_message(&answer),
+                native_finish(&answer),
+                serde_json::json!({"provider": "anthropic"}),
+            )
+        } else {
+            let finish = answer["choices"][0]["finish_reason"].as_str().unwrap_or("");
+            (
+                answer["choices"][0]["message"].clone(),
+                finish.to_string(),
+                serde_json::json!({}),
+            )
+        };
+        let message = &message;
+        let t = h5::one_turn(MockResponse::ok_json(&raw), extra).await;
 
         let expected_red = EXPECTED_RED
             .iter()
@@ -153,7 +211,19 @@ async fn h5_recorded_provider_answers_parse() {
             finish.as_str()
         };
         assert_eq!(t.hop["finish_reason"], mapped, "{rel}");
-        if let Some(n) = answer["usage"]["prompt_tokens"].as_u64() {
+        let prompt = if native {
+            [
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            ]
+            .iter()
+            .map(|k| answer["usage"][*k].as_u64())
+            .sum::<Option<u64>>()
+        } else {
+            answer["usage"]["prompt_tokens"].as_u64()
+        };
+        if let Some(n) = prompt {
             assert_eq!(t.hop["tokens_prompt"], n, "{rel}: {:?}", t.hop);
         }
         let mut traces = Vec::new();

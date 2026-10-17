@@ -833,6 +833,15 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
             v["params"]["model"] = json!("gpt-4o-mock");
         },
     );
+    // GH #1248: talky's quick voice is an `llm` cell on the same `${ctx.model}`
+    // start value as the brain; a tree booted from disk carries a literal. Only
+    // a composite that ships one has it -- cogny speaks through its brain alone.
+    if templates_root().join(composite).join("quick").is_dir() {
+        patch(root, &format!("main/{composite}/quick/config.json"), |v| {
+            v["params"]["base_url"] = json!(base_url);
+            v["params"]["model"] = json!("gpt-4o-mock");
+        });
+    }
 }
 
 /// A `code` stand-in for a tool occupant this file never calls.
@@ -955,6 +964,43 @@ fn ledger_tools(td: &tempfile::TempDir, composite: &str) -> Vec<String> {
     names.into_iter().collect()
 }
 
+/// The names a folded menu carries for these flat names (GH #1244/#1246): a
+/// family is the first name segment (`file_ws` its own), it needs two members,
+/// and a tool with its own `op` stays single; a single tool named like a family
+/// gives way to it.
+fn folded_names(flat: &[String], own_op: &BTreeSet<String>) -> Vec<String> {
+    let family = |n: &str| -> Option<String> {
+        if own_op.contains(n) {
+            return None;
+        }
+        if let Some(rest) = n.strip_prefix("file_ws_") {
+            return (!rest.is_empty()).then(|| "file_ws".to_string());
+        }
+        n.split_once('_')
+            .filter(|(h, r)| !h.is_empty() && !r.is_empty())
+            .map(|(h, _)| h.to_string())
+    };
+    let mut count = std::collections::BTreeMap::new();
+    for n in flat {
+        if let Some(f) = family(n) {
+            *count.entry(f).or_insert(0usize) += 1;
+        }
+    }
+    let mut out = BTreeSet::new();
+    for n in flat {
+        match family(n) {
+            Some(f) if count[&f] >= 2 => {
+                out.insert(f);
+            }
+            _ if count.get(n).is_some_and(|c| *c >= 2) => {}
+            _ => {
+                out.insert(n.clone());
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// Poll until the menu has landed. 30s is the failure-marker convention; the
 /// tick itself is a second away, and the 20ms step only decides how fast a
 /// green test finishes.
@@ -975,7 +1021,7 @@ async fn await_menu(td: &tempfile::TempDir, composite: &str, at_least: usize) ->
 /// Claim 6. The shipped talky, beside the shipped tools hive, wired with the
 /// pair the assistant level draws: the tick fires by itself and exactly the two
 /// declared schemas become durable state of the agent (its curator's ledger
-/// since GH #889).
+/// since GH #889), as their one family since talky folds (GH #1248).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_talky_asks_for_its_two_tools_and_gets_exactly_those_two() {
     let (Some(_), Some(_)) = (shipped("talky"), shipped("tools")) else {
@@ -992,11 +1038,21 @@ async fn a_talky_asks_for_its_two_tools_and_gets_exactly_those_two() {
     let (_h, _park) = boot(&td).await;
 
     // Two, and nothing held out: since GH #889 the collector serves no tool of
-    // its own, so what lands is exactly what the hive answered.
-    let names = await_menu(&td, "talky", 2).await;
+    // its own, so what lands is exactly what the hive answered. T5-11 (GH
+    // #1248): talky folds its menu like the core, so the two land as their
+    // family -- the collector's rule applied to the two declared names.
+    let declared = ["web_search".to_string(), "web_fetch".to_string()];
+    let own_op: BTreeSet<String> = ask_the_hive(&json!(declared))["schemas"]
+        .as_array()
+        .expect("schemas")
+        .iter()
+        .filter(|s| s["parameters"]["properties"].get("op").is_some())
+        .filter_map(|s| s["name"].as_str().map(str::to_string))
+        .collect();
+    let want = folded_names(&declared, &own_op);
+    let names = await_menu(&td, "talky", want.len()).await;
     assert_eq!(
-        names,
-        vec!["web_fetch".to_string(), "web_search".to_string()],
+        names, want,
         "a cell that uses tools declares them, and it gets the ones it declared — not \
          the hive's whole catalogue, and not a list somebody typed into its prompt"
     );
@@ -1033,6 +1089,16 @@ async fn a_cogny_asks_for_everything_and_its_brain_gets_it() {
     let mut want = everything.clone();
     want.extend(curator_offer());
     want.push("ask_requester".to_string());
+    // T5-10 (GH #1246): the core folds its menu, so its ledger holds the
+    // families of the union -- the collector's rule applied to the flat names.
+    let own_op: BTreeSet<String> = ask_the_hive(&json!(["*"]))["schemas"]
+        .as_array()
+        .expect("schemas")
+        .iter()
+        .filter(|s| s["parameters"]["properties"].get("op").is_some())
+        .filter_map(|s| s["name"].as_str().map(str::to_string))
+        .collect();
+    let mut want = folded_names(&want, &own_op);
     want.sort();
     let names = await_menu(&td, "cogny", want.len()).await;
     assert_eq!(

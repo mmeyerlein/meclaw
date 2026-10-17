@@ -1,7 +1,6 @@
 //! Test harness `misc_5` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh518_a_german_query_keeps_its_umlauts;
 pub mod gh519_an_episode_gets_a_vector;
 pub mod gh520_from_an_entity_to_a_fact;
 pub mod gh522_a_chat_is_a_generation_and_a_node_is_an_address;
@@ -59,6 +58,8 @@ pub mod gh682_the_screens_children_can_be_replaced_twice;
 pub mod gh691_duplicate_episodes_fold_in_the_query_legs;
 pub mod gh691_the_dossier_budget_counts_axes_not_rows;
 pub mod gh694_an_application_brings_its_own_tile;
+pub mod gh694_one_canvas_and_a_dock;
+pub mod gh694_one_state_many_exits;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../support/mod.rs"]

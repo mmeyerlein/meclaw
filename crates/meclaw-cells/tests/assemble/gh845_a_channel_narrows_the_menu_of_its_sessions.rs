@@ -653,3 +653,58 @@ fn a_session_past_its_prune_keeps_its_scope_and_reports_no_change() {
     assert_eq!(hop_str(curate(&c), "scope_changed"), "0", "{c:?}");
     assert_eq!(curate(&c)["tool_scope"], json!({"deny": ["x"]}));
 }
+
+// ═══════════════════════ 11. the scope in families (GH #1246, T5-05)
+
+/// T5-05: with the fold on, the model sees ONE tool per family, so a scope
+/// stated in op names would filter every family away. The collector reads the
+/// menu store beside the session row and translates: a family stays when one of
+/// its ops is allowed, falls only when every op is denied, and a hint names the
+/// families the `llm` cell sends at hint level (T5-13).
+#[test]
+fn a_scope_in_op_names_reaches_the_brain_in_families_with_its_hint() {
+    let fold = [("fold_tools", json!("1"))];
+    let opened = run_cell(
+        ASSEMBLE,
+        &fold,
+        turn(TURN, json!({"tools_allow": "x"}), "hello"),
+    )
+    .0;
+    let menu_leg = call(in_phase(&opened, "turn-open"), "c-open-menu");
+    assert_eq!(menu_leg["table"], "menu", "{menu_leg}");
+
+    let tool = |n: &str| {
+        json!({"type": "function",
+               "function": {"name": n, "description": format!("{n}."),
+                            "parameters": {"type": "object", "properties": {}}}})
+    };
+    let menu = json!([{"answerer": "tools", "tools": [
+        tool("file_read"), tool("file_write"), tool("web_search"), tool("web_fetch"),
+        tool("bash"), tool("orga_find"), tool("orga_note")]}]);
+    let mut reply = turn_open(
+        TURN,
+        json!([session_row(
+            json!(["file_read", "bash", "orga_find"]),
+            json!(["web_search", "web_fetch", "file_write"])
+        )]),
+        None,
+        "hello",
+    );
+    reply["messages"].as_array_mut().unwrap().push(
+        json!({"origin": "tool", "type": "tool_result", "id": "c-open-menu",
+                     "text": menu.to_string()}),
+    );
+    reply["results"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"tool_call_id": "c-open-menu", "operation": "select"}));
+    reply["header"]["context"]["tools_hint"] = json!("orga_note");
+    let (b, _) = run_cell(ASSEMBLE, &fold, reply);
+    let c = collect(TURN, window_row(&b));
+    assert_eq!(
+        curate(&c)["tool_scope"],
+        json!({"allow": ["file", "bash", "orga"], "deny": ["web"], "hint": ["orga"]}),
+        "one allowed op keeps its family, a partly denied family stays, a wholly denied \
+         one falls, the hint is a family: {c:?}"
+    );
+}

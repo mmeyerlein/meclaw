@@ -208,12 +208,13 @@ def graph_tests(ix, rel):
     # built before) counts as crate-relative.
     crate = gate_plan._crate_of(rel)
     fixture = not crate or (rel.split("/")[2:3] == ["tests"] and not rel.endswith(".rs"))
+    # What a walk reads is the reader's (`runtime_dir_applies` per unit: the
+    # unit of `bin:<crate>::<unit>`), as in `_runtime_readers`.
     for d in gate_plan.runtime_ancestors(rel):
-        if not gate_plan.runtime_dir_applies(d, rel):
-            continue
         for e in ix.inc.get("dir:%s" % d, ()):
             if e["kind"] == "reads" and e["from"].startswith("bin:") and (
-                    fixture or (e.get("data") or {}).get("form") == "repo"):
+                    fixture or (e.get("data") or {}).get("form") == "repo") and \
+                    gate_plan.runtime_dir_applies(d, rel, e["from"].split("::", 1)[-1]):
                 out[e["from"]].add("graph:reads dir:%s" % d)
     parts = rel.split("/")
     if parts[0] in ("templates", "examples") and len(parts) >= 3:

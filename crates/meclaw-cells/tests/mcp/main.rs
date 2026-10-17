@@ -2,6 +2,8 @@
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
 pub mod fitness_mcp;
+#[path = "../support/gh1059_grants.rs"]
+pub mod gh1059_grants;
 pub mod gh268_the_shipped_mcp_token_reaches_the_wire;
 pub mod gh489_an_unnamed_mcp_provider_is_idle_not_failed;
 pub mod gh96_mcp_sandbox_profile;

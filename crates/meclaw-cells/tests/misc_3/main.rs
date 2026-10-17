@@ -1,6 +1,8 @@
 //! Test harness `misc_3` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod gh298_the_batch_lane_is_gone;
+pub mod gh298_the_queue_is_an_exception_list;
 pub mod gh299_the_contract_asks_for_both_parts;
 pub mod gh300_the_close_pass_has_a_lane;
 pub mod gh300_the_close_pass_reads_the_whole_session;
@@ -55,6 +57,5 @@ pub mod gh449_the_hardline_is_not_a_row;
 pub mod gh450_a_turn_can_wait_for_a_person;
 pub mod gh453_the_seeded_subscription_pushes_after_subscribe;
 pub mod gh454_two_assistants_one_channel;
-pub mod gh506_an_unreadable_rule_row_does_not_close_the_lane;
 #[path = "../support_14b.rs"]
 pub mod support;

@@ -241,10 +241,20 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
             v["params"]["model"] = json!("summarizer-mock");
         });
     }
+    // GH #1248: talky's quick voice is a third `llm` cell on `${ctx.model}`,
+    // pointed at the closed port as well.
+    if root.join(QUICK).is_file() {
+        patch(root, QUICK, |v| {
+            v["params"]["base_url"] = json!(CLOSED_PORT);
+            v["params"]["model"] = json!("quick-mock");
+        });
+    }
 }
 
 /// The curator's summarizer inside the copied talky (`curator@1.0.0`, GH #888).
 const SUMMARIZER: &str = "main/talky/curator/summarizer/config.json";
+/// The quick voice inside the copied talky (GH #1248).
+const QUICK: &str = "main/talky/quick/config.json";
 /// An endpoint nothing listens on: a call there fails at once and costs nothing.
 const CLOSED_PORT: &str = "http://127.0.0.1:9/v1";
 

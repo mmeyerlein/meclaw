@@ -603,7 +603,11 @@ fn the_declared_lane_is_the_one_the_script_writes() {
          `multi_send_not_declared`: {cfg}"
     );
     let hop = &cfg["contract"]["emits"]["hop"];
-    assert_eq!(hop["route"]["values"], serde_json::json!(["sidecar"]));
+    // GH #1255: the sent answer leaves for its declared checker on its own lane.
+    assert_eq!(
+        hop["route"]["values"],
+        serde_json::json!(["sidecar", "answer_check"])
+    );
     assert_eq!(
         hop["route"]["required"], false,
         "a pass-through routes nothing"

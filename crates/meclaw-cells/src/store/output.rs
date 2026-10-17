@@ -199,6 +199,29 @@ pub fn build_bundle_result(
     (body, headers)
 }
 
+/// #1233 (T6-08): the body a store answers on its seed lane — one
+/// `seed_receipt` slot, which the mutation door reads to release its answer.
+pub(crate) fn seed_receipt_body(receipt: Map<String, Value>) -> Value {
+    let mut body = Map::new();
+    // A cell emission is checked as a universal body (`messages` is what makes
+    // it one); the receipt rides beside it as a store-specific top-level slot.
+    body.insert("messages".into(), Value::Array(Vec::new()));
+    // Every store reply names its op in the hop header — the shipped store
+    // contracts require `hop.operation` of every emission, and a reply the
+    // central emits check drops never reaches the door.
+    let mut header = Map::new();
+    header.insert(
+        "operation".into(),
+        Value::String(meclaw_colony::mutation::seed_rows::LANE_SLOT.into()),
+    );
+    body.insert("header".into(), Value::Object(header));
+    body.insert(
+        meclaw_colony::mutation::seed_rows::RECEIPT_SLOT.into(),
+        Value::Object(receipt),
+    );
+    Value::Object(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

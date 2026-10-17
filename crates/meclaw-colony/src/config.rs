@@ -85,6 +85,7 @@ impl From<ContractBlock> for ContractView {
             transfer: c.transfer,
             transfer_base_path: None,
             ingress_carries_trace: c.ingress.carries_trace,
+            drain: crate::DrainView::default(),
         }
     }
 }

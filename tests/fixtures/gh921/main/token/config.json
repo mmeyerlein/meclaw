@@ -7,7 +7,7 @@
     "mount": "probe-token",
     "verify": {
       "kind": "token",
-      "secret": "${PROBE_TOKEN_SECRET}",
+      "secret_grant_id": "grant:probe-token@colony-test/token",
       "header": "X-Probe-Token"
     },
     "headers_allow": [

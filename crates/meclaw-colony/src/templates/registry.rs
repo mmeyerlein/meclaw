@@ -36,6 +36,12 @@ pub struct TemplatesRegistry {
         PathBuf,
         Result<crate::mutation::subtree::SubtreeTemplate, crate::mutation::MutationError>,
     >,
+    /// GH #1236 (re-check H2b C-1): the provenance stamp of every registered
+    /// node the colony's registry book holds (`colony.db` `registry`, written
+    /// by `SetRegistryProvenance`), keyed by node path. A model twin's library
+    /// seed is found from here, not from the original's `config.json`.
+    /// Filled only on the per-mutation snapshot; empty everywhere else.
+    instances: std::collections::HashMap<meclaw_core::Path, crate::config::NodeProvenance>,
 }
 
 /// Error returned by [`TemplatesRegistry::resolve`].
@@ -55,7 +61,43 @@ impl TemplatesRegistry {
         Self {
             entries,
             subtrees: std::collections::HashMap::new(),
+            instances: std::collections::HashMap::new(),
         }
+    }
+
+    /// GH #440: this snapshot plus the classes a mutation just `registered`,
+    /// built anew like [`Self::from_entries`] (no parsed subtrees). GH #1236
+    /// (re-check H2b D-I-1): the registry book's provenance stamps stay --
+    /// rebuilt from the entries alone, a swap after an `add_templates` (same
+    /// diff, or an earlier entry of the same manifest) found no stamp and its
+    /// twin took the drifted `seed/` in the original's directory (GH #1250).
+    pub(crate) fn with_registered(
+        self,
+        registered: impl IntoIterator<Item = TemplateEntry>,
+    ) -> Self {
+        Self {
+            entries: self.entries.into_iter().chain(registered).collect(),
+            subtrees: std::collections::HashMap::new(),
+            instances: self.instances,
+        }
+    }
+
+    /// GH #1236 (C-1): keep the registry book's provenance stamps on this
+    /// per-mutation snapshot (see [`crate::mutation::twin::registry_book`]).
+    pub(crate) fn keep_instance_provenance(
+        &mut self,
+        rows: Vec<(meclaw_core::Path, crate::config::NodeProvenance)>,
+    ) {
+        self.instances.extend(rows);
+    }
+
+    /// GH #1236 (C-1): the provenance stamp the registry book holds for the
+    /// node at `path`, `None` for one it holds none for.
+    pub(crate) fn instance_provenance(
+        &self,
+        path: &meclaw_core::Path,
+    ) -> Option<&crate::config::NodeProvenance> {
+        self.instances.get(path)
     }
 
     /// GH #1193: the parse of the template tree at `template_root` this

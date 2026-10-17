@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "alex",
-        "template": "member@2.5.32",
+        "template": "member@2.6.0",
         "override_params": {
           "access/vault": {
             "key_source": "plainfile",

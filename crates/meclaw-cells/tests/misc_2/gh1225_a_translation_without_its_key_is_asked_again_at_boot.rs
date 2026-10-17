@@ -14,6 +14,9 @@
 //! | the real translator's denied round is an `auth` failure, and the hand keeps exactly that one waiting, with a mark | [`a_denied_credential_round_is_kept_waiting_and_a_wire_failure_is_not`] |
 //! | only an announcement of a BOOT receipt reads the waiting questions, and it stamps them in the same bundle, so each is asked once per boot | [`only_a_boot_reads_the_waiting_questions_and_asks_each_once_per_boot`] |
 //! | the last page of a boot's retry forgets only the questions no page of that run asked | [`a_paged_boot_retry_forgets_only_what_no_page_asked`] |
+//! | ...nor one an earlier page found held open by another op and so did not ask | [`a_paged_boot_retry_keeps_what_an_earlier_page_found_held_open`] |
+//! | a boot drops the claims an earlier run held on the questions it asks, before its world read (F-KL-1) | [`a_boot_takes_over_the_claims_of_its_waiting_questions`] |
+//! | a key that arrives after its round's deadline reads the waiting questions like a boot; a box of an earlier process stays on the boot road (F-KL-1) | [`a_key_that_arrives_late_asks_the_waiting_questions_again`] |
 //! | an empty vault at birth, a boot that is still without the key (stays open, marked twice), a boot with it (`in_model` arrives, the brain runs the answer), and a boot after that asks nothing -- each boot over the colony's own boot receipt, announced twice as the shell does, starting one retry | [`a_translation_without_its_key_is_asked_again_at_the_next_boot`] |
 //! | a translation that failed for another reason is not asked at boot | [`a_translation_that_failed_otherwise_is_not_asked_at_boot`] |
 //! | the shell's boot receipt reaches the hand with its `form` | [`the_shells_announcement_keeps_the_receipts_form`] |
@@ -420,6 +423,219 @@ fn a_paged_boot_retry_forgets_only_what_no_page_asked() {
     assert_eq!(forgotten, vec!["r-gone".to_string()], "{ops:?}");
 }
 
+/// One page of a boot's retry as the store answers its read, the page bound at
+/// one subscriber: a catalogue of one model, the page's subscribers, and per
+/// requirement of the page its three reads -- no translation for this
+/// catalogue, none of any, and the open question of another op where `open`.
+fn boot_retry_page(cmd: &Value, subs: &[Value], open: &[bool]) -> Value {
+    let model = json!({"model_id": FAST, "provider": "gateway", "base_url": "", "wire_dialect": "",
+                       "context_window": 32000, "cost_in": 1, "cost_out": 1,
+                       "caps": {"tools": true}, "traits": {}, "strengths": "quick",
+                       "status": "active", "note": "", "package": {}, "prompt": ""});
+    let mut results = vec![
+        json!([model]),
+        json!([]),
+        json!([]),
+        Value::Array(subs.to_vec()),
+    ];
+    for held in open {
+        results.push(json!([]));
+        results.push(json!([]));
+        results.push(if *held {
+            json!([{"claim": "another-op"}])
+        } else {
+            json!([])
+        });
+    }
+    json!({
+        "params": {"subscriber_rows": 1},
+        "header": {
+            "hop": {"operation": "bundle", "rows_affected": 0, "bundle_errors": 0},
+            "context": {"lr_phase": "world", "lr_carry": json!({"cmd": cmd}).to_string()},
+        },
+        "messages": results.iter().enumerate()
+            .map(|(i, r)| json!({"origin": "tool", "type": "tool_result", "id": format!("w{i}"),
+                                 "text": r.to_string()}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn forgotten_waits(ops: &[Value]) -> Vec<String> {
+    let mut out: Vec<String> = ops
+        .iter()
+        .filter(|o| o["operation"] == "delete" && o["table"] == "credential_waits")
+        .map(|o| {
+            o["where"]["requirement_hash"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// A page of a boot's retry that finds a waiting question held open by another
+/// op does not ask it -- that op's answer or failure is still to come. The
+/// question was found all the same, so the last page, where it is no longer,
+/// keeps its row and `tries`; only the one no page found is forgotten.
+#[test]
+fn a_paged_boot_retry_keeps_what_an_earlier_page_found_held_open() {
+    let Some(root) = registry_root() else {
+        return;
+    };
+    let trace = "0192a000-0000-7000-8000-000000000003";
+    let cmd = json!({
+        "op": "retranslate", "internal": true, "actor": "boot", "tier": "", "model_id": "",
+        "call_id": "", "only": ["r-gone", "r-held"], "boot": trace,
+        "tries": {"r-gone": 1, "r-held": 1}, "page": 1,
+        "probe": {"page": 1, "ch": "c", "rhs": ["r-held"], "ids": [FAST],
+                  "cutoff": "2000-01-01T00:00:00Z"},
+    });
+    let sub = json!({"cell_path": "/gen/a", "tier": "", "pinned": 0, "start_model": BIRTH,
+                     "package_hash": "", "model_id": "", "rank": "", "reason": "", "since": "",
+                     "requirement": R_TALK, "requirement_hash": "r-held"});
+
+    // The first page is full and holds the question another op asked: not
+    // asked again, nothing forgotten, and the next page is read.
+    let out = run_hand(&root, boot_retry_page(&cmd, &[sub], &[true]));
+    let ops = store_ops(&out);
+    assert!(
+        !ops.iter()
+            .any(|o| o["operation"] == "insert" && o["table"] == "open_questions"),
+        "a question another op holds open is not asked again: {ops:?}"
+    );
+    assert_eq!(forgotten_waits(&ops), Vec::<String>::new(), "{ops:?}");
+    let next = out
+        .iter()
+        .find(|m| m["header"]["phase"] == "world")
+        .unwrap_or_else(|| panic!("a full page reads the next one: {out:?}"));
+    let carry: Value =
+        meclaw_core::serde_json::from_str(next["header"]["carry"].as_str().unwrap()).unwrap();
+    assert_eq!(carry["cmd"]["page"], 2, "{carry}");
+
+    // The last page holds no subscriber of either requirement.
+    let ops = store_ops(&run_hand(&root, boot_retry_page(&carry["cmd"], &[], &[])));
+    assert_eq!(forgotten_waits(&ops), vec!["r-gone".to_string()], "{ops:?}");
+}
+
+/// The index of the first output message holding a store op that matches.
+fn first_with(out: &[Value], pred: impl Fn(&Value) -> bool) -> Option<usize> {
+    out.iter()
+        .position(|m| store_ops(std::slice::from_ref(m)).iter().any(&pred))
+}
+
+/// F-KL-1, cause 1: the claims of a run that died. Measured on a production
+/// colony: a boot asked its four waiting questions and claimed them, the
+/// process restarted before the answer, and the claims (open for
+/// `OPEN_QUESTION_SECONDS`) made the next two boots skip all four. A boot
+/// restarted the translator, so a question parked in its RAM did not survive:
+/// the boot drops the claims of exactly the questions it is about to ask,
+/// in a bundle BEFORE its world read, and nothing else.
+#[test]
+fn a_boot_takes_over_the_claims_of_its_waiting_questions() {
+    let Some(root) = registry_root() else {
+        return;
+    };
+    let trace = "0192a000-0000-7000-8000-000000000003";
+    let rows = json!([
+        {"requirement_hash": "r-a", "catalogue_hash": "c", "tries": 1, "asked_boot": "an-older-boot"},
+        {"requirement_hash": "r-b", "catalogue_hash": "c", "tries": 2, "asked_boot": ""},
+        {"requirement_hash": "r-this", "catalogue_hash": "c", "tries": 1, "asked_boot": trace},
+    ]);
+    let out = run_hand(&root, boot_echo(rows, trace));
+    let drop_claims = |o: &Value| o["operation"] == "delete" && o["table"] == "open_questions";
+    let at = first_with(&out, drop_claims)
+        .unwrap_or_else(|| panic!("the boot drops the claims: {out:?}"));
+    let ops = store_ops(std::slice::from_ref(&out[at]));
+    assert_eq!(
+        ops,
+        vec![json!({"operation": "delete", "table": "open_questions",
+                    "where": {"requirement_hash": {"in": ["r-a", "r-b"]}}})],
+        "only the claims of the questions this boot asks: {out:?}"
+    );
+    let world = out
+        .iter()
+        .position(|m| m["header"]["phase"] == "world")
+        .unwrap_or_else(|| panic!("the retry reads its world: {out:?}"));
+    assert!(
+        at < world,
+        "the claims go first, so the world read finds none: {out:?}"
+    );
+
+    // Nothing waiting, or everything already asked by this boot: nothing.
+    assert_eq!(
+        run_hand(&root, boot_echo(json!([]), trace)),
+        Vec::<Value>::new()
+    );
+    let asked = json!([{"requirement_hash": "r-this", "catalogue_hash": "c", "tries": 1,
+                        "asked_boot": trace}]);
+    assert_eq!(
+        run_hand(&root, boot_echo(asked, trace)),
+        Vec::<Value>::new()
+    );
+}
+
+/// F-KL-1, cause 2: the key that arrives after the round's deadline. The
+/// translator (`credential_late_notice`, pinned on the cell in
+/// `llm::cell::tests::gh1225_*`) reports the box once; the hand reads the
+/// waiting questions exactly as a boot does, under a mark of its own, and the
+/// boot path asks them. Nothing is journalled and nothing is written.
+#[test]
+fn a_key_that_arrives_late_asks_the_waiting_questions_again() {
+    let Some(root) = registry_root() else {
+        return;
+    };
+    let carry = json!({"rh": "r1", "ch": "c1", "cid": "claim-1", "requirement": R_TALK});
+    let notice = json!({"messages": [], "meta": {"provider": "openai",
+        "credential": {"outcome": "arrived_late", "grant_id": GRANT}}});
+    let out = run_hand(&root, translated(json!({}), notice, carry.clone()));
+    assert_eq!(out.len(), 1, "one bundle: {out:?}");
+    assert_eq!(out[0]["header"]["phase"], "boot_waits", "{out:?}");
+    let mark =
+        meclaw_core::serde_json::from_str::<Value>(out[0]["header"]["carry"].as_str().unwrap())
+            .unwrap()["boot"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+    assert!(mark.starts_with("credential:") && mark.len() > 11, "{mark}");
+    let ops = store_ops(&out);
+    let unasked = json!({"asked_boot": {"neq": mark}});
+    assert_eq!(ops.len(), 2, "{ops:?}");
+    assert_eq!(ops[0]["operation"], "select", "{ops:?}");
+    assert_eq!(ops[0]["table"], "credential_waits", "{ops:?}");
+    assert_eq!(ops[0]["where"], unasked, "{ops:?}");
+    assert_eq!(ops[1]["operation"], "update", "{ops:?}");
+    assert_eq!(ops[1]["set"], json!({"asked_boot": mark}), "{ops:?}");
+    assert_eq!(ops[1]["where"], unasked, "{ops:?}");
+
+    // Fail-closed: the box of an EARLIER process is refused by the cell (it
+    // cannot open it) and stays on today's road -- journalled, kept waiting
+    // for the next boot, never read as an arrival.
+    let refused = json!({"messages": [], "meta": {"provider": "openai", "error": {
+        "source": "auth", "detail": "a sealed box arrived that this cell never asked for"}}});
+    let out = run_hand(
+        &root,
+        translated(
+            json!({"finish_reason": "error", "error_code": "invalid_input"}),
+            refused,
+            carry,
+        ),
+    );
+    assert!(
+        !out.iter().any(|m| m["header"]["phase"] == "boot_waits"),
+        "{out:?}"
+    );
+    let ops = store_ops(&out);
+    assert_eq!(journalled(&ops, "translation_failed"), 1, "{ops:?}");
+    assert_eq!(
+        journalled(&ops, "translation_awaits_credential"),
+        1,
+        "{ops:?}"
+    );
+    assert_eq!(waits_written(&ops).len(), 1, "{ops:?}");
+}
+
 /// The shell turns every receipt reaching `/os` into the judge's announcement
 /// and restamps only its route, so the boot receipt's `form` arrives.
 #[test]
@@ -667,7 +883,13 @@ fn build_tree(td: &tempfile::TempDir, registry: &std::path::Path, brain_url: &st
         "main/llm_registry/translate/config.json",
         &code_cell(
             TRANSLATOR,
-            json!({"dir": root.to_string_lossy()}),
+            // GH #1235 (T6-16): a `code` cell without `params.sandbox` boots
+            // under the default-deny profile, and the stand-in counts its asks
+            // in the tree's root -- so it declares that one writable directory.
+            json!({"dir": root.to_string_lossy(),
+                   "sandbox": {"trust": "restricted", "network": "deny",
+                               "filesystem": {"runtime": true,
+                                              "write": [root.to_string_lossy()]}}}),
             json!({"finish_reason": {"type": "string", "required": true},
                "error_code": {"type": "string", "required": false}}),
         ),

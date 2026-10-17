@@ -8,6 +8,7 @@ pub mod fitness_file;
 pub mod fitness_harness;
 pub mod gh1059_the_start_ask_is_the_rounds_ask;
 pub mod gh1092_a_denied_credential_round_is_answered_at_once;
+pub mod gh1252_a_foreign_box_leaves_the_round_alone;
 pub mod gh342_the_shipped_judge_tool_reaches_the_wire;
 pub mod gh372_an_async_only_round_still_answers;
 pub mod gh425_the_build_tool_closes_its_own_round;

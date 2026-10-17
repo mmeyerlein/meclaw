@@ -195,15 +195,15 @@ impl WebhookParams {
                     (true, true) => {
                         return Err(format!(
                             "verify.secret_grant_id: not together with verify.secret (kind {:?}); \
-                             the secret comes either sealed from the vault or from ${{VAR}}, \
-                             never both",
+                             the secret comes sealed from the vault under the grant, never from \
+                             a second source",
                             kind.as_str()
                         ));
                     }
                     (false, false) => {
                         return Err(format!(
                             "verify.secret: required with kind {:?} (name a credential grant in \
-                             verify.secret_grant_id, or write it as ${{VAR}})",
+                             verify.secret_grant_id)",
                             kind.as_str()
                         ));
                     }
@@ -313,27 +313,26 @@ pub fn refuse_params_update() -> String {
     )
 }
 
-/// `verify.secret` as the FILE declares it, before any `${VAR}` is bound:
-/// exactly one `${NAME}` token without a default, as for the `meclaw`
-/// platform's `auth` (`crate::proxy::meclaw::params::validate_declared`). A
-/// literal would put the secret on disk and into every export of the tree.
-/// The refusal names the key and never the value.
+/// `verify.secret` as the FILE declares it, before any `${VAR}` is bound: not
+/// at all. A literal would put the secret on disk and into every export of the
+/// tree (GH #921), and since GH #1235 a `${VAR}` is refused too -- the secret
+/// comes sealed under `verify.secret_grant_id`. The refusal names the key and
+/// never the value.
 pub fn validate_declared(declared: &JsonValue) -> Result<(), String> {
     let Some(secret) = declared.get("verify").and_then(|v| v.get("secret")) else {
         return Ok(());
     };
-    if secret
-        .as_str()
-        .is_some_and(crate::proxy::meclaw::params::is_env_token)
-    {
-        Ok(())
-    } else {
-        Err(
-            "verify.secret: a secret is written as ${VAR} and bound from the environment, \
-             never as a value in config.json; the value is not echoed"
-                .to_string(),
-        )
+    // GH #1235 (T6-22): no `${VAR}` either -- the secret comes sealed under
+    // `verify.secret_grant_id` only.
+    if secret.is_null() {
+        return Ok(());
     }
+    Err(
+        "verify.secret: a secret comes sealed from the vault -- name a credential grant in \
+         verify.secret_grant_id, neither a value nor ${VAR} in config.json; the value is not \
+         echoed"
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -527,14 +526,13 @@ mod tests {
         assert!(d.contains("<redacted>"), "{d}");
     }
 
-    /// The file form: exactly one `${VAR}` without a default.
+    /// The file form (GH #1235, T6-22): no `verify.secret` at all -- neither a
+    /// literal nor `${VAR}`; the grant is the source.
     #[test]
-    fn the_declared_secret_must_be_one_env_token() {
-        for ok in [json!("${PROBE_SECRET}"), json!("${_X1}")] {
-            let v = with(&["verify", "secret"], ok.clone());
-            assert_eq!(validate_declared(&v), Ok(()), "{ok}");
-        }
+    fn the_declared_secret_is_refused_in_every_form() {
         for bad in [
+            json!("${PROBE_SECRET}"),
+            json!("${_X1}"),
             json!(SECRET),
             json!("${PROBE_SECRET:-fallback}"),
             json!("x${PROBE_SECRET}"),

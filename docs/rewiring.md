@@ -54,6 +54,39 @@ The `diff` knows nine operations and only those nine: `add_nodes`,
 refusal, never a silent no-op, and the refusal names the key and the legal
 vocabulary before anything is written.
 
+Since #1233, `seed_rows` for a running store travel as a message on its seed
+lane, and the store writes them itself. The door answers `committed` only once
+every such store has sent its receipt; the receipts, digest included, then sit in
+the `mutation_log` row under `seed_receipts`. A reader right after `committed`
+sees the rows. A store that sends no receipt within its `cell.message_timeout`
+leaves an entry with `error_code: "seed_receipt_timeout"` there instead, and the
+answer stays `committed`.
+
+Since #1236, the model twin of a `swap_nodes` (an `llm` cell put in place of an
+`llm` cell, GH #1034) gets the original's state by message as well. The colony
+opens neither `cell.db` and does not read the original's `config.json` either
+(it knows type and provenance from its registry): it gives the twin
+`handover_wait_ms`, unless the template or the override names the key, from the
+twin's own config: its effective backstop (`cell.message_timeout`, else the
+colony default `message_timeout_default_ms`, raised by the timeout chain of
+[cell types](cell-types.md)), without a backstop `external_timeout_ms` × (1 +
+`length_continuations`) plus the margin -- the bound of one inference turn, which
+covers a turn of the original still running at the swap.
+Before the swap makes the original inactive, it sends the original `{"handover": {"operation": "export"}}` with the
+twin as `reply_to`. The original answers on its own connection, behind whatever
+its mailbox already held, and then parks by its idle timeout instead of being
+stopped. The twin parks its turns until it has imported the answer: the
+original's `system` rows (a newer row wins per slot) and its running budget.
+
+The wait covers exactly one turn. When the original's mailbox holds more than
+one turn at the swap, the handover can come after the wait has elapsed. When the
+twin is swapped on while it still waits (A→B→C), B answers the `export` at once
+with its own state, and A's handover reaches the inactive B. Either way the twin
+runs on without the inheritance and writes a `WARN` line. To inherit for sure,
+swap an original at rest, and swap a twin on only after its import. An original
+that an earlier entry of the same manifest created has no provenance stamp yet in
+that manifest's snapshot; its twin gets the `seed/` in the original's directory.
+
 Edge endpoints are paths relative to the `scope`, at any depth, and `.` names
 the scope root itself (GH #487). `{"from": "./telegram", "to": "."}` is
 therefore the lane that leaves the level, and `{"from": ".", "to": "./talky"}`
@@ -418,7 +451,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.2.1",
        "override_params": {"bot_token_grant_id": "grant:telegram-bot@<subject>/channels-telegram"}},
-      {"name": "talky", "template": "talky@6.8.1"}
+      {"name": "talky", "template": "talky@6.9.0"}
     ]
   }
 }

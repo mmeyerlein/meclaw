@@ -1,7 +1,7 @@
 {
-  "id": "gen-1791182188-deq9Q4NdKhJFLVzgi0Ks",
+  "id": "gen-1792177544-70CnNIQntmP3XxEDVutj",
   "object": "chat.completion",
-  "created": 1791182188,
+  "created": 1792177544,
   "model": "qwen/qwen3.8-flash",
   "provider": "Alibaba",
   "system_fingerprint": null,
@@ -10,17 +10,17 @@
     {
       "index": 0,
       "logprobs": null,
-      "finish_reason": "stop",
-      "native_finish_reason": "stop",
+      "finish_reason": "length",
+      "native_finish_reason": "length",
       "message": {
         "role": "assistant",
-        "content": "Pong.",
+        "content": null,
         "refusal": null,
-        "reasoning": "We need to respond to user \"Ping.\" Need final answer. Could reply \"Pong.\" Likely.",
+        "reasoning": "Thinking:\n\n1.  **Analyze the Request:**\n    *   User input: \"Ping.\"\n    *   System prompt constraint: \"Answer with the single word OK.\"\n\n2.  **Evaluate constraints:**\n    *   The output *must* be exactly \"OK\".\n    *  ",
         "reasoning_details": [
           {
             "type": "reasoning.text",
-            "text": "We need to respond to user \"Ping.\" Need final answer. Could reply \"Pong.\" Likely.",
+            "text": "Thinking:\n\n1.  **Analyze the Request:**\n    *   User input: \"Ping.\"\n    *   System prompt constraint: \"Answer with the single word OK.\"\n\n2.  **Evaluate constraints:**\n    *   The output *must* be exactly \"OK\".\n    *  ",
             "format": "unknown",
             "index": 0
           }
@@ -30,9 +30,9 @@
   ],
   "usage": {
     "prompt_tokens": 62,
-    "completion_tokens": 27,
-    "total_tokens": 89,
-    "cost": 2.17701e-05,
+    "completion_tokens": 64,
+    "total_tokens": 126,
+    "cost": 3.89862e-05,
     "is_byok": false,
     "prompt_tokens_details": {
       "cached_tokens": 0,
@@ -41,12 +41,12 @@
       "video_tokens": 0
     },
     "cost_details": {
-      "upstream_inference_cost": 2.199e-05,
+      "upstream_inference_cost": 3.938e-05,
       "upstream_inference_prompt_cost": 9.3e-06,
-      "upstream_inference_completions_cost": 1.269e-05
+      "upstream_inference_completions_cost": 3.008e-05
     },
     "completion_tokens_details": {
-      "reasoning_tokens": 21,
+      "reasoning_tokens": 64,
       "image_tokens": 0,
       "audio_tokens": 0
     }

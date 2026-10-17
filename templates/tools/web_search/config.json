@@ -77,7 +77,7 @@
   },
   "description": {
     "purpose": "Queries a generic search endpoint and emits the result list as one tool_result turn.",
-    "use_when": "The `web_search` occupant of a tools hive, reached on hop.tool_name == 'web_search'. The endpoint must speak the generic {results:[...]} shape -- front a provider with a shim if it does not. Both of its values bind late from the environment: SEARCH_ENDPOINT and SEARCH_API_KEY, declared in this template's `requires.env`.",
+    "use_when": "The `web_search` occupant of a tools hive, reached on hop.tool_name == 'web_search'. The endpoint must speak the generic {results:[...]} shape -- front a provider with a shim if it does not. The endpoint binds late from SEARCH_ENDPOINT, declared in this template's `requires.env`; a key, where the endpoint wants one, comes sealed under `credential_grant_id`, never from the environment.",
     "not_in_scope": "No provider adapters, no result ranking, no pagination. A non-conforming response is not an error (result_count 0, body passed through). And NO `params.sandbox`: like `web_fetch` this cell carries none -- egress is its job, and the union this template declares says so out loud rather than leaving it to be discovered.",
     "emits_meaning": "messages[]: one tool_result turn, text = JSON result list (title/url/snippet per hit). hop.result_count: number of hits; error_code only on io_error/timeout/invalid_input.",
     "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {query}.",

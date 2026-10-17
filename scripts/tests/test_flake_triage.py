@@ -1170,6 +1170,18 @@ class PythonClass(unittest.TestCase):
         self.assertEqual(ft.LANE_UNITTEST_ENV, lanes.verdict_env())
         self.assertIn("MECLAW_REQUIRE_BROWSERS", ft.LANE_UNITTEST_ENV)
 
+    def test_a_run_of_a_hyphenated_module_path_counts(self):
+        """v2-r3-cistore: `plans.export-fixtures.<mod>` ids -- the run's status
+        and duration lines named none of them, every pass was NOT RUN."""
+        tid = "plans.export-fixtures.t.C.test_a"
+        text = (f"test_a ({tid}) ... ok\n\nSlowest test durations\n" + "-" * 70 + "\n"
+                f"0.250s     test_a ({tid})\n\n" + "-" * 70 + "\nRan 1 test in 0.3s\n\nOK\n")
+        stats = {}
+        self.assertFalse(ft.merge_unittest_run(stats, text, ["plans.export-fixtures.t.C"]))
+        self.assertIn(tid, stats)
+        self.assertEqual(stats[tid]["runs"], 1, stats)
+        self.assertEqual(stats[tid]["secs"], [0.25], stats)
+
     def test_each_failed_subtest_keeps_its_error_text(self):
         """Re-check tv-kit fix15 H4: two subtests of one test failed; the second
         overwrote the first."""

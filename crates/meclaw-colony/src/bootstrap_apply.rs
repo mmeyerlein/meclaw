@@ -40,15 +40,22 @@ pub async fn apply_bootstrap_plan(
     // resumes as a FirstBoot (idempotent re-apply from the filesystem) instead
     // of panicking on the mixed registry/edges/hive_scopes state. The matching
     // clear runs atomically inside the InitialApply transaction at the end.
-    {
+    //
+    // GH #1253 (review C1): the ack carries the colony's drain view, and the
+    // registry this apply spawns from is wrapped with it here, once, for every
+    // caller of the boot entry. Before, only the colony task's own copy was
+    // wrapped, so every cell declared in the filesystem graph — every
+    // production timer and Telegram proxy — read the never-draining default.
+    let drain = {
         let (ack_tx, ack_rx) = oneshot::channel();
         runtime
             .inbox_tx
             .send(ColonyMsg::BeginInitialApply { ack: ack_tx })
             .await
             .expect("colony inbox closed");
-        ack_rx.await.expect("BeginInitialApply ack");
-    }
+        ack_rx.await.expect("BeginInitialApply ack")
+    };
+    let factories = &crate::with_drain_view(factories.clone(), &drain);
     // GH #437: the growth roots this boot fulfilled with `birth: "inactive"`.
     // Cloned out of the plan before the loop borrows it.
     let born_inactive = plan.born_inactive.clone();
@@ -110,6 +117,8 @@ pub async fn apply_bootstrap_plan(
         let mut contract_view = c.contract_view.clone();
         contract_view.validate_emits =
             resolve_validate_emits(runtime.colony_config.strict_validation);
+        // GH #1234: a relative transfer root lives in this cell's own hive.
+        contract_view.anchor_transfer_root(&c.fs_path);
         // Hardening Slice 1: capture the contract pieces for SetNodeContract
         // BEFORE `spawn_cell` consumes the `ContractView`.
         let nc_emits = contract_view.emits.clone();
@@ -378,6 +387,8 @@ async fn register_inactive_non_spawned(
     // reconnect-respawned eager cell carries the resolved flag.
     let mut contract_view = c.contract_view.clone();
     contract_view.validate_emits = resolve_validate_emits(runtime.colony_config.strict_validation);
+    // GH #1234: a relative transfer root lives in this cell's own hive.
+    contract_view.anchor_transfer_root(&c.fs_path);
     let factory = factories.get(&c.cell_type).cloned();
     // F1-KH2 kind discriminator: declared on the trait, so the kind is known
     // WITHOUT building a task (an eager `spawn_cell` would violate boot-gating,
@@ -1317,7 +1328,7 @@ mod tests {
             while let Some(msg) = inbox_rx.recv().await {
                 match msg {
                     crate::ColonyMsg::BeginInitialApply { ack } => {
-                        let _ = ack.send(());
+                        let _ = ack.send(crate::DrainView::default());
                     }
                     crate::ColonyMsg::InitialApply { ack, .. } => {
                         let _ = ack.send(());

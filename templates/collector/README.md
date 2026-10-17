@@ -1,4 +1,4 @@
-# `collector@5.1.4`
+# `collector@5.2.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -84,6 +84,8 @@ message context.
 | `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `in_briefing` | the member's `affinity`, restamped by the member ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) | becomes the **brief leg** of this turn: affinity's answer to the `brief` this hive raised, parked as text -- its `system` is dropped at the lane. `hop.brief_outcome == 'error'` parks the leg EMPTY. Since `collector@4.3.0` |
+| `in_route` | a route cell of the composite ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)) | becomes the **route leg** of this turn while `route_wait_ms` is above 0: the path the route cell chose, the body slot `stamp` = `{turn_id, path, p, intent, needs, families, duration}` with `hop.turn_id` and `hop.path` beside it. Ignored at `0`. See "Folded menu and route stamp" below. |
+| `in_depart` | the composite, when its curator hands a turn to the backend on `consult` ([#1247](https://github.com/mmeyerlein/meclaw/issues/1247)) | writes the `depart` row of that consult under its `consult_id` (hop, else context), keyed by the member's turn, deadline `late_after_ms` -- the row `in_calls` writes for a handed call, so the advisor's `in_advice` opens its round under the member's turn. No turn or no id: dropped with a warn line. |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
 | `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)) |
@@ -208,6 +210,10 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` and, since GH #892, `cogny` cut the block and switch it on; a composite without a splitter leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
 | `partial_head` | `200` | the characters of the last tool result the named partial answer of a capped round quotes; a longer result is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
+| `fold_tools` | `"0"` | `"1"` folds the merged menu into one tool per name-prefix family before it is written ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)); `"0"` writes the flat menu and is the way back. See "Folded menu and route stamp". |
+| `fold_families` | `["file_ws"]` | family names longer than the first name segment; every other tool folds by its first segment, so a new hive folds without an entry. |
+| `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. |
+| `route_no_recall` | `["simple"]` | the stamped paths whose turn does not wait for the memory leg; read only while `route_wait_ms` is above 0. |
 
 Removed in `collector@5.0.0` (GH #889): `window_turns`, `window_bytes`, `turn_chars`, `tool_chars`,
 `round_bytes`, `memory_chars`, `context_window`, `curate_soft`, `curate_hard`, `keep_rounds`,
@@ -238,7 +244,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.1.4",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.2.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -474,7 +480,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.1.4`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.2.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -520,7 +526,76 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.1.4` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.2.0` (the curator decides what fits, R-IG-1).
+
+### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
+
+**The folded menu.** With `fold_tools: "1"` the merged menu is folded into one tool per *family* before it
+is written to `system.tools`. A family is the first segment of a tool name (`file_read` and `file_write`
+fold into `file`), or a longer name listed in `fold_families` (`file_ws_open` folds into `file_ws`). Reading
+and writing tools share a family. A family needs at least two members; a smaller one stays a plain tool, and
+so does every tool that already takes an `op` parameter (`edit`, `orga_change`). A plain tool named like a
+family (the tools hive's `file` beside the file family) gives way to the family and is named on
+`hop.menu_shadowed`.
+
+A family is one declaration:
+
+```json
+{"name": "file",
+ "description": "2 operations on `file`. Name one in `op` and pass its parameters in `args`, ...\n- read(file, offset?): Describe a file -- path, kind, size.\n- write(file, text): Write a file.\n- help(op?, query?): the full schema of one op, or the op list.",
+ "parameters": {"type": "object",
+                "properties": {"op": {"type": "string", "enum": ["read", "write", "help"]},
+                               "args": {"type": "object"}},
+                "required": ["op", "args"]}}
+```
+
+Each op gets one signature line: its parameters in declared order, `?` for an optional one, then the first
+sentence of its description without the address phrase. `args` is free but required (`{}` for an op
+without parameters, `help` among them) -- a call without it would not unfold and dead-letters; the full schema of an op comes with
+`help`. The dispatcher unfolds `file{op: "read", args}` back into `file_read`, so the answerers stay flat.
+
+The fold runs where the menu is written, once per menu tick and never per turn, and sorts families, ops and
+the menu by name: the menu is the prefix every request starts with. `hop.menu_folded` names the families
+written, `hop.menu_shadowed` the displaced tools, and `hop.menu_count` counts the tools as written; the two
+new keys are present and empty with the fold off. `"0"` (shipped) writes the flat menu and is the way back for
+a composite that turned the fold on.
+
+**Help, the error and the scope** ([#1246](https://github.com/mmeyerlein/meclaw/issues/1246)). All three read the
+same menu store the fold is derived from, with the same family rule:
+
+- `help` reaches no answerer. The dispatcher hands it back on `in_tool` with the family on `hop.help_for` and the
+  call's `args` as the result text; the collector parks the request as a `help` row under the call id, reads the
+  menu store in the same bundle and answers under that id: without `op` the op list (one signature line each),
+  with `op` the full schema of that op (whole description and parameters), with `query` the op lines whose name,
+  signature or short description holds one of its words.
+- With the fold on, a result with `hop.error_code` `bad_request` or `invalid_input` takes the same way: the op is
+  read off the round's assistant row (a result names its call by id only), and the op's full schema is appended to
+  the error text, so the retry needs no help round. An error text that is a JSON object (the file tools' refusal)
+  stays one and takes the schema as the field `op_schema`, so the curator still reads the failure and its code
+  (`tool_error`, GH #925). Any other error is parked as it came.
+- With the fold on, the channel's `tool_scope` (stated in op names) is translated to families before it leaves on
+  `curate`: a family stays when one of its ops is allowed and falls only when every op is denied (the op-exact cut
+  stays with the answerer). `context.tools_hint` names the families the `llm` cell sends at hint level, as
+  `tool_scope.hint` (per call, not kept in the session row); a name in no family is dropped. The opening of a round
+  reads the menu store beside the session row for this, in the same bundle and only with the fold on.
+
+**The route stamp.** A route cell that decides the path of a turn (`talk`, `simple`, `complex`, `research`)
+sends it on `in_route` as ONE body slot `stamp` = `{turn_id, path, p, intent, needs, families, duration}`,
+with `hop.turn_id` and `hop.path` beside it. The leg is keyed by the turn id (`context.turn_id`, else the
+hop's, else the stamp's); `hop.path` is the same value and stands in for a stamp without a path, and
+`context.path` is not read. With `route_wait_ms` above 0
+the stamp is a leg of the turn, parked beside the window, memory and brief legs, and it narrows the fan-in:
+
+- a path listed in `route_no_recall` (shipped `["simple"]`) does not wait for the memory leg. The recall wait
+  point sits in this cell, the one place a turn's legs meet.
+- no stamp yet, and the window leg is older than `route_wait_ms`: the turn stops waiting for it. The check
+  runs when a leg lands, so the route cell answers every turn (`talk` when unsure, failed or late) and its
+  stamp is the occasion that ends a longer wait.
+
+The path rides on every seam of the round (`curate`, `answer`) as `hop.path`, the stamp's families beside it
+as `hop.families` (a comma list in stamp order), both empty without a stamp, for the curator to branch on and
+to scope the quick path's tools. `0` (shipped) is off: no route leg, a stamp on `in_route` is ignored, and the fan-in
+is the one of before.
 
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
 

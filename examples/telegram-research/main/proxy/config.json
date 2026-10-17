@@ -19,7 +19,7 @@
       "bot_token": {
         "type": "string",
         "secret": true,
-        "default": "set TELEGRAM_BOT_TOKEN in your .env",
+        "default": "deposit cred:telegram-bot with --vault-add; the key comes by the grant in bot_token_grant_id, never from .env",
         "description": "Telegram bot token (BotFather)"
       },
       "long_poll_request_secs": {

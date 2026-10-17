@@ -77,6 +77,14 @@ const KNOBS: &[(&str, &str)] = &[
     // the names are affinity's slot vocabulary, asked about the counterpart of a
     // turn. Empty is the shipped default and asks nothing.
     ("brief_slots", "_list"),
+    // GH #1244 -- the folded menu: the switch (`"0"` shipped, the way back) and
+    // the family names longer than a first name segment.
+    ("fold_tools", "_str"),
+    ("fold_families", "_list"),
+    // GH #1244 -- the route stamp: how long a turn waits for it (0 = off) and
+    // the stamped paths that do not wait for the memory leg.
+    ("route_wait_ms", "_int"),
+    ("route_no_recall", "_list"),
 ];
 
 fn config() -> serde_json::Value {

@@ -115,6 +115,19 @@ class LiveRowsTest(unittest.TestCase):
         self.assertEqual("kept", what)
         self.assertEqual(README, out)
 
+    def test_closed_names_the_rows_close_writes_and_no_other(self):
+        # re-check fr4 d0f8f69e8 M1: the one reader of a closed wave (precheck
+        # `wave-name`) -- both rows `live_close` writes, not a Running row nor
+        # a row of another form (that wave counts as open, fail-closed)
+        running = wave.live_open(README, WAVE, "Wave Z.", "2026-10-14")
+        self.assertEqual([OLD], wave.live_closed(running))
+        self.assertEqual([WAVE, OLD], wave.live_closed(wave.live_close(running, WAVE, "2026-10-20")[0]))
+        self.assertEqual([WAVE, OLD], wave.live_closed(wave.live_close(README, WAVE, "2026-10-20")[0]))
+        other = README.replace("**Built 2026-10-12:**", "**Built 2026-10-12, lifted 2026-10-13:**")
+        self.assertEqual([], wave.live_closed(other))
+        with self.assertRaisesRegex(ValueError, "no section Live"):
+            wave.live_closed("no table\n")
+
 
 class OpenCommandTest(unittest.TestCase):
     def setUp(self):

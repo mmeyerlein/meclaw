@@ -16,7 +16,12 @@ is tested, not the branch):
        reason and queue place at the start and on each change (`wait_s` in
        the merge receipt, V2-A10). With `--wait` the candidate gate waits for
        its lane too (`gate --wait-admission`, K13); without it a lane it
-       cannot have ends the merge at once (ABORTED, no queue place).
+       cannot have ends the merge at once (ABORTED, no queue place). A merge
+       that waits holds no lane (OR-TM-6): each wait round gives a lane lease
+       of its gate holder back (`give_back_lanes`; one whose run lives stays
+       until the run ends), and the candidate gate takes its lane only under
+       the lease, ahead of the waiting strands (K14) -- a `token take` before
+       `merge --wait` (workaround K13-3) is superfluous.
     2. preconditions: the newest strand receipt is GREEN on the branch head
        (its base may be older than master -- that is what the merge gate is
        for), the strand's pre stamp is fresh, the report has its head block
@@ -28,7 +33,21 @@ is tested, not the branch):
     3. candidate: a detached worktree of the main tree OUTSIDE `.git` and
        outside the tree (`~/.local/state/meclaw/pipeline/merge/<S>`),
        `git merge --no-ff --no-commit <branch>`; a conflict refuses -- except
-       in the generated corpus, which is never merged but regenerated.
+       in the generated corpus, which is never merged but regenerated, and
+       pure additions under `## [Unreleased]` of CHANGELOG.md (OR-TM-7: a list
+       conflict cost a strand a full re-gate): both sides stay, master first,
+       a section both open stands once, a heading twice stays two sections
+       (`unreleased_union`), and the merge says so in one line --
+       `merge: resolved ...`, `resolved` in the receipt and the
+       journal. A changed or dropped line, a conflict outside that body or in
+       any other file, and any conflict of a batch still refuse. Then every
+       released `## [x.y.z]` of CHANGELOG.md must read as on master
+       (`keep_released`, OR-TM-12: a strand branched before a release cut
+       merged without a conflict, and git set its lines into the released
+       section): pure additions there move under `[Unreleased]` (master
+       first, into the section of the same heading and occurrence, the same
+       resolution line), any other change refuses `released_changed`, naming
+       the cause.
     4. versions + pin cascade (`versions.assign`, kinds from
        `plans/<wave>/straenge/<S>.json`), the corpus when docs moved, the
        `[Unreleased]` line, `ROADMAP.md` § Now without the strand's issues;
@@ -82,7 +101,7 @@ import sys
 import time
 import uuid
 
-from . import events, lifted, schedule, store, turnaround, versions
+from . import events, gitenv, lifted, schedule, store, turnaround, versions
 from .lane import GOLDEN_SWITCHES, python_argv
 
 TTL_S = 7200
@@ -122,7 +141,9 @@ class Refused(Exception):
 # --- git and paths ------------------------------------------------------------------
 
 def git(cwd, *args, check=False, env=None):
-    res = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
+    """`git -C cwd <args>` of the merge point and `revert`, rerere off (OR-TM-11):
+    a merge decides from its own conflict, never from a recorded resolution."""
+    res = subprocess.run(gitenv.git_argv(cwd, *args), capture_output=True, text=True,
                          env=env)
     if check and res.returncode != 0:
         raise Refused("git_failed", "git %s: %s" % (" ".join(args[:3]), res.stderr.strip()[:300]))
@@ -871,6 +892,49 @@ def take_tree_waiting(db, repo, holder, on_queued=None, clock=None):
                 os.close(fd)
 
 
+def lane_holders(strands):
+    """The lane leases the merge gate of `strands` runs on: its holder
+    (`gate_holder`) and, for a batch `<wave>/S1+S2`, each member's lease the
+    admission speaks for (`schedule._batch_speaker`)."""
+    key = gate_holder(strands)
+    prefix, _, names = key.rpartition("/")
+    if "+" not in names:
+        return [key]
+    return [key] + ["%s/%s" % (prefix, n) if prefix else n for n in names.split("+")]
+
+
+def give_back_lanes(db, repo, strands, err, said):
+    """OR-TM-6 (K15, 16.10. 20:03): a merge that waits for `tree:master` holds
+    no lane. The lane lease of its gate holder -- the `token take` before
+    `merge --wait` (workaround K13-3) or one the strand kept -- stood leased and
+    idle while the merge waited: two of four lanes, strand gates in the queue.
+    Each wait round gives such a lease back (`schedule.lease_release`, no
+    force: a lease whose run lives stays until that run ends, GH #1228) and
+    rings the pool; the candidate gate takes a lane only under the merge lease,
+    ahead of the waiting strands (`gate --wait-admission`, K14). `said` keeps
+    each line to once."""
+    if not schedule._armed(db):
+        return
+    for holder in lane_holders(strands):
+        lane = schedule.lease_lane(db, holder).lane
+        if not lane:
+            continue
+        res = schedule.lease_release(db, holder, branch=holder)
+        if res.code == 0:
+            _ring(db)
+            line = "merge: lane %s of %s given back while the merge waits for %s -- the " \
+                   "candidate gate takes a lane under the merge lease" % (lane, holder,
+                                                                         resource(repo))
+        else:
+            why = (res.err or res.out).strip().splitlines()
+            line = "merge: lane %s of %s stays while the merge waits (%s)" % (
+                lane, holder, why[-1] if why else "release exit %d" % res.code)
+        if line not in said:
+            said.append(line)
+            err.write(line + "\n")
+            err.flush()
+
+
 def _took(db, repo, holder, at):
     """Did the take at `at` commit `holder`'s tree lease? (`take_tree` writes `at`.)
 
@@ -920,6 +984,17 @@ def _event(db, name, mid, strand, base, **extra):
     events.emit(db, name, "status", data)
 
 
+def _events(db, name, rows, base):
+    """`_event` for each `(mid, strand)` of `rows` in one write transaction: a
+    caller that repeats after a locked store (`schedule.while_locked`, whose
+    `fn` must be safe to repeat) finds all of them written or none -- one
+    transaction per event journaled the first member twice when the second
+    found the store locked (re-check stack fr m2)."""
+    with store.tx(db):
+        for mid, strand in rows:
+            _event(db, name, mid, strand, base)
+
+
 # --- the candidate ----------------------------------------------------------------------
 
 def candidate_path(label):
@@ -946,19 +1021,307 @@ def close_candidate(root, path):
 
 
 def merge_into(cand, refs):
-    """`git merge --no-ff --no-commit` of `refs`; the corpus is regenerated, never merged."""
+    """`git merge --no-ff --no-commit` of `refs`; the corpus is regenerated, never merged,
+    a conflict of pure additions under `## [Unreleased]` of CHANGELOG.md keeps both
+    sides (`unreleased_union`, OR-TM-7), and every released `## [x.y.z]` stays master's
+    (`keep_released`, OR-TM-12). Returns the resolution line, or None."""
     res = git(cand, "merge", "--no-ff", "--no-commit", *refs)
     if res.returncode == 0:
-        return
+        return keep_released(cand)
     conflicts = out(cand, "diff", "--name-only", "--diff-filter=U").split()
-    if conflicts and len(refs) == 1 and all(c in CORPUS for c in conflicts):
+    union = None
+    if conflicts and len(refs) == 1 and CHANGELOG in conflicts:
+        union = unreleased_union(*(_stage(cand, n, CHANGELOG) for n in (1, 2, 3)))
+    if (conflicts and len(refs) == 1 and all(c in CORPUS or c == CHANGELOG for c in conflicts)
+            and (union or CHANGELOG not in conflicts)):
         for c in conflicts:
-            git(cand, "checkout", "--ours", "--", c, check=True)
+            if c == CHANGELOG:
+                with open(os.path.join(cand, c), "w", encoding="utf-8") as fh:
+                    fh.write(union[0])
+            else:
+                git(cand, "checkout", "--ours", "--", c, check=True)
             git(cand, "add", "--", c, check=True)
-        return
+        moved = keep_released(cand)
+        return "; ".join(x for x in ((union or (None, None))[1], moved) if x) or None
     git(cand, "merge", "--abort")
     raise Refused("batch_conflict" if len(refs) > 1 else "merge_conflict",
                   "conflict in %s" % (", ".join(conflicts) or res.stderr.strip()[:200]))
+
+
+CHANGELOG = "CHANGELOG.md"
+UNRELEASED = "## [Unreleased]"
+
+
+def _stage(cand, n, rel):
+    """The text of `rel` at index stage `n` (1 base, 2 ours, 3 theirs), or None."""
+    res = git(cand, "show", ":%d:%s" % (n, rel))
+    return res.stdout if res.returncode == 0 else None
+
+
+def _unreleased(text):
+    """`(head, body, tail)` lines around the body of the one `## [Unreleased]`; the body
+    ends at the next `## ` heading. None without exactly one such section."""
+    if text is None:
+        return None
+    lines = text.split("\n")
+    at = [i for i, line in enumerate(lines) if line.startswith(UNRELEASED)]
+    if len(at) != 1:
+        return None
+    end = next((i for i in range(at[0] + 1, len(lines)) if lines[i].startswith("## ")),
+               len(lines))
+    return lines[:at[0] + 1], lines[at[0] + 1:end], lines[end:]
+
+
+def _trim(lines):
+    lines = list(lines)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _parse(body):
+    """`_sections` without the write-back check."""
+    pre, secs, seen = [], [], {}
+    for line in body:
+        if line.startswith("### "):
+            seen[line] = seen.get(line, -1) + 1
+            secs.append(((line, seen[line]), []))
+        else:
+            (secs[-1][1] if secs else pre).append(line)
+    return (_trim(pre), [(key, _trim(lines)) for key, lines in secs])
+
+
+def _sections(body):
+    """`(preamble, [((heading, n), lines)])` of an `[Unreleased]` body (`### `
+    headings; `#### ` stays content): a section is keyed by its heading and the
+    heading's occurrence index `n`, so a heading twice keeps both sections apart
+    (OR-V2.v2-r3-unreldup.1). None for a body this form would not write back byte
+    for byte -- the union never reformats what it keeps."""
+    doc = _parse(body)
+    return doc if _body(doc) == body else None
+
+
+def _body(doc):
+    pre, secs = doc
+    body = [""] + (pre + [""] if pre else [])
+    for (heading, _), lines in secs:
+        body += [heading, ""] + lines + [""]
+    return body
+
+
+def _gaps(base, side):
+    """What `side` adds before each line of `base` and after its last
+    (`len(base) + 1` lists), or None when `side` changes or drops a base line."""
+    gaps, k = [[] for _ in range(len(base) + 1)], 0
+    for line in side:
+        if k < len(base) and line == base[k]:
+            k += 1
+        else:
+            gaps[k].append(line)
+    return gaps if k == len(base) else None
+
+
+def _join(base, ours, theirs):
+    """`base` with each gap's additions, master's first, then the strand's (an
+    identical addition once); `(lines, ours_added, theirs_added)`, or None when a
+    side is not purely additive."""
+    og, tg = _gaps(base, ours), _gaps(base, theirs)
+    if og is None or tg is None:
+        return None
+    lines = []
+    for k in range(len(base) + 1):
+        lines += og[k] + (tg[k] if tg[k] != og[k] else [])
+        lines += base[k:k + 1]
+    return lines, sum(og, []), sum(tg, [])
+
+
+def _entries(lines):
+    return sum(1 for line in lines if line.startswith(("- ", "* ")))
+
+
+def unreleased_union(base, ours, theirs):
+    """`(text, line)` of CHANGELOG.md with both sides' additions under
+    `## [Unreleased]` (OR-TM-7, K15: a list conflict cost a full strand re-gate),
+    or None. Everything outside that body must be untouched by one side; each
+    side keeps every line of the base body in its `### ` section, a section
+    being a heading and its occurrence (`_sections`: a heading twice is two
+    sections, none lost); a section both add stands once. `line` names the file
+    and the entries each side added."""
+    parts = [_unreleased(t) for t in (base, ours, theirs)]
+    if None in parts:
+        return None
+    (bh, bb, bt), (oh, ob, ot), (th, tb, tt) = parts
+    outside = [(bh, bt), (oh, ot), (th, tt)]
+    if outside[1] != outside[0] and outside[2] != outside[0] and outside[1] != outside[2]:
+        return None
+    head, tail = outside[1] if outside[2] == outside[0] else outside[2]
+    docs = [_sections(b) for b in (bb, ob, tb)]
+    if None in docs:
+        return None
+    (bp, bs), (op, os_), (tp, ts) = docs
+    known = dict(bs)
+    keys = _join([k for k, _ in bs], [k for k, _ in os_], [k for k, _ in ts])
+    pre = _join(bp, op, tp)
+    if keys is None or pre is None:
+        return None
+    ours_d, theirs_d = dict(os_), dict(ts)
+    secs, added = [], [pre[1], pre[2]]
+    for k in dict.fromkeys(keys[0]):
+        joined = _join(known.get(k, []), ours_d.get(k, known.get(k, [])),
+                       theirs_d.get(k, known.get(k, [])))
+        if joined is None:
+            return None
+        secs.append((k, joined[0]))
+        added[0], added[1] = added[0] + joined[1], added[1] + joined[2]
+    text = "\n".join(head + _body((pre[0], secs)) + tail)
+    return text, "%s [Unreleased]: both sides kept, master +%d, strand +%d entries" % (
+        CHANGELOG, _entries(added[0]), _entries(added[1]))
+
+
+RELEASED_CHANGED = "released_changed"
+
+
+def _chunks(lines):
+    """The lines before the first `## ` heading, then one list per `## ` section."""
+    chunks = [[]]
+    for line in lines:
+        if line.startswith("## "):
+            chunks.append([])
+        chunks[-1].append(line)
+    return chunks
+
+
+def _released_key(chunk):
+    """The version of a released `## [x.y.z]` section, else None."""
+    if not chunk or not chunk[0].startswith("## [") or chunk[0].startswith(UNRELEASED):
+        return None
+    end = chunk[0].find("]")
+    return chunk[0][4:end] if end > 4 else None
+
+
+def _released(text):
+    """`{version: lines}` of every released section, or None for a version twice."""
+    secs = {}
+    for chunk in _chunks(text.split("\n"))[1:]:
+        key = _released_key(chunk)
+        if key is not None:
+            if key in secs:
+                return None
+            secs[key] = chunk
+    return secs
+
+
+def _added(master, cand):
+    """`[(key, lines)]` a released section `cand` adds to `master` (`key` a
+    `_sections` key -- heading and occurrence --, None for the lines above its
+    first `### `), or None for any other change: a changed heading line, a
+    changed or dropped line or `### ` heading, a form `_sections` would not write
+    back byte for byte."""
+    if master[0] != cand[0]:
+        return None
+    docs = _sections(master[1:]), _sections(cand[1:])
+    if None in docs:
+        return None
+    (mp, ms), (cp, cs) = docs
+    heads, pre = _gaps([h for h, _ in ms], [h for h, _ in cs]), _gaps(mp, cp)
+    if heads is None or pre is None:
+        return None
+    known, added = dict(ms), [(None, sum(pre, []))]
+    for heading, lines in cs:
+        gaps = _gaps(known.get(heading, []), lines)
+        if gaps is None:
+            return None
+        added.append((heading, sum(gaps, [])))
+    return [(h, lines) for h, lines in added if lines]
+
+
+def keep_released(cand):
+    """OR-TM-12 (K17, H4 merge c3f784b25): after the git merge, before the commit,
+    every released `## [x.y.z]` of CHANGELOG.md is byte for byte master's (`HEAD`).
+    A strand branched before a release cut merges without a conflict, and git sets
+    its `[Unreleased]` lines into the released section that heading became: pure
+    additions there move under `## [Unreleased]` (master first, into the section
+    of the same heading and occurrence -- `_sections`, as the union keys them --,
+    a new one at the end, an identical entry once) and the section is master's
+    again; the resolution line, or None when nothing moved. Any other change of a
+    released section of master (changed, dropped, a heading line, a form the
+    resolver would not write back) refuses `released_changed`, the merge aborted;
+    so does an `[Unreleased]` that cannot take the additions (none, twice, a form
+    the merge would not write back), the refusal naming it with its line. A
+    released section master does not have is the strand's own release cut."""
+    head = git(cand, "show", "HEAD:%s" % CHANGELOG)
+    if head.returncode != 0:
+        return None
+    master, path = head.stdout, os.path.join(cand, CHANGELOG)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        text = None
+    if text == master:
+        return None
+    ours = _released(master)
+    theirs = _released(text) if text is not None else None
+    if ours is not None and theirs is not None and all(
+            theirs.get(v) == lines for v, lines in ours.items()):
+        return None
+
+    def refuse(what, why=None):
+        git(cand, "merge", "--abort")
+        raise Refused(RELEASED_CHANGED, "%s %s differs from master; a merge moves only pure "
+                      "additions of a released section to [Unreleased]" % (CHANGELOG, what)
+                      if why is None else "%s %s: the strand's additions cannot move, %s"
+                      % (CHANGELOG, what, why))
+
+    if ours is None or theirs is None:
+        refuse("(gone)" if text is None else "(a released version twice)")
+    moved, versions_ = [], []
+    for version, lines in ours.items():
+        if theirs.get(version) == lines:
+            continue
+        added = _added(lines, theirs[version]) if version in theirs else None
+        if added is None:
+            refuse("[%s]" % version)
+        moved += added
+        versions_.append(version)
+    chunks = _chunks(text.split("\n"))
+    at = [i for i, c in enumerate(chunks) if c[0:1] and c[0].startswith(UNRELEASED)]
+    doc = _sections(chunks[at[0]][1:]) if len(at) == 1 else None
+    if doc is None:
+        refuse("[%s]" % "], [".join(versions_), _no_target(chunks, at))
+    pre, secs = doc[0], [(h, list(lines)) for h, lines in doc[1]]
+    for heading, lines in moved:
+        into = pre if heading is None else next((x for h, x in secs if h == heading), None)
+        if into is None:
+            into = []
+            secs.append((heading, into))
+        into += [line for line in lines if not line.strip() or line not in into]
+    chunks[at[0]] = chunks[at[0]][:1] + _body((pre, secs))
+    chunks = [ours[_released_key(c)] if _released_key(c) in versions_ else c for c in chunks]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(sum(chunks, [])))
+    git(cand, "add", "--", CHANGELOG, check=True)
+    return "%s [%s]: strand +%d entries moved to [Unreleased]" % (
+        CHANGELOG, "], [".join(versions_), _entries(sum((x for _, x in moved), [])))
+
+
+def _no_target(chunks, at):
+    """Why the `## [Unreleased]` of `chunks` (at the chunk indexes `at`) takes no
+    moved line: none, twice (each heading's line), or the first line of its body
+    the `_sections` form would not write back."""
+    starts = [sum(len(c) for c in chunks[:i]) + 1 for i in at]
+    if not at:
+        return "no [Unreleased] to take them"
+    if len(at) > 1:
+        return "[Unreleased] twice (%s:%s)" % (CHANGELOG, ", :".join(map(str, starts)))
+    body = chunks[at[0]][1:]
+    back = _body(_parse(body))
+    n = next((k for k, (a, b) in enumerate(zip(body, back)) if a != b),
+             min(len(body), len(back)))
+    return "[Unreleased] at %s:%d (`%s`) is a form the merge would not write back byte for byte" % (
+        CHANGELOG, starts[0] + 1 + n, body[n] if n < len(body) else "")
 
 
 def regenerate_corpus(cand):
@@ -1252,7 +1615,7 @@ def build_candidate(root, base, strands, label, extra_kinds=None):
     cand = open_candidate(root, base, label)
     try:
         tips = [out(root, "rev-parse", s.branch) for s in strands]
-        merge_into(cand, tips)
+        resolved = merge_into(cand, tips)
         changed = out(cand, "diff", "--name-only", "--cached", base).split()
         kinds = {}
         for s in strands:
@@ -1278,6 +1641,8 @@ def build_candidate(root, base, strands, label, extra_kinds=None):
             # the caller knows the running kit's class, not the candidate's
             raise versions.VersionError(str(exc)) from exc
         clean_roadmap(cand, [i for s in strands for i in s.issues])
+        if resolved:
+            result["resolved"] = resolved
         # V2-A17: what the merge point itself wrote (numbers, cascade, corpus,
         # changelog) -- the working tree against the merged index.
         result["merge_point"] = out(cand, "diff", "--name-only").split()
@@ -1595,7 +1960,12 @@ def write_receipt(wdir, label, sha, doc):
 def gate_base(root, base, strands, ctx):
     """GH #1167 (b): `(rev, why)` the merge gate plans from. One strand whose
     receipt covers its tip and whose base lies on master: the tip. A batch or
-    any doubt: master -- the full gate."""
+    any doubt: master -- the full gate. OR-TM-9: a strand whose gate planned no
+    cargo station plans from master too -- the candidate's diff is the strand's
+    (plus the merge point's edits), its plan the strand gate's; from the tip
+    it was master's move since the strand base (K-APPID 4bb6d28c1: 132 files
+    of code, 23/23 stations for AGENTS.md and plans/), or nothing, which the
+    resolver floors to `build` + t0."""
     if len(strands) != 1:
         return base, "full: a batch of %d strands" % len(strands)
     s = strands[0]
@@ -1603,7 +1973,22 @@ def gate_base(root, base, strands, ctx):
     tip = out(root, "rev-parse", "%s^{commit}" % s.branch)
     if not tip or rec.get("no_pre"):
         return base, "full: %s" % ("no branch tip" if not tip else "merged with --no-pre")
+    if _cargo_free(rec):
+        return base, "strand diff: the strand gate planned no cargo station (OR-TM-9)"
     return turnaround.merge_gate_base(root, base, tip, rec)
+
+
+def _cargo_free(rec):
+    """Did the strand gate of receipt `rec` plan stations, none of them a cargo
+    station (`schedule._needs`, the gate's `cargo=` rule)? Its `plan.json`
+    decides. Fail closed: none, one without stations, or a station without its
+    `needs` (a plan that does not say what it books) is no answer (False)."""
+    doc = _plan_doc(rec["path"]) if rec.get("path") else None
+    stations = (doc or {}).get("stations")
+    if not isinstance(stations, list) or not stations:
+        return False
+    return all(isinstance(st, dict) and isinstance(st.get("needs"), dict)
+               and schedule._needs(st)["cargo"] < 1 for st in stations)
 
 
 def land_plan_only(db, ctx, s, base):
@@ -1666,6 +2051,9 @@ def land(db, ctx, strands, base, depth=0):
     except versions.VersionError as exc:
         steps.fail()
         return [(s.name, "refused", "version_conflict", str(exc)) for s in strands]
+    resolved = result.get("resolved")
+    if resolved:
+        ctx["err"].write("merge: resolved %s\n" % resolved)
     gctx = {"rev": sha, "base": base, "label": label, "strands": [s.name for s in strands],
             "cache_from": [ctx["receipts"][s.name]["run"] for s in strands],
             "strand_run": (ctx["receipts"][strands[0].name]["run"] if len(strands) == 1
@@ -1693,7 +2081,7 @@ def land(db, ctx, strands, base, depth=0):
             _set_merge(db, mids[s.name], state="gating", versions=result["versions"],
                        pins=result["pins"])
             _event(db, "merge_gated", mids[s.name], s.name, base, merge_sha=sha,
-                   versions=result["versions"])
+                   versions=result["versions"], resolved=resolved)
         steps.done()
         steps.at("gate")
         # N3: every gate run starts on a renewed lease -- a bisection runs
@@ -1743,7 +2131,7 @@ def land(db, ctx, strands, base, depth=0):
     for s in strands:
         _set_merge(db, mids[s.name], state="merged", merge_sha=sha)
         _event(db, "merge_done", mids[s.name], s.name, base, merge_sha=sha,
-               versions=result["versions"], pins=result["pins"])
+               versions=result["versions"], pins=result["pins"], resolved=resolved)
         for repo_name, template, version in sats:
             events.emit(db, "satellite_pin_needed", "finding", {
                 "merge": mids[s.name], "repo": repo_name, "template": template,
@@ -1755,6 +2143,8 @@ def land(db, ctx, strands, base, depth=0):
             "summary": "MERGE %s %s %s GREEN" % (s.name, sha[:9], versions.version_line(result))}
         if goldens is not None:
             doc["goldens"] = goldens
+        if resolved:
+            doc["resolved"] = resolved
         merge_receipt(ctx, s.wdir, "merge-%s" % s.name, sha, doc)
     ctx["out"].write("%s\n" % versions.version_line(result))
     ctx["out"].write("%s\n" % versions.pins_line(result))
@@ -1816,16 +2206,26 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
                 "waiting for its release (--wait)" if wait
                 else "the release offers it to the oldest queued merge"))
 
-        said = []
+        said, lanes_said = [], []
 
         def waits(first):
             # V2-A10 (wave validation 2): the merge of v2-fix-b waited 14 min
             # without a word. One line when the wait starts, one per change of
             # holder or position -- a round follows a ring, never a clock.
+            # A strand refused before any wait (PREAMBLE § 6 rule 5) keeps its
+            # lane: `lease_resolves` only reads, so it goes first (re-check
+            # stack fr I1). OR-TM-6: no lane while the merge waits -- before
+            # its wait line and the first round's events (re-check stack m1):
+            # `while_locked` repeats a round its write found locked, the
+            # give-back is idempotent (after it the holder has no lane), and
+            # the round's events are one transaction (`_events`) -- a member's
+            # event that found the store locked leaves none of them (re-check
+            # stack fr m2).
             if first:
                 lease_resolves(strands, base, no_pre)
-                for s in strands:
-                    _event(db, "merge_queued", mids[s.name], s.name, base)
+            give_back_lanes(db, repo, strands, err, lanes_said)
+            if first:
+                _events(db, "merge_queued", [(mids[s.name], s.name) for s in strands], base)
             state = wait_state(db, repo, holder)
             if not said or said[-1] != state:
                 said.append(state)
@@ -1958,15 +2358,63 @@ def _refuse(db, mid, strand, base, reason, text, err, quiet=False):
 # --- close (GH #1107) -------------------------------------------------------------------
 
 def find_merge(root, branch, tip, name):
-    """The merge commit on master that carries the strand, or ''."""
+    """The merge commit on master that carries the strand, or ''. An empty
+    `branch` matches no subject ("" is in every one, fix round 1 M2)."""
     for line in out(root, "log", "--merges", "--first-parent", "--format=%H %P%x09%s",
                     "master").splitlines():
         shas, _, subject = line.partition("\t")
         parts = shas.split()
-        if (tip and tip in parts[2:]) or branch in subject \
+        named = branch in subject if branch else False
+        if (tip and tip in parts[2:]) or named \
                 or re.match(r"Merge (\S+, )*%s[ ,]" % re.escape(name), subject):
             return parts[0]
     return ""
+
+
+def strand_merge(root, branch, name):
+    """`(tip, merge commit)` of the strand on `branch`; each '' when absent."""
+    tip = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % branch) if branch else ""
+    return tip, find_merge(root, branch, tip, name)
+
+
+def merge_parents(root, report, name):
+    """The parents of the merge commit that brought the strand of `report` to
+    master, the first parent (master before the merge) first; [] before it."""
+    head, _ = head_block(report)
+    _, merged = strand_merge(root, (head or {}).get("branch", ""), name)
+    return out(root, "rev-list", "--parents", "-n", "1", merged).split()[1:] if merged else []
+
+
+class _NoAnswer(Exception):
+    """A `git merge-base --is-ancestor` that said neither 0 nor 1."""
+
+
+def came_with(root, parents, branch, err=None):
+    """True when the head of `branch` came to master with the merge commit of
+    `parents`: an ancestor of a later parent, not of the first one (OR-TM-13).
+    A missing branch, or a head that moved on after the merge, did not --
+    the fail-safe keeps such a strand a carrier of its issues. So does a
+    check without an answer: `git merge-base --is-ancestor` says 0 (an
+    ancestor) or 1 (not one); any other exit (128, a signal) keeps the
+    strand a carrier, with one line naming it on `err` (fix round 1, I1)."""
+    if len(parents) < 2:
+        return False
+    head = out(root, "rev-parse", "--verify", "--quiet", "refs/heads/%s^{commit}" % branch)
+    if not head:
+        return False
+
+    def below(rev):
+        rc = git(root, "merge-base", "--is-ancestor", head, rev).returncode
+        if rc not in (0, 1):
+            raise _NoAnswer("git merge-base --is-ancestor %s %s exited rc %d"
+                            % (head[:9], rev[:9], rc))
+        return rc == 0
+
+    try:
+        return not below(parents[0]) and any(below(p) for p in parents[1:])
+    except _NoAnswer as exc:
+        (err or sys.stderr).write("close: %s kept as a carrier -- %s\n" % (branch, exc))
+        return False
 
 
 def close_info(root, report, archive, name):
@@ -1981,8 +2429,7 @@ def close_info(root, report, archive, name):
         raise Refused("no_strand_receipt", "no strand receipt with a summary under %s" % archive)
     if not line.endswith(" GREEN"):
         raise Refused("strand_gate_not_green", "the newest strand gate is %s" % line.split()[-1])
-    tip = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % branch) if branch else ""
-    merged = find_merge(root, branch, tip, name)
+    tip, merged = strand_merge(root, branch, name)
     if not tip and merged:
         parents = out(root, "rev-list", "--parents", "-n", "1", merged).split()[2:]
         tip = parents[0] if parents else ""
@@ -2008,10 +2455,23 @@ def close_info(root, report, archive, name):
     return issues, "\n".join(lines), commits
 
 
-def wave_issues(root, wdir, name):
+def wave_issues(root, wdir, name, parents=(), mine=None, err=None):
     """`{issue: other strand}` of the issues another strand file of the wave
     carries too -- the wave's (acceptance) issue, which no strand closes
-    (Z-I 2c (5)). Read from the main tree's `plans/<wave>/straenge/`."""
+    (Z-I 2c (5)). Read from the main tree's `plans/<wave>/straenge/`.
+
+    `parents` are those of the merge commit of `name` (`merge_parents`). A
+    strand whose branch head came with that merge (`came_with`) -- a component
+    of a batch, whose strand file lands on master with it -- carries nothing
+    foreign: its issues close with this merge (OR-TM-13, T2B left six open).
+    The branch is the one `strand.sh new` named (`default_branch`). `mine`
+    limits the answer, and the git look-ups, to these issues; `err` gets the
+    line of a git check without an answer (`came_with`).
+
+    The limit: a component that landed in the batch as a copy (rebase,
+    cherry-pick) instead of a merge of its head stays a foreign carrier and
+    its issues stay open -- fail-safe; the standard batch form is merge
+    commits of the heads (OR-V2.v2-r3-close.2)."""
     sdir = os.path.join(root, "plans", os.path.basename(wdir.rstrip("/")), "straenge")
     found = {}
     try:
@@ -2028,16 +2488,24 @@ def wave_issues(root, wdir, name):
         except (OSError, ValueError):
             continue
         if isinstance(doc, dict):
-            for issue in versions.issues_of(doc):
-                found.setdefault(issue, other)
+            carried = [i for i in versions.issues_of(doc) if mine is None or i in mine]
+            if carried and not came_with(root, parents, default_branch(wdir, other), err):
+                for issue in carried:
+                    found.setdefault(issue, other)
     return found
 
 
 def close_issues(s, do=False, out_=None, err=None, gh=None):
+    """Close the strand's issues on GitHub (`do`) or print the `gh` lines.
+
+    An issue another strand of the wave carries too stays open ("left open --
+    the wave issue"); a strand that came to master with this same merge is no
+    such carrier (`wave_issues`)."""
     out_, err = out_ or sys.stdout, err or sys.stderr
     issues, comment, _ = close_info(s.root, s.report, s.archive, s.name)
     gh = gh or os.environ.get("MECLAW_GH", "gh")
-    shared = wave_issues(s.root, s.wdir, s.name)
+    shared = wave_issues(s.root, s.wdir, s.name, merge_parents(s.root, s.report, s.name),
+                         issues, err)
     # `"close_issue": false` in the strand file: a carrier issue (V2-A1) --
     # the same English comment, the issue stays open.
     close = versions.close_issue_of(getattr(s, "doc", None) or {})

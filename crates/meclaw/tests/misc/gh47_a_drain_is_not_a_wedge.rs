@@ -112,7 +112,13 @@ print(json.dumps({{"header": {{"finish_reason": "assistant"}},
             "params": {
                 "runner": "python3",
                 "script_inline": script,
-                "external_timeout_ms": meclaw_testing::deadline::product_wait_ms()
+                "external_timeout_ms": meclaw_testing::deadline::product_wait_ms(),
+                // GH #1235 (T6-16): without `sandbox` the cell boots under the
+                // default-deny profile, and the script leaves its marker in the
+                // tree's root -- so it declares that one writable directory.
+                "sandbox": {"trust": "restricted", "network": "deny",
+                            "filesystem": {"runtime": true,
+                                           "write": [root.to_string_lossy()]}}
             },
             "contract": {"version": "0.1.0", "settings": {}, "consumes": {}}
         })

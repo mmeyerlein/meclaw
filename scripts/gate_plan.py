@@ -58,8 +58,10 @@ CLASSES (a path can carry several)
                      fixture edge, the shipped block its drift checks compare,
                      the engine it runs on and the fact counter it records
                      (GH #881). A path may carry this class beside another
-    display_browser  workshop/tools/display-*, and the Rust locks that run
-                  a browser driver of the station (BROWSER_LOCKS). Never
+    display_browser  workshop/tools/display-*, the Rust locks that run
+                  a browser driver of the station (BROWSER_LOCKS), and the
+                  engine pin the drivers run on (BROWSER_ENGINE_PINS:
+                  workshop/tools/package.json, package-lock.json). Never
                   `template`: the driver lies under workshop/, which does
                   not travel
     display_lab   workshop/tools/display-lab/**, scripts/tests/test_display_lab.py
@@ -764,6 +766,13 @@ BROWSER_LOCKS = frozenset({
     "crates/meclaw-cells/tests/gh1028_a_new_window_keeps_the_others_in_place_browser.rs",
 })
 
+# The engine the drivers run on: the one npm dependency of the tree (Playwright)
+# and its lock. Class `display_browser` -- the whole station runs on the new pin.
+BROWSER_ENGINE_PINS = frozenset({
+    "workshop/tools/package.json",
+    "workshop/tools/package-lock.json",
+})
+
 # The `#[ignore]`d browser locks of the station, one nextest term each. They run
 # as ONE nextest call over the union of their binaries (W7, `browser_cmds`), so
 # nextest's own test groups decide how many run at once (`.config/nextest.toml`:
@@ -1186,7 +1195,11 @@ def _classes_of_path(path):
     # The browser half of the same document: the layout driver under workshop/ and
     # the two locks that run it. No `template` class comes with it -- workshop/ is a
     # FORBIDDEN_PREFIX of the export, which is why the station is in CI_EXCLUDED.
-    if (path.startswith("workshop/tools/display-") and not lab) or path in BROWSER_LOCKS:
+    # The Playwright pin and its lock: `lane_sync.sh browsers` provisions the
+    # engine every driver runs on from it, and no test names either -- before,
+    # a bump planned no browser at all (OR-V2.v2-r3-planbrowser.2).
+    if ((path.startswith("workshop/tools/display-") and not lab) or path in BROWSER_LOCKS
+            or path in BROWSER_ENGINE_PINS):
         cls.add("display_browser")
 
     # The persona gate (ADR-0029, GH #882): the suite itself -- its committed
@@ -2901,13 +2914,42 @@ SCRIPT_READS = (
     ("workshop/tools/build_librarian_seed.py", CORPUS_SOURCES),
 )
 
-# `{dir: suffixes}`: a test that names `dir` reads only these files below it.
-# `workshop/tools` is the PYTHONPATH of the generators the tests run
-# (gh661); the browser drivers beside them belong to `browser:display`, and a
-# driver-only diff plans no `tests` (gh961, measured).
+# `{dir: {unit: (suffixes, depth)}}`: what each NAMED reader of `dir` reads
+# below it -- a property of the reader, not of the directory (fix round stapel,
+# I1/I2). `depth`: "import" a PYTHONPATH root, the modules an `import` reaches
+# (`_importable`: every name on the way a Python identifier -- `llm-conformance/`
+# and `display-lab/` are no package; their modules, read by path by their own
+# unittest stations, planned every reader of the root and the browser run
+# behind it: OR-TM-8, K15, AN3-FIX 6bd5216f1, crit 10800 s on build03); "top"
+# the directory's own files (one `read_dir`); "any" every depth, a hyphened
+# directory included. The station is the reader's own (rule 11): a browser
+# unit runs in `browser:display`, every other in `tests`.
+#   gh661       imports the generators it runs from `workshop/tools` -> `tests`
+#   708         `every_driver_keeps_the_answer_of_an_evidence_shot`: every
+#               `.mjs` of the top level -> `tests`
+#   744         every `.mjs`, node_modules aside -> `browser:display`
+#   gh1209      `every_browser_driver_goes_through_the_switch`: every `.mjs`/
+#               `.js`, node_modules aside -> `browser:display`
+# A reader of `dir` the table does not name reads every file below it, any
+# suffix, any depth (fail-closed, like a dir outside the table): a new walker
+# runs for every diff there until its entry says what it keeps.
 RUNTIME_DIR_READS_ONLY = {
-    "workshop/tools": (".py",),
+    "workshop/tools": {
+        "misc_5/gh661_the_briefing_states_the_operator_set_rule": ((".py",), "import"),
+        "708_the_client_draws_the_tap_before_the_pass": ((".mjs",), "top"),
+        "744_a_late_patch_does_not_take_the_drawing_back": ((".mjs",), "any"),
+        "gh1209_no_stage_draws_a_filter_browser": ((".mjs", ".js"), "any"),
+    },
 }
+
+
+def _importable(rel):
+    """Does an `import` from a PYTHONPATH root reach the file `rel` (relative to
+    the root)? Every directory between is a package and the file a module only
+    when each name is a Python identifier."""
+    parts = rel.split("/")
+    return all(p.isidentifier() for p in parts[:-1]) \
+        and parts[-1].rsplit(".", 1)[0].isidentifier()
 
 _STRING_LITERAL_RE = re.compile(r'"([A-Za-z0-9_.@+\-/]+)"')
 # The same literals, plus (group 2) the next non-space character after each, ""
@@ -3186,12 +3228,24 @@ def is_catalogue_top(path):
     return path.startswith("templates/") and path.count("/") == 1
 
 
-def _runtime_dir_applies(lit, path):
-    """Does a walk of the directory `lit` read `path`? (the dir shape's filter)"""
+def _runtime_dir_applies(lit, path, unit=None):
+    """Does the walk of the directory `lit` by the test unit `unit` read `path`?
+    (the dir shape's filter; RUNTIME_DIR_READS_ONLY per named reader, every
+    file below for a reader the table does not name -- `unit` None too)"""
     if path.startswith(("templates/", "examples/")):
         return False
-    only = RUNTIME_DIR_READS_ONLY.get(lit)
-    return only is None or path.endswith(only)
+    rule = RUNTIME_DIR_READS_ONLY.get(lit, {}).get(unit)
+    if rule is None:
+        return True
+    suffixes, depth = rule
+    below = path[len(lit) + 1:] if path.startswith(lit + "/") else None
+    if not path.endswith(suffixes):
+        return False
+    if below is None or depth == "any":
+        return True
+    if depth == "top":
+        return "/" not in below
+    return _importable(below)
 
 
 def _runtime_roots(repo, targets):
@@ -3279,8 +3333,12 @@ def _runtime_readers_named(repo, path):
     # looks for the path as written and misses it (tb-s1c-b)
     add(_runtime_spelled(repo).get(path, ()), "rule:8 runtime dotdot file:%s" % path)
     for lit in _ancestors(path):
-        if lit in lits and _runtime_dir_applies(lit, path):
-            add(lits[lit], "rule:8 runtime dir:%s file:%s" % (lit, path))
+        if lit in lits:
+            # each reader by what IT reads (RUNTIME_DIR_READS_ONLY); a driver of
+            # the class `display_browser` as well: its class plans the locks,
+            # the walkers join them (stapel c2), 708 runs in `tests` (I1)
+            add({(c, u) for c, u in lits[lit] if _runtime_dir_applies(lit, path, u)},
+                "rule:8 runtime dir:%s file:%s" % (lit, path))
     if is_catalogue_top(path):
         add({(c, u) for c, u, text in _reader_sources(repo) if _is_catalogue_wide(text)},
             "rule:8 runtime catalogue file:%s" % path)
@@ -3892,7 +3950,22 @@ def test_filter(paths, mode, repo=None):
                                      an ancestor directory as a literal (a
                                      walk, `crates` and `crates/<c>` too;
                                      not under templates/ or examples/,
-                                     rules 4/5 own those), for a top-level
+                                     rules 4/5 own those; below a
+                                     directory of RUNTIME_DIR_READS_ONLY
+                                     each NAMED reader only what it keeps,
+                                     in its own station (rule 11):
+                                     `workshop/tools` -- gh661 the modules
+                                     an `import` reaches (`.py`, every
+                                     name a Python identifier, so nothing
+                                     below `llm-conformance/` or
+                                     `display-lab/`: OR-TM-8), 708 every
+                                     top-level `.mjs` (a driver diff runs
+                                     it in `tests`), 744 every `.mjs` and
+                                     gh1209_no_stage every `.mjs`/`.js` at
+                                     any depth (`browser:display`; no `.py`
+                                     plans a browser); a reader the table
+                                     does not name reads every file below,
+                                     fail-closed), for a top-level
                                      file of templates/ the catalogue-wide
                                      binaries (`is_catalogue_top`), a SCRIPT_READS
                                      generator they run whose sources match

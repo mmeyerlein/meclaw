@@ -137,7 +137,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// app's read of its own round): 1 + 4 + 24 + 1 = thirty. MEASURED.
 /// GH #1061: the access hive's six
 /// (`store`, `vault`, `invoke`, `policy`, `sweep`, `clock`) -- thirty-six.
-const CELLS_AFTER_GROW: usize = 36;
+/// GH #1247: talky's route stamp (`route`, `decide`) -- thirty-eight. MEASURED.
+/// GH #1248: talky's quick voice (`quick`) -- thirty-nine. MEASURED.
+const CELLS_AFTER_GROW: usize = 39;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -162,7 +164,12 @@ const CELLS_AFTER_GROW: usize = 36;
 /// forty-nine. Measured in the strand gate (50 with the probe, against 48).
 /// GH #1061: plus the access hive's six cells in both counts (the checked-in
 /// store and vault, and the four the instantiation grows around them).
-const CELLS_AFTER_COGNY: usize = 55;
+/// GH #1247: talky's route stamp (`route`, `decide`) is in [`CELLS_AFTER_GROW`]
+/// and so in this total too; `cogny` grows neither -- fifty-seven. Measured in
+/// the strand's test run (58 with the probe, against 56).
+/// GH #1248: talky's quick voice is in [`CELLS_AFTER_GROW`] and so in this
+/// total too -- fifty-eight.
+const CELLS_AFTER_COGNY: usize = 58;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -651,7 +658,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "two checked-in cells plus thirty-four instantiated ones: {after:?}"
+        "two checked-in cells plus thirty-seven instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.

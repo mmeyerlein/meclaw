@@ -1,7 +1,7 @@
 {
   "model_id": "openai/gpt-6-luna",
   "endpoint_class": "openrouter",
-  "measured_at": "2026-10-05T06:36:05Z",
+  "measured_at": "2026-10-16T19:06:04Z",
   "tool_version": "1",
   "params": {
     "temperature": "refused",
@@ -55,12 +55,12 @@
     },
     "K8": {
       "status": "green",
-      "note": "max_tokens 4096->32; params []; expected_dropped ['temperature']"
+      "note": "max_tokens 128000->32; params []; expected_dropped ['temperature']"
     },
     "K9": {
       "status": "green",
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 4.8e-05
+  "cost_usd": 0.001452
 }

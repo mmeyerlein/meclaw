@@ -245,6 +245,12 @@ fn build_tree(
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #1248: the quick voice is an `llm` cell on the same `${ctx.model}`
+    // start value as the brain; a tree booted from disk carries a literal.
+    patch(root, "main/talky/quick/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     // GH #555 — the one thing an instance says about files: the fence this
     // store writes its own seed set inside.
     let fence_s = fence.to_str().expect("a utf-8 fence").to_string();

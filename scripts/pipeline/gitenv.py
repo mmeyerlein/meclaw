@@ -22,6 +22,21 @@ GIT_REPO_VARS = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_P
                  "GIT_SHALLOW_FILE", "GIT_COMMON_DIR")
 
 
+# OR-TM-11 (H4 merge refused, 17.10.): with `rerere.enabled` (or an
+# `rr-cache` directory) in the repository git replays a recorded resolution of
+# an earlier conflict, and under `rerere.autoupdate` it stages it ("Staged
+# ... using previous resolution"): the path is no longer unmerged, and the
+# kit's merge decided from a resolution it never made. Every kit git call that
+# merges, reverts, rebases or cherry-picks runs with rerere off, whatever the
+# repository or global config says; the config itself is never touched.
+NO_RERERE = ("-c", "rerere.enabled=false")
+
+
+def git_argv(cwd, *args):
+    """argv of the kit's git call `git -C cwd <args>` with rerere off (`NO_RERERE`)."""
+    return ["git", *NO_RERERE, "-C", cwd, *args]
+
+
 def without_repo_env(env):
     """`env` without git's repository variables: a run's git is its tree's."""
     return {k: v for k, v in env.items() if k not in GIT_REPO_VARS}

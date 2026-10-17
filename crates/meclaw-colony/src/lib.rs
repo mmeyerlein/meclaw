@@ -20,6 +20,7 @@ pub mod db_conn;
 pub mod db_transfer;
 pub mod dead_letter;
 mod drain;
+pub mod drain_view;
 pub mod edge_table;
 pub mod env_file;
 pub mod factory;
@@ -90,8 +91,12 @@ pub use colony_dispatch::mutation_door_reply;
 pub use config::{CellHeader, EdgeSpec, GraphHints, HiveParams, ParsedConfig};
 pub use db_conn::{DbConn, QueryTimeout};
 pub use dead_letter::{DeadLetter, DeadLetterReason};
+pub use drain_view::{DrainView, with_drain_view};
 pub use edge_table::{Edge, EdgeDecision, EdgeTable, apply_edges, evaluate_edge};
-pub use factory::{CellFactory, CellFactoryRegistry, ContractView, SpawnedCellKind, WakeFn};
+pub use factory::{
+    CELL_ROOT_MARKER, CellFactory, CellFactoryRegistry, ContractView, SpawnedCellKind, WakeFn,
+    anchor_cell_root, check_cell_root, create_cell_root,
+};
 pub use hive_boundary::{
     HiveBoundary, HiveBoundaryTable, boundary_refusal, rebuild_hive_boundaries,
 };

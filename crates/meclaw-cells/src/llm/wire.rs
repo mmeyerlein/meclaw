@@ -26,6 +26,20 @@ pub const OPENAI_CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 /// (reference `openai/codex` @266c6920, `codex-api/src/endpoint/responses.rs:100`).
 pub const OPENAI_RESPONSES_PATH: &str = "/responses";
 
+/// GH #1239: default Anthropic base URL; the caller appends
+/// [`ANTHROPIC_MESSAGES_PATH`].
+pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
+
+/// GH #1239: the Messages endpoint path.
+pub const ANTHROPIC_MESSAGES_PATH: &str = "/messages";
+
+/// GH #1239: the `anthropic-version` header. A protocol constant like the
+/// path and no param: another version is another wire.
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// GH #1239: `error.details.error_code` of the 429 the spend cap answers.
+const ANTHROPIC_SPEND_CAP: &str = "enforced_spend_limit_reached";
+
 /// HTTP-layer error variants for OpenAI calls. Mapping to UBF `error_code`
 /// is `wire_error_to_code`.
 #[derive(Debug)]
@@ -736,6 +750,135 @@ pub async fn call_responses_timed(
     (result, timings)
 }
 
+/// GH #1239: the headers of a Messages call, in the order they are set.
+///
+/// The mapped headers first, minus every header this wire owns
+/// (`x-api-key`, `anthropic-version`, `Authorization`, case-insensitive):
+/// the key is the single credential and no param may displace or double it
+/// (the same secret-hygiene guard as `call_openai`). Then the version, then
+/// the key LAST. `None` sends no key at all (GH #271, see `apply_bearer`).
+pub(crate) fn messages_headers(
+    api_key: Option<&str>,
+    extra_headers: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = extra_headers
+        .iter()
+        .filter(|(name, _)| {
+            let owned = ["x-api-key", "anthropic-version", "authorization"]
+                .iter()
+                .any(|h| name.eq_ignore_ascii_case(h));
+            if owned {
+                tracing::warn!("ignoring attempt to set {name} via a mapped header");
+            }
+            !owned
+        })
+        .cloned()
+        .collect();
+    out.push(("anthropic-version".into(), ANTHROPIC_VERSION.into()));
+    if let Some(key) = api_key {
+        out.push(("x-api-key".into(), key.into()));
+    }
+    out
+}
+
+/// GH #1239: classify a non-2xx Messages reply from its raw body.
+///
+/// 529 `overloaded_error` lands with every 5xx in `Transient`: retryable in
+/// principle, the retry is the topology's call. The spend cap answers 429
+/// without `retry-after` and with `error.details.error_code =
+/// enforced_spend_limit_reached`: it keeps the `rate_limit` lane of every 429,
+/// but as `QuotaExhausted` (`kind: quota_exhausted`), because waiting a few
+/// seconds does not lift it. 400/404/422 keep the provider's sentence for the
+/// param-refusal check of the chat wire (GH #999 F5).
+pub(crate) fn classify_messages_status(status: u16, text: &str) -> WireError {
+    let body: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    let spend_cap = body
+        .pointer("/error/details/error_code")
+        .and_then(Value::as_str)
+        == Some(ANTHROPIC_SPEND_CAP);
+    match status {
+        401 | 403 => WireError::Unauthorized,
+        429 if spend_cap => WireError::QuotaExhausted {
+            resets_at: None,
+            plan_type: None,
+        },
+        429 => WireError::RateLimited,
+        500..=599 => WireError::Transient(format!("http {status}")),
+        404 => with_param_refusal(
+            WireError::ModelNotFound,
+            Some(status),
+            error_body_message(text),
+        ),
+        _ => with_param_refusal(
+            WireError::HttpStatus(status),
+            Some(status),
+            error_body_message(text),
+        ),
+    }
+}
+
+/// GH #1239: execute a Messages POST and return the parsed JSON body.
+///
+/// One JSON body, no stream (the cell refuses `stream` at birth). The whole
+/// roundtrip sits inside one `tokio::time::timeout` (A-timeout). `api_key`
+/// becomes `x-api-key`, set last and never logged ([`messages_headers`]).
+pub async fn call_messages(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+) -> Result<Value, WireError> {
+    call_messages_timed(client, url, api_key, extra_headers, body, timeout)
+        .await
+        .0
+}
+
+/// [`call_messages`] plus the per-phase [`WireTimings`] of that call (GH #124).
+pub async fn call_messages_timed(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+) -> (Result<Value, WireError>, WireTimings) {
+    let started = tokio::time::Instant::now();
+    let request_fut = async {
+        let mut req = client.post(url);
+        for (name, value) in messages_headers(api_key, extra_headers) {
+            req = req.header(name, value);
+        }
+        let resp = match req.json(body).send().await {
+            Ok(r) => r,
+            Err(e) => return (Err(WireError::Network(e.to_string())), None),
+        };
+        let ttfb = Some(ms_since(started));
+        let status = resp.status().as_u16();
+        let text = match resp.text().await {
+            Ok(t) => t,
+            Err(e) => return (Err(WireError::Network(e.to_string())), ttfb),
+        };
+        if (200..300).contains(&status) {
+            let parsed = serde_json::from_str::<Value>(&text)
+                .map_err(|e| WireError::BodyParse(e.to_string()));
+            return (parsed, ttfb);
+        }
+        (Err(classify_messages_status(status, &text)), ttfb)
+    };
+    let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
+        Ok(pair) => pair,
+        Err(_) => (Err(WireError::Timeout), None),
+    };
+    let timings = WireTimings {
+        ttfb_ms,
+        total_ms: ms_since(started),
+        attempts: 1,
+    };
+    (result, timings)
+}
+
 /// Copy a `HeaderMap` into a `HashMap<String, String>` with the
 /// `authorization` header value replaced by `<redacted>`.
 ///
@@ -747,7 +890,8 @@ pub fn redact_authorization(headers: &HeaderMap) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for (name, value) in headers.iter() {
         let key = name.as_str().to_string();
-        if key.eq_ignore_ascii_case("authorization") {
+        // GH #1239: the Messages wire carries its key as `x-api-key`.
+        if key.eq_ignore_ascii_case("authorization") || key.eq_ignore_ascii_case("x-api-key") {
             out.insert(key, "<redacted>".to_string());
         } else {
             out.insert(key, value.to_str().unwrap_or("").to_string());
@@ -1141,5 +1285,61 @@ mod tests {
         let r = redact_authorization(&h);
         assert_eq!(r.get("authorization"), Some(&"<redacted>".to_string()));
         assert_eq!(r.get("content-type"), Some(&"application/json".to_string()));
+    }
+
+    /// GH #1239: the Messages call carries the key as `x-api-key` plus the
+    /// protocol version, neither of them settable through a mapped header,
+    /// the key redacted like a bearer; 529 is transient, and the spend cap
+    /// stays in the rate-limit lane with its own kind.
+    #[test]
+    fn messages_wire_sets_key_and_version_and_types_429_and_529() {
+        use super::{classify_messages_status, messages_headers, wire_error_meta};
+        let extra = [
+            ("x-api-key".to_string(), "evil".to_string()),
+            ("Anthropic-Version".to_string(), "1999-01-01".to_string()),
+            ("authorization".to_string(), "Bearer evil".to_string()),
+            ("x-title".to_string(), "t".to_string()),
+        ];
+        let headers = messages_headers(Some("k"), &extra);
+        assert_eq!(
+            headers,
+            vec![
+                ("x-title".to_string(), "t".to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ("x-api-key".to_string(), "k".to_string()),
+            ]
+        );
+        let mut h = HeaderMap::new();
+        h.insert("x-api-key", "sk-ant-secret".parse().unwrap());
+        assert_eq!(
+            redact_authorization(&h).get("x-api-key"),
+            Some(&"<redacted>".to_string())
+        );
+
+        let overloaded = classify_messages_status(
+            529,
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        );
+        assert!(
+            matches!(overloaded, WireError::Transient(_)),
+            "{overloaded:?}"
+        );
+        assert_eq!(wire_error_to_code(&overloaded), "provider_error");
+        let spend = classify_messages_status(
+            429,
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"spend limit",
+                "details":{"error_code":"enforced_spend_limit_reached"}}}"#,
+        );
+        assert_eq!(wire_error_to_code(&spend), "rate_limit");
+        assert_eq!(wire_error_meta(&spend).unwrap()["kind"], "quota_exhausted");
+        let plain = classify_messages_status(
+            429,
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+        );
+        assert!(matches!(plain, WireError::RateLimited), "{plain:?}");
+        assert!(matches!(
+            classify_messages_status(401, ""),
+            WireError::Unauthorized
+        ));
     }
 }

@@ -149,7 +149,9 @@ pub enum ManifestOutcome {
         /// when no entry replaced a node.
         changes: Vec<super::NodeChange>,
     },
-    /// Entry `failed_at` (1-based) was refused.
+    /// Entry `failed_at` (1-based) was refused; `0` when the door refused the
+    /// sender for the whole manifest (`sender_out_of_scope`), the refused
+    /// entry's position then rides in `details`.
     Rejected {
         /// The mutation ids of the entries BEFORE the refused one, in order.
         ids: Vec<String>,

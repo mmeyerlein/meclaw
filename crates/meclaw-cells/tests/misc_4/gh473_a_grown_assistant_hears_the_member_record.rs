@@ -929,6 +929,9 @@ fn quiesce(dir: &std::path::Path, counter: &mut u32, base_url: &str) {
                     sched["cron"] = json!(NEVER);
                 }
             }
+            // GH #1247: talky's route decider speaks the decisions road, which
+            // the mock does not; unpointed it stamps every turn `talk`.
+            "llm" if v["params"]["provider"] == json!("decisions") => continue,
             "llm" => {
                 v["params"]["base_url"] = json!(base_url);
                 v["params"]["model"] = json!("gpt-4o-mock");

@@ -1,7 +1,7 @@
 {
-  "id": "gen-1791182141-jpD5wn9fifBtxx6sNxON",
+  "id": "gen-1792177829-e16wS9LwU1SDMXqp33SE",
   "object": "chat.completion",
-  "created": 1791182141,
+  "created": 1792177829,
   "model": "google/gemini-3.8-flash",
   "provider": "Google",
   "system_fingerprint": null,
@@ -14,15 +14,21 @@
       "native_finish_reason": "MAX_TOKENS",
       "message": {
         "role": "assistant",
-        "content": "\"\n",
+        "content": null,
         "refusal": null,
-        "reasoning": null,
+        "reasoning": "**Processing Instructions**\n\nI've analyzed the request, and the core instruction is to respond solely with \"OK.\" My process is now focused on fulfilling this singular directive.\n\n",
         "reasoning_details": [
           {
             "type": "reasoning.text",
-            "signature": "AY89a1+dmNW6ov/lo5Z2d4yqnHPJ6bRKrpymVhXIde0uXFUBr+HYLmJcrRnR8nzVFu0kp3KrPG8WVB9yX+NKKT0LrbQik0ocl2fHbsSpflYz/Cp0i6b+1E9D284mqvawH3L40pfXwn2FvsjZ2TWrn3nLSnd0zywEcYiX2v3/a4CIGMlyfaAwNHtBafEpsIpLHHgakP9z2wa3vhG59a1bphhvEbyuWING7Qz/J1rlsNOj9NEc4YmDICOTGMqsSJ8Rjl6LPzmSO8sNCi+/5ZTq9NuKUeTfknh6DX6iKK0rXw==",
+            "text": "**Processing Instructions**\n\nI've analyzed the request, and the core instruction is to respond solely with \"OK.\" My process is now focused on fulfilling this singular directive.\n\n",
             "format": "google-gemini-v1",
             "index": 0
+          },
+          {
+            "type": "reasoning.encrypted",
+            "data": "AY89a1+VSX4RY5WN/m3oGY/fFUQitZeTQtlUPvlAGyl5kLgF+Y5r45LLLnfqVmBGLOaMb7SjoiR7wLxbSybXkZZvwR/t6PxQDPextQ37dUzlPJkVR4pGPdXMPEGE4QQzrEWMDXbUMXSELKUBqQtPUO4oh6WuWg03BYsTpKCYFtwcKusuF0NSTZZSrcXSNtNoLG0N+cAfqN0pvt0gxUT7FUlYeb9fjUlZR8W+Q+W82fkd4Iiu+BvJwcE5W291Lgaaq/kqecFSDqA5euWNgfv9qDRgV6q03c6Bgk2ggbpuktBJcPBtfJAG465z0Q==",
+            "format": "google-gemini-v1",
+            "index": 1
           }
         ]
       }
@@ -30,9 +36,9 @@
   ],
   "usage": {
     "prompt_tokens": 9,
-    "completion_tokens": 28,
-    "total_tokens": 37,
-    "cost": 0.0001106325,
+    "completion_tokens": 29,
+    "total_tokens": 38,
+    "cost": 0.000114345,
     "is_byok": false,
     "prompt_tokens_details": {
       "cached_tokens": 0,
@@ -41,12 +47,12 @@
       "video_tokens": 0
     },
     "cost_details": {
-      "upstream_inference_cost": 0.00011175,
+      "upstream_inference_cost": 0.0001155,
       "upstream_inference_prompt_cost": 6.75e-06,
-      "upstream_inference_completions_cost": 0.000105
+      "upstream_inference_completions_cost": 0.00010875
     },
     "completion_tokens_details": {
-      "reasoning_tokens": 26,
+      "reasoning_tokens": 29,
       "image_tokens": 0,
       "audio_tokens": 0
     }

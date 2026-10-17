@@ -230,6 +230,10 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, src: &std::path::Path, ba
 fn llm_cells_of(composite: &str) -> Vec<String> {
     let mut cells: Vec<String> = brains_of(composite).iter().map(|b| b.to_string()).collect();
     cells.push("curator/summarizer".to_string());
+    // GH #1248: talky's quick voice, the second model cell behind its curator.
+    if composite == "talky" {
+        cells.push("quick".to_string());
+    }
     cells
 }
 

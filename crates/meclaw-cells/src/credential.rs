@@ -80,6 +80,35 @@ pub fn grant_param(
     }
 }
 
+/// GH #1235 (T6-22): a secret param takes no `${VAR}`.
+///
+/// The token bound the secret from the environment of the colony process,
+/// which every cell spawned by it can read; a credential grant hands the
+/// secret sealed to the one cell it is granted to (GH #1059). Checked on the
+/// params as the FILE declares them (`CellFactory::validate_declared_params`),
+/// at the boot and at the mutation door. A literal is not this rule's to
+/// refuse (register 353); the refusal names the key and never the value.
+///
+/// # Errors
+/// `"<key>: …"` when the declared value is a string holding a `${` token.
+pub fn refuse_env_secret(
+    key: &str,
+    declared: Option<&Value>,
+    grant_key: &str,
+) -> Result<(), String> {
+    if declared
+        .and_then(Value::as_str)
+        .is_some_and(|s| s.contains("${"))
+    {
+        return Err(format!(
+            "{key}: a secret takes no ${{VAR}} -- the colony's environment is readable by every \
+             cell it spawns; name a credential grant in {grant_key} (the vault delivers the \
+             secret sealed); the value is not echoed"
+        ));
+    }
+    Ok(())
+}
+
 /// A millisecond credential param read from hand-parsed params: absent or
 /// `null` is `default`; anything but a non-negative integer is refused by the
 /// param's name (review V2 M3, see [`grant_param`]).
@@ -373,8 +402,10 @@ struct Round<T> {
 }
 
 /// How many superseded request ids a slot remembers, to tell a late box from a
-/// bad one. A round is re-asked at most once per `wait_ms`, so a handful
-/// covers any box that is merely slow; an older one is just a bad box.
+/// foreign one. A round is re-asked at most once per `wait_ms`, so a handful
+/// covers any box that is merely slow; an older one carries a call id the slot
+/// no longer knows and is refused as unsolicited before any key is used
+/// (GH #1252), like the box of a replaced instance.
 const STALE_ROUNDS: usize = 8;
 
 struct Slot<T> {
@@ -616,8 +647,9 @@ impl<T: Send + 'static> CredentialSlots<T> {
     /// (`messages[].text` of the `tool_result`), else by the request's call id
     /// (the `tool_result` id), else — a bare `{"sealed": …}` — to the one slot
     /// with a request in flight. A box whose call id names a SUPERSEDED request
-    /// is late and discarded; anything else is opened with the slot's recipient
-    /// key, which is consumed either way.
+    /// is late and discarded; a box whose call id names no request of the slot
+    /// is unsolicited and opens nothing (GH #1252); anything else is opened with
+    /// the slot's recipient key, which is consumed either way.
     ///
     /// # Errors
     /// [`Refusal`] — the cell answers the delivery with
@@ -655,6 +687,16 @@ impl<T: Send + 'static> CredentialSlots<T> {
             .is_some_and(|id| slot.stale.iter().any(|s| s == id))
         {
             return Err(Refusal::Late { grant });
+        }
+        // GH #1252: a box whose call id this slot never issued (measured: the
+        // late box of an instance `replace_nodes` swapped out, orga lab) is
+        // refused BEFORE the key is taken -- opening it spent the open round's
+        // key, and the round's own box then found none (three rounds, ~40 s).
+        // A box without a call id (a bare `{"sealed": …}`) keeps the old path.
+        if let (Some(id), Some((_, asked))) = (call_id.as_deref(), slot.recipient.as_ref())
+            && id != asked.as_str()
+        {
+            return Err(Refusal::Unsolicited);
         }
         let Some((pair, _)) = slot.recipient.take() else {
             return Err(Refusal::Unsolicited);
@@ -855,8 +897,23 @@ async fn warden<T: Send + 'static>(
             Err(ExpiryCause::Deadline { wait_ms })
         }
     };
+    // Close BEFORE draining (GH #1252, finding KV2-N1): the receiver lives on
+    // until this function returns, and `on_expired` below awaits — in the
+    // product it pushes one pending receipt per item. An item parked in that
+    // window used to land in this round's buffer (`try_send` Ok) and go down
+    // with the receiver: no answer, no receipt. Closed, `park` gets
+    // `TrySendError::Closed` and the item opens the next round instead.
+    items.close();
+    // Drain with `recv()` until `None`, not `try_recv()`: tokio only promises a
+    // lossless drain after `close()` that way (`sync/mpsc/bounded.rs`, `close`).
+    // `try_send` takes its permit first and writes afterwards; in that gap
+    // `try_recv` reports `Empty`, the loop would end and the item land in the
+    // closed buffer after the drain. `recv()` waits for it and returns `None`
+    // only once the semaphore is idle. It cannot hang: after `close()` no new
+    // permit is granted, and the only open ones live inside a `try_send`
+    // (there is no `reserve`/`Permit` in this module).
     let mut held = Vec::new();
-    while let Ok(item) = items.try_recv() {
+    while let Some(item) = items.recv().await {
         held.push(item);
     }
     match reply {

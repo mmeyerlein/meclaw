@@ -120,6 +120,18 @@ const SEAMS: &[Row] = &[
         Some("reply_to_consult"),
         Seam::Door,
     ),
+    // GH #1247: a turn stamped `complex`/`research` leaves through the curator
+    // on `consult`, no model tool call -- the same crossing, a model call on
+    // the core's side.
+    row(ASSISTANT, "./talky", "./cogny", "consult", None, Seam::Door),
+    row(
+        ASSISTANT,
+        "./talky-chat",
+        "./cogny",
+        "consult",
+        None,
+        Seam::Door,
+    ),
     row(ASSISTANT, "./cogny", "./talky", "answer", None, Seam::Door),
     row(
         ASSISTANT,
@@ -148,6 +160,8 @@ const SEAMS: &[Row] = &[
         Seam::CuratorEntry,
     ),
     row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+    // GH #1248 (T4-09): the quick voice's round, the brain's edge once more.
+    row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
     // A close job enters the curator (GH #940, ADR-0002 E8): since a turn of
     // another round seals its channel's generation, a `close` can leave the
     // turn's own chain mid-turn -- the night's leaves a fresh root. The edge
@@ -372,6 +386,18 @@ const SEAMS: &[Row] = &[
         None,
         Seam::Door,
     ),
+    // GH #1249: the recurrence pass, armed by the same booked receipt as the
+    // entity night. It is three store rounds and one dreamer call, nothing in it
+    // routes back to the dream lane, and it starts at the tail of the night's
+    // chain.
+    row(
+        MEMORY_HIVE,
+        "./dream-glue",
+        "./recur",
+        "recur",
+        None,
+        Seam::Door,
+    ),
     // The entity night's own round (GH #1057 review, finding 6): a backfill
     // pages through the facts and a delta writes in bundles of at most 500
     // ops, every page and every write a step of its own. The step restores
@@ -469,7 +495,9 @@ fn fits(r: &Row, f: &Found) -> bool {
     r.template == f.template
         && r.from == f.from
         && r.to == f.to
-        && f.condition.contains(&format!("hop.route == '{}'", r.route))
+        && r.route
+            .split('|')
+            .all(|v| f.condition.contains(&format!("hop.route == '{v}'")))
         && r.tool
             .is_none_or(|t| f.condition.contains(&format!("hop.tool_name == '{t}'")))
 }
@@ -576,10 +604,14 @@ fn has_counter(condition: &str) -> bool {
     implies(condition, &is_counter)
 }
 
-/// Does every branch of the condition require `<key> == '<value>'`?
+/// Does every branch of the condition require `<key> == '<value>'`? A value
+/// `a|b` accepts either alternative in a branch (GH #1247).
 fn requires(condition: &str, key: &str, value: &str) -> bool {
-    let want = format!("{key} == '{value}'");
-    implies(condition, &|t: &str| t == want)
+    let wants: Vec<String> = value
+        .split('|')
+        .map(|v| format!("{key} == '{v}'"))
+        .collect();
+    implies(condition, &|t: &str| wants.iter().any(|w| t == w))
 }
 
 #[test]

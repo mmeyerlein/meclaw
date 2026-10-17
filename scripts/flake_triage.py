@@ -613,7 +613,7 @@ def short_runs(cases, stats, count):
 
 # --- the Python class (`--unittest`) -------------------------------------------------
 
-_PY_DURATION = re.compile(r"^\s*([0-9.]+)s\s+(\w+) \(([\w.]+)\)\s*$")
+_PY_DURATION = re.compile(r"^\s*([0-9.]+)s\s+(\w+) \(([\w.-]+)\)\s*$")
 _PY_FRAME = re.compile(r'^\s*File "([^"]+)", line (\d+)')
 _PY_BLOCK_END = re.compile(r"^(?:={20,}|-{20,})$")
 

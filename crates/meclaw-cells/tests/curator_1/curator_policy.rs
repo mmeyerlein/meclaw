@@ -2705,6 +2705,9 @@ fn rb_data_on(
 /// `system_hash_sent`), `blocks`, and -- when a test sets them -- the
 /// `session_slots` the call was parked with and `handover_audience`. Returns
 /// the message that leaves for the model and the ledger ops that go with it.
+/// A ledger may name the seam's `hop` (its `path` picks the way, GH #1247) and
+/// the `route` of the message to return (`brain` by default; `quick` is the
+/// quick call or, on a consult's way, its bridge).
 fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, Value>) {
     let list = |k: &str| {
         ledger
@@ -2713,8 +2716,13 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
             .filter(Value::is_array)
             .unwrap_or_else(|| json!([]))
     };
+    let hop = ledger
+        .get("hop")
+        .cloned()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
     let slim = json!({"session": session, "turn": "t9", "iter": "0",
-                      "plan": ledger["plan"].to_string(), "hop": {},
+                      "plan": ledger["plan"].to_string(), "hop": hop,
                       "session_slots": list("session_slots")});
     let leaf_hash = list("slots")
         .as_array()
@@ -2745,9 +2753,10 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
         ("w-blocks", list("blocks")),
     ];
     let (out, err) = policy_step("win", aud, json!({}), &legs);
+    let route = ledger["route"].as_str().unwrap_or("brain");
     let brain = out
         .iter()
-        .find(|m| m["header"]["route"] == "brain")
+        .find(|m| m["header"]["route"] == route)
         .cloned()
         .unwrap_or_else(|| panic!("a call leaves for the model: {out:?} {err}"));
     (brain, out.first().map(ops_of).unwrap_or_default())
@@ -3041,6 +3050,80 @@ fn overlapping_calls_of_two_rounds_each_leave_only_their_own_gated_leaves() {
         "{held}"
     );
     assert!(held.contains("for e and b"), "{held}");
+}
+
+/// The quick way and its bridge leave on a model cell of their own,
+/// `./quick` (GH #1248), and that `llm` keeps ONE system tree too. A quick
+/// call that sent only the families with leaves left the summary and the pin
+/// of one round standing for the quick call of the next: a turn of another
+/// channel heard them (re-check I1, the class of GH #925). So the gated and
+/// the session families go whole on these calls as well, empty when the round
+/// sees nothing.
+#[test]
+fn a_quick_turn_of_another_round_never_sees_the_gated_leaves_of_the_last() {
+    if !shipped() {
+        return;
+    }
+    let stamp = |secs: i64| {
+        (chrono::Utc::now() - chrono::Duration::seconds(secs))
+            .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+            .to_string()
+    };
+    let hash_of = |el: &Value| sha256_hex(&canonical(el));
+    let summary = json!({"path": "history.summary", "text": "what e and a said"});
+    let pin_a = json!({"type": "pin", "source": "orga", "text": "for e and a"});
+    let ledger = |path: &str| {
+        json!({
+            "plan": {"v": 1, "cover": 0, "keep": [], "at": stamp(10)},
+            "slots": [{"path": summary_slot(EA), "hash": hash_of(&summary),
+                       "owner": "curator"}],
+            "sum_audience": EA,
+            "pins": [{"hash": hash_of(&pin_a), "source": "orga", "until": "", "at": stamp(30),
+                      "audience_set": EA}],
+            "blocks": [
+                {"hash": hash_of(&summary), "kind": "system", "body": canonical(&summary)},
+                {"hash": hash_of(&pin_a), "kind": "pin", "body": canonical(&pin_a)}
+            ],
+            "sent": "{}",
+            "hop": {"path": path},
+            "route": "quick",
+        })
+    };
+    let ea = round_of(&["member:e", "member:a"]);
+    let eb = round_of(&["member:e", "member:b"]);
+    let (a, _) = win_step(&ea, "sa", &ledger("talk"));
+    let mut only_a = Map::new();
+    only_a.insert(short_id(&pin_a), json!({"text": "for e and a"}));
+    assert_eq!(
+        a["system"]["history"],
+        json!({"$replace": true, "summary": {"text": "what e and a said"}})
+    );
+    assert_eq!(
+        a["system"]["pinned"],
+        json!({"$replace": true, "orga": only_a})
+    );
+    let (b, _) = win_step(&eb, "sb", &ledger("talk"));
+    let (bridge, _) = win_step(&eb, "sb", &ledger("complex"));
+    assert_eq!(bridge["header"]["bridge"], json!("consult"), "{bridge}");
+    for (what, call) in [("quick call", &b), ("bridge", &bridge)] {
+        for fam in ["history", "pinned"] {
+            assert_eq!(
+                call["system"][fam],
+                json!({"$replace": true}),
+                "B's {what} sends `{fam}` whole and empty: {call}"
+            );
+        }
+        // What `./quick` holds when it answers B, A's quick call first.
+        let mut held = Map::new();
+        for c in [&a, call] {
+            llm_takes(&mut held, &c["system"]);
+        }
+        let held = Value::Object(held).to_string();
+        assert!(
+            !held.contains("what e and a said") && !held.contains("for e and a"),
+            "B's {what}: {held}"
+        );
+    }
 }
 
 /// The rule the collector sets on `instructions.peer` while a peer turn

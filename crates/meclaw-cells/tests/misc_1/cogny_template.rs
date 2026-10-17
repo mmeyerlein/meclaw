@@ -781,6 +781,11 @@ fn no_lookup_lane_survives_in_the_shipped_mechanism() {
         meclaw_core::serde_json::json!(["*"]),
         "and the declared list is what reaches the memory's `schemas` cell: {collector:?}"
     );
+    // T5-10 (GH #1246): the core folds its menu into families; the voices stay flat.
+    assert_eq!(
+        collector["override_params"]["assemble"]["fold_tools"], "1",
+        "the core sees one tool per family: {collector:?}"
+    );
 }
 
 /// Drop every `because` and `description` subtree, recursively. What is left is

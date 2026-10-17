@@ -1,4 +1,4 @@
-# `affinity@3.10.5`
+# `affinity@3.11.0`
 
 The curated record of the people and agents a colony knows -- as one hive of existing
 cell types. No new cell type, no Rust, and no model: every judgement in here is a
@@ -679,7 +679,7 @@ so without a second declaration an `import` would write rows straight past the o
 sentence this hive is built on. `store/config.json` therefore also carries
 `"write_surface": "internal"` in its **`contract`** block. Both halves compute the same
 owning scope, so the store has exactly one boundary; an `export` is a read and neither
-half bounds it. The transfer lane of `affinity@3.10.5` is not an exception to that and does
+half bounds it. The transfer lane of `affinity@3.11.0` is not an exception to that and does
 not need to be: `./porter` stands **inside** the hive scope and writes through the store's
 own ops, so it is bounded by the same sentence as `./gate` is. `clock` carries the contract half as well: its `cell.db` is where the
 schedules live, and a planted schedule fires into `./push` with an `emit_to` of the
@@ -901,12 +901,12 @@ porter names the directory and raises `export_done` off the slot's own receipt
 below is therefore what an IMPORT part looks like — and what one of those files, read back the
 other way round, becomes.
 
-**Redirect that fence before the first export.** The shipped default is
-`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is
-this hive's CURATED RECORD — the identities, the statements and the disclosure rules that decide
-who may be told what. Nothing about the fence is a secret and nothing about it is checked: the
-store writes where `params` say, so name a directory of your own with `override_params` on
-`"affinity/store"` before anything is exported.
+**Where the export lands.** The shipped fence is the relative `export`, a directory of this
+hive (GH #1234): what lands under it is this hive's CURATED RECORD — the identities, the
+statements and the disclosure rules that decide who may be told what — and it stays inside the
+hive that holds it, never in a directory the machine shares. An absolute path via
+`override_params` on `"affinity/store"` still works; collect the holders' directories into one
+place before `build_import.py`.
 
 Nine parts, one per table, each a whole JSON object. There is no monolithic file: the store
 cannot return two result sets at once, so a part *is* one table.
@@ -1005,7 +1005,7 @@ enters as the seed of a new hive, where the template's default decides, never in
 that names the column (`schema_mismatch`): a missing column without a default, a changed type, a
 column this store does not declare, a header `version` newer than the table's.
 
-`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.10.5`) and
+`affinity` hangs directly under the member (`member/affinity`, a `ref` to `affinity@3.11.0`) and
 its `in_export` is fanned by the member's own. The sink files the parts under
 `<export_dir>/affinity/seed/`, and a directory per hive is a requirement rather than tidiness:
 `memory-hive` and `affinity` both have a table called `entities`, and a flat sink would have

@@ -68,6 +68,7 @@ import tempfile
 import time
 
 from . import register as _register
+from . import schedule as _schedule
 
 DEFAULT_ROOT = "/srv/target"
 
@@ -1064,16 +1065,80 @@ def mark_partial(lane, target):
             fail="the partial mark on %s failed" % lane.name)
 
 
+# GH #1199 (OR-TM-14): the repository a lane tree was checked out from, in the tree's
+# own git directory (`meclaw.git/worktrees/<name>/`, outside the checkout, so `git
+# clean` never takes it). `origin` is the gate's repository id (`schedule.CORE_REPO`
+# for the core -- the one core id, re-check M2 --, the register's `repo` for a satellite).
+ORIGIN_FILE = "meclaw-lane-origin"
+
+# What the tree on the lane says about its origin, before anything travels:
+# `origin <id>` from the file, `head <sha>` for a tree from before the file, `none`
+# when nothing is at the path, `unreadable` for anything there git cannot read as a
+# tree of its own (no `.git`, a `.git` that points nowhere) -- re-check M1.
+ORIGIN_PROBE = r'''[ -e "$1" ] || [ -L "$1" ] || { echo none; exit 0; }
+[ -e "$1/.git" ] && gd=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || { echo unreadable; exit 0; }
+if [ -f "$gd/%s" ]; then printf 'origin %%s\n' "$(head -n 1 "$gd/%s")"
+else printf 'head %%s\n' "$(git -C "$1" rev-parse -q --verify HEAD 2>/dev/null)"; fi''' % (
+    ORIGIN_FILE, ORIGIN_FILE)
+
+
+def check_origin(lane, top, tree, origin):
+    """Refuse (`LaneError` code 5) a push of the repository `origin` into a lane tree
+    another repository checked out -- nothing travels, the tree stays as it is (No-Delete).
+    The overlay hash after the sync could not see it (GH #1199): it compares the lane
+    with this tree AFTER the checkout had rewritten the foreign one. A tree from before
+    the origin file counts as this repository's only when its HEAD is a commit this
+    repository knows. Fail closed (re-check M1): only `none` (nothing at the path), this
+    repository's `origin` and a known `head` pass; every other answer refuses."""
+    said = _remote(lane, "bash -c %s _ %s" % (q(ORIGIN_PROBE), q(tree)),
+                   fail="the host %s did not answer" % lane.name).stdout.decode(errors="replace")
+    lines = said.splitlines()
+    word, _, value = (lines[0].strip() if len(lines) == 1 else "").partition(" ")
+    value = value.strip()
+    way = "it stays as it is"
+    if word == "none" and not value:
+        return
+    if word == "origin" and value == origin:
+        return
+    if word == "head" and re.fullmatch(r"[0-9a-f]{40,64}", value):
+        if subprocess.run(["git", "-C", top, "cat-file", "-e", value + "^{commit}"],
+                          capture_output=True).returncode == 0:
+            return
+        foreign = "a commit %s this repository does not know" % value[:12]
+        # re-check M4: a tree of this repository whose last pushed commit is gone here
+        # (a rebased or dropped strand) has no other way out -- No-Delete keeps it
+        way = ("if it is this repository's tree whose commit was dropped here (a rebased or "
+               "discarded strand), write its origin once on %s as a hand step the wave records: "
+               "echo %s >\"$(git -C %s rev-parse --absolute-git-dir)/%s\" -- never delete the "
+               "tree" % (lane.name, origin, q(tree), ORIGIN_FILE))
+    elif word == "origin" and value:
+        foreign = "the repository %r" % value
+    elif word == "unreadable" and not value:
+        raise LaneError(5, "refused -- %s on %s is a directory git cannot read as a lane tree "
+                        "(no .git of its own, or one that points nowhere); nothing travels, it "
+                        "stays as it is -- look at it on the host, never delete it by hand "
+                        "(GH #1199)" % (tree, lane.name))
+    else:
+        raise LaneError(5, "refused -- the probe of the tree %s on %s answered %r, not none, "
+                        "origin or head; nothing travels (GH #1199: fail closed)"
+                        % (tree, lane.name, said[:120]))
+    raise LaneError(5, "refused -- the tree %s on %s holds %s, this push is the repository %r; "
+                    "%s (GH #1199: a lane tree is never overwritten by another repository)"
+                    % (tree, lane.name, foreign, origin, way))
+
+
 def push(lane, repo_root, tree_name, cargo, slot=None, kit=None, mirrors=(), assets=None,
-         pins=None):
+         pins=None, origin=_schedule.CORE_REPO):
     """Commit + overlay of `repo_root` onto `lane`.
 
     `cargo=True` checks out into the build path of the slot (`paths`: `<root>/tree`
     or `<root>/slot/<n>/tree`), otherwise into `<root>/wt/<tree_name>`. Returns `{rev, overlay_hash, browser, tree,
     target, ws_root}`, plus `goldens_before` ({path: sha256} of the lane
     tree's goldens) when a golden switch is set here -- `fetch(pushed=...)`
-    brings back what the run changed. A tracked secret or a different tree on
-    the lane raises `LaneError` code 5; a lane that does not answer code 2.
+    brings back what the run changed. A tracked secret, a tree another
+    repository checked out (`check_origin`, before anything travels; `origin` is
+    this repository's id, GH #1199) or a different tree on the lane after the
+    sync raises `LaneError` code 5; a lane that does not answer code 2.
 
     W10 (satellites): `kit=<core root>` also pushes the core's pipeline kit
     (`push_kit`, result `kit`), `mirrors=[<repo>, ...]` the source mirrors
@@ -1094,6 +1159,7 @@ def push(lane, repo_root, tree_name, cargo, slot=None, kit=None, mirrors=(), ass
     if hits:
         raise LaneError(5, "refused -- tracked secret file(s), they would leave this machine:\n"
                         + "\n".join("  " + h for h in hits))
+    check_origin(lane, top, tree, origin)
 
     _remote(lane, "mkdir -p %s && { test -d %s || git init -q --bare %s; }"
             % (q(root + "/wt"), q(bare), q(bare)), fail="the host %s did not answer" % lane.name)
@@ -1146,7 +1212,10 @@ def push(lane, repo_root, tree_name, cargo, slot=None, kit=None, mirrors=(), ass
             mkdir -p %(p)s
             git --git-dir=%(b)s worktree prune
             git --git-dir=%(b)s worktree add -q --force --detach %(t)s %(sha)s
-        fi""" % {"t": q(tree), "p": q(os.path.dirname(tree)), "b": q(bare), "sha": sha},
+        fi
+        echo %(o)s >"$(git -C %(t)s rev-parse --absolute-git-dir)"/%(of)s""" % {
+            "t": q(tree), "p": q(os.path.dirname(tree)), "b": q(bare), "sha": sha,
+            "o": q(origin), "of": ORIGIN_FILE},
             fail="the checkout on %s failed" % lane.name)
 
     if overlay:

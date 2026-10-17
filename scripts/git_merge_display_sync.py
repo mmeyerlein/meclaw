@@ -88,8 +88,10 @@ def merge_texts(base: str, ours: str, theirs: str) -> tuple[str, bool]:
             path = pathlib.Path(tmp) / name
             path.write_text(text, encoding="utf-8")
             paths.append(str(path))
-        done = subprocess.run(["git", "merge-file", "-p", "-L", "ours", "-L", "base",
-                               "-L", "theirs", *paths], capture_output=True, text=True)
+        # rerere off like every merge of the kit (OR-TM-11, `pipeline/gitenv.NO_RERERE`)
+        done = subprocess.run(["git", "-c", "rerere.enabled=false", "merge-file", "-p",
+                               "-L", "ours", "-L", "base", "-L", "theirs", *paths],
+                              capture_output=True, text=True)
     return done.stdout, done.returncode != 0
 
 

@@ -1,7 +1,7 @@
-# `member@2.5.32`
+# `member@2.6.0`
 
 One person, as a level. **Eight holders, three open containers and no cell of
-its own** — eleven nodes and one hundred and three edges.
+its own** — eleven nodes and one hundred and four edges.
 
 | holder | what it holds |
 |---|---|
@@ -168,6 +168,7 @@ sends.
 | `recall` | consumed — into the memory as `in_query` |
 | `brief` | consumed — into the record as `in_brief`, the asker and the reply-to token stamped (since 1.10.0, see *The brief road*) |
 | `sidecar` | consumed, and **sorted by section** (since 1.7.0, [#607](https://github.com/mmeyerlein/meclaw/issues/607)): `hop.section == 'memory'` into the memory as `in_remember`, everything else into `./apps`. `extraction` still carries the memory block on its own lane beside it |
+| `answer_check` | consumed, into `./apps` (since [#1255](https://github.com/mmeyerlein/meclaw/issues/1255)): the sent answer for the app that checks it, one message per section a surface's splitter names in its knob `answer_check`. Declared `at: ["./apps"]` like `sidecar`, and drawn into the container by this level for the same reason; the installing mutation draws `./apps -> ./apps/<app>` on `hop.section`. The answer text never leaves the member |
 | `write` | **both**: fanned onto the memory's `in_close_pass` *and* out on `write` |
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
 | `error`, `build` | out, untranslated. Nothing here consumes them |
@@ -879,7 +880,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.5.32` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.6.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1115,7 +1116,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.5.32"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.6.0"}]
 }}
 ```
 
@@ -1124,7 +1125,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.7.19"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.8.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1348,7 +1349,7 @@ credential only while it holds none, and the key in its config counts as one: se
 a grant beside a non-empty `api_key` and the cell keeps spending the environment
 key, never asks, and the four v-lanes carry nothing — quietly, because a model
 that answers looks exactly like a model that answers. Both brain templates ship
-`api_key: "${OPENROUTER_API_KEY}"`, so a generation grown without this line is a
+`api_key: ""`, so a generation grown with a key in that line is a
 generation whose credential lane is inert, and `api_key` being immutable means
 the repair is a new generation rather than a message.
 
@@ -1406,6 +1407,7 @@ at the rim of its member, and each one is a class of edge with an owner
 | **offers** | a v-lane per direction *in*: the tool call and the menu tick end on the connect points the app declares for itself. The answers come back the ordinary way — `tool_result` and `tool_schemas` up into the container, restamped to `in_tool` and `in_menu` by the level's own two edges | the mutation for the v-lanes, the **level** for the two restamp edges |
 | **writes** | `view` and `error` up, exactly as since GH #459, carried on by `./apps -> ./channels` | the mutation for the app's own outbound edge, the level for the rest |
 | **is written to** | a section of the block the front model appends to its answer, since 1.7.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). No round, no call: the model writes the section into the same fence it writes the memory into, and it arrives as an ordinary message on `sidecar` carrying `hop.section` | **the level** for `./assistants -> ./apps`, the mutation for `./apps -> ./apps/<app>` on the section name |
+| **checks an answer** | the sent answer itself, since [#1255](https://github.com/mmeyerlein/meclaw/issues/1255): a surface's splitter whose knob `answer_check` names the app's section raises it on every answer, written section or not, on the lane `answer_check` carrying `hop.section` | **the level** for `./assistants -> ./apps`, the mutation for `./apps -> ./apps/<app>` on `hop.route == 'answer_check' && hop.section == '<section>'` |
 
 `event` and `receipt` still come down from a screen the way they did, addressed
 by the owner the display stamped.

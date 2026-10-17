@@ -65,6 +65,19 @@ impl Default for VoiceCellFactory {
 }
 
 impl CellFactory for VoiceCellFactory {
+    /// GH #1235 (T6-22): no slot's `api_key` takes `${VAR}`; each key comes
+    /// sealed under the slot's own `credential_grant_id`.
+    fn validate_declared_params(&self, declared: &JsonValue) -> Result<(), String> {
+        for slot in ["stt", "tts", "duplex"] {
+            crate::credential::refuse_env_secret(
+                &format!("{slot}.api_key"),
+                declared.get(slot).and_then(|s| s.get("api_key")),
+                &format!("{slot}.credential_grant_id"),
+            )?;
+        }
+        Ok(())
+    }
+
     fn validate_params(&self, params: &JsonValue) -> Result<(), String> {
         VoiceParams::parse(params).map(|_| ())
     }

@@ -89,7 +89,9 @@
           "route": "in_sealed",
           "at": [
             "./brain",
-            "./curator/summarizer"
+            "./quick",
+            "./curator/summarizer",
+            "./decide"
           ],
           "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on the cell that asked (`./brain` or `./curator/summarizer`) and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds. A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
@@ -120,6 +122,10 @@
           "because": "one section of the block a turn's answer carried, as the model wrote it: hop.section names the section, hop.turn_id the round it answered (GH #916), the body carries {messages: [], section, payload}. ONE message PER SECTION -- never repaired, never re-serialised, and never judged here, so a parent distributes on hop.section and a section this composite has never heard of needs no change to it. Since talky@5.1.0 this port replaces `extraction`, which carried exactly one thing (the memory annotation, as raw text) and is now the section `memory` on this route (GH #605); a parent still wired on `hop.route == 'extraction'` writes nothing. Since talky@4.1.0 this is how per-turn extraction travels at all: it is NOT a tool call any more, so a parent that wired the old `hop.tool_name == 'remember'` lane rewires it to this route too. The curator's own sections (`window`, `gap`) never travel here, and `memory` travels through the curator unchanged (GH #892). Since GH #949 the section `things` does not travel here either: it goes to `./curator` and leaves as `thing_seen`. It is a lane and not an obligation: without the block contract in the brain's instructions there is nothing to cut and nothing ever travels here. Since GH #895 one more section leaves here that no answer carried: in a duplex call `./curator` sends a gap's find as `fact` for the voice model"
         },
         {
+          "route": "answer_check",
+          "because": "the sent answer for the checker this composite declares (GH #1255): the splitter's knob `answer_check` names the sections whose checker reads it, and for each, on every answer -- the section written, empty or missing alike -- ONE message leaves here after the answer: `hop.section` names the section, `hop.turn_id` the round, `hop.section_written` \"1\" when the section also left on `sidecar`, else \"0\"; the body is `{messages: [], section, verify_answer}`, the answer as its reader got it. A model at low reasoning effort writes no `claims`, and a checker fed by the section alone had no input at all. The answer path never waits for it, a tool round sends none, and no section on `sidecar` carries the text. Empty knob (the default), nothing travels here; set, the parent MUST wire it to the checker, or every answer dead-letters one message"
+        },
+        {
           "route": "recall",
           "because": "a memory read this turn needs: the collector's per-turn ask, whose question `./curator` builds out of the wall since GH #895 (same hop keys), and the curator's own lookup of a gap of an answer, which lifts `hop.gap_ask` into `context.gap_ask` on the way out so its bundle comes back to the curator"
         },
@@ -130,6 +136,10 @@
         {
           "route": "tool",
           "because": "a tool call for a cell the parent wired; hop.tool_name says which one. Since talky@4.2.1 the exit is a GUARDED DEFAULT edge (GH #283, ruling Q1): `{\"from\": \"./dispatcher\", \"to\": \".\", \"default\": true, \"condition\": \"has(hop.route) && hop.route == 'tool'\"}`. It is consulted only when NO ordinary edge out of ./dispatcher fired for the message. Since talky@6.0.0 no name is reserved here (GH #889). `memory_recall` was reserved until talky@5.0.0: this composite served it out of its own collector and declared its schema by hand, and since GH #552 it is an ORDINARY tool name -- the member's memory hive declares it, answers it, and this default edge carries the call out like any other. Two properties keep it honest, and both were measured against this tree rather than assumed. FIRST, the guard is not decoration: ./dispatcher emits four sorts (calls, result, answer, tool) and suppression is SENDER-WIDE, so an unguarded default would try to carry calls/result/answer outward whenever nothing ordinary happened to fire for them; the condition names the one lane this default consumes and leaves the rest to no_route. SECOND, the no-tee requirement: ./dispatcher has four out-edges here (calls, result and answer into ./collector, plus this one) and every ordinary one of them is conditioned on its own lane -- there is NO unconditional tee. If the set ever grows one (a logger, a tap, a mirror), it must be conditioned on its own routes, or it silences this default for every tool call and the parent's tool cells go dark. The sender inventory of the whole composite, for the same reason: nine senders (., ./session-keeper, ./schemas, ./collector, ./curator, ./brain, ./splitter, ./dispatcher, ./errors) over 57 edges (39 at 6.0.0; GH #953 added ./curator -> ./session-keeper, the curator's turn_write as the keeper's in_answered), seven of which reach `.` (./collector four times, ./curator four times -- write, turn_write, pack_ack, model_refused --, ./session-keeper twice, ./brain for a refused model, ./splitter for the sidecar, ./dispatcher for this default, ./errors for error) -- and the sender-wide rule means an edge a PARENT draws from ./talky/dispatcher counts here too Since GH #1085 (OR-IG-8) this exit also sets `context.input_soft` to the window the brain stamped on the answer that asked (`hop.input_soft`, which the dispatcher hands on to each call since 1.2.3), so a tool behind any number of cells still knows the window its result is read in and cuts to its share of it; without a stamp the key is empty and the tool delivers whole."
+        },
+        {
+          "route": "consult",
+          "because": "a turn the route cell stamped `complex` or `research` (GH #1247, R-WP-5, R-WP-9), handed by the curator straight to the backend without a call of the voice model: `messages[]` the whole window, `hop.consult_id` and `hop.consult_class` (`consult` or `research`). The parent routes it to its backend like a `consult_cogny` tool call, and the answer comes back on `in_advice`, where the voice model speaks it"
         },
         {
           "route": "error",
@@ -159,7 +169,9 @@
           "route": "credential_request",
           "at": [
             "./brain",
-            "./curator/summarizer"
+            "./quick",
+            "./curator/summarizer",
+            "./decide"
           ],
           "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1). A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
@@ -248,7 +260,12 @@
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer'))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick')))"
+        },
+        {
+          "from": ".",
+          "to": "./quick",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/quick')"
         },
         {
           "from": ".",
@@ -310,7 +327,10 @@
             "set_hop": {
               "route": "'in_curate'"
             },
-            "restore_ttl": true
+            "restore_ttl": true,
+            "set_context": {
+              "path": "has(hop.path) ? hop.path : ''"
+            }
           }
         },
         {
@@ -327,6 +347,50 @@
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
             },
             "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'consult' || hop.route == 'research')",
+          "modifier": {
+            "set_hop": {
+              "route": "'consult'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "input_soft",
+              "path",
+              "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'consult' || hop.route == 'research')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_depart'"
+            }
           }
         },
         {
@@ -368,7 +432,22 @@
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
         },
         {
+          "from": "./quick",
+          "to": "./splitter",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+        },
+        {
           "from": "./brain",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_llm'"
+            }
+          }
+        },
+        {
+          "from": "./quick",
           "to": "./curator",
           "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
           "modifier": {
@@ -391,7 +470,24 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./splitter",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer_check'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -426,6 +522,11 @@
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)"
         },
         {
+          "from": "./quick",
+          "to": "./errors",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)"
+        },
+        {
           "from": "./brain",
           "to": ".",
           "condition": "has(hop.refused_subscriber)",
@@ -437,7 +538,27 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./quick",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -480,7 +601,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -493,7 +616,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -506,7 +631,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -540,7 +667,9 @@
               "curator_call",
               "gap_ask",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -559,7 +688,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -572,7 +703,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -585,7 +718,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -599,7 +734,9 @@
               "curator_call",
               "gap_ask",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -615,7 +752,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -628,7 +767,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -647,7 +788,9 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
-              "recall_input_soft"
+              "recall_input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -660,7 +803,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -683,7 +828,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -696,7 +843,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -749,7 +898,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -762,7 +913,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -775,7 +928,9 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "path",
+              "route_asked_at"
             ]
           }
         },
@@ -783,6 +938,76 @@
           "from": "./curator",
           "to": "./errors",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'reject'"
+        },
+        {
+          "from": ".",
+          "to": "./decide",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/decide')"
+        },
+        {
+          "from": "./session-keeper",
+          "to": "./route",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "set_context": {
+              "session_id": "hop.session_id"
+            }
+          }
+        },
+        {
+          "from": "./route",
+          "to": "./decide",
+          "condition": "has(hop.route) && hop.route == 'decide'",
+          "modifier": {
+            "set_context": {
+              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''"
+            }
+          }
+        },
+        {
+          "from": "./decide",
+          "to": "./route",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_decision'",
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''"
+            },
+            "delete_context": [
+              "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./decide",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "input_soft",
+              "route_asked_at",
+              "path"
+            ]
+          }
+        },
+        {
+          "from": "./route",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'stamp'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_route'"
+            }
+          }
         }
       ]
     }

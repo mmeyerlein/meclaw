@@ -1,0 +1,141 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "window_days": 14,
+    "min_days": 4,
+    "cosine_min": 0.82,
+    "tolerance_min": 30,
+    "tz": "UTC",
+    "episode_rows": 2000,
+    "max_routines": 12,
+    "max_triggers": 16,
+    "script_inline": "import sys, json, base64, datetime, math\n\ndoc = json.load(sys.stdin)\n# GH #1249: the recurrence pass of this memory. It runs once per dream run,\n# armed by `./dream-glue` when the night has booked its receipt (phase\n# `closed`), and never on a clock of its own (R-AG-1: no tick without an\n# event). It reads this hive's own store -- the member's turns of the last\n# `window_days` and their episode embeddings -- groups the questions that come\n# back, and asks `./dreamer` to turn each routine into a prewarm candidate. The\n# candidates leave the hive on the lane `recurring`; nobody answers it.\n#\n# Every knob is a param of this cell (GH #138): the literal beside each name is\n# the shipped default, the same value the template config and\n# `contract.settings` carry.\nP = doc.get(\"params\") or {}\n\n\ndef _knob(key, default):\n    v = P.get(key, default)\n    return default if v is None else v\n\n\ndef _int(key, default):\n    v = _knob(key, default)\n    if isinstance(v, str) and not v.strip():\n        return default\n    return int(v)\n\n\ndef _float(key, default):\n    v = _knob(key, default)\n    if isinstance(v, str) and not v.strip():\n        return default\n    return float(v)\n\n\ndef _str(key, default):\n    v = _knob(key, default)\n    return \"\" if v is None else str(v)\n\n\n# How far back a routine is looked for, in days before the night.\nWINDOW_DAYS = _int(\"window_days\", 14)\n# On how many distinct local days a question has to come back inside the window\n# before it is a routine (four in fourteen: twice a week for two weeks).\nMIN_DAYS = _int(\"min_days\", 4)\n# Two questions are the same question when the cosine of their episode vectors\n# reaches this, read as the cosine of the float embeddings (the scale the brief\n# and R-WP-6 speak). The store keeps the vectors binarised to their signs, and\n# two sign vectors of float vectors at angle theta differ in theta / pi of their\n# bits on average (random-hyperplane estimate). So the grouping compares the\n# sign vectors' own cosine, 1 - 2 * hamming / bits, against\n# SIGN_COSINE_MIN = 1 - 2 * acos(cosine_min) / pi (0.82 -> about 0.61). Applied\n# to the sign vectors unconverted, 0.82 would ask for a float cosine of about\n# 0.96, and a question asked again in other words would not group.\nCOSINE_MIN = _float(\"cosine_min\", 0.82)\nSIGN_COSINE_MIN = 1.0 - 2.0 * math.acos(min(1.0, max(-1.0, COSINE_MIN))) / math.pi\n# The time of day a routine keeps: every occurrence within this many minutes of\n# the routine's time, either side.\nTOLERANCE_MIN = _int(\"tolerance_min\", 30)\n# The member's time zone (IANA name). Times of day and weekdays are read in it,\n# and every candidate carries it beside its rrule. An unknown name reads as UTC\n# and says so on stderr.\nTZ = _str(\"tz\", \"UTC\")\n# Page bound of the two reads (episodes, embeddings). Both read newest first,\n# so a full page leaves out the window's oldest turns, not its latest; a full\n# page is said on stderr.\nEPISODE_ROWS = _int(\"episode_rows\", 2000)\n# Routines one night puts to the dreamer, most frequent first.\nMAX_ROUTINES = _int(\"max_routines\", 12)\n# Spellings of a routine's question a candidate carries as `triggers`.\nMAX_TRIGGERS = _int(\"max_triggers\", 16)\n\nWEEKDAYS = (\"MO\", \"TU\", \"WE\", \"TH\", \"FR\", \"SA\", \"SU\")\n\n\ndef park():\n    sys.stdout.write(json.dumps([]))\n    sys.exit(0)\n\n\ndef emit(msgs):\n    sys.stdout.write(json.dumps(msgs))\n    sys.exit(0)\n\n\ndef zone(name):\n    \"\"\"The zone a routine is read in; UTC when the name is unknown.\"\"\"\n    if not name or name == \"UTC\":\n        return datetime.timezone.utc\n    try:\n        import zoneinfo\n        return zoneinfo.ZoneInfo(name)\n    except Exception:\n        sys.stderr.write(\"recur: unknown tz %r, read as UTC\\n\" % name)\n        return datetime.timezone.utc\n\n\ndef parse_at(value):\n    \"\"\"An ISO-8601 instant as an aware datetime, or None.\"\"\"\n    try:\n        at = datetime.datetime.fromisoformat(str(value).replace(\"Z\", \"+00:00\"))\n    except Exception:\n        return None\n    if at.tzinfo is None:\n        at = at.replace(tzinfo=datetime.timezone.utc)\n    return at\n\n\ndef bits_of(blob):\n    \"\"\"A stored vector (strict base64 text, the store's `similar` format) as bytes.\"\"\"\n    try:\n        return base64.b64decode(str(blob or \"\"), validate=True)\n    except Exception:\n        return b\"\"\n\n\ndef sign_vector(vec):\n    \"\"\"A binarised vector (bytes) as (int, bits): its hamming distance to\n    another is then one xor and one popcount, not a loop over its bytes.\"\"\"\n    return int.from_bytes(vec, \"big\"), 8 * len(vec)\n\n\ndef cosine(a, b):\n    \"\"\"Cosine of two sign vectors given as (int, bits): 1 - 2 * hamming / bits.\n    Vectors of different length (two embedding generations) or empty ones are\n    unrelated.\"\"\"\n    if not a[1] or a[1] != b[1]:\n        return 0.0\n    return 1.0 - 2.0 * (a[0] ^ b[0]).bit_count() / a[1]\n\n\ndef audience_key(raw):\n    \"\"\"The canonical spelling of an episode's audience set, or '' when it has none.\"\"\"\n    try:\n        members = json.loads(raw) if isinstance(raw, str) else raw\n    except Exception:\n        return \"\"\n    if not isinstance(members, list) or not members:\n        return \"\"\n    return json.dumps(sorted(str(m) for m in members))\n\n\ndef group_questions(items):\n    \"\"\"Greedy, deterministic grouping in time order: a question joins the group\n    whose first question is nearest to it (sign cosine >= SIGN_COSINE_MIN, the\n    sign-bit reading of cosine_min) and was asked in the same audience;\n    otherwise it opens a group. `items` carry `id`, `vec`\n    (bytes), `at` (datetime), `aud` (audience key) and `text`.\"\"\"\n    groups = []\n    for it in sorted(items, key=lambda x: (x[\"at\"], x[\"id\"])):\n        vec = sign_vector(it[\"vec\"])\n        best, best_cos = None, SIGN_COSINE_MIN\n        for g in groups:\n            if g[\"aud\"] != it[\"aud\"]:\n                continue\n            c = cosine(g[\"seed\"], vec)\n            if c >= best_cos and (best is None or c > best_cos):\n                best, best_cos = g, c\n        if best is None:\n            groups.append({\"seed\": vec, \"aud\": it[\"aud\"], \"items\": [it]})\n        else:\n            best[\"items\"].append(it)\n    return groups\n\n\ndef minute_distance(a, b):\n    d = abs(a - b) % 1440\n    return min(d, 1440 - d)\n\n\ndef time_profile(items, tz):\n    \"\"\"The routine inside one group: the time of day most occurrences keep\n    (within +-TOLERANCE_MIN), the occurrences that keep it, their distinct local\n    days and weekdays. Ties go to the earlier time.\"\"\"\n    local = [(it, it[\"at\"].astimezone(tz)) for it in items]\n    best = None\n    for _, lt in local:\n        centre = lt.hour * 60 + lt.minute\n        kept = [(it, t) for it, t in local\n                if minute_distance(t.hour * 60 + t.minute, centre) <= TOLERANCE_MIN]\n        days = len({t.date() for _, t in kept})\n        key = (-days, centre)\n        if best is None or key < best[0]:\n            best = (key, kept)\n    kept = best[1] if best else []\n    minutes = sorted(t.hour * 60 + t.minute for _, t in kept)\n    at_min = minutes[(len(minutes) - 1) // 2] if minutes else 0\n    return {\"kept\": [it for it, _ in kept], \"at_min\": at_min,\n            \"days\": len({t.date() for _, t in kept}),\n            \"weekdays\": sorted({t.weekday() for _, t in kept})}\n\n\ndef rrule_of(at_min, weekdays):\n    \"\"\"The routine as an RFC 5545 rule: DAILY when every weekday is in it.\"\"\"\n    time = \"BYHOUR=%d;BYMINUTE=%d\" % (at_min // 60, at_min % 60)\n    if len(weekdays) == 7:\n        return \"FREQ=DAILY;\" + time\n    return \"FREQ=WEEKLY;BYDAY=%s;%s\" % (\",\".join(WEEKDAYS[w] for w in weekdays), time)\n\n\ndef find_routines(items, night, tz_name):\n    \"\"\"The routines of one window: groups of the same question, asked on at\n    least MIN_DAYS distinct local days of the WINDOW_DAYS before `night`, at one\n    time of day. Most frequent first, at most MAX_ROUTINES.\"\"\"\n    tz = zone(tz_name)\n    end = parse_at(night)\n    if end is None:\n        return []\n    start = end - datetime.timedelta(days=WINDOW_DAYS)\n    inside = [it for it in items if start <= it[\"at\"] <= end and it[\"vec\"] and it[\"aud\"]]\n    found = []\n    for g in group_questions(inside):\n        prof = time_profile(g[\"items\"], tz)\n        if prof[\"days\"] < MIN_DAYS:\n            continue\n        triggers = []\n        for it in prof[\"kept\"]:\n            t = \" \".join(str(it[\"text\"] or \"\").split())\n            if t and t not in triggers:\n                triggers.append(t)\n        found.append({\"rrule\": rrule_of(prof[\"at_min\"], prof[\"weekdays\"]),\n                      \"tz\": tz_name or \"UTC\", \"days\": prof[\"days\"],\n                      \"audience_set\": json.loads(g[\"aud\"]),\n                      \"triggers\": triggers[:MAX_TRIGGERS],\n                      \"episode_ids\": [it[\"id\"] for it in prof[\"kept\"]],\n                      \"at_min\": prof[\"at_min\"]})\n    found.sort(key=lambda r: (-r[\"days\"], r[\"at_min\"], r[\"episode_ids\"][0]))\n    for i, r in enumerate(found[:MAX_ROUTINES]):\n        r[\"group\"] = \"g%d\" % (i + 1)\n    return found[:MAX_ROUTINES]\n\n\ndef items_of(episodes, embeddings):\n    \"\"\"Join the two reads: one item per episode that has a ready vector of the\n    embedding generation most of the window's vectors belong to.\"\"\"\n    by_model = {}\n    for e in embeddings:\n        by_model.setdefault(str(e.get(\"model_id\") or \"\"), {})[str(e.get(\"owner_id\"))] = e\n    if not by_model:\n        return []\n    model = sorted(by_model, key=lambda m: (len(by_model[m]), m))[-1]\n    vecs = by_model[model]\n    items = []\n    for ep in episodes:\n        at = parse_at(ep.get(\"happened_at\"))\n        vec = bits_of((vecs.get(str(ep.get(\"id\"))) or {}).get(\"blob\"))\n        if at is None or not vec:\n            continue\n        items.append({\"id\": str(ep.get(\"id\")), \"vec\": vec, \"at\": at,\n                      \"aud\": audience_key(ep.get(\"audience_set\")),\n                      \"text\": ep.get(\"content\") or \"\"})\n    return items\n\n\ndef parse_model_json(text):\n    \"\"\"A model answer that may be fenced or wrapped in a sentence.\"\"\"\n    s = str(text or \"\").strip()\n    if s.startswith(\"```\"):\n        s = s.strip(\"`\")\n        if s.lower().startswith(\"json\"):\n            s = s[4:]\n    try:\n        return json.loads(s)\n    except Exception:\n        pass\n    a, b = s.find(\"{\"), s.rfind(\"}\")\n    if a >= 0 and b > a:\n        try:\n            return json.loads(s[a:b + 1])\n        except Exception:\n            return None\n    return None\n\n\ndef as_int(value):\n    \"\"\"A whole number the model gave, or None (a bool is not a number).\"\"\"\n    if isinstance(value, bool):\n        return None\n    if isinstance(value, int):\n        return value\n    if isinstance(value, float) and value == int(value):\n        return int(value)\n    if isinstance(value, str) and value.strip().isdigit():\n        return int(value.strip())\n    return None\n\n\ndef candidates_of(routines, answer):\n    \"\"\"The dreamer's candidates, joined to the routines they name. R-WP-6: the\n    freshness of a routine is the dreamer's call, so `ttl_min` is required on\n    every candidate and has no default -- a candidate without a positive\n    `ttl_min`, or with `tool: none`, is no prewarm and is left out. Returns\n    {audience key: [candidate]}.\"\"\"\n    by_group = {r.get(\"group\"): r for r in routines}\n    out = {}\n    listed = answer.get(\"candidates\") if isinstance(answer, dict) else None\n    for c in listed if isinstance(listed, list) else []:\n        if not isinstance(c, dict):\n            continue\n        r = by_group.get(c.get(\"group\"))\n        tool = str(c.get(\"tool\") or \"\").strip()\n        ttl = as_int(c.get(\"ttl_min\"))\n        lead = as_int(c.get(\"lead_min\"))\n        topic = str(c.get(\"topic\") or \"\").strip()\n        query = str(c.get(\"query\") or \"\").strip()\n        if r is None or not tool or tool.lower() == \"none\" or ttl is None or ttl <= 0:\n            continue\n        if not topic or not query:\n            continue\n        cand = {\"topic\": topic, \"query\": query, \"tool\": tool,\n                \"triggers\": r.get(\"triggers\", []), \"rrule\": r.get(\"rrule\"),\n                \"tz\": r.get(\"tz\"), \"lead_min\": max(lead or 0, 0), \"ttl_min\": ttl,\n                \"evidence\": {\"episode_ids\": r.get(\"episode_ids\", []),\n                             \"days\": r.get(\"days\"), \"window_days\": WINDOW_DAYS}}\n        out.setdefault(json.dumps(r.get(\"audience_set\") or []), []).append(cand)\n    return out\n\n\nINSTRUCTIONS = (\n    \"You turn the recurring questions of one member into prewarm candidates: an answer \"\n    \"fetched shortly before the member usually asks. Answer with JSON only, shape: \"\n    \"{\\\"candidates\\\":[{\\\"group\\\":\\\"g1\\\",\\\"topic\\\":\\\"\\\",\\\"query\\\":\\\"\\\",\\\"tool\\\":\\\"\\\",\"\n    \"\\\"lead_min\\\":0,\\\"ttl_min\\\":0}]}.\\n\\n\"\n    \"You receive routines: each one is a question that came back on several days at about \"\n    \"the same time (`rrule`, in the time zone `tz`), with the words the member used. For \"\n    \"each routine decide:\\n\"\n    \"- `topic`: a short name of what the member wants to know.\\n\"\n    \"- `query`: the one question to fetch ahead, phrased so a tool can answer it.\\n\"\n    \"- `tool`: the kind of tool whose fresh result answers it (for example weather, news, \"\n    \"calendar, web search), or \\\"none\\\" when nothing fetched ahead would help -- a \"\n    \"question about the member's own memory, a feeling, a chat.\\n\"\n    \"- `lead_min`: how many minutes before the routine's time to fetch.\\n\"\n    \"- `ttl_min`: how many minutes a fetched answer stays fresh for THIS routine. You \"\n    \"decide it per routine; there is no default, and a candidate without it is dropped.\\n\\n\"\n    \"Leave a routine out rather than guess. Never invent a group.\")\n\n\ndef store_op(ops, ph):\n    \"\"\"One store message: a bundle when it carries more than one op.\"\"\"\n    return {\"header\": {\"route\": \"rstore\", \"phase\": ph, \"dream_run\": run_id,\n                       \"dream_to\": night},\n            \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                          \"id\": \"r-%s-%d\" % (ph, i), \"text\": json.dumps(o)}\n                         for i, o in enumerate(ops)]}\n\n\ndef texts(body):\n    \"\"\"The tool_result texts of a store answer, in call order.\"\"\"\n    return [m.get(\"text\") or \"\" for m in body.get(\"messages\", [])\n            if m.get(\"type\") in (\"tool_result\", \"text\")]\n\n\ndef rows(text):\n    try:\n        v = json.loads(text or \"[]\")\n    except Exception:\n        return []\n    return v if isinstance(v, list) else []\n\n\nbody = doc.get(\"body\") or {}\nh = (doc.get(\"envelope\") or {}).get(\"header\", {})\nctx = h.get(\"context\", {})\nhop = h.get(\"hop\", {})\nphase = str(ctx.get(\"mem_phase\", \"\"))\nop = hop.get(\"operation\")\nerr = str(hop.get(\"error_code\", \"\") or \"\")\nrun_id = str(ctx.get(\"dream_run\", \"\"))\nnight = str(ctx.get(\"dream_to\", \"\"))\n\nif (err and op) or int(hop.get(\"bundle_errors\") or 0) > 0:\n    sys.stderr.write(\"recur: the store refused phase %r (%s): no candidates tonight\\n\"\n                     % (phase, err or \"bundle_errors\"))\n    park()\n\nif not run_id or not night:\n    park()\n\nif phase == \"recur-arm\":\n    end = parse_at(night)\n    if end is None:\n        park()\n    start = (end - datetime.timedelta(days=WINDOW_DAYS)).isoformat().replace(\"+00:00\", \"Z\")\n    emit([store_op([\n        {\"operation\": \"select\", \"table\": \"episodes\",\n         \"columns\": [\"id\", \"content\", \"happened_at\", \"audience_set\"],\n         \"where\": {\"sender\": \"user\", \"happened_at\": {\"gte\": start},\n                   \"muted_at\": {\"is_null\": True}, \"closed_at\": {\"is_null\": True}},\n         \"order_by\": [{\"col\": \"happened_at\", \"dir\": \"desc\"}],\n         \"limit\": EPISODE_ROWS},\n        {\"operation\": \"select\", \"table\": \"embeddings\",\n         \"columns\": [\"owner_id\", \"model_id\", \"blob\"],\n         \"where\": {\"owner_table\": \"episodes\", \"status\": \"ready\",\n                   \"created_at\": {\"gte\": start}},\n         \"order_by\": [{\"col\": \"created_at\", \"dir\": \"desc\"}],\n         \"limit\": EPISODE_ROWS},\n    ], \"recur-read\")])\n\nif phase == \"recur-read\":\n    parts = texts(body)\n    if len(parts) < 2:\n        park()\n    episodes, embeddings = rows(parts[0]), rows(parts[1])\n    for name, page in ((\"episodes\", episodes), (\"embeddings\", embeddings)):\n        if len(page) >= EPISODE_ROWS:\n            sys.stderr.write(\"recur: the %s read is a full page (%d)\\n\" % (name, EPISODE_ROWS))\n    routines = find_routines(items_of(episodes, embeddings), night, TZ)\n    if not routines:\n        park()\n    ask = [{\"group\": r[\"group\"], \"questions\": r[\"triggers\"], \"rrule\": r[\"rrule\"],\n            \"tz\": r[\"tz\"], \"days\": r[\"days\"]} for r in routines]\n    emit([store_op([{\"operation\": \"insert\", \"table\": \"scratch\",\n                     \"row\": {\"key\": run_id, \"kind\": \"recur-routines\", \"created_at\": night,\n                             \"payload\": json.dumps(routines, sort_keys=True)}}],\n                   \"recur-parked\"),\n          {\"header\": {\"route\": \"recur-ask\", \"phase\": \"recur-ask\", \"dream_run\": run_id,\n                      \"dream_to\": night},\n           \"system\": {\"instructions\": {\"text\": INSTRUCTIONS}},\n           \"messages\": [{\"origin\": \"user\", \"type\": \"text\",\n                         \"text\": json.dumps({\"night\": night, \"routines\": ask})}]}])\n\nif phase == \"recur-said\":\n    if hop.get(\"finish_reason\") == \"error\":\n        sys.stderr.write(\"recur: dreamer error, no candidates tonight\\n\")\n        park()\n    answer = None\n    for m in body.get(\"messages\", []):\n        if m.get(\"type\") == \"text\" and m.get(\"text\"):\n            answer = parse_model_json(m.get(\"text\"))\n            break\n    if not isinstance(answer, dict):\n        sys.stderr.write(\"recur: the dreamer's answer is not JSON, no candidates tonight\\n\")\n        park()\n    emit([store_op([{\"operation\": \"insert\", \"table\": \"scratch\",\n                     \"row\": {\"key\": run_id, \"kind\": \"recur-answer\", \"created_at\": night,\n                             \"payload\": json.dumps(answer, sort_keys=True)}}],\n                   \"recur-answered\")])\n\nif phase == \"recur-answered\" and op == \"insert\":\n    emit([store_op([{\"operation\": \"select\", \"table\": \"scratch\",\n                     \"columns\": [\"kind\", \"payload\"],\n                     \"where\": {\"key\": run_id,\n                               \"kind\": {\"in\": [\"recur-routines\", \"recur-answer\"]}}}],\n                   \"recur-merge\")])\n\nif phase == \"recur-merge\":\n    parked = {}\n    for r in rows((texts(body) or [\"\"])[0]):\n        payload = r.get(\"payload\")\n        try:\n            parked[r.get(\"kind\")] = json.loads(payload) if isinstance(payload, str) else payload\n        except Exception:\n            park()\n    routines = parked.get(\"recur-routines\")\n    if not isinstance(routines, list):\n        park()\n    out = candidates_of(routines, parked.get(\"recur-answer\"))\n    if not out:\n        park()\n    emit([{\"header\": {\"route\": \"recurring\", \"phase\": \"recurring\", \"dream_run\": run_id,\n                      \"dream_to\": night},\n           \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\",\n                         \"text\": json.dumps({\"candidates\": cands,\n                                             \"audience_set\": json.loads(aud)},\n                                            sort_keys=True)}]}\n          for aud, cands in sorted(out.items())])\n\npark()\n",
+    "external_timeout_ms": 15000,
+    "max_concurrency": 1
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "window_days": {
+        "type": "number",
+        "secret": false,
+        "default": 14,
+        "description": "GH #1249: how far back, in days before the night, a routine is looked for."
+      },
+      "min_days": {
+        "type": "number",
+        "secret": false,
+        "default": 4,
+        "description": "GH #1249: distinct local days a question must come back on inside the window before it is a routine."
+      },
+      "cosine_min": {
+        "type": "number",
+        "secret": false,
+        "default": 0.82,
+        "description": "GH #1249: the cosine of two episode vectors at which two turns are the same question, read as the float cosine; the stored vectors are sign bits, so the script compares 1 - 2 * hamming / bits against 1 - 2 * acos(cosine_min) / pi."
+      },
+      "tolerance_min": {
+        "type": "number",
+        "secret": false,
+        "default": 30,
+        "description": "GH #1249: minutes either side of a routine's time of day an occurrence may lie."
+      },
+      "tz": {
+        "type": "string",
+        "secret": false,
+        "default": "UTC",
+        "description": "GH #1249: the member's time zone (IANA name). Times of day and weekdays are read in it and every candidate carries it; an unknown name reads as UTC and says so on stderr."
+      },
+      "episode_rows": {
+        "type": "number",
+        "secret": false,
+        "default": 2000,
+        "description": "GH #1249: page bound of the episode read and of the vector read, both newest first; a full page is said on stderr."
+      },
+      "max_routines": {
+        "type": "number",
+        "secret": false,
+        "default": 12,
+        "description": "GH #1249: routines one night puts to the dreamer, most frequent first."
+      },
+      "max_triggers": {
+        "type": "number",
+        "secret": false,
+        "default": 16,
+        "description": "GH #1249: spellings of a routine's question a candidate carries as `triggers`."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "rstore",
+            "recur-ask",
+            "recurring"
+          ],
+          "required": true
+        },
+        "phase": {
+          "type": "string",
+          "required": true
+        },
+        "dream_run": {
+          "type": "string",
+          "required": true,
+          "description": "GH #1249: the dream run this pass belongs to, carried through the store and the dreamer."
+        },
+        "dream_to": {
+          "type": "string",
+          "required": true,
+          "description": "GH #1249: the night's window end; the window of the pass ends here."
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "context": {
+        "dream_run": {
+          "type": "string",
+          "required": false
+        },
+        "dream_to": {
+          "type": "string",
+          "required": false
+        },
+        "store_origin": {
+          "type": "string",
+          "required": false
+        },
+        "mem_phase": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "description": {
+    "purpose": "GH #1249: finds the member's recurring questions and has them turned into prewarm candidates. Once per dream run it reads this hive's own store -- the member's turns of the last `window_days` (`episodes`, by `happened_at`) and their episode vectors (`embeddings`) -- groups the turns by cosine (`cosine_min`), keeps a group that came back on `min_days` distinct local days at one time of day (+- `tolerance_min`, read in `tz`) as a routine with an rrule, asks `./dreamer` for topic, query, tool, lead_min and ttl_min of each, and sends what has a `ttl_min` and a tool on `recurring`, one message per audience set.",
+    "use_when": "Inside memory-hive only: `./dream-glue` arms it on route `recur` when the night has booked its receipt.",
+    "not_in_scope": "No clock of its own, no model call for the grouping, no write outside `scratch`, no tool call stored, no acknowledgement of `recurring`."
+  }
+}

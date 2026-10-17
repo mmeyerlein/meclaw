@@ -59,6 +59,7 @@ pub mod gh511_a_cut_row_says_it_was_cut;
 pub mod gh512_the_collector_declares_the_tools_it_answers_itself;
 pub mod gh514_the_shell_is_a_scope_the_policy_can_reach;
 pub mod gh515_a_long_turn_shows_a_sign_of_life;
+pub mod gh518_a_german_query_keeps_its_umlauts;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../support/mod.rs"]

@@ -475,6 +475,16 @@ fn warn_on_an_ignored_literal(parsed: &ParsedWebSearchParams) {
 }
 
 impl CellFactory for WebSearchCellFactory {
+    /// GH #1235 (T6-22): `api_key` takes no `${VAR}`; the key comes sealed
+    /// under `credential_grant_id`.
+    fn validate_declared_params(&self, declared: &meclaw_core::JsonValue) -> Result<(), String> {
+        crate::credential::refuse_env_secret(
+            "api_key",
+            declared.get("api_key"),
+            "credential_grant_id",
+        )
+    }
+
     fn validate_params(&self, params: &meclaw_core::JsonValue) -> Result<(), String> {
         parse_params_pure(params).map(|_| ())
     }

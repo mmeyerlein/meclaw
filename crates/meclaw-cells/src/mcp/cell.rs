@@ -4,6 +4,7 @@
 //! `pending().await`. State is single-threaded in the handler sub-task (no mutex —
 //! phase-1 discipline).
 
+use crate::credential::{CREDENTIAL_PENDING_DETAIL, CredentialSlots, Secret};
 use crate::mcp::io::{McpEvent, McpIo, McpReconfig, RunIoConfig, StdioIoConfig, run_io};
 use crate::mcp::wire::McpClient;
 use crate::stdio_child::ChildEvent;
@@ -48,6 +49,24 @@ pub struct McpCell {
     pub(crate) provider_key: String,
     /// Initial I/O config, consumed once by `split_io`.
     pub(crate) initial_io_cfg: Option<McpIo>,
+    /// GH #1235: the bearer comes sealed from the vault (`auth.bearer_grant_id`).
+    pub(crate) credential: Option<McpCredential>,
+}
+
+/// GH #1235 (OR-programm-tm.H5.orch-4): the grant of an http cell whose bearer
+/// the vault delivers. Same round as the proxy's bot token (GH #1059): asked in
+/// `on_start`, nothing parked -- a call before the box is answered
+/// `credential_pending` at once, and the I/O half runs no handshake until then.
+pub(crate) struct McpCredential {
+    /// `params.auth.bearer_grant_id`.
+    grant: String,
+    /// The cell's own path: the request leaves through its edges
+    /// (`hop.route == "credential_request"`).
+    path: meclaw_core::Path,
+    /// The slot of that grant (RAM only, `<sealed>` under `Debug`).
+    slots: CredentialSlots<()>,
+    /// Hands the opened bearer to the waiting I/O half, once.
+    bearer_tx: mpsc::Sender<Secret>,
 }
 
 impl McpCell {
@@ -73,6 +92,101 @@ impl McpCell {
                 // Replaced by the substrate via `attach_liveness`.
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
             })),
+            credential: None,
+        }
+    }
+
+    /// GH #1235: the bearer comes from the vault, sealed, under `grant`. The
+    /// cell asks in `on_start`; its I/O half sleeps -- no handshake, no request
+    /// -- until the box opened, and re-asks after every round that ends without
+    /// one (`wait`, doubling up to its ceiling). Only on the http transport;
+    /// the client this cell was built with carries no token.
+    #[must_use]
+    pub fn with_credential(
+        mut self,
+        path: meclaw_core::Path,
+        grant: &str,
+        wait: crate::proxy::io::CredentialWait,
+    ) -> Self {
+        let (bearer_tx, bearer_rx) = mpsc::channel(1);
+        if let Some(McpIo::Http(cfg)) = self.initial_io_cfg.take() {
+            self.initial_io_cfg = Some(McpIo::HttpGranted {
+                cfg,
+                wait,
+                bearer_rx,
+            });
+        }
+        let on_expired: crate::credential::ExpiryFn<()> =
+            std::sync::Arc::new(|_, _| Box::pin(async {}));
+        self.credential = Some(McpCredential {
+            grant: grant.to_string(),
+            path,
+            slots: CredentialSlots::new(
+                wait.wait_ms,
+                crate::credential::default_credential_wait_max(),
+                on_expired,
+            ),
+            bearer_tx,
+        });
+        self
+    }
+
+    /// GH #1235: ask the access hive for the bearer.
+    async fn ask_for_bearer(&mut self, sink: &OriginSink) {
+        let Some(c) = self.credential.as_mut() else {
+            return;
+        };
+        let content = match c.slots.request(&c.grant) {
+            Ok(content) => content,
+            Err(e) => {
+                tracing::error!(error = %e, "mcp: no random source for a credential request");
+                return;
+            }
+        };
+        tracing::info!(grant = %c.grant, "mcp: asking the vault for the bearer token");
+        let _ = sink
+            .emit(meclaw_core::CellOutput {
+                target: c.path.clone(),
+                content,
+            })
+            .await;
+    }
+
+    /// GH #1235: take a sealed delivery. Opened -> the handler's client and the
+    /// I/O half get the bearer (the handshake starts). Not opened -> the cell
+    /// stays asleep; its next round asks again. Never echoes a value.
+    async fn accept_bearer(&mut self, content: &meclaw_core::serde_json::Value) {
+        let Some(c) = self.credential.as_mut() else {
+            tracing::warn!(
+                "mcp: a sealed box arrived, but this cell has no auth.bearer_grant_id -- discarded"
+            );
+            return;
+        };
+        match c.slots.accept_sealed(content).await {
+            Ok(accepted) => {
+                let Some(bearer) = c.slots.secret_handle(&accepted.grant) else {
+                    tracing::warn!(
+                        grant = %accepted.grant,
+                        "mcp: the sealed bearer opened empty -- the cell stays asleep"
+                    );
+                    return;
+                };
+                tracing::info!(grant = %accepted.grant, "mcp: bearer received sealed and opened in RAM");
+                if let McpLink::Http(client) = &mut self.link {
+                    *client = client.with_bearer(bearer.expose());
+                }
+                let _ = c.bearer_tx.send(bearer).await;
+            }
+            Err(refusal) => match refusal.detail() {
+                None => tracing::warn!(
+                    "mcp: a sealed box of an earlier credential round arrived late and was discarded"
+                ),
+                Some(detail) => tracing::warn!(
+                    %detail,
+                    "mcp: the sealed bearer was refused -- the cell stays asleep and asks again \
+                     after the round's wait"
+                ),
+            },
         }
     }
 
@@ -96,6 +210,7 @@ impl McpCell {
                 // Replaced by the substrate via `attach_liveness`.
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
             })),
+            credential: None,
         }
     }
 
@@ -120,6 +235,7 @@ impl McpCell {
             query_timeout_ms,
             provider_key,
             initial_io_cfg: Some(McpIo::Unset),
+            credential: None,
         }
     }
 }
@@ -136,7 +252,7 @@ impl LongRunningCell for McpCell {
     /// Issue #7: take the mark for whichever transport this cell runs.
     fn attach_liveness(io: &mut Self::Io, mark: meclaw_colony::IoLivenessMark) {
         match io {
-            McpIo::Http(cfg) => cfg.liveness = mark,
+            McpIo::Http(cfg) | McpIo::HttpGranted { cfg, .. } => cfg.liveness = mark,
             McpIo::Stdio(cfg) => cfg.liveness = mark,
             // GH #489: a task that owes no round trip reports no liveness —
             // see `run_unset_io` for why announcing here would be the wrong
@@ -159,6 +275,17 @@ impl LongRunningCell for McpCell {
         run_io(io, events_tx, reconfig_rx)
     }
 
+    /// GH #1235: a granted cell asks for its bearer before anything else; key
+    /// pair and token are RAM-only, so a respawn asks again.
+    #[allow(clippy::manual_async_fn)]
+    fn on_start<'a>(
+        &'a mut self,
+        sink: &'a OriginSink,
+        _db: &'a mut DbConn,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        async move { self.ask_for_bearer(sink).await }
+    }
+
     /// Inbound-Message-Handler. Parses the tail `tool_call`-turn (Phase-9-store
     /// convention: `text` = JSON-string with `name`+`arguments`, `id` = UBF-required
     /// call id), dispatches to `McpClient::call_tool` with A-Timeout, emits exactly
@@ -173,6 +300,13 @@ impl LongRunningCell for McpCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1235: the sealed bearer. Never touches `cell.db`.
+            if let meclaw_core::Body::Inline(ref v) = msg.body
+                && v.get("sealed").is_some()
+            {
+                self.accept_bearer(v).await;
+                return;
+            }
             // β: params-update slot (config.md § Access l.20), handled FIRST.
             // Mutable: external_timeout_ms (path A, next call_tool) + query_timeout_ms
             // (path C, DbConn live). Immutable: endpoint + auth (credential/identity).
@@ -297,6 +431,23 @@ impl LongRunningCell for McpCell {
                 .await;
                 return;
             }
+            // GH #1235: a granted cell before its box has no token and has run
+            // no handshake; nothing is called, the round says so.
+            if let Some(c) = &self.credential
+                && c.slots.secret(&c.grant).is_none()
+            {
+                crate::mcp::emit::emit_tool_result_error(
+                    sink,
+                    &msg,
+                    &parsed.name,
+                    0,
+                    &parsed.call_id,
+                    "credential_pending",
+                    CREDENTIAL_PENDING_DETAIL,
+                )
+                .await;
+                return;
+            }
 
             // T19: __list_tools__ reads cache, emits system.tools listing — no call_tool.
             if parsed.name == "__list_tools__" {
@@ -409,7 +560,7 @@ impl LongRunningCell for McpCell {
     fn handle_event<'a>(
         &'a mut self,
         event: Self::Event,
-        _sink: &'a OriginSink,
+        sink: &'a OriginSink,
         db: &'a mut DbConn,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
@@ -425,6 +576,15 @@ impl LongRunningCell for McpCell {
                 // An unsolicited frame. The POC protocol has no notifications,
                 // so this is diagnostics only; the typed-emission consumers
                 // (harness cell type) are a later package.
+                // GH #1235: a round ended without the box -- ask again.
+                McpEvent::CredentialRoundExpired { round, wait_ms } => {
+                    tracing::warn!(
+                        round,
+                        wait_ms,
+                        "mcp: no sealed bearer arrived in time -- asking again"
+                    );
+                    self.ask_for_bearer(sink).await;
+                }
                 McpEvent::Child(ChildEvent::Frame(v)) => {
                     tracing::debug!(frame = %v, "mcp stdio: unsolicited frame");
                 }

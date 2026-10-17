@@ -38,6 +38,8 @@ pub mod gh1225_kh_history_reads_the_whole_wall;
 pub mod gh1225_kh_the_note_a_close_parks_is_swept_and_said;
 pub mod gh1225_kh_the_note_of_the_last_session_is_found_behind_other_handovers;
 pub mod gh1225_kh_writer_a_late_wall_row_waits_for_the_next_close;
+pub mod gh1225_kh_writer_a_refused_close_read_is_no_empty_session;
+pub mod gh1225_kh_writer_a_written_store_error_mark_is_not_said_refused;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

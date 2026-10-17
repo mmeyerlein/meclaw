@@ -1,7 +1,7 @@
 {
-  "id": "gen-1791224616-u0Dl2XPhJEUGgMwxKlkR",
+  "id": "gen-1792177534-deHm0QRSR8xKz0IqHWBS",
   "object": "chat.completion",
-  "created": 1791224616,
+  "created": 1792177534,
   "model": "qwen/qwen3.7-flash",
   "provider": "Alibaba",
   "system_fingerprint": null,
@@ -16,11 +16,11 @@
         "role": "assistant",
         "content": null,
         "refusal": null,
-        "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:** The user says \"Ping.\"\n2.  **Identify Constraint:** The",
+        "reasoning": "Thinking Process:\n1.  **Analyze the input:** The user sent a message simply saying \"Ping.\" and instructed me to answer with the single word",
         "reasoning_details": [
           {
             "type": "reasoning.text",
-            "text": "Here's a thinking process:\n\n1.  **Analyze User Input:** The user says \"Ping.\"\n2.  **Identify Constraint:** The",
+            "text": "Thinking Process:\n1.  **Analyze the input:** The user sent a message simply saying \"Ping.\" and instructed me to answer with the single word",
             "format": "unknown",
             "index": 0
           }
@@ -32,7 +32,7 @@
     "prompt_tokens": 24,
     "completion_tokens": 32,
     "total_tokens": 56,
-    "cost": 4.8312e-06,
+    "cost": 5.55588e-06,
     "is_byok": false,
     "prompt_tokens_details": {
       "cached_tokens": 0,
@@ -41,9 +41,9 @@
       "video_tokens": 0
     },
     "cost_details": {
-      "upstream_inference_cost": 4.88e-06,
-      "upstream_inference_prompt_cost": 7.2e-07,
-      "upstream_inference_completions_cost": 4.16e-06
+      "upstream_inference_cost": 5.612e-06,
+      "upstream_inference_prompt_cost": 8.28e-07,
+      "upstream_inference_completions_cost": 4.784e-06
     },
     "completion_tokens_details": {
       "reasoning_tokens": 32,

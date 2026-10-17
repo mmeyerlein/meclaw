@@ -1042,6 +1042,35 @@ fn tools_offered(req: &OpenAiRequestSnapshot) -> Vec<String> {
     v
 }
 
+/// The `op` enum of the folded family `fam` in a request (T5-11, GH #1248):
+/// what the family offers, `help` included; empty when `fam` is not on the
+/// menu. Folded, a tool is an op here, never an entry of its own.
+fn family_ops(req: &OpenAiRequestSnapshot, fam: &str) -> Vec<String> {
+    let tools = req.tools().cloned().unwrap_or_default();
+    let Some(t) = tools.iter().find(|t| {
+        t["function"]["name"]
+            .as_str()
+            .or_else(|| t["name"].as_str())
+            == Some(fam)
+    }) else {
+        return Vec::new();
+    };
+    let params = if t["function"].is_object() {
+        &t["function"]["parameters"]
+    } else {
+        &t["parameters"]
+    };
+    let mut v: Vec<String> = params["properties"]["op"]["enum"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|o| o.as_str().map(str::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
 fn wire(req: &OpenAiRequestSnapshot) -> String {
     sj::to_string(req.messages().expect("wire messages")).unwrap_or_default()
 }
@@ -1143,9 +1172,11 @@ async fn a_talky_read_takes_a_tenth_of_its_brains_window() {
 /// `text`; the brain's catalogue window is `window` (None: no stamp). Hands
 /// back the read's result as the next request carried it.
 async fn talky_reads(text: &str, window: Option<u64>) -> String {
-    let file_arg = json!({"file": PATH}).to_string();
+    // T5-11 (GH #1248): talky sees its menu folded, so the voice calls the
+    // family `file` with `{op, args}` and the dispatcher unfolds it.
+    let file_arg = json!({"op": "read", "args": {"file": PATH}}).to_string();
     let voice = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(READ_ID, "file_read", file_arg.as_str())]),
+        canned_tool_calls(vec![(READ_ID, "file", file_arg.as_str())]),
         canned_chat_completion(ANSWER_A, "stop"),
     ])
     .await;
@@ -1173,7 +1204,7 @@ async fn talky_reads(text: &str, window: Option<u64>) -> String {
     let (h, mut ports) = boot(&td).await;
     h.send(menu_tick()).await;
     seed_text(&h, &mut ports, &root, text).await;
-    wait_for_menus(&root, &[("talky", "file_read")]).await;
+    wait_for_menus(&root, &[("talky", "file")]).await;
     h.send(person("t-1", SAID_A)).await;
     let mut seen = Vec::new();
     next_matching(
@@ -1197,11 +1228,13 @@ async fn a_talky_reads_a_seeded_file_through_its_tools() {
         eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
         return;
     }
-    let file_arg = json!({"file": PATH}).to_string();
+    // T5-11 (GH #1248): the folded menu -- one family `file`, called with `{op, args}`.
+    let summary_arg = json!({"op": "summary", "args": {"file": PATH}}).to_string();
+    let read_arg = json!({"op": "read", "args": {"file": PATH}}).to_string();
     let voice = MockOpenAI::start(vec![
         canned_tool_calls(vec![
-            (SUMMARY_ID, "file_summary", file_arg.as_str()),
-            (READ_ID, "file_read", file_arg.as_str()),
+            (SUMMARY_ID, "file", summary_arg.as_str()),
+            (READ_ID, "file", read_arg.as_str()),
         ]),
         canned_chat_completion(ANSWER_A, "stop"),
     ])
@@ -1229,8 +1262,7 @@ async fn a_talky_reads_a_seeded_file_through_its_tools() {
 
     h.send(menu_tick()).await;
     seed(&h, &mut ports, &root).await;
-    let wanted: Vec<(&str, &str)> = READ_TOOLS.iter().map(|t| ("talky", *t)).collect();
-    wait_for_menus(&root, &wanted).await;
+    wait_for_menus(&root, &[("talky", "file")]).await;
 
     h.send(person("t-1", SAID_A)).await;
     let mut seen = Vec::new();
@@ -1251,7 +1283,11 @@ async fn a_talky_reads_a_seeded_file_through_its_tools() {
     let reqs = voice.recorded_requests().await;
     h.shutdown().await;
 
-    // 1. The menu: the fourteen read tools, no write or workspace tool.
+    // 1. The menu: the fourteen read tools folded into the family `file`
+    //    (T5-11, GH #1248), no write or workspace tool. Folded, a tool is an
+    //    op of `file{op}`, so the claim reads the family's `op` enum: a write
+    //    tool in talky's list would stand there as an op, never as a name
+    //    (re-check I2).
     assert_eq!(
         reqs.len(),
         2,
@@ -1260,17 +1296,35 @@ async fn a_talky_reads_a_seeded_file_through_its_tools() {
     let writes = write_tools();
     for (i, r) in reqs.iter().enumerate() {
         let offered = tools_offered(r);
+        let ops = family_ops(r, "file");
+        assert!(
+            offered.iter().any(|o| o == "file"),
+            "talky request {i} does not offer the family `file`: {offered:?}"
+        );
         for t in READ_TOOLS {
             assert!(
-                offered.iter().any(|o| o == t),
-                "talky request {i} does not offer `{t}`: {offered:?}"
+                !offered.iter().any(|o| o == t),
+                "talky request {i}: folded, `{t}` is no entry of its own: {offered:?}"
+            );
+            let op = t.strip_prefix("file_").unwrap_or(t);
+            assert!(
+                ops.iter().any(|o| o == op),
+                "talky request {i}: the family `file` offers the read op `{op}`: {ops:?}"
             );
         }
-        let wrong: Vec<&String> = offered.iter().filter(|o| writes.contains(*o)).collect();
+        let wrong: Vec<&String> = writes
+            .iter()
+            .filter(|w| {
+                offered.contains(*w)
+                    || ops
+                        .iter()
+                        .any(|o| Some(o.as_str()) == w.strip_prefix("file_"))
+            })
+            .collect();
         assert!(
-            wrong.is_empty(),
+            wrong.is_empty() && !offered.iter().any(|o| o == "file_ws"),
             "talky request {i} offers write or workspace tools, which only the core may \
-             call: {wrong:?}"
+             call: {wrong:?} (ops of `file`: {ops:?}, menu: {offered:?})"
         );
     }
 
@@ -1380,10 +1434,14 @@ async fn cogny_opens_a_workspace_replaces_against_its_base_and_commits() {
                             else. Form: one sentence. Length: short."),
     })
     .to_string();
-    let open_args = json!({"name": WS}).to_string();
-    let replace_args =
-        json!({"file": PATH, "base": base, "old": OLD, "new": NEW, "ws": WS}).to_string();
-    let commit_args = json!({"ws": WS, "note": "the river runs south"}).to_string();
+    // T5-10 (GH #1246): the core sees its menu folded, so it calls the families
+    // (`file_ws{op, args}`, `file{op, args}`) and the dispatcher unfolds them.
+    let open_args = json!({"op": "open", "args": {"name": WS}}).to_string();
+    let replace_args = json!({"op": "replace", "args":
+        {"file": PATH, "base": base, "old": OLD, "new": NEW, "ws": WS}})
+    .to_string();
+    let commit_args =
+        json!({"op": "commit", "args": {"ws": WS, "note": "the river runs south"}}).to_string();
 
     let voice = MockOpenAI::start(vec![
         canned_content_and_tool_calls(
@@ -1394,9 +1452,9 @@ async fn cogny_opens_a_workspace_replaces_against_its_base_and_commits() {
     ])
     .await;
     let core = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(WS_OPEN_ID, "file_ws_open", open_args.as_str())]),
-        canned_tool_calls(vec![(REPLACE_ID, "file_replace", replace_args.as_str())]),
-        canned_tool_calls(vec![(COMMIT_ID, "file_ws_commit", commit_args.as_str())]),
+        canned_tool_calls(vec![(WS_OPEN_ID, "file_ws", open_args.as_str())]),
+        canned_tool_calls(vec![(REPLACE_ID, "file", replace_args.as_str())]),
+        canned_tool_calls(vec![(COMMIT_ID, "file_ws", commit_args.as_str())]),
         canned_chat_completion(CORE_DONE, "stop"),
     ])
     .await;
@@ -1424,9 +1482,8 @@ async fn cogny_opens_a_workspace_replaces_against_its_base_and_commits() {
         &root,
         &[
             ("talky", "consult_cogny"),
-            ("cogny", "file_ws_open"),
-            ("cogny", "file_replace"),
-            ("cogny", "file_ws_commit"),
+            ("cogny", "file_ws"),
+            ("cogny", "file"),
         ],
     )
     .await;
@@ -1492,17 +1549,16 @@ async fn cogny_opens_a_workspace_replaces_against_its_base_and_commits() {
         "ws_open, replace, commit -- one round each -- then the core's answer"
     );
     let offered = tools_offered(&core_reqs[0]);
-    for t in [
-        "file_ws_open",
-        "file_replace",
-        "file_ws_commit",
-        "file_read",
-    ] {
+    for t in ["file_ws", "file"] {
         assert!(
             offered.iter().any(|o| o == t),
-            "the core declares `*` and is offered `{t}`: {offered:?}"
+            "the core declares `*` and is offered the family `{t}`: {offered:?}"
         );
     }
+    assert!(
+        !offered.iter().any(|o| o == "file_read"),
+        "folded: no single file op on the core's menu: {offered:?}"
+    );
 
     let opened = tool_content(&core_reqs[1], WS_OPEN_ID);
     assert!(

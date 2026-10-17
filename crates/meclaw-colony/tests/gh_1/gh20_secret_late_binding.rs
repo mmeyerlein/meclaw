@@ -155,6 +155,7 @@ fn instantiation_keeps_env_forms_literal_on_params_and_settings_defaults() {
         &ctx,
         &Default::default(),
         &meclaw_colony::WorkPulse::silent(),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(staged.len(), 1);
@@ -221,6 +222,7 @@ fn instantiation_runtime_view_resolves_what_the_disk_view_withholds() {
         &ctx,
         &Default::default(),
         &meclaw_colony::WorkPulse::silent(),
+        &Default::default(),
     )
     .unwrap();
 
@@ -259,6 +261,7 @@ fn unresolvable_env_var_still_rejects_the_instantiation() {
         &HashMap::new(),
         &Default::default(),
         &meclaw_colony::WorkPulse::silent(),
+        &Default::default(),
     )
     .unwrap_err();
     assert_eq!(err.error_code(), "env_var_missing");
@@ -302,6 +305,7 @@ fn override_params_from_the_diff_stay_tokens_on_disk() {
         &HashMap::new(),
         &Default::default(),
         &meclaw_colony::WorkPulse::silent(),
+        &Default::default(),
     )
     .unwrap();
 
@@ -360,6 +364,7 @@ fn subtree_rebirth_keeps_every_node_free_of_secrets() {
         &ctx,
         &Default::default(),
         &meclaw_colony::WorkPulse::silent(),
+        &Default::default(),
     )
     .unwrap();
     assert!(

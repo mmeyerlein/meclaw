@@ -205,7 +205,11 @@ impl CellFactory for BrainUnderTest {
         blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
-        if path.as_str() == self.real_at {
+        // GH #1247: talky's route decider is asked on every turn. The double
+        // swallows the question and the colony never settles; the real cell,
+        // shipped without a model, answers with an error at once (no socket),
+        // and `./route` stamps the turn `talk`.
+        if path.as_str() == self.real_at || path.as_str().ends_with("/talky/decide") {
             return Arc::new(LlmCellFactory).spawn_cell(
                 path,
                 params,
@@ -465,7 +469,7 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@2.5.32",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.6.0",
                            "override_params": {
                                "access/vault": {"unlock_env": UNLOCK_ENV},
                                "memory-hive/clock": quiet_night(),
@@ -548,7 +552,7 @@ fn assistant_manifest(base_url: &str) -> Value {
                 "model_surface": "gpt-4o-mini"},
         "diff": {
             "add_nodes": [{"name": format!("assistants/{AGENT}"),
-                           "template": "assistant@3.7.19",
+                           "template": "assistant@3.8.0",
                            "override_params": {
                                // The brain under test: no bearer of its own
                                // (an empty string is not a bearer, GH #271), a

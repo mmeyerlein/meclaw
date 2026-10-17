@@ -7,7 +7,7 @@
     "mount": "probe-hook",
     "verify": {
       "kind": "hmac_sha256",
-      "secret": "${PROBE_HOOK_SECRET}",
+      "secret_grant_id": "grant:probe-hook@colony-test/hook",
       "header": "X-Probe-Signature",
       "prefix": "sha256="
     },

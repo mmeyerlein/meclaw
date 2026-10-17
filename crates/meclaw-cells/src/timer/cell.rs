@@ -38,6 +38,9 @@ pub struct TimerCell {
     /// `clock_op` lane from outside the sealed rim, and an `add` there would
     /// plant a strike the clock emits from INSIDE the hive, at any inner cell.
     pub(crate) accept_ops: Option<Vec<String>>,
+    /// GH #1253: the colony's shutdown drain. A strike that comes due while the
+    /// colony drains is held back before its completion mark ([`Self::handle_event`]).
+    pub(crate) drain: meclaw_colony::DrainView,
 }
 
 impl TimerCell {
@@ -52,7 +55,14 @@ impl TimerCell {
             booted_at: chrono::Utc::now(),
             replan_tx: None,
             accept_ops: None,
+            drain: meclaw_colony::DrainView::default(),
         }
+    }
+
+    /// GH #1253: read the colony's shutdown drain (`ContractView::drain`).
+    pub fn with_drain(mut self, drain: meclaw_colony::DrainView) -> Self {
+        self.drain = drain;
+        self
     }
 
     /// GH #1019: narrow what the mailbox accepts (`params.accept_ops`).
@@ -841,6 +851,21 @@ impl LongRunningCell for TimerCell {
                         "fire: cron order changed to an expression without this moment, stale strike skipped"
                     ),
                 }
+                return;
+            }
+
+            // GH #1253 (finding K-DRAIN-timer § 4): the colony dead-letters a
+            // source emission in its shutdown drain (`shutdown_draining`); a
+            // strike marked completed and emitted into that refusal was lost
+            // for good. Held back here, the row stays `active`, the next start
+            // plans it again and `catch_up` fires it late. No replan: the colony
+            // is going down.
+            if self.drain.is_draining() {
+                tracing::debug!(
+                    path = self.own_path.as_str(),
+                    ?schedule_id,
+                    "fire: colony draining, strike withheld"
+                );
                 return;
             }
 

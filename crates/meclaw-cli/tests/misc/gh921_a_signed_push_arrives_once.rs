@@ -11,12 +11,17 @@
 //! ```
 //!
 //! Measured at the receiver: rows of `GET /colony/messages` under `/sink` and
-//! `/receipts`, never "the cell emitted". The secrets live only in the
-//! TempDir's `.env`; every other file and every captured log line is searched
-//! for them. The signature below is HMAC-SHA256 of [`SIGNED_BODY`] under
+//! `/receipts`, never "the cell emitted". The secrets come sealed from a real
+//! vault in the TempDir's tree under the cells' grants (GH #1235: a secret
+//! param takes no `${VAR}`, `support/vault_grant.rs`); every file and every
+//! captured log line is searched for them. The signature below is HMAC-SHA256 of [`SIGNED_BODY`] under
 //! [`HOOK_SECRET`], computed once outside the test (Python `hmac`), so the test
 //! needs no crypto crate of its own. The file is deliberately not named
 //! `*_e2e` (see `gh617_a_lane_crosses_a_colony_boundary.rs`).
+
+// harness_fold: #[path = "support/vault_grant.rs"]
+#[allow(unused_imports)]
+use crate::vault_grant; // harness_fold: mod vault_grant;
 
 use meclaw_cli::{Cli, run_with_hooks};
 use serde_json::{Value, json};
@@ -98,12 +103,26 @@ impl Colony {
     }
 }
 
-/// Boots the fixture with `env` as its `.env`.
-async fn boot(env: &[(&str, &str)]) -> Colony {
+const HOOK: vault_grant::Granted = vault_grant::Granted {
+    cell: "hook",
+    grant: "grant:probe-hook@colony-test/hook",
+    cred_ref: "cred:probe-hook",
+    secret: HOOK_SECRET,
+};
+const TOKEN: vault_grant::Granted = vault_grant::Granted {
+    cell: "token",
+    grant: "grant:probe-token@colony-test/token",
+    cred_ref: "cred:probe-token",
+    secret: TOKEN_SECRET,
+};
+
+/// Boots the fixture with a vault holding the secrets of `granted`, once
+/// every one of their boxes opened.
+async fn boot(granted: &[vault_grant::Granted]) -> Colony {
+    let _ = captured_logs();
     let td = tempfile::TempDir::new().expect("tempdir");
     copy_dir_recursive(&fixture_path("gh921"), td.path());
-    let lines: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
-    std::fs::write(td.path().join(".env"), lines).expect("write env");
+    vault_grant::grow_vault(td.path(), cli_for(td.path()), granted).await;
     let cli = cli_for(td.path());
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
     let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -113,6 +132,7 @@ async fn boot(env: &[(&str, &str)]) -> Colony {
         .await
         .expect("the colony must bind HTTP within 30s")
         .expect("addr hook");
+    vault_grant::wait_opened(&captured_logs(), granted.len()).await;
     Colony {
         addr,
         shutdown,
@@ -218,6 +238,7 @@ impl std::io::Write for LogWriter {
         if let Ok(mut v) = self.0.lock() {
             v.extend_from_slice(b);
         }
+        vault_grant::log_written().notify_waiters();
         Ok(b.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -229,7 +250,8 @@ fn find(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Every file under the colony's root except the `.env` that holds the secrets
+/// Every file under the colony's root, `.env` included (GH #1235: it holds no
+/// secret any more)
 /// on purpose, and every captured log line: none contains a needle.
 fn assert_nowhere(c: &Colony, needles: &[&str]) {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -237,7 +259,7 @@ fn assert_nowhere(c: &Colony, needles: &[&str]) {
             let p = e.path();
             if e.file_type().expect("file_type").is_dir() {
                 walk(&p, out);
-            } else if p.file_name().is_some_and(|n| n != ".env") {
+            } else {
                 out.push(p);
             }
         }
@@ -278,11 +300,7 @@ fn receipts<'a>(all: &'a [Row], lane: &str, event: &str) -> Vec<&'a Row> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_signed_push_arrives_once_and_an_unsigned_one_nowhere() {
     let _ = captured_logs();
-    let c = boot(&[
-        ("PROBE_HOOK_SECRET", HOOK_SECRET),
-        ("PROBE_TOKEN_SECRET", TOKEN_SECRET),
-    ])
-    .await;
+    let c = boot(&[HOOK, TOKEN]).await;
     let a = c.addr;
     let sig = format!("sha256={SIGNATURE}");
     let json_ct = ("content-type", "application/json");
@@ -369,15 +387,15 @@ async fn a_signed_push_arrives_once_and_an_unsigned_one_nowhere() {
     c.stop().await;
 }
 
-/// A secret bound blank never opens the mount: every POST is `503`, and the
-/// cell books `secret_missing` once.
+/// GH #1235 (T6-22): a blank `${VAR}` no longer boots and the vault stores
+/// no empty secret, so `secret_missing` has no road into a colony any more
+/// (the cell-level locks keep it). What a mount without its secret is in a
+/// colony now: a grant whose box never comes. It never opens -- every POST is
+/// `503` with a `credential_pending` receipt on its lane -- and nothing
+/// arrives (GH #1106).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_blank_secret_answers_503_and_is_booked_once() {
-    let c = boot(&[
-        ("PROBE_HOOK_SECRET", HOOK_SECRET),
-        ("PROBE_TOKEN_SECRET", ""),
-    ])
-    .await;
+async fn a_grant_whose_box_never_comes_answers_503_and_delivers_nothing() {
+    let c = boot(&[HOOK]).await;
     let a = c.addr;
     assert_eq!(post(&a, "/probe-token/", &[], "ping").await, 503);
     assert_eq!(
@@ -385,12 +403,17 @@ async fn a_blank_secret_answers_503_and_is_booked_once() {
         503
     );
     let all = wait_for_rows(&a, "/receipts", 1).await;
-    let missing: Vec<&Row> = all
+    let pending: Vec<&Row> = all
         .iter()
-        .filter(|r| r.hop["error_code"] == json!("secret_missing"))
+        .filter(|r| r.hop["error_code"] == json!("credential_pending"))
         .collect();
-    assert_eq!(missing.len(), 1, "booked once per life, not per request");
-    assert_eq!(missing[0].hop["lane"], json!("probe-token"));
+    assert!(!pending.is_empty(), "the closed mount books its refusal");
+    assert!(
+        pending
+            .iter()
+            .all(|r| r.hop["lane"] == json!("probe-token")),
+        "on its own lane"
+    );
     assert!(
         rows(&a, "/sink").await.is_empty(),
         "nothing arrives through a mount without a secret"

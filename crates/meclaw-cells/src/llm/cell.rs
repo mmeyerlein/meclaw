@@ -7,7 +7,7 @@ use crate::llm::window;
 use crate::llm::wire::WireError;
 use crate::llm::{
     auth, continuation, latency, output, package, params::LlmParams, state, system_gate,
-    tool_scope, translate, translate_decisions, translate_responses, wire,
+    tool_scope, translate, translate_anthropic, translate_decisions, translate_responses, wire,
 };
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
@@ -100,6 +100,30 @@ async fn emit_credential_pending(turn: &ParkedTurn) {
         None,
     )
     .await;
+}
+
+/// GH #1225: tell the asker that the credential arrived after its round's
+/// deadline had already answered the parked turns with `credential_pending`.
+///
+/// The key is in RAM now, and without this message nobody learns it: measured
+/// on a production colony, the registry's waiting question then waited for
+/// the next boot. No `error_code` (nothing failed) and no value -- only the
+/// grant that opened. Sent on the box's own sink to its reply target, the
+/// road a refused box takes as well.
+async fn emit_credential_arrived_late(
+    provider: &str,
+    sink: &OutputSink,
+    target: meclaw_core::Path,
+    grant_id: &str,
+) {
+    let content = meclaw_core::serde_json::json!({
+        "messages": [],
+        "meta": {
+            "provider": provider,
+            "credential": {"outcome": "arrived_late", "grant_id": grant_id},
+        },
+    });
+    let _ = sink.push(meclaw_core::CellOutput { target, content }).await;
 }
 
 /// How a provider call failed, with everything `emit_error` needs.
@@ -226,6 +250,108 @@ async fn run_responses_lane(
     translated.map_err(|e| LaneFailure::from_translate(&e, "parse"))
 }
 
+/// GH #1241 (T10-09): one call on the native Anthropic Messages lane.
+///
+/// `POST <base_url>/messages` with the key as `x-api-key` and the app
+/// attribution (`X-Title`, `HTTP-Referer`) as on the other lanes -- the
+/// mapped headers pass, the credential headers stay the wire's
+/// ([`wire::messages_headers`]). One JSON body, one A-timeout; no
+/// continuation (the wire refuses the prefill it would send). A tool turn's
+/// thinking is kept for the next call of its round, and the answer ends the
+/// round `open_round` of this conversation (T10-10, re-check M1).
+async fn run_messages_lane(
+    cell: &LlmCell,
+    db: &mut meclaw_colony::DbConn,
+    open_round: Vec<String>,
+    request_json: &Value,
+    timeout: std::time::Duration,
+    wire_out: &mut Option<wire::WireTimings>,
+) -> Result<TranslatedResponse, LaneFailure> {
+    let url = crate::llm::params::endpoint_url(
+        cell.params
+            .base_url
+            .as_deref()
+            .unwrap_or(wire::ANTHROPIC_DEFAULT_BASE_URL),
+        wire::ANTHROPIC_MESSAGES_PATH,
+    );
+    let attribution = translate::build_attribution_headers(&cell.params);
+    let (result, timings) = wire::call_messages_timed(
+        &cell.http,
+        &url,
+        cell.bearer(),
+        &attribution,
+        request_json,
+        timeout,
+    )
+    .await;
+    *wire_out = Some(timings);
+    let json = result.map_err(|e| LaneFailure::from_wire(&e))?;
+    // GH #75: a 2xx body that carries only an `error` object (a proxy in
+    // front of the provider) is a failure, not an answer.
+    if let Some(e) = wire::classify_in_body_error(&json) {
+        return Err(LaneFailure::from_wire(&e));
+    }
+    let translated = translate_anthropic::parse_messages_response(&json)
+        .map_err(|e| LaneFailure::from_translate(&e, "parse"))?;
+    save_tool_turn_thinking(
+        db,
+        open_round,
+        translate_anthropic::thinking_of_tool_turn(&json),
+    )
+    .await;
+    Ok(translated)
+}
+
+/// GH #1241 (T10-10): the kept thinking of the open tool round, if any. A
+/// `cell.db` that does not answer costs the replay, not the call: WARN, and
+/// the request goes out without it (OR-programm-tm.AN2.11).
+async fn read_open_round_thinking(
+    db: &mut meclaw_colony::DbConn,
+    ids: Vec<String>,
+) -> Option<Value> {
+    if ids.is_empty() {
+        return None;
+    }
+    match db
+        .call_with_timeout(move |conn| state::read_thinking(conn, &ids))
+        .await
+    {
+        Ok(Ok(found)) => found,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "llm: reading the open round's thinking failed");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "llm: reading the open round's thinking timed out");
+            None
+        }
+    }
+}
+
+/// GH #1241 (T10-10): the round change of this conversation -- drop the
+/// thinking of the round the answer ends (`closed`), keep a tool turn's
+/// (`kept`). The answer is already in hand; a write that fails is a WARN,
+/// never the call's failure.
+async fn save_tool_turn_thinking(
+    db: &mut meclaw_colony::DbConn,
+    closed: Vec<String>,
+    kept: Option<(Vec<String>, Value)>,
+) {
+    if closed.is_empty() && kept.is_none() {
+        return;
+    }
+    let (ids, blocks) = kept.unwrap_or_default();
+    let now = unix_ms_now() / 1000;
+    match db
+        .call_with_timeout(move |conn| state::save_thinking(conn, &closed, &ids, &blocks, now))
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "llm: keeping a tool turn's thinking failed"),
+        Err(e) => tracing::warn!(error = %e, "llm: keeping a tool turn's thinking timed out"),
+    }
+}
+
 /// The oauth_subscription branch: token → call → (401 → refresh → one retry).
 ///
 /// `wire_out` accumulates BOTH attempts when the retry fires (GH #124), so a
@@ -345,6 +471,13 @@ pub struct LlmCell {
     /// has no finite size. `handle` drains this queue after the delivery is
     /// done, which is the same order with a flat call stack.
     released: std::collections::VecDeque<ParkedTurn>,
+    /// GH #1225 (re-check M-2, N-1): turns that met the credential guard since
+    /// the last box opened -- parked or answered at once. Every one the next
+    /// box does not release already holds its `credential_pending` (deadline,
+    /// overflow, unusable delivery, denial, or a round asked again after its
+    /// deadline), and its asker waits for the key: one rule instead of a flag
+    /// per road. Reset by that box.
+    credential_turns_since_box: usize,
     /// T6-06 (GH #1232): the twin's wait for its original's handover. `Some`
     /// only for a cell built with `handover_wait_ms` above 0; the end of the
     /// wait writes `0` into the overlay, so a woken cell is built with `None`.
@@ -390,6 +523,7 @@ impl LlmCell {
                 expiry_receipts(),
             ),
             released: std::collections::VecDeque::new(),
+            credential_turns_since_box: 0,
             handover: (params.handover_wait_ms > 0).then(Handover::default),
             // A cell built from parsed params alone treats them as its start
             // value; the factory uses [`Self::restored`] with the real birth.
@@ -601,6 +735,7 @@ impl LlmCell {
             self.params.credential_wait_ms,
             self.params.credential_wait_max,
         );
+        self.credential_turns_since_box = self.credential_turns_since_box.saturating_add(1);
         match self.credentials.park(&grant, turn) {
             ParkOutcome::Asked => {
                 self.ask_for_credential(sink, &ask_target, &grant).await;
@@ -672,6 +807,23 @@ impl LlmCell {
                     .get(*key)
                     .is_some_and(|v| !v.is_null() && v.as_u64() != Some(0))
             })
+    }
+
+    /// GH #1236: the reasoning budget this cell runs on, the keys
+    /// `names_a_budget_key` counts, for the handover export.
+    fn running_budget(&self) -> meclaw_core::serde_json::Map<String, Value> {
+        let Ok(Value::Object(effective)) = meclaw_core::serde_json::to_value(&self.params) else {
+            return meclaw_core::serde_json::Map::new();
+        };
+        meclaw_colony::mutation::twin::BUDGET_KEYS
+            .iter()
+            .filter_map(|key| {
+                effective
+                    .get(*key)
+                    .filter(|v| !v.is_null() && v.as_u64() != Some(0))
+                    .map(|v| ((*key).to_string(), v.clone()))
+            })
+            .collect()
     }
 
     /// T6-06 (GH #1232): the end of a twin's wait, by import or by expiry.
@@ -782,7 +934,11 @@ impl LlmCell {
                         )
                         .await;
                 };
-                match db.call(|conn| state::handover_export(conn)).await {
+                let running = self.running_budget();
+                match db
+                    .call(move |conn| state::handover_export(conn, &running))
+                    .await
+                {
                     Ok(content) => {
                         // A closed sink means the colony is going down.
                         let _ = sink
@@ -1272,6 +1428,9 @@ impl LlmCell {
         if self.params.is_decisions() {
             return crate::llm::params::PROVIDER_DECISIONS;
         }
+        if self.params.is_anthropic() {
+            return crate::llm::params::PROVIDER_ANTHROPIC;
+        }
         match self.params.effective_wire_dialect() {
             WireDialect::ChatCompletions => "chat_completions",
             WireDialect::Responses => "responses",
@@ -1305,9 +1464,14 @@ impl LlmCell {
         // GH #94: both dialects consume attachments — only the provider-native
         // shape differs, so the shape is the ONLY thing chosen here and the
         // read loop below stays shared (one failure taxonomy, one timeout).
-        let to_part: fn(&str, &[u8]) -> Value = match self.params.effective_wire_dialect() {
-            WireDialect::ChatCompletions => translate::image_content_part,
-            WireDialect::Responses => translate_responses::input_image_item,
+        // GH #1241 (T10-04): the anthropic lane takes base64 image blocks.
+        let to_part: fn(&str, &[u8]) -> Value = if self.params.is_anthropic() {
+            translate_anthropic::image_block
+        } else {
+            match self.params.effective_wire_dialect() {
+                WireDialect::ChatCompletions => translate::image_content_part,
+                WireDialect::Responses => translate_responses::input_image_item,
+            }
         };
         let timeout = std::time::Duration::from_millis(self.params.attachment_timeout_ms);
         let mut parts = Vec::with_capacity(entries.len());
@@ -1900,6 +2064,23 @@ impl LlmCell {
                 match self.credentials.accept_sealed(&content).await {
                     Ok(accepted) => {
                         tracing::info!("llm: bearer credential received sealed and opened in RAM");
+                        // GH #1225: fewer turns released than met the guard
+                        // since the last box means a turn already holds its
+                        // receipt -- deadline, overflow (re-check M-2), an
+                        // unusable delivery, a denial, or a round asked again
+                        // after its deadline (N-1; the last two release the
+                        // new round's turns in time). Told once, if the
+                        // template asks for it.
+                        let waited = std::mem::take(&mut self.credential_turns_since_box);
+                        if accepted.released.len() < waited && self.params.credential_late_notice {
+                            emit_credential_arrived_late(
+                                &self.params.provider,
+                                sink,
+                                reply_target,
+                                &accepted.grant,
+                            )
+                            .await;
+                        }
                         // GH #457: the round is over. Everything it was holding
                         // moves to the drain queue and is answered by `handle`
                         // after this call.
@@ -2340,36 +2521,75 @@ impl LlmCell {
             // P10 dialect fork. Everything above (system tree, tools, system
             // prompt) is dialect-neutral and shared; below this point the two
             // wires diverge. The chat-completions branch continues UNCHANGED —
-            // pinned by `llm_chat_completions_wire_regression`.
-            if self.params.effective_wire_dialect() == WireDialect::Responses {
+            // pinned by `llm_chat_completions_wire_regression`. GH #1241: the
+            // anthropic lane (T10-09) shares the Responses lane's frame --
+            // window, phase clock, one failure value, one emit; only the
+            // request and the call differ.
+            let anthropic = self.params.is_anthropic();
+            if anthropic || self.params.effective_wire_dialect() == WireDialect::Responses {
                 let timeout = std::time::Duration::from_millis(self.params.external_timeout_ms);
                 let mut wire_timings: Option<wire::WireTimings> = None;
-                let outcome = match translate_responses::build_responses_request(
-                    &self.params,
-                    &system_string,
-                    &input_messages,
-                    &tools,
-                ) {
-                    Ok(mut request_json) => {
+                // T10-10: the open round of THIS conversation -- its thinking
+                // goes back, and its rows go when the answer ends the round.
+                let open_round = if anthropic {
+                    translate_anthropic::open_round_ids(&input_messages)
+                } else {
+                    Vec::new()
+                };
+                let built = if anthropic {
+                    // T10-10: the open round's thinking, read before the
+                    // build, goes back in front of its tool calls.
+                    let thinking = read_open_round_thinking(db, open_round.clone()).await;
+                    translate_anthropic::build_messages_request(
+                        &self.params,
+                        &system_string,
+                        &input_messages,
+                        &tools,
+                        image_parts,
+                    )
+                    .map(|mut r| {
+                        if let Some(blocks) = thinking {
+                            translate_anthropic::replay_thinking(&mut r, blocks);
+                        }
+                        r
+                    })
+                } else {
+                    translate_responses::build_responses_request(
+                        &self.params,
+                        &system_string,
+                        &input_messages,
+                        &tools,
+                    )
+                    .map(|mut r| {
                         // GH #890: the cell's cache key, keyed by its own
                         // path. No-op under `cache_mode: "off"`.
                         translate_responses::apply_cache_wire(
-                            &mut request_json,
+                            &mut r,
                             &self.params,
                             sink.sender_path().as_str(),
                         );
                         // GH #94: fold the resolved images into the typed
                         // input[]. No-op for an empty vector.
                         translate_responses::attach_input_images(
-                            &mut request_json,
+                            &mut r,
                             &input_messages,
                             image_parts,
                         );
+                        r
+                    })
+                };
+                let outcome = match built {
+                    Ok(mut request_json) => {
                         // R-HK-15/16: the window, as on the chat wire.
+                        let budget = if anthropic {
+                            "max_tokens"
+                        } else {
+                            "max_output_tokens"
+                        };
                         if let Err(r) = window::apply(
                             &self.params,
                             &mut request_json,
-                            "max_output_tokens",
+                            budget,
                             sink.sender_path().as_str(),
                         ) {
                             Err(LaneFailure {
@@ -2394,8 +2614,20 @@ impl LlmCell {
                                     system_string.len(),
                                 );
                             }
-                            run_responses_lane(self, &request_json, timeout, &mut wire_timings)
+                            if anthropic {
+                                run_messages_lane(
+                                    self,
+                                    db,
+                                    open_round,
+                                    &request_json,
+                                    timeout,
+                                    &mut wire_timings,
+                                )
                                 .await
+                            } else {
+                                run_responses_lane(self, &request_json, timeout, &mut wire_timings)
+                                    .await
+                            }
                         }
                     }
                     Err(e) => Err(LaneFailure::from_translate(&e, "translate")),
@@ -2910,6 +3142,364 @@ mod tests {
         assert_eq!(cell.bearer(), None, "nothing was adopted");
         let em = rx.try_recv().expect("a named refusal, not silence");
         assert_eq!(em.content["header"]["error_code"], "invalid_input");
+    }
+
+    /// GH #1225 (F-KL-1): the box of a round whose deadline already answered
+    /// the parked turn. Measured on a production colony under load: the 10 s round
+    /// ran out, the turn got its `credential_pending`, the box came seconds
+    /// later and opened -- and the cell said nothing, so the registry's question
+    /// waited for the next boot with the key already in RAM. With
+    /// `credential_late_notice` the asker is told exactly once; without it the
+    /// cell stays silent as before (talky and the others have no reader for it).
+    async fn a_late_box(notice: bool) -> (std::time::Duration, Vec<Value>) {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let mut raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+            "credential_wait_ms": 400u64,
+        });
+        if notice {
+            raw["credential_late_notice"] = json!(true);
+        }
+        let mut cell = LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        );
+        let (sink, mut rx) = mk_sink();
+
+        let t0 = tokio::time::Instant::now();
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let request = rx.recv().await.expect("the credential request").content;
+        assert_eq!(request["header"]["route"], "credential_request");
+        let public = cell.pending_recipient_hex().expect("a pair is in flight");
+
+        // The deadline answers the parked turn; the callers (paused clock)
+        // hold it to exactly `credential_wait_ms`.
+        let pending = rx.recv().await.expect("the receipt").content;
+        assert_eq!(pending["header"]["error_code"], "credential_pending");
+        let waited = t0.elapsed();
+
+        // Then the box arrives and opens; the end of `handle` is the mark.
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-LATE").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+        assert_eq!(cell.bearer(), Some("sk-or-v1-LATE"), "the late box opened");
+        let mut after = Vec::new();
+        while let Ok(em) = rx.try_recv() {
+            after.push(em.content);
+        }
+        (waited, after)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gh1225_a_box_after_the_deadline_is_reported_once_when_the_param_asks() {
+        let (waited, after) = a_late_box(true).await;
+        assert_eq!(
+            waited,
+            std::time::Duration::from_millis(400),
+            "the round's deadline"
+        );
+        assert_eq!(after.len(), 1, "exactly one notice: {after:?}");
+        let notice = &after[0];
+        assert_eq!(
+            notice["meta"]["credential"],
+            json!({"outcome": "arrived_late", "grant_id": "grant:abc"}),
+            "{notice}"
+        );
+        assert_eq!(notice["meta"]["provider"], "openai", "{notice}");
+        assert_eq!(notice["messages"], json!([]), "{notice}");
+        assert!(
+            notice["header"].get("error_code").is_none() && notice["header"].get("route").is_none(),
+            "a notice is no error and no credential request: {notice}"
+        );
+        assert!(
+            !notice.to_string().contains("sk-or-v1-LATE"),
+            "the notice never carries the credential: {notice}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gh1225_without_the_param_a_late_box_is_still_answered_with_silence() {
+        let (waited, after) = a_late_box(false).await;
+        assert_eq!(
+            waited,
+            std::time::Duration::from_millis(400),
+            "the round's deadline"
+        );
+        assert!(after.is_empty(), "no emission: {after:?}");
+    }
+
+    /// GH #1225 (re-check I-1): the notice is for a box whose turns were
+    /// already answered, never for a punctual one. With the param on and the
+    /// box in time, the parked turn is answered from the wire lane and the cell
+    /// says nothing else -- a notice here would make the registry read its
+    /// waits and ask every waiting question again on each punctual box.
+    #[tokio::test]
+    async fn gh1225_a_box_in_time_releases_its_turn_and_sends_no_notice() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+            "credential_wait_ms": 60_000u64,
+            "credential_late_notice": true,
+        });
+        let mut cell = LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        );
+        let (sink, mut rx) = mk_sink();
+
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let request = rx.recv().await.expect("the credential request").content;
+        assert_eq!(request["header"]["route"], "credential_request");
+        let public = cell.pending_recipient_hex().expect("a pair is in flight");
+
+        // The box comes while the turn is still parked: the deadline is a
+        // minute away and never reached.
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-IN-TIME").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+        assert_eq!(cell.bearer(), Some("sk-or-v1-IN-TIME"), "the box opened");
+        // Quiescence: the delivery's `handle` drained the released turn, so
+        // with the sink gone the channel ends after the last emission.
+        drop(sink);
+        let mut after = Vec::new();
+        while let Some(em) = rx.recv().await {
+            after.push(em.content);
+        }
+        assert!(
+            !after
+                .iter()
+                .any(|c| c["meta"]["credential"]["outcome"] == "arrived_late"),
+            "a box in time is no late box: {after:?}"
+        );
+        assert_eq!(
+            after.len(),
+            1,
+            "the turn's answer and nothing else: {after:?}"
+        );
+        assert_eq!(
+            after[0]["header"]["error_code"], "provider_error",
+            "the released turn reached the wire lane: {after:?}"
+        );
+    }
+
+    /// GH #1225 (re-check M-2): a turn past `credential_wait_max` gets its
+    /// `credential_pending` at once, and its asker waits for the key just like
+    /// one whose deadline ran out. A box that then comes in time releases only
+    /// the turns that fit -- so the overflow is reported too, exactly once, or
+    /// that question would wait for the next boot with the key already in RAM.
+    #[tokio::test]
+    async fn gh1225_a_box_after_an_overflow_receipt_is_reported_once() {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+            "credential_wait_ms": 60_000u64,
+            "credential_wait_max": 1usize,
+            "credential_late_notice": true,
+        });
+        let mut cell = LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        );
+        let (sink, mut rx) = mk_sink();
+
+        cell.handle(user_turn(), &sink, &mut db).await;
+        // The second turn does not fit and is answered on the spot.
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let mut early = Vec::new();
+        while let Ok(em) = rx.try_recv() {
+            early.push(em.content);
+        }
+        assert_eq!(early.len(), 2, "the request and one receipt: {early:?}");
+        assert_eq!(early[0]["header"]["route"], "credential_request");
+        assert_eq!(early[1]["header"]["error_code"], "credential_pending");
+        let public = cell.pending_recipient_hex().expect("a pair is in flight");
+
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-IN-TIME").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+        assert_eq!(cell.bearer(), Some("sk-or-v1-IN-TIME"), "the box opened");
+        drop(sink);
+        let mut after = Vec::new();
+        while let Some(em) = rx.recv().await {
+            after.push(em.content);
+        }
+        let notices: Vec<&Value> = after
+            .iter()
+            .filter(|c| c["meta"]["credential"]["outcome"] == "arrived_late")
+            .collect();
+        assert_eq!(notices.len(), 1, "exactly one notice: {after:?}");
+        assert_eq!(
+            notices[0]["meta"]["credential"],
+            json!({"outcome": "arrived_late", "grant_id": "grant:abc"}),
+            "{after:?}"
+        );
+        assert_eq!(
+            after
+                .iter()
+                .filter(|c| c["header"]["error_code"] == "provider_error")
+                .count(),
+            1,
+            "the parked turn is still answered from the wire lane: {after:?}"
+        );
+        assert_eq!(after.len(), 2, "the notice and the answer: {after:?}");
+    }
+
+    /// GH #1225 (N-1): the rule behind every notice -- a box opens while a
+    /// question of this cell already holds its `credential_pending`. Besides
+    /// the deadline and the overflow, two roads lead there, and on both the box
+    /// is punctual for the round in flight: the broker denied the first round
+    /// (`denied`), or the first round's deadline answered its turn and the
+    /// next turn asked again. Either way the first turn's asker waits for the
+    /// key, so the box is reported exactly once and the second turn is still
+    /// answered from the wire lane.
+    async fn a_punctual_box_after_a_receipt(denied: bool) -> Vec<Value> {
+        let td = TempDir::new().unwrap();
+        let conn =
+            meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+        let mut db = meclaw_colony::DbConn::wrap(conn, None);
+        // The deadline is the trigger of the second road and no verdict: the
+        // test waits for its receipt, never for a time.
+        let raw = json!({
+            "provider": "openai", "model": "gpt-4o", "api_key": "",
+            "credential_grant_id": "grant:abc",
+            "base_url": "http://127.0.0.1:1/never-reached",
+            "external_timeout_ms": 100u64,
+            "credential_wait_ms": if denied { 60_000u64 } else { 1u64 },
+            "credential_late_notice": true,
+        });
+        let mut cell = LlmCell::new(
+            LlmParams::parse(&raw).expect("parse"),
+            reqwest::Client::builder().build().unwrap(),
+        );
+        let (sink, mut rx) = mk_sink();
+
+        cell.handle(user_turn(), &sink, &mut db).await;
+        if denied {
+            let text = json!({
+                "outcome": "denied", "reason_code": "vault_locked", "grant_id": "grant:abc",
+            });
+            cell.handle(
+                MessageBuilder::new(Path::new("/llm"))
+                    .body(Body::Inline(json!({
+                        "messages": [{"type": "tool_result", "text": text.to_string()}],
+                    })))
+                    .build(),
+                &sink,
+                &mut db,
+            )
+            .await;
+        }
+        // The first round: its request and the first turn's receipt.
+        let mut first = Vec::new();
+        for _ in 0..2 {
+            first.push(rx.recv().await.expect("the first round").content);
+        }
+        assert!(
+            first
+                .iter()
+                .any(|c| c["header"]["route"] == "credential_request")
+                && first
+                    .iter()
+                    .any(|c| c["header"]["error_code"] == "credential_pending"),
+            "a request and a receipt: {first:?}"
+        );
+
+        // The next round reads its bound fresh (GH #853): a minute, never
+        // reached, so its box is punctual.
+        cell.params.credential_wait_ms = 60_000;
+        cell.handle(user_turn(), &sink, &mut db).await;
+        let request = rx.recv().await.expect("the second request").content;
+        assert_eq!(
+            request["header"]["route"], "credential_request",
+            "the second turn asks again: {request}"
+        );
+        let public = cell.pending_recipient_hex().expect("a pair is in flight");
+        let sealed = crate::sealed::seal_to(&public, b"sk-or-v1-IN-TIME").expect("seal");
+        cell.handle(
+            MessageBuilder::new(Path::new("/llm"))
+                .body(Body::Inline(json!({"sealed": sealed.to_json()})))
+                .build(),
+            &sink,
+            &mut db,
+        )
+        .await;
+        assert_eq!(cell.bearer(), Some("sk-or-v1-IN-TIME"), "the box opened");
+        drop(sink);
+        let mut after = Vec::new();
+        while let Some(em) = rx.recv().await {
+            after.push(em.content);
+        }
+        after
+    }
+
+    fn assert_one_notice_and_the_answer(after: &[Value]) {
+        let notices: Vec<&Value> = after
+            .iter()
+            .filter(|c| c["meta"]["credential"]["outcome"] == "arrived_late")
+            .collect();
+        assert_eq!(notices.len(), 1, "exactly one notice: {after:?}");
+        assert_eq!(
+            notices[0]["meta"]["credential"],
+            json!({"outcome": "arrived_late", "grant_id": "grant:abc"}),
+            "{after:?}"
+        );
+        assert_eq!(
+            after
+                .iter()
+                .filter(|c| c["header"]["error_code"] == "provider_error")
+                .count(),
+            1,
+            "the second turn is answered from the wire lane: {after:?}"
+        );
+        assert_eq!(after.len(), 2, "the notice and the answer: {after:?}");
+    }
+
+    #[tokio::test]
+    async fn gh1225_a_punctual_box_after_a_denied_round_is_reported_once() {
+        let after = a_punctual_box_after_a_receipt(true).await;
+        assert_one_notice_and_the_answer(&after);
+    }
+
+    #[tokio::test]
+    async fn gh1225_a_punctual_box_after_an_expired_and_reasked_round_is_reported_once() {
+        let after = a_punctual_box_after_a_receipt(false).await;
+        assert_one_notice_and_the_answer(&after);
     }
 
     /// R3 / GH #421: a cell that declares a credential grant and holds no

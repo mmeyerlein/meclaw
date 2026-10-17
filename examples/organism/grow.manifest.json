@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.2.62"
+            "template": "meclaw-os@2.2.63"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.1.36"
+            "template": "org@2.1.37"
           }
         ],
         "add_edges": [
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.5.32",
+            "template": "member@2.6.0",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -255,7 +255,7 @@
         "add_nodes": [
           {
             "name": "assistants/scribe",
-            "template": "assistant@3.7.19",
+            "template": "assistant@3.8.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2,
@@ -269,12 +269,24 @@
               "talky/curator/summarizer": {
                 "credential_grant_id": "grant:openrouter@member-alex/talky-curator-summarizer"
               },
+              "talky/decide": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-decide"
+              },
+              "talky/quick": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-quick"
+              },
               "talky-chat/brain": {
                 "api_key": "",
                 "credential_grant_id": "grant:openrouter@member-alex/talky-chat"
               },
               "talky-chat/curator/summarizer": {
                 "credential_grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer"
+              },
+              "talky-chat/decide": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-chat-decide"
+              },
+              "talky-chat/quick": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-chat-quick"
               },
               "cogny/curator/summarizer": {
                 "credential_grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer"
@@ -475,6 +487,11 @@
           {
             "from": "./assistants/scribe",
             "to": "./assistants",
+            "condition": "has(hop.route) && hop.route == 'answer_check'"
+          },
+          {
+            "from": "./assistants/scribe",
+            "to": "./assistants",
             "condition": "has(hop.route) && hop.route == 'build'",
             "modifier": {
               "set_context": {
@@ -573,6 +590,56 @@
             }
           },
           {
+            "from": "./assistants/scribe/talky/decide",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky-decide'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky/decide",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-decide'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./assistants/scribe/talky/quick",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky-quick'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky/quick",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-quick'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
             "from": "./assistants/scribe/talky-chat/brain",
             "to": "./access",
             "lane": "credential_request",
@@ -616,6 +683,56 @@
             "to": "./assistants/scribe/talky-chat/curator/summarizer",
             "lane": "in_sealed",
             "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-curator-summarizer'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./assistants/scribe/talky-chat/decide",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky-chat-decide'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky-chat/decide",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-decide'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./assistants/scribe/talky-chat/quick",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky-chat-quick'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky-chat/quick",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-quick'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -717,6 +834,44 @@
                 }
               },
               {
+                "grant_id": "grant:openrouter@member-alex/talky-decide",
+                "requester": "agent:scribe/talky-decide",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky/decide against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@member-alex/talky-quick",
+                "requester": "agent:scribe/talky-quick",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky/quick against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
                 "grant_id": "grant:openrouter@member-alex/talky-chat",
                 "requester": "agent:scribe/talky-chat",
                 "capability": "credential.read",
@@ -747,6 +902,44 @@
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky-chat/curator/summarizer against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
+                "requester": "agent:scribe/talky-chat-decide",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky-chat/decide against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
+                "requester": "agent:scribe/talky-chat-quick",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky-chat/quick against the provider",
                 "issued_at": "2026-01-01T00:00:00.000000Z",
                 "expires_at": "2099-01-01T00:00:00.000000Z",
                 "rule_id": "alex-credential-read",
@@ -822,7 +1015,7 @@
               },
               {
                 "id": "ev-organism-0000000003",
-                "grant_id": "grant:openrouter@member-alex/talky-chat",
+                "grant_id": "grant:openrouter@member-alex/talky-decide",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -833,7 +1026,7 @@
               },
               {
                 "id": "ev-organism-0000000004",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+                "grant_id": "grant:openrouter@member-alex/talky-quick",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -844,7 +1037,7 @@
               },
               {
                 "id": "ev-organism-0000000005",
-                "grant_id": "grant:openrouter@member-alex/cogny",
+                "grant_id": "grant:openrouter@member-alex/talky-chat",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -855,6 +1048,50 @@
               },
               {
                 "id": "ev-organism-0000000006",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000007",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000008",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000009",
+                "grant_id": "grant:openrouter@member-alex/cogny",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000010",
                 "grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",

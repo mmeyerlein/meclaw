@@ -21,7 +21,14 @@ use meclaw_core::serde_json::{self, Value};
 /// whole `system` table and its params overlay, each a `transfer` document
 /// (`meclaw-cell-export/1`), already in the import form, so whoever forwards
 /// it to the successor unchanged has handed over (OR-programm-tm.H2.1).
-pub(crate) fn handover_export(conn: &rusqlite::Connection) -> Result<Value, String> {
+/// GH #1236: `running` is the budget the cell runs on (birth params with the
+/// overlay on top); a key the overlay does not hold travels as one more row,
+/// so the successor takes the whole running budget and no colony reads this
+/// cell's `config.json` for it.
+pub(crate) fn handover_export(
+    conn: &rusqlite::Connection,
+    running: &serde_json::Map<String, Value>,
+) -> Result<Value, String> {
     use meclaw_colony::db_transfer::{TransferOutcome, export_document};
     let mut args = serde_json::Map::new();
     args.insert("table".into(), Value::from("system"));
@@ -29,8 +36,20 @@ pub(crate) fn handover_export(conn: &rusqlite::Connection) -> Result<Value, Stri
         TransferOutcome::Done { payload, .. } => payload,
         other => return Err(format!("export of the system table: {other:?}")),
     };
-    let params = crate::params_overlay::overlay_document(conn)
+    let mut params = crate::params_overlay::overlay_document(conn)
         .map_err(|e| format!("export of the params overlay: {e}"))?;
+    if let Some(rows) = params.get_mut("rows").and_then(Value::as_array_mut) {
+        for (key, value) in running {
+            if !rows
+                .iter()
+                .any(|r| r.get("key").and_then(Value::as_str) == Some(key))
+            {
+                rows.push(serde_json::json!({
+                    "key": key, "value": value.to_string(), "updated_at": 0
+                }));
+            }
+        }
+    }
     Ok(serde_json::json!({
         "handover": {"operation": "import", "parts": [system, params]}
     }))
@@ -48,12 +67,14 @@ fn handover_part<'a>(
 }
 
 /// T6-06 (GH #1232, OR-programm-tm.H2.orch-1): write the original's `system`
-/// rows on the twin's own connection with the ORIGINAL winning per slot,
-/// unlike a `transfer` import, which the receiver wins: a seed slot the
-/// original overwrote at run time must not fall back to its seed value on the
-/// swap, or the handover is worthless for exactly those slots. A slot only the
-/// twin holds stays (OR-programm-tm.H2.9). One transaction, whole or nothing;
-/// a malformed part changes nothing.
+/// rows on the twin's own connection with the ORIGINAL winning per slot where
+/// its row is newer, unlike a `transfer` import, which the receiver wins: a
+/// seed slot the original overwrote at run time must not fall back to its
+/// seed value on the swap, or the handover is worthless for exactly those
+/// slots. GH #1236: a row of the twin at least as new stays -- a twin cut with
+/// instructions of its own keeps them (GH #1034), the seed rows of both carry
+/// the seed's stamp. A slot only the twin holds stays (OR-programm-tm.H2.9).
+/// One transaction, whole or nothing; a malformed part changes nothing.
 pub(crate) fn handover_import_system(
     conn: &mut rusqlite::Connection,
     parts: &[Value],
@@ -99,7 +120,8 @@ pub(crate) fn handover_import_system(
             "INSERT INTO system (slot_path, value, updated_at) VALUES (?, ?, ?)
              ON CONFLICT(slot_path) DO UPDATE SET
                  value = excluded.value,
-                 updated_at = excluded.updated_at",
+                 updated_at = excluded.updated_at
+             WHERE excluded.updated_at > system.updated_at",
             rusqlite::params![slot, value, updated_at],
         )
         .map_err(|e| e.to_string())?;
@@ -409,6 +431,72 @@ pub(crate) fn replace_last_input(
         rusqlite::params![json, now],
     )?;
     Ok(())
+}
+
+/// GH #1241 (T10-10): the cell's own table of the thinking blocks an
+/// anthropic tool turn must carry back (OR-programm-tm.AN2.8) -- created by
+/// the cell on first use, outside the shared cell schema.
+fn ensure_thinking_table(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS llm_thinking (
+             tool_use_id TEXT PRIMARY KEY,
+             blocks TEXT NOT NULL,
+             saved_at INTEGER NOT NULL
+         )",
+        [],
+    )?;
+    Ok(())
+}
+
+/// GH #1241 (T10-10): one conversation's round change. The rows of `closed`
+/// (the open round this answer ends, the conversation's own) go, then
+/// `blocks` (the JSON array, verbatim) is kept under every `tool_use` id of
+/// the answer in `ids` -- none when the answer closes the round. Only the
+/// open round's thinking ever goes back, so the table holds the open rounds
+/// and nothing else: no fixed row count (content limits live in the catalog,
+/// the curator or the carrier only, R-IG-1), and another conversation's open
+/// round keeps its rows (re-check M1).
+pub(crate) fn save_thinking(
+    conn: &mut rusqlite::Connection,
+    closed: &[String],
+    ids: &[String],
+    blocks: &Value,
+    now: i64,
+) -> rusqlite::Result<()> {
+    ensure_thinking_table(conn)?;
+    let text = blocks.to_string();
+    let tx = conn.transaction()?;
+    for id in closed {
+        tx.execute(
+            "DELETE FROM llm_thinking WHERE tool_use_id = ?",
+            rusqlite::params![id],
+        )?;
+    }
+    for id in ids {
+        tx.execute(
+            "INSERT OR REPLACE INTO llm_thinking (tool_use_id, blocks, saved_at) VALUES (?, ?, ?)",
+            rusqlite::params![id, text, now],
+        )?;
+    }
+    tx.commit()
+}
+
+/// GH #1241 (T10-10): the thinking blocks kept under the first of `ids` that
+/// has any, `None` when none has.
+pub(crate) fn read_thinking(
+    conn: &rusqlite::Connection,
+    ids: &[String],
+) -> rusqlite::Result<Option<Value>> {
+    ensure_thinking_table(conn)?;
+    let mut stmt = conn.prepare("SELECT blocks FROM llm_thinking WHERE tool_use_id = ?")?;
+    for id in ids {
+        let mut rows = stmt.query(rusqlite::params![id])?;
+        if let Some(row) = rows.next()? {
+            let text: String = row.get(0)?;
+            return Ok(serde_json::from_str(&text).ok());
+        }
+    }
+    Ok(None)
 }
 
 /// How a `system_first_persist` call failed: the database said no, or the

@@ -402,17 +402,21 @@ class TestBrowserParts(LabCase):
         WebKit test in the one part that runs them one at a time (GH #1048). A
         release adds every browser unit outside the locks to the union: its `tests`
         is `all()` and gives them up (GH #1162) -- the set read from
-        `browser_units`, not from the reach that moves them."""
+        `browser_units`, not from the reach that moves them. A strand on a driver
+        adds the two units that walk the drivers (stapel c2)."""
         moved = sorted(t for t, (c, u, _x) in gp.browser_units().items()
                        if not gp._browser_lock_term(c, u))
         self.assertTrue(moved)
+        walkers = ["binary_id(=meclaw-cells::744_a_late_patch_does_not_take_the_drawing_back)",
+                   "binary_id(=meclaw-cells::gh1209_no_stage_draws_a_filter_browser)"]
         for mode, colony in (("strand", False), ("integration", True), ("release", True)):
             diff = ["workshop/tools/display-layout-browser.mjs"] if mode == "strand" else ["docs/x.md"]
             st = by_name(gp.plan(diff, mode, repo=None))["browser:display"]
             self.assertEqual({"by": "cmd", "profiles": ["browser-chromium", "browser-webkit"]},
                              st.parallel, mode)
             union = " + ".join(([gp.COLONY_LOCK] if colony else []) + list(gp.IGNORED_LOCKS)
-                               + [gp.SHEET_LOCK] + (moved if mode == "release" else []))
+                               + [gp.SHEET_LOCK] + (moved if mode == "release" else [])
+                               + (walkers if mode == "strand" else []))
             self.assertEqual([["scripts/test-tier.sh", "filter",
                                "(%s) - %s" % (union, gp.WEBKIT_TESTS), "--run-ignored", "all"],
                               ["scripts/test-tier.sh", "filter",

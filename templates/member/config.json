@@ -85,7 +85,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@3.7.19\""
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@3.8.0\""
         }
       ],
       "emits": [
@@ -183,8 +183,15 @@
           "because": "one section of the block the front model appends to its answer, on its way to the app that asked for it (GH #607). The block is ONE fence with one key per section; the splitter inside the generation cuts it up and emits one message per section, carrying `hop.section`. `memory` is taken by this level's own memory hive on the edge beside this one -- it is the write half of the member's memory (GH #122, ADR 0012) and it is not this lane. EVERY OTHER SECTION belongs to an app of this person, and `at: [\"./apps\"]` says the same thing `turn` and `partial` say: the lane docks on that container, both its ends are inside this level, and nothing may carry it PAST the member as a v-lane (ADR-0020). What is DIFFERENT from the observer lanes is who draws the edge into the container: this level does, not the installing mutation. The rim cannot know the sections -- a section is named by whoever offered it, an app is installed later, and an edge per section would have to be redrawn at the rim on every install. So the level carries everything that is not `memory` into `./apps` on ONE edge and the installing mutation draws `./apps -> ./apps/<app>` on `hop.section == '<app section>'`, which is the level where the name is known. That costs a member without apps nothing measurable, for the same reason the two restamp edges cost it nothing: a section is only ever written because it was OFFERED, and with no app offering one the model is never asked for anything but `memory`"
         },
         {
+          "route": "answer_check",
+          "at": [
+            "./apps"
+          ],
+          "because": "the sent answer for the checker an app of this person is (GH #1255): one message per section a surface's splitter names in its knob `answer_check`, after the answer, carried out of the generation by `assistant` -- hop `{route, section, turn_id, section_written}`, body `{messages: [], section, verify_answer}`. It goes where every non-`memory` section goes and for the same reason: the checker is an app of the person, `at: [\"./apps\"]` says the lane docks on that container, and the answer text never leaves this level. This level draws the edge into the container, the installing mutation draws `./apps -> ./apps/<app>` on `hop.route == 'answer_check' && hop.section == '<section>'`. It costs a member that set no knob nothing: the splitter raises the lane only for a section the knob names, and the knob is this member's own override"
+        },
+        {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@3.7.19\""
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@3.8.0\""
         }
       ]
     },
@@ -380,6 +387,11 @@
           "from": "./assistants",
           "to": "./apps",
           "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section != 'memory'"
+        },
+        {
+          "from": "./assistants",
+          "to": "./apps",
+          "condition": "has(hop.route) && hop.route == 'answer_check'"
         },
         {
           "from": "./assistants",

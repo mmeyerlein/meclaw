@@ -74,15 +74,16 @@ pub struct MeclawCell {
     /// GH #1015: inbox rows handed on and not yet booked `done`, oldest first.
     handed: std::collections::VecDeque<(String, tokio::time::Instant)>,
     /// GH #1105: the client secret comes sealed from the vault
-    /// (`auth.client_secret_grant_id`). `None` = no grant: the secret is the
-    /// `${VAR}` of the one-release transition, or there is no OAuth form.
+    /// (`auth.client_secret_grant_id`), and since GH #1235 (T6-22) the static
+    /// form's header value too (`auth.value_grant_id`). `None` = no grant: a
+    /// directly constructed secret, or no `auth` at all.
     credential: Option<PeerCredential>,
 }
 
 /// GH #1105: the grant of a peer proxy whose client secret the vault delivers.
 /// Key pair and secret live in RAM only, so every (re)start asks again.
 struct PeerCredential {
-    /// `params.auth.client_secret_grant_id`.
+    /// `params.auth.client_secret_grant_id` or `params.auth.value_grant_id`.
     grant: String,
     /// The slot of that grant. Nothing is parked in it: a message sent before
     /// the box is booked in the outbox as `credential_pending` and leaves once
@@ -232,7 +233,7 @@ impl MeclawCell {
         let Some(c) = self.credential.as_mut() else {
             tracing::warn!(
                 "proxy/meclaw: a sealed box arrived, but this peer proxy has no \
-                 auth.client_secret_grant_id — discarded"
+                 auth.client_secret_grant_id or auth.value_grant_id — discarded"
             );
             return;
         };

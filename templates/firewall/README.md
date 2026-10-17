@@ -1,4 +1,4 @@
-# `firewall@2.4.2`
+# `firewall@2.5.0`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -571,12 +571,11 @@ object above is therefore what an IMPORT part looks like, which is one of those 
 back the other way round. `absent` is not `rows: []`: an empty table held no rules, an
 absent one never had the table.
 
-**Redirect that fence before the first export.** The shipped default is
-`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is
-the whole SCREENING POLICY — every rule that decides which inbound turn reaches the person.
-Nothing about the fence is a secret and nothing about it is checked: the store writes where
-`params` say, so name a directory of your own with `override_params` on `"firewall/rules"`
-before anything is exported.
+**Where the export lands.** The shipped fence is the relative `export`, a directory of this
+hive (GH #1234): what lands under it is the whole SCREENING POLICY — every rule that decides
+which inbound turn reaches the person — and it stays inside the hive that holds it, never in a
+directory the machine shares. An absolute path via `override_params` on `"firewall/rules"`
+still works; collect the holders' directories into one place before `build_import.py`.
 
 **Wiring, in the same mutation as the ingress.** `params.required_drains` pairs each
 ingress lane with both of its exits (`in_export → export_done`, `in_export → reject`,

@@ -228,6 +228,24 @@ impl BackoffState {
 pub fn run_io(
     cfg: RunIoConfig,
     events_tx: mpsc::Sender<ProxyEvent>,
+    reconfig_rx: mpsc::Receiver<ProxyReconfig>,
+) -> impl Future<Output = ()> + Send {
+    run_io_with_drain(
+        cfg,
+        meclaw_colony::DrainView::default(),
+        events_tx,
+        reconfig_rx,
+    )
+}
+
+/// [`run_io`] that reads the colony's shutdown drain (GH #1253). A separate
+/// entry rather than a `RunIoConfig` field: the hand-built configs in tests keep
+/// meaning "no colony".
+#[allow(clippy::manual_async_fn)]
+pub fn run_io_with_drain(
+    cfg: RunIoConfig,
+    drain: meclaw_colony::DrainView,
+    events_tx: mpsc::Sender<ProxyEvent>,
     mut reconfig_rx: mpsc::Receiver<ProxyReconfig>,
 ) -> impl Future<Output = ()> + Send {
     async move {
@@ -365,6 +383,18 @@ pub fn run_io(
                         // exactly why event traffic cannot stand in for it.
                         liveness.mark_success();
                         backoff.reset();
+                        // GH #1253 (finding K-DRAIN-timer § 4): Telegram acks an
+                        // update once a poll with a higher offset starts. A batch
+                        // that comes back in the colony's shutdown drain is
+                        // neither handed over (the handler would save the cursor
+                        // past it while the colony refuses its emission) nor
+                        // followed by another poll; the next start fetches it
+                        // again. The task parks until the reconfig lane closes,
+                        // so the funnel sees a shutdown, not a dead cell.
+                        if drain.is_draining() {
+                            while reconfig_rx.recv().await.is_some() {}
+                            return;
+                        }
                         for ev in events {
                             let update_id = ev.update_id();
                             running_offset = running_offset.max(update_id + 1);

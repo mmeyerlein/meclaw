@@ -101,8 +101,12 @@ impl PeerClient {
 
     /// GH #1105: the same client with the client secret the vault delivered
     /// under `auth.client_secret_grant_id`. The token cache starts empty: a
-    /// token is only ever fetched with the secret now in hand. A client
-    /// without the OAuth form is returned as it is.
+    /// token is only ever fetched with the secret now in hand.
+    ///
+    /// GH #1235 (T6-22): the static form takes its header value the same way,
+    /// under `auth.value_grant_id`. A delivered value that is no legal header
+    /// value leaves the credential pending (named, never echoed). A client
+    /// without a credential is returned as it is.
     #[must_use]
     pub fn with_client_secret(&self, secret: &str) -> Self {
         let credential = match self.credential.as_deref() {
@@ -114,7 +118,23 @@ impl PeerClient {
                     cache: Mutex::new(None),
                 }))
             }
-            _ => self.credential.clone(),
+            Some(Credential::Header { name, .. }) => match HeaderValue::from_str(secret) {
+                Ok(mut value) => {
+                    value.set_sensitive(true);
+                    Some(Arc::new(Credential::Header {
+                        name: name.clone(),
+                        value,
+                    }))
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "proxy/meclaw: the sealed auth.value is not a legal HTTP header value \
+                         (visible ASCII only) -- messages stay pending; the value is not echoed"
+                    );
+                    self.credential.clone()
+                }
+            },
+            None => None,
         };
         Self {
             inner: self.inner.clone(),
@@ -174,6 +194,14 @@ impl PeerClient {
                 .post_once(url, &body, None, delivery, timeout_ms)
                 .await?
                 .json(url),
+            // GH #1235 (T6-22): a grant's static form before its box: no
+            // value to send. Transient like the OAuth form's case below.
+            Some(Credential::Header { value, .. }) if value.is_empty() => Err(Refusal::new(
+                CREDENTIAL_PENDING,
+                "the header value of auth.value_grant_id has not arrived from the vault yet; \
+                 nothing was posted",
+            )
+            .transient()),
             Some(Credential::Header { name, value }) => {
                 let cred = Some((name.clone(), value.clone()));
                 match self

@@ -14,3 +14,4 @@ pub mod store_seed_header_factory;
 pub mod store_wake_failure_modes;
 #[path = "../support_14b.rs"]
 pub mod support;
+pub mod zh_store_seed_lane;

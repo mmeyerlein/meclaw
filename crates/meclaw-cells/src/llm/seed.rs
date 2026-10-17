@@ -7,9 +7,11 @@
 //!   Line 1: `{"schema": {"slot_path": "text", "value": "json"}}`  (cross-check)
 //!   Lines 2+: `{"slot_path": "identity.soul", "value": {"text": "…"}}`
 //!
-//! `updated_at` is NOT carried by the file — the loader stamps it at seed time,
-//! exactly like the message path stamps a `system.*` update. That is local to
-//! this loader: THIS loader stamps it; the staging seeder does not — a JSONL row
+//! `updated_at` is NOT read from the file — the loader stamps every seed row
+//! with `0`, the seed's stamp (GH #1236), so any run-time `system.*` update is
+//! newer; a cell born before GH #1236 keeps the wall-clock stamp of its birth.
+//! That is local to this loader: THIS loader stamps it; the staging seeder does
+//! not — a JSONL row
 //! staged by `mutation/stage.rs` is written verbatim and must carry the column
 //! itself (see `docs/cell-types.md` § Seed).
 //!
@@ -26,19 +28,9 @@ fn seed_path(cell_dir: &std::path::Path) -> std::path::PathBuf {
     cell_dir.join("seed").join("system.jsonl")
 }
 
-/// Seed time for the `updated_at` column, panic-free (the callers run inside the
-/// colony task). A clock before the epoch yields `0` — the column is bookkeeping
-/// only, and the first real `system.*` update overwrites it anyway.
-fn seed_now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// The declared shape of the `system` table as a seed may write it (GH #822):
 /// `slot_path` and `value` are required, `updated_at` has a default because
-/// this loader stamps it at seed time — a header that carries it (the staging
+/// this loader stamps it `0`, the seed's stamp (GH #1236) — a header that carries it (the staging
 /// form, see the module docs) and one that does not are both current.
 fn system_decl() -> meclaw_colony::schema_evolution::TableDecl {
     use meclaw_colony::schema_evolution::{ColumnDecl, TableDecl};
@@ -176,12 +168,18 @@ pub(crate) fn load_system_seed_if_present(
         return Ok(());
     }
     let rows = parse_system_seed(&path)?;
-    let now = seed_now_secs();
+    // GH #1236: a seed row carries the seed's stamp, `0`, like the rows the
+    // colony seeds into a staged cell.db (`seed_cell_db_if_present`). The
+    // handover import keeps a twin's row unless the original's is newer
+    // (OR-programm-tm.H2b.3); a wall-clock stamp made the original's untouched
+    // seed row look written at run time (measured: 1792237607 against the
+    // twin's 0, gh1034 case 5), so it beat a twin's own instructions.
+    let seed_stamp = 0;
     let tx = conn
         .transaction()
         .map_err(|e| format!("seed {}: begin transaction failed: {e}", path.display()))?;
     for (slot_path, leaf) in &rows {
-        upsert_system_leaf(&tx, slot_path, leaf, now).map_err(|e| {
+        upsert_system_leaf(&tx, slot_path, leaf, seed_stamp).map_err(|e| {
             format!(
                 "seed {} slot {slot_path}: upsert failed: {e}",
                 path.display()
@@ -310,7 +308,10 @@ mod tests {
             let stamped: i64 = conn
                 .query_row("SELECT updated_at FROM system", [], |r| r.get(0))
                 .unwrap();
-            assert!(stamped > 0, "{header}: the loader stamps updated_at");
+            assert_eq!(
+                stamped, 0,
+                "{header}: a seed row carries the seed's stamp (GH #1236)"
+            );
         }
     }
 

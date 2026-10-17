@@ -3,7 +3,7 @@
     "type": "file"
   },
   "params": {
-    "base_path": "/tmp",
+    "base_path": "workspace",
     "max_concurrency": 8
   },
   "contract": {
@@ -12,8 +12,8 @@
       "base_path": {
         "type": "string",
         "secret": false,
-        "default": "/tmp",
-        "description": "The one directory this assistant's file surface may reach. Every path in a call is relative to it and the boundary is checked twice, lexically and after canonicalisation. `./edit` carries the same string, so a mutation that repoints one repoints both."
+        "default": "workspace",
+        "description": "The one directory this assistant's file surface may reach. Every path in a call is relative to it and the boundary is checked twice, lexically and after canonicalisation. `./edit` carries the same string, so a mutation that repoints one repoints both. A relative root (the shipped `workspace`) is a directory of THIS tools hive, created at the spawn; an absolute one must exist."
       }
     },
     "emits": {

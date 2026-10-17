@@ -65,6 +65,8 @@ pub fn apply_mutation(
     // SYNCHRONOUS, so the pulse has to be sync too. This function only passes it
     // on; the beats happen at the cell loops inside `stage`/`subtree`.
     pulse: &crate::watchdog::WorkPulse,
+    // GH #1236 (C-1/I-1): handed on to staging, see `build_staging_tree_from_templates`.
+    twins: &crate::mutation::twin::TwinFacts,
 ) -> Result<StagedPlan, MutationError> {
     let (staged, subtrees) = build_staging_tree_from_templates(
         root,
@@ -76,6 +78,7 @@ pub fn apply_mutation(
         ctx,
         factories,
         pulse,
+        twins,
     )?;
     let replaces = stage_replace_nodes(
         root,
@@ -188,6 +191,7 @@ mod tests {
             &Default::default(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(staged.len(), 1);
@@ -213,6 +217,7 @@ mod tests {
             &Default::default(),
             &Default::default(),
             &crate::watchdog::WorkPulse::silent(),
+            &Default::default(),
         )
         .unwrap();
         assert!(staged.is_empty());

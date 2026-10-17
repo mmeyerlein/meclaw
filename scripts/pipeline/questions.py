@@ -16,10 +16,11 @@ PERSONA_RECEIPT = """\
        embedder costs cents, so the runner asks for a budget as well):
          LOCAL_LLM_MODEL=<model id served at LOCAL_LLM_BASE_URL> python3 workshop/evals/persona/run_persona.py --live --engine local --budget-eur <EUR>
        then, if it is green, commit workshop/evals/persona/last_run.json and transcripts/, and run this gate again
-    2. measure again on a paid provider (costs money; design estimate 1.2-2.0 EUR a run,
-       the runner prints its own estimate and refuses to spend without a budget):
+    2. measure again on a paid provider (refused before the boot since #1235: the router key
+       reaches a cell only as a credential grant with a vault, and no eval colony carries one):
          python3 workshop/evals/persona/run_persona.py --live --engine paid --budget-eur <EUR>
        then, if it is green, commit the report and run this gate again
+       (today answers 1 and 2 both stop at the runner's 0.62 guard, #801, before anything runs)
     3. go on without a fresh measurement -- the owner's call, written into the receipt:
          scripts/gate.sh <mode> --decide persona-receipt=without:"OR-<id>: <reason>"   (with this run's other options)
 """

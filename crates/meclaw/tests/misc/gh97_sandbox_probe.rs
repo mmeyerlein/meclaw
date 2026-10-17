@@ -169,9 +169,12 @@ fn tree_without_sandbox(root: &std::path::Path) {
         br#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
     )
     .unwrap();
+    // GH #1235 (T6-16): a `bash` cell that declares no `sandbox` boots under the
+    // default-deny profile, so a tree without a restricted profile is one whose
+    // cell takes the explicit escape hatch.
     std::fs::write(
         root.join("demo/a/config.json"),
-        br#"{"cell":{"type":"bash"},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        br#"{"cell":{"type":"bash"},"params":{"sandbox":{"trust":"trusted"}},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
     )
     .unwrap();
 }

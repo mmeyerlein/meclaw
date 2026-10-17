@@ -200,6 +200,7 @@ mod tests {
             preexisting_target: false,
             provenance: None,
             // GH #169: an instantiation, not a relocation.
+            twin_of: None,
             relocation: None,
         }
     }

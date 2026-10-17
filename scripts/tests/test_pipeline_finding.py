@@ -47,6 +47,13 @@ class TestFirstFinding(_LogRoot):
                  '  File "scripts/tests/test_x.py", line 9, in test_a\n')
         self.assertEqual(finding.first_finding(p), "scripts.tests.test_x.Case.test_a")
 
+    def test_unittest_failure_of_a_hyphenated_module_path_names_the_test(self):
+        """v2-r3-cistore: `plans.export-fixtures.<mod>` ids -- the label fell
+        through to the traceback frame instead of the test."""
+        p = self._log("FAIL: test_a (plans.export-fixtures.test_x.Case.test_a)\nTraceback\n"
+                      '  File "plans/export-fixtures/test_x.py", line 9, in test_a\n')
+        self.assertEqual(finding.first_finding(p), "plans.export-fixtures.test_x.Case.test_a")
+
     def test_nextest_failure_names_the_binary_and_test(self):
         p = self._log("        PASS [   0.1s] meclaw::a ok\n        FAIL [   2.3s] meclaw::gate some::test\n")
         self.assertEqual(finding.first_finding(p), "meclaw::gate some::test")

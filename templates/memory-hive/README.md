@@ -1,9 +1,10 @@
-# `memory-hive@3.15.0`
+# `memory-hive@3.16.0`
 
-A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Sixteen cells:
+A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
 `dream-glue`, `dreamer`, `judge`, `clock`, `embed`, `dialectic`, `porter`, `tool`, `schemas`,
-`entity-glue` (since 3.13.0, see [The entity graph has a producer](#the-entity-graph-has-a-producer-1057)).
+`entity-glue` (since 3.13.0, see [The entity graph has a producer](#the-entity-graph-has-a-producer-1057)),
+`recur` (see [Recurring questions become prewarm candidates](#recurring-questions-become-prewarm-candidates-1249)).
 
 What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = temporal truth):
 
@@ -377,6 +378,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing, and since [#261](https://github.com/mmeyerlein/meclaw/issues/261) exactly ONE message of it: the receipt of an applied import, for the whole directory rather than per part (`hop.export_of` counts the tables applied, `hop.rows_written` the rows that were new, `hop.export_final` is always `'1'` because a directory is applied whole or not at all) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
 | `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve and in `sidecar[]` the section this hive asks for in return: one `{section, required, schema, instruction}` with `section: "memory"` and `required: true` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)). All three slots are `required: true` in the emitted body — `schemas` carries `contract.version` `1.1.0` for the new one — and `sidecar[]` is filled on EVERY answer of the cell, the `tools_missing` one included, because a section is not a response to a name. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
+| `recurring` | out → any app that subscribes | condition `hop.route == 'recurring'` on an edge FROM `./memory`. Once per dream run, one message per audience set: `{candidates: [{topic, query, tool, triggers, rrule, tz, lead_min, ttl_min, evidence}], audience_set}` — the member's routines as prewarm candidates ([#1249](https://github.com/mmeyerlein/meclaw/issues/1249), see [Recurring questions become prewarm candidates](#recurring-questions-become-prewarm-candidates-1249)). Every candidate carries a `ttl_min` and a tool. Nobody answers it, and it is no required drain |
 | `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. `verify_failed` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) is for facts the curator's word-for-word check refused and kept (`sidecar_verify` with `"mode": "mark"`, the item carries `failed`): such a fact is filed under no source -- a quote of the advice labelled `person` would otherwise become the person's -- and the receipt counts them, never echoing. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. `op_not_accepted` ([#1229](https://github.com/mmeyerlein/meclaw/issues/1229)) is the writer refusing a `clock_op` that is not a `trigger` of the night: the lane ends at `./writer`, and an `add`, `modify` or `remove` from outside never reaches the clock (section *The night* below). See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
@@ -1246,6 +1248,45 @@ New in the store: `entities.subject_key`, `entities.valid_until`, `entities.merg
 Pinned in
 `crates/meclaw-cells/tests/misc_1/gh1057_entities_come_from_the_facts.rs`.
 
+## Recurring questions become prewarm candidates ([#1249](https://github.com/mmeyerlein/meclaw/issues/1249))
+
+Once per dream run, when the night has booked its receipt in `consolidation_log` (phase `closed`),
+`./dream-glue` sends `recur` to `./recur` — the same receipt that starts the entity night. The pass has no
+clock of its own: a day nobody wrote arms no night, and a night arms one pass. The edge restores the TTL (a
+**door**, GH #929): the pass starts at the tail of the night's chain and routes nothing back into it.
+
+`./recur` reads this hive's store and nothing else: the member's own turns (`episodes` with `sender` `user`,
+neither muted nor forgotten) of the `window_days` before the night by `happened_at`, and their vectors
+(`embeddings` with `owner_table` `episodes` and `status` `ready`, of the generation most of them belong to).
+Both reads take the newest rows first, so a full page leaves out the oldest turns of the window.
+The grouping costs no model call. A turn joins the group whose first turn is nearest and was asked in the
+same audience, if the cosine of the two embeddings reaches `cosine_min`. That is the float cosine; the store
+keeps the vectors as sign bits, and two sign vectors of embeddings at angle θ differ in θ/π of their bits on
+average, so the pass compares `1 - 2 · hamming / bits` against `1 - 2 · acos(cosine_min) / π` (0.82 → 0.61).
+A group is a routine when it came back on at least `min_days` distinct local days at one time of day: every
+occurrence within `tolerance_min` of the routine's time, read in the time zone `tz`. Its time profile becomes
+an RFC 5545 rule, `FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=7;BYMINUTE=30`, or `FREQ=DAILY;…` when every weekday is in it.
+
+The routines go to `./dreamer` in one call (route `recur-ask`, at most `max_routines`). It names for each a
+`topic`, the `query` to fetch ahead, the `tool` whose fresh result answers it (or `none`), `lead_min` and
+`ttl_min`. How long a fetched answer stays fresh is the dreamer's call per routine: `ttl_min` has no
+default, and a candidate without it, or with `tool: none`, is not sent. Episodes keep no tool calls, so
+`tool` is the dreamer's reading of the question, not a replay of a call. The routines and the answer wait in
+`scratch` (kinds `recur-routines` and `recur-answer`, swept like every lane's rows).
+
+What is left leaves the hive on `recurring`, one message per audience set:
+
+```json
+{"candidates": [{"topic": "weather", "query": "weather in Berlin today", "tool": "weather",
+                 "triggers": ["weather today?"], "rrule": "FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=7;BYMINUTE=30",
+                 "tz": "Europe/Berlin", "lead_min": 15, "ttl_min": 60,
+                 "evidence": {"episode_ids": ["…"], "days": 4, "window_days": 14}}],
+ "audience_set": ["member:m"]}
+```
+
+Any app may subscribe with `hop.route == 'recurring'` on an edge from the hive path. Nobody answers the lane,
+and it is no required drain.
+
 ## Taking a memory out, putting it into another (#243)
 
 Until 2.2.0 there was no way to get the content a hive had accumulated *out* of it, and no way
@@ -1270,7 +1311,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.15.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.16.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1485,12 +1526,11 @@ whose aliases and facts disagree still lands on the identities the source decide
 #    audience_now and channel. Same bundle, or the transfer was wrong.
 ```
 
-**Redirect that fence before the first export.** The shipped default is
-`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is a
-member's WHOLE MEMORY — every episode, every fact, every claim this hive holds. Nothing about the
-fence is a secret and nothing about it is checked: the store writes where `params` say, so name a
-directory of your own with `override_params` on `"memory-hive/store"` before anything is
-exported.
+**Where the export lands.** The shipped fence is the relative `export`, a directory of this
+hive (GH #1234): what lands under it is a member's WHOLE MEMORY — every episode, every fact,
+every claim this hive holds — and it stays inside the hive that holds it, never in a directory
+the machine shares. An absolute path via `override_params` on `"memory-hive/store"` still works;
+collect the holders' directories into one place before `build_import.py`.
 
 Nothing in that sequence touches a `cell.db`. There is no `sqlite3`, no trigger surgery, no
 schema header to lift by hand: the FTS indexes of `episodes` and `facts` are maintained by
@@ -1677,7 +1717,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.32",
+{"add_nodes": [{"name": "alex", "template": "member@2.6.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1833,6 +1873,19 @@ knob's name on stderr -- a typo never reads as "off".
 | `hub_degree` | `12` | GH #1057: an entity with more distinct neighbours than this is a hub (`kind` `hub`, edges into it `co-hub`); recall's walk neither starts at nor enters one |
 | `count_page` | `500` | GH #1057: rows one count read of a subject may return; a subject that is no entity yet becomes one at `min_facts`, so a full page means enough, and the canonical name is chosen from it |
 | `newborn_hits` | `200` | GH #1057: facts one mention search of an entity born in the night's window may return; a full page is said in the journal, and a mention beyond it gets no edge from that night |
+
+### The params of `./recur`
+
+| param | default | effect |
+|---|---|---|
+| `window_days` | `14` | GH #1249: how far back, in days before the night, a routine is looked for |
+| `min_days` | `4` | distinct local days a question must come back on inside the window |
+| `cosine_min` | `0.82` | the cosine of two episode vectors at which two turns are the same question, read as the float cosine (the sign bits are compared against `1 - 2 · acos(cosine_min) / π`) |
+| `tolerance_min` | `30` | minutes either side of the routine's time of day an occurrence may lie |
+| `tz` | `UTC` | the member's time zone (IANA name): times of day and weekdays are read in it and every candidate carries it; an unknown name reads as UTC and says so in the journal |
+| `episode_rows` | `2000` | page bound of the episode read and of the vector read, both newest first; a full page is said in the journal |
+| `max_routines` | `12` | routines one night puts to the dreamer, most frequent first |
+| `max_triggers` | `16` | spellings of a routine's question a candidate carries as `triggers` |
 
 ### Language data in the params ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225), [#1089](https://github.com/mmeyerlein/meclaw/issues/1089))
 

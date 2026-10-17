@@ -14,7 +14,8 @@
 //!   finding 4); a clamp is said on the same target.
 //!
 //! The estimate counts the bytes of a token and the tokens of an inline image
-//! (a `data:` URL, never its base64 bytes) as the model's catalogue row states
+//! (a `data:` URL or a Messages `base64` source, never its base64 bytes) as
+//! the model's catalogue row states
 //! them -- the package keys `chars_per_token` and `tokens_per_image` (GH
 //! #1085: a flat three refused English, about four bytes a token, a quarter
 //! before the real window). A cell no row has reached counts the defaults:
@@ -83,9 +84,18 @@ fn walk(v: &Value, bytes: &mut u64, images: &mut u64) {
         Value::String(s) => *bytes += s.len() as u64,
         Value::Array(a) => a.iter().for_each(|x| walk(x, bytes, images)),
         Value::Object(o) => {
+            // The Messages wire carries an image as raw base64 under
+            // `source: {type: "base64", media_type, data}` -- one image, like
+            // a `data:` URL, never its bytes (re-check I1 of GH #1241).
+            let base64_source = o.get("type").and_then(Value::as_str) == Some("base64")
+                && o.contains_key("media_type");
             for (k, x) in o {
                 *bytes += k.len() as u64;
-                walk(x, bytes, images);
+                if base64_source && k == "data" {
+                    *images += 1;
+                } else {
+                    walk(x, bytes, images);
+                }
             }
         }
         Value::Number(_) | Value::Bool(_) => *bytes += 4,
@@ -289,6 +299,24 @@ mod tests {
         assert_eq!(
             estimate_prompt_tokens(&image, &params(json!({}))),
             1 + IMAGE_TOKENS
+        );
+    }
+
+    /// Re-check I1 of GH #1241: the Messages wire carries an image as raw
+    /// base64 under `source` -- one image at the row's rate, never its bytes.
+    #[test]
+    fn a_messages_image_block_counts_as_one_image() {
+        let block = crate::llm::translate_anthropic::image_block("image/png", &[0u8; 900_000]);
+        let mut b = json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "look"}, block]}],
+            "max_tokens": 32768
+        });
+        let p = params(json!({"context_window": 200_000, "tokens_per_image": 1600}));
+        assert!(estimate_prompt_tokens(&b, &p) < 2 * 1600);
+        assert!(
+            apply(&p, &mut b, "max_tokens", "/p").is_ok(),
+            "a photo fits the window"
         );
     }
 

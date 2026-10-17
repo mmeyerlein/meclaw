@@ -184,7 +184,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          `memory-hive@3.14.1` (GH #1095); 2.5.26 only pins \
          `access\u{40}2.5.2`, `affinity@3.10.2`, `assistant@3.7.15`, `file-space` 1.4.8, \
          `memory-hive@3.14.2` and `telegram-connector\u{40}2.2.0` (GH #1096, #1097, #1098, #1099); 2.5.27 only pins \
-         `affinity\u{40}3.10.3`, `assistant\u{40}3.7.16`, `firewall@2.4.2` and \
+         `affinity\u{40}3.10.3`, `assistant\u{40}3.7.16`, `firewall\u{40}2.4.2` and \
          `memory-hive` 3.14.3 (Dev-Tempo cascade, GH #1126). None of it \
          touches the app rim. What this file \
          guards is the edge below, and that edge has not moved since 1.8.0"

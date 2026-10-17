@@ -120,10 +120,13 @@ pub enum CacheMode {
     Off,
     /// The provider caches on its own; the cell sends one stable
     /// `prompt_cache_key` per cell (derived from its path) on both wires.
+    /// The Messages wire (`provider: "anthropic"`) takes the top-level
+    /// `cache_control` mark instead (GH #1241).
     Implicit,
     /// Chat-completions: `cache_control` marks at the end of the system
-    /// message and at the end of the stable history. The Responses wire has no
-    /// block marks and falls back to `implicit` (OR-KX-C1).
+    /// message and at the end of the stable history; the Messages wire marks
+    /// the same two ends (GH #1241). The Responses wire has no block marks and
+    /// falls back to `implicit` (OR-KX-C1).
     Breakpoints,
 }
 
@@ -195,6 +198,25 @@ pub struct LlmParams {
     /// never back to the asking cell, so silence is the only signal there is.
     #[serde(default = "default_credential_wait_ms")]
     pub credential_wait_ms: u64,
+    /// GH #1225: whether a sealed box that opens after a turn was already
+    /// answered with `credential_pending` since the last box -- the deadline
+    /// ran out (also when a later turn asked again), a turn past
+    /// `credential_wait_max` was answered at once, an unusable delivery ended
+    /// the round, or the broker denied it -- is reported to the asker: one
+    /// message, `meta.credential.outcome == "arrived_late"`; default false =
+    /// silence, as before. A box before which no turn was answered reports
+    /// nothing.
+    ///
+    /// Measured on a production colony under load: the access chain answered
+    /// after the 10 s round, the parked turn already had its
+    /// `credential_pending`, the box opened -- and nobody learned that the key
+    /// was in RAM, so the registry's question waited for the next boot. Off by
+    /// default because a cell whose edges have no reader for the notice (talky
+    /// and every other chat cell) must not get an empty turn on them; the
+    /// registry's translator turns it on. Only meaningful together with
+    /// `credential_grant_id`.
+    #[serde(default)]
+    pub credential_late_notice: bool,
     /// T6-06 (GH #1232): how long a twin waits for its original's handover
     /// before it runs its parked turns without the inheritance, in
     /// milliseconds; default 0 = the cell expects no handover and parks
@@ -794,6 +816,9 @@ impl LlmParams {
         if p.is_decisions() {
             p.check_decisions()?;
         }
+        if p.is_anthropic() {
+            p.check_anthropic()?;
+        }
         // GH #999 (F4): the chat wire parses ONE JSON body. A `stream: true`
         // overlay makes the provider answer in SSE and turns every call into
         // a failure, so it is refused here -- at birth and, because a
@@ -914,6 +939,41 @@ impl LlmParams {
     /// questions in, typed answers out) rather than the chat wire.
     pub fn is_decisions(&self) -> bool {
         self.provider == PROVIDER_DECISIONS
+    }
+
+    /// GH #1239: whether this cell speaks the native Anthropic Messages wire.
+    pub fn is_anthropic(&self) -> bool {
+        self.provider == PROVIDER_ANTHROPIC
+    }
+
+    /// GH #1239: what an anthropic cell refuses at birth, by name
+    /// (`anthropic_unsupported_param`). The Messages wire takes an api key
+    /// only (`x-api-key`, no subscription login), has one shape (no
+    /// `wire_dialect`), is read as one JSON body (no stream), and answers 400
+    /// to a prefill -- the trailing assistant turn a length continuation
+    /// sends -- so `length_continuations` stays 0.
+    fn check_anthropic(&self) -> Result<(), String> {
+        let mut named: Vec<&str> = Vec::new();
+        if self.auth != AuthMode::ApiKey {
+            named.push("auth");
+        }
+        if self.wire_dialect.is_some() {
+            named.push("wire_dialect");
+        }
+        if self.provider_extra.get("stream") == Some(&serde_json::Value::Bool(true)) {
+            named.push("provider_extra.stream");
+        }
+        if self.length_continuations != 0 {
+            named.push("length_continuations");
+        }
+        if named.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "anthropic_unsupported_param: provider 'anthropic' does not take {}",
+                named.join(", ")
+            ))
+        }
     }
 
     /// GH #957: what a decisions cell refuses at birth. The decisions wire has
@@ -1121,6 +1181,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     // GH #457: the parking bound + deadline of that same delivery.
     "credential_wait_max",
     "credential_wait_ms",
+    // GH #1225: the notice of a box that opened after its round's deadline.
+    "credential_late_notice",
     // T6-06 (GH #1232): the twin's wait for its original's handover.
     "handover_wait_ms",
     "base_url",
@@ -1181,10 +1243,15 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
 /// GH #957: the provider for typed decisions (see `translate_decisions`).
 pub const PROVIDER_DECISIONS: &str = "decisions";
 
+/// GH #1239: the provider for the native Anthropic Messages wire (see
+/// `translate_anthropic`).
+pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+
 /// GH #957: the wire protocols a `llm` cell speaks -- a closed list. `openai`
 /// is the OpenAI-compatible chat wire (both dialects), `decisions` the typed
-/// question/answer wire. Anything else is a spawn reject naming this list.
-pub const PROVIDERS: &[&str] = &["openai", PROVIDER_DECISIONS];
+/// question/answer wire, `anthropic` (GH #1239) the native Messages wire.
+/// Anything else is a spawn reject naming this list.
+pub const PROVIDERS: &[&str] = &["openai", PROVIDER_DECISIONS, PROVIDER_ANTHROPIC];
 
 /// Param keys that may NOT be changed at runtime via a params-update message.
 ///
@@ -2162,7 +2229,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_non_openai_provider() {
-        let raw = json!({"provider": "anthropic", "model": "claude-3", "api_key": "x"});
+        let raw = json!({"provider": "cohere", "model": "command-r", "api_key": "x"}); // GH #1239: not anthropic, which is listed now
         let r = LlmParams::parse(&raw);
         assert!(r.is_err());
         let err = r.unwrap_err();

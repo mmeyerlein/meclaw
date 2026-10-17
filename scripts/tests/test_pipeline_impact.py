@@ -498,6 +498,50 @@ class ShortCrateWalkersTest(Base):
         self.assertLessEqual(want, set(narrowed["tests"]))
 
 
+# Re-check stack fr I2: what a walk of `workshop/tools` reads is the reader's
+# (RUNTIME_DIR_READS_ONLY per unit) -- in the graph as on the floor. Asked
+# without the unit, `impact.graph_tests` gave every reader every file: a Python
+# diff planned the top-level driver walker (a cargo build), a nested driver the
+# PYTHONPATH reader. Readers named like gh661 (`import`) and 708 (`top`).
+TOOLS = "workshop/tools"
+TOOL_READER_FILES = {
+    "crates/alpha/tests/a20_seeds_from_the_tools.rs":
+        '#[test]\nfn a() {\n    let tools = std::path::Path::new("workshop/tools");\n'
+        '    let _ = std::process::Command::new("python3").env("PYTHONPATH", tools);\n}\n',
+    "crates/alpha/tests/a21_walks_the_top_drivers.rs":
+        '#[test]\nfn a() {\n    let tools = std::path::Path::new("workshop/tools");\n'
+        '    let _ = std::fs::read_dir(tools);\n}\n',
+    "workshop/tools/seed.py": "X = 1\n",
+    "workshop/tools/driver.mjs": "export const d = 1;\n",
+    "workshop/tools/display-lab/tap.mjs": "export const t = 1;\n",
+}
+IMPORT_READER = "binary_id(=alpha::a20_seeds_from_the_tools)"
+TOP_READER = "binary_id(=alpha::a21_walks_the_top_drivers)"
+TOOL_READERS = {TOOLS: {"a20_seeds_from_the_tools": ((".py",), "import"),
+                        "a21_walks_the_top_drivers": ((".mjs",), "top")}}
+
+
+class ToolReadersInTheGraphTest(Base):
+    files = dict(FILES, **TOOL_READER_FILES)
+
+    def setUp(self):
+        patcher = mock.patch.dict(gate_plan.RUNTIME_DIR_READS_ONLY, TOOL_READERS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        super().setUp()
+
+    def test_each_reader_in_the_graph_reads_its_own_files(self):
+        ix = graph.Index(self.doc)
+        for rel, want in (("workshop/tools/seed.py", {IMPORT_READER}),
+                          ("workshop/tools/driver.mjs", {TOP_READER}),
+                          ("workshop/tools/display-lab/tap.mjs", set())):
+            with self.subTest(rel):
+                got = {"binary_id(=%s)" % b[len("bin:"):] for b in impact.graph_tests(ix, rel)}
+                self.assertEqual(want, got & {IMPORT_READER, TOP_READER})
+                floor = set(gate_plan._tests_reading_at_runtime(self.root, rel))
+                self.assertEqual(want, floor & {IMPORT_READER, TOP_READER}, "graph = resolver")
+
+
 # Rule 10 (welle-tb S1b, follow-up of the re-check): a crate file outside src/
 # and tests/ -- an `include_str!` schema, an example, a bench, a README a crate
 # doc includes, a migration, a template or a toml inside the crate, a build.rs

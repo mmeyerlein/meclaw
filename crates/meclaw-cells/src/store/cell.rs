@@ -510,6 +510,28 @@ impl StatefulCell for StoreCell {
             let store_path = sink.sender_path().clone();
             let sender = msg.reply_to.clone();
 
+            // #1233 (T6-08): the door's seed lane — the rows of a committed
+            // `seed_rows`, written on this cell's own connection and answered
+            // with a digest receipt (`store::seed::seed_lane_receipt`).
+            if let Body::Inline(v) = &msg.body
+                && let Some(slot) = v.get(meclaw_colony::mutation::seed_rows::LANE_SLOT)
+            {
+                let receipt = crate::store::seed::seed_lane_receipt(
+                    &self.params.schema,
+                    slot,
+                    sender.as_ref(),
+                    db,
+                )
+                .await;
+                let _ = sink
+                    .push(CellOutput {
+                        target: reply_target.clone(),
+                        content: output::seed_receipt_body(receipt),
+                    })
+                    .await;
+                return;
+            }
+
             // β: params-update slot (config.md § Access l.20), handled FIRST and
             // strictly. The `params` block is merged into `self.params` + persisted
             // to cell.db, THEN any tool_call runs with the updated params. A

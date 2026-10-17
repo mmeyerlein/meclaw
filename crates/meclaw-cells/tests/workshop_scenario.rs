@@ -434,7 +434,13 @@ async fn boot_workshop() -> Workshop {
         "main/shell/config.json",
         &tool_cell(
             "bash",
-            json!({"max_concurrency": 2, "external_timeout_ms": 30000}),
+            // GH #1235 (T6-16): without `params.sandbox` the cell boots under
+            // the default-deny profile, which cannot reach the workspace. The
+            // test only reads it (`python3 -B`, no bytecode), so read it is.
+            json!({"max_concurrency": 2, "external_timeout_ms": 30000,
+                   "sandbox": {"trust": "restricted", "network": "deny",
+                               "filesystem": {"runtime": true,
+                                              "read": [ws.to_str().unwrap()]}}}),
             false,
         ),
     );
@@ -499,10 +505,15 @@ async fn boot_workshop() -> Workshop {
         "main/coder/config.json",
         &tool_cell(
             "harness",
+            // GH #1235 (T6-16): under the default-deny profile the child
+            // cannot even exec the fixture binary; the stub adapter only
+            // streams its answer, so the binary is all it is granted.
             json!({"adapter": "claude-code", "command": "${HARNESS_CMD}", "emit_to": "/sink",
                    "workspace_root": worktrees.to_str().unwrap(),
                    "startup_timeout_ms": 5000, "external_timeout_ms": 5000,
-                   "query_timeout_ms": 1000, "kill_grace_ms": 500}),
+                   "query_timeout_ms": 1000, "kill_grace_ms": 500,
+                   "sandbox": {"trust": "restricted", "network": "deny",
+                               "filesystem": {"runtime": true, "read": [HARNESS_FIXTURE]}}}),
             true,
         ),
     );

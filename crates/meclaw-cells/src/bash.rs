@@ -5,8 +5,10 @@ use std::time::Duration;
 pub struct BashCell {
     pub external_timeout: Duration,
     pub max_concurrency: usize,
-    /// Optional process sandbox for the shell (S4, GH #35). `None` means the
-    /// legacy unsandboxed behaviour: the shell keeps the daemon's rights.
+    /// Process sandbox for the shell (S4, GH #35). A colony never spawns
+    /// one with `None` since GH #1235: the boot and every instantiation put
+    /// the default-deny block in when the params declare none. `None` is the
+    /// unsandboxed shell of a direct construction (tests).
     pub sandbox: Option<crate::sandbox::SandboxProfile>,
     /// Explicit size cap on the combined output handed to the caller, in
     /// bytes (GH #83). `None` (the default since GH #1085, R-IG-1): the output
@@ -17,6 +19,16 @@ pub struct BashCell {
     /// `...[cut: <k> of <n> bytes shown; <hint>]`, and `header.bytes` keeps
     /// the full pre-cut size.
     pub max_bytes: Option<usize>,
+    /// Directory every command starts in (GH #1234). `None` keeps the colony
+    /// process's own directory, the behaviour before the param existed. A
+    /// relative `params.cwd` is resolved at the spawn to a directory of the
+    /// enclosing hive and created there (`boundary::spawn_root`, the anchor
+    /// `file` and `edit` use), so the shell of a hive starts where its file
+    /// tools write -- the coder pipeline pinned that with
+    /// `cd /tmp/meclaw-coder &&` in front of every command, one directory for
+    /// every pipeline on the machine. A working directory, not a boundary:
+    /// the shell may still `cd` elsewhere; the boundary is `params.sandbox`.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug)]
@@ -125,6 +137,9 @@ impl meclaw_colony::StatelessCell for BashCell {
                 .arg(&parsed.command)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+            if let Some(dir) = &self.cwd {
+                cmd.current_dir(dir);
+            }
 
             // GH #866: sandbox, `fork` and the journal's `spawned` record are
             // blocking syscalls; under write-back pressure the record's `fsync`
@@ -363,6 +378,9 @@ struct ParsedBashParams {
     max_concurrency: usize,
     sandbox: Option<crate::sandbox::SandboxProfile>,
     max_bytes: Option<usize>,
+    /// The declared `params.cwd`, unresolved: a relative one is anchored only
+    /// at the spawn, which alone knows the cell's directory (GH #1234).
+    cwd: Option<std::path::PathBuf>,
 }
 
 fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, String> {
@@ -398,28 +416,66 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedBashParams, S
         return Err("params.max_bytes must be >= 1".into());
     }
     let sandbox = crate::sandbox::SandboxProfile::parse(raw)?;
+    // GH #1234: absolute, or a directory of the enclosing hive (created at the
+    // spawn, `boundary::spawn_root`) -- the form check `file` and `edit` use.
+    let cwd = match raw.get("cwd") {
+        None => None,
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| "params.cwd must be a string".to_string())?;
+            meclaw_colony::check_cell_root(s).map_err(|tail| format!("params.cwd {tail}"))?;
+            Some(std::path::PathBuf::from(s))
+        }
+    };
     Ok(ParsedBashParams {
         external_timeout: Duration::from_millis(ms),
         max_concurrency: mc,
         sandbox,
         max_bytes: mb,
+        cwd,
     })
+}
+
+/// The profile the shell runs under: the declared one, plus write on the
+/// cell's own root when `params.cwd` is relative (GH #1235,
+/// OR-programm-tm.H5.orch-1). A relative `cwd` is a directory the spawn
+/// anchored in the enclosing hive -- the root this cell owns -- so it stays
+/// writable under the default-deny block without a param of its own; an
+/// absolute `cwd` is the operator's path, and the block declares it or not.
+fn own_sandbox(
+    declared: Option<crate::sandbox::SandboxProfile>,
+    own_root: bool,
+    cwd: Option<&std::path::Path>,
+) -> Option<crate::sandbox::SandboxProfile> {
+    match (declared, cwd) {
+        (Some(profile), Some(root)) if own_root => Some(profile.with_writable_dir(root)),
+        (declared, _) => declared,
+    }
 }
 
 impl CellFactory for BashCellFactory {
     fn validate_params(&self, params: &meclaw_core::JsonValue) -> Result<(), String> {
-        parse_params_pure(params).map(|_| ())
+        let parsed = parse_params_pure(params)?;
+        // An absolute `cwd` must exist; a relative one names a directory of
+        // the enclosing hive that only the spawn creates (GH #1234), so the
+        // door checks its form and nothing on disk -- as for `file`.
+        if let Some(cwd) = parsed.cwd.as_deref().filter(|c| c.is_absolute()) {
+            crate::boundary::canonical_root(cwd).map_err(|e| format!("params.cwd: {e}"))?;
+        }
+        Ok(())
     }
 
-    /// Stateless cell — `cell_dir` and the three Phase-13-G-1 substrate params
-    /// (`colony_inbox_tx`, `idle_timeout`, `cell_timeout`) are unused; idle/wake
-    /// is a stateful concept.
+    /// Stateless cell — `cell_dir` only anchors a relative `cwd` (GH #1234);
+    /// the three Phase-13-G-1 substrate params (`colony_inbox_tx`,
+    /// `idle_timeout`, `cell_timeout`) are unused; idle/wake is a stateful
+    /// concept.
     fn spawn_cell(
         self: std::sync::Arc<Self>,
         path: meclaw_core::Path,
         params: meclaw_core::JsonValue,
         outputs_tx: tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
-        _cell_dir: std::path::PathBuf,
+        cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
         colony_inbox_tx: tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
@@ -431,14 +487,21 @@ impl CellFactory for BashCellFactory {
         let parsed = parse_params_pure(&params)?;
         let external_timeout = parsed.external_timeout;
         let max_concurrency = parsed.max_concurrency;
-        let sandbox = parsed.sandbox;
         let max_bytes = parsed.max_bytes;
+        let own_root = parsed.cwd.as_deref().is_some_and(|c| c.is_relative());
+        let cwd = parsed
+            .cwd
+            .map(|c| crate::boundary::spawn_root(&c, &cell_dir))
+            .transpose()
+            .map_err(|e| format!("params.cwd: {e}"))?;
+        let sandbox = own_sandbox(parsed.sandbox, own_root, cwd.as_deref());
 
         let cell = std::sync::Arc::new(BashCell {
             external_timeout,
             max_concurrency,
             sandbox: sandbox.clone(),
             max_bytes,
+            cwd: cwd.clone(),
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<meclaw_core::Message>(mailbox_capacity);
         // Phase-13.5 Lifecycle-3b Task 3 + P3-A4 funnel: the initial dispatcher
@@ -475,6 +538,7 @@ impl CellFactory for BashCellFactory {
                 // restricted as the one it replaces.
                 sandbox: respawn_sandbox.clone(),
                 max_bytes,
+                cwd: cwd.clone(),
             });
             let (tx, rx) =
                 tokio::sync::mpsc::channel::<meclaw_core::Message>(respawn_mailbox_capacity);
@@ -525,7 +589,7 @@ impl CellFactory for BashCellFactory {
         path: meclaw_core::Path,
         params: meclaw_core::JsonValue,
         outputs_tx: tokio::sync::mpsc::Sender<meclaw_core::CellEmission>,
-        _cell_dir: std::path::PathBuf,
+        cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
         colony_inbox_tx: tokio::sync::mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
@@ -536,11 +600,17 @@ impl CellFactory for BashCellFactory {
     ) -> Option<RespawnFn> {
         let parsed = parse_params_pure(&params).ok()?;
         let max_concurrency = parsed.max_concurrency;
+        let own_root = parsed.cwd.as_deref().is_some_and(|c| c.is_relative());
+        let cwd = match parsed.cwd {
+            None => None,
+            Some(c) => Some(crate::boundary::spawn_root(&c, &cell_dir).ok()?),
+        };
         let cell = std::sync::Arc::new(BashCell {
             external_timeout: parsed.external_timeout,
             max_concurrency,
-            sandbox: parsed.sandbox,
+            sandbox: own_sandbox(parsed.sandbox, own_root, cwd.as_deref()),
             max_bytes: parsed.max_bytes,
+            cwd,
         });
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
             path,
@@ -647,6 +717,7 @@ mod tests {
             max_concurrency: 4,
             sandbox: None,
             max_bytes: None,
+            cwd: None,
         };
 
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
@@ -695,6 +766,7 @@ mod tests {
             max_concurrency: 4,
             sandbox: None,
             max_bytes: None,
+            cwd: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -736,6 +808,7 @@ mod tests {
             max_concurrency: 4,
             sandbox: None,
             max_bytes: None,
+            cwd: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -779,6 +852,7 @@ mod tests {
             max_concurrency: 4,
             sandbox: None,
             max_bytes: None,
+            cwd: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -972,6 +1046,7 @@ mod tests {
             max_concurrency: 4,
             sandbox: None,
             max_bytes: Some(1000),
+            cwd: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -1032,6 +1107,7 @@ mod tests {
             max_concurrency: 4,
             sandbox: None,
             max_bytes: None,
+            cwd: None,
         };
         let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
         let sink = OutputSink::new(
@@ -1096,6 +1172,7 @@ mod tests {
                 max_concurrency: 4,
                 sandbox: None,
                 max_bytes: None,
+                cwd: None,
             };
             let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
             let sink = OutputSink::new(

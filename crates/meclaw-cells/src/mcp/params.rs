@@ -56,6 +56,10 @@ pub struct McpParams {
     pub external_timeout_ms: u64,
     /// A timeout for `cell.db` calls via `DbConn`. Default 5000.
     pub query_timeout_ms: u64,
+    /// GH #1235 (OR-programm-tm.H5.orch-4): the grant under which the vault
+    /// hands this cell its bearer token, sealed (`auth.bearer_grant_id`).
+    /// `None` = no grant. Spent on the `http` transport only.
+    pub bearer_grant: Option<String>,
 }
 
 /// β: the `mcp` runtime-overlay projection. Only the two timeout fields are
@@ -149,10 +153,33 @@ impl McpParams {
             .get("query_timeout_ms")
             .and_then(|x| x.as_u64())
             .unwrap_or(5_000);
+        // GH #1235 (OR-programm-tm.H5.orch-4): the bearer is a secret like
+        // every other (T6-22) and comes sealed under a grant. A token next to
+        // the grant would be a second source for one secret.
+        let bearer_grant = match obj.get("auth").and_then(|a| a.as_object()) {
+            Some(auth) => crate::credential::grant_param(auth, "bearer_grant_id")
+                .map_err(|e| format!("auth.{e}"))?,
+            None => None,
+        };
+        if bearer_grant.is_some()
+            && matches!(
+                &transport,
+                McpTransport::Http {
+                    bearer: Some(_),
+                    ..
+                }
+            )
+        {
+            return Err(
+                "auth: bearer and bearer_grant_id name one secret twice -- keep the grant"
+                    .to_string(),
+            );
+        }
         Ok(Self {
             transport,
             external_timeout_ms,
             query_timeout_ms,
+            bearer_grant,
         })
     }
 }
@@ -177,12 +204,11 @@ fn parse_http(obj: &serde_json::Map<String, JsonValue>) -> Result<McpTransport, 
     else {
         return Ok(McpTransport::Unset);
     };
-    // An empty token is no token (GH #268). `auth.bearer` is written as
-    // `${MCP_BEARER:-}` wherever the operator may leave the variable unset, and
-    // the substitution turns that into `""`. Sending `Authorization: Bearer `
+    // An empty token is no token (GH #268). Sending `Authorization: Bearer `
     // to a provider that would have answered anonymously is a worse failure
     // than sending nothing, and every declaration in the tree describes the
-    // empty value as "no Authorization header".
+    // empty value as "no Authorization header". Since GH #1235 the file names
+    // no `${VAR}` here; the token comes sealed under `auth.bearer_grant_id`.
     let bearer = obj
         .get("auth")
         .and_then(|a| a.as_object())

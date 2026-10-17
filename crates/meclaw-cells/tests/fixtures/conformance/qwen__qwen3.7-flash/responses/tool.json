@@ -1,7 +1,7 @@
 {
-  "id": "gen-1791224622-A11uX4SoqKYjbNC0uptp",
+  "id": "gen-1792177542-wiSFrTAJ6JkiNAX9Cl98",
   "object": "chat.completion",
-  "created": 1791224622,
+  "created": 1792177542,
   "model": "qwen/qwen3.7-flash",
   "provider": "Alibaba",
   "system_fingerprint": null,
@@ -16,12 +16,12 @@
         "role": "assistant",
         "content": null,
         "refusal": null,
-        "reasoning": "Thinking Process:\n1.  **Identify the User's Goal**: The user wants me to call the `echo` tool with the text \"ping\".\n2.  **Locate the Tool**: I see a tool definition for `echo` that takes one required parameter `text`.\n3.  **Map Input to Parameters**: `text = \"ping\"`.\n4.  **Construct Function Call**: `echo(text=\"ping\")`.\n5.  **Format Output**: Use the exact format expected by the system for tool calls.\n\nCheck constraints: \"Always answer by calling the tool echo.\" - Matches perfectly. Let's output. \nNo other tools are needed.\nProceed. \nOutput matches the requested format.\u2705",
+        "reasoning": "The user wants me to call the `echo` tool with the text \"ping\".\nI need to use the `echo` tool.\nThe parameter required is `text`, and its value should be \"ping\".\n\nPlan:\n1. Call the `echo` tool with `text=\"ping\"`.\n",
         "tool_calls": [
           {
             "type": "function",
             "index": 0,
-            "id": "call_49372c9908a94df88391a9f3",
+            "id": "call_6bc471d2f3ae460baaa8196d",
             "function": {
               "name": "echo",
               "arguments": "{\"text\": \"ping\"}"
@@ -31,7 +31,7 @@
         "reasoning_details": [
           {
             "type": "reasoning.text",
-            "text": "Thinking Process:\n1.  **Identify the User's Goal**: The user wants me to call the `echo` tool with the text \"ping\".\n2.  **Locate the Tool**: I see a tool definition for `echo` that takes one required parameter `text`.\n3.  **Map Input to Parameters**: `text = \"ping\"`.\n4.  **Construct Function Call**: `echo(text=\"ping\")`.\n5.  **Format Output**: Use the exact format expected by the system for tool calls.\n\nCheck constraints: \"Always answer by calling the tool echo.\" - Matches perfectly. Let's output. \nNo other tools are needed.\nProceed. \nOutput matches the requested format.\u2705",
+            "text": "The user wants me to call the `echo` tool with the text \"ping\".\nI need to use the `echo` tool.\nThe parameter required is `text`, and its value should be \"ping\".\n\nPlan:\n1. Call the `echo` tool with `text=\"ping\"`.\n",
             "format": "unknown",
             "index": 0
           }
@@ -41,9 +41,9 @@
   ],
   "usage": {
     "prompt_tokens": 289,
-    "completion_tokens": 178,
-    "total_tokens": 467,
-    "cost": 3.14919e-05,
+    "completion_tokens": 90,
+    "total_tokens": 379,
+    "cost": 2.01663e-05,
     "is_byok": false,
     "prompt_tokens_details": {
       "cached_tokens": 0,
@@ -52,12 +52,12 @@
       "video_tokens": 0
     },
     "cost_details": {
-      "upstream_inference_cost": 3.181e-05,
+      "upstream_inference_cost": 2.037e-05,
       "upstream_inference_prompt_cost": 8.67e-06,
-      "upstream_inference_completions_cost": 2.314e-05
+      "upstream_inference_completions_cost": 1.17e-05
     },
     "completion_tokens_details": {
-      "reasoning_tokens": 151,
+      "reasoning_tokens": 63,
       "image_tokens": 0,
       "audio_tokens": 0
     }

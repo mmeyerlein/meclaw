@@ -584,7 +584,7 @@ def _runs_here(o, repo, db, cargo):
     return not cargo and not o.host and not _held_lane(db, repo, o)
 
 
-def _plan_build(o, repo, satellite, here, fp, lane_name, cargo=False):
+def _plan_build(o, repo, satellite, here, fp, lane_name, cargo=False, repo_id=None):
     """The build part `--plan-only` keys with -- the run's own (orchestrator OR-T12-18
     A-M3, re-check tv-bn M7w A-M3: the plan looked up in a third environment, this
     process's without the lane's words and the mode): the `+env` the run would hand
@@ -607,10 +607,10 @@ def _plan_build(o, repo, satellite, here, fp, lane_name, cargo=False):
     if ln is None or words is None:
         return executor._build_part(None)
     return executor.stations_build(ln, dict(passed, **dict(words, MECLAW_GATE_MODE=o.mode)), repo,
-                                   _lane_tree(ln, cargo, repo, o))
+                                   _lane_tree(ln, cargo, repo, o, repo_id))
 
 
-def _lane_tree(ln, cargo, repo, o):
+def _lane_tree(ln, cargo, repo, o, repo_id=None):
     """The tree a pass of `repo` runs in on lane `ln`: the admission's own rule
     (`schedule.admission_tree` under `schedule.tree_under`, one source -- re-check
     bundle N delta kit-fp M1) with the words `_run_lane` hands `schedule.admit`.
@@ -618,7 +618,7 @@ def _lane_tree(ln, cargo, repo, o):
     `tree` itself."""
     holder = holder_key(repo, o.strand, o.wave, o.holder) or o.wave or ""
     return schedule.tree_under(ln.root, schedule.admission_tree(
-        cargo, os.path.basename(repo.rstrip("/")), holder))
+        cargo, schedule.lane_tree_name(repo_id, repo), holder))
 
 
 # --- the run -------------------------------------------------------------------------------
@@ -1584,7 +1584,7 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
         kw = dict(repo=doc.get("repo") or "meclaw", mode=o.mode,
                   strand=holder_key(repo, o.strand, o.wave, o.holder), wave=o.wave or "",
                   base=doc.get("base"), lane_pref=o.host, now=None,
-                  tree_name=os.path.basename(repo.rstrip("/")), any_lane=bool(o.any_lane),
+                  tree_name=schedule.lane_tree_name(doc.get("repo"), repo), any_lane=bool(o.any_lane),
                   # K14: a merge candidate's gate waits ahead of the strands
                   merge=os.environ.get("MECLAW_GATE_MODE", "") == "merge",
                   # re-check Kette Minor 2: the release class reads the strand file
@@ -1666,7 +1666,7 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
             p.note_lost(db, adm.run)
             print(p.lost_line(), file=out)
             return 2
-        name = os.path.basename(repo.rstrip("/"))
+        name = schedule.lane_tree_name(doc.get("repo"), repo)  # GH #1199: one per repository
         try:
             # W1's guards of a lane run (`lane_sync.sh guard`: a local lane only as class egon,
             # no gate on class egon, the floor, the slot) before anything travels.
@@ -1687,7 +1687,8 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
             # cannot travel aborts the run (welle-tb tb-zcol A).
             if passed_refused is not None:
                 raise passed_refused
-            pushed = lane.push(ln, repo, name, adm.cargo, **_satellite_transport(repo, satellite))
+            pushed = lane.push(ln, repo, name, adm.cargo, origin=doc.get("repo") or schedule.CORE_REPO,
+                               **_satellite_transport(repo, satellite))
             if satellite:
                 # The stations run in the lane's checkout, from the kit there,
                 # sized for the lane's cpu (GH #1163: the colony density).
@@ -1864,7 +1865,7 @@ def run_gate(args, out, err):
         _plan_only(doc, out)
         keys, known, _fp = _lookup(db, doc, repo, metadata, fp, lane_name or "local", o.mode,
                                    o.cache, _plan_build(o, repo, satellite, here, fp, lane_name,
-                                                        cargo))
+                                                        cargo, doc.get("repo")))
         print(_plan_line(doc, known, keys, cargo, lane_name or "-", None, o.cache), file=out)
         return 0
     if satellite:

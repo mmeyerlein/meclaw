@@ -5,7 +5,7 @@
 
 use crate::credential::CredentialSlots;
 use crate::proxy::io::{
-    CredentialWait, ProxyEvent, ProxyReconfig, RunIoConfig, run_io, wait_for_bot_token,
+    CredentialWait, ProxyEvent, ProxyReconfig, RunIoConfig, wait_for_bot_token,
 };
 use crate::proxy::telegram::TelegramClient;
 use crate::proxy::typing::{TypingCadence, TypingKeepers};
@@ -50,6 +50,9 @@ pub struct ProxyCell {
     /// GH #1059: the bot token comes sealed from the vault (`bot_token_grant_id`).
     /// `None` = a literal `bot_token` (the one-release transition, OR-VG-4).
     pub(crate) credential: Option<ProxyCredential>,
+    /// GH #1253: the colony's shutdown drain, handed to the I/O task, which
+    /// stops polling once it sees it ([`crate::proxy::io::run_io_with_drain`]).
+    pub(crate) drain: meclaw_colony::DrainView,
 }
 
 /// GH #1059: the grant of a connector whose bot token the vault delivers.
@@ -101,6 +104,7 @@ impl ProxyCell {
             }),
             blob_store: None,
             credential: None,
+            drain: meclaw_colony::DrainView::default(),
         }
     }
 
@@ -199,6 +203,14 @@ impl ProxyCell {
         }
     }
 
+    /// GH #1253: the colony's shutdown drain (`ContractView::drain`), for the
+    /// I/O task. A builder for the same reason as [`Self::with_blob_store`].
+    #[must_use]
+    pub fn with_drain(mut self, drain: meclaw_colony::DrainView) -> Self {
+        self.drain = drain;
+        self
+    }
+
     /// GH #907: the blob store documents are committed to. A builder rather
     /// than a `new` argument: the factory sets it on birth and respawn alike,
     /// and the many constructions that never see a document stay as they are.
@@ -226,6 +238,8 @@ pub struct ProxyIo {
     pub(crate) cfg: RunIoConfig,
     /// GH #1059: `Some` = sleep until the bot token arrives (a grant's connector).
     pub(crate) wait: Option<CredentialWait>,
+    /// GH #1253: the colony's shutdown drain.
+    pub(crate) drain: meclaw_colony::DrainView,
 }
 
 impl LongRunningCell for ProxyCell {
@@ -237,6 +251,7 @@ impl LongRunningCell for ProxyCell {
         ProxyIo {
             cfg: self.initial_io_cfg.take().expect("split_io called twice"),
             wait: self.credential.as_ref().map(|c| c.wait),
+            drain: self.drain.clone(),
         }
     }
 
@@ -259,7 +274,11 @@ impl LongRunningCell for ProxyCell {
         reconfig_rx: mpsc::Receiver<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send {
         async move {
-            let ProxyIo { mut cfg, wait } = io;
+            let ProxyIo {
+                mut cfg,
+                wait,
+                drain,
+            } = io;
             let mut reconfig_rx = reconfig_rx;
             // GH #1059: a grant's connector polls nothing before its token.
             if let Some(wait) = wait
@@ -267,7 +286,7 @@ impl LongRunningCell for ProxyCell {
             {
                 return; // handler gone → the cell tears down
             }
-            run_io(cfg, events_tx, reconfig_rx).await;
+            crate::proxy::io::run_io_with_drain(cfg, drain, events_tx, reconfig_rx).await;
         }
     }
 

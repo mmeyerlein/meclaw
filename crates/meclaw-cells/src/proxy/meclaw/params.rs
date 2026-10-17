@@ -292,8 +292,15 @@ fn validate_direction(dir: &str, lanes: &[Lane]) -> Result<(), String> {
 /// GH #828: the two secret keys of `auth`, each with the form it belongs to.
 pub const SECRET_KEYS: &[&str] = &["value", "client_secret"];
 
+/// GH #1235 (T6-22): the grant key that stands in for each secret key of
+/// [`SECRET_KEYS`]; the vault delivers the secret sealed under it.
+const SECRET_GRANT_KEYS: &[(&str, &str)] = &[
+    ("value", "auth.value_grant_id"),
+    ("client_secret", "auth.client_secret_grant_id"),
+];
+
 /// The keys of the static form.
-const STATIC_KEYS: &[&str] = &["header", "value"];
+const STATIC_KEYS: &[&str] = &["header", "value", "value_grant_id"];
 /// The keys of the OAuth form.
 const OAUTH_KEYS: &[&str] = &[
     "token_url",
@@ -328,18 +335,27 @@ pub enum PeerAuth {
     OAuth(OAuthAuth),
 }
 
-/// `{"header": ..., "value": "${VAR}"}`.
+/// `{"header": ..., "value_grant_id": "<grant>"}`.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StaticAuth {
     /// The header name, sent verbatim.
     pub header: String,
-    /// The secret value; `${VAR}` in the file, resolved in memory.
+    /// The secret value. Empty when `value_grant_id` names the grant the
+    /// vault delivers it under; the file carries it in no form (GH #1235,
+    /// T6-22 — `validate_declared`), only a direct construction does.
+    #[serde(default)]
     pub value: String,
+    /// GH #1235 (T6-22): the grant under which the vault delivers the header
+    /// value, sealed — the static form's twin of `client_secret_grant_id`
+    /// (GH #1105). Not a secret itself. Set together with a non-empty `value`
+    /// it is refused: one secret, one source.
+    #[serde(default)]
+    pub value_grant_id: Option<String>,
 }
 
-/// `{"token_url": ..., "client_id": ..., "client_secret": "${VAR}", "scope", "audience"}`,
-/// or with `"client_secret_grant_id": "<grant>"` in place of `client_secret`.
+/// `{"token_url": ..., "client_id": ..., "client_secret_grant_id": "<grant>", "scope",
+/// "audience"}`.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OAuthAuth {
@@ -347,9 +363,9 @@ pub struct OAuthAuth {
     pub token_url: String,
     /// The client the grant is for; not a secret.
     pub client_id: String,
-    /// The client secret; `${VAR}` in the file, resolved in memory. Empty
-    /// when `client_secret_grant_id` names the grant the vault delivers it
-    /// under (GH #1105); the `${VAR}` is the one-release transition.
+    /// The client secret. Empty when `client_secret_grant_id` names the grant
+    /// the vault delivers it under (GH #1105); the file carries it in no form
+    /// (GH #1235, T6-22), only a direct construction does.
     #[serde(default)]
     pub client_secret: String,
     /// GH #1105: the grant under which the vault delivers the client secret,
@@ -380,6 +396,7 @@ impl std::fmt::Debug for StaticAuth {
         f.debug_struct("StaticAuth")
             .field("header", &self.header)
             .field("value", &"<redacted>")
+            .field("value_grant_id", &self.value_grant_id)
             .finish()
     }
 }
@@ -471,13 +488,16 @@ impl PeerAuth {
                         a.header
                     ));
                 }
-                // An empty variable is not a credential (the GH #270 lesson of
+                // An empty value is not a credential (the GH #270 lesson of
                 // the slack variant): it would post a header the far proxy
-                // refuses on every crossing while the cell looks healthy.
-                if a.value.is_empty() {
-                    return Err("auth.value: required and non-empty (use ${VAR})".to_string());
+                // refuses on every crossing while the cell looks healthy. The
+                // value has one source, as the OAuth form's secret (GH #1105).
+                match (a.secret_grant(), a.value.is_empty()) {
+                    (Some(_), false) => return Err(VALUE_TWICE.to_string()),
+                    (None, true) => return Err(VALUE_MISSING.to_string()),
+                    _ => {}
                 }
-                if axum::http::HeaderValue::from_str(&a.value).is_err() {
+                if !a.value.is_empty() && axum::http::HeaderValue::from_str(&a.value).is_err() {
                     return Err(
                         "auth.value: not a legal HTTP header value (visible ASCII only); the \
                          value is not echoed"
@@ -529,13 +549,29 @@ impl PeerAuth {
 
 /// GH #1105: `auth.client_secret` and `auth.client_secret_grant_id` both set.
 pub const CLIENT_SECRET_TWICE: &str = "auth: client_secret and client_secret_grant_id are both \
-     set; the client secret comes from one source — the grant (sealed from the vault) or, for one \
-     release, the ${VAR} — never both; the value is not echoed";
+     set; the client secret comes from one source, the grant (sealed from the vault); the value \
+     is not echoed";
 
 /// GH #1105: neither `auth.client_secret` nor `auth.client_secret_grant_id`.
 pub const CLIENT_SECRET_MISSING: &str = "auth.client_secret: required — name the grant in \
-     auth.client_secret_grant_id (the vault delivers the secret sealed); a ${VAR} client_secret \
-     is the one-release transition";
+     auth.client_secret_grant_id (the vault delivers the secret sealed)";
+
+/// GH #1235 (T6-22): `auth.value` and `auth.value_grant_id` both set.
+pub const VALUE_TWICE: &str = "auth: value and value_grant_id are both set; the header value \
+     comes from one source, the grant (sealed from the vault); the value is not echoed";
+
+/// GH #1235 (T6-22): neither `auth.value` nor `auth.value_grant_id`.
+pub const VALUE_MISSING: &str = "auth.value: required — name the grant in auth.value_grant_id \
+     (the vault delivers the header value sealed)";
+
+impl StaticAuth {
+    /// GH #1235 (T6-22): the grant the header value comes under, if one is
+    /// named. The empty string is not a grant (`credential::grant_param`'s rule).
+    #[must_use]
+    pub fn secret_grant(&self) -> Option<&str> {
+        self.value_grant_id.as_deref().filter(|g| !g.is_empty())
+    }
+}
 
 impl OAuthAuth {
     /// GH #1105: the grant the client secret comes under, if one is named.
@@ -549,22 +585,27 @@ impl OAuthAuth {
 }
 
 impl PeerAuth {
-    /// GH #1105: the grant of the OAuth form's client secret; `None` for the
-    /// static form and for an OAuth form on its `${VAR}`.
+    /// The grant of the credential's secret: the OAuth form's client secret
+    /// (GH #1105) or the static form's header value (GH #1235, T6-22). `None`
+    /// for a directly constructed secret.
     #[must_use]
-    pub fn client_secret_grant(&self) -> Option<&str> {
+    pub fn secret_grant(&self) -> Option<&str> {
         match self {
             PeerAuth::OAuth(a) => a.secret_grant(),
-            PeerAuth::Header(_) => None,
+            PeerAuth::Header(a) => a.secret_grant(),
         }
     }
 }
 
 /// GH #828: the secret keys of `auth` as the FILE declares them, before any
-/// `${VAR}` is bound. A secret is exactly one `${NAME}` token without a
-/// default: a literal would put the credential on disk and into every export
-/// of the tree, and a `${NAME:-fallback}` would do the same the moment the
-/// variable is unset. The refusal names the key and never the literal.
+/// `${VAR}` is bound. A literal puts the credential on disk and into every
+/// export of the tree (GH #828); a `${VAR}` binds it from the colony's
+/// environment, which every cell the colony spawns can read (GH #1235,
+/// T6-22, `credential::refuse_env_secret`; zellgrenzen inventory no. 9). So
+/// the file names the grant (`auth.value_grant_id`,
+/// `auth.client_secret_grant_id`) and the vault delivers the secret sealed to
+/// this one cell. An empty value is no secret and passes. The refusal names
+/// the key and never the value.
 ///
 /// Only this check can see the difference: the parse above reads the resolved
 /// value, and a resolved value looks the same whether it came from `.env` or
@@ -573,28 +614,19 @@ pub fn validate_declared(declared: &JsonValue) -> Result<(), String> {
     let Some(auth) = declared.get("auth").and_then(JsonValue::as_object) else {
         return Ok(());
     };
-    for key in SECRET_KEYS {
+    for (key, grant_key) in SECRET_GRANT_KEYS {
         let Some(v) = auth.get(*key) else { continue };
-        if !v.as_str().is_some_and(is_env_token) {
-            return Err(format!(
-                "auth.{key}: a secret is written as ${{VAR}} and bound from the environment, \
-                 never as a value in config.json; the value is not echoed"
-            ));
+        if v.as_str().is_some_and(str::is_empty) {
+            continue;
         }
+        let key = format!("auth.{key}");
+        crate::credential::refuse_env_secret(&key, Some(v), grant_key)?;
+        return Err(format!(
+            "{key}: a secret is never written into config.json; name a credential grant in \
+             {grant_key} (the vault delivers the secret sealed); the value is not echoed"
+        ));
     }
     Ok(())
-}
-
-/// `${NAME}`, the whole string, `NAME` from `[A-Za-z_][A-Za-z0-9_]*`.
-pub(crate) fn is_env_token(s: &str) -> bool {
-    let Some(name) = s.strip_prefix("${").and_then(|r| r.strip_suffix('}')) else {
-        return false;
-    };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -771,14 +803,23 @@ mod tests {
     }
 
     #[test]
-    fn a_secret_must_be_declared_as_one_env_token() {
-        let ok = base(json!({"header": "X-A", "value": "${PEER_CREDENTIAL}"}));
+    fn a_secret_is_declared_only_as_a_grant() {
+        // GH #1235 (T6-22): the grant is the one way; `${VAR}` is refused like
+        // the literal (zellgrenzen inventory no. 9).
+        let ok = base(json!({"header": "X-A", "value_grant_id": "grant:g@a/p"}));
         assert_eq!(validate_declared(&ok), Ok(()));
-        let ok = base(
-            json!({"token_url": "https://i/t", "client_id": "lit", "client_secret": "${S_1}"}),
-        );
+        let ok = base(json!({"token_url": "https://i/t", "client_id": "lit",
+                             "client_secret_grant_id": "grant:g@a/p"}));
         assert_eq!(validate_declared(&ok), Ok(()), "client_id is no secret");
         for (auth, key) in [
+            (
+                json!({"header": "X-A", "value": "${PEER_CREDENTIAL}"}),
+                "auth.value",
+            ),
+            (
+                json!({"token_url": "https://i/t", "client_id": "n", "client_secret": "${S_1}"}),
+                "auth.client_secret",
+            ),
             (json!({"header": "X-A", "value": SECRET}), "auth.value"),
             (
                 json!({"header": "X-A", "value": "${PEER:-fallback}"}),
@@ -796,7 +837,14 @@ mod tests {
         ] {
             let e = validate_declared(&base(auth)).expect_err("refused");
             assert!(e.starts_with(key), "{key}: {e}");
-            assert!(!e.contains(SECRET) && !e.contains("fallback"), "{e}");
+            assert!(
+                e.contains(&format!("{key}_grant_id")),
+                "names the grant: {e}"
+            );
+            assert!(
+                !e.contains(SECRET) && !e.contains("fallback") && !e.contains("PEER"),
+                "{e}"
+            );
         }
         assert_eq!(
             validate_declared(&base(json!(null))),
@@ -821,7 +869,7 @@ mod tests {
         );
         assert!(a.client_secret.is_empty());
         assert_eq!(
-            p.auth.as_ref().and_then(PeerAuth::client_secret_grant),
+            p.auth.as_ref().and_then(PeerAuth::secret_grant),
             Some("grant:peer_client_secret@agent/peer")
         );
         assert_eq!(validate_declared(&base(auth)), Ok(()));

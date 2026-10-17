@@ -46,6 +46,7 @@ fn cell() -> BashCell {
         max_concurrency: 4,
         sandbox: None,
         max_bytes: None,
+        cwd: None,
     }
 }
 

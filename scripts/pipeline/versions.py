@@ -263,13 +263,11 @@ def issues_of(doc):
 # --- the tree -------------------------------------------------------------------
 
 def template_dirs(tree):
-    """`{dir: name}` of every `templates/<dir>/template.json`."""
+    """`{dir: name}` of every `templates/<dir>/template.json` of the tree's own files
+    (`locks.listed`, GH #1199 K19)."""
     out = {}
-    root = os.path.join(tree, "templates")
-    if not os.path.isdir(root):
-        return out
-    for d in sorted(os.listdir(root)):
-        path = os.path.join(root, d, "template.json")
+    for d in locks.template_dirs(tree):
+        path = os.path.join(tree, "templates", d, "template.json")
         try:
             with open(path, encoding="utf-8") as fh:
                 doc = json.load(fh)
@@ -407,16 +405,11 @@ def _raise_inter_crate_pins(tree, new):
 # --- the cascade -------------------------------------------------------------------
 
 def _files(tree, top, suffix):
-    root = os.path.join(tree, top)
-    if not os.path.isdir(root):
-        return
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in locks.SKIP_DIRS)
-        for fn in sorted(filenames):
-            if fn.endswith(suffix):
-                rel = os.path.relpath(os.path.join(dirpath, fn), tree).replace(os.sep, "/")
-                if not rel.startswith(FROZEN):
-                    yield rel
+    """The cascade's files: the pin readers' own (`locks._walk`, GH #1199 K19 -- an
+    ignored rest is no file of the tree), without the frozen archive."""
+    for rel in locks._walk(tree, top, suffix):
+        if not rel.startswith(FROZEN):
+            yield rel
 
 
 def cascade(tree, moved, also=None):

@@ -942,3 +942,81 @@ fn a_round_less_note_is_one_seq_past_its_calls_missing_audience() {
         "the note is one past the call's own seq: {seqs:?}"
     );
 }
+
+/// One round on `in_curate` stamped with the path `path` (GH #1247): the way
+/// it leaves on follows the role's `path_routes`.
+fn curate_on_path(h: &mut Hive, session: &str, turn_id: &str, path: &str, ask: &str) {
+    h.out.clear();
+    let hop = json!({"session_id": session, "turn_id": turn_id, "iter": "0", "phase": "",
+                     "path": path});
+    let ctx = json!({"session_id": session, "turn_id": turn_id, "iter": "0",
+                     "channel": "test", "audience_set": ROUND_E, "path": path});
+    h.lane(
+        "in_curate",
+        ctx,
+        hop,
+        json!({"messages": [user(ask)], "system": mode("Be brief.")}),
+    );
+}
+
+/// GH #1256: a `consult` or `research` call that opens a `split` session.
+///
+/// WHY: such a call carries the errand, not talky's identity (GH #1247,
+/// T4-11), so it has no full element -- yet the session's snapshot was due
+/// (first call of the session), and the policy wrote it off the missing
+/// element: `AttributeError` in phase `win`, no errand to the backend, no
+/// bridge on `quick`, the turn dead-lettered `no_route` -- silence for the
+/// person whenever a deployment runs talky on `split`. The
+/// call that shows no identity takes no snapshot; the next speaking call of
+/// the session takes it.
+#[test]
+fn a_consult_or_research_call_opening_a_split_session_leaves_the_snapshot_to_the_next_brain_call() {
+    if !shipped() {
+        return;
+    }
+    for (path, way) in [("complex", "consult"), ("research", "research")] {
+        let mut h = split_hive(&[("policy", "role", json!("talky"))]);
+        pack(&mut h, both(VOLL, KURZ));
+        h.ledger_ops.clear();
+        curate_on_path(&mut h, "s1", "t1", path, "plan my week around the move");
+        let errand = h.routed(way);
+        assert_eq!(
+            errand.len(),
+            1,
+            "{path}: the errand leaves on {way}: {:?} {:?}",
+            h.out,
+            h.stderr
+        );
+        let bridge = h.routed("quick");
+        assert_eq!(
+            bridge.len(),
+            1,
+            "{path}: the quick voice bridges the wait: {:?} {:?}",
+            h.out,
+            h.stderr
+        );
+        assert_eq!(bridge[0].hop["bridge"], json!(way), "{:?}", bridge[0].hop);
+        assert_eq!(
+            snapshot_blocks_written(&h),
+            0,
+            "{path}: the errand shows no identity and takes no snapshot: {:?}",
+            h.ledger_ops
+        );
+        assert_eq!(
+            state_writes(&h, "identity_full:s1"),
+            0,
+            "{path}: no snapshot state on the errand's call"
+        );
+        // The next speaking call of the session takes the snapshot.
+        let mut held = Map::new();
+        let call = turn(&mut h, "s1", "t2", "q2", "a2", json!({}));
+        hold(&mut held, &call);
+        assert_split(&call, &held, KURZ, VOLL, path);
+        assert_eq!(
+            snapshot_blocks_written(&h),
+            1,
+            "{path}: the brain call after the errand takes the snapshot"
+        );
+        assert_eq!(snapshot_of(&h, "s1")["element"], block(VOLL), "{path}");
+    }
+}

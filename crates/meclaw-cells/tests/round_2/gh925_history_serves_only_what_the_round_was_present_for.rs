@@ -99,7 +99,23 @@ use tokio::sync::mpsc;
 /// An endpoint nothing listens on: a call there fails at once and costs nothing.
 const CLOSED_PORT: &str = "http://127.0.0.1:9/v1";
 const BRAIN_MODEL: &str = "brain-stub";
-const HISTORY_TOOLS: [&str; 3] = ["history_search", "history_read", "history_outline"];
+
+/// What a composite's menu shows of the history tools. cogny folds its menu
+/// since T5-10 (GH #1246), talky since T5-11 (GH #1248): a brain sees the one
+/// family `history` and calls it as `history{op, args}`, which the dispatcher
+/// unfolds to `history_<op>` before the edge to the curator reads the name.
+fn history_menu(_composite: &str) -> &'static [&'static str] {
+    &["history"]
+}
+
+/// One call of the folded family: `{op, args}` with the op's own arguments.
+fn fold(op: &str, args: &str) -> String {
+    json!({
+        "op": op,
+        "args": meclaw_core::serde_json::from_str::<Value>(args).expect("args are JSON"),
+    })
+    .to_string()
+}
 
 // ─────────────────────────────────────────────────────────────── the rounds
 
@@ -671,7 +687,9 @@ async fn await_menu(h: &ColonyHandle, root: &std::path::Path, composite: &str) {
         &desc,
         || {
             let names = ledger_tools(root, composite);
-            let ready = HISTORY_TOOLS.iter().all(|t| names.iter().any(|n| n == t));
+            let ready = history_menu(composite)
+                .iter()
+                .all(|t| names.iter().any(|n| n == t));
             async move { ready.then_some(()) }
         },
         || async move {
@@ -1040,24 +1058,44 @@ async fn a_round_reads_back_only_what_it_was_present_for() {
         // one: the words are said, nothing is looked up
         canned_chat_completion(SESSIONS[0].reply, "stop"),
         // two: one search
-        canned_tool_calls(vec![(CALL_TWO, "history_search", SEARCH)]),
+        canned_tool_calls(vec![(CALL_TWO, "history", fold("search", SEARCH).as_str())]),
         canned_chat_completion(SESSIONS[1].reply, "stop"),
         // three: a search and an outline
-        canned_tool_calls(vec![(CALL_THREE_SEARCH, "history_search", SEARCH)]),
-        canned_tool_calls(vec![(CALL_THREE_OUTLINE, "history_outline", "{}")]),
+        canned_tool_calls(vec![(
+            CALL_THREE_SEARCH,
+            "history",
+            fold("search", SEARCH).as_str(),
+        )]),
+        canned_tool_calls(vec![(
+            CALL_THREE_OUTLINE,
+            "history",
+            fold("outline", "{}").as_str(),
+        )]),
         canned_chat_completion(SESSIONS[2].reply, "stop"),
         // four: a search, a read of the row from before the rule and a read
         // of session two's words by their id
-        canned_tool_calls(vec![(CALL_FOUR_SEARCH, "history_search", SEARCH)]),
-        canned_tool_calls(vec![(CALL_FOUR_READ, "history_read", read_old.as_str())]),
+        canned_tool_calls(vec![(
+            CALL_FOUR_SEARCH,
+            "history",
+            fold("search", SEARCH).as_str(),
+        )]),
+        canned_tool_calls(vec![(
+            CALL_FOUR_READ,
+            "history",
+            fold("read", read_old.as_str()).as_str(),
+        )]),
         canned_tool_calls(vec![(
             CALL_FOUR_READ_TWO,
-            "history_read",
-            read_two.as_str(),
+            "history",
+            fold("read", read_two.as_str()).as_str(),
         )]),
         canned_chat_completion(SESSIONS[3].reply, "stop"),
         // five: a search without a round
-        canned_tool_calls(vec![(CALL_FIVE, "history_search", SEARCH)]),
+        canned_tool_calls(vec![(
+            CALL_FIVE,
+            "history",
+            fold("search", SEARCH).as_str(),
+        )]),
         canned_chat_completion(SESSIONS[4].reply, "stop"),
     ])
     .await;
@@ -1334,9 +1372,15 @@ async fn the_cores_marks_carry_the_round_they_were_made_in() {
         eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
         return;
     }
+    // cogny's menu is folded (T5-10, GH #1246): the core calls the family.
+    let core_read = json!({
+        "op": "read",
+        "args": meclaw_core::serde_json::from_str::<Value>(UNKNOWN_ID).expect("UNKNOWN_ID is JSON"),
+    })
+    .to_string();
     let core = MockOpenAI::start(vec![
         // Consult one: a read that fails, then the answer with a correction.
-        canned_tool_calls(vec![(CORE_READ, "history_read", UNKNOWN_ID)]),
+        canned_tool_calls(vec![(CORE_READ, "history", core_read.as_str())]),
         canned_chat_completion(CORE_CORRECTED, "stop"),
         // Consult two: the core asks back -- a handoff, the round ends there.
         canned_tool_calls(vec![(CORE_ASK, "ask_requester", ASK_ARGS)]),
@@ -1422,10 +1466,13 @@ async fn the_cores_marks_carry_the_round_they_were_made_in() {
     // `ask`. So every mark names CORE_SESSION, the failed read and the
     // correction name consult one's turn, the question back consult two's,
     // and `at` is the curator's clock (RFC 3339) at a moment of this run.
+    // The `tool_error` names the tool as the model called it and as its menu
+    // holds it (OR-BD-6: only a menu name enters the value) -- cogny's menu is
+    // folded (T5-10, GH #1246), so that is the family `history`.
     let round = canonical(CORE_ROUND);
     let mut turns: BTreeMap<&str, String> = BTreeMap::new();
     for (kind, value) in [
-        ("tool_error", "history_read:not_found"),
+        ("tool_error", "history:not_found"),
         ("correction", ""),
         ("ask", "ask_requester"),
     ] {
@@ -1735,9 +1782,17 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
         return;
     }
     let brain = MockOpenAI::start(vec![
-        canned_tool_calls(vec![(CLOSE_ONE_CALL, "history_outline", "{}")]),
+        canned_tool_calls(vec![(
+            CLOSE_ONE_CALL,
+            "history",
+            fold("outline", "{}").as_str(),
+        )]),
         canned_chat_completion(CLOSE_ONE_REPLY, "stop"),
-        canned_tool_calls(vec![(CLOSE_TWO_CALL, "history_outline", "{}")]),
+        canned_tool_calls(vec![(
+            CLOSE_TWO_CALL,
+            "history",
+            fold("outline", "{}").as_str(),
+        )]),
         canned_chat_completion(CLOSE_TWO_REPLY, "stop"),
         canned_chat_completion(CLOSE_THREE_REPLY, "stop"),
     ])

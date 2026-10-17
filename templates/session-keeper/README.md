@@ -1,4 +1,4 @@
-# `session-keeper@2.5.0`
+# `session-keeper@2.6.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -357,12 +357,12 @@ marker — a directory without it is a prefix, and nothing else in it would say 
 object above is therefore what an IMPORT part looks like, which is that file read back the
 other way round.
 
-**Redirect that fence before the first export.** The shipped default is
-`/tmp/meclaw-member-export`, which is world-readable on most hosts, and what lands under it is
-the whole SESSION LEDGER — every turn of every session this keeper holds. Nothing about the
-fence is a secret and nothing about it is checked: the store writes where `params` say, so name
-a directory of your own with `override_params` on `"talky/session-keeper/sessions"` (or the path
-the keeper stands at) before anything is exported.
+**Where the export lands.** The shipped fence is the relative `export`, a directory of this
+hive (GH #1234): what lands under it is the whole SESSION LEDGER — every turn of every session
+this keeper holds — and it stays inside the keeper that holds it, so two generations never write
+into one directory. An absolute path via `override_params` on `"talky/session-keeper/sessions"`
+(or the path the keeper stands at) still works; collect the holders' directories into one place
+before `build_import.py`.
 
 **Wiring.** `params.required_drains` pairs each ingress lane with its exit
 (`in_export → export_done`, `in_export → reject`, `in_import → dump`,

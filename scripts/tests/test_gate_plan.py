@@ -92,6 +92,14 @@ def release_moved():
                   if not gp._browser_lock_term(c, u))
 
 
+# The two browser units that walk `workshop/tools` for the drivers (744 every
+# `.mjs`, gh1209_no_stage every `.mjs`/`.js`, at any depth): a driver of the
+# class `display_browser` is such a file, so its diff plans them in
+# `browser:display` beside the locks (stapel c2, OR-V2.v2-r3-planbrowser.2).
+DRIVER_WALKERS = ["binary_id(=meclaw-cells::744_a_late_patch_does_not_take_the_drawing_back)",
+                  "binary_id(=meclaw-cells::gh1209_no_stage_draws_a_filter_browser)"]
+
+
 
 # tb-s10 A2 (re-check tb-s4-st-pin L-2): the scenario class spelled out -- 8 terms,
 # 57 units of the tree (KR-TB-1 d) -- so a term that joins or leaves
@@ -744,12 +752,17 @@ class Classify(unittest.TestCase):
         # The driver lies under workshop/, which carries no template class.
         self.assertNotIn("template", gp.classify([driver]))
 
-        # A diff on the driver alone plans it in a strand, and it builds.
+        # A diff on the driver alone plans it in a strand, and it builds -- with
+        # the two units that walk the drivers beside the locks (stapel c2).
         st = by_name(gp.plan([driver], "strand", repo=None))
         self.assertIn("browser:display", st)
         self.assertTrue(st["browser:display"].cargo)
         self.assertEqual(st["browser:display"].scope, "sheet")
-        self.assertEqual(st["browser:display"].cmds, gp.browser_cmds(colony=False))
+        self.assertEqual(st["browser:display"].cmds,
+                         gp.browser_cmds(colony=False, moved=DRIVER_WALKERS))
+        for cmd in st["browser:display"].cmds:
+            for term in DRIVER_WALKERS:
+                self.assertIn(term, cmd[2])
 
         # So does a diff on the display template itself -- the sheet is what it measures.
         self.assertIn("browser:display",
@@ -816,7 +829,8 @@ class Classify(unittest.TestCase):
         (GH #1048, the reason W7 kept the calls serial: review W7 I1, OR-DT.W7.3). The
         station carries `parallel` by cmd with one nextest profile per part. The TSV
         keeps one row per command. A release adds every browser unit outside the
-        locks to the union (its `tests` is `all()` and gives them up, GH #1162)."""
+        locks to the union (its `tests` is `all()` and gives them up, GH #1162);
+        a strand on a driver the two units that walk the drivers (stapel c2)."""
         moved = release_moved()
         self.assertTrue(moved)
         for mode, colony in (("strand", False), ("integration", True),
@@ -829,7 +843,8 @@ class Classify(unittest.TestCase):
                 self.assertEqual(len(cmds), 2, cmds)
                 union = " + ".join(([gp.COLONY_LOCK] if colony else [])
                                    + list(gp.IGNORED_LOCKS) + [gp.SHEET_LOCK]
-                                   + (moved if mode == "release" else []))
+                                   + (moved if mode == "release" else [])
+                                   + (DRIVER_WALKERS if mode == "strand" else []))
                 chromium, webkit = cmds
                 self.assertEqual(chromium, ["scripts/test-tier.sh", "filter",
                                             "(%s) - test(/webkit/)" % union,
@@ -3045,7 +3060,7 @@ def reader_pairs(repo, files):
       literal  a file outside crates/ (or a crate file) the reader text names
                (`_tests_reading_path`, both `_path_literals` spellings);
       runtime  below a directory the unit walks (`runtime_roots`) EVERY file
-               the walk admits (`runtime_dir_applies`), not the first one; a
+               the walk admits (`runtime_dir_applies`, per unit), not the first one; a
                walk written repo-relative (`crates`, `crates/<c>/src`) reads
                every crate file below, `.rs` and src/ included (gh523 reads
                `.rs`/`.json`/`.manifest` below `crates`, gh230 every `.rs`); a
@@ -3088,7 +3103,7 @@ def reader_pairs(repo, files):
                     add(crate, unit, p)
                 continue
             for f in tracked:
-                if f.startswith(p + "/") and gp.runtime_dir_applies(p, f) and (
+                if f.startswith(p + "/") and gp.runtime_dir_applies(p, f, unit) and (
                         not f.startswith("crates/") or as_written or fixture(f)):
                     add(crate, unit, f)
     named = [f for f in tracked
@@ -4384,11 +4399,15 @@ class OutOfLineModulesAreReadOneLevelDeep(unittest.TestCase):
                            "a/z.rs": "#[test]\nfn runs() {}\n"}),
             "binary_id(=meclaw-cells::nested)")
 
-    def test_only_a_driver_mjs_has_no_tests_station(self):
-        """The measured case: gh961's driver alone ran 0 tests in `tests`."""
+    def test_only_a_driver_mjs_plans_the_shot_walk_alone_in_tests(self):
+        """The measured case: gh961's driver alone ran 0 tests in `tests`. Fix
+        round stapel I1 (OR-V2.v2-r3-planbrowser.9): 708 reads every
+        top-level `.mjs` (`every_driver_keeps_the_answer_of_an_evidence_shot`),
+        so `tests` carries exactly that binary -- never an empty selection."""
         for mjs in ("display-motion-browser.mjs", "display-csp-browser.mjs"):
             st = by_name(gp.plan(["workshop/tools/" + mjs], "strand"))
-            self.assertNotIn("tests", st, mjs)
+            self.assertEqual("binary_id(=meclaw-cells::708_the_client_draws_the_tap_before_the_pass)",
+                             st["tests"].scope.split(" - ", 1)[0], mjs)
             self.assertIn("browser:display", st, mjs)
 
     def test_only_the_gh961_lock_has_browser_display_but_no_tests_station(self):

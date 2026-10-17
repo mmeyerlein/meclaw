@@ -202,7 +202,19 @@ async fn boot(td: &tempfile::TempDir) -> ColonyHandle {
     let types = cell_types_in(&td.path().join("templates"));
     let fs: Vec<(String, Arc<dyn CellFactory>)> = types
         .into_iter()
-        .map(|t| (t, Arc::new(InertCellFactory) as Arc<dyn CellFactory>))
+        // #1233: `seed_rows` into a store an earlier mutation registered travel
+        // on that store's seed lane, and the door answers `committed` only after
+        // the store's receipt, so the store is the one real cell here. An inert
+        // store never answers, and each such mutation waited out the store's
+        // `cell.message_timeout` (121 s by default) before it was committed.
+        .map(|t| {
+            let f: Arc<dyn CellFactory> = if t == "store" {
+                Arc::new(meclaw_cells::store::StoreCellFactory)
+            } else {
+                Arc::new(InertCellFactory)
+            };
+            (t, f)
+        })
         .collect();
     let h = ColonyHandle::new_with_factories_at(td, fs.clone());
     let mut registry = CellFactoryRegistry::new();

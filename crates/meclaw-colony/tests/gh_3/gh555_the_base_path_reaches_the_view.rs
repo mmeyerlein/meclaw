@@ -147,8 +147,11 @@ fn a_fence_that_is_not_there_yet_still_boots_and_still_validates() {
 /// silent `None`. A relative `base_path` has no fixed meaning — the cell task
 /// knows no colony root — so a colony that booted with one would answer
 /// `to`/`from` against whatever directory the process happened to start in.
+/// GH #1234 narrowed it: a relative fence is now a directory of the enclosing
+/// hive, anchored at the spawn — what stays a loud boot error is one that
+/// climbs out of that hive, because a fence outside its hive is shared again.
 #[test]
-fn a_relative_base_path_is_a_loud_boot_error() {
+fn a_relative_base_path_that_climbs_out_of_its_hive_is_a_loud_boot_error() {
     let td = tempfile::TempDir::new().unwrap();
     write(
         td.path(),
@@ -160,18 +163,18 @@ fn a_relative_base_path_is_a_loud_boot_error() {
         "main/wrong/config.json",
         &format!(
             r#"{{"cell":{{"type":"echo"}},
-                "params":{{"emitted_target":"/sink","transfer":{{"base_path":"export"}}}},
+                "params":{{"emitted_target":"/sink","transfer":{{"base_path":"../export"}}}},
                 "contract":{{{CONTRACT_TAIL}}}}}"#
         ),
     );
 
     let err = meclaw_colony::plan_bootstrap(td.path(), &echo_factories(), &Default::default())
-        .expect_err("a relative fence must stop the boot");
+        .expect_err("a fence that climbs out of its hive must stop the boot");
     assert!(
         err.items().iter().any(|e| matches!(
             e,
             BootstrapError::InvalidTransferBasePath { reason, .. }
-                if reason.contains("absolute") && reason.contains("export")
+                if reason.contains("hive") && reason.contains("../export")
         )),
         "the boot error must name the key and the offending value: {:?}",
         err.items()

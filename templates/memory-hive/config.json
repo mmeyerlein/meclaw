@@ -146,6 +146,10 @@
           "because": "this memory's OWN declaration, one `{name, description, parameters}` for `memory_recall`, plus in `unknown[]` the asked names it does not serve. Provider-neutral, like the tools hive's answer. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question. Since 3.4.0 it also carries `sidecar[]` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): the section this memory asks for IN RETURN, `{section: \"memory\", required: true, schema, instruction}`, on every answer of the lane including the one that served no asked name -- a section is not a response to a name, it is what this hive asks of whoever talks to it. An asking collector merges the offers of all its answerers and composes one block contract out of them (GH #529, one column over)"
         },
         {
+          "route": "recurring",
+          "because": "GH #1249: the member's routines as prewarm candidates. Once per dream run, after the night has booked its receipt, `./recur` groups the member's own turns of the last `window_days` by the cosine of their episode vectors, keeps a group that came back on `min_days` distinct local days at one time of day as a routine with an rrule, and `./dreamer` names the topic, the query to fetch ahead, the tool, `lead_min` and `ttl_min` of each. One message per audience set; its text is `{candidates: [{topic, query, tool, triggers, rrule, tz, lead_min, ttl_min, evidence}], audience_set}`. How long a fetched answer stays fresh is the dreamer's call per routine: a candidate without `ttl_min`, or with `tool: none`, is never sent. Nobody answers this lane and it is no required drain -- any app may subscribe, and a hive nobody listens to loses nothing but the hint"
+        },
+        {
           "route": "credential_request",
           "at": [
             "./closer",
@@ -449,7 +453,7 @@
         {
           "from": "./dreamer",
           "to": "./dream-glue",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(context.store_origin) && context.store_origin == 'recur') && !(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -1407,6 +1411,82 @@
             "set_context": {
               "mem_phase": "context.mem_phase"
             }
+          }
+        },
+        {
+          "from": "./dream-glue",
+          "to": "./recur",
+          "condition": "has(hop.route) && hop.route == 'recur'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'recur'",
+              "mem_phase": "'recur-arm'",
+              "dream_run": "hop.dream_run",
+              "dream_to": "hop.dream_to"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./recur",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'rstore'",
+          "modifier": {
+            "set_context": {
+              "store_origin": "'recur'",
+              "mem_phase": "hop.phase"
+            }
+          }
+        },
+        {
+          "from": "./store",
+          "to": "./recur",
+          "condition": "context.store_origin == 'recur'"
+        },
+        {
+          "from": "./recur",
+          "to": "./dreamer",
+          "condition": "has(hop.route) && hop.route == 'recur-ask'"
+        },
+        {
+          "from": "./dreamer",
+          "to": "./recur",
+          "condition": "has(context.store_origin) && context.store_origin == 'recur' && !(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'recur-said'"
+            }
+          }
+        },
+        {
+          "from": "./recur",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'recurring'",
+          "modifier": {
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin"
+            ]
           }
         }
       ]

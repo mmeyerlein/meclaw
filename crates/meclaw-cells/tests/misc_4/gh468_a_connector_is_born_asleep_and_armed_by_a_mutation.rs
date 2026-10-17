@@ -60,10 +60,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-/// The token the test colony's `.env` carries. A placeholder, and it is the
-/// whole point that it is one: what the test proves is that the ARMED node
-/// substitutes `${TELEGRAM_BOT_TOKEN}` out of the colony's own environment,
-/// never that any particular value is right.
+/// The token the arming swap names. A placeholder, and it is the whole point
+/// that it is one: what the test proves is that the ARMED node polls with the
+/// token the swap gave it, never that any particular value is right. Until GH
+/// #1235 it came from the colony's `.env` as `${TELEGRAM_BOT_TOKEN}`; a secret
+/// takes no environment token any more (T6-22).
 const ENV_TOKEN: &str = "test-bot-token-468";
 
 /// The parked node's placeholder token, as the README writes it.
@@ -158,11 +159,6 @@ fn build_root(root: &std::path::Path) {
     for f in ["config.json", "template.json", "README.md"] {
         std::fs::copy(repo("templates/telegram-connector").join(f), tpl.join(f)).unwrap();
     }
-    std::fs::write(
-        root.join(".env"),
-        format!("TELEGRAM_BOT_TOKEN={ENV_TOKEN}\n"),
-    )
-    .unwrap();
 }
 
 /// Boot the colony with the REAL `proxy` factory — an inert stand-in would make
@@ -426,12 +422,11 @@ async fn the_readme_arming_manifest_swings_the_edges_and_the_first_update_lands(
     // GH #1061 (#801): the README arms with a GRANT, and a sealed box needs a
     // broker this hermetic tree does not grow (the grant road is locked by
     // `gh1059_telegram_grant`). The swap is what this test measures, so the
-    // key takes the road that still works for one release: the environment
-    // token, with the grant emptied -- otherwise the grant wins and the armed
-    // node asks a broker that is not there.
+    // key takes the literal road, with the grant emptied -- otherwise the grant
+    // wins and the armed node asks a broker that is not there. The environment
+    // token is refused since GH #1235 (T6-22).
     arm["diff"]["swap_nodes"][0]["with"]["params"]["bot_token_grant_id"] = json!("");
-    arm["diff"]["swap_nodes"][0]["with"]["params"]["bot_token"] =
-        json!(concat!("$", "{TELEGRAM_BOT_TOKEN}"));
+    arm["diff"]["swap_nodes"][0]["with"]["params"]["bot_token"] = json!(ENV_TOKEN);
     committed(&mutate(&h, arm).await, "the README's arming manifest");
 
     // 3. The turn the fake returns has to arrive as a user-origin message —
@@ -460,8 +455,7 @@ async fn the_readme_arming_manifest_swings_the_edges_and_the_first_update_lands(
         "the chat the turn came from travels on the hop"
     );
 
-    // 4. And the poll carried the REAL token — substituted out of the colony's
-    //    `.env` at instantiation, never written into the mutation body. This is
+    // 4. And the poll carried the ARMED token, the one the swap named. This is
     //    what arming MEANS; a swap that kept the placeholder would have reached
     //    the fake just as well and proved nothing.
     let paths: Vec<String> = captured
@@ -474,8 +468,8 @@ async fn the_readme_arming_manifest_swings_the_edges_and_the_first_update_lands(
         paths
             .iter()
             .any(|p| p.contains(&format!("/bot{ENV_TOKEN}/getUpdates"))),
-        "the armed connector must poll with the token its ${{TELEGRAM_BOT_TOKEN}} \
-         resolved to; requests seen: {paths:?}"
+        "the armed connector must poll with the token the swap named; requests \
+         seen: {paths:?}"
     );
     assert!(
         !paths.iter().any(|p| p.contains(PARKED_TOKEN)),

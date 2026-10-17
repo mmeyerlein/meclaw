@@ -171,8 +171,11 @@ def newest_map(directory=None):
 
 
 def _git(repo, *args):
+    """`git -C repo <args>`, rerere off (`gitenv.NO_RERERE`, OR-TM-11): the
+    probe merge (`merge-tree`) is the merge's own."""
     import subprocess
-    return subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+    from . import gitenv
+    return subprocess.run(gitenv.git_argv(repo, *args), capture_output=True, text=True)
 
 
 def _git_z(repo, *args):

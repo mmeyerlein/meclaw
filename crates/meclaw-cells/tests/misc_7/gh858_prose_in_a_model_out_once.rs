@@ -1649,6 +1649,15 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
                 m["status"], "explicit",
                 "a local row is reached by name: {m}"
             );
+        } else if m["wire_dialect"] == "messages" {
+            // GH #1243: a native row names the model as its provider's own API
+            // takes it (no gateway prefix) and is reached by name only.
+            assert!(!id.is_empty() && !id.contains('/'), "a native id: {m}");
+            assert_eq!(m["provider"], "anthropic", "{m}");
+            assert_eq!(
+                m["status"], "explicit",
+                "a native row is reached by name: {m}"
+            );
         } else {
             assert!(id.contains('/'), "a provider id: {m}");
         }
@@ -1665,10 +1674,13 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
         );
         // GH #965 (OR-DP.M.21): a chat row names its endpoint; a decisions row
         // names none -- the decider keeps the endpoint its set gives it, so a
-        // push never moves it outside its (empty) `base_url_allow`.
+        // push never moves it outside its (empty) `base_url_allow`. GH #1243:
+        // so does a native `messages` row, for the same reason.
         assert_eq!(
             m["base_url"].as_str().unwrap_or_default().is_empty(),
-            m["wire_dialect"] == "decisions" || m["provider"] == "local",
+            m["wire_dialect"] == "decisions"
+                || m["wire_dialect"] == "messages"
+                || m["provider"] == "local",
             "{m}"
         );
         // GH #1025: `explicit` is reachable like `active` (override, tier,

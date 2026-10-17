@@ -527,6 +527,162 @@ class RecheckMode(unittest.TestCase):
             self.assertEqual([], of(pc.run([rel], repo=root), "recheck-mode"), rel)
 
 
+class WaveName(unittest.TestCase):
+    """Fund 4 (batch merge 17.10., class K-R2): an added line of code that names
+    a file a commit after the gate may change -- a wave directory whole, a
+    directory of it, a report's path or file name (`turnaround._needles`) --
+    reads that file, so each such commit voids the receipt and the pre stamp
+    (`receipt_not_branch_head`). `pre` says so with the file and the line, on
+    the added lines only, by the needles of the merge's own reader rule
+    (re-check fr d4d5b5375 I2)."""
+
+    WAVE = "welle-x-2026-01-01"
+
+    def git(self, root, *args):
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+                       + list(args), check=True, capture_output=True)
+
+    def repo(self, base_files=None):
+        """`master` with a wave directory and `base_files`, then branch `s`."""
+        root = tree(self, dict({"README.md": "x\n",
+                                "plans/%s/berichte/S1.md" % self.WAVE: "report\n",
+                                "plans/%s/straenge/S1.json" % self.WAVE: "{}\n",
+                                "plans/%s/plan-parts/P1.md" % self.WAVE: "plan\n"},
+                               **(base_files or {})))
+        self.git(root, "init", "-q", "-b", "master")
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-q", "-m", "base")
+        self.git(root, "checkout", "-q", "-b", "s")
+        return root
+
+    def commit(self, root, files):
+        for rel, text in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-q", "-m", "strand")
+        return sorted(files)
+
+    def found(self, root, paths):
+        return of(pc.run(paths, repo=root), "wave-name")
+
+    def test_a_test_comment_naming_the_wave_whole_is_red_with_file_and_line(self):
+        root = self.repo()
+        rel = "scripts/tests/test_pipeline_schedule.py"
+        paths = self.commit(root, {rel: "import os\n\n# as in %s\n" % self.WAVE})
+        found = self.found(root, paths)
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn("%s:3 " % rel, found[0].message)
+        self.assertIn(self.WAVE, found[0].message)
+        self.assertIn("placeholder", found[0].message)
+        self.assertNotIn("path with /", found[0].message)
+
+    def test_each_code_class_counts_rust_shell_and_the_python_readers(self):
+        root = self.repo()
+        for rel, line in (("crates/a/src/writer.rs", "/// see %s\n"),
+                          ("scripts/pipeline/lane_x.sh", "# %s\n"),
+                          ("workshop/tools/x.py", "W = Path('plans') / '%s'\n"),
+                          ("crates/a/tests/it.rs", "// %s\n")):
+            paths = self.commit(root, {rel: line % self.WAVE})
+            self.assertEqual(["RED"], levels(self.found(root, paths)), rel)
+
+    def test_a_path_with_a_slash_to_a_file_no_commit_after_the_gate_changes_is_silent(self):
+        root = self.repo()
+        paths = self.commit(root, {"scripts/x.py": "R = 'plans/%s/plan-parts/P1.md'\n" % self.WAVE})
+        self.assertEqual([], self.found(root, paths))
+
+    # re-check fr d4d5b5375 I2: every form `turnaround._needles` reads, one case each
+    def test_each_needle_form_of_the_reader_rule_is_red(self):
+        for line, needle in (
+                ("D = 'plans/%s/berichte'\n" % self.WAVE, "%s/berichte" % self.WAVE),
+                ("G = 'plans/%s/berichte/*.md'\n" % self.WAVE, "%s/berichte" % self.WAVE),
+                ("S = '%s/straenge/'\n" % self.WAVE, "%s/straenge" % self.WAVE),
+                ("R = 'plans/%s/berichte/S1.md'\n" % self.WAVE,
+                 "plans/%s/berichte/S1.md" % self.WAVE),
+                ("N = 'S1.md'\n", "S1.md"),
+                ("J = 'S1.json'\n", "S1.json")):
+            root = self.repo()
+            paths = self.commit(root, {"scripts/x.py": line})
+            found = self.found(root, paths)
+            self.assertEqual(["RED"], levels(found), line)
+            self.assertIn("scripts/x.py:1 ", found[0].message)
+            self.assertIn("`%s`" % needle, found[0].message, line)
+
+    def test_the_parity_case_is_red(self):
+        # the batch merge 17.10.: a test constant naming the wave directory
+        root = self.repo()
+        paths = self.commit(root, {"scripts/tests/test_x.py": 'WAVE = "plans/%s"\n' % self.WAVE})
+        self.assertEqual(["RED"], levels(self.found(root, paths)))
+
+    def test_precheck_and_turnaround_judge_a_line_alike(self):
+        # the same rule: a one-line code file is red here iff `turnaround`
+        # reads a post-gate file of the wave through it
+        ta = pc._turnaround()
+        post_gate = ["plans/%s/berichte/S1.md" % self.WAVE, "plans/%s/straenge/S1.json" % self.WAVE]
+        lines = ("# %s\n", "D = 'plans/%s/berichte'\n", "G = 'plans/%s/berichte/*.md'\n",
+                 "S = '%s/straenge/'\n", "R = 'plans/%s/berichte/S1.md'\n",
+                 "P = 'plans/%s/plan-parts/P1.md'\n", "N = 'S1.md'\n", "M = 'S1.mdx'\n",
+                 "Q = 'recheck-S1'\n", "W = 'plans/<wave>/berichte'\n",
+                 "U = 'welle-y-2026-01-01'\n", "X = 'plans/%s/berichte/S10.md'\n",
+                 "Y = '%s-old'\n")
+        for line in lines:
+            text = line.replace("%s", self.WAVE)
+            root = self.repo()
+            paths = self.commit(root, {"scripts/x.py": text})
+            red = levels(self.found(root, paths)) == ["RED"]
+            reads = bool(ta.python_readers(str(root), post_gate,
+                                           specs=(":(literal)scripts/x.py",)))
+            self.assertEqual(red, reads, text)
+
+    # re-check fr4 d0f8f69e8 M1 (orchestrator ruling): the needles of open waves
+    # only -- the merge judges the post-gate commits of its own wave, a closed one
+    # gets none; closed is the Built row `wave close` writes into section Live,
+    # a wave without a readable row counts as open (fail-closed)
+    def test_a_file_name_only_a_closed_wave_carries_is_silent_and_red_while_it_is_open(self):
+        from pipeline import wave
+        closed = "welle-c-2026-01-01"
+        table = "# Plans\n\n## Live\n\n| Path | What it is |\n|---|---|\n"
+        running = wave.live_open(table, closed, "Wave C.", "2026-01-01")
+        built = wave.live_close(running, closed, "2026-01-02")[0]
+        for readme, want in ((built, []), (running, ["RED"]), (table, ["RED"]),
+                             ("no table\n", ["RED"]), (None, ["RED"])):
+            files = {"plans/%s/berichte/run.md" % closed: "report\n"}
+            if readme is not None:
+                files["plans/README.md"] = readme
+            root = self.repo(files)
+            paths = self.commit(root, {"scripts/x.py": "N = 'run.md'\n"})
+            self.assertEqual(want, levels(self.found(root, paths)), readme)
+
+    def test_a_placeholder_and_an_unknown_wave_are_silent(self):
+        root = self.repo()
+        paths = self.commit(root, {"scripts/x.py": "# plans/<wave>/berichte\n"
+                                                   "# welle-y-2026-01-01\n"})
+        self.assertEqual([], self.found(root, paths))
+
+    def test_a_name_on_an_unchanged_base_line_is_not_this_diffs(self):
+        root = self.repo({"scripts/x.py": "# %s\n" % self.WAVE})
+        paths = self.commit(root, {"scripts/x.py": "# %s\nX = 1\n" % self.WAVE})
+        self.assertEqual([], self.found(root, paths))
+
+    def test_docs_and_plans_naming_the_wave_are_silent(self):
+        # no reader: a page, a report, a wave's own script under plans/
+        root = self.repo()
+        paths = self.commit(root, {"docs/x.md": "%s\n" % self.WAVE,
+                                   "plans/%s/berichte/S2.md" % self.WAVE: "%s\n" % self.WAVE,
+                                   "plans/%s/berichte/S2/x_wave_probe.sh" % self.WAVE: "# %s\n" % self.WAVE})
+        self.assertEqual([], self.found(root, paths))
+
+    def test_an_untracked_code_file_counts_every_line(self):
+        root = self.repo()
+        rel = root / "scripts" / "new.py"
+        rel.parent.mkdir(parents=True, exist_ok=True)
+        rel.write_text("X = 1\nW = '%s'\n" % self.WAVE, encoding="utf-8")
+        found = self.found(root, ["scripts/new.py"])
+        self.assertEqual(["RED"], levels(found))
+        self.assertIn("scripts/new.py:2 ", found[0].message)
+
+
 class RunArtefacts(unittest.TestCase):
     """`last_run.json` and stray symlinks: four incidents, no gate run lost."""
 

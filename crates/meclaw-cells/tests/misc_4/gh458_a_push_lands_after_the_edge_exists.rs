@@ -275,6 +275,12 @@ fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, talky: &std::p
         v["params"]["base_url"] = json!("http://127.0.0.1:1/v1");
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // GH #1248: the quick voice is an `llm` cell on the same `${ctx.model}`
+    // start value as the brain; a tree booted from disk carries a literal.
+    patch(root, "main/talky/quick/config.json", |v| {
+        v["params"]["base_url"] = json!("http://127.0.0.1:1/v1");
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
 async fn boot(

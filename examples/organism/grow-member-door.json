@@ -9,7 +9,7 @@
     "add_nodes": [
       {
         "name": "scribe",
-        "template": "assistant@3.7.19",
+        "template": "assistant@3.8.0",
         "override_params": {
           "cogny/brain": {
             "temperature": 0.2
@@ -206,6 +206,11 @@
         "from": "./scribe",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'thing_seen'"
+      },
+      {
+        "from": "./scribe",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'answer_check'"
       },
       {
         "from": "./scribe",

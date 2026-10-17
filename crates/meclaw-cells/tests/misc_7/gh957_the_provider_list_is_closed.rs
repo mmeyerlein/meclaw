@@ -6,7 +6,11 @@
 //!   pass-through map, or with a wire dialect, is refused by name
 //!   (`decisions_unsupported_param`), never silently ignored;
 //! - an `openai` cell parses exactly as before (its wire stays pinned by
-//!   `llm_chat_completions_wire_regression`).
+//!   `llm_chat_completions_wire_regression`);
+//! - `anthropic` (GH #1239) speaks the native Messages wire with an api key
+//!   only: a subscription login, a wire dialect, a stream switch or a
+//!   length continuation (the Messages wire refuses a prefill) is refused by
+//!   name (`anthropic_unsupported_param`).
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::llm::params::{LlmParams, PROVIDERS};
@@ -28,8 +32,40 @@ fn an_unknown_provider_is_refused_with_the_list() {
 }
 
 #[test]
-fn the_list_is_openai_and_decisions() {
-    assert_eq!(PROVIDERS, &["openai", "decisions"]);
+fn the_list_is_openai_decisions_and_anthropic() {
+    assert_eq!(PROVIDERS, &["openai", "decisions", "anthropic"]);
+}
+
+#[test]
+fn an_anthropic_cell_takes_an_api_key_and_refuses_the_rest_by_name() {
+    let p = LlmParams::parse(&json!({"provider": "anthropic", "model": "claude", "api_key": "k"}))
+        .expect("anthropic with an api key is a cell");
+    assert!(p.is_anthropic() && !p.is_decisions());
+    for (extra, name) in [
+        (json!({"wire_dialect": "responses"}), "wire_dialect"),
+        (
+            json!({"provider_extra": {"stream": true}}),
+            "provider_extra.stream",
+        ),
+        (json!({"length_continuations": 1}), "length_continuations"),
+    ] {
+        let mut raw = json!({"provider": "anthropic", "model": "claude", "api_key": "k"});
+        for (k, v) in extra.as_object().expect("object") {
+            raw[k] = v.clone();
+        }
+        let err = LlmCellFactory.validate_params(&raw).expect_err("refused");
+        assert!(
+            err.contains("anthropic_unsupported_param") && err.contains(name),
+            "{err}"
+        );
+    }
+    let raw = json!({"provider": "anthropic", "model": "claude",
+                     "auth": "oauth_subscription", "auth_ref": "/tmp/none.json"});
+    let err = LlmParams::parse(&raw).expect_err("api key only");
+    assert!(
+        err.contains("anthropic_unsupported_param") && err.contains("auth"),
+        "{err}"
+    );
 }
 
 #[test]

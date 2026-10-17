@@ -11,12 +11,14 @@ use meclaw_core::{JsonValue, Uuid};
 
 use crate::CellFactoryRegistry;
 use crate::config::{HiveParams, ParsedConfig};
-use crate::factory::ContractView;
+use crate::factory::{CELL_ROOT_MARKER, ContractView};
 
 /// Recursive walk under `root_dir`, yielding every directory that contains a
 /// `config.json`. The top-level blacklist (`templates/`, `.staging/`,
 /// `blobs/`, dot-prefixed) is applied **only** at the {root}-Ebene; deeper
-/// in the tree, all directories with a `config.json` are valid.
+/// in the tree, all directories with a `config.json` are valid — except a
+/// cell's own root: a directory that carries [`CELL_ROOT_MARKER`] is neither a
+/// node nor walked into, on every level (GH #1234).
 pub fn walk_cell_directories(root_dir: &std::path::Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
     walk_into(root_dir, true, &mut result);
@@ -33,6 +35,9 @@ fn walk_into(dir: &std::path::Path, top_level: bool, out: &mut Vec<PathBuf>) {
             continue;
         }
         if top_level && is_blacklisted_top_level(&path) {
+            continue;
+        }
+        if path.join(CELL_ROOT_MARKER).is_file() {
             continue;
         }
         if path.join("config.json").is_file() {
@@ -425,7 +430,8 @@ pub struct BootstrapPlan {
 /// GH #555 — `params.transfer.base_path`, parsed and nothing more.
 ///
 /// The **pure** half, in the sense `file`'s `parse_params_pure` is pure: it
-/// checks that the value is a string and that the path is absolute, and asks
+/// checks that the value is a string and that the path is absolute or stays in
+/// its hive (GH #1234), and asks
 /// the filesystem nothing at all. No `canonicalize`, no `is_dir`, no existence
 /// check — not here and not at `--validate`.
 ///
@@ -437,11 +443,12 @@ pub struct BootstrapPlan {
 /// promise about where does not require the where to exist yet. The first
 /// `to`/`from` finds out, and answers `transfer_io_error` on the message.
 ///
-/// Absolute is required because the cell task knows no colony root: `root`
-/// lives in the colony struct and never reaches `spawn_cell`. A relative fence
-/// would resolve against whatever directory the process happened to start in,
-/// which is not a boundary — so it is a loud refusal, exactly like a malformed
-/// `emits` schema.
+/// A relative fence is carried verbatim and anchored in the enclosing hive at
+/// the spawn ([`ContractView::anchor_transfer_root`], GH #1234): the cell task
+/// knows no colony root, and resolving it against the process directory would
+/// be no boundary at all. What is refused here, loudly like a malformed
+/// `emits` schema, is a relative fence that climbs out of that hive
+/// ([`crate::factory::check_cell_root`]).
 fn parse_transfer_base_path(params: &JsonValue) -> Result<Option<std::path::PathBuf>, String> {
     let Some(block) = params.get("transfer") else {
         return Ok(None);
@@ -455,13 +462,9 @@ fn parse_transfer_base_path(params: &JsonValue) -> Result<Option<std::path::Path
     let text = raw
         .as_str()
         .ok_or("params.transfer.base_path must be a string")?;
-    let path = std::path::Path::new(text);
-    if !path.is_absolute() {
-        return Err(format!(
-            "params.transfer.base_path must be absolute, got: {text}"
-        ));
-    }
-    Ok(Some(path.to_path_buf()))
+    crate::factory::check_cell_root(text)
+        .map_err(|tail| format!("params.transfer.base_path {tail}"))?;
+    Ok(Some(std::path::PathBuf::from(text)))
 }
 
 /// Build a `ContractView` from a parsed `contract` block and the same config's
@@ -520,6 +523,8 @@ pub(crate) fn compile_spawn_view(
         transfer_base_path: parse_transfer_base_path(params)?.map(std::sync::Arc::from),
         // GH #617: carried verbatim — a declaration is nothing to compile.
         ingress_carries_trace: block.ingress.carries_trace,
+        // GH #1253: not from the config — the spawn site sets the colony's view.
+        drain: crate::DrainView::default(),
     })
 }
 /// GH #424 — read one `ref` marker's `config.json` into a [`PlannedGrowth`].
@@ -995,6 +1000,27 @@ pub fn plan_bootstrap_with_env(
                 });
                 continue;
             };
+            // GH #1235 (T6-16, R-ZH-4): the default-deny cut reaches a tree
+            // already on disk. A `bash`, `code` or `harness` cell without
+            // `params.sandbox` kept the daemon's rights for good, since the GH
+            // #85 cut only fired at a template instantiation. The block goes
+            // into the runtime view the factory validates and spawns from;
+            // the colony writes `config.json` only at an instantiation, so
+            // the file stays as its owner wrote it.
+            let mut cfg = cfg;
+            if crate::mutation::stage::sandbox_enforcing(&cfg.cell.cell_type)
+                && cfg.params.get("sandbox").is_none()
+            {
+                if cfg.params.is_null() {
+                    cfg.params = JsonValue::Object(Default::default());
+                }
+                if let Some(obj) = cfg.params.as_object_mut() {
+                    obj.insert(
+                        "sandbox".into(),
+                        crate::mutation::stage::default_sandbox_block(),
+                    );
+                }
+            }
             if let Err(reason) = factory.validate_params(&cfg.params) {
                 errors.push(BootstrapError::InvalidParams {
                     path: fs_path.clone(),
@@ -1758,7 +1784,7 @@ pub enum BootstrapError {
         reason: String,
     },
     /// GH #555: a cell's `params.transfer` block is not an object, or its
-    /// `base_path` is not a string or not absolute. Boot fails loudly for the
+    /// `base_path` is not a string or climbs out of its hive. Boot fails loudly for the
     /// same reason a malformed `emits` schema does — a fence that quietly means
     /// "no fence" is the worst outcome this key can have. Note what is NOT an
     /// error here: a directory that does not exist yet. The parse is pure, and

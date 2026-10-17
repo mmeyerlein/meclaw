@@ -379,7 +379,13 @@ fn build_root(root: &Path, stubs: &Stubs) {
                 "credential_grant_id": grant("embed"),
                 "credential_wait_ms": round_budget_ms(),
                 "credential_env": "T4_EMBED_KEY",
-                "external_timeout_ms": meclaw_testing::deadline::product_wait_ms()
+                "external_timeout_ms": meclaw_testing::deadline::product_wait_ms(),
+                // GH #1235 (T6-16): without `params.sandbox` the cell boots
+                // under the default-deny profile (network deny); the script
+                // calls its provider stub, so it declares the network, nothing
+                // on disk.
+                "sandbox": {"trust": "restricted", "network": "allow",
+                            "filesystem": {"runtime": true}}
             },
             "contract": {
                 "version": "1.0.0", "settings": {},

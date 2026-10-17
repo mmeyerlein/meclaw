@@ -3,8 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kh_writer_a_refused_close_read_is_no_empty_session;
-pub mod gh1225_kh_writer_a_written_store_error_mark_is_not_said_refused;
 pub mod gh1225_kp_fix1_names_and_the_ledgers_word;
 pub mod gh1225_kp_the_push_holds_what_the_ledger_holds;
 pub mod gh1225_kr_a_failed_read_is_never_an_answer;
@@ -19,6 +17,11 @@ pub mod gh1225_kr_seq_never_falls_below_the_ledger;
 pub mod gh1225_kr_the_set_sent_last_stands;
 pub mod gh1225_kr_two_turns_and_a_restart_never_share_an_episode_id;
 pub mod gh1225_without_a_package_the_curator_still_rebuilds;
+pub mod gh1247_a_complex_turn_goes_straight_to_cogny;
+pub mod gh1247_a_quick_turn_carries_its_candidates_without_the_memory;
+pub mod gh1247_the_curator_branches_the_seam_by_the_path;
+pub mod gh1248_a_complex_turn_is_bridged_and_research_names_its_wait;
+pub mod gh1248_the_curator_names_the_speaker_after_a_tool_result;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;

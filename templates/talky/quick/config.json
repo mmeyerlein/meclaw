@@ -1,0 +1,200 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 1366000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "${ctx.model}",
+    "requirement": "The quick voice of a conversation: it answers small talk and simple requests at once, says one short sentence beside every tool call it makes and bridges the wait while a harder request is worked on elsewhere. It reads a short window of a few thousand tokens, calls a small menu of tools reliably and writes natural, warm prose in the language it is addressed in. No deliberation before the first word: the time to the first token decides. It runs on most turns, so the price per call must stay very low.",
+    "api_key": "",
+    "credential_grant_id": "",
+    "credential_wait_ms": 30000,
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.3,
+    "reasoning_effort": null,
+    "reasoning": {
+      "enabled": false
+    },
+    "external_timeout_ms": 1241000,
+    "system_order": [
+      "identity",
+      "memory",
+      "instructions",
+      "persona",
+      "history"
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-4o-mini",
+        "description": "Provider model id; the template carries ctx.model (strict, resolved at instantiation). Convention (K-H2): pass a RESOLVED literal."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #560: the grant this quick voice presents to get its bearer credential SEALED from an access hive, as `./brain` does. It ships EMPTY, which is no grant at all -- the cell then spends `api_key`. WHICH credential is named by the grant and never here (R-AC-2)."
+      },
+      "credential_wait_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 30000,
+        "description": "GH #457: how long one sealed credential round may take before every parked turn gets its `credential_pending` receipt. The substrate default is 10 s, which was measured against a broker standing beside the consumer; a member's broker is three python cells and two store round trips away from a brain four levels down, so this template ships the longer one. It bounds nothing but the WAIT -- no provider is called and nothing is billed while it runs."
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": null,
+        "description": "GH #1087: unset, as on `./brain`. This cell ships `reasoning: {\"enabled\": false}` instead (T4-09): no hidden deliberation before the first word; a `reasoning` object outranks the shorthand."
+      },
+      "external_timeout_ms_row": {
+        "type": "string",
+        "secret": false,
+        "default": "openai/gpt-6-luna",
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from: the row it is born on, the start value of `./brain`, until the registry moves it to the row of the tier `quick`."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "values": [
+            "stop",
+            "length",
+            "tool_calls",
+            "content_filter",
+            "error"
+          ],
+          "required": false
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "latency_ms": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cached": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "cost": {
+          "type": "number",
+          "required": false
+        },
+        "cache_expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
+          "type": "number",
+          "required": false
+        },
+        "dropped": {
+          "type": "array",
+          "required": false
+        },
+        "unverified": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The quick voice of talky (GH #1248, T4-09): a second model cell behind the curator. The curator sends it the turns its route stamp calls talk or simple, the speaker after a speakable tool result, and the bridge of a complex or research turn; everything else goes to `./brain`. It holds its own system tree, which the curator sends whole on every quick call (a short window, no sidecar contract, the stamp's families as its tool scope). Born on the brain's start value; the model registry moves it to the row of the tier `quick` once it is subscribed there. Reasoning off.",
+    "use_when": "Inside the talky composite only. The curator edge (`./curator` -> here on `quick`) carries restore_ttl; the answer edge (here -> `./splitter`) carries stop, tool_calls and length, and the tap (here -> `./curator` on `in_llm`) every answer.",
+    "not_in_scope": "No window of its own, no recall, no sidecar: what it sees is the curator's choice."
+  }
+}

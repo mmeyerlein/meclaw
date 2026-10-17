@@ -27,6 +27,14 @@ pub enum McpEvent {
     },
     /// stdio only: something happened on the child connection.
     Child(ChildEvent),
+    /// GH #1235: a round without the sealed bearer ended; the handler asks
+    /// again (a lost first question would leave the cell asleep for good).
+    CredentialRoundExpired {
+        /// The round that starts now.
+        round: u32,
+        /// Its wait in ms.
+        wait_ms: u64,
+    },
 }
 
 impl From<ChildEvent> for McpEvent {
@@ -89,6 +97,16 @@ pub enum McpIo {
     Stdio(StdioIoConfig),
     /// GH #489: no provider was named, so there is no I/O to run.
     Unset,
+    /// GH #1235: HTTP + JSON-RPC whose bearer the vault delivers sealed. The
+    /// handshake waits for it -- no request leaves without the token.
+    HttpGranted {
+        /// The http config; its client carries no token yet.
+        cfg: RunIoConfig,
+        /// The round clock of the wait.
+        wait: crate::proxy::io::CredentialWait,
+        /// The opened bearer, sent once by the handler.
+        bearer_rx: mpsc::Receiver<crate::credential::Secret>,
+    },
 }
 
 /// I/O sub-task. Dispatches on the transport; both branches share the
@@ -109,6 +127,17 @@ pub fn run_io(
             McpIo::Http(cfg) => run_http_io(cfg, events_tx, reconfig_rx).await,
             McpIo::Stdio(cfg) => crate::mcp::stdio::run_stdio_io(cfg, events_tx, reconfig_rx).await,
             McpIo::Unset => run_unset_io(events_tx, reconfig_rx).await,
+            McpIo::HttpGranted {
+                mut cfg,
+                wait,
+                mut bearer_rx,
+            } => {
+                if !wait_for_bearer(&mut cfg, wait, &events_tx, &mut bearer_rx).await {
+                    return; // handler gone -> the cell tears down
+                }
+                drop(bearer_rx);
+                run_http_io(cfg, events_tx, reconfig_rx).await;
+            }
         }
     }
 }
@@ -169,6 +198,36 @@ async fn run_http_io(
         return;
     }
     std::future::pending::<()>().await;
+}
+
+/// GH #1235: the sleeping start of a granted http cell -- the same round
+/// clock as the proxy's bot token (`crate::proxy::io::wait_for_bot_token`).
+/// Calls nothing and returns `true` once the bearer arrived (`cfg.client`
+/// then carries it); `false` when the handler is gone. Every round that ends
+/// without a box is reported to the handler, which asks again.
+async fn wait_for_bearer(
+    cfg: &mut RunIoConfig,
+    wait: crate::proxy::io::CredentialWait,
+    events_tx: &mpsc::Sender<McpEvent>,
+    bearer_rx: &mut mpsc::Receiver<crate::credential::Secret>,
+) -> bool {
+    use crate::credential_rounds::{RoundClock, Wake, next_wake};
+    let mut clock = RoundClock::start(wait.wait_ms, wait.backoff_max_ms);
+    loop {
+        match next_wake(bearer_rx, &mut clock).await {
+            Wake::Reconfig(bearer) => {
+                cfg.client = cfg.client.with_bearer(bearer.expose());
+                return true;
+            }
+            Wake::Closed => return false,
+            Wake::RoundExpired { round, wait_ms } => {
+                let event = McpEvent::CredentialRoundExpired { round, wait_ms };
+                if events_tx.send(event).await.is_err() {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// GH #489: the I/O task of a cell that names no provider.

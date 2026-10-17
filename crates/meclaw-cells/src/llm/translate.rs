@@ -229,6 +229,20 @@ fn chat_sampling_fields(params: &crate::llm::params::LlmParams) -> Vec<(&'static
     out
 }
 
+/// The sampling fields of the request this cell builds, by its lane: the
+/// anthropic cell has its own (GH #1241, it would otherwise read as chat),
+/// the others follow their wire dialect.
+fn request_sampling_fields(params: &crate::llm::params::LlmParams) -> Vec<(&'static str, Value)> {
+    use crate::llm::params::WireDialect;
+    if params.is_anthropic() {
+        return crate::llm::translate_anthropic::sampling_fields(params);
+    }
+    match params.effective_wire_dialect() {
+        WireDialect::ChatCompletions => chat_sampling_fields(params),
+        WireDialect::Responses => crate::llm::translate_responses::sampling_fields(params),
+    }
+}
+
 /// GH #993: the sampling fields this cell's request would carry and does not,
 /// because the model's `supported_params` leaves them out -- the list the
 /// answer names in `hop.dropped`. Read from the same field lists the two
@@ -236,15 +250,10 @@ fn chat_sampling_fields(params: &crate::llm::params::LlmParams) -> Vec<(&'static
 /// sets is not dropped: the overlay writes it into the request regardless.
 /// Empty without a list, and on the decisions wire (it carries no sampling).
 pub(crate) fn dropped_params(params: &crate::llm::params::LlmParams) -> Vec<String> {
-    use crate::llm::params::WireDialect;
     if params.supported_params.is_none() || params.is_decisions() {
         return Vec::new();
     }
-    let fields = match params.effective_wire_dialect() {
-        WireDialect::ChatCompletions => chat_sampling_fields(params),
-        WireDialect::Responses => crate::llm::translate_responses::sampling_fields(params),
-    };
-    fields
+    request_sampling_fields(params)
         .into_iter()
         .map(|(key, _)| key)
         .filter(|key| !takes_param(params, key) && !params.provider_extra.contains_key(*key))
@@ -261,14 +270,10 @@ pub(crate) fn dropped_params(params: &crate::llm::params::LlmParams) -> Vec<Stri
 /// sampling fields (the overlay is sent unchecked too), in [`SAMPLING_PARAMS`]
 /// order. Empty with a list (the list IS the check) and on the decisions wire.
 pub(crate) fn unverified_params(params: &crate::llm::params::LlmParams) -> Vec<String> {
-    use crate::llm::params::WireDialect;
     if params.supported_params.is_some() || params.is_decisions() {
         return Vec::new();
     }
-    let fields = match params.effective_wire_dialect() {
-        WireDialect::ChatCompletions => chat_sampling_fields(params),
-        WireDialect::Responses => crate::llm::translate_responses::sampling_fields(params),
-    };
+    let fields = request_sampling_fields(params);
     SAMPLING_PARAMS
         .iter()
         .filter(|name| {
@@ -387,7 +392,7 @@ pub(crate) fn prompt_cache_key(cell_path: &str) -> String {
 /// GH #890: the mark one prefix end carries. `"ttl": "1h"` exactly when the
 /// cell is told the provider keeps the prefix for an hour or more; below that
 /// the provider's default (five minutes) is what `cache_ttl_s` describes.
-fn cache_control(ttl_s: u64) -> Value {
+pub(crate) fn cache_control(ttl_s: u64) -> Value {
     use meclaw_core::serde_json::json;
     if ttl_s >= 3600 {
         json!({"type": "ephemeral", "ttl": "1h"})

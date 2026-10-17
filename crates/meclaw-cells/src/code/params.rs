@@ -66,8 +66,10 @@ pub struct CodeParams {
     pub external_timeout_ms: Option<u64>,
     /// Optional maximum number of concurrent script executions.
     pub max_concurrency: Option<usize>,
-    /// Optional process sandbox for the script (S4, GH #35). `None` means the
-    /// legacy unsandboxed behaviour: the script keeps the daemon's rights.
+    /// Process sandbox for the script (S4, GH #35). A colony never spawns
+    /// one with `None` since GH #1235: the boot and every instantiation put
+    /// the default-deny block in when the params declare none. `None` is the
+    /// unsandboxed script of a direct construction (tests).
     pub sandbox: Option<crate::sandbox::SandboxProfile>,
     /// How long a runner process lives (R2). `cold` is the default and the
     /// behaviour every `code` cell had before the modes existed.

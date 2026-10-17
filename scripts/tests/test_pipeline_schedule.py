@@ -1657,6 +1657,11 @@ class TestMergeGoesFirst(TestLeaseKitFindsWave):
             "SELECT holder FROM lease_entries WHERE resource IS NULL AND offered IS NOT NULL "
             "ORDER BY seq")]
 
+    def wait_trees(self):
+        """Each waiter's place tree (`lease_entries.tree`, "" for none)."""
+        return {r["holder"]: r["tree"] or "" for r in self.db.execute(
+            "SELECT holder, tree FROM lease_entries WHERE resource IS NULL")}
+
     def strands_wait(self, *names, minutes=0, tree=""):
         for n in names:
             self.assertEqual(3, schedule.lease_take(self.db, n, lane="north", tree=tree,
@@ -1833,6 +1838,12 @@ class TestMergeGoesFirst(TestLeaseKitFindsWave):
             self.assertIsInstance(queued, schedule.Queued, name)
         self.assertEqual(["welle-x/rel-0643-10", "welle-x/rel-3c", "welle-x/rel-4",
                           "welle-x/s1", "welle-x/s2"], [h for h, _ in self.queue()])
+        # Re-check Kette FR2 m4: the class tree is no place tree -- `tree` keeps
+        # a waiter's place while the tree lives (`_stale_wait`), a gate without
+        # the wait hands its tree for the class alone.
+        self.assertEqual({"welle-x/rel-3c": rt, "welle-x/rel-4": ""},
+                         {h: t for h, t in self.wait_trees().items()
+                          if h in ("welle-x/rel-3c", "welle-x/rel-4")})
 
     def test_a_take_of_a_second_holder_keeps_the_release_class(self):
         # Re-check Kette Minor 2: `lanes take --holder <n>` from the strand's own
@@ -1845,6 +1856,129 @@ class TestMergeGoesFirst(TestLeaseKitFindsWave):
         self.assertEqual(3, schedule.lease_take(self.db, "welle-x/rel-3c:2", lane="north",
                                                 release_tree=rt, now=T0 + 60).code)
         self.assertEqual(["welle-x/rel-3c:2", "welle-x/s1"], [h for h, _ in self.queue()])
+        # Re-check Kette FR2 m4: the class tree keeps no place -- only `tree` does
+        self.assertEqual("", self.wait_trees()["welle-x/rel-3c:2"])
+
+    def test_a_release_gate_on_a_lane_offered_to_the_program_is_admitted_at_once(self):
+        # Re-check Kette FR2 m1: a caller not yet queued was placed by a probe
+        # without its release class (the merge class had it, K14) -- a release
+        # gate on a free lane offered to a program strand queued as #1 and left
+        # the lane idle until the next round. Placed by its class: admitted.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        self.strands_wait("welle-x/s1")
+        self.free_north("welle-x/x", 1)
+        self.assertEqual(["welle-x/s1"], self.offered())
+        adm = self.admit(cargo_plan(), strand="welle-x/rel-0643-10", mode="release",
+                         lane_pref="north", minutes=2)
+        self.assertEqual("north", getattr(adm, "lane", None), adm)
+        self.assertEqual([("welle-x/s1", "north")], self.queue())
+
+    def test_a_release_take_on_a_lane_offered_to_the_program_is_granted_at_once(self):
+        # Re-check Kette FR2 m1: `take` counted every waiter ahead of a caller
+        # not yet queued -- a declared release strand's take on a free lane
+        # offered to a program strand got exit 3 (#1, offered). Its place is
+        # where its class puts it, the order `_queue_order` keeps.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        rt = self.release_tree("rel-3c")
+        self.strands_wait("welle-x/s1", tree=rt)
+        self.free_north("welle-x/x", 1)
+        self.assertEqual(["welle-x/s1"], self.offered())
+        res = schedule.lease_take(self.db, "welle-x/rel-3c", lane="north", tree=rt, now=T0 + 120)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual(["welle-x/rel-3c"],
+                         [h["strand"] for h in schedule._load(self.db)["holders"]])
+        self.assertEqual([("welle-x/s1", "north")], self.queue())
+
+    def test_release_takes_granted_at_once_count_in_the_release_streak(self):
+        # Re-check stack I1 (take path): since FR2 m1 a release caller not yet
+        # queued is placed by its class and granted at once -- with no queue
+        # entry `_grant` read no class, counted the grant as program and reset
+        # the streak: the waiting program strand starved behind the releases.
+        # The caller hands its class; after `RELEASE_STREAK_MAX` releases the
+        # program strand gets the lane.
+        self.arm("north")
+        cap = schedule.RELEASE_STREAK_MAX
+        rt = self.release_tree(*["rel-%d" % i for i in range(cap + 1)])
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        self.strands_wait("welle-x/s1", tree=rt)
+        holder, minute = "welle-x/x", 1
+        for i in range(cap):
+            self.free_north(holder, minute)
+            self.assertEqual(["welle-x/s1"], self.offered(), "round %d" % i)
+            holder = "welle-x/rel-%d" % i
+            res = schedule.lease_take(self.db, holder, lane="north", tree=rt,
+                                      now=T0 + 60 * minute)
+            self.assertEqual(0, res.code, "round %d: %s" % (i, res.err))
+            self.assertEqual(i + 1, schedule._load(self.db)["release_streak"],
+                             "round %d: a release granted at once counts" % i)
+            minute += 2
+        self.free_north(holder, minute)
+        self.assertEqual(3, schedule.lease_take(self.db, "welle-x/rel-%d" % cap, lane="north",
+                                                tree=rt, now=T0 + 60 * minute).code,
+                         "after the cap the next release waits")
+        self.assertEqual(["welle-x/s1"], self.offered())
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/s1", lane="north", tree=rt,
+                                                now=T0 + 60 * minute).code)
+        self.assertEqual(0, schedule._load(self.db)["release_streak"],
+                         "a program strand served ends the streak")
+
+    def test_release_takes_without_a_waiting_program_count_no_release_streak(self):
+        # Re-check stack fr m1: the streak counts releases in a row only while
+        # the program waits (lease re-check m2). Counted without a waiter, a
+        # program strand arriving after `RELEASE_STREAK_MAX` releases went
+        # ahead of the next release at once -- the cap is about starving, and
+        # nobody starved.
+        self.arm("north")
+        cap = schedule.RELEASE_STREAK_MAX
+        rt = self.release_tree(*["rel-%d" % i for i in range(cap + 1)])
+        minute = 0
+        for i in range(cap):
+            holder = "welle-x/rel-%d" % i
+            res = schedule.lease_take(self.db, holder, lane="north", tree=rt,
+                                      now=T0 + 60 * minute)
+            self.assertEqual(0, res.code, "round %d: %s" % (i, res.err))
+            self.assertEqual(0, schedule._load(self.db)["release_streak"],
+                             "round %d: no program waits, no streak" % i)
+            minute += 1
+            self.free_north(holder, minute)
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north",
+                                                now=T0 + 60 * minute).code)
+        self.strands_wait("welle-x/s1", minutes=minute + 1, tree=rt)
+        self.free_north("welle-x/x", minute + 2)
+        res = schedule.lease_take(self.db, "welle-x/rel-%d" % cap, lane="north", tree=rt,
+                                  now=T0 + 60 * (minute + 2))
+        self.assertEqual(0, res.code, "the next release still goes ahead: %s" % res.err)
+        self.assertEqual(1, schedule._load(self.db)["release_streak"],
+                         "the first release while the program waits")
+
+    def test_release_gates_admitted_at_once_count_in_the_release_streak(self):
+        # Re-check stack I1 (gate release path): the same for the admission of
+        # a `gate release` not yet queued -- `_admit` hands its class to the grant.
+        self.arm("north")
+        cap = schedule.RELEASE_STREAK_MAX
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        self.strands_wait("welle-x/s1")
+        holder, minute = "welle-x/x", 1
+        for i in range(cap):
+            self.free_north(holder, minute)
+            self.assertEqual(["welle-x/s1"], self.offered(), "round %d" % i)
+            holder = self.admit(cargo_plan(), strand="welle-x/rel-0643-%d" % (10 + i),
+                                mode="release", lane_pref="north", minutes=minute)
+            self.assertEqual("north", getattr(holder, "lane", None), "round %d: %s" % (i, holder))
+            self.assertEqual(i + 1, schedule._load(self.db)["release_streak"],
+                             "round %d: a release gate admitted at once counts" % i)
+            minute += 2
+        self.free_north(holder, minute)
+        queued = self.admit(cargo_plan(), strand="welle-x/rel-0643-%d" % (10 + cap),
+                            mode="release", lane_pref="north", minutes=minute)
+        self.assertIsInstance(queued, schedule.Queued, "after the cap the next release gate waits")
+        self.assertEqual(["welle-x/s1"], self.offered())
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/s1", lane="north",
+                                                now=T0 + 60 * minute).code)
+        self.assertEqual(0, schedule._load(self.db)["release_streak"],
+                         "a program strand served ends the streak")
 
     def test_the_strand_file_of_another_wave_is_no_release_class(self):
         # Re-check Kette Minor 2 (side note): `plans/<wave>*` also matched a wave
@@ -1867,6 +2001,19 @@ class TestMergeGoesFirst(TestLeaseKitFindsWave):
             with self.subTest(wave_dir=wave_dir):
                 self.assertTrue(schedule._release_class("welle-x/rel-5", tree))
                 os.remove(os.path.join(d, "rel-5.json"))
+        # Re-check Kette FR2 m3: `plans/<wave>-*/` also matched the wave
+        # `<wave>-2-<date>` (the repo has e.g. `welle-x-2026-10-10/` beside
+        # `welle-x-2-2026-10-14/`) -- the kit's rule decides: the wave
+        # is the directory without `-YYYY-MM-DD` (`strand.sh` `wave_name`).
+        second = os.path.join(self._tmp.name, "second")
+        d = os.path.join(second, "plans", "welle-x-2-2026-10-16", "straenge")
+        os.makedirs(d)
+        with open(os.path.join(d, "rel-3c.json"), "w") as fh:
+            json.dump({"strand": "rel-3c", "release": True}, fh)
+        with self.subTest(wave_dir="welle-x-2-2026-10-16"):
+            self.assertFalse(schedule._release_class("welle-x/rel-3c", second),
+                             "the strand file of wave welle-x-2 declares nothing for welle-x")
+            self.assertTrue(schedule._release_class("welle-x-2/rel-3c", second))
 
 
 class TestLeaseLiveRunClass(ScheduleCase):

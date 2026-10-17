@@ -1,4 +1,4 @@
-# `llm-registry@2.9.0`
+# `llm-registry@2.10.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -107,7 +107,7 @@ it is born with.
 |---|---|
 | `model` | `model_id` |
 | `base_url` | `base_url` (empty = the cell keeps its own endpoint) |
-| `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own; `decisions` marks the row's protocol and is never sent, see below) |
+| `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own; `decisions` and `messages` mark the row's protocol and are never sent, see below) |
 | `model_prompt` | `prompt` -- the lines this model needs in every system prompt and no other model does; the brain puts them FIRST in its system part |
 | `cache_mode`, `cache_ttl_s`, `context_window` | the columns of the same names -- how the model's provider caches a prompt prefix and for how many seconds, and its window in tokens; empty or 0 = the cell keeps its own (GH #890) |
 | `max_output` | the column of the same name -- the most tokens the model generates in one answer, as its provider lists it (the note names the source); 0 = not stated. A brain that names no cap of its own asks for exactly this, and one that names a cap never asks for more (GH #1037) |
@@ -126,16 +126,25 @@ brain whose `base_url_allow` lists that origin (GH #853); a brain without the li
 whole push, loudly, on its error lane. A row with an empty `base_url` is how a catalogue says
 *this model lives where the cell already points*.
 
-**Two protocols, kept apart (GH #957).** A row whose `wire_dialect` is `decisions` is a typed
+**Protocols, kept apart (GH #957).** A row whose `wire_dialect` is `decisions` is a typed
 decisions model (typed questions about one state in, typed answers out), served only to a cell
-born with `provider: "decisions"`; every other row is a chat model. A subscriber states its
-protocol with `"protocol": "decisions"` on `subscribe` or in its announcement entry (absent =
-chat), and every resolution -- targeted, global, prose, tier -- skips a row of the other
+born with `provider: "decisions"`; a `messages` row is a native Messages model (below); every
+other row is a chat model. A subscriber states its protocol with `"protocol": "decisions"` (or
+`"anthropic"`) on `subscribe` or in its announcement entry (absent = chat), and every resolution -- targeted, global, prose, tier -- skips a row of the other
 protocol, so an override can never hand a decisions cell a chat model or the reverse; `select`
 takes the same `protocol` key. A decisions subscriber may state no start model at all: it is
 born on an empty one and waits for the registry. Its `base_url` is the service root without
 `/v1` (example `https://openrouter.ai/api`; the cell appends `/alpha/decisions`), and its push
 never carries `wire_dialect`. The translator is shown chat rows only.
+
+**The native Messages wire is a third protocol (GH #1242).** A row whose `wire_dialect` is
+`messages` is a model on its provider's native Messages API, served only to a cell born with
+`provider: "anthropic"`, which subscribes with `"protocol": "anthropic"`. It is kept apart
+exactly like a decisions row: no override, tier or translation moves a chat cell onto it or an
+anthropic cell onto a chat row, `select` ranks it only for `"protocol": "anthropic"`, the
+translator is not shown it, and its push never carries `wire_dialect` -- `messages` names the
+protocol, not a dialect the cell takes. A test colony swaps one Claude model for another with an
+override.
 
 ## The precedence
 
@@ -325,8 +334,11 @@ model like this:
 1. **The key.** A translation is keyed by the pair `(requirement_hash, catalogue_hash)`: the
    first 16 hex digits of the sha256 of the requirement (the cell's stderr line shows the first 8
    of the same digest) and of what the translator is shown of the catalogue -- every ACTIVE row's
-   id, provider, context window, prices, `caps`, `traits` and `strengths`. A price change or a
-   retired model is a new question; a new package, prompt block, endpoint or note is not.
+   id, provider, context window, prices, `caps`, `traits`, `strengths` and, since GH #1242, the
+   measured `response_ms`. The translator judges speed by `response_ms` alone: a row with 0 there
+   is not measured and is never chosen for being fast, and a row's `strengths` speak of speed
+   only where it is measured. A price change, a new measurement or a retired model is a new
+   question; a new package, prompt block, endpoint or note is not.
 2. **Asked once.** `subscribe` (and an announcement), `model_upsert`, `model_retire` and
    `retranslate` ask `./translate` exactly for the pairs that have no row -- once per distinct
    requirement, not once per subscriber, and never while a push is delivered. `remap`, the
@@ -396,9 +408,18 @@ removes the row; a second `auth` failure keeps it, one try more under this boot 
 again, and the boot after that asks once more. `tries` counts the failed asks since the last
 one outside a boot: an `auth` failure of `subscribe`, `model_upsert` or an operator's
 `retranslate` writes the row anew with `tries` 1. Should the colony stop while a boot's
-question is open, the next boot finds that question still held until it expires (at most 30 s
-past the translator's backstop, as every open question) and does not ask; the row stays, and
-the boot after that asks it. Nothing else asks: no timer, no poll, and a failure from any other
+question is open, the next boot takes it over: before its read of the catalogue it drops the
+open questions of exactly the requirements it asks, because a question parked in the stopped
+translator's RAM did not survive the stop (a replayed one is answered twice at worst and
+journalled `translation_duplicate`).
+
+The key can also arrive late without any stop: under load the access chain answers after the
+translator's round ran out (`credential_wait_ms`), the question was answered `credential_pending`
+and waits, and the box opens a few seconds later. The translator sets `credential_late_notice`,
+so it reports that box once (`meta.credential.outcome == "arrived_late"`), and the hand reads the
+waiting questions exactly as a boot does, with a mark of its own (`credential:<id>`) in
+`asked_boot`, and asks them. So `asked_boot` names the boot or the arrival that asked last.
+Nothing else asks: no timer, no poll, and a failure from any other
 source (`wire`, `parse`, a refused or unreadable answer) is handled as before -- the next op
 that finds the question unanswered, or `retranslate`, asks it. A tree without receipts has no
 boot announcement; there `retranslate` is the retry.
@@ -584,10 +605,10 @@ pins this: an incident row changes no other table and emits nothing.
 
 | table | what it is | who writes it |
 |---|---|---|
-| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s`, with GH #1097 `output_tps` (the measured slow floor of the output rate in tokens a second, 0 = not measured; never pushed -- the timeout chain of `docs/cell-types.md` derives a born cell's `external_timeout_ms` from it and `max_output`) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
+| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s`, with GH #1097 `output_tps` (the measured slow floor of the output rate in tokens a second, 0 = not measured; never pushed -- the timeout chain of `docs/cell-types.md` derives a born cell's `external_timeout_ms` from it and `max_output`), with GH #1242 `response_ms` (the measured median time of one answer in milliseconds -- a request to its complete tool call at a small window, not streamed -- 0 = not measured; never pushed, shown to the translator, and the number a cell that must answer first is chosen by) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
 | `tiers` | the index: `tier -> model_id`, with `since`, `decided_by`, `active` | `seed/tiers.jsonl` at instantiation, then `hand` (`remap`) |
 | `overrides` | the replacements: `id`, `scope` (`global` \| `target`), `match`, `model_id`, `since`, `decided_by`, `active`. Since 2.2.0 | `hand` (`override_set`, `override_clear`, `reset`) |
-| `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push; `protocol` (`""` = chat, `decisions`, GH #957) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
+| `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push; `protocol` (`""` = chat, `decisions`, GH #957, `anthropic`, GH #1242) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
 | `translations` | since 2.3.0: one row per answered `(requirement_hash, catalogue_hash)` -- `model_id`, `reason`, `at` | `hand`, after checking the translator's answer |
 | `open_questions` | since 2.3.0: the questions asked and not yet answered -- `requirement_hash`, `catalogue_hash`, `claim`, `at`; a row counts as open until its answer, refusal or failure, at most 30 s past the translator's backstop; an expired row stays until the next claim of its pair removes it | `hand` |
 | `credential_waits` | the questions that wait for the translator's key ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)): `requirement_hash`, `catalogue_hash`, `at`, `tries`, `asked_boot` (the trace of the boot that asked last), `detail`; one row per requirement, gone with the first call that got past the key | `hand` |
@@ -638,6 +659,7 @@ server reports, no endpoint (the cell keeps the `base_url` its set gives it) and
 | `qwen3.8-27b` (local) | 150 000 | 0 / 0 | explicit |
 | `google/gemini-embedding-2` (embeddings) | 8 192 | 20 / 0 | explicit |
 | `openai/gpt-4o-mini` | 128 000 | 15 / 60 | explicit |
+| `claude-haiku-5-5` (native Messages) | 1 000 000 | 10 / 50 | explicit |
 
 Since GH #1085 the seed carries one embeddings row, read 2026-10-07: `google/gemini-embedding-2`,
 the model the embed cells of the memory hive and the file space call. `wire_dialect` `embeddings`
@@ -650,8 +672,53 @@ Since GH #1085 the seed also carries `openai/gpt-4o-mini`, read 2026-10-07: the 
 model by the window of that model's row, so a template born on a model without a row would size
 by a number of its own; `explicit` keeps it out of every translation and ranked select.
 
-`tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`)
-and `strong` (`anthropic/claude-opus-5.5`). Prices and listings move; every row says in its
+Since GH #1243 the seed carries one native row, read 2026-10-17 from the provider's public model
+overview and price list: `claude-haiku-5-5` on `wire_dialect` `messages`, the model test colonies
+and village figures run on. `explicit` and its protocol keep it to the cells that name it; the
+price is the base tier for prompts up to 100k tokens, and `input_soft` sits below that step, so
+the curator rebuilds a window before its prompts reach the dearer tier. Its sampling list and
+`response_ms` are measured (`crates/meclaw-cells/tests/fixtures/conformance/claude-haiku-5-5/`).
+How a cell gets onto it is *A native Claude row and its key* below.
+
+## A native Claude row and its key
+
+The catalogue row carries no credential: `provider`, `api_key` and the grant stay per cell, so a
+cell is born on the native wire with its key, and the registry only moves it between Claude
+rows. The recipe, for an operator account `<account>` (one console organisation, one key):
+
+1. Seal the key: `meclaw --vault-add cred:anthropic-<account>` (the key on stdin, never as an
+   argument); the vault has to be unlockable, as for the translator's key.
+2. Grant it to the cell: a grant row like the translator's seeded
+   `grant:openrouter@colony-os/llm-registry-translate` -- `capability` `credential.read`,
+   `cred_ref` `cred:anthropic-<account>`, `requester` the cell, `scope.actions` `vault.deliver` --
+   with the id `grant:anthropic-<account>@<subject>/<cell>`, issued before the cell first asks
+   (`credential_grant_id` is immutable).
+3. Bear the cell on the wire and the row, with the app id every llm cell sends:
+
+```json
+{
+  "type": "llm",
+  "params": {
+    "provider": "anthropic",
+    "base_url": "https://api.anthropic.com/v1",
+    "model": "claude-haiku-5-5",
+    "api_key": "",
+    "credential_grant_id": "grant:anthropic-<account>@<subject>/<cell>",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"
+  }
+}
+```
+
+The cell subscribes with `"protocol": "anthropic"`; the push of the row then brings the package
+(window, cache, prices, `supported_params`). The row names no endpoint, so a push leaves the
+cell on its own `base_url`. A test colony moves a cell born on another Claude row onto this one
+with a targeted override; no tier and no default points here (the shipped brains stay on their
+chat rows). A cell on this row keeps `length_continuations` at 0: a continuation sends the cut
+text back as the assistant's turn, which the model refuses.
+
+`tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`),
+`strong` (`anthropic/claude-opus-5.5`) and `quick` (`qwen/qwen3.7-flash`, see *Tier names are data*). Prices and listings move; every row says in its
 `note` when it was read, and the operator keeps the catalogue with `model_upsert` and
 `model_retire`. No row carries a package or a prompt block: how a deployment runs a model
 (reasoning effort, token budget, the lines a model needs) is its own decision, and the form is in
@@ -695,10 +762,23 @@ with `meclaw --vault-add cred:openrouter` (stdin); the vault has to be unlockabl
 
 ## Tier names are data
 
-`light`, `mid` and `strong` are what the seed carries. They are rows, not code: nothing
+`light`, `mid`, `strong` and `quick` are what the seed carries. They are rows, not code: nothing
 in `select` or `hand` knows a tier name, so adding `embed` or `think` is an insert and not an
 edit. Pick names for the **role** a tier plays, not for a model class -- *strong* will still mean
 something in two years when a particular model class does not.
+
+`quick` is the role of a cell that must answer first -- a reply beside a running tool call, a
+fast step of a larger flow (GH #1242). Its row is a measurement's answer, never a judgement: the
+row with the smallest `response_ms` among those that hit at least 95 % of the tool calls of the
+conformance set. A cell that needs speed binds the tier, not a model name, so a new measurement
+moves it with one `remap`. The seed's `quick` is `qwen/qwen3.7-flash`: measured on 2026-10-16
+(`workshop/tools/llm-conformance --latency 20`, 20 tool calls each at a window of about 4k tokens)
+it answered at a p50 of 1115 ms with 20 of 20 hits, ahead of `openai/gpt-6-luna` (1169 ms, 19 of
+20), `qwen/qwen3.8-flash` (1359 ms, 19 of 20) and `google/gemini-3.8-flash` (2149 ms, 20 of 20).
+The gemini time was taken with reasoning at effort low, because its endpoint refuses reasoning
+off; the row's `note` says so. The recordings lie under
+`crates/meclaw-cells/tests/fixtures/conformance/<slug>/latency.json`, and a test holds the seed's
+`response_ms` and the `quick` row to them.
 
 ## What is deliberately not here
 

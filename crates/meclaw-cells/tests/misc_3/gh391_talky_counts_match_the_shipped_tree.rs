@@ -146,6 +146,8 @@ fn word(n: usize) -> &'static str {
         (35, "thirty-five"),
         (36, "thirty-six"),
         (37, "thirty-seven"),
+        // GH #1247 (T4-11): the curator's consult takes the boundary to thirty-eight.
+        (38, "thirty-eight"),
         // GH #889: the curator between collector and brain took talky's graph
         // to thirty-nine edges.
         (39, "thirty-nine"),
@@ -172,6 +174,26 @@ fn word(n: usize) -> &'static str {
         // as its answer receipt (`in_answered`) -- fifty-seven.
         (57, "fifty-seven"),
         (58, "fifty-eight"),
+        // GH #1247: the route cell and its decider take the graph to sixty-four.
+        (59, "fifty-nine"),
+        (60, "sixty"),
+        (61, "sixty-one"),
+        (62, "sixty-two"),
+        (63, "sixty-three"),
+        (64, "sixty-four"),
+        // GH #1247 (T4-11): the curator's consult leaves the composite.
+        (65, "sixty-five"),
+        // GH #1247 (T4-11): the consult's departure reaches the collector.
+        (66, "sixty-six"),
+        // GH #1248 (T4-09): the quick voice -- its model door, the curator's
+        // edge onto it, its answer, tap, error and refused push; the boundary
+        // grows to forty.
+        (40, "forty"),
+        (72, "seventy-two"),
+        // GH #1255: the sent answer leaves the splitter for its declared
+        // checker on `answer_check` -- seventy-three, the boundary forty-one.
+        (41, "forty-one"),
+        (73, "seventy-three"),
     ]
     .into_iter()
     .collect();

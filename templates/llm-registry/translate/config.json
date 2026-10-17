@@ -9,6 +9,7 @@
     "model": "${LLM_REGISTRY_TRANSLATOR_MODEL:-anthropic/claude-opus-5.5}",
     "api_key": "",
     "credential_grant_id": "",
+    "credential_late_notice": true,
     "temperature": 0,
     "external_timeout_ms": 3058000,
     "system_order": [

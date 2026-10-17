@@ -462,6 +462,117 @@ class TestLanePush(LaneTestCase):
         self.assertIn("did not answer", str(cm.exception))
 
 
+class TestLaneTreeOrigin(LaneTestCase):
+    """GH #1199 (OR-TM-14): a lane tree belongs to one repository. coding's `pass2`
+    overwrote orga's `pass2` on build04 -- the run data of orga were gone."""
+
+    def two_repositories(self):
+        orga = self.make_repo(self.tmp / "orga" / "pass2")
+        coding = self.make_repo(self.tmp / "coding" / "pass2")
+        # one history each: the commits of one are unknown to the other (the fixture's
+        # first commits are byte-equal); the overlay README stays each one's
+        for repo in (orga, coding):
+            (repo / "own.txt").write_text(repo.parent.name + "\n")
+            git(repo, "add", "own.txt")
+            git(repo, "commit", "-q", "-m", repo.parent.name)
+        return orga, coding
+
+    def test_two_repositories_with_one_worktree_name_get_two_lane_trees(self):
+        from scripts.pipeline import schedule
+        orga, coding = self.two_repositories()
+        names = [schedule.lane_tree_name(r, str(p)) for r, p in (("orga", orga), ("coding", coding))]
+        self.assertEqual(["orga@pass2", "coding@pass2"], names)
+        # the core keeps its path (the plain worktree name)
+        self.assertEqual("meclaw-core-wt-s", schedule.lane_tree_name("meclaw", "/x/meclaw-core-wt-s/"))
+        self.assertEqual("meclaw-core-wt-s", schedule.lane_tree_name(None, "/x/meclaw-core-wt-s"))
+        a = lane.push(self.a, str(orga), names[0], False, origin="orga")
+        (pathlib.Path(a["tree"]) / "ignored.txt").write_text("orga run data\n")
+        b = lane.push(self.a, str(coding), names[1], False, origin="coding")
+        self.assertNotEqual(a["tree"], b["tree"])
+        self.assertEqual(git(orga, "rev-parse", "HEAD").strip(), git(pathlib.Path(a["tree"]), "rev-parse", "HEAD").strip())
+        self.assertEqual("orga run data\n", (pathlib.Path(a["tree"]) / "ignored.txt").read_text())
+
+    def test_a_foreign_repositorys_tree_under_the_name_is_refused_and_kept(self):
+        orga, coding = self.two_repositories()
+        a = lane.push(self.a, str(orga), "pass2", False, origin="orga")
+        tree = pathlib.Path(a["tree"])
+        (tree / "ignored.txt").write_text("orga run data\n")
+        orga_rev = git(orga, "rev-parse", "HEAD").strip()
+        bare = self.remote / "meclaw.git"
+        self.assertIn("receive-pack", self.ssh_log.read_text())  # the log sees a push
+        # the same repository again: the tree is its own
+        lane.push(self.a, str(orga), "pass2", False, origin="orga")
+        # the origin file says orga; a tree from before it (no file): coding knows
+        # none of orga's commits -- both refused before anything travels
+        origin_file = pathlib.Path(git(tree, "rev-parse", "--absolute-git-dir").strip()) / lane.ORIGIN_FILE
+        self.assertEqual("orga\n", origin_file.read_text())
+        for case in ("origin file", "no origin file"):
+            with self.subTest(case=case):
+                if case == "no origin file":
+                    origin_file.unlink()
+                self.ssh_log.write_text("")
+                with self.assertRaisesRegex(lane.LaneError, "never overwritten by another repository") as cm:
+                    lane.push(self.a, str(coding), "pass2", False, origin="coding")
+                self.assertEqual(5, cm.exception.code)
+                self.assertIn("orga" if case == "origin file" else orga_rev[:12], str(cm.exception))
+                if case == "no origin file":
+                    # re-check M4: the way out of a tree whose commit this repository
+                    # dropped -- its origin once by hand, never a deletion
+                    self.assertIn('echo coding >"$(git -C %s rev-parse --absolute-git-dir)/%s"'
+                                  % (tree, lane.ORIGIN_FILE), str(cm.exception))
+                    self.assertIn("hand step", str(cm.exception))
+                self.assertEqual(orga_rev, git(tree, "rev-parse", "HEAD").strip())
+                self.assertEqual(orga_rev, git(bare, "rev-parse", "refs/heads/lane/pass2").strip())
+                self.assertEqual("orga run data\n", (tree / "ignored.txt").read_text())
+                self.assertEqual("changed, not committed\n", (tree / "README.md").read_text())
+                self.assertNotIn("git-receive-pack", self.ssh_log.read_text())
+        # a tree from before the file whose commit this repository knows: its own
+        lane.push(self.a, str(orga), "pass2", False, origin="orga")
+        self.assertEqual("orga\n", origin_file.read_text())
+
+
+    def test_a_directory_git_cannot_read_is_refused_and_kept(self):
+        # re-check M1: only a path that does not exist is "no tree"; a directory git
+        # cannot read (no .git, a .git that points nowhere) never reaches the
+        # checkout's `rm -rf`
+        orga, _ = self.two_repositories()
+        for case in ("plain directory", "dangling .git"):
+            with self.subTest(case=case):
+                tree = self.remote / "wt" / case.replace(" ", "-")
+                tree.mkdir(parents=True)
+                (tree / "run.txt").write_text("run data\n")
+                if case == "dangling .git":
+                    (tree / ".git").write_text("gitdir: %s\n" % (self.tmp / "gone"))
+                self.ssh_log.write_text("")
+                with self.assertRaisesRegex(lane.LaneError, "git cannot read") as cm:
+                    lane.push(self.a, str(orga), tree.name, False, origin="orga")
+                self.assertEqual(5, cm.exception.code)
+                self.assertEqual("run data\n", (tree / "run.txt").read_text())
+                self.assertNotIn("git-receive-pack", self.ssh_log.read_text())
+
+    def test_every_unexpected_probe_answer_is_refused(self):
+        # re-check M1: fail closed -- `none`, this repository's `origin`, a known
+        # `head` pass; an empty answer, a banner, another word, `head` without a
+        # commit refuse with code 5
+        orga, _ = self.two_repositories()
+        rev = git(orga, "rev-parse", "HEAD").strip()
+
+        def probe(answer):
+            def remote(lane_, script, input=b"", fail=None):
+                return subprocess.CompletedProcess([], 0, stdout=answer, stderr=b"")
+            return mock.patch.object(lane, "_remote", remote)
+
+        for answer in (b"none\n", b"origin orga\n", ("head %s\n" % rev).encode()):
+            with self.subTest(answer=answer), probe(answer):
+                self.assertIsNone(lane.check_origin(self.a, str(orga), "/r/wt/t", "orga"))
+        for answer in (b"", b"\n", b"Welcome to build01\n", b"maybe orga\n", b"head\n",
+                       b"head \n", b"none\nnone\n", b"none x\n", b"origin\n"):
+            with self.subTest(answer=answer), probe(answer):
+                with self.assertRaisesRegex(lane.LaneError, "^refused -- ") as cm:
+                    lane.check_origin(self.a, str(orga), "/r/wt/t", "orga")
+                self.assertEqual(5, cm.exception.code)
+
+
 class TestLaneBuildPath(LaneTestCase):
     """W1 point 1: cargo runs in ONE build path `tree/` per lane."""
 

@@ -34,7 +34,6 @@ use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::{ColonyHandle, NEVER_CRON, topologies::phase_3a::CaptureCell};
 use std::sync::Arc;
-use std::time::Duration;
 use support::{HIVE, as_map, boot, build, db, hop_str, next_on, rows, shipped};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -84,9 +83,8 @@ fn op_call(args: Value, call_id: &str) -> Message {
 }
 
 async fn receipt(rx: &mut mpsc::Receiver<Message>) -> Message {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    meclaw_testing::deadline::hang("a receipt at /sink", rx.recv())
         .await
-        .expect("no receipt at /sink within 30s")
         .expect("sink channel closed")
 }
 
@@ -104,6 +102,41 @@ async fn add_quiet(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, id: Uuid,
         ack.headers.hop["msg_type"], "timer_op_ack",
         "{:?}",
         ack.headers.hop
+    );
+}
+
+/// Absence on the timer's own path (dev-rules § 11: a marker on the same path,
+/// then a zero-wait check). A quiet sentinel plan, struck by id, travels
+/// handler -> `TimerReconfig::FireNow` -> I/O half -> emit like every strike
+/// before it; all channels of that path are FIFO, so a stray strike arrives
+/// before the sentinel's fire. The two receipts are the sentinel's ack and
+/// fire (either order) or the test fails; then nothing may be left.
+async fn nothing_before_a_sentinel(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>) {
+    let id = Uuid::now_v7();
+    add_quiet(h, rx, id, "sentinel").await;
+    h.send(op_call(
+        json!({"op": "trigger", "schedule_id": id.to_string()}),
+        "call-sentinel",
+    ))
+    .await;
+    let mut kinds = Vec::new();
+    for _ in 0..2 {
+        let m = receipt(rx).await;
+        let hop = &m.headers.hop;
+        assert_eq!(
+            hop["schedule_id"],
+            id.to_string(),
+            "an emission before the sentinel's fire: {hop:?}"
+        );
+        kinds.push(hop["msg_type"].clone());
+    }
+    kinds.sort_by_key(|k| k.to_string());
+    assert_eq!(kinds, vec![json!("night"), json!("timer_op_ack")]);
+    let extra = rx.try_recv();
+    assert!(
+        extra.is_err(),
+        "an emission after the sentinel: {:?}",
+        extra.map(|m| m.headers.hop)
     );
 }
 
@@ -146,13 +179,10 @@ async fn gh1019_a_trigger_by_name_is_one_strike_and_keeps_the_plan() {
     assert_eq!(fire.headers.hop["schedule_name"], "nightly-dream");
     assert_eq!(fire.headers.hop["schedule_id"], id.to_string());
 
-    // One trigger, one strike: nothing else arrives.
-    let extra = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
-    assert!(
-        extra.is_err(),
-        "a second emission: {:?}",
-        extra.map(|m| m.map(|m| m.headers.hop))
-    );
+    // One trigger, one strike: nothing else arrives before a sentinel sent
+    // the same way (Restliste K-UHREN: the 2-s window was a wall-clock
+    // verdict; `quiesce()` does not cover the timer's I/O half-task).
+    nothing_before_a_sentinel(&h, &mut rx).await;
     assert_eq!(
         row_of(&td.path().join("timer/cell.db"), id),
         (NEVER_CRON.to_string(), "active".to_string(), 1),
@@ -187,12 +217,9 @@ async fn gh1019_an_unknown_or_ambiguous_name_is_refused_and_fires_nothing() {
         "two active rows under one name: {:?}",
         err.headers.hop
     );
-    let extra = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
-    assert!(
-        extra.is_err(),
-        "a refused trigger fired: {:?}",
-        extra.map(|m| m.map(|m| m.headers.hop))
-    );
+    // A refused trigger fires nothing before a sentinel sent the same way
+    // (Restliste K-UHREN; `quiesce()` does not cover the I/O half-task).
+    nothing_before_a_sentinel(&h, &mut rx).await;
     h.shutdown().await;
 }
 

@@ -102,8 +102,56 @@ impl CellFactory for LlmCellFactory {
     /// Pre-spawn validation. Routes through the SAME parse path as
     /// `spawn_cell` (parser-invariant per `meclaw_colony::CellFactory` doc):
     /// `validate_params(raw) ≡ LlmParams::parse(raw).map(|_| ())`.
+    /// GH #1235 (T6-22): `api_key` takes no `${VAR}`; the key comes sealed
+    /// under `credential_grant_id`. The app-id params (`x_title`,
+    /// `http_referer`) are no secrets and keep their environment default.
+    fn validate_declared_params(&self, declared: &JsonValue) -> Result<(), String> {
+        crate::credential::refuse_env_secret(
+            "api_key",
+            declared.get("api_key"),
+            "credential_grant_id",
+        )
+    }
+
     fn validate_params(&self, raw: &JsonValue) -> Result<(), String> {
         LlmParams::parse(raw).map(|_| ())
+    }
+
+    /// GH #1236 (OR-programm-tm.H2b.orch15-1): a twin waits under
+    /// `handover_wait_ms`; a value the params name stands. Otherwise as long
+    /// as one inference turn of the same model package may run -- the backstop
+    /// the spawn resolves, raised the way [`restore_cell`] raises it
+    /// ([`crate::llm::params::effective_backstop_ms`], GH #1099), which covers
+    /// the original's turn still running at the swap. Without a backstop the
+    /// rule's own bound, `external_timeout_ms` x (1 + `length_continuations`)
+    /// plus the margin (re-check H2b I-1: `external_timeout_ms` pure covered a
+    /// third of a turn with two continuations).
+    fn handover_wait(
+        &self,
+        backstop_ms: Option<u64>,
+        params: &JsonValue,
+    ) -> Option<(&'static str, u64)> {
+        const KEY: &str = "handover_wait_ms";
+        if let Some(named) = params.get(KEY) {
+            return named.as_u64().map(|ms| (KEY, ms));
+        }
+        let external_ms = params
+            .get("external_timeout_ms")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(crate::llm::params::DEFAULT_EXTERNAL_TIMEOUT_MS);
+        let continuations = params
+            .get("length_continuations")
+            .and_then(JsonValue::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or_default();
+        // `Some(0)` for "no backstop": the rule raises it to exactly its own
+        // bound, so both cases come out of one call.
+        let (wait_ms, _) = crate::llm::params::effective_backstop_ms(
+            external_ms,
+            continuations,
+            Some(backstop_ms.unwrap_or_default()),
+        );
+        wait_ms.map(|ms| (KEY, ms))
     }
 
     /// Pre-spawn validation of the cell's on-disk assets (GH #99): the optional
@@ -457,8 +505,8 @@ mod tests {
     #[test]
     fn validate_params_rejects_non_openai_provider() {
         let r = LlmCellFactory.validate_params(&json!({
-            "provider": "anthropic",
-            "model": "claude-3",
+            "provider": "cohere", // GH #1239: anthropic is on the list now
+            "model": "command-r",
             "api_key": "sk-test"
         }));
         assert!(r.is_err());
@@ -466,6 +514,63 @@ mod tests {
         assert!(
             err.contains("openai"),
             "error mentions openai constraint: {err}"
+        );
+    }
+
+    // GH #1236 re-check H2b I-1/I-3a: the twin's wait is the bound of one
+    // inference turn as the SPAWN resolves it -- the colony hands in the
+    // backstop `resolve_message_timeout` yields (`None` = no backstop: `0`,
+    // `-1`, or a colony default of `0`), the factory raises it like
+    // `restore_cell`. Before, an undeclared `cell.message_timeout` reached the
+    // factory as "no backstop" and the twin waited `external_timeout_ms` pure:
+    // with `length_continuations` 2 a third of the turn it has to cover.
+
+    #[test]
+    fn a_named_wait_stands() {
+        let params = json!({"handover_wait_ms": 5_000, "external_timeout_ms": 30_000});
+        assert_eq!(
+            LlmCellFactory.handover_wait(Some(600_000), &params),
+            Some(("handover_wait_ms", 5_000))
+        );
+        let off = json!({"handover_wait_ms": 0});
+        assert_eq!(
+            LlmCellFactory.handover_wait(None, &off),
+            Some(("handover_wait_ms", 0))
+        );
+    }
+
+    #[test]
+    fn the_override_on_top_derives_the_wait() {
+        // The colony merges `override_params` over the template params before
+        // it asks; an override of `external_timeout_ms` moves the derived wait.
+        let params = json!({"external_timeout_ms": 30_000});
+        assert_eq!(
+            LlmCellFactory.handover_wait(None, &params),
+            Some(("handover_wait_ms", 40_000))
+        );
+    }
+
+    #[test]
+    fn the_derived_wait_is_the_effective_backstop() {
+        let params = json!({"external_timeout_ms": 110_000});
+        // A backstop under the turn is raised the way `restore_cell` raises it.
+        assert_eq!(
+            LlmCellFactory.handover_wait(Some(60_000), &params),
+            Some(("handover_wait_ms", 121_000))
+        );
+        // One that clears it stands.
+        assert_eq!(
+            LlmCellFactory.handover_wait(Some(300_000), &params),
+            Some(("handover_wait_ms", 300_000))
+        );
+    }
+
+    #[test]
+    fn without_a_backstop_the_wait_covers_every_continuation() {
+        let params = json!({"external_timeout_ms": 100_000, "length_continuations": 2});
+        assert_eq!(
+            LlmCellFactory.handover_wait(None, &params),
+            Some(("handover_wait_ms", 310_000))
         );
     }
 }

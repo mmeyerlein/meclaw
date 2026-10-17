@@ -1,7 +1,7 @@
 {
   "model_id": "qwen/qwen3.7-flash",
   "endpoint_class": "openrouter",
-  "measured_at": "2026-10-05T18:23:46Z",
+  "measured_at": "2026-10-16T19:06:09Z",
   "tool_version": "1",
   "params": {
     "temperature": "taken",
@@ -55,13 +55,13 @@
       "note": "JSON, no `stream` in the body"
     },
     "K8": {
-      "status": "n/a",
-      "note": "no --requests-dir"
+      "status": "green",
+      "note": "max_tokens 65536->32; params ['temperature']; expected_dropped []"
     },
     "K9": {
       "status": "green",
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 6.9e-05
+  "cost_usd": 0.000793
 }

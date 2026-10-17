@@ -292,15 +292,22 @@ fn every_holder_that_exports_declares_the_fence_it_writes_inside() {
         ("memory-hive", "store"),
         ("affinity", "store"),
         ("firewall", "rules"),
+        ("session-keeper", "sessions"),
     ] {
         let c = config(&format!("templates/{hive}/{cell}/config.json"));
         let base = c["params"]["transfer"]["base_path"]
             .as_str()
             .unwrap_or_else(|| panic!("{hive}/{cell} declares no params.transfer.base_path"));
+        // T6-13 (GH #1234): the shipped fence is a directory of the store's OWN
+        // hive -- relative, anchored there at the spawn, climbing nowhere. Until
+        // then it was one absolute scratch directory for the whole machine.
+        let path = std::path::Path::new(base);
         assert!(
-            std::path::Path::new(base).is_absolute(),
-            "{hive}/{cell}: the fence must be absolute, got {base:?} — a relative \
-             one is a loud boot error, which is the point"
+            !path.is_absolute()
+                && path
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "{hive}/{cell}: the fence must be a directory of its own hive, got {base:?}"
         );
     }
 }

@@ -10,14 +10,14 @@ and nothing to pay for.
 | example | cells | keyless | boot | why it exists |
 |---|---:|---|---|---|
 | [`hard-shell`](hard-shell/) | 1 → 3 | yes | < 1 s | an agent you are allowed to attack, out of a seed that configures no security at all |
-| [`hello`](hello/) | 2 | no | < 1 s | one `llm` and one edge, which is the whole model in one folder |
-| [`swarm`](swarm/) | 7 | no | < 1 s | the tool loop as a shape: fan-out, fan-in through a store, and a loopback edge into the `llm` |
+| [`hello`](hello/) | 2 | to boot | < 1 s | one `llm` and one edge, which is the whole model in one folder |
+| [`swarm`](swarm/) | 7 | to boot | < 1 s | the tool loop as a shape: fan-out, fan-in through a store, and a loopback edge into the `llm` |
 | [`meclaw-os`](meclaw-os/) | 0 → 17 | to boot | < 1 s | an empty seed plus one declaration that grows the whole agent from the template library |
 | [`organism`](organism/) | 0 → 126 | to boot | < 1 s | six declarations grow four levels of composition, 762 edges, 76 of them written by hand |
 | [`never-forgets`](never-forgets/) | 3 → 16 | to boot | < 1 s | tell it in January, ask it in March, and the model names the time range it wants |
 | [`vault-pilot`](vault-pilot/) | 2 → 8 | to boot | < 1 s | a model that holds no key, because its credential arrives sealed from the broker's vault |
 | [`display-colony-view`](display-colony-view/) | 2 → 10 | yes | < 1 s | two owners on one screen, and neither can touch the other's view |
-| [`telegram-research`](telegram-research/) | 10 | no | < 1 s | a multi-tool agent on a real surface, written out node by node |
+| [`telegram-research`](telegram-research/) | 10 | to boot | < 1 s | a multi-tool agent on a real surface, written out node by node |
 | [`memory-import`](memory-import/) | 0 → one member | to boot | < 1 s | the one door a memory comes back through, so a member is born with its past |
 
 `a → b` means *a* cells are checked in and *b* are running once the example's `grow.json` has
@@ -30,11 +30,10 @@ What "keyless" means here, because the distinction is a boot-time one:
 - yes: boots and answers with no key anywhere.
 - to boot: boots, grows and validates with no key, and needs a provider key before it can
   answer, because answering is what an `llm` cell does. `vault-pilot` wants its key in a vault
-  instead of in `.env`, plus the passphrase that opens it.
-- no: will not boot until the variable its `llm` cell substitutes exists. `hello`, `swarm` and
-  `telegram-research` read `${OPENROUTER_API_KEY}`, the substitution reads `{root}/.env` (or
-  `--env`) and never the process environment, and an unset variable fails the bootstrap with
-  `env_var_missing`.
+  instead of in `.env`, plus the passphrase that opens it. `hello`, `swarm` and
+  `telegram-research` name their key as a grant in `credential_grant_id`: it arrives sealed from
+  a vault, never from `.env` or the process environment, and a secret param that names a
+  `${VAR}` token fails the bootstrap.
 
 `--validate` checks a tree without spawning anything:
 

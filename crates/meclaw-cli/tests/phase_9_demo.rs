@@ -69,11 +69,17 @@ async fn phase_9_demo_code_to_store_round_trip() {
         "main/code/config.json",
         r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
     );
+    // GH #1235 (T6-16): a `code` cell without `params.sandbox` boots under the
+    // default-deny profile, and only a MATERIALISED `script_inline` gets its
+    // file granted by the substrate (cell-types.md § code). A `script_path`
+    // is the operator's file, so each cell declares read on its own script.
     let transform_config = format!(
         r#"{{"cell":{{"type":"code"}},"params":{{
             "runner":"python3",
             "script_path":"{transform_py}",
-            "external_timeout_ms":10000
+            "external_timeout_ms":10000,
+            "sandbox":{{"trust":"restricted","network":"deny",
+                        "filesystem":{{"runtime":true,"read":["{transform_py}"]}}}}
         }},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}},"multi_send_capable":true}}}}"#
     );
     write(
@@ -85,7 +91,9 @@ async fn phase_9_demo_code_to_store_round_trip() {
         r#"{{"cell":{{"type":"code"}},"params":{{
             "runner":"python3",
             "script_path":"{query_py}",
-            "external_timeout_ms":10000
+            "external_timeout_ms":10000,
+            "sandbox":{{"trust":"restricted","network":"deny",
+                        "filesystem":{{"runtime":true,"read":["{query_py}"]}}}}
         }},"contract":{{"version":"0.1.0","settings":{{}},"consumes":{{}}}}}}"#
     );
     write(td.path(), "main/code/query/config.json", &query_config);

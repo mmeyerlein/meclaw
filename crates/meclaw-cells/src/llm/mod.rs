@@ -18,6 +18,7 @@ pub(crate) mod system_gate;
 pub mod token_broker;
 pub(crate) mod tool_scope;
 pub(crate) mod translate;
+pub(crate) mod translate_anthropic;
 pub(crate) mod translate_decisions;
 pub(crate) mod translate_responses;
 pub(crate) mod window;

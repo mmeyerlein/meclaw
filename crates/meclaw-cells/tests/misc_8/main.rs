@@ -1,10 +1,6 @@
 //! Test harness `misc_8` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh960_an_app_with_shows_reaches_the_presenter;
-pub mod gh960_shows_is_checked_at_install;
-pub mod gh963_installing_the_presenter_announces_its_decider;
-pub mod gh963_the_observed_topics_hold;
 pub mod gh964_the_screen_draws_the_map;
 pub mod gh965_the_residents_have_topics_on_the_screen;
 pub mod gh975_a_projection_job_fits_the_colony_ttl;
@@ -65,3 +61,8 @@ pub mod w4_extract_replaces;
 pub mod w6_claim_aliases;
 pub mod w9a_per_turn_colony;
 pub mod x2_hive_fixture_drift;
+pub mod zh_bash_root_in_own_hive;
+pub mod zh_bash_writes_own_root_under_default_deny;
+pub mod zh_file_root_in_own_hive;
+pub mod zh_secret_params_refuse_env;
+pub mod zh_transfer_root_in_own_hive;

@@ -124,14 +124,13 @@ const SYSCALL_KEYS: [&str; 3] = ["ptrace", "raw_sockets", "foreign_signals"];
 impl SandboxProfile {
     /// Parse the `sandbox` block out of a raw `params` object.
     ///
-    /// Returns `Ok(None)` when no `sandbox` key is present, which still means
-    /// the unsandboxed behaviour. The default-deny cut of GH #85 does NOT sit
-    /// here: it fills the block in at INSTANTIATION time, in
-    /// `meclaw_colony::mutation::stage`, so that a cell born from a template
-    /// arrives with a profile it can be read off its own `config.json`. This
-    /// parser stays the pre-cut reader on purpose, because that is what makes
-    /// the cut prospective -- a hand-written tree already on disk keeps running
-    /// exactly as it did.
+    /// Returns `Ok(None)` when no `sandbox` key is present. The default-deny
+    /// cut does NOT sit here: the colony fills the block in before a factory
+    /// sees the params -- into the `config.json` of a cell born from a
+    /// template (`meclaw_colony::mutation::stage`, GH #85), into the runtime
+    /// view of a hand-written or adopted one (`meclaw_colony::bootstrap`,
+    /// GH #1235). A parser that defaulted on its own would decide the same
+    /// question a second time, per cell type.
     ///
     /// Returns `Err(operator-readable message)` for every malformed profile.
     /// This runs in `CellFactory::validate_params`, so a broken profile is a
@@ -264,6 +263,40 @@ impl SandboxProfile {
                     syscalls: *syscalls,
                 }
             }
+        }
+    }
+}
+
+impl SandboxProfile {
+    /// A copy of this profile that additionally grants read and write on
+    /// `dir`, the root the cell owns (GH #1235, OR-programm-tm.H5.orch-1).
+    ///
+    /// The default-deny block keeps only the runtime set reachable, so a
+    /// `bash` cell whose relative `params.cwd` the spawn anchored in its hive
+    /// started there and could write nothing (the coder pipeline's `runner`).
+    /// Its own root is its own right: the substrate grants exactly that
+    /// directory, the operator declares nothing, and everything else stays
+    /// denied. Like [`Self::with_readable_file`], a `Trusted` profile and one
+    /// without a filesystem view are returned unchanged.
+    #[must_use]
+    pub fn with_writable_dir(&self, dir: &std::path::Path) -> Self {
+        match self {
+            Self::Restricted {
+                network,
+                filesystem: Some(filesystem),
+                limits,
+                syscalls,
+            } => {
+                let mut filesystem = filesystem.clone();
+                filesystem.write.push(dir.to_path_buf());
+                Self::Restricted {
+                    network: *network,
+                    filesystem: Some(filesystem),
+                    limits: *limits,
+                    syscalls: *syscalls,
+                }
+            }
+            _ => self.clone(),
         }
     }
 }

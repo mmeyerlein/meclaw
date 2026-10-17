@@ -20,6 +20,12 @@ meclaw --vault /main/access/vault --vault-add telegram_token
 The vault mints its half of the sealing key per answer and drops it, so no key material
 anywhere opens yesterday's box. [`templates/vault`](../../templates/vault/README.md).
 
+The vault is the only road for a secret a cell spends. Since GH #1235 a secret param takes no
+`${VAR}`: an `api_key`, a chat token, a webhook secret, the credential of a `meclaw` peer proxy or the bearer of an
+`mcp` cell written as an environment token is refused at boot and at the mutation door, because every cell
+the colony process spawns can read its environment. `.env` carries non-secrets only, such as model
+names, addresses and the app id ([`config.md`](../config.md), § `params`).
+
 ## Handles instead of secrets
 
 `access` is the capability broker. An agent asks for a capability, and what comes back is a

@@ -27,4 +27,6 @@ pub mod store_seed_header_validate;
 pub mod u11_validate_file_base_path;
 pub mod u7_env_flag;
 pub mod u9_headless;
+#[path = "../support/vault_grant.rs"]
+pub mod vault_grant;
 pub mod watchdog_trip_exit_code;

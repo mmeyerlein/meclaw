@@ -23,6 +23,10 @@
 //! filtered on the turn's `trace_id`, asks for `limit=1000` and refuses a
 //! truncated scan, because a truncated scan reads as "nothing matched".
 
+// harness_fold: #[path = "support/vault_grant.rs"]
+#[allow(unused_imports)]
+use crate::vault_grant; // harness_fold: mod vault_grant;
+
 use meclaw_cli::{Cli, run_with_hooks};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -906,6 +910,7 @@ impl std::io::Write for LogWriter {
         if let Ok(mut v) = self.0.lock() {
             v.extend_from_slice(b);
         }
+        vault_grant::log_written().notify_waiters();
         Ok(b.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -1092,7 +1097,18 @@ async fn boot_north_with(
     extra: Value,
     env: &[(&str, &str)],
 ) -> Colony {
+    let secret = granted_secret(&auth);
     let td = prepare_north(peer_url, auth, extra, env);
+    if let Some(secret) = secret {
+        let _ = captured_logs();
+        let granted = [vault_grant::Granted {
+            cell: "friend",
+            grant: PEER_GRANT,
+            cred_ref: CRED_REF,
+            secret,
+        }];
+        vault_grant::grow_vault(td.path(), cli_for(td.path()), &granted).await;
+    }
     let cli = cli_for(td.path());
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
     let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1102,6 +1118,9 @@ async fn boot_north_with(
         .await
         .expect("the colony must bind HTTP within 30s")
         .expect("addr hook");
+    if secret.is_some() {
+        vault_grant::wait_opened(&captured_logs(), 1).await;
+    }
     Colony {
         addr,
         shutdown,
@@ -1161,26 +1180,45 @@ fn oauth_block(token: SocketAddr) -> Value {
     json!({
         "token_url": format!("http://{token}/realms/test/protocol/openid-connect/token"),
         "client_id": "${PEER_CLIENT_ID}",
-        "client_secret": "${PEER_CLIENT_SECRET}",
+        "client_secret_grant_id": PEER_GRANT,
         "scope": "peer",
         "audience": "south",
     })
 }
 
-const OAUTH_ENV: &[(&str, &str)] = &[
-    ("PEER_CLIENT_ID", "north-colony"),
-    ("PEER_CLIENT_SECRET", CLIENT_SECRET),
-];
+/// `client_id` is no secret and keeps its `${VAR}`; the client secret comes
+/// from the vault (GH #1235, T6-22).
+const OAUTH_ENV: &[(&str, &str)] = &[("PEER_CLIENT_ID", "north-colony")];
 
-/// Every file under both colonies' roots except the `.env` that holds the
-/// secret on purpose, and every captured log line: none contains a needle.
+// GH #1235 (T6-22): north's peer proxy names a credential grant, and a real
+// `access` hive in north's own tree delivers the secret sealed to it
+// (`support/vault_grant.rs`).
+
+/// The grant both forms of north's `auth` name.
+const PEER_GRANT: &str = "grant:north-peer@colony-north/friend";
+/// The vault's name of the credential.
+const CRED_REF: &str = "cred:north-peer";
+/// The secret the vault holds for `auth`: the OAuth form's client secret or
+/// the static form's header value, or `None` when `auth` names no grant.
+fn granted_secret(auth: &Value) -> Option<&'static str> {
+    if auth.get("client_secret_grant_id").is_some() {
+        Some(CLIENT_SECRET)
+    } else if auth.get("value_grant_id").is_some() {
+        Some(STATIC_SECRET)
+    } else {
+        None
+    }
+}
+
+/// Every file under both colonies' roots, `.env` included (GH #1235: it holds
+/// no secret any more), and every captured log line: none contains a needle.
 fn assert_nowhere(colonies: &[&Colony], needles: &[&str]) {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).expect("read_dir").flatten() {
             let p = e.path();
             if e.file_type().expect("file_type").is_dir() {
                 walk(&p, out);
-            } else if p.file_name().is_some_and(|n| n != ".env") {
+            } else {
                 out.push(p);
             }
         }
@@ -1197,7 +1235,7 @@ fn assert_nowhere(colonies: &[&Colony], needles: &[&str]) {
         for n in needles {
             assert!(
                 find(&bytes, n.as_bytes()).is_none(),
-                "a credential stands in {} -- it must live in .env and in memory only",
+                "a credential stands in {} -- it must live sealed in the vault and in memory only",
                 f.display()
             );
         }
@@ -1232,14 +1270,8 @@ async fn gh828_a_static_credential_rides_every_post_and_a_proxy_that_strips_it_s
         (header(h, "x-peer-credential") != Some(STATIC_SECRET))
             .then(|| "south-proxy: no known credential".to_string())
     });
-    let auth = json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}"});
-    let (south, seen, north) = auth_pair(
-        verdict,
-        auth,
-        json!({}),
-        &[("PEER_CREDENTIAL", STATIC_SECRET)],
-    )
-    .await;
+    let auth = json!({"header": "X-Peer-Credential", "value_grant_id": PEER_GRANT});
+    let (south, seen, north) = auth_pair(verdict, auth, json!({}), &[]).await;
     for _ in 0..2 {
         let t = drive(&north.addr, "topic", topic(), 64).await;
         assert_eq!(
@@ -1507,9 +1539,9 @@ async fn gh828_a_literal_secret_or_both_forms_at_once_do_not_boot() {
     );
     assert!(!e.contains(literal), "and never echoes the literal");
     let e = boot_refused(
-        json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}",
+        json!({"header": "X-Peer-Credential", "value_grant_id": PEER_GRANT,
                "token_url": "http://127.0.0.1:9/token"}),
-        &[("PEER_CREDENTIAL", STATIC_SECRET)],
+        &[],
     )
     .await;
     assert!(e.contains("auth"), "the refusal names the block -- {e}");
@@ -1528,14 +1560,8 @@ async fn gh828_a_401_to_the_static_form_is_peer_refused_after_one_post() {
     let verdict: Verdict = Arc::new(|_: &[(String, String)]| {
         Some("south-proxy: this credential is revoked".to_string())
     });
-    let auth = json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}"});
-    let (south, seen, north) = auth_pair(
-        verdict,
-        auth,
-        json!({}),
-        &[("PEER_CREDENTIAL", STATIC_SECRET)],
-    )
-    .await;
+    let auth = json!({"header": "X-Peer-Credential", "value_grant_id": PEER_GRANT});
+    let (south, seen, north) = auth_pair(verdict, auth, json!({}), &[]).await;
     let t = drive(&north.addr, "topic", topic(), 64).await;
     let r = north_receipt(&north, &t).await;
     assert_eq!(r.hop["peer_event"], json!("refused"));
@@ -1588,9 +1614,9 @@ async fn gh828_a_literal_secret_is_refused_at_the_mutation_door_too() {
     let literal = "a-literal-grown-by-a-mutation";
     let td = prepare_north(
         "http://127.0.0.1:9/peer/",
-        json!({"header": "X-Peer-Credential", "value": "${PEER_CREDENTIAL}"}),
+        json!({"header": "X-Peer-Credential", "value_grant_id": PEER_GRANT}),
         json!({}),
-        &[("PEER_CREDENTIAL", STATIC_SECRET)],
+        &[],
     );
     // A second peer proxy as a template: north's own, `auth` as a token, on a
     // mount of its own. `override_params` may only address a param the

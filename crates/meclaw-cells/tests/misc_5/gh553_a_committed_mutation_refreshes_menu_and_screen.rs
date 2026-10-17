@@ -286,6 +286,12 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
             v["params"]["model"] = json!("gpt-4o-mock");
         },
     );
+    // GH #1248: the quick voice is an `llm` cell on the same `${ctx.model}`
+    // start value as the brain; a tree booted from disk carries a literal.
+    patch(&root.join("main/agent/quick/config.json"), |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     patch(
         &root.join("main/agent/collector/assemble/config.json"),
         |v| v["params"]["tools"] = json!(["web_search", "web_fetch"]),

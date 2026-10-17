@@ -293,7 +293,19 @@ fn factories(root: &std::path::Path) -> Vec<(String, Arc<dyn CellFactory>)> {
     );
     types
         .into_iter()
-        .map(|t| (t, Arc::new(InertCellFactory) as Arc<dyn CellFactory>))
+        // #1233: `seed_rows` into a store an earlier mutation registered travel
+        // on that store's seed lane, and the door answers `committed` only after
+        // the store's receipt, so the store is the one real cell here. An inert
+        // store never answers, and each such mutation waited out the store's
+        // `cell.message_timeout` (121 s by default) before it was committed.
+        .map(|t| {
+            let f: Arc<dyn CellFactory> = if t == "store" {
+                Arc::new(meclaw_cells::store::StoreCellFactory)
+            } else {
+                Arc::new(InertCellFactory)
+            };
+            (t, f)
+        })
         .collect()
 }
 
@@ -572,7 +584,10 @@ fn second_channel() -> Value {
     let old_node = format!("./{CHANNEL_NODE}");
     let new_node = format!("./{SECOND_CHANNEL_NODE}");
     v["diff"]["add_nodes"][0]["name"] = json!(SECOND_CHANNEL_NODE);
-    v["diff"]["add_nodes"][0]["override_params"] = json!({"bot_token": "${TELEGRAM_BOT_TOKEN_2}"});
+    // GH #1235 (T6-22): the second bot's token comes under a grant of its
+    // own, never as `${VAR}`.
+    v["diff"]["add_nodes"][0]["override_params"] =
+        json!({"bot_token_grant_id": "grant:telegram-bot-2@template-telegram-connector/bot"});
 
     // The channel NAME is a value, not a path: it is stamped by the connector's
     // own edge and read back by the guard on the way down. Both spellings move
@@ -1016,8 +1031,10 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // same four tool edges as the file space's (`tool` and `schemas` in,
     // `tool_result` re-stamped to `in_tool` and `tool_schemas` to `in_menu`
     // with `tool_answerer = 'objects'`).
+    // 52 -> 53 with GH #1255: the sent answer for the app that checks it,
+    // `./assistants -> ./apps` on `answer_check`, beside the sidecar edge.
     assert_eq!(
-        declared, 52,
+        declared, 53,
         "the member's own edges to and from its assistants container are the member \
          template's, drawn ONCE at member instantiation. These reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
@@ -1089,7 +1106,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          `schemas`, the menu tick that asks what it looks like, and \u{2014} since GH #834 \
          \u{2014} `brief` into `./affinity` as `in_brief`, stamped with the turn, the asker \
          and `brief_caller`. Since GH #926 one lane more crosses each way, plain: the \
-         stats question `in_stats` in and its answer `stats` out. The push itself draws no \
+         stats question `in_stats` in and its answer `stats` out. Since GH #1255 the sent \
+         answer `answer_check` goes into `./apps` beside the sections, for the app that \
+         checks it. The push itself draws no \
          edge here: producer and \
          consumer are siblings, so it addresses \
          `<member>/assistants/<agent>` at its own path. A second agent must not move this \

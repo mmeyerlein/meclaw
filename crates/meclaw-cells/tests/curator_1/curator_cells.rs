@@ -717,6 +717,10 @@ fn curator_template_shape() {
         lanes("emits"),
         [
             "brain",
+            // GH #1247: the ways a stamped path leaves on besides the brain.
+            "quick",
+            "consult",
+            "research",
             "turn_write",
             "write",
             "pack_ack",

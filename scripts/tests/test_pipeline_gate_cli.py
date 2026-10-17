@@ -1061,6 +1061,40 @@ class TestGateLane(GateCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_two_repositories_with_one_worktree_name_get_two_lane_trees(self):
+        """GH #1199 (OR-TM-14): the lane tree was `wt/<worktree basename>` without the
+        repository -- coding's `pass2` overwrote orga's `pass2` on build04. The gate's
+        guard, hold and push take `schedule.lane_tree_name` of the plan's repository:
+        two repositories, one worktree name, two trees; the core keeps its path."""
+        self.python_plan()
+        trees = {}
+        for repo_id in ("orga", "coding", "meclaw"):
+            self.plan_extra = {"repo": repo_id}
+            with self.subTest(repo=repo_id), \
+                    mock.patch.object(gate.lane, "push", wraps=gate.lane.push) as push:
+                rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l",
+                                         "--cache", "off")
+                self.assertEqual(rc, 0, out + err)
+                self.assertEqual(1, push.call_count)
+                name, origin = push.call_args.args[2], push.call_args.kwargs["origin"]
+                self.assertEqual(repo_id, origin)
+                trees[repo_id] = name
+        self.assertEqual({"orga": "orga@repo", "coding": "coding@repo", "meclaw": "repo"}, trees)
+        for name in trees.values():
+            self.assertTrue((self.lane_root / "wt" / name / "README.md").is_file(), name)
+
+    def test_plan_only_measures_in_the_repositorys_own_lane_tree(self):
+        """GH #1199: `--plan-only`'s measure (`gate._lane_tree`) names the tree of the
+        plan's repository, the one the run will be admitted to."""
+        from scripts.pipeline import executor
+        self.python_plan()
+        self.plan_extra = {"repo": "orga"}
+        with mock.patch.object(executor, "stations_build", wraps=executor.stations_build) as build:
+            rc, out, err = self.gate("strand", "--plan-only", "--host", "lane-l")
+        self.assertEqual(0, rc, out + err)
+        self.assertEqual([str(self.lane_root) + "/wt/orga@repo"],
+                         [c.args[3] for c in build.call_args_list if len(c.args) > 3])
+
     def test_kern_writes_local_legacy_receipt_for_make_export(self):
         self.kern_plan()
         archive = self.tmp / "archive"
@@ -1261,7 +1295,8 @@ class TestGateLane(GateCase):
     def test_a_satellite_plan_without_cargo_goes_to_wt_name_on_the_lane(self):
         # Review Z-A2 R1 M2 (GH #1155): the glue between the admission and the
         # lane -- a satellite pass without cargo is guarded and pushed with
-        # cargo=False into `wt/<repo-name>`, `tree/` stays untouched.
+        # cargo=False into `wt/<repo>@<repo-name>` (GH #1199: one tree per
+        # repository), `tree/` stays untouched.
         rev = self.rev()
         doc = {"mode": "strand", "rev": rev, "base": rev, "repo": "sat",
                "classes": [], "crates": [], "stations": [station("shellcheck"), station("claims")],
@@ -1292,7 +1327,7 @@ class TestGateLane(GateCase):
         rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
         self.assertEqual(2, rc, out + err)
         self.assertIn("push stopped by the test", err)
-        name = self.repo.name
+        name = "sat@" + self.repo.name
         self.assertEqual([(name, False, "%s/wt/%s" % (self.lane_root, name))], guarded)
         self.assertEqual([(name, False, str(self.repo))], pushed)
         self.assertFalse((self.lane_root / "tree").exists())

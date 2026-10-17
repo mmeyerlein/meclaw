@@ -207,6 +207,84 @@ fn load_one(
     Ok(())
 }
 
+/// #1233 (T6-08): the seed lane of a RUNNING store. The mutation door sends
+/// the rows of a committed `seed_rows` as a message (`{"seed_rows": {id, table,
+/// rows}}`) instead of opening a second connection into this cell's `cell.db`
+/// (cell boundaries are hard, the way back is the message path). The store
+/// writes them on its OWN connection with the door's counting and idempotence
+/// (`meclaw_colony::mutation::seed_rows::apply_rows`, one implementation) and
+/// answers with a receipt: inserted, already present, and a sha256 digest over
+/// the rows it was given — what landed, checkable against what was ordered.
+///
+/// Only the door may use the lane: the colony stamps `reply_to` with the
+/// sender, and a seed from anywhere else is answered with an `error` receipt
+/// and writes nothing.
+pub(crate) async fn seed_lane_receipt(
+    schema: &BTreeMap<String, BTreeMap<String, String>>,
+    slot: &Value,
+    sender: Option<&meclaw_core::Path>,
+    db: &mut meclaw_colony::DbConn,
+) -> Map<String, Value> {
+    use meclaw_colony::mutation::seed_rows::{DOOR, apply_rows};
+    let mut receipt = Map::new();
+    receipt.insert("id".into(), slot.get("id").cloned().unwrap_or(Value::Null));
+    let table = slot
+        .get("table")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    receipt.insert("table".into(), Value::String(table.clone()));
+    let refuse = |mut r: Map<String, Value>, why: String| {
+        r.insert("error".into(), Value::String(why));
+        r
+    };
+    if sender.map(|s| s.as_str()) != Some(DOOR) {
+        return refuse(
+            receipt,
+            format!("the seed lane takes rows from {DOOR} only"),
+        );
+    }
+    let Some(columns) = schema.get(&table).cloned() else {
+        return refuse(receipt, format!("this store declares no table {table:?}"));
+    };
+    let rows: Option<Vec<Map<String, Value>>> = slot
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().map(|r| r.as_object().cloned()).collect())
+        .unwrap_or(None);
+    let Some(rows) = rows else {
+        return refuse(receipt, "rows must be an array of objects".to_string());
+    };
+    let digest = rows_digest(&table, &rows);
+    let written = db
+        .call(move |c| apply_rows(c, &table, &columns, &rows))
+        .await;
+    match written {
+        Ok((inserted, already_present)) => {
+            receipt.insert("inserted".into(), Value::from(inserted));
+            receipt.insert("already_present".into(), Value::from(already_present));
+            receipt.insert("digest".into(), Value::String(digest));
+            receipt
+        }
+        Err(e) => refuse(receipt, e),
+    }
+}
+
+/// sha256 hex over the canonical JSON (sorted keys, compact) of
+/// `{"rows": …, "table": …}` — the same canonical form the submitter's digest
+/// over a `seed_rows` declaration uses.
+fn rows_digest(table: &str, rows: &[Map<String, Value>]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut doc = Map::new();
+    doc.insert(
+        "rows".into(),
+        Value::Array(rows.iter().cloned().map(Value::Object).collect()),
+    );
+    doc.insert("table".into(), Value::String(table.to_string()));
+    let canonical = Value::Object(doc).to_string();
+    format!("{:x}", Sha256::digest(canonical.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

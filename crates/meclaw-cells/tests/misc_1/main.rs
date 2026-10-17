@@ -47,7 +47,7 @@ pub mod gh1043_b_a_replayed_send_answers_like_the_original;
 pub mod gh1057_entities_come_from_the_facts;
 pub mod gh1058_the_credential_module;
 pub mod gh1061_a_standalone_template_runs_after_one_deposit;
-pub mod gh1061_an_instance_built_with_a_key_still_runs_for_one_release;
+pub mod gh1061_an_env_key_instance_is_refused_at_the_boot;
 pub mod gh1061_no_template_reads_a_secret_from_the_environment;
 pub mod gh1061_the_credential_consumers;
 pub mod gh1085_a_tool_behind_a_dispatcher_gets_its_window;
@@ -61,6 +61,7 @@ pub mod gh1098_one_token_estimate_and_marked_cuts;
 pub mod gh1102_a_channel_credential_road_commits;
 pub mod gh1103_a_brokered_channel_takes_its_hive_s_handles;
 pub mod gh116_orphan_reap;
+pub mod gh506_an_unreadable_rule_row_does_not_close_the_lane;
 #[path = "../mock_mcp.rs"]
 pub mod mock_mcp;
 #[path = "../mock_openai.rs"]

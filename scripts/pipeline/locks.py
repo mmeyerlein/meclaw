@@ -148,6 +148,7 @@ revision, no `sets/` -- no finding.
 
 import collections
 import fnmatch
+import functools
 import json
 import os
 import re
@@ -177,14 +178,30 @@ def render(f):
 
 # --- the tree ---------------------------------------------------------------
 
+class Unlisted(Exception):
+    """git cannot list a tree that has `.git` (GH #1199, re-check M5)."""
+
+
+def _closed(fn):
+    """A lock that reads the tree's listing: `Unlisted` is RED with its reason, never a
+    quiet walk (GH #1199, re-check M5) -- the walk would read an ignored rest again."""
+    @functools.wraps(fn)
+    def check(diff_paths, tree, ctx=None):
+        try:
+            return list(fn(diff_paths, tree, ctx))
+        except Unlisted as exc:
+            return [Finding("RED", fn.__name__[len("check_"):].replace("_", "-"), "", 0,
+                            str(exc), "`git -C %s ls-files` says why (safe.directory, an "
+                            "index lock, the 30-s timeout); repair it and run again" % tree)]
+    return check
+
+
 def template_versions(tree):
-    """`{name: version}` from `templates/*/template.json`; `{}` without them."""
+    """`{name: version}` from `templates/*/template.json`; `{}` without them.
+    Only the tree's own files (`listed`, GH #1199 K19)."""
     out = {}
-    root = os.path.join(tree, "templates")
-    if not os.path.isdir(root):
-        return out
-    for name in sorted(os.listdir(root)):
-        path = os.path.join(root, name, "template.json")
+    for name in template_dirs(tree):
+        path = os.path.join(tree, "templates", name, "template.json")
         try:
             with open(path, encoding="utf-8") as fh:
                 doc = json.load(fh)
@@ -217,15 +234,27 @@ def _walk_json(tree, top):
     return _walk(tree, top, ".json")
 
 
+def listed(tree, top):
+    """The files under `top` a pin reader reads (GH #1199, K19 17.10.): what git lists
+    there (`_tree_paths`: tracked, and untracked not ignored -- the tree a gate sees,
+    overlay included), sorted. An ignored rest the checkout keeps (`git clean` without
+    -x) is no file of this tree: four `workshop/workspace/builder-scenarios/*` of an
+    older run on build04 pinned `member@2.5.33` and turned pin-lock red after a bump.
+    A git tree git cannot list raises `Unlisted` (a lock says RED); a tree without git
+    is walked."""
+    return sorted(rel for rel in _tree_paths(tree, top)
+                  if not SKIP_DIRS.intersection(rel.split("/")[:-1])
+                  and os.path.isfile(os.path.join(tree, rel)))
+
+
+def template_dirs(tree):
+    """The directories `<d>` of `templates/<d>/template.json` among `listed`."""
+    return sorted({rel.split("/")[1] for rel in listed(tree, "templates")
+                   if rel.count("/") == 2 and rel.endswith("/template.json")})
+
+
 def _walk(tree, top, suffix):
-    root = os.path.join(tree, top)
-    if not os.path.isdir(root):
-        return
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
-        for fn in sorted(filenames):
-            if fn.endswith(suffix):
-                yield os.path.relpath(os.path.join(dirpath, fn), tree).replace(os.sep, "/")
+    return (rel for rel in listed(tree, top) if rel.endswith(suffix))
 
 
 def _lines(tree, rel):
@@ -324,14 +353,12 @@ def left_behind(diff_paths, tree, base):
 
 
 def _sets(tree):
-    root = os.path.join(tree, "sets")
-    if not os.path.isdir(root):
-        return []
-    return sorted("sets/" + f for f in os.listdir(root) if f.endswith(".json"))
+    return [rel for rel in listed(tree, "sets") if rel.count("/") == 1 and rel.endswith(".json")]
 
 
 # --- the locks --------------------------------------------------------------
 
+@_closed
 def check_pin_lock(diff_paths, tree, ctx=None):
     versions = template_versions(tree)
     if not versions:
@@ -378,6 +405,7 @@ def _added_lines(tree, base, rel):
     return out
 
 
+@_closed
 def check_scenario_pin_lock(diff_paths, tree, ctx=None):
     versions = template_versions(tree)
     return _stale_pins(tree, list(_walk_json(tree, SCENARIO_ROOT)), versions,
@@ -458,6 +486,7 @@ def _local_pins(doc):
     return out
 
 
+@_closed
 def check_set_drift_lock(diff_paths, tree, ctx=None):
     ctx = ctx or {}
     core = ctx.get("core_versions")
@@ -550,6 +579,7 @@ def _pin_drift(rel, lines, doc, tree):
     return out
 
 
+@_closed
 def check_pin_drift_lock(diff_paths, tree, ctx=None):
     out = []
     for rel in _sets(tree):
@@ -1117,17 +1147,26 @@ def check_browser_station_lock(diff_paths, tree, ctx=None):
 OUT_LINK_ALLOWED = "plans/"
 
 
-def _tree_paths(tree):
-    """Every path of the tree the stamp sees -- tracked (index) and untracked, not
-    ignored -- or, without git, every path of a walk (fail closed: more, not less)."""
-    out = _git(tree, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    if out is not None:
+def _tree_paths(tree, top=""):
+    """Every path under `top` (default: the whole tree) the stamp and the pin readers see
+    -- tracked (index) and untracked, not ignored. The one listing of `locks` (re-check
+    M3). A tree with `.git` git cannot list (safe.directory, the 30-s timeout) raises
+    `Unlisted`: fail closed is RED, not a walk that reads an ignored rest again (re-check
+    M5). A tree without `.git` -- `cascade_dry`'s throwaway copy, an unpacked export, a
+    fixture -- is no git tree: every path of a walk, and no process (VG TV-K3)."""
+    top = top.strip("/")
+    if os.path.lexists(os.path.join(tree, ".git")):
+        out = _git(tree, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                   *(("--", top) if top else ()))
+        if out is None:
+            raise Unlisted("git cannot list the tree %s%s: no pin is read from a walk of a git "
+                           "tree (GH #1199)" % (tree, " under %s/" % top if top else ""))
         return sorted({p for p in out.split("\0") if p})
     found = []
-    for top, dirs, files in os.walk(tree):
+    for base, dirs, files in os.walk(os.path.join(tree, top)):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
         for name in sorted(dirs + files):
-            found.append(os.path.relpath(os.path.join(top, name), tree).replace(os.sep, "/"))
+            found.append(os.path.relpath(os.path.join(base, name), tree).replace(os.sep, "/"))
     return found
 
 
@@ -1146,6 +1185,7 @@ def out_links(tree):
     return out
 
 
+@_closed
 def check_out_link_lock(diff_paths, tree, ctx=None):
     """OR-TB.S10.Z.4 fail closed (recheck M2): a symlink outside `plans/` that leaves
     the tree is RED in every pre-run, not only when `turnaround.stamp_aliases` happens

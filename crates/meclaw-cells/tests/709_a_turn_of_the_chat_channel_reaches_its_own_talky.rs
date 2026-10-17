@@ -276,10 +276,14 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // GH #950: ninety-four -- the `lib_` tools leave each keeper and the core on
     // `tool`, to the member's librarian. GH #951: ninety-seven -- the `object_`
     // tools leave each keeper and the core on `tool`, to the member's objects.
+    // GH #1247: ninety-nine -- the curator's own consult leaves each keeper for
+    // `./cogny` on `consult` (with its `consult_id`), one per keeper.
+    // GH #1255: one hundred and one -- the `answer_check` exit out of each keeper,
+    // the sent answer for the checker a member binds at this level's path.
     assert_eq!(
         hp.graph.edges.len(),
-        97,
-        "ninety-seven edges, thirty-eight around each keeper. The number is asserted so \
+        101,
+        "one hundred and one edges, forty around each keeper. The number is asserted so \
          that an edge added on one side and forgotten on the other is loud"
     );
 }

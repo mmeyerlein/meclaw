@@ -584,3 +584,389 @@ fn the_level_declares_the_errand_its_own_topology_answers() {
         );
     }
 }
+
+// ═══════════════════════════════════ 4. the fold (GH #1244, T5-02 … T5-04)
+
+/// A declaration with typed parameters: `props` in declared order, `required`
+/// the ones without `?` on the signature line.
+fn typed(name: &str, description: &str, props: &[&str], required: &[&str]) -> Value {
+    let mut p = meclaw_core::serde_json::Map::new();
+    for k in props {
+        p.insert((*k).to_string(), json!({"type": "string"}));
+    }
+    json!({"name": name, "description": description,
+           "parameters": {"type": "object", "properties": p, "required": required}})
+}
+
+/// The rows of a menu with every case of R-WM-2 in it: the file family (read
+/// and write together, write declared first), the workspace family of its own,
+/// the tools hive's `file` with its own `op`, a two-member `web` family, an orga
+/// family beside the single op tool `orga_change`, and the memory's one tool
+/// (under the minimum size of two).
+fn fold_rows() -> Vec<Value> {
+    let all = json!(["*"]);
+    let (space, _) = record(
+        "file-space",
+        &[
+            typed(
+                "file_write",
+                "Write a file. It replaces the text.",
+                &["file", "text"],
+                &["file", "text"],
+            ),
+            typed(
+                "file_read",
+                "Describe a file (address `fh-<12 hex>` or a path) -- path, kind, size. \
+                   More sentences follow.",
+                &["file", "offset"],
+                &["file"],
+            ),
+            typed("file_ws_open", "Open a workspace.", &["name"], &[]),
+            typed(
+                "file_ws_diff",
+                "The diff of a workspace.",
+                &["name"],
+                &["name"],
+            ),
+        ],
+        &[],
+        &all,
+    );
+    let (tools, _) = record(
+        "tools",
+        &[
+            typed(
+                "file",
+                "The tools hive's own file tool.",
+                &["op", "path"],
+                &["op"],
+            ),
+            typed("web_search", "Search the web.", &["query"], &["query"]),
+            typed("web_fetch", "Fetch one page.", &["url"], &["url"]),
+            typed("bash", "Run a command.", &["cmd"], &["cmd"]),
+        ],
+        &[],
+        &all,
+    );
+    let (orga, _) = record(
+        "orga",
+        &[
+            typed("orga_find", "Find a record.", &["query"], &["query"]),
+            typed("orga_note", "Note a record.", &["text"], &["text"]),
+            typed(
+                "orga_change",
+                "Change a record.",
+                &["op", "id"],
+                &["op", "id"],
+            ),
+        ],
+        &[],
+        &all,
+    );
+    let (mem, _) = record("memory", &[decl(MEM)], &[], &all);
+    vec![row_of(&space), row_of(&tools), row_of(&orga), row_of(&mem)]
+}
+
+fn merge_with(rows: &[Value], params: Value) -> Value {
+    let (out, stderr) = run(&code_stdin(&json!({
+        "target": "/main/collector",
+        "header": {"hop": {"route": "cstore", "operation": "bundle"},
+                   "context": {"col_phase": "menu-merge"}},
+        "ttl": 64,
+        "messages": [{"id": "c-menu-all", "type": "tool_result",
+                      "text": meclaw_core::serde_json::to_string(rows).unwrap()}],
+        "results": [{"tool_call_id": "c-menu-all", "operation": "select"}],
+        "params": params,
+    })));
+    assert!(stderr.is_empty(), "nothing to report: {stderr}");
+    assert_eq!(out.len(), 1, "one menu message: {out:#?}");
+    out[0].clone()
+}
+
+fn folded() -> Value {
+    merge_with(&fold_rows(), json!({"tools": ["*"], "fold_tools": "1"}))
+}
+
+#[test]
+fn a_folded_menu_groups_the_tools_by_their_name_prefix() {
+    let msg = folded();
+    assert_eq!(
+        names(&msg),
+        want(&["bash", "file", "file_ws", MEM, "orga", "orga_change", "web"]),
+        "first name segment, the workspace its own family, op tools single, a family needs \
+         two members: {msg:#?}"
+    );
+    assert_eq!(msg["header"]["menu_count"], "7");
+    assert_eq!(msg["header"]["menu_folded"], "file,file_ws,orga,web");
+    assert_eq!(
+        msg["header"]["menu_shadowed"], "file",
+        "the tools hive's `file` loses to the file family and says so: {msg:#?}"
+    );
+    let file = leaf(&msg, "file");
+    assert_eq!(
+        file["function"]["parameters"]["properties"]["op"]["enum"],
+        json!(["read", "write", "help"]),
+        "the `file` leaf is the family, not the tools hive's tool: {file:#?}"
+    );
+}
+
+#[test]
+fn a_family_declares_an_op_enum_one_signature_line_per_op_and_free_args() {
+    let msg = folded();
+    let file = leaf(&msg, "file");
+    let params = &file["function"]["parameters"];
+    // orch-7 (K-DISPATCHER M-1): `args` is required too -- a call `F{op}`
+    // without it is not unfolded by the dispatcher and dead-letters as tool `F`.
+    assert_eq!(params["required"], json!(["op", "args"]));
+    assert_eq!(
+        params["properties"]["args"]["type"], "object",
+        "free args: {params:#?}"
+    );
+    assert!(
+        params["properties"]["args"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("`{}`")),
+        "an op without parameters (help) passes `{{}}`: {params:#?}"
+    );
+    assert!(
+        params["properties"]["args"].get("properties").is_none(),
+        "no union of the ops' parameters: {params:#?}"
+    );
+    let text = file["function"]["description"]
+        .as_str()
+        .expect("description");
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "- read(file, offset?): Describe a file -- path, kind, size.",
+            "- write(file, text): Write a file.",
+            "- help(op?, query?): the full schema of one op, or the op list.",
+        ],
+        "first sentence, no address phrase, `?` for the optional, sorted, help last: {text}"
+    );
+}
+
+#[test]
+fn the_fold_ships_off_and_is_one_switch() {
+    let flat = merge_with(&fold_rows(), json!({"tools": ["*"]}));
+    assert!(
+        names(&flat).contains("file_read") && names(&flat).contains("orga_find"),
+        "off writes the flat menu: {flat:#?}"
+    );
+    assert_eq!(
+        flat["header"]["menu_folded"], "",
+        "present and empty: {flat:#?}"
+    );
+    assert_eq!(
+        flat["header"]["menu_shadowed"], "",
+        "present and empty: {flat:#?}"
+    );
+    assert_eq!(
+        folded()["system"]["tools"].to_string(),
+        folded()["system"]["tools"].to_string(),
+        "the same rows give the same bytes"
+    );
+    let cfg = shipped("collector/assemble/config.json").expect("the template");
+    assert_eq!(cfg["params"]["fold_tools"], "0");
+    assert_eq!(cfg["contract"]["settings"]["fold_tools"]["default"], "0");
+    assert_eq!(cfg["params"]["fold_families"], json!(["file_ws"]));
+    let src = cfg["params"]["script_inline"].as_str().expect("script");
+    assert!(
+        src.contains("_str(\"fold_tools\", \"0\")"),
+        "the script's fallback"
+    );
+    assert!(
+        src.contains("_list(\"fold_families\", [\"file_ws\"])"),
+        "the script's fallback"
+    );
+}
+
+// ═══════════════ 5. help and the error from the menu store (GH #1246)
+
+/// A result on `in_tool` with the hop keys the dispatcher stamped on it.
+fn result_in(hop: Value, id: &str, text: &str) -> Vec<Value> {
+    let mut h = hop;
+    h["route"] = json!("in_tool");
+    run(&code_stdin(&json!({
+        "target": "/main/collector",
+        "header": {"hop": h, "context": {"turn_id": "t1", "session_id": "s1"}},
+        "ttl": 64,
+        "messages": [{"origin": "tool", "type": "tool_result", "id": id, "text": text}],
+        "params": {"tools": ["*"], "fold_tools": "1"},
+    })))
+    .0
+}
+
+/// The round-check row a result is parked with: `(id, text)` of its turn.
+fn parked(out: &[Value]) -> (String, String) {
+    let park = out
+        .iter()
+        .find(|m| m["header"]["phase"] == "round-check")
+        .unwrap_or_else(|| panic!("no round-check park: {out:#?}"));
+    let row: Value =
+        meclaw_core::serde_json::from_str(park["messages"][0]["text"].as_str().expect("op text"))
+            .expect("op json");
+    let turn: Value =
+        meclaw_core::serde_json::from_str(row["row"]["turn"].as_str().expect("turn")).unwrap();
+    (
+        turn["id"].as_str().unwrap_or_default().to_string(),
+        turn["text"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+/// Both steps of a looked-up result: the arrival parks a `help` row and reads the
+/// menu store, the store's reply (with `round` rows beside it) parks the answer.
+fn looked_up(hop: Value, id: &str, text: &str, round: &[Value]) -> (String, String) {
+    let first = result_in(hop, id, text);
+    let ask = first
+        .iter()
+        .find(|m| m["header"]["phase"] == "help")
+        .unwrap_or_else(|| panic!("no menu lookup: {first:#?}"));
+    let legs: Vec<(String, Value)> = ask["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["id"].as_str().unwrap().to_string(),
+                meclaw_core::serde_json::from_str(m["text"].as_str().unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    let put = legs
+        .iter()
+        .find(|(_, a)| a["operation"] == "insert")
+        .expect("the request is parked");
+    let mut rows = vec![put.1["row"].clone()];
+    rows.extend(round.iter().cloned());
+    let reply = |cid: &str, rows: Value| json!({"origin": "tool", "type": "tool_result", "id": cid, "text": rows.to_string()});
+    let mut msgs = vec![];
+    let mut results = vec![];
+    for (cid, a) in &legs {
+        let r = if a["table"] == "menu" {
+            json!(fold_rows())
+        } else if a["operation"] == "select" {
+            json!(rows)
+        } else {
+            Value::Null
+        };
+        msgs.push(reply(cid, r));
+        results.push(json!({"tool_call_id": cid, "operation": a["operation"]}));
+    }
+    parked(
+        &run(&code_stdin(&json!({
+            "target": "/main/collector",
+            "header": {"hop": {"route": "cstore", "operation": "bundle"},
+                       "context": {"col_phase": "help", "turn_id": "t1",
+                                   "session_id": "s1", "iter": "0",
+                                   "store_origin": "collector"}},
+            "ttl": 64,
+            "messages": msgs,
+            "results": results,
+            "params": {"tools": ["*"], "fold_tools": "1"},
+        })))
+        .0,
+    )
+}
+
+fn help(request: Value) -> String {
+    let (id, text) = looked_up(
+        json!({"help_for": "file", "tool_call_id": "call-h"}),
+        "call-h",
+        &request.to_string(),
+        &[],
+    );
+    assert_eq!(id, "call-h", "answered under the call's own id");
+    text
+}
+
+/// T5-07: help is answered from the menu store -- the op list with its signature
+/// lines, the full schema of one op, a keyword search over names and lines.
+#[test]
+fn help_answers_from_the_menu_store_the_list_one_schema_or_a_search() {
+    let list = help(json!({}));
+    assert!(
+        list.contains("- read(file, offset?): Describe a file -- path, kind, size.")
+            && list.contains("- write(file, text): Write a file."),
+        "without `op` the op list: {list}"
+    );
+    let one = help(json!({"op": "read"}));
+    assert!(
+        one.contains("More sentences follow.") && one.contains("\"offset\""),
+        "with `op` the full description and the parameters: {one}"
+    );
+    let found = help(json!({"query": "kind"}));
+    assert!(
+        found.contains("read(file, offset?)") && !found.contains("write(file"),
+        "the query searches names, signature lines and short descriptions: {found}"
+    );
+}
+
+/// T5-08: the error of a FOLDED call carries the schema of its op -- only for
+/// `bad_request`/`invalid_input`; any other error is parked as it came.
+#[test]
+fn the_error_of_a_folded_call_carries_the_schema_of_its_op() {
+    let assistant = json!({"turn_id": "t1", "iter": 0, "role": "assistant",
+        "turn": json!([{"origin": "assistant", "type": "tool_call", "id": "call-e",
+            "text": json!({"name": "file",
+                           "arguments": json!({"op": "read", "args": {}}).to_string()})
+                .to_string()}])
+        .to_string()});
+    let (id, text) = looked_up(
+        json!({"error_code": "invalid_input", "tool_call_id": "call-e"}),
+        "call-e",
+        "file_read: `file` is required",
+        &[assistant],
+    );
+    assert_eq!(id, "call-e");
+    assert!(
+        text.starts_with("file_read: `file` is required")
+            && text.contains("\"offset\"")
+            && text.contains("read"),
+        "the error, then the op's schema: {text}"
+    );
+    let plain = result_in(
+        json!({"error_code": "timeout", "tool_call_id": "call-t"}),
+        "call-t",
+        "too slow",
+    );
+    assert_eq!(parked(&plain), ("call-t".into(), "too slow".into()));
+}
+
+/// T5-08, review I-1: an error text that is a JSON object (the file tools'
+/// refusal `{"ok": false, "error": {"code", ...}}`) stays one -- the schema goes
+/// in as the field `op_schema`, so the curator's `tool_failure` still reads the
+/// failure and its code off the parsed text (GH #925 `tool_error`).
+#[test]
+fn a_json_error_of_a_folded_call_takes_the_schema_as_a_field() {
+    let assistant = json!({"turn_id": "t1", "iter": 0, "role": "assistant",
+        "turn": json!([{"origin": "assistant", "type": "tool_call", "id": "call-e",
+            "text": json!({"name": "file",
+                           "arguments": json!({"op": "read", "args": {}}).to_string()})
+                .to_string()}])
+        .to_string()});
+    let refusal = json!({"ok": false, "op": "read",
+        "error": {"code": "bad_request", "message": "`file` is required"}});
+    let (id, text) = looked_up(
+        json!({"error_code": "bad_request", "tool_call_id": "call-e"}),
+        "call-e",
+        &refusal.to_string(),
+        &[assistant],
+    );
+    assert_eq!(id, "call-e");
+    let body: Value = meclaw_core::serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("the error stays a JSON object ({e}): {text}"));
+    assert_eq!(
+        (&body["ok"], &body["error"]["code"]),
+        (&json!(false), &json!("bad_request")),
+        "the failure and its code stay readable: {text}"
+    );
+    assert!(
+        body["op_schema"]["op"] == "read"
+            && body["op_schema"]["args"]["properties"]
+                .get("offset")
+                .is_some(),
+        "the op's schema as a field: {text}"
+    );
+}

@@ -100,7 +100,11 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// `in_stats`: twenty-three from `talky`, twenty-eight in all. MEASURED.
 /// GH #949 a twelfth (`reader`) answers an app's read of its own round:
 /// twenty-four from `talky`, twenty-nine in all. MEASURED.
-const CELLS_AFTER_GROW: usize = 29;
+/// GH #1247 two more (`route`, `decide`) stamp each turn's path:
+/// twenty-six from `talky`, thirty-one in all. MEASURED.
+/// GH #1248: talky's quick voice -- twenty-seven from `talky`, thirty-two in
+/// all. MEASURED.
+const CELLS_AFTER_GROW: usize = 32;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

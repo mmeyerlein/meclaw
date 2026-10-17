@@ -437,9 +437,9 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedEditParams, S
         .and_then(|v| v.as_str())
         .ok_or_else(|| "params.base_path missing or not a string".to_string())?;
     let bp_path = std::path::Path::new(bp);
-    if !bp_path.is_absolute() {
-        return Err(format!("params.base_path must be absolute, got: {bp}"));
-    }
+    // GH #1234: absolute, or a directory of the enclosing hive (created at the
+    // spawn, `boundary::spawn_root`).
+    meclaw_colony::check_cell_root(bp).map_err(|tail| format!("params.base_path {tail}"))?;
     let mc = match raw.get("max_concurrency") {
         None => DEFAULT_EDIT_MAX_CONCURRENCY,
         Some(v) => v
@@ -456,39 +456,26 @@ fn parse_params_pure(raw: &meclaw_core::JsonValue) -> Result<ParsedEditParams, S
     })
 }
 
-/// FS-side validation: canonicalize `base_path` + assert it is a directory.
-/// Returns the canonicalized path so `spawn_cell` can reuse it. U11: this runs
-/// in BOTH `validate_params` and `spawn_cell` so the parser-invariant holds —
-/// otherwise validate accepts a `base_path` that spawn_cell rejects, and the
-/// reject surfaces as a Boot-PANIC via `bootstrap_apply.rs`
-/// `.expect("validated in plan-phase")` instead of a clean validate error.
-fn validate_base_path_fs(parsed: &ParsedEditParams) -> Result<PathBuf, String> {
-    let canon = parsed.base_path.canonicalize().map_err(|e| {
-        format!(
-            "base_path canonicalize failed ({:?}): {e}",
-            parsed.base_path
-        )
-    })?;
-    if !canon.is_dir() {
-        return Err(format!("base_path is not a directory: {canon:?}"));
-    }
-    Ok(canon)
-}
-
 impl CellFactory for EditCellFactory {
     fn validate_params(&self, params: &meclaw_core::JsonValue) -> Result<(), String> {
         let parsed = parse_params_pure(params)?;
-        validate_base_path_fs(&parsed).map(|_| ())
+        // U11 for an absolute root; a relative one names a directory of the
+        // enclosing hive that only the spawn creates (GH #1234), so the door
+        // checks its form and nothing on disk.
+        if parsed.base_path.is_absolute() {
+            boundary::canonical_root(&parsed.base_path)?;
+        }
+        Ok(())
     }
 
-    /// Stateless cell — `cell_dir` and the three Phase-13-G-1 substrate params
+    /// Stateless cell — `cell_dir` only anchors a relative root (GH #1234); the three Phase-13-G-1 substrate params
     /// (`colony_inbox_tx`, `idle_timeout`, `cell_timeout`) are unused.
     fn spawn_cell(
         self: Arc<Self>,
         path: meclaw_core::Path,
         params: meclaw_core::JsonValue,
         outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
-        _cell_dir: std::path::PathBuf,
+        cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
         colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
@@ -499,7 +486,7 @@ impl CellFactory for EditCellFactory {
     ) -> Result<SpawnedCellKind, String> {
         let parsed = parse_params_pure(&params)?;
         // FS-Validierung — SAME path as validate_params (U11).
-        let canon = validate_base_path_fs(&parsed)?;
+        let canon = boundary::spawn_root(&parsed.base_path, &cell_dir)?;
         let max_concurrency = parsed.max_concurrency;
 
         let cell = Arc::new(EditCell {
@@ -585,7 +572,7 @@ impl CellFactory for EditCellFactory {
         path: meclaw_core::Path,
         params: meclaw_core::JsonValue,
         outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
-        _cell_dir: std::path::PathBuf,
+        cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
         colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
         _idle_timeout: Option<std::time::Duration>,
@@ -595,10 +582,7 @@ impl CellFactory for EditCellFactory {
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
         let parsed = parse_params_pure(&params).ok()?;
-        let canon = parsed.base_path.canonicalize().ok()?;
-        if !canon.is_dir() {
-            return None;
-        }
+        let canon = boundary::spawn_root(&parsed.base_path, &cell_dir).ok()?;
         let max_concurrency = parsed.max_concurrency;
         let cell = Arc::new(EditCell {
             base_path: canon,
@@ -636,11 +620,11 @@ mod tests {
     }
 
     #[test]
-    fn factory_validate_params_rejects_relative_base_path() {
+    fn factory_validate_params_rejects_a_root_that_climbs_out_of_its_hive() {
         use meclaw_colony::CellFactory;
         assert!(
             EditCellFactory
-                .validate_params(&meclaw_core::serde_json::json!({"base_path": "rel/dir"}))
+                .validate_params(&meclaw_core::serde_json::json!({"base_path": "../rel/dir"}))
                 .is_err()
         );
     }

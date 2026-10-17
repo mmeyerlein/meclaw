@@ -854,13 +854,16 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         // GH #951: the things a curator saw go to the person's objects, which
         // keep the canonical entity rows the push candidates are built from.
         "thing_seen",
+        // GH #1255: the sent answer goes into the person's apps container, where
+        // the app that checks it is bound on its section, like a sidecar section.
+        "answer_check",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
     assert_eq!(
         consumed_by_the_member, want,
-        "the member consumes exactly the ten lanes of this level it has a holder for: the \
+        "the member consumes exactly the eleven lanes of this level it has a holder for: the \
          `answer` goes to a channel of the PERSON (GH #454), `recall` and `sidecar` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \
@@ -875,7 +878,8 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
          offer may be made by an app standing outside the generation. Since GH #834 `brief` \
          goes to the person's record (`./affinity`, as `in_brief`, the asker stamped), and since \
          GH #877 `pack_ack` goes there too (as `in_pack_ack`, where a clean receipt books the \
-         delivery). Every \
+         delivery). Since GH #1255 `answer_check` goes into the apps container as well, to \
+         the app that checks the answer on its section. Every \
          other lane an assistant raises crosses the member and is the parent's to drain."
     );
     for lane in &consumed_by_the_member {
@@ -914,6 +918,15 @@ fn number_word(n: usize) -> String {
     ];
     if n < 20 {
         return ONES[n].to_string();
+    }
+    // GH #1255 on top of GH #1247: the level crossed a hundred edges (101), and
+    // the README spells it the way the member README spells its own count,
+    // `one hundred and one`.
+    if (100..200).contains(&n) {
+        return match n - 100 {
+            0 => "one hundred".to_string(),
+            rest => format!("one hundred and {}", number_word(rest)),
+        };
     }
     let tens = [
         "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",

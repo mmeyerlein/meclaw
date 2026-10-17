@@ -585,6 +585,10 @@ fn the_core_opens_a_round_for_every_errand_and_the_voices_do_not() {
         core["override_params"]["assemble"]["defer_turns"], "0",
         "a core defers no errand behind another: {core:#?}"
     );
+    assert_eq!(
+        core["override_params"]["assemble"]["fold_tools"], "1",
+        "T5-10: the core folds its menu: {core:#?}"
+    );
     let shipped_default =
         shipped_json("templates/collector/assemble/config.json")["params"]["defer_turns"].clone();
     assert_eq!(
@@ -601,6 +605,25 @@ fn the_core_opens_a_round_for_every_errand_and_the_voices_do_not() {
             assert!(
                 v["override_params"][key].get("defer_turns").is_none(),
                 "{rel}: a voice keeps one open round per session: {v:#?}"
+            );
+        }
+    }
+    // T5-11 (GH #1248): the voices fold too -- once, on talky's collector ref;
+    // the assistant's talky and talky-chat inherit it and set nothing.
+    assert_eq!(
+        shipped_json("templates/talky/collector/config.json")["override_params"]["assemble"]["fold_tools"],
+        "1",
+        "T5-11: talky folds its menu"
+    );
+    for rel in [
+        "templates/assistant/talky/config.json",
+        "templates/assistant/talky-chat/config.json",
+    ] {
+        let v = shipped_json(rel);
+        for key in ["assemble", "collector/assemble"] {
+            assert!(
+                v["override_params"][key].get("fold_tools").is_none(),
+                "{rel}: the fold comes from talky's collector, not from the level: {v:#?}"
             );
         }
     }

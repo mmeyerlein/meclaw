@@ -93,6 +93,7 @@ impl CellFactory for TimerCellFactory {
             mailbox_capacity,
             contract.consumes.clone(),
             contract.transfer_bounds(),
+            contract.drain.clone(),
         )?;
 
         // Initial spawn → `build_long_running_task` (inside `build`) creates the
@@ -166,6 +167,7 @@ impl CellFactory for TimerCellFactory {
             mailbox_capacity,
             contract.consumes.clone(),
             contract.transfer_bounds(),
+            contract.drain.clone(),
         )
         .ok()?;
         // No initial `build(...)` call here → boot-gating: the inactive cell's
@@ -208,6 +210,7 @@ fn make_build(
     mailbox_capacity: usize,
     consumes: Option<std::sync::Arc<meclaw_core::CompiledConsumes>>,
     bounds: meclaw_core::TransferBounds,
+    drain: meclaw_colony::DrainView,
 ) -> Result<
     impl Fn() -> (
         mpsc::Sender<Message>,
@@ -238,6 +241,8 @@ fn make_build(
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
     let bounds_cap = bounds;
+    // GH #1253: the colony's drain view, carried into every (re)spawn.
+    let drain_cap = drain;
 
     Ok(move || -> (
         mpsc::Sender<Message>,
@@ -276,7 +281,8 @@ fn make_build(
         //    `.await` inside the helper → await-free respawn corridor preserved.
         let cell = TimerCell::new(path_cap.clone(), active, query_timeout_ms)
             .with_booted_at(booted_at)
-            .with_accept_ops(accept_cap.clone());
+            .with_accept_ops(accept_cap.clone())
+            .with_drain(drain_cap.clone());
         let db = DbConn::wrap(conn, Some(Duration::from_millis(query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

@@ -328,6 +328,12 @@ fn stage_generation(root: &std::path::Path, who: &str) {
         );
         inerts.push(format!("{talky}/session-keeper"));
         inerts.push(format!("{talky}/dispatcher"));
+        // GH #1247: the route stamp's decider is an `llm` cell this road never
+        // needs -- the shipped collector waits for no stamp (`route_wait_ms` 0).
+        inerts.push(format!("{talky}/decide"));
+        // GH #1248: the quick voice is an `llm` cell this road never reaches --
+        // without a stamp the curator sends every round to the brain.
+        inerts.push(format!("{talky}/quick"));
     }
     inerts.push(format!("{base}/cogny"));
     inerts.push(format!("{base}/tools"));

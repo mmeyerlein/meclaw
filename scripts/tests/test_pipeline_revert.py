@@ -354,5 +354,33 @@ class CorpusRevertTest(unittest.TestCase):
         self.assertEqual(fx.read(f.root, "templates/a/bar.txt"), "bar\n")
 
 
+class RerereRevertTest(unittest.TestCase):
+    """OR-TM-11: `take_back` decides from its own conflict -- a recorded rerere
+    resolution of the same conflict never hides the corpus conflict of the
+    revert (the kit's git calls run with `rerere.enabled=false`)."""
+
+    CORPUS = merge.CORPUS[0]
+
+    def test_a_recorded_resolution_never_hides_the_corpus_conflict_of_a_revert(self):
+        root = fx.rerere_init(self)
+        fx.write(root, self.CORPUS, "head\nv1\ntail\n")
+        fx.git(root, "add", "-A")
+        fx.git(root, "commit", "-qm", "corpus")
+        fx.git(root, "checkout", "-qb", "s1")
+        fx.write(root, self.CORPUS, "head\nS1\ntail\n")
+        fx.git(root, "commit", "-qam", "s1")
+        fx.git(root, "checkout", "-q", "master")
+        fx.git(root, "merge", "-q", "--no-ff", "-m", "merge s1", "s1")
+        merged = fx.git(root, "rev-parse", "HEAD")
+        fx.write(root, self.CORPUS, "head\nS2\ntail\n")
+        fx.git(root, "commit", "-qam", "a later merge moves the corpus")
+        fx.rerere_record(self, root, ["revert", "-m", "1", "--no-commit", merged], self.CORPUS,
+                         "OLD-RESOLUTION\n")
+        revert.take_back(root, merged)
+        self.assertEqual(fx.read(root, self.CORPUS), "head\nS2\ntail\n")
+        self.assertEqual(fx.git(root, "diff", "--name-only", "--diff-filter=U"), "")
+        self.assertTrue(os.path.exists(os.path.join(root, ".git", "REVERT_HEAD")))
+
+
 if __name__ == "__main__":
     unittest.main()

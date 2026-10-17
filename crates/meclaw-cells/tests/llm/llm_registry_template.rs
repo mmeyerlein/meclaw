@@ -63,6 +63,7 @@ use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem}
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
+use meclaw_testing::code_wire::{run_shipped_script, shipped_script};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use mock_openai::{MockOpenAI, canned_chat_completion};
 use std::sync::Arc;
@@ -3132,4 +3133,435 @@ async fn select_never_ranks_an_explicit_row_but_a_tier_reaches_it() {
     assert_eq!(gone["reason_code"].as_str(), Some("tier_model_inactive"));
 
     h.shutdown().await;
+}
+
+// ─────────────────── GH #1242: measured speed, the quick tier, the native wire
+//
+// Run on the shipped `hand` and `select` scripts the way the code cell runs
+// them (stdin document in, messages out) -- the GH #957 form of
+// `gh957_the_registry_keeps_providers_apart.rs`: no colony, no provider.
+
+/// The shipped script of one registry cell.
+fn registry_script(cell: &str) -> Option<String> {
+    let root = shipped_registry()?;
+    Some(shipped_script(
+        root.join(cell)
+            .join("config.json")
+            .to_str()
+            .expect("utf-8 path"),
+    ))
+}
+
+fn run_registry_script(script: &str, envelope: Value, body: Value) -> Vec<Value> {
+    let doc = json!({"envelope": envelope, "body": body, "params": {}});
+    let out = run_shipped_script(script, &doc.to_string());
+    assert!(
+        out.status.success(),
+        "the script exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    match meclaw_core::serde_json::from_slice(&out.stdout).expect("json out") {
+        Value::Array(a) => a,
+        other => vec![other],
+    }
+}
+
+/// An operator's command on the hand's door.
+fn hand_command(hand: &str, cmd: Value) -> Vec<Value> {
+    run_registry_script(
+        hand,
+        json!({"header": {"hop": {"route": "in_hand"}, "context": {"actor": "operator"}}}),
+        json!({"messages": [{"origin": "assistant", "type": "tool_call", "id": "c1",
+                             "text": cmd.to_string()}]}),
+    )
+}
+
+/// The store's echo of one bundle of the hand: one `tool_result` per call.
+fn hand_echo(hand: &str, phase: &str, carry: Value, results: Vec<Value>) -> Vec<Value> {
+    let messages: Vec<Value> = results
+        .iter()
+        .map(|r| json!({"origin": "tool", "type": "tool_result", "id": "x", "text": r.to_string()}))
+        .collect();
+    run_registry_script(
+        hand,
+        json!({"header": {"hop": {"route": "rstore", "operation": "bundle"},
+                          "context": {"registry_origin": "hand", "lr_phase": phase,
+                                      "lr_carry": carry.to_string()}}}),
+        json!({"messages": messages}),
+    )
+}
+
+/// The reason code of a rejected ack, if the output carries one.
+fn rejection(out: &[Value]) -> Option<String> {
+    out.iter()
+        .find(|m| m["header"]["route"] == "ack" && m["header"]["outcome"] == "rejected")
+        .map(|m| {
+            m["header"]["reason_code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+}
+
+/// The parsed carry of the first message that carries one.
+fn first_carry(out: &[Value]) -> Value {
+    out.iter()
+        .find_map(|m| m["header"]["carry"].as_str().filter(|c| !c.is_empty()))
+        .map(|c| meclaw_core::serde_json::from_str(c).expect("a json carry"))
+        .unwrap_or(Value::Null)
+}
+
+/// The schema line and the rows of one shipped seed file.
+fn seed_rows(root: &std::path::Path, rel: &str) -> (Value, Vec<Value>) {
+    let text = std::fs::read_to_string(root.join(rel)).unwrap();
+    let mut rows = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| meclaw_core::serde_json::from_str::<Value>(l).unwrap());
+    let head = rows.next().expect("a schema line");
+    (head, rows.collect())
+}
+
+/// GH #1242 (T4-01): the catalogue carries each model's measured response
+/// time as a column, the way it carries `output_tps` (GH #1097): the store
+/// declares it with a default, the seed's schema line and every row state it
+/// (0 = not measured), and `model_upsert` takes it as an integer and refuses
+/// anything else by name.
+#[test]
+fn the_catalogue_carries_a_measured_response_time_per_model() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let store = read_json(&root.join("store/config.json"));
+    assert_eq!(
+        store["params"]["schema"]["models"]["response_ms"],
+        json!({"type": "int", "default": 0}),
+        "the store column"
+    );
+    let (head, rows) = seed_rows(&root, "store/seed/models.jsonl");
+    assert_eq!(
+        head["schema"]["response_ms"], "int",
+        "the seed's schema line"
+    );
+    for r in &rows {
+        assert!(
+            r["response_ms"].as_u64().is_some(),
+            "every row states it, 0 = not measured: {r}"
+        );
+    }
+
+    let Some(hand) = registry_script("hand") else {
+        return;
+    };
+    let taken = hand_command(
+        &hand,
+        json!({"op": "model_upsert",
+               "model": {"model_id": "test/timed", "response_ms": 640}}),
+    );
+    assert_eq!(rejection(&taken), None, "{taken:?}");
+    assert_eq!(
+        first_carry(&taken)["cmd"]["model"]["response_ms"],
+        640,
+        "{taken:?}"
+    );
+    let refused = hand_command(
+        &hand,
+        json!({"op": "model_upsert",
+               "model": {"model_id": "test/timed", "response_ms": "fast"}}),
+    );
+    assert_eq!(
+        rejection(&refused).as_deref(),
+        Some("invalid_model_field"),
+        "{refused:?}"
+    );
+}
+
+/// GH #1242 (T10-11, R-T10-1): the registry keeps a third protocol apart. A
+/// row whose `wire_dialect` is `messages` is a model on the provider's native
+/// Messages wire, served only to a cell that subscribed with
+/// `"protocol": "anthropic"` -- the `decisions` form of GH #957. Its push
+/// never carries `wire_dialect` (such a cell takes none), a chat cell is never
+/// moved onto it, `subscribe` takes the protocol, and `select` ranks the row
+/// only for an anthropic request.
+#[test]
+fn the_registry_serves_messages_rows_only_to_anthropic_cells() {
+    let (Some(hand), Some(select)) = (registry_script("hand"), registry_script("select")) else {
+        return;
+    };
+    const CHAT: &str = "vendor/chat-a";
+    const NATIVE_A: &str = "vendor/native-a";
+    const NATIVE_B: &str = "vendor/native-b";
+    const CHAT_CELL: &str = "/g/assistant/brain";
+    const NATIVE_CELL: &str = "/g/lab/brain";
+    let models = json!([
+        {"model_id": CHAT, "status": "active", "wire_dialect": "chat_completions",
+         "base_url": "", "cost_in": 10, "cost_out": 50, "context_window": 100000},
+        {"model_id": NATIVE_A, "status": "active", "wire_dialect": "messages",
+         "base_url": "https://native.example", "cost_in": 4, "cost_out": 20,
+         "context_window": 200000},
+        {"model_id": NATIVE_B, "status": "active", "wire_dialect": "messages",
+         "base_url": "https://native.example", "cost_in": 5, "cost_out": 25,
+         "context_window": 200000}
+    ]);
+    let subscribers = json!([
+        {"cell_path": CHAT_CELL, "tier": "", "pinned": 0, "start_model": CHAT,
+         "package_hash": "", "model_id": CHAT, "rank": "start", "reason": "start_value",
+         "since": "t", "protocol": ""},
+        {"cell_path": NATIVE_CELL, "tier": "", "pinned": 0, "start_model": NATIVE_A,
+         "package_hash": "", "model_id": NATIVE_A, "rank": "start", "reason": "start_value",
+         "since": "t", "protocol": "anthropic"}
+    ]);
+    let override_cmd = |scope: &str, matching: &str, model: &str| {
+        json!({"op": "override_set", "tier": "", "model_id": model, "reason": "",
+               "scope": scope, "match": matching, "id": "", "cell_path": "",
+               "start_model": "", "pinned": null, "announce": false, "entries": [],
+               "actor": "operator", "call_id": "c1"})
+    };
+    let world = |cmd: Value, extras: Vec<Value>| {
+        let mut results = vec![models.clone(), json!([]), json!([]), subscribers.clone()];
+        results.extend(extras);
+        hand_echo(&hand, "world", json!({"cmd": cmd}), results)
+    };
+    let pushes = |out: &[Value]| -> Vec<(String, Value)> {
+        out.iter()
+            .filter(|m| m["header"]["route"] == "update")
+            .map(|m| {
+                (
+                    m["header"]["subscriber"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    m["params"].clone(),
+                )
+            })
+            .collect()
+    };
+
+    // A targeted replacement onto a messages row below /g reaches the
+    // anthropic cell alone, and its push names no dialect.
+    let out = world(
+        override_cmd("target", "/g", NATIVE_B),
+        vec![json!([]), json!([{"cell_path": NATIVE_CELL}])],
+    );
+    let p = pushes(&out);
+    assert_eq!(p.len(), 1, "one push, to the anthropic cell only: {out:?}");
+    assert_eq!(p[0].0, NATIVE_CELL);
+    assert_eq!(p[0].1["model"], NATIVE_B);
+    assert!(
+        p[0].1.get("wire_dialect").is_none(),
+        "an anthropic cell is never sent a dialect: {}",
+        p[0].1
+    );
+
+    // A global swap of the chat model onto a messages row moves no chat cell.
+    let out = world(override_cmd("global", CHAT, NATIVE_B), vec![]);
+    assert!(pushes(&out).is_empty(), "no chat cell moves: {out:?}");
+
+    // `subscribe` takes the protocol.
+    let out = hand_command(
+        &hand,
+        json!({"op": "subscribe", "cell_path": NATIVE_CELL, "start_model": NATIVE_A,
+               "protocol": "anthropic"}),
+    );
+    assert_eq!(rejection(&out), None, "{out:?}");
+    assert_eq!(
+        first_carry(&out)["cmd"]["entries"],
+        json!([{"cell_path": NATIVE_CELL, "start_model": NATIVE_A, "protocol": "anthropic"}]),
+        "{out:?}"
+    );
+
+    // `select` takes the protocol of the asker and ranks a messages row only
+    // for it: the cheaper native rows are never a chat answer.
+    let asked = run_registry_script(
+        &select,
+        json!({"header": {"hop": {"route": "in_select"}, "context": {"asker": "/a"}}}),
+        json!({"messages": [{"origin": "assistant", "type": "tool_call", "id": "c",
+                             "text": json!({"protocol": "anthropic"}).to_string()}]}),
+    );
+    assert_eq!(
+        first_carry(&asked)["req"]["protocol"],
+        "anthropic",
+        "{asked:?}"
+    );
+    let ranked = |protocol: &str| -> Value {
+        let req = json!({"tier": "", "caps": [], "max_cost": null, "min_context": null,
+                         "asker": "/a", "call_id": "c", "protocol": protocol});
+        run_registry_script(
+            &select,
+            json!({"header": {"hop": {"route": "rstore", "operation": "select"},
+                              "context": {"lr_phase": "models",
+                                          "lr_carry": json!({"req": req, "tiers": {}})
+                                              .to_string()}}}),
+            json!({"messages": [{"origin": "tool", "type": "tool_result", "id": "x",
+                                 "text": models.to_string()}]}),
+        )
+        .into_iter()
+        .find(|m| m["header"]["route"] == "answer")
+        .expect("an answer")
+    };
+    assert_eq!(ranked("")["header"]["model_id"], CHAT);
+    assert_eq!(ranked("anthropic")["header"]["model_id"], NATIVE_A);
+}
+
+/// GH #1242 (T4-04, R-WP-2): speed is a measurement, not prose. The
+/// translator is shown each row's `response_ms` and told to judge speed by it
+/// alone (0 = not measured), and no shipped row claims speed in its
+/// strengths unless its response time is measured. Which row the `quick`
+/// tier means is the measurement's answer, not this test's.
+#[test]
+fn the_translator_judges_speed_by_the_measured_column_only() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let Some(hand) = registry_script("hand") else {
+        return;
+    };
+    let catalogue = json!([
+        {"model_id": "test/timed", "provider": "gateway", "status": "active",
+         "wire_dialect": "chat_completions", "context_window": 100000, "cost_in": 10,
+         "cost_out": 50, "caps": {}, "traits": {}, "strengths": "a test row",
+         "response_ms": 640},
+        {"model_id": "test/untimed", "provider": "gateway", "status": "active",
+         "wire_dialect": "chat_completions", "context_window": 100000, "cost_in": 5,
+         "cost_out": 25, "caps": {}, "traits": {}, "strengths": "a test row",
+         "response_ms": 0}
+    ]);
+    // The store's echo of a claim (expired removed, open before, the claim),
+    // then the catalogue: the hand asks the translator.
+    let out = hand_echo(
+        &hand,
+        "claimed",
+        json!({"n": 0, "claims": [{"cid": "q1", "rh": "r1", "ch": "",
+                                   "requirement": "answers a caller without delay"}]}),
+        vec![json!([]), json!([]), json!([]), catalogue],
+    );
+    let ask = out
+        .iter()
+        .find(|m| m["header"]["route"] == "translate")
+        .unwrap_or_else(|| panic!("a question to the translator: {out:?}"));
+    let instructions = ask["system"]["instructions"]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        instructions.contains("response_ms"),
+        "the translator is told what the column means: {instructions}"
+    );
+    let shown: Vec<(String, u64)> = ask["messages"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| meclaw_core::serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("model_id").is_some())
+        .map(|v| {
+            (
+                v["model_id"].as_str().unwrap_or_default().to_string(),
+                v["response_ms"].as_u64().unwrap_or(u64::MAX),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            ("test/timed".to_string(), 640),
+            ("test/untimed".to_string(), 0)
+        ],
+        "every catalogue line carries the measured response time: {ask}"
+    );
+
+    let (_, rows) = seed_rows(&root, "store/seed/models.jsonl");
+    for r in &rows {
+        let s = r["strengths"].as_str().unwrap_or_default().to_lowercase();
+        let claims_speed = ["fast", "quick", "latency", "speed"]
+            .iter()
+            .any(|w| s.contains(w));
+        assert!(
+            !claims_speed || r["response_ms"].as_u64().unwrap_or(0) > 0,
+            "a row claims speed in prose without a measured response time: {r}"
+        );
+    }
+}
+
+/// GH #1242 (T4-04, R-WP-2, Lab T4-03): the `quick` tier is the measurement's
+/// answer. Every model the conformance tool timed (`latency.json` beside its
+/// `measured.json`) carries that p50 as its `response_ms`, and the seed's
+/// `quick` tier names the fastest timed row that hit at least 95 % of the
+/// tool calls. A row timed with reasoning on says so in its note, so a slow
+/// mandatory-reasoning row is not read as a fast one. GH #1243: the tier
+/// serves chat cells, so a native `messages` row (another protocol, which no
+/// chat cell is ever resolved to) is timed and held to its p50 but never
+/// the tier's answer.
+#[test]
+fn the_quick_tier_is_the_fastest_timed_model_that_hits_its_tools() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let conformance =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/conformance");
+    let mut timed: Vec<(String, Value)> = std::fs::read_dir(&conformance)
+        .expect("fixtures/conformance")
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path().join("latency.json");
+            p.is_file()
+                .then(|| (e.file_name().to_string_lossy().to_string(), read_json(&p)))
+        })
+        .collect();
+    timed.sort_by(|a, b| a.0.cmp(&b.0));
+    assert!(
+        !timed.is_empty(),
+        "no latency.json under {}: the quick tier has no measurement",
+        conformance.display()
+    );
+
+    let (_, models) = seed_rows(&root, "store/seed/models.jsonl");
+    let mut reliable: Vec<(f64, String)> = Vec::new();
+    for (dir, lat) in &timed {
+        // The tool's slug: `/` -> `__`, a `local` row under `local__<slug>`.
+        let row = models
+            .iter()
+            .find(|r| {
+                let s = r["model_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .replace('/', "__");
+                *dir == s || (r["provider"] == "local" && *dir == format!("local__{s}"))
+            })
+            .unwrap_or_else(|| panic!("{dir} was timed but the catalogue has no row for it"));
+        let id = row["model_id"].as_str().unwrap_or_default().to_string();
+        let p50 = lat["p50_ms"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{dir}/latency.json: p50_ms"));
+        assert_eq!(
+            row["response_ms"].as_u64(),
+            Some(p50.round() as u64),
+            "{id}: response_ms is the measured p50 ({dir}/latency.json)"
+        );
+        let reasoning = lat["reasoning"].as_str().unwrap_or("off");
+        if reasoning != "off" {
+            let note = row["note"].as_str().unwrap_or_default();
+            assert!(
+                note.contains("response_ms") && note.contains("reasoning"),
+                "{id} was timed with reasoning {reasoning}; its note says so: {note}"
+            );
+        }
+        if lat["hit_rate"].as_f64().unwrap_or(0.0) >= 0.95 && row["wire_dialect"] != "messages" {
+            reliable.push((p50, id));
+        }
+    }
+    let fastest = reliable
+        .iter()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, id)| id.clone())
+        .expect("a timed row with at least 95 % tool hits");
+    let (_, tiers) = seed_rows(&root, "store/seed/tiers.jsonl");
+    let quick: Vec<&str> = tiers
+        .iter()
+        .filter(|t| t["tier"] == "quick" && t["active"] == 1)
+        .filter_map(|t| t["model_id"].as_str())
+        .collect();
+    assert_eq!(
+        quick,
+        vec![fastest.as_str()],
+        "the quick tier is the fastest timed row with at least 95 % tool hits"
+    );
 }

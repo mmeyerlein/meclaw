@@ -597,6 +597,21 @@ class TheIsolation(unittest.TestCase):
         self.assertEqual(flakes.parse_unittest_output(
             "UNEXPECTED SUCCESS: test_x (m.U.test_x)\n")["failed"], ["m.U.test_x"])
 
+    def test_a_module_path_with_a_hyphen_is_a_test_id(self):
+        """v2-r3-cistore: the export audit's selftests live in
+        `plans/export-fixtures/` -- `plans.export-fixtures.<mod>` imports, but
+        the id had to be `[\\w.]+`, so no line of theirs was a test and
+        flake_triage called every run of them NOT RUN."""
+        mod = "plans.export-fixtures.t.C"
+        text = (f"test_a ({mod}.test_a) ... ok\n"
+                f"test_b ({mod}.test_b) ... FAIL\n\n" + "=" * 70 + "\n"
+                f"FAIL: test_b ({mod}.test_b)\n")
+        parsed = flakes.parse_unittest_output(text)
+        self.assertEqual(parsed["passed"], [f"{mod}.test_a"])
+        self.assertEqual(parsed["failed"], [f"{mod}.test_b"])
+        self.assertEqual(flakes.parse_unittest_output(
+            f"UNEXPECTED SUCCESS: test_x ({mod}.test_x)\n")["failed"], [f"{mod}.test_x"])
+
     def test_a_skip_reason_with_a_quote_is_a_skip(self):
         """Re-check fix3 H: unittest prints the reason with `repr`, so a reason
         holding `'` comes in double quotes -- that line was no status at all."""

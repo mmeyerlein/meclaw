@@ -71,6 +71,15 @@ impl ProxyCellFactory {
     }
 }
 
+/// GH #1235 (T6-22): `bot_token` (Telegram, Slack) and `app_token` (Slack)
+/// as the file declares them -- no `${VAR}`, the grant is the source.
+fn chat_tokens_declared(declared: &JsonValue) -> Result<(), String> {
+    for key in ["bot_token", "app_token"] {
+        crate::credential::refuse_env_secret(key, declared.get(key), &format!("{key}_grant_id"))?;
+    }
+    Ok(())
+}
+
 impl CellFactory for ProxyCellFactory {
     /// This type's tables are fixed in its own Rust code, so a seed header --
     /// which describes rows, not a schema -- can never describe them (GH #399,
@@ -120,14 +129,18 @@ impl CellFactory for ProxyCellFactory {
     /// GH #921: the same duty for a `webhook` proxy's `verify.secret`. A
     /// `platform` that does not parse runs both checks, each looking only at
     /// the key its own platform has.
+    ///
+    /// GH #1235 (T6-22): the chat platforms' tokens take no `${VAR}` either;
+    /// each comes sealed under its `*_grant_id`.
     fn validate_declared_params(&self, declared: &JsonValue) -> Result<(), String> {
         match crate::proxy::platform::parse_platform(declared) {
-            Ok(ProxyPlatform::Telegram | ProxyPlatform::Slack) => Ok(()),
+            Ok(ProxyPlatform::Telegram | ProxyPlatform::Slack) => chat_tokens_declared(declared),
             Ok(ProxyPlatform::Meclaw) => crate::proxy::meclaw::params::validate_declared(declared),
             Ok(ProxyPlatform::Webhook) => {
                 crate::proxy::webhook::params::validate_declared(declared)
             }
             Err(_) => {
+                chat_tokens_declared(declared)?;
                 crate::proxy::meclaw::params::validate_declared(declared)?;
                 crate::proxy::webhook::params::validate_declared(declared)
             }
@@ -180,6 +193,7 @@ impl CellFactory for ProxyCellFactory {
                 contract.transfer_bounds(),
                 contract.ingress_carries_trace,
                 message_timeout,
+                contract.drain.clone(),
             )?),
             ProxyPlatform::Slack => Box::new(make_build_slack(
                 params,
@@ -296,6 +310,7 @@ impl CellFactory for ProxyCellFactory {
                     contract.transfer_bounds(),
                     contract.ingress_carries_trace,
                     message_timeout,
+                    contract.drain.clone(),
                 )
                 .ok()?,
             ),
@@ -394,6 +409,8 @@ fn make_build(
     // backstop of the cell that answers, which only the topology knows; the
     // shipped connector carries it as `typing_max_ms` (review fix1).
     default_backstop: Option<std::time::Duration>,
+    // GH #1253 — the colony's drain view, carried into every (re)spawn.
+    drain: meclaw_colony::DrainView,
 ) -> Result<
     impl Fn() -> (
         mpsc::Sender<Message>,
@@ -455,6 +472,7 @@ fn make_build(
     // GH #260: the substrate half of the write boundary, captured like the
     // consumes views so restart and reconnect carry the same declaration.
     let bounds_cap = bounds;
+    let drain_cap = drain;
     let carries_cap = carries_trace;
 
     Ok(move || -> (
@@ -505,7 +523,9 @@ fn make_build(
         )
         // GH #907: the store a fetched document is committed to -- the same
         // handle the delivery boundary gets, on birth and respawn alike.
-        .with_blob_store(blob_cap.clone());
+        .with_blob_store(blob_cap.clone())
+        // GH #1253: the I/O task stops polling once the colony drains.
+        .with_drain(drain_cap.clone());
         let mut cell = cell;
         cell.set_typing_cadence(typing_cadence);
         // GH #1059: a grant's connector is born without a token and asks for it.
@@ -703,7 +723,7 @@ fn make_build_meclaw(
                 parsed
                     .auth
                     .as_ref()
-                    .and_then(crate::proxy::meclaw::params::PeerAuth::client_secret_grant),
+                    .and_then(crate::proxy::meclaw::params::PeerAuth::secret_grant),
             );
         let db = DbConn::wrap(conn, Some(Duration::from_millis(parsed.query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
@@ -833,7 +853,9 @@ mod tests {
             let e = with(platform, "lit-921").expect_err("refused");
             assert!(e.starts_with("verify.secret"), "{platform}: {e}");
             assert!(!e.contains("lit-921"), "{e}");
-            assert_eq!(with(platform, "${HOOK_SECRET}"), Ok(()), "{platform}");
+            // GH #1235 (T6-22): no `${VAR}` either; the grant is the source.
+            let e = with(platform, "${HOOK_SECRET}").expect_err("refused");
+            assert!(e.starts_with("verify.secret"), "{platform}: {e}");
         }
         assert_eq!(with("telegram", "lit-921"), Ok(()));
     }

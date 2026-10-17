@@ -1,28 +1,34 @@
 {
-  "id": "gen-1791182152-2VBXQKmiLXMSsdp5x3Wt",
+  "id": "gen-1792177843-6DW8sFR0mevLzhAxFIft",
   "object": "chat.completion",
-  "created": 1791182152,
+  "created": 1792177843,
   "model": "google/gemini-3.8-flash",
   "provider": "Google",
   "system_fingerprint": null,
-  "service_tier": "provisioned",
+  "service_tier": "default",
   "choices": [
     {
       "index": 0,
       "logprobs": null,
-      "finish_reason": "stop",
-      "native_finish_reason": "STOP",
+      "finish_reason": "length",
+      "native_finish_reason": "MAX_TOKENS",
       "message": {
         "role": "assistant",
-        "content": "OK",
+        "content": null,
         "refusal": null,
-        "reasoning": null,
+        "reasoning": "**Confirming Instruction Compliance**\n\nI've processed the latest input, focusing on the direct instruction to respond with \"OK.\" My thought process confirms that this singular response fulfills the immediate requirement.\n\n",
         "reasoning_details": [
           {
             "type": "reasoning.text",
-            "signature": "AY89a1/pFoz8ubQ8LTYtxZyTrRnV54VH9VaoPUcO+BUl/F/PwgL4H0rsOpd92fEKqDI0lJhnNJHLaroiXPr8FXMjH5quedHgoVAOVcmpby7xyqesPG+5",
+            "text": "**Confirming Instruction Compliance**\n\nI've processed the latest input, focusing on the direct instruction to respond with \"OK.\" My thought process confirms that this singular response fulfills the immediate requirement.\n\n",
             "format": "google-gemini-v1",
             "index": 0
+          },
+          {
+            "type": "reasoning.encrypted",
+            "data": "AY89a198sLA5MnoEmazU0PW/1cyUvDaQ9mux4Z91ZW06pSIo5+kAD8kFbXevMGFm1zvd+0/GeOA/ZLwQmT2GM5d8H415rQGoYDhf6GknnsdiuhrLmDxI3ZJHpg37h5m8ZIiANXwoQ1WOSp4IAMce8geSgCwhqGsSNaeed/HsqBRcfKac2L2rED685bZCx9MfzaZ+hLAMLJkbTyhLnCb3dQvvT01SWv160DkKHJ4WhRDQdLVsjwhPa6oaik40gZM1+tbZGtLFN5yDHqpNIEqt7oU25KFJoojjXqv0RSiLabaR5FseuZFXimorIIjVMQgyiRbFLqOu+7VQNJXxxe74mQyOM3DCX5wDz2uYvB1lVhsnd68fImxJMqZkXeP3UfRoXBzhe9EqMMqUlRa/MKX061TvQRnUujB30NPEPEdeztn1zhiSWzC/i689EXIdywOb5hLBXdOof3lSA05zTgFZt+aIzCeEIPN7fkIYBLNKXg==",
+            "format": "google-gemini-v1",
+            "index": 1
           }
         ]
       }
@@ -30,9 +36,9 @@
   ],
   "usage": {
     "prompt_tokens": 9,
-    "completion_tokens": 1,
-    "total_tokens": 10,
-    "cost": 1.0395e-05,
+    "completion_tokens": 60,
+    "total_tokens": 69,
+    "cost": 0.0002294325,
     "is_byok": false,
     "prompt_tokens_details": {
       "cached_tokens": 0,
@@ -41,12 +47,12 @@
       "video_tokens": 0
     },
     "cost_details": {
-      "upstream_inference_cost": 1.05e-05,
+      "upstream_inference_cost": 0.00023175,
       "upstream_inference_prompt_cost": 6.75e-06,
-      "upstream_inference_completions_cost": 3.75e-06
+      "upstream_inference_completions_cost": 0.000225
     },
     "completion_tokens_details": {
-      "reasoning_tokens": 0,
+      "reasoning_tokens": 60,
       "image_tokens": 0,
       "audio_tokens": 0
     }

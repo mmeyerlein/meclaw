@@ -118,6 +118,30 @@ class MeasureMinimumTest(unittest.TestCase):
                 else:
                     self.assertNotIn("opt-out", line[0])
 
+    def test_the_default_tree_is_the_gates_lane_tree(self):
+        """GH #1199: `--tree` defaults to the gate's one rule for a lane tree
+        (`schedule.lane_tree_name` under `admission_tree`), not a second spelling of
+        `wt/<strand>`: the core's tree keeps the plain name."""
+        import argparse
+        args = argparse.Namespace(lane="lane-x", tree="", root="/r", strand="pass2", target_dir="/tg",
+                                  only="A3", runs=1)
+        trees = []
+
+        def measure_atom(aid, cmd, prep, timeout, runner, tree, *a, **kw):
+            trees.append(tree)
+            return {"atom": aid, "median": 1.0, "values": [1.0], "logs": ["/l"], "browsers": ""}
+
+        real = m._schedule.lane_tree_name
+        for rule, want in ((real, "/r/wt/pass2"), (lambda repo, wt: "%s+%s" % (repo, wt), "/r/wt/meclaw+pass2")):
+            trees.clear()
+            with self.subTest(want=want), mock.patch.object(m, "lane_target", return_value="u@x"), \
+                    mock.patch.object(m, "ssh_runner", return_value=lambda s, t: (0, "8\n")), \
+                    mock.patch.object(m, "measure_atom", side_effect=measure_atom), \
+                    mock.patch.object(m._schedule, "lane_tree_name", side_effect=rule), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                m.measure_atoms(args)
+                self.assertEqual([want], trees)
+
     def test_an_empty_run_of_a_hundredth_second_is_rejected(self):
         """M0 nit: a constant command that ran 0.01 s with rc 0 measured nothing."""
         runner = fake_runner([(0.1, 0, 0.01)] * 2)

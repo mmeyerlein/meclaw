@@ -10,13 +10,15 @@
 //! request fixtures as `fixtures/conformance/<slug>/measured.json`, and this
 //! file keeps the two equal offline:
 //!
-//! 1. every `active` or `explicit` row on a chat or responses wire names its params;
+//! 1. every `active` or `explicit` row on a chat, responses or native
+//!    Messages wire names its params;
 //! 2. every such row has a measurement;
 //! 3. the row's list, read on the sampling fields, is the measured `taken`
 //!    set in the cell's order (`accepted_unverified` never counts);
 //! 4. every held measurement passed the checks a catalogue list rests on
 //!    (K1 shape, K2 usage, K3 params, K7 no stream);
-//! 5. the tool's field list is the cell's (`SAMPLING_PARAMS`).
+//! 5. the tool's field list is the cell's (`SAMPLING_PARAMS`);
+//! 6. the native `claude-haiku-5-5` row (GH #1243) is one of those rows.
 //!
 //! Guarded like every other template-reading test (GH #49); the tool lies
 //! under `workshop/`, which never travels, so 5 skips without it.
@@ -27,8 +29,13 @@ use std::path::{Path, PathBuf};
 /// The conformance tool; its `SAMPLING_PARAMS` mirrors the cell's.
 const TOOL: &str = "workshop/tools/llm-conformance/conformance.py";
 
-/// The wires a sampling list governs (`decisions` rows carry none).
-const CHAT_WIRES: &[&str] = &["chat_completions", "responses"];
+/// The wires a sampling list governs (`decisions` rows carry none). GH #1243:
+/// `messages`, the native wire of a `provider: "anthropic"` cell, sends its
+/// sampling fields by the same `supported_params` list.
+const CHAT_WIRES: &[&str] = &["chat_completions", "responses", "messages"];
+
+/// GH #1243: the native Claude row of the test colonies and village figures.
+const HAIKU: &str = "claude-haiku-5-5";
 
 /// The checks a catalogue list rests on (README section 4 of the wave plan:
 /// K4-K6 and K8 may be `n/a`, and K8 is the cell's request, not the model).
@@ -284,5 +291,30 @@ fn h5_the_tool_mirrors_the_cell() {
         tool,
         sampling_params(),
         "the conformance tool's SAMPLING_PARAMS left the cell's (src/llm/translate.rs)"
+    );
+}
+
+/// GH #1243: the native row is held to its measurement like every chat row
+/// (the three tests above then name its params, its record and its list);
+/// its `response_ms` against `latency.json` is held by the registry
+/// template's quick-tier test, like every timed row's.
+#[test]
+fn h5_the_native_haiku_row_rests_on_its_measurement() {
+    let Some(path) = catalogue() else {
+        eprintln!("llm-registry did not travel into this tree -- skipped (GH #49)");
+        return;
+    };
+    let rows = chat_rows(&path);
+    let Some(row) = rows.iter().find(|r| model_id(r) == HAIKU) else {
+        panic!(
+            "no held row `{HAIKU}` on a wire of {CHAT_WIRES:?} in {}",
+            path.display()
+        );
+    };
+    let field = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+    assert_eq!(
+        (field("provider"), field("wire_dialect"), field("status")),
+        ("anthropic", "messages", "explicit"),
+        "{HAIKU}: the native Messages row, reached by name only"
     );
 }

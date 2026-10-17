@@ -15,7 +15,9 @@
     ],
     "provider_extra": {
       "parallel_tool_calls": false
-    }
+    },
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
   },
   "contract": {
     "version": "1.0.0",

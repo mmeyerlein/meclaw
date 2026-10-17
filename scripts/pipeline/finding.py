@@ -12,8 +12,9 @@ import re
 # Ordered by how precisely a hit names the place; the first kind found wins.
 # Each entry: (regex, how the hit is written: "g1", "g2" or "g1:g2").
 _KINDS = (
-    # unittest: `FAIL: test_x (scripts.tests.mod.Class.test_x)`
-    (re.compile(r"^(?:FAIL|ERROR): \S+ \(([\w.]+)\)"), "g1"),
+    # unittest: `FAIL: test_x (scripts.tests.mod.Class.test_x)`; a module path may
+    # hold a hyphen (`plans.export-fixtures.<mod>`, v2-r3-cistore)
+    (re.compile(r"^(?:FAIL|ERROR): \S+ \(([\w.-]+)\)"), "g1"),
     # nextest: `        FAIL [   0.123s] crate::bin some::test`; nextest >= 0.9.146 puts a
     # padded progress counter `( 3232/10378)` before the binary -- without the
     # optional group the label read `at ( 3232/10378)` and a counter with more

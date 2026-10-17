@@ -528,7 +528,10 @@ class TestMessagesWire(ConformanceCase):
                 self.assertEqual(sum(1 for b in sent if not b.get("tools")
                                      and probe.items() <= b.items()), 1)
                 self.assertEqual(lat["reasoning"], "off")
+                self.assertIsNone(lat["switch_note"])
                 switch = conformance.REASONING_OFF[wire]
+                # The switch is tried once before the run, not in every call.
+                self.assertEqual(self.switch_trials(sent, switch), 1)
                 bodies = self.latency_bodies(fake)
                 self.assertEqual(len(bodies), 20)
                 for i, b in enumerate(bodies):
@@ -545,6 +548,10 @@ class TestMessagesWire(ConformanceCase):
                 saved = json.loads((record / slug / "latency.json").read_text())
                 self.assertEqual(saved["hits"], 16)
                 self.assertEqual(saved["reasoning"], "off")
+
+    @staticmethod
+    def switch_trials(sent, switch):
+        return sum(1 for b in sent if not b.get("tools") and switch.items() <= b.items())
 
     @staticmethod
     def latency_bodies(fake):
@@ -575,6 +582,73 @@ class TestMessagesWire(ConformanceCase):
                 for b in bodies:
                     for field in ("reasoning", "thinking", "reasoning_effort"):
                         self.assertNotIn(field, b)
+
+    def test_latency_on_a_model_that_must_reason_measures_at_low_effort(self):
+        # T4-03 (16.10.): gemini-3.8-flash takes `reasoning` in K3 but refuses
+        # the switch with 400 "Reasoning is mandatory" -- every timed call was
+        # an error and the probe still said `off`. The switch is tried once;
+        # refused, the run measures at K5's low form and says `mandatory_low`.
+        fake = fake_provider.FakeProvider()
+        self.base = fake.start()
+        self.addCleanup(fake.stop)
+        code, report, out = self.run_tool(
+            "fake/reasoning-mandatory", "--only", "K1", "--latency", "20",
+            "--price-in", "1", "--price-out", "5", endpoint_class="openrouter")
+        self.assertEqual(code, 0, out)
+        lat = report["latency"]
+        self.assertEqual(lat["reasoning"], "mandatory_low")
+        self.assertIn("HTTP 400", lat["switch_note"])
+        self.assertEqual(lat["tool_calls"], 16)
+        sent = [json.loads(raw) for raw in fake.bodies]
+        self.assertEqual(self.switch_trials(sent, conformance.REASONING_OFF["chat"]), 1)
+        bodies = self.latency_bodies(fake)
+        self.assertEqual(len(bodies), 20)
+        self.assertTrue(all(b.get("reasoning") == {"effort": "low"} for b in bodies))
+
+    def test_latency_downgrades_only_on_a_refusal_of_the_switch(self):
+        # Delta check AN3-FIX I1: a 503 on the switch's trial is no refusal --
+        # the run keeps the switch K3 proved and says `off`, the trial's
+        # answer stands in `switch_note` (OR-programm-tm.AN3-FIX.orch-1).
+        fake = fake_provider.FakeProvider()
+        self.base = fake.start()
+        self.addCleanup(fake.stop)
+        code, report, out = self.run_tool(
+            "fake/reasoning-switch-503", "--only", "K1", "--latency", "20",
+            "--price-in", "1", "--price-out", "5", endpoint_class="openrouter")
+        self.assertEqual(code, 0, out)
+        lat = report["latency"]
+        self.assertEqual(lat["reasoning"], "off")
+        self.assertTrue(lat["switch_note"].startswith("HTTP 503"), lat["switch_note"])
+        self.assertEqual(lat["tool_calls"], 16)
+        switch = conformance.REASONING_OFF["chat"]
+        sent = [json.loads(raw) for raw in fake.bodies]
+        self.assertEqual(self.switch_trials(sent, switch), 1)
+        bodies = self.latency_bodies(fake)
+        self.assertEqual(len(bodies), 20)
+        self.assertTrue(all(b.get("reasoning") == switch["reasoning"] for b in bodies))
+
+    def test_latency_sends_no_unproven_low_form_on_the_messages_wire(self):
+        # Delta check AN3-FIX M1: on the Messages wire the low form is
+        # `reasoning_effort`, which --only K1 never proved. Refused switch and
+        # no proven low form: nothing is sent, the label says the model was
+        # timed at its default reasoning.
+        fake = fake_provider.FakeProvider()
+        self.base = fake.start()
+        self.addCleanup(fake.stop)
+        code, report, out = self.run_tool(
+            "claude-fake-reasoning-mandatory", "--wire", "messages", "--only", "K1",
+            "--latency", "20", "--price-in", "1", "--price-out", "5",
+            endpoint_class="anthropic")
+        self.assertEqual(code, 0, out)
+        lat = report["latency"]
+        self.assertEqual(lat["reasoning"], "mandatory_default")
+        self.assertIn("HTTP 400", lat["switch_note"])
+        self.assertEqual(lat["tool_calls"], 16)
+        bodies = self.latency_bodies(fake)
+        self.assertEqual(len(bodies), 20)
+        for b in bodies:
+            for field in ("thinking", "output_config"):
+                self.assertNotIn(field, b)
 
 
 def tearDownModule():

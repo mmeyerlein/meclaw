@@ -2,8 +2,15 @@
 //!
 //! The menu lives durably in the brain (`system.tools.*` in `cell.db`). A
 //! channel that may use only part of it sends the body slot
-//! `tool_scope: {"allow": [..], "deny": [..]}` with each call; this module
-//! filters the menu for that request and never writes it back. Pure, no I/O.
+//! `tool_scope: {"allow": [..], "deny": [..], "hint": [..]}` with each call;
+//! this module filters the menu for that request and never writes it back.
+//! Pure, no I/O.
+//!
+//! **Two levels** (R-WM-1): an entry that stays travels whole (the default,
+//! its ops and arguments), or — when `hint` names it — at the hint level: its
+//! name, the first sentence of its description and the schema `{op: string}`.
+//! The model fetches the rest of a hinted family through `help`; the hint
+//! level keeps the prompt small for families the turn will rarely call.
 //!
 //! **Order is kept, never re-sorted** (OR-SN-31): the filter walks the menu in
 //! its own order and drops entries, so the same scope yields byte-identical
@@ -11,9 +18,9 @@
 //! hold across the turns of one session (R-SN-1). The order of the names in
 //! `allow` does not matter.
 
-use meclaw_core::serde_json::Value;
+use meclaw_core::serde_json::{Value, json};
 
-/// A parsed `tool_scope` slot. Both halves are optional.
+/// A parsed `tool_scope` slot. All three parts are optional.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ToolScope {
     /// When set, only these tools stay (intersection with the menu). An empty
@@ -21,6 +28,9 @@ pub(crate) struct ToolScope {
     allow: Option<Vec<String>>,
     /// These tools leave; applied after `allow`.
     deny: Vec<String>,
+    /// These tools stay at the hint level (name, first sentence, `{op}`).
+    /// Never narrows and never widens: only an entry that `allow`/`deny` keep.
+    hint: Vec<String>,
 }
 
 /// What the filter produced for one request.
@@ -37,8 +47,9 @@ impl ToolScope {
     /// `Ok(None)` — OR-SN-69: a writer that fills the slot from an optional
     /// value (the collector, T2) must not have to drop the key to mean "no
     /// scope" (rev-L1 M-3). Anything else that is not
-    /// `{"allow"?: [string], "deny"?: [string]}` is an error: a scope that
-    /// cannot be read must not silently widen the menu to all of it.
+    /// `{"allow"?: [string], "deny"?: [string], "hint"?: [string]}` is an
+    /// error: a scope that cannot be read must not silently widen the menu to
+    /// all of it.
     pub(crate) fn parse(slot: Option<&Value>) -> Result<Option<Self>, String> {
         let Some(slot) = slot.filter(|v| !v.is_null()) else {
             return Ok(None);
@@ -46,26 +57,43 @@ impl ToolScope {
         let Some(obj) = slot.as_object() else {
             return Err("invalid tool_scope slot: not a JSON object".to_string());
         };
-        if let Some(key) = obj.keys().find(|k| !matches!(k.as_str(), "allow" | "deny")) {
+        if let Some(key) = obj
+            .keys()
+            .find(|k| !matches!(k.as_str(), "allow" | "deny" | "hint"))
+        {
             return Err(format!(
-                "invalid tool_scope slot: unknown key {key:?} (allowed: allow, deny)"
+                "invalid tool_scope slot: unknown key {key:?} (allowed: allow, deny, hint)"
             ));
         }
         let allow = obj.get("allow").map(|v| names(v, "allow")).transpose()?;
-        let deny = obj
-            .get("deny")
-            .map(|v| names(v, "deny"))
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Some(Self { allow, deny }))
+        let half = |h: &str| -> Result<Vec<String>, String> {
+            Ok(obj
+                .get(h)
+                .map(|v| names(v, h))
+                .transpose()?
+                .unwrap_or_default())
+        };
+        Ok(Some(Self {
+            allow,
+            deny: half("deny")?,
+            hint: half("hint")?,
+        }))
     }
 
     /// Filter `menu` — `(slot key, tool object)` pairs in menu order. A name
     /// matches an entry by its slot key under `system.tools` or by the tool's
-    /// own function name (`function.name`, or a flat `name`).
+    /// own function name (`function.name`, or a flat `name`). An entry that
+    /// stays and that `hint` names is replaced by its hint form in place, so
+    /// the order is the menu's either way.
     pub(crate) fn apply(&self, menu: Vec<(String, Value)>) -> Scoped {
         let mut unknown: Vec<String> = Vec::new();
-        for name in self.allow.iter().flatten().chain(self.deny.iter()) {
+        let named = self
+            .allow
+            .iter()
+            .flatten()
+            .chain(&self.deny)
+            .chain(&self.hint);
+        for name in named {
             let known = menu.iter().any(|(k, t)| matches_name(k, t, name));
             if !known && !unknown.contains(name) {
                 unknown.push(name.clone());
@@ -80,10 +108,54 @@ impl ToolScope {
                     .is_none_or(|a| a.iter().any(|n| matches_name(k, t, n)));
                 allowed && !self.deny.iter().any(|n| matches_name(k, t, n))
             })
-            .map(|(_, t)| t)
+            .map(|(k, t)| {
+                if self.hint.iter().any(|n| matches_name(&k, &t, n)) {
+                    hint_form(t)
+                } else {
+                    t
+                }
+            })
             .collect();
         Scoped { tools, unknown }
     }
+}
+
+/// The hint level of one tool object (R-WM-1): the name stays, the
+/// description shrinks to its first sentence, the schema becomes `{op:
+/// string}`. Chat-completions nests the fields under `function`, the flat
+/// form carries them at the top; both keep their shape.
+fn hint_form(mut tool: Value) -> Value {
+    let nested = tool.get("function").is_some_and(Value::is_object);
+    let inner = if nested {
+        &mut tool["function"]
+    } else {
+        &mut tool
+    };
+    if let Some(obj) = inner.as_object_mut() {
+        let first = obj
+            .get("description")
+            .and_then(Value::as_str)
+            .map(first_sentence);
+        if let Some(first) = first {
+            obj.insert("description".into(), Value::String(first));
+        }
+        obj.insert(
+            "parameters".into(),
+            json!({"type": "object", "properties": {"op": {"type": "string"}}, "required": ["op"]}),
+        );
+    }
+    tool
+}
+
+/// The first sentence of a description: up to and including the first `.`
+/// that ends the text or is followed by whitespace, never past the first line.
+fn first_sentence(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    let end = line
+        .char_indices()
+        .find(|&(i, c)| c == '.' && line[i + 1..].chars().next().is_none_or(char::is_whitespace))
+        .map_or(line.len(), |(i, _)| i + 1);
+    line[..end].to_string()
 }
 
 fn names(v: &Value, half: &str) -> Result<Vec<String>, String> {
@@ -117,7 +189,6 @@ fn matches_name(key: &str, tool: &Value, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meclaw_core::serde_json::json;
 
     fn menu(entries: &[(&str, &str)]) -> Vec<(String, Value)> {
         entries

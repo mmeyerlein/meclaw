@@ -1,0 +1,16 @@
+{
+  "wire": "chat",
+  "n": 20,
+  "sent": 20,
+  "window_tokens": 4000,
+  "reasoning": "off",
+  "tool_calls": 19,
+  "hits": 19,
+  "hit_rate": 0.95,
+  "p50_ms": 1359.0,
+  "p95_ms": 1957.5,
+  "prompt_tokens_p50": 4499,
+  "misses": [
+    "17: want send_message, got text"
+  ]
+}

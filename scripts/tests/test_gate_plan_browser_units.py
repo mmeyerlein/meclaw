@@ -595,5 +595,360 @@ class EveryTermReaderTakesOneBinaryOperator(unittest.TestCase):
         self.assertTrue(any(r.search("gh7_runs") for r in regs))
 
 
+# --- OR-TM-8 (K15, GH #1199): a PYTHONPATH reaches its modules, not every .py ---
+#
+# Measured on AN3-FIX (6bd5216f1, 16.10.): a Python-only diff under
+# `workshop/tools/llm-conformance/` planned `build`, `build:browser`, both parts of
+# `browser:display` and `browser:alone` (crit 10800 s on build03). Rule 8 runtime
+# read `RUNTIME_DIR_READS_ONLY["workshop/tools"] = (".py",)` as "every .py at any
+# depth": every unit that names `workshop/tools` -- the PYTHONPATH reader gh661, but
+# also the driver walkers 708/744/gh1209 -- read the file. An `import` from that
+# root reaches only the modules whose every name is a Python identifier;
+# `llm-conformance/` and `display-lab/` are no package.
+
+PY_READER = ('#[test]\nfn a() {\n    let tools = std::path::Path::new("workshop/tools");\n'
+             '    let _ = std::process::Command::new("python3").env("PYTHONPATH", tools);\n}\n')
+WALKER = ('#[test]\nfn a() {\n    let tools = std::path::Path::new("workshop/tools");\n'
+          '    let _ = std::fs::read_dir(tools);\n}\n')
+WALK_ALL = ('#[test]\nfn a() {\n    let d = std::path::Path::new("workshop/fixtures");\n'
+            '    let _ = std::fs::read_dir(d);\n}\n')
+PY_TREE = {
+    "crates/x/Cargo.toml": CARGO,
+    "crates/x/tests/seeds_from_the_tools.rs": PY_READER,
+    "crates/x/tests/walks_the_drivers_browser.rs": WALKER,
+    "crates/x/tests/walks_the_fixtures.rs": WALK_ALL,
+    "workshop/tools/seed.py": "X = 1\n",
+    "workshop/tools/pkg/sub.py": "Y = 1\n",
+    "workshop/tools/llm-conformance/fake_provider.py": "Z = 1\n",
+    "workshop/tools/llm-conformance/README.md": "z\n",
+    "workshop/tools/display-lab/turn.py": "T = 1\n",
+    "workshop/fixtures/some-set/case.py": "C = 1\n",
+}
+SEEDS = "binary_id(=x::seeds_from_the_tools)"
+WALKER_UNIT = "x::walks_the_drivers_browser"
+# The fixture's readers named like the real ones (RUNTIME_DIR_READS_ONLY is per
+# reader, fix round stapel): the PYTHONPATH reader as gh661, the browser walker
+# as gh1209_no_stage. Unnamed they read every file below (fail-closed).
+FIXTURE_READERS = {"workshop/tools": {
+    "seeds_from_the_tools": ((".py",), "import"),
+    "walks_the_drivers_browser": ((".mjs", ".js"), "any")}}
+
+
+def _name_the_fixture_readers(case):
+    patcher = unittest.mock.patch.dict(gp.RUNTIME_DIR_READS_ONLY, FIXTURE_READERS)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
+def _stations(paths, root, mode="strand"):
+    return {s["name"]: s for s in gp.to_json(paths, mode, root, explain=True)["stations"]}
+
+
+class APythonPathReachesItsModules(unittest.TestCase):
+    """Pins (a)-(c) on a fixture tree: they run in the public tree as well."""
+
+    def setUp(self):
+        self.root = _tree(PY_TREE)
+        _name_the_fixture_readers(self)
+
+    def test_a_module_below_a_hyphened_directory_plans_no_cargo_station(self):
+        # pin (a): no reader, no `tests`, no `browser:display` -- so nothing to build
+        for rel in ("workshop/tools/llm-conformance/fake_provider.py",
+                    "workshop/tools/display-lab/turn.py"):
+            st = _stations([rel], self.root)
+            self.assertNotIn("tests", st, rel)
+            self.assertNotIn("browser:display", st, rel)
+            self.assertFalse([n for n, s in st.items() if s.get("cargo")], rel)
+            self.assertEqual({}, gp.test_terms([rel], self.root), rel)
+
+    def test_a_module_the_import_reaches_plans_its_import_reader_and_no_browser(self):
+        # pin (b), fix round stapel I2 (OR-V2.v2-r3-planbrowser.8): a top-level
+        # module and one of a package plan the PYTHONPATH reader; the browser
+        # walker keeps `.mjs`/`.js` only -- before, it ran for every module
+        for rel in ("workshop/tools/seed.py", "workshop/tools/pkg/sub.py"):
+            st = _stations([rel], self.root)
+            self.assertIn(SEEDS, st["tests"]["select"]["filter"], rel)
+            self.assertNotIn("browser:display", st, rel)
+            self.assertNotIn(WALKER_UNIT, st["tests"]["select"]["filter"], rel)
+
+    def test_a_walk_outside_the_table_still_reads_every_file_below(self):
+        # pin (c): fail-closed stays -- a directory the table does not name is
+        # read whole, a hyphened sub-directory and any suffix included
+        rel = "workshop/fixtures/some-set/case.py"
+        self.assertIn("binary_id(=x::walks_the_fixtures)", gp.test_terms([rel], self.root))
+        self.assertTrue(gp.runtime_dir_applies("workshop/fixtures",
+                                               "workshop/fixtures/new-set/x.bin"))
+
+    def test_a_crate_fixture_no_test_names_stays_wide(self):
+        # pin (c): the unread shape keeps rdeps(<crate>) with its reason
+        rel = "crates/x/tests/fixtures/new-set/case.json"
+        terms = gp.test_terms([rel], self.root)
+        self.assertIn("rdeps(x)", terms)
+        self.assertTrue(any(r.startswith("rule:8 runtime unread ") for r in terms["rdeps(x)"]))
+
+
+# OR-V2.v2-r3-planbrowser.2 (stapel c): a browser unit that walks `workshop/tools`
+# for the drivers (744 `.mjs`, gh1209 `.mjs`/`.js`, every depth but node_modules)
+# reads them below a hyphened directory too; the PYTHONPATH reader beside it does
+# not. Before, `RUNTIME_DIR_READS_ONLY` gave every reader `.py` only, and a diff to
+# `lib/no-filters.mjs` or `display-lab/tap.mjs` planned no `browser:display`.
+JS_TREE = dict(PY_TREE, **{"workshop/tools/display-lab/tap.mjs": "export const t = 1;\n",
+                           "workshop/tools/lib/switch.mjs": "export const s = 1;\n",
+                           "workshop/tools/lib/old.js": "module.exports = 1;\n"})
+
+
+class ABrowserWalkReadsTheDrivers(unittest.TestCase):
+    """Pin (c) of the stapel on a fixture tree: it runs in the public tree as well."""
+
+    def setUp(self):
+        self.root = _tree(JS_TREE)
+        _name_the_fixture_readers(self)
+
+    def test_a_walked_driver_plans_the_browser_walker_and_no_tests(self):
+        for rel in ("workshop/tools/display-lab/tap.mjs", "workshop/tools/lib/switch.mjs",
+                    "workshop/tools/lib/old.js"):
+            st = _stations([rel], self.root)
+            self.assertIn(WALKER_UNIT, st["browser:display"]["select"]["extra"], rel)
+            self.assertEqual(["browser unit: %s" % rel], st["browser:display"]["reason"], rel)
+            self.assertNotIn("tests", st, rel)
+            self.assertNotIn(SEEDS, gp.test_terms([rel], self.root), rel)
+
+    def test_a_driver_of_the_class_plans_the_walker_beside_the_class(self):
+        # stapel c2: a driver `display-*.mjs` is a walked `.mjs` too -- before,
+        # RUNTIME_DIR_BROWSER_READS left the class out and the walker never ran
+        rel = "workshop/tools/display-new-browser.mjs"
+        st = _stations([rel], self.root)
+        self.assertEqual(["display_browser: %s" % rel, "browser unit: %s" % rel],
+                         st["browser:display"]["reason"])
+        self.assertIn(WALKER_UNIT, st["browser:display"]["select"]["extra"])
+        self.assertNotIn("tests", st)
+
+    def test_ci_keeps_the_walker_in_tests(self):
+        # rule 11 holds: in ci a browser unit stays in `tests`
+        st = _stations(["workshop/tools/display-lab/tap.mjs"], self.root, "ci")
+        self.assertIn(WALKER_UNIT, st["tests"]["select"]["filter"])
+        self.assertNotIn(SEEDS, st["tests"]["select"]["filter"])
+
+
+class AReaderTheRuleDoesNotNameReadsEverything(unittest.TestCase):
+    """Fix round stapel (m1): RUNTIME_DIR_READS_ONLY narrows its NAMED readers
+    only; an unnamed reader of `workshop/tools` reads every file below it, any
+    suffix, any depth, in its own station. Before, every reader was narrowed to
+    the importable modules (and a browser unit to `.mjs`/`.js` beside them) --
+    a new walker of `.py` at every depth, or of `.json`, ran for none."""
+
+    def setUp(self):
+        self.root = _tree(JS_TREE)   # the readers unnamed: no FIXTURE_READERS
+
+    def test_an_unnamed_reader_reads_every_file_below(self):
+        for rel in ("workshop/tools/llm-conformance/README.md",
+                    "workshop/tools/llm-conformance/fake_provider.py",
+                    "workshop/tools/display-lab/tap.mjs", "workshop/tools/seed.py"):
+            st = _stations([rel], self.root)
+            self.assertIn(SEEDS, st["tests"]["select"]["filter"], rel)
+            self.assertIn(WALKER_UNIT, st["browser:display"]["select"]["extra"], rel)
+            self.assertNotIn(WALKER_UNIT, st["tests"]["select"]["filter"], rel)
+        self.assertTrue(gp.runtime_dir_applies("workshop/tools", "workshop/tools/a-b/c.bin",
+                                               "an_unnamed_walker"))
+
+
+@private_tree.private("workshop/tools")
+class TheConformanceToolPlansNoBrowser(unittest.TestCase):
+    """Pins (a)/(b) on the real tree: the AN3-FIX diff and the browser tools."""
+
+    AN3_PY_ONLY = ["scripts/tests/test_llm_conformance.py",
+                   "workshop/tools/llm-conformance/README.md",
+                   "workshop/tools/llm-conformance/cost_guard.py",
+                   "workshop/tools/llm-conformance/fake_provider.py"]
+
+    def test_the_tool_without_a_named_file_plans_no_cargo_station(self):
+        st = _stations(self.AN3_PY_ONLY, None)
+        self.assertIn("llm-conformance", st)
+        self.assertNotIn("tests", st)
+        self.assertNotIn("browser:display", st)
+        self.assertFalse([n for n, s in st.items() if s.get("cargo")])
+
+    def test_the_file_a_drift_lock_names_plans_that_lock_alone(self):
+        # h5 reads `conformance.py` by name (SAMPLING_PARAMS): it stays, alone
+        st = _stations(self.AN3_PY_ONLY + ["workshop/tools/llm-conformance/conformance.py"],
+                       None)
+        self.assertEqual(["meclaw-cells::misc_8"], st["tests"]["select"]["binaries"])
+        self.assertIn("h5_the_catalogue_matches_the_measurement", st["tests"]["select"]["filter"])
+        self.assertNotIn("browser:display", st)
+
+    def test_a_browser_tool_plans_the_browser_station_as_before(self):
+        # pin (b): driver, lock, browser test file, the library a stand-in imports
+        # with both routes of today: the class `display_browser` and the
+        # browser units the selection reaches
+        for rel, labels in (
+                ("workshop/tools/display-filters-browser.mjs",
+                 ("display_browser", "browser unit")),
+                ("crates/meclaw-cells/tests/710_the_sheet_holds_in_both_engines_browser.rs",
+                 ("display_browser", "browser unit")),
+                ("crates/meclaw-cells/tests/gh1209_no_stage_draws_a_filter_browser.rs",
+                 ("browser unit",)),
+                ("workshop/tools/lib/os-template.mjs", ("browser unit",))):
+            st = _stations([rel], None)
+            self.assertEqual(["%s: %s" % (label, rel) for label in labels],
+                             st["browser:display"]["reason"], rel)
+
+    def test_a_top_level_module_still_plans_its_readers(self):
+        # pin (b): the PYTHONPATH reader gh661 imports top-level modules
+        st = _stations(["workshop/tools/judge_eval.py"], None)
+        self.assertIn("gh661_the_briefing_states_the_operator_set_rule",
+                      st["tests"]["select"]["filter"])
+
+    def test_no_module_the_import_reaches_names_a_hyphened_directory(self):
+        # the boundary of the rule: a file below `llm-conformance/` or
+        # `display-lab/` is reached by path only, and no module the PYTHONPATH
+        # reaches names one of them -- the day one does, the rule must follow
+        # -- at every depth (fix round stapel m1): a package module
+        # (`<ident>/x.py`) is reached as well, a hyphened directory below one too
+        tools = DRIVERS
+        hyphened = sorted({p.name for p in tools.rglob("*")
+                           if p.is_dir() and not p.name.isidentifier()
+                           and "node_modules" not in p.relative_to(tools).parts})
+        self.assertIn("llm-conformance", hyphened)   # not vacuous
+        for py in sorted(tools.rglob("*.py")):
+            rel = py.relative_to(tools).as_posix()
+            if not gp._importable(rel):
+                continue
+            text = py.read_text(encoding="utf-8")
+            for d in hyphened:
+                self.assertNotIn(d, text, "%s names %s/" % (rel, d))
+
+
+# The two browser units that walk `workshop/tools` for the drivers (grep of the
+# sources): 744 `walk(&repo("workshop/tools"))` keeps every `.mjs`, gh1209
+# `files(&tools, &[".mjs", ".js"])` every `.mjs`/`.js` -- both at every depth,
+# node_modules aside, `display-lab/` and `lib/` included.
+WALKERS = ("meclaw-cells::744_a_late_patch_does_not_take_the_drawing_back",
+           "meclaw-cells::gh1209_no_stage_draws_a_filter_browser")
+
+
+@private_tree.private("workshop/tools")
+class TheBrowserToolInputsPlanTheBrowserStation(unittest.TestCase):
+    """Pin (c) of the stapel on the real tree (OR-V2.v2-r3-planbrowser.2): every
+    input of the browser drivers plans `browser:display` on its own -- the
+    Playwright pin and its lock by the class (`lane_sync.sh browsers` provisions
+    the engine from `package.json`, no test names either), the filter switch and
+    the lab's `.mjs` by the two units that walk them."""
+
+    def test_the_playwright_pin_and_its_lock_plan_the_station_by_its_class(self):
+        for rel in ("workshop/tools/package.json", "workshop/tools/package-lock.json"):
+            st = _stations([rel], None)
+            self.assertIn("browser:display", st, rel)
+            self.assertEqual(["display_browser: %s" % rel], st["browser:display"]["reason"], rel)
+
+    def test_each_walked_input_plans_the_units_that_walk_it(self):
+        lab = sorted(p.relative_to(REPO).as_posix()
+                     for p in (DRIVERS / "display-lab").rglob("*.mjs"))
+        self.assertGreaterEqual(len(lab), 4, lab)   # not vacuous
+        for rel in ["workshop/tools/lib/no-filters.mjs"] + lab:
+            st = _stations([rel], None)
+            self.assertIn("browser:display", st, rel)
+            self.assertEqual(["browser unit: %s" % rel], st["browser:display"]["reason"], rel)
+            for unit in WALKERS:
+                self.assertIn(unit, st["browser:display"]["select"]["extra"], rel)
+            self.assertNotIn("tests", st, rel)
+
+    def test_a_driver_diff_plans_the_walkers_beside_the_class(self):
+        # stapel c2 (rest of OR-V2.v2-r3-planbrowser.2): a driver of the class
+        # `display_browser` is a `.mjs` below `workshop/tools` as well, and the
+        # walkers read it -- gh1209 refuses exactly a new driver without
+        # `withoutFilters`. Before, a driver-only diff ran the class's locks and
+        # neither walker. Fix round stapel I1 (OR-V2.v2-r3-planbrowser.7): 708
+        # reads every top-level `.mjs`, so a driver diff plans it in `tests` --
+        # the walkers stay out of `tests`.
+        for rel in ("workshop/tools/display-layout-browser.mjs",
+                    "workshop/tools/display-new-browser.mjs"):
+            st = _stations([rel], None)
+            self.assertIn("browser:display", st, rel)
+            reason = st["browser:display"]["reason"]
+            self.assertIn("display_browser: %s" % rel, reason, rel)
+            self.assertIn("browser unit: %s" % rel, reason, rel)
+            for unit in WALKERS:
+                self.assertIn(unit, st["browser:display"]["select"]["extra"], rel)
+                if "tests" in st:
+                    self.assertNotIn(unit, st["tests"]["select"]["filter"], rel)
+        st = _stations(["workshop/tools/display-new-browser.mjs"], None)
+        self.assertEqual(["meclaw-cells::708_the_client_draws_the_tap_before_the_pass"],
+                         st["tests"]["select"]["binaries"])
+
+    def test_no_python_module_of_the_lab_plans_a_browser(self):
+        # OR-V2.v2-r3-planbrowser.1: no browser test and no lock reads the
+        # lab's Python; the walkers read `.mjs`/`.js` only
+        lab = sorted(p.relative_to(REPO).as_posix()
+                     for p in (DRIVERS / "display-lab").rglob("*.py"))
+        self.assertGreaterEqual(len(lab), 8, lab)   # not vacuous
+        for rel in lab:
+            st = _stations([rel], None)
+            self.assertNotIn("browser:display", st, rel)
+            self.assertFalse([n for n, s in st.items() if s.get("cargo")], rel)
+
+
+# Fix round stapel (test-cc25, I1/I2/m1): what a walk of `workshop/tools` reads
+# is a property of the READER, not of the directory -- gh661 imports the
+# modules (`tests`), 708 `every_driver_keeps_the_answer_of_an_evidence_shot`
+# reads every `.mjs` of the top level (`tests`), 744 every `.mjs` and gh1209
+# every `.mjs`/`.js` at every depth (`browser:display`, rule 11).
+SHOT_WALK = "meclaw-cells::708_the_client_draws_the_tap_before_the_pass"
+IMPORT_READER = "gh661_the_briefing_states_the_operator_set_rule"
+IMPORTABLE = ("build_librarian.py", "build_librarian_seed.py", "cache_ttl_calc.py",
+              "check_reasoning_effort.py", "hive_context_sweep.py", "judge_eval.py")
+
+
+@private_tree.private("workshop/tools")
+class EachReaderOfTheToolsReadsItsOwnFiles(unittest.TestCase):
+    """I1/I2 of the fix round on the real tree: a driver diff runs the shot walk
+    708 in `tests`, an importable module runs gh661 and no browser."""
+
+    def test_a_driver_diff_plans_the_shot_walk_in_tests(self):
+        # I1: a driver of today and a new one -- 708 names none of them; before,
+        # a driver-only diff planned no `tests` and a dropped shot answer passed
+        for rel in ("workshop/tools/display-filters-browser.mjs",
+                    "workshop/tools/display-scene-browser.mjs",
+                    "workshop/tools/display-new-browser.mjs"):
+            st = _stations([rel], None)
+            self.assertIn(SHOT_WALK, st["tests"]["select"]["filter"], rel)
+            for unit in WALKERS:
+                self.assertIn(unit, st["browser:display"]["select"]["extra"], rel)
+                self.assertNotIn(unit, st["tests"]["select"]["filter"], rel)
+
+    def test_an_importable_module_plans_its_import_reader_and_no_browser(self):
+        # I2: no browser unit reads a `.py` there; before, the walkers 744 and
+        # gh1209 read every importable module and pulled the browser run
+        for name in IMPORTABLE:
+            rel = "workshop/tools/" + name
+            self.assertTrue((DRIVERS / name).is_file(), rel)   # not vacuous
+            st = _stations([rel], None)
+            self.assertNotIn("browser:display", st, rel)
+            self.assertIn(IMPORT_READER, st["tests"]["select"]["filter"], rel)
+            for unit in WALKERS:
+                self.assertNotIn(unit, st["tests"]["select"]["filter"], rel)
+
+    def test_every_reader_of_the_tools_is_named_with_what_it_keeps(self):
+        # m1: the rule against the tree -- every unit that names `workshop/tools`
+        # has its entry (a new walker fails here, and plans fail-closed until
+        # its entry says what it keeps), and each entry keeps exactly the
+        # suffixes its source filters on, at the depth its walk goes
+        table = gp.RUNTIME_DIR_READS_ONLY["workshop/tools"]
+        readers = {u for _c, u in gp._runtime_index(str(REPO))["workshop/tools"]}
+        self.assertEqual(sorted(readers), sorted(table))
+        sources = {u: t for _c, u, t in gp._test_sources(str(REPO))}
+        # an extension filter: `Some("mjs")`, `== "mjs"`, `[".mjs", ".js"]`
+        ext = re.compile(r'(?:Some\("|== "|"\.)(mjs|js|cjs|json|py|css|html|sh|ts|md)"')
+        for unit, (suffixes, depth) in sorted(table.items()):
+            text = sources[unit]
+            if depth == "import":
+                # the root goes onto the import path of the generator it runs
+                self.assertIn("sys.path.insert", text, unit)
+                self.assertEqual((".py",), suffixes, unit)
+                continue
+            self.assertEqual(sorted(suffixes), sorted("." + m for m in ext.findall(text)), unit)
+            # "any": the walk descends into directories; "top": one `read_dir`
+            self.assertEqual(depth == "any", ".is_dir()" in text, unit)
+
+
 if __name__ == "__main__":
     unittest.main()

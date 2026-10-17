@@ -328,24 +328,28 @@ fn build_tree(td: &tempfile::TempDir, judge_url: &str) -> Files {
             json!({"messages": {"type": "array", "required": false}}),
         ),
     );
-    write_json(
-        &root.join("main/curator/config.json"),
-        &code_cell(
-            &curator_script(&files.curator_spec, &files.curator_log),
-            "Answers a stats ask in the contracted form, from a scenario file.",
-            json!({"messages": {"type": "array", "required": false},
-                   "stats": {"type": "object", "required": false}}),
-        ),
+    // GH #1235 (T6-16): a `code` cell without `params.sandbox` boots under the
+    // default-deny profile. The two stubs read their scenario file and append
+    // to their log, both in `stub/`, so they declare exactly that directory.
+    let stub_sandbox = json!({"trust": "restricted", "network": "deny",
+                              "filesystem": {"runtime": true,
+                                             "write": [stub.display().to_string()]}});
+    let mut curator = code_cell(
+        &curator_script(&files.curator_spec, &files.curator_log),
+        "Answers a stats ask in the contracted form, from a scenario file.",
+        json!({"messages": {"type": "array", "required": false},
+               "stats": {"type": "object", "required": false}}),
     );
-    write_json(
-        &root.join("main/evaluator/config.json"),
-        &code_cell(
-            &evaluator_script(&files.eval_spec, &files.eval_log),
-            "Answers an eval order with the verdict a scenario file names.",
-            json!({"messages": {"type": "array", "required": false},
-                   "eval": {"type": "object", "required": false}}),
-        ),
+    curator["params"]["sandbox"] = stub_sandbox.clone();
+    write_json(&root.join("main/curator/config.json"), &curator);
+    let mut evaluator = code_cell(
+        &evaluator_script(&files.eval_spec, &files.eval_log),
+        "Answers an eval order with the verdict a scenario file names.",
+        json!({"messages": {"type": "array", "required": false},
+               "eval": {"type": "object", "required": false}}),
     );
+    evaluator["params"]["sandbox"] = stub_sandbox;
+    write_json(&root.join("main/evaluator/config.json"), &evaluator);
     copy_tree(&shipped().expect("guarded"), &root.join("main/argus"));
 
     // The clock ships no schedule (R-AG-1, GH #1229): the cycles here are
