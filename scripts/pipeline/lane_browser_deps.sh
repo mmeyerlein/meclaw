@@ -42,6 +42,8 @@
 # a dry run without a package list), 3 no right to install (no root, no passwordless
 # sudo). Every child reads /dev/null: on the lane this script IS stdin.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 root="${1:-}"
 pin="${2:-}"
 mode="${3:-}"
@@ -52,6 +54,14 @@ PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export PATH
 
 die() { code="$1"; shift; echo "lane_browser_deps: $*" >&2; exit "$code"; }
+
+# The bound of every tool call that asks the lane (GH #1224, re-check v2-r3-shell
+# M1): the `bounded` block of lane_fingerprint.sh, which `lane_sync.sh browsers`
+# sends ahead of this script -- a call past it is said by name with its process
+# tree and ends the run with exit 2 (cannot tell). Run by hand without the block,
+# the calls run unbounded. The installs (apt, the bundle download) are no probe
+# and keep their own time.
+command -v bounded >/dev/null 2>&1 || bounded() { "$@" </dev/null; }
 
 case "$mode" in check|install) ;; *) die 2 "usage: <lane root> <pinned version> check|install [<engine>...]" ;; esac
 if [ -z "$root" ] || [ -z "$pin" ]; then die 2 "usage: <lane root> <pinned version> check|install [<engine>...]"; fi
@@ -83,7 +93,7 @@ cli="$pw/cli.js"
 # The missing packages, one line `<n> <pkg>...`, or a reason (exit 2).
 missing() {
     # shellcheck disable=SC2086
-    out=$("$node_bin" "$cli" install-deps --dry-run $engines </dev/null 2>&1)
+    out=$(bounded "$node_bin" "$cli" install-deps --dry-run $engines 2>&1)
     if printf '%s\n' "$out" | grep -q '^All system dependencies are installed\.$'; then
         echo 0
         return 0
@@ -101,7 +111,7 @@ missing() {
 # Where the pinned CLI keeps (or would keep) the webkit bundle; nothing for other engines.
 bundle_dir() {
     case " $engines " in *" webkit "*) ;; *) return 0 ;; esac
-    "$node_bin" "$cli" install --dry-run webkit </dev/null 2>/dev/null \
+    bounded "$node_bin" "$cli" install --dry-run webkit 2>/dev/null \
         | sed -n 's/^ *Install location: *//p' | head -n 1
 }
 
@@ -114,7 +124,8 @@ shadowed() {
         for f in "$d"/*; do
             [ -f "$f" ] || continue
             case "${f##*/}" in *.so|*.so.*) ;; *) [ -x "$f" ] || continue ;; esac
-            LD_LIBRARY_PATH="$lp" ldd "$f" </dev/null 2>/dev/null
+            # past its bound (124) the walk ends: the next ldd would wait the same
+            bounded env LD_LIBRARY_PATH="$lp" ldd "$f" 2>/dev/null || [ $? -ne 124 ] || exit 124
         done
     done | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found$/\1/p' | sort -u \
         | tr '\n' ' ' | sed 's/ $//'
@@ -228,3 +239,5 @@ fi
 whole_bundle
 chromium_sandbox
 echo "browser-deps ok $engines: every system package of playwright $pin is installed"
+true
+}; exit $?

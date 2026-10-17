@@ -17,6 +17,7 @@
 #          `strand|integration|release --lane` the pipeline's, with its
 #          pre-stamp rule (GH #1139). There is no switch back to the old
 #          runner for the pipeline's modes (GH #1156).
+#   --mode <mode> anywhere (no leading mode word) -> pipeline.py gate as is
 #   -h|--help, no mode, an unknown mode
 #       -> scripts/gate_legacy.sh: its header is the manual (options, output
 #          lines, receipt, exit codes -- the pipeline keeps them), and it
@@ -26,6 +27,8 @@
 # directory. The exit code is the runner's (exec). `-C <dir>`: a `cd <dir>`
 # first, as `git -C` -- the runners read the tree from the cwd (GH #1199).
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -uo pipefail
 
 # This file's directory with builtins only: an external `dirname` missing from
@@ -41,14 +44,17 @@ while [ "${1:-}" = "-C" ]; do
     shift 2
 done
 
+# `--mode <m>` anywhere is the positional form (#1199 K13): pipeline.py reads it.
+flag=""
+for a in "$@"; do case "$a" in --mode|--mode=*) flag=1 ;; esac; done
 case "${1:-}" in
     strand|integration|release) ;;
-    *) exec /bin/bash -p "$legacy" "$@" ;;
+    *) [ -n "$flag" ] || exec /bin/bash -p "$legacy" "$@" ;;
 esac
 
-mode="$1"
-shift
 # The kit's one Python (`KIT_PY`, lane.PYTHON; re-check tv-bn M7t B-M4).
 # shellcheck source=scripts/pipeline/kit_python.sh
 . "$here/pipeline/kit_python.sh" || exit 2
-exec "${KIT_PY[@]}" "$here/pipeline.py" gate --mode "$mode" "$@"
+case "$1" in strand|integration|release) mode="$1"; shift; set -- --mode "$mode" "$@" ;; esac
+exec "${KIT_PY[@]}" "$here/pipeline.py" gate "$@"
+}; exit $?

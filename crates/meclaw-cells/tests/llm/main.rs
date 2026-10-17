@@ -3,6 +3,7 @@
 
 pub mod a_shipped_llm_backstop_outlasts_its_own_call;
 pub mod gh1058_the_llm_cell_on_the_shared_module;
+pub mod gh1225_every_llm_request_names_its_app;
 pub mod gh271_an_empty_llm_key_is_not_a_bearer;
 pub mod gh47_an_async_llm_cell_survives_the_eof;
 pub mod gh845_the_llm_narrows_tools_per_request;
@@ -27,3 +28,5 @@ pub mod mock_oauth;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 pub mod mock_responses;
+pub mod zh_llm_state_export;
+pub mod zh_llm_twin_waits_for_handover;

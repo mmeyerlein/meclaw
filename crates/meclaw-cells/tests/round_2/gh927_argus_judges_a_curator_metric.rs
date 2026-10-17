@@ -348,16 +348,9 @@ fn build_tree(td: &tempfile::TempDir, judge_url: &str) -> Files {
     );
     copy_tree(&shipped().expect("guarded"), &root.join("main/argus"));
 
-    // The clock is written out of the way (a boot-time literal, GH #138): the
-    // cycles here are driven one at a time by `in_cycle`.
-    let clock_path = root.join("main/argus/clock/config.json");
-    let mut clock: Value = meclaw_core::serde_json::from_str(
-        &std::fs::read_to_string(&clock_path).expect("the shipped clock"),
-    )
-    .expect("json");
-    clock["params"]["schedules"][0]["schedule_id"] = json!("01930000-0000-7000-8000-000000000927");
-    clock["params"]["schedules"][0]["cron"] = json!("0 0 0 1 1 *");
-    write_json(&clock_path, &clock);
+    // The clock ships no schedule (R-AG-1, GH #1229): the cycles here are
+    // driven one at a time by `in_cycle`, and the watchdog each arms lies hours
+    // past the run.
 
     // One goal on, and it is a role goal. Everything else ships disabled.
     let goals_path = root.join("main/argus/charter/seed/goals.jsonl");

@@ -128,9 +128,11 @@ fn rows(db: &std::path::Path, sql: &str) -> Vec<Vec<String>> {
     .expect("rows")
 }
 
-/// One shipped keeper at `main/<name>`, with the night timer left out: this
-/// file is about the transfer, and a cron that fires mid-test would close the
-/// very generation the third property reads.
+/// One shipped keeper at `main/<name>`, with the night timer left out and the
+/// night window switched off: this file is about the transfer, and since
+/// GH #1229 the import of a generation arms the night -- inside the shipped
+/// window it IS a firing, which would close the very (long idle) generation
+/// the third property reads, depending on the hour the test runs.
 fn keeper(root: &std::path::Path, name: &str, seeded: bool, fence: &std::path::Path) {
     let dst = root.join("main").join(name);
     copy_tree(&repo("templates/session-keeper"), &dst);
@@ -141,11 +143,13 @@ fn keeper(root: &std::path::Path, name: &str, seeded: bool, fence: &std::path::P
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["from"] != "./night")
+        // Both ends: since GH #1229 `./close` arms the night (`./close -> ./night`).
+        .filter(|e| e["from"] != "./night" && e["to"] != "./night")
         .cloned()
         .collect::<Vec<_>>();
     hive["params"]["graph"]["edges"] = json!(edges);
     write_json(&dst.join("config.json"), &hive);
+    meclaw_testing::quiet_keeper_night(&dst);
 
     // The one thing an instance says about files (GH #555): the absolute
     // directory this keeper's own store writes and reads inside.

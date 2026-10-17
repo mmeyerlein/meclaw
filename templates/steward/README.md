@@ -1,6 +1,6 @@
-# `steward@2.1.9`
+# `steward@2.2.0`
 
-> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.3.5` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
+> **Deprecated since GH #462.** This template has been renamed: the colony's control loop is `argus` in the table next door, and `argus@1.4.0` is where the work goes from here. `steward` is not removed and not going to break -- an instance grown from it keeps running, because instantiation copies -- but it takes no further work, and a new control loop should be an `argus`.
 
 The colony's control loop, as a hive of seven cells. It is what turns "the
 system can improve itself" from a claim into something you can check.
@@ -306,6 +306,7 @@ to this hive.
 | `STEWARD_JUDGE_MODEL` | `anthropic/claude-opus-5.5` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `STEWARD_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `STEWARD_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `STEWARD_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
+| `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | the app attribution of the judge (`http_referer` / `x_title`), sent as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` |
 
 **Retracted:** `STEWARD_COLONY_DB` is gone
 ([#267](https://github.com/mmeyerlein/meclaw/issues/267)). The meter and the

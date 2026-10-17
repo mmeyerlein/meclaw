@@ -122,6 +122,15 @@ impl EdgeTable {
         self.by_from.get(from).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// GH #1231 (R-ZH-2, variant a): does `from` hold a drawn edge to `to`?
+    ///
+    /// The mutation door asks it of its sender: an edge to `/colony/mutations`
+    /// is the right to mutate anywhere, and without one a sender mutates only
+    /// below its own hive.
+    pub fn has_edge_to(&self, from: &Path, to: &Path) -> bool {
+        self.edges_from(from).iter().any(|e| &e.to == to)
+    }
+
     /// Returns all edges whose `to` equals `path`, in arbitrary order.
     ///
     /// Phase 13.5-Lifecycle-3b T2 (connectivity-recompute): there is no reverse

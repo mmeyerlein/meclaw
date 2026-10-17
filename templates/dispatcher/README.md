@@ -1,4 +1,4 @@
-# `dispatcher@1.2.3`
+# `dispatcher@1.3.0`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -23,6 +23,19 @@ messages a graph can route.
   of that window and marks the cut. A hop lives for one emission, and this cell emits anew,
   so until `1.2.3` the stamp ended here and every tool behind a dispatcher answered whole.
   Nothing else of the brain's hop rides on.
+- **Family calls, unfolded** ([#1245](https://github.com/mmeyerlein/meclaw/issues/1245)).
+  A collector that folds its menu shows the model one tool per family, `F` with
+  `{op, args}`; every answerer stays flat and keeps its single-op name. A call whose
+  arguments are **exactly** `{op, args}` leaves as `F_op` with `args` alone as its
+  arguments, so nothing downstream learns that a fold existed -- the rights an answerer
+  checks per op and every edge keyed on `hop.tool_name` see what they saw before. A tool
+  with an `op` of its own beside other keys (`file{op, path}`) is not a family call and
+  leaves as it came. Unfolding runs before the async and handoff classes are read, so both
+  are declared for the single op (`web_research`, not `web`).
+- **help, answered in place.** `F{op: "help", args}` goes to no answerer: it comes back at
+  once on the `result` lane, `hop.help_for` naming the family and the request (`args`, e.g.
+  `{"op": "read"}`) as the `tool_result` text. It is not an error and carries no
+  `error_code`; the collector fills the answer from its menu store.
 - **The expectation set first.** The assistant turn goes to the fan-in *before* any tool
   message leaves (PLAIN order). A tool that answers in a millisecond can otherwise report
   a result for a round the collector has not been told about yet.
@@ -105,8 +118,8 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 | route | to | what travels |
 |---|---|---|
 | `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round. `hop.call_count` sizes it (the number of `tool_call` turns in the bundle, as a string), `hop.async_calls` names the ids the fan-in must not wait for |
-| `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments**; `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result, `hop.input_soft` (since `1.2.3`, when the brain stamped one) is the window the result is read in |
-| `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind |
+| `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments** (a family call: `F_op` and its inner `args`); `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result, `hop.input_soft` (since `1.2.3`, when the brain stamped one) is the window the result is read in |
+| `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind -- or a family's `help` call, `hop.help_for` naming the family and the request as its text |
 | `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle. Since `1.2.2` the body slot `sidecar_raw` travels with a final answer when the answer arrived with one: the block a sidecar splitter cut out of it, passed through untouched so the collector can keep it for the window ([#871](https://github.com/mmeyerlein/meclaw/issues/871)) -- and with the sentence next to a bundle, when the round carried one. This cell reads none of it |
 
 The tool lanes guard the key they discriminate on:
@@ -284,6 +297,7 @@ same `tool_call_id`, keyed on the names you did **not** wire.
 | `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order (with `interim` off, the interim `answer` is not emitted; a *final* sentence still is) |
 | `tool_call` turns present, count > budget | `calls`, then the interim `answer` if a text turn stood next to them (the sentence is appended **before** the budget branch runs, so an over-budget bundle still says it), then one `result` per call: `call budget exceeded`, no tool message at all |
 | a call whose `text` is not `{name, arguments}` | `result` with `error_code: malformed_tool_call` in place of that one call; the sound calls still run |
+| a call `F` whose arguments are exactly `{op, args}` | one `tool` named `F_op` with `args` as its arguments; `op: "help"` instead: `result` with `hop.help_for = F`, no tool message |
 | no calls, `finish_reason == 'stop'` or `'length'` | one `answer`, `hop.finish_reason` kept |
 | anything else | nothing (empty multi-send, terminal) and one stderr line: `dispatcher: finish '<reason>' without a tool call -- nothing dispatched` |
 

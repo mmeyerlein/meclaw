@@ -1,4 +1,4 @@
-# `llm-registry@2.8.5`
+# `llm-registry@2.9.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -11,7 +11,7 @@ Four cells:
 
 | path | type | role |
 |---|---|---|
-| `store` | `store` | the catalogue: `models` (one model package per row), `tiers`, `overrides`, `subscribers`, `translations`, `open_questions`, `resolutions`, `incidents` |
+| `store` | `store` | the catalogue: `models` (one model package per row), `tiers`, `overrides`, `subscribers`, `translations`, `open_questions`, `credential_waits`, `resolutions`, `incidents` |
 | `select` | `code` | the read port -- requirements in, ONE resolution out, or a refusal |
 | `hand` | `code` | the write hand -- resolves every subscriber by one precedence and pushes a model package into each brain whose package changed, **on call** |
 | `translate` | `llm` | the translator -- a prose requirement and the active catalogue in, `{model_id, reason}` out, asked only when a (requirement, catalogue) pair has no answer yet |
@@ -353,7 +353,9 @@ model like this:
    (`translation_outside_catalogue`, the id cut to one line of 128 characters in the journal),
    an answer that is not that object is refused
    (`translation_unreadable`), a failed call is journalled (`translation_failed`), and in all
-   three cases nothing is stored and nothing moves. An accepted answer becomes one row in
+   three cases nothing is stored and nothing moves. A call that failed for want of its key
+   (`meta.error.source == "auth"`) waits for the next boot -- *A question without its key*,
+   below. An accepted answer becomes one row in
    `translations` with its reason (on one line: control characters and line breaks become
    spaces, at most 400 characters), and the subscribers of that requirement are resolved again.
 4. **Deterministic after that.** Every resolution reads the row for the current catalogue -- of
@@ -365,11 +367,41 @@ model like this:
 `show` names the rank `prose` with the translator's sentence as `because`. The translator itself
 is a plain `llm` cell with a **start value** (`${LLM_REGISTRY_TRANSLATOR_MODEL:-…}`,
 `${LLM_REGISTRY_TRANSLATOR_BASE_URL:-…}`; the key comes from the vault through a credential
-grant, `credential_grant_id`, #801); no `update` edge
+grant, `credential_grant_id`, #801; `http_referer` / `x_title` name the app as on every llm cell); no `update` edge
 reaches it and the registry never resolves it, so a broken translator can never stand between the
 registry and a repair. Without a key the registry still boots, resolves and pushes, and every
 translation fails into the journal. The instructions it is given travel in the question's
 `system` slot, and it keeps no history: each question carries the whole catalogue.
+
+### A question without its key
+
+At a birth the announcement fires in the one-shot apply that grows the colony, and a deployment
+deposits the translator's key in the vault after that ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)).
+The access hive denies the bearer, the translator answers with `meta.error.source == "auth"`,
+and no trigger would ask again: the requirement is not new, the catalogue did not move, and a
+known brain announced again is nothing. So such a failure is written down, one row per
+requirement in `credential_waits` (`requirement_hash`, `catalogue_hash`, `at`, `tries`,
+`asked_boot`, `detail`), and journalled `translation_awaits_credential` beside
+`translation_failed`.
+
+The next **boot** asks it again. `meclaw-os` turns every mutation receipt that reaches `/os`
+into an announcement and restamps only its route, so the boot receipt arrives with
+`hop.form == "boot"`; an announcement of a boot reads `credential_waits` and asks every
+question that boot has not asked yet, through `retranslate` narrowed to exactly those
+requirements. The read stamps the boot's trace into `asked_boot` in the same store bundle, and
+the store runs one bundle after the other: the shell announces every receipt twice, and the
+second announcement of a boot finds every row stamped and asks nothing. A boot asks at most
+`catalog_rows` of them, the oldest first. An answer (or any failure that got past the key)
+removes the row; a second `auth` failure keeps it, one try more under this boot and marked
+again, and the boot after that asks once more. `tries` counts the failed asks since the last
+one outside a boot: an `auth` failure of `subscribe`, `model_upsert` or an operator's
+`retranslate` writes the row anew with `tries` 1. Should the colony stop while a boot's
+question is open, the next boot finds that question still held until it expires (at most 30 s
+past the translator's backstop, as every open question) and does not ask; the row stays, and
+the boot after that asks it. Nothing else asks: no timer, no poll, and a failure from any other
+source (`wire`, `parse`, a refused or unreadable answer) is handled as before -- the next op
+that finds the question unanswered, or `retranslate`, asks it. A tree without receipts has no
+boot announcement; there `retranslate` is the retry.
 
 Since 2.3.2 ([#886](https://github.com/mmeyerlein/meclaw/issues/886)) `./translate` declares `hop.model`, the model that
 answered its translation; nothing else moved.
@@ -492,7 +524,7 @@ caller wants rides on `hop.route`.
 |---|---|---|
 | `in_select` | in | the request as a `tool_call` turn (`{tier?, capability?, max_cost?, min_context?}`); the edge promotes the asker to `context.asker` |
 | `answer` | out | a lookup's result (`hop.resolved` / `hop.reason_code` / `hop.model_id` / `hop.tier`), or the view `show` returns |
-| `in_hand` | in | a command (the ops above); the edge **MUST** promote the deciding identity to `context.actor`. Or an announcement from the tree, over an edge that stamps `context.model_announcer` and `context.model_generation` instead |
+| `in_hand` | in | a command (the ops above); the edge **MUST** promote the deciding identity to `context.actor`. Or an announcement from the tree, over an edge that stamps `context.model_announcer` and `context.model_generation` instead; one riding on a boot receipt (`hop.form == "boot"`) also asks the questions that wait for their key (#1225) |
 | `ack` | out | `accepted` or `rejected` plus a `reason_code`, and the counts: `pushed`, `unchanged`, `skipped_pinned` (and `subscribers`, `pages` for the ops that page) |
 | `update` | out | one model package for one subscriber -- `hop.subscriber` names which, `hop.rank` says why |
 | `in_refused` | in | a push a subscriber's own llm cell refused, carried back on the road the push came by: `hop.refused_subscriber`, `hop.refused_model`, the reason in `meta.error.detail`. Marks the row; answers nothing. Since 2.3.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
@@ -558,10 +590,11 @@ pins this: an incident row changes no other table and emits nothing.
 | `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push; `protocol` (`""` = chat, `decisions`, GH #957) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
 | `translations` | since 2.3.0: one row per answered `(requirement_hash, catalogue_hash)` -- `model_id`, `reason`, `at` | `hand`, after checking the translator's answer |
 | `open_questions` | since 2.3.0: the questions asked and not yet answered -- `requirement_hash`, `catalogue_hash`, `claim`, `at`; a row counts as open until its answer, refusal or failure, at most 30 s past the translator's backstop; an expired row stays until the next claim of its pair removes it | `hand` |
+| `credential_waits` | the questions that wait for the translator's key ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)): `requirement_hash`, `catalogue_hash`, `at`, `tries`, `asked_boot` (the trace of the boot that asked last), `detail`; one row per requirement, gone with the first call that got past the key | `hand` |
 | `resolutions` | the journal: every lookup and every push, granted, refused or skipped -- with `rank` and `source_id` (the override id, `tier:<name>` or `translation:<requirement_hash>`) since 2.2.0; since 2.3.0 also every translation stored, refused or failed; since 2.3.1 every refusal a cell sent back (`hand_refused_by_cell`, `hand_refusal_stale`, `hand_refusal_unknown`, `hand_refusal_unaddressed`) | `select`, `hand` |
 | `incidents` | the field log: `model_id`, `kind` (`rate_limit`, `outage`, `slow`), `at`, `detail` | **boot-graph edge only** |
 
-The new columns and the `overrides`, `translations` and `open_questions` tables are added to an existing `cell.db`
+The new columns and the `overrides`, `translations`, `open_questions` and `credential_waits` tables are added to an existing `cell.db`
 at the next spawn (`ALTER TABLE ADD COLUMN`, strictly additive), so a registry that ran 2.1.0 or
 2.2.0 keeps its rows -- and keeps its old catalogue too, because a seed applies only to a new
 store: bring the shipped rows in with `model_upsert`.
@@ -653,7 +686,7 @@ with `meclaw --vault-add cred:openrouter` (stdin); the vault has to be unlockabl
 | `tier_rows` | `./select` | 200 | the tier index read of one lookup |
 | `model_rows` | `./select` | 500 | the active-model read of one lookup |
 | `subscriber_rows` | `./hand` | 200 | the subscribers one hop reads, resolves and may push to. `remap`, `override_set` and `override_clear` page on until a read comes back short, and `subscribe`, `reset` and an announcement read their own paths exactly, so it bounds the work of a hop, never who is reached; `show` answers one page and says `truncated` |
-| `catalog_rows` | `./hand` | 500 | the active models, tiers and overrides one op resolves against |
+| `catalog_rows` | `./hand` | 500 | the active models, tiers and overrides one op resolves against, and the waiting questions one boot asks (`credential_waits`, the oldest first) |
 
 ```json
 {"add_nodes": [{"name": "llm-registry", "template": "llm-registry",
@@ -675,7 +708,8 @@ something in two years when a particular model class does not.
   enters in one place, a subscriber's `requirement`, and it is translated once per change -- a
   question a cell could ask at run time would put a model on the resolution path.
 - **No regulating loop around the translator.** It answers when an op finds a question
-  unanswered, not on an incident, a timer or a price feed (GH #130).
+  unanswered, not on an incident, a timer or a price feed (GH #130). The one retry it gets on
+  its own is a question that lacked its key, once per boot of the colony (#1225).
 - **No naming scheme for start values.** The keys a cell is born on (`${ctx.model}`,
   `${MODEL_*}`, a judge's own key) stay as they are; the view per cell is `show`, and a model
   changes here rather than in an environment.

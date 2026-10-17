@@ -17,7 +17,8 @@ WHICH FILES COUNT AS LIFTED
                    name found nowhere makes every changed test file lifted
                    (fail closed). This holds without any declaration.
     (c) FLAKY fix  `"flaky_fix": true` in the strand file (or `flaky_fix: true`
-                   in the report head): every changed file a ban grades.
+                   in the report head): every changed file a ban grades; a
+                   pure move (R100, the same blob) is no change (GH #1199 R1.1).
 
 The files are read at the branch tip, with the ban data and the register of
 the tip, in a scratch tree where they stand untracked -- so the module grades
@@ -143,13 +144,33 @@ def files_of_test(root, rev, name):
 
 
 def changed_graded(root, base, tip):
-    """The files of `base..tip` that a ban grades and that exist at `tip`."""
+    """The files of `base..tip` that a ban grades and that exist at `tip`.
+
+    A pure move (rename with the same blob, R100) changes no line and lifts
+    nothing: the gh877 merge (16.10.) was refused with 13 hits, three files of
+    them byte-equal moves of a harness refold (GH #1199 R1.1). A moved file
+    with a change counts under its new path, and so does a pure move that
+    changes how a ban grades the file (into or out of a ban scope, M1 of the
+    v2-r3-bans re-check)."""
     tb = _bans_module()
-    res = _git(root, "diff", "--no-renames", "--name-only", base, tip)
+    bans = tb._toml_text(_show(root, tip, DATA_FILES[0]) or "").get("ban", [])
+    res = _git(root, "diff", "--find-renames", "--raw", "--no-abbrev", "-z", base, tip)
     if res.returncode != 0:
         raise ValueError("git diff %s %s failed: %s" % (base[:9], tip[:9], res.stderr.strip()))
-    bans = tb._toml_text(_show(root, tip, DATA_FILES[0]) or "").get("ban", [])
-    return sorted(p for p in res.stdout.splitlines()
+    paths, fields = [], res.stdout.split("\0")
+    i = 0
+    while i < len(fields) - 1:
+        meta = fields[i].split()        # :<mode> <mode> <src> <dst> <status>
+        status = meta[4] if len(meta) == 5 else ""
+        if status[:1] in ("R", "C"):
+            src, dst, i = fields[i + 1], fields[i + 2], i + 3
+            if status[:1] == "R" and meta[2] == meta[3] and all(
+                    tb.in_scope(b, src) == tb.in_scope(b, dst) for b in bans):
+                continue                # a pure move within one scope: same grading
+        else:
+            dst, i = fields[i + 1], i + 2
+        paths.append(dst)
+    return sorted(p for p in paths
                   if any(tb.in_scope(b, p) for b in bans) and _show(root, tip, p) is not None)
 
 

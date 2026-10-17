@@ -516,6 +516,9 @@ def functions(dst_dir, rel="lane_sync.sh", cut=LANE_SYNC_DISPATCH):
     text = (SCRIPTS / rel).read_text(encoding="utf-8")
     dst = pathlib.Path(dst_dir) / rel
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(text[:text.index(cut)] + "\n", encoding="utf-8")
+    head = text[:text.index(cut)]
+    if "\n{\n" in head:   # an entry is one group (GH #1223): its functions close it
+        head += "\n}"
+    dst.write_text(head + "\n", encoding="utf-8")
     seed(dst_dir, rel)
     return str(dst)

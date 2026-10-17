@@ -10,3 +10,15 @@
 {"test": "not-asked", "text": "Wie wird das Wetter morgen?", "words": "geld nachbar schuldet"}
 {"test": "not-asked", "text": "Der Arzt war nett.", "words": "kolja arzt"}
 {"test": "not-asked", "text": "Mein Nachbar hat heute gegrüßt.", "words": "geld nachbar schuldet"}
+{"test": "keeps-aside", "text": "Ich will nicht mehr über das Geld vom Nachbarn reden.", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "keeps-aside", "text": "Red bitte nicht mehr von dem Geld vom Nachbarn.", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "keeps-aside", "text": "Sprich bitte nicht mehr über das Geld vom Nachbarn.", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "keeps-aside", "text": "Sprich nicht mehr über das Geld vom Nachbarn.", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "keeps-aside", "text": "Kannst du das mit dem Geld vom Nachbarn vergessen?", "words": "geld nachbarn", "asks": "geld nachbarn"}
+{"test": "confirms", "question": "Welches Geld meinst du, das vom Nachbarn", "text": "Ja, das Geld vom Nachbarn.", "words": "geld nachbarn"}
+{"test": "no-request", "text": "Ich will nicht mehr reden."}
+{"test": "no-request", "text": "Wir haben nicht mehr über das Geld vom Nachbarn geredet."}
+{"test": "no-request", "text": "Mein Bruder will nicht mehr über das Geld vom Nachbarn reden."}
+{"test": "no-request", "text": "Meine Tochter will nicht mehr darüber reden."}
+{"test": "takes-up", "text": "Wir wollten nicht mehr über das Geld vom Nachbarn reden, aber dann kam der Brief.", "words": "geld nachbarn"}
+{"test": "keeps-aside", "text": "Das Geld vom Nachbarn, nicht mehr reden bitte.", "words": "geld nachbarn", "asks": ""}

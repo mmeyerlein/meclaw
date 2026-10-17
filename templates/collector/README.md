@@ -1,4 +1,4 @@
-# `collector@5.1.3`
+# `collector@5.1.4`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -207,6 +207,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` and, since GH #892, `cogny` cut the block and switch it on; a composite without a splitter leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
+| `partial_head` | `200` | the characters of the last tool result the named partial answer of a capped round quotes; a longer result is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
 
 Removed in `collector@5.0.0` (GH #889): `window_turns`, `window_bytes`, `turn_chars`, `tool_chars`,
 `round_bytes`, `memory_chars`, `context_window`, `curate_soft`, `curate_hard`, `keep_rounds`,
@@ -237,7 +238,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.1.3",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.1.4",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -473,7 +474,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.1.3`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.1.4`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -519,7 +520,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.1.3` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.1.4` (the curator decides what fits, R-IG-1).
 
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
 

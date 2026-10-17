@@ -2168,7 +2168,9 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_pipeline_two_phase_build",
             "scripts.tests.test_pipeline_turnaround",
             "scripts.tests.test_stop_watch",
-            "scripts.tests.test_pipeline_progress"]])
+            "scripts.tests.test_pipeline_progress",
+            "scripts.tests.test_pipeline_merge_gate_parity",
+            "scripts.tests.test_export_audit_scope"]])
 
     def test_every_runner_test_module_is_in_gate_selftest(self):
         """GH #1162: the runner's own tests (`scripts/tests/test_pipeline_*.py`)
@@ -5691,7 +5693,16 @@ class StrandExportAuditSelection(unittest.TestCase):
         for path in self.TRIGGERS:
             st = by_name(gp.plan([path], "strand", repo=None))
             self.assertIn("export-audit", st, path)
-            self.assertEqual(st["export-audit"].cmds, [self.AUDIT], path)
+            # GH #1199 (v2-r3-mergegate): narrowed to the diff's exported tests
+            # (test_export_audit_scope); a template judges no test file.
+            judged = [] if path.startswith("templates/") else [path]
+            # re-check I1: the resolver module drops out only beside the kit
+            # station that runs it (make_export.py plans it, a test does not)
+            kit = ["--no-public-resolver"] if "export-tree-tests" in st else []
+            self.assertEqual(path == gp.MAKE_EXPORT, bool(kit), path)
+            self.assertEqual(st["export-audit"].cmds,
+                             [self.AUDIT + kit + ["--diff-paths"] + judged],
+                             path)
             self.assertFalse(st["export-audit"].cargo, path)
 
     def test_a_scripts_or_docs_only_diff_does_not_plan_it(self):

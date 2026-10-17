@@ -13,6 +13,7 @@ ABORTED or a refused/lost pass 2, queued 3, ASK 4.
 Local run data lives under `~/.local/state/meclaw/pipeline/` (`runs/<run>/`,
 `metadata/<sha256>.json`, `local-fingerprint.json`).
 """
+import contextlib
 import datetime
 import glob
 import hashlib
@@ -53,6 +54,7 @@ GRACE_S = 1800
 STORE_EXIT = 6
 
 USAGE = """usage: pipeline.py gate <strand|integration|release> [--base <rev>] [--only <stations>]
+         [--mode <strand|integration|release>]
          [--archive <dir>] [--log-dir <dir>] [--fail-fast] [--plan-only] [--no-nice]
          [--lane] [--resync] [--no-precheck-stop] [--decide <station>=without:"OR-<id>: <reason>"]
          [--host <lane>] [--strand <name>] [--wave <wave>] [--no-pre --reason <text>]
@@ -62,7 +64,8 @@ USAGE = """usage: pipeline.py gate <strand|integration|release> [--base <rev>] [
 Plans one pass of the gate and runs it -- here when no station needs cargo,
 else on a lane the scheduler admits. Exit: GREEN 0, RED 1, ABORTED 2,
 queued 3, ASK 4; a refused argument is 2, a lane that refuses this
-tree 5, a store error at the admission 6.
+tree 5, a store error at the admission 6. The mode stands first or as
+`--mode <m>` anywhere; two different modes are refused.
 
 --repo plans the repository at <path> instead of the current one; a
 satellite (coding, soul2me, orga: `pipeline/stations.json`) is planned from
@@ -167,6 +170,13 @@ def _local_fp_path():
     return os.path.join(state_dir(), "local-fingerprint.json")
 
 
+def _local_register(old, new):
+    """The local lane's register after a run said `new`: the register rule of the
+    lanes (`schedule.merge_register`) -- a field the run did not measure, the
+    `browsers` of a run that books no engine (#1199 K14), keeps its value."""
+    return schedule.merge_register(old if isinstance(old, dict) else {}, new, None)
+
+
 # --- arguments -----------------------------------------------------------------------------
 
 class Opts:
@@ -180,6 +190,39 @@ class Opts:
         self.help = False
 
 
+def _take_modes(argv):
+    """The modes `argv` names, taken out of it in place: the positional first word
+    (or a mode word after a flag) and every `--mode <m>` / `--mode=<m>` wherever
+    it stands (#1199 K13: `gate --repo <r> --mode strand` read `--repo` as the
+    mode). A value flag's value is never one (`--reason --mode`). `None`: a
+    `--mode` without its value."""
+    modes, rest, i = [], [], 0
+    if argv and not argv[0].startswith("-"):
+        modes.append(argv[0])
+        i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in VALUE_FLAGS:
+            rest.extend(argv[i:i + 2])
+            i += 2
+            continue
+        if a == "--mode":
+            if i + 1 >= len(argv):
+                return None
+            modes.append(argv[i + 1])
+            i += 2
+            continue
+        if a.startswith("--mode="):
+            modes.append(a[len("--mode="):])
+        elif a in MODES:  # the positional form after a flag
+            modes.append(a)
+        else:
+            rest.append(a)
+        i += 1
+    argv[:] = rest
+    return modes
+
+
 def parse(argv, err):
     """`Opts`, or the exit code of a refused command line (2) -- gate.sh's checks."""
     o = Opts()
@@ -190,14 +233,19 @@ def parse(argv, err):
     if not argv:
         print(USAGE, file=err)
         return 2
-    if argv[0] == "--mode":  # the wrapper's form: gate.sh -> pipeline.py gate --mode <m>
-        argv.pop(0)
-        if not argv:
-            print(USAGE, file=err)
-            return 2
-    elif argv[0].startswith("--mode="):
-        argv[0] = argv[0][len("--mode="):]
-    o.mode = argv.pop(0)
+    modes = _take_modes(argv)
+    if modes is None:
+        print(USAGE, file=err)
+        return 2
+    if len(set(modes)) > 1:
+        print("gate: two modes: %s (`--mode <m>` and the positional `<m>` name the same "
+              "one)" % " and ".join(modes), file=err)
+        return 2
+    if not modes:
+        print("gate: no mode (expected strand|integration|release, positional or "
+              "--mode <m>)", file=err)
+        return 2
+    o.mode = modes[0]
     if o.mode not in MODES:
         print("gate: unknown mode: %s (expected strand|integration|release; ci runs "
               "scripts/gate_legacy.sh)" % o.mode, file=err)
@@ -458,8 +506,14 @@ def _header(doc, repo, mode, out):
     except Exception:  # noqa: BLE001 -- the header is a courtesy, the plan stands
         n = 0
     short = _git(repo, "rev-parse", "--short", base) if base else ""
-    print("gate: base = %s (%d %s)" % (short or base or "full tree", n, "file" if n == 1 else "files"),
-          file=out)
+    why = None
+    if not base:   # GH #1199 (I3 class): no merge base is no whole-tree pass -- say so
+        try:
+            why = plan._resolve_base(repo, "strand" if mode == "merge" else mode, None)[2]
+        except Exception:  # noqa: BLE001 -- the header is a courtesy, the plan stands
+            why = None
+    label = short or base or ("none (%s)" % why if why else "full tree")
+    print("gate: base = %s (%d %s)" % (label, n, "file" if n == 1 else "files"), file=out)
 
 
 def _scope_line(n):
@@ -483,10 +537,11 @@ def _plan_only(doc, out):
     print("tests=%s" % ("true" if has_tests else "false"), file=out)
 
 
-def _plan_fingerprint(db, host):
+def _plan_fingerprint(db, host, repo=None):
     """`(fingerprint, runner)` `--plan-only` keys with: `--host`'s runner, else the
-    runner updated last, else the local one -- the register from the store; the
-    build part is measured like the run's (`_plan_build`)."""
+    runner updated last, else the local one -- the register from the store as a
+    run of `repo` expects it (`schedule.register_view`, #1199 K13); the build part
+    is measured like the run's (`_plan_build`)."""
     try:
         schedule._ensure(db)
         if host:
@@ -495,13 +550,41 @@ def _plan_fingerprint(db, host):
             row = db.execute("SELECT fingerprint, name FROM runners WHERE fingerprint IS NOT NULL "
                              "ORDER BY updated_at DESC LIMIT 1").fetchone()
         if row and row[0]:
-            return json.loads(row[0]), row[1] or host or ""
+            return schedule.register_view(json.loads(row[0]), repo), row[1] or host or ""
     except (ValueError, OSError, Exception):  # noqa: BLE001 -- a missing store keys nothing
         pass
     return _load_json(_local_fp_path()) or {}, "local"
 
 
-def _plan_build(o, repo, satellite, cargo, fp, lane_name):
+def _held_lane(db, repo, o):
+    """The lane of the lane lease the pass's holder holds, else '' (an unarmed or
+    unreadable store holds none). A batch holder `<wave>/S1+S2` speaks for the
+    member that holds the lane, as its admission does (`schedule._batch_speaker`;
+    re-check v2-r3-lease n1)."""
+    key = holder_key(repo, o.strand, o.wave, o.holder)
+    if not key:
+        return ""
+    try:
+        st = schedule._load(db)
+        mine = schedule._holder(st, schedule._batch_speaker(st, key, o.host)) if st else None
+    except Exception:  # noqa: BLE001 -- a store that cannot say holds no lease
+        return ""
+    return (mine or {}).get("lane") or ""
+
+
+def _runs_here(o, repo, db, cargo):
+    """Whether a (non-satellite) pass runs on this machine (`_run_local`): `--lane`,
+    or a plan without a cargo station, without `--host` and without a held lane
+    lease. I3 (ruling test-cc19, 16.10.): cargo-free kit plans (gate-selftest,
+    export-tree-tests --kit) with `--host build03` ran here beside the live Egon
+    (~120 % load, a load-flake) -- with `--host` or a held lane lease they run on
+    the lane (`_run_lane`, a lease as for a cargo plan)."""
+    if o.lane:
+        return True
+    return not cargo and not o.host and not _held_lane(db, repo, o)
+
+
+def _plan_build(o, repo, satellite, here, fp, lane_name, cargo=False):
     """The build part `--plan-only` keys with -- the run's own (orchestrator OR-T12-18
     A-M3, re-check tv-bn M7w A-M3: the plan looked up in a third environment, this
     process's without the lane's words and the mode): the `+env` the run would hand
@@ -512,7 +595,7 @@ def _plan_build(o, repo, satellite, cargo, fp, lane_name):
     mode, measured for the tree the admission names on the lane (`_lane_tree`). A
     lane that cannot be named: no build part, no key."""
     from . import executor  # the stations' build part is the executor's rule
-    if not satellite and (not cargo or o.lane):
+    if not satellite and here:
         return executor.stations_build(None, _local_plus_env(o)[3], repo)
     try:
         name = o.host or lane_name
@@ -1174,8 +1257,21 @@ def _run_local(o, repo, doc, metadata, db, out, err):
     cargo = any(_needs_cargo(s) for s in doc.get("stations") or [])
     print(_plan_line(doc, known, keys, cargo, "local", p.plan_path(), o.cache), file=out,
           flush=True)
+    # TV-K5 (b) here too (fix round 4 v2-r3-kit): a cap is at least 3x the green P95,
+    # here the slowest lane class's (`schedule.local_p95`); a cap below it is raised.
+    p95 = p.store("station p95", schedule.local_p95, db, doc.get("repo") or "meclaw",
+                  o.mode) or {}
+    doc_r["stations"], raised = schedule.with_hang_caps(doc_r["stations"], p95)
+    for line in schedule.hang_cap_notes(raised, schedule.clamped_caps(doc_r["stations"], p95)):
+        print(line, file=out, flush=True)
     for note in _floor_notes(doc_r["stations"]):
         print("gate: NOTE %s" % note, file=out, flush=True)
+    if not o.lane:
+        # Lease find R3b (welle-validierung-2, 16.10.): a lane lease taken for
+        # this pass lay idle and was reclaimed while it ran. Since I3 only a
+        # plan without cargo, `--host` and a held lane lease gets here.
+        print("gate: NOTE local pass (no cargo station, no --host, no lane lease): runs on this "
+              "machine, takes and needs no lane lease", file=out, flush=True)
     dispatch = {"run": run, "repo": doc.get("repo") or "meclaw", "mode": o.mode, "rev": doc.get("rev"),
                 "base": doc.get("base"), "dirty": bool(doc.get("dirty")),
                 "strand": holder_key(repo, o.strand, o.wave, o.holder), "tree": repo, "target": target,
@@ -1214,7 +1310,8 @@ def _run_local(o, repo, doc, metadata, db, out, err):
         print("gate: the executor ended without pass_ended (exit %s) -- the run is lost" % rc, file=err)
         return 2
     if isinstance(p.fingerprint, dict) and not p.fingerprint.get("unanswered"):
-        _write_json(_local_fp_path(), p.fingerprint)   # M7r A-M1: no answer, no register
+        # M7r A-M1: no answer, no register; K14: what the run did not measure stays
+        _write_json(_local_fp_path(), _local_register(_load_json(_local_fp_path()), p.fingerprint))
     p.store("flake register", _flake_ingest, db, run, {})
     v2 = p.v2(dispatch["ws"], p.head(run, "local", 1, dispatch))
     # The full-pass mark (#1165) before the cache: the cache stays the last record.
@@ -1350,24 +1447,160 @@ def _lost(o, p, ln, adm, dest, close, rc, err, db, scoped=False):
     return 2
 
 
+# Re-check v2-r3-lease m2: the clock of the admission wait line (tests inject it).
+_clock = time.monotonic
+
+
+class _Signalled(SystemExit):
+    """SIGTERM/SIGHUP inside a lane pass (#1228 round 3, K13): the default
+    action ended the driver without its `finally`, the admission stayed and
+    kept the lease. Raised in the main thread, it unwinds like Ctrl-C; as a
+    SystemExit the CLI ends with 128 + signal, no traceback."""
+
+
+class _ExitSignals:
+    """The trap of `_trap_exit_signals`: calling it restores the old handlers;
+    `held()` defers SIGTERM/SIGHUP/SIGINT over the spawn window (re-check
+    v2-r3-lease m1): a signal between the executor's spawn in `exec_stream`
+    and `started.append` ended the pass as "not started" -- ABORTED, the
+    lease free under a running executor. Deferred, it raises once `started`
+    names the executor (or `exec_stream` raised: then nothing started).
+    No signal mask: a blocked mask would pass to the spawned child."""
+
+    def __init__(self, old=None):
+        self.old = old if old is not None else {}
+        self.holding, self.pending = False, None
+
+    def __call__(self):
+        import signal
+        for sig, handler in self.old.items():
+            signal.signal(sig, handler)
+
+    @contextlib.contextmanager
+    def held(self):
+        import signal
+        if not self.old:    # not the main thread: nothing to defer
+            yield
+            return
+        self.holding, self.pending = True, None
+        old_int = signal.signal(signal.SIGINT, self._defer)
+        try:
+            yield
+        finally:
+            signal.signal(signal.SIGINT, old_int)
+            self.holding = False
+            pending, self.pending = self.pending, None
+            if pending == signal.SIGINT:
+                raise KeyboardInterrupt
+            if pending is not None:
+                raise _Signalled(128 + pending)
+
+    def _defer(self, signum, _frame):
+        if self.pending is None:
+            self.pending = signum
+
+
+def _trap_exit_signals():
+    """SIGTERM and SIGHUP raise `_Signalled` for the pass; returns the trap
+    (`_ExitSignals`: call it to restore). Only the main thread may set a
+    handler -- elsewhere nothing changes."""
+    import signal
+    if threading.current_thread() is not threading.main_thread():
+        return _ExitSignals()
+    trap = _ExitSignals()
+
+    def raise_(signum, frame):
+        # one-shot: a second signal must not break the close on the way out
+        for sig in trap.old:
+            signal.signal(sig, signal.SIG_IGN)
+        if trap.holding:
+            return trap._defer(signum, frame)
+        raise _Signalled(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            trap.old[sig] = signal.signal(sig, raise_)
+        except (ValueError, OSError):
+            continue
+    return trap
+
+
+def _close_on_the_way_out(ln, adm, d, started, close, err):
+    """#1228 round 3 (K13): a way out of a pass without its close -- an exception,
+    a LaneError, Ctrl-C, SIGTERM/SIGHUP -- frees the lease. Before the executor
+    started (`started` empty) nothing of the run lives on the lane: ABORTED.
+    After it, the executor is asked to abort (nobody reads its stream any more),
+    then the lane is probed (`schedule.run_gone`: the scope, the workspace, the
+    tree): gone is ABORTED, anything else -- a pid, no answer, a run without a
+    scope (I1) -- stays lost (fail-closed); `take` closes it once the lane
+    probes empty and the driver is dead (`schedule._close_dead_runs`)."""
+    aborted = {"event": "pass_ended", "data": {"verdict": "ABORTED"}}
+    if not started:
+        if close(aborted):
+            print("gate: the pass of %s ended before its executor started on %s -- closed "
+                  "ABORTED, the lease is free" % (adm.run, adm.lane), file=err)
+        return
+    proc = started[0]
+    ws = d.get("ws") or "%s/ws/%s" % (ln.root, adm.run)
+    why = ""
+    if not getattr(proc, "scoped", False):
+        why = "%s started without a scope -- no unit to ask (I1)" % adm.run
+    else:
+        try:
+            lane.abort(ln, d["tree"], adm.run, ws)
+        except lane.LaneError as exc:
+            print("gate: abort of %s on the way out: %s" % (adm.run, exc), file=err)
+        try:
+            _state, why = schedule.run_gone(ln, adm.run, ws, d.get("tree") or "", lane)
+        except Exception as exc:  # noqa: BLE001 -- fail-closed: no answer keeps the lease
+            why = "the probe failed: %s: %s" % (type(exc).__name__, exc)
+    if not why and close(aborted):
+        print("gate: the pass of %s ended without its close and the lane shows the run "
+              "gone -- closed ABORTED, the lease is free" % adm.run, file=err)
+        return
+    close(None, lost=True)
+    print("gate: the pass of %s ended without its close -- the run is lost, the lane keeps "
+          "its lease (%s); a take frees it once the lane probes empty"
+          % (adm.run, why or "the store refused the close"), file=err)
+
+
 def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
     meta_path = meta_path or metadata_path(repo)
+    queued_at = []
 
     def queued(q):
+        queued_at.append((_clock(), q.reason))
         print("gate: queued -- %s (waiting for admission)" % q.reason, file=err, flush=True)
 
     try:
         lanes = lane.load_lanes()
-        _sync(db, lanes, o.host)
+        if o.wait_admission:
+            # tm-orch4: a waiter outlasts a locked store from its first write on
+            schedule.while_locked(lambda: _sync(db, lanes, o.host),
+                                  end=time.monotonic() + schedule.wait_secs(
+                                      os.environ, "MECLAW_ADMISSION_WAIT_SECS", "14400"),
+                                  reset=lambda: schedule._rollback(db))
+        else:
+            _sync(db, lanes, o.host)
         kw = dict(repo=doc.get("repo") or "meclaw", mode=o.mode,
                   strand=holder_key(repo, o.strand, o.wave, o.holder), wave=o.wave or "",
                   base=doc.get("base"), lane_pref=o.host, now=None,
-                  tree_name=os.path.basename(repo.rstrip("/")), any_lane=bool(o.any_lane))
+                  tree_name=os.path.basename(repo.rstrip("/")), any_lane=bool(o.any_lane),
+                  # K14: a merge candidate's gate waits ahead of the strands
+                  merge=os.environ.get("MECLAW_GATE_MODE", "") == "merge",
+                  # re-check Kette Minor 2: the release class reads the strand file
+                  # in the caller's tree -- with and without --wait-admission
+                  release_tree=os.path.abspath(repo))
         if o.wait_admission:
             adm = schedule.admit_waiting(db, doc, on_queued=queued,
                                          wait_tree=os.path.abspath(repo), **kw)
+            if queued_at:
+                # re-check v2-r3-lease m2: the wait is said once it ends (admitted
+                # or given up) -- `merge --wait` counts it as the lane wait
+                at, why = queued_at[0]
+                print("gate: admission wait %ds (%s)" % (round(_clock() - at), why),
+                      file=err, flush=True)
         else:
-            # Kit find (h): the merge gate never comes back for an offer -- a
+            # Kit find (h): a merge gate without --wait never comes back for an offer -- a
             # queue place of it would block the lane for every waiter behind.
             adm = schedule.admit(db, doc, wait=False, **kw,
                                  queue=os.environ.get("MECLAW_GATE_MODE", "") != "merge")
@@ -1383,7 +1616,8 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
                                          if adm.power_requested else ""), file=err)
         return 3
     p = _Pass(o, repo, doc, out, err)
-    held, closed = None, []
+    held, closed, started, ln, d = None, [], [], None, {}
+    restore_signals = _trap_exit_signals()
 
     def close(pass_ended, lost=False):
         # One close per admission (a second one walks a finished item); a close
@@ -1507,11 +1741,16 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
         for line in schedule.hang_cap_notes(raised, schedule.clamped_caps(d["stations"], p95)):
             print(line, file=out, flush=True)
         try:
-            proc = lane.exec_stream(ln, d, pipeline=(pushed["kit"] + "/scripts/pipeline.py")
-                                    if satellite else None)
+            # m1: the spawn and its record are one step for a signal
+            with restore_signals.held():
+                proc = lane.exec_stream(ln, d, pipeline=(pushed["kit"] + "/scripts/pipeline.py")
+                                        if satellite else None)
+                started.append(proc)
         except lane.LaneError as exc:
+            # `exec_stream` raises only when the executor did not start: nothing
+            # of the run lives on the lane, the lease is free (#1228 round 3, K13).
             print("gate: %s" % exc, file=err)
-            close(None, lost=True)
+            close({"event": "pass_ended", "data": {"verdict": "ABORTED"}})
             return 2
         ws = d.get("ws") or "%s/ws/%s" % (ln.root, adm.run)
         rc = _stream_to_end(p, proc, lambda text: schedule.ingest(db, adm, text),
@@ -1542,12 +1781,14 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
                     p.fingerprint, p.events)
         return p.finish(v2, dest, adm.lane, adm.round, db=db, run=adm.run)
     finally:
-        # Any way out without a close -- an exception, Ctrl-C -- leaves the
-        # admission lost, never dispatched forever (A-C1).
+        # Any way out without a close -- an exception, Ctrl-C, SIGTERM/SIGHUP --
+        # frees the lease, or leaves the admission lost when the lane may still
+        # run it (A-C1; #1228 round 3, K13).
         try:
             if not closed:
-                close(None, lost=True)
+                _close_on_the_way_out(ln, adm, d, started, close, err)
         finally:
+            restore_signals()
             if held is not None:
                 held.release()
 
@@ -1617,11 +1858,13 @@ def run_gate(args, out, err):
         print("gate: NOTE %s" % note, file=out)
     db = store.open()
     cargo = any(_needs_cargo(s) for s in doc.get("stations") or [])
+    here = not satellite and _runs_here(o, repo, db, cargo)
     if o.plan_only:
-        fp, lane_name = _plan_fingerprint(db, o.host)
+        fp, lane_name = _plan_fingerprint(db, o.host or ("" if here else _held_lane(db, repo, o)), repo)
         _plan_only(doc, out)
         keys, known, _fp = _lookup(db, doc, repo, metadata, fp, lane_name or "local", o.mode,
-                                   o.cache, _plan_build(o, repo, satellite, cargo, fp, lane_name))
+                                   o.cache, _plan_build(o, repo, satellite, here, fp, lane_name,
+                                                        cargo))
         print(_plan_line(doc, known, keys, cargo, lane_name or "-", None, o.cache), file=out)
         return 0
     if satellite:
@@ -1635,7 +1878,7 @@ def run_gate(args, out, err):
         return _run_lane(o, repo, doc, metadata, db, out, err, meta_path)
     if cargo and o.lane and _lane_flag_refused(db, out, err):
         return 3
-    if not cargo or o.lane:
+    if here:
         return _run_local(o, repo, doc, metadata, db, out, err)
     return _run_lane(o, repo, doc, metadata, db, out, err, meta_path)
 

@@ -340,6 +340,14 @@ fn build_member(td: &tempfile::TempDir, surface: &str, stubs: &Stubs) -> Vec<Str
             &main.join(format!("assistants/scribe/{s}/session-keeper/close")),
             &json!({"idle_ms": 1}),
         );
+        // GH #1229: the keeper's night is a window of `./close`, and an open
+        // inside it is a firing at once -- with `idle_ms` 1 that ends the
+        // generation it opened before its turn stands on the wall (22:00-04:00
+        // UTC). The window is closed here, so only the sweep ends a session,
+        // whatever the hour of the run.
+        meclaw_testing::quiet_keeper_night(
+            &main.join(format!("assistants/scribe/{s}/session-keeper")),
+        );
     }
     let mut edges = member_memory_edges();
     edges.push(json!({"from": "./assistants", "to": "/sink",

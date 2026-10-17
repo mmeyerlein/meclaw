@@ -27,8 +27,8 @@ use serde_json::Value as JsonValue;
 use super::lanes::Refusal;
 use super::params::{OAuthAuth, PeerAuth};
 use super::wire::{
-    AUTH_UNAVAILABLE, FRAME_ID_HEADER, INVALID_FRAME, PEER_REFUSED, PEER_TIMEOUT, PEER_UNREACHABLE,
-    SENT_MS_HEADER,
+    AUTH_UNAVAILABLE, CREDENTIAL_PENDING, FRAME_ID_HEADER, INVALID_FRAME, PEER_REFUSED,
+    PEER_TIMEOUT, PEER_UNREACHABLE, SENT_MS_HEADER,
 };
 
 /// At most this much of a token's life is given up to clock skew and the time
@@ -99,6 +99,29 @@ impl PeerClient {
         Ok(Self { inner, credential })
     }
 
+    /// GH #1105: the same client with the client secret the vault delivered
+    /// under `auth.client_secret_grant_id`. The token cache starts empty: a
+    /// token is only ever fetched with the secret now in hand. A client
+    /// without the OAuth form is returned as it is.
+    #[must_use]
+    pub fn with_client_secret(&self, secret: &str) -> Self {
+        let credential = match self.credential.as_deref() {
+            Some(Credential::OAuth { grant, .. }) => {
+                let mut grant = grant.clone();
+                grant.client_secret = secret.to_string();
+                Some(Arc::new(Credential::OAuth {
+                    grant,
+                    cache: Mutex::new(None),
+                }))
+            }
+            _ => self.credential.clone(),
+        };
+        Self {
+            inner: self.inner.clone(),
+            credential,
+        }
+    }
+
     /// POSTs `frame` to `url` and returns the parsed answer.
     ///
     /// Without a credential this is one POST. With the static form it is one
@@ -163,6 +186,17 @@ impl PeerClient {
                     )),
                     ok => ok.json(url),
                 }
+            }
+            // GH #1105: a grant's client before its box: nothing to ask the
+            // token endpoint with. Transient, so the outbox keeps the message
+            // and sends it once the secret arrived; no request leaves.
+            Some(Credential::OAuth { grant, .. }) if grant.client_secret.is_empty() => {
+                Err(Refusal::new(
+                    CREDENTIAL_PENDING,
+                    "the client secret of auth.client_secret_grant_id has not arrived from the \
+                     vault yet; nothing was posted",
+                )
+                .transient())
             }
             Some(Credential::OAuth { grant, cache }) => {
                 let bearer = self.token(grant, cache, false, timeout_ms).await?;
@@ -501,6 +535,33 @@ mod tests {
         let e = excerpt(b"a\x1b[31mb\x00c\x7f d\r\n\x07e");
         assert!(!e.chars().any(char::is_control), "{e:?}");
         assert_eq!(e, "a[31mbc d e");
+    }
+
+    /// GH #1105: an OAuth client whose secret comes from a grant refuses
+    /// `credential_pending` (transient) until the secret is set, and asks no
+    /// token endpoint for it: the URL here has no listener, and an attempt
+    /// would read `auth_unavailable` instead.
+    #[tokio::test]
+    async fn gh1105_no_secret_yet_is_a_transient_credential_pending() {
+        let auth: PeerAuth = serde_json::from_value(serde_json::json!({
+            "token_url": "http://127.0.0.1:9/token", "client_id": "north",
+            "client_secret_grant_id": "grant:g@a/p"
+        }))
+        .expect("parses");
+        let client = PeerClient::with_auth(Some(&auth)).expect("client");
+        let r = client
+            .post_frame("http://127.0.0.1:9/peer", &serde_json::json!({}), 2_000)
+            .await
+            .expect_err("nothing to post with");
+        assert_eq!(r.error_code, CREDENTIAL_PENDING);
+        assert!(r.transient, "the outbox keeps the message");
+        let r = client
+            .with_client_secret("stub-secret-1105")
+            .post_frame("http://127.0.0.1:9/peer", &serde_json::json!({}), 2_000)
+            .await
+            .expect_err("no token endpoint listens");
+        assert_eq!(r.error_code, AUTH_UNAVAILABLE, "with the secret it asks");
+        assert!(!r.detail.contains("stub-secret-1105"), "{}", r.detail);
     }
 
     /// A listener that answers every request with `head` and then holds the

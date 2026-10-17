@@ -1,4 +1,4 @@
-# `builder@1.26.53`
+# `builder@1.27.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -466,7 +466,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.10.12",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.11.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.0"}], "…": "…"}}]}
@@ -1719,6 +1719,7 @@ no.
 |---|---|
 | `MODEL_BUILDER` | the model the composer asks |
 | `LOCAL_LLM_BASE_URL` | the OpenAI-shaped endpoint it asks at |
+| `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | the app attribution of `compose` (`http_referer` / `x_title`, defaults `https://meclaw.ai` / `MeClaw`), sent as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` |
 | *(none)* | the credential is no environment value (#801). As shipped `compose` holds no grant and sends no `Authorization` header (GH #271), which is right for a keyless local endpoint; an endpoint that wants a key gets it through `credential_grant_id` (`override_params`) and `meclaw --vault-add cred:local-llm` (stdin, unlockable vault) |
 
 The four settings of the `recipes` cell are params, set with `override_params` on the builder:

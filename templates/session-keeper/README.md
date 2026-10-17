@@ -1,4 +1,4 @@
-# `session-keeper@2.4.1`
+# `session-keeper@2.5.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -17,9 +17,13 @@ the only place that mints it.
 - **One identity per call.** Every inbound turn of a channel leaves the stamp with the
   `session_id` of the generation that channel is currently in. Turn 17 carries the same id
   as turn 1, without anyone downstream having to remember anything.
-- **An end that is arithmetic.** A nightly timer plus an idle threshold: no channel is
+- **An end that is arithmetic.** A night window plus an idle threshold: no channel is
   ended while it is talking, and no model is asked whether a conversation is over. Both
-  halves are configuration -- the night is a cron, the silence is a number.
+  halves are configuration -- the night is a window of the UTC day, the silence is a number.
+- **A night without a tick.** Nothing fires through a night in which nothing is open: the
+  first generation that opens -- or that an import brings in, open as it stood -- arms ONE
+  strike for the night, and every firing arms the next one for the moment the next open
+  generation falls silent (R-AG-1, [#1229](https://github.com/mmeyerlein/meclaw/issues/1229)).
 - **A lazy beginning.** Nothing pre-creates a session. Not a boot, not a close, not the
   timer. The next turn after the end of a call IS the beginning of the next one, and it
   mints its own id.
@@ -32,9 +36,9 @@ the only place that mints it.
 | cell | type | what it holds |
 |---|---|---|
 | `stamp` | `code` | the ingress pass: look up the generation, restart the idle clock, stamp the turn |
-| `close` | `code` | the night pass: which channels fell silent, seal them, ask for the close |
+| `close` | `code` | the night pass: which channels fell silent, seal them, ask for the close -- and arm the next strike of `night` |
 | `sessions` | `store` | one row per generation: `channel, session_id, opened_at, last_seen, closed, closed_at, audience_set, owed_turn` (the last since GH #953: the turn whose final answer the generation still waits for). Since 2.1.0 one more table stands beside it and is not domain at all: `port_scratch`, the transfer lane's notepad — written and read by `porter` alone, and it never travels. |
-| `night` | `timer` | the firing, every thirty minutes through the local night |
+| `night` | `timer` | the night watchdog: no schedule of its own; `close` keeps one one-shot (`night-close`) on it |
 | `porter` | `code` | the transfer lane: it walks `sessions` for an `in_export` and writes one part back on `in_import`. It opens no generation and closes none — stateless like the other two, which is why its notepad is a table in `sessions`. |
 
 ## Ports
@@ -132,10 +136,12 @@ threshold, releases the mark and sends the close itself. The same holds for a pa
 not wire `turn_write` to `in_answered`, or a writer whose `turn_write` knob is `0` (today only
 cogny, which has no keeper): their owed generations close at night. The night's own seal takes a
 generation whether it owes an answer or not -- two hours of silence mean none is coming. The
-price of that bound: a generation sealed shortly before a firing whose answer never comes is
-still inside the idle window at that firing, so its close leaves with the NEXT night -- up to
-about 26 hours after the seal (Re-Review R-2). Only a generation whose answer never arrives
-pays it; an answered one closes at the acknowledgement.
+price of that bound: a generation whose answer never comes closes at the first moment of the
+night after its idle threshold -- the firing's `next` question arms a strike for a sealed row
+exactly as for an open one (#1229). With the shipped window that is up to about 20 hours after
+the seal, for a generation that falls silent just after the night ends (Re-Review R-2 measured
+up to about 26 under the former thirty-minute night cron). Only a generation whose answer never
+arrives pays it; an answered one closes at the acknowledgement.
 
 A door that declares nothing leaves the column empty; nothing here derives a round from the
 `session_id` prefix, and nothing defaults it to `["*"]`.
@@ -143,7 +149,7 @@ A door that declares nothing leaves the column empty; nothing here derives a rou
 | lane | who sends it | what it does |
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | stamps the turn and restarts the idle clock |
-| `in_sweep` | an operator, a second schedule | forces a sweep outside the night (optional) |
+| `in_sweep` | an operator, a test | forces a sweep outside the night (optional); like every firing it arms the strike for the generation that falls silent next |
 | `in_answered` | the parent, from the curator's `turn_write` | the acknowledgement of a turn's final answer: clears the generation's `owed_turn` and closes a generation sealed while it waited (GH #953) |
 | `in_export` | whoever moves this keeper | demands the whole session ledger as a versioned document. Empty `context` -- an export is about the hive, not about a round. |
 | `in_import` | the same, on the receiving side | feeds ONE part of such a document into a keeper that is already running. Empty `context`. |
@@ -201,7 +207,7 @@ crossing edge derives inactive, and its timer never spawns.
 
 ## Knobs
 
-**Since `2.2.0` the three knobs of this hive are params, not environment
+**Since `2.2.0` the knobs of this hive are params, not environment
 variables** ([#138](https://github.com/mmeyerlein/meclaw/issues/138); the
 `collector@1.2.0` migration
 ([#136](https://github.com/mmeyerlein/meclaw/issues/136)) is the reference
@@ -220,30 +226,23 @@ because only a key a cell carries under `params` may be named
 |---|---|---|---|
 | `./close` | `idle_ms` | `7200000` | how long a channel has to be silent before a firing ends its generation. Two hours. |
 | `./close` | `close_limit` | `50` | how many generations one firing may seal. A store `select` has no implicit limit. |
-| `./night` | `schedules[0].cron` | `0 0,30 22-23,0-3 * * *` | 6-field Quartz cron of the sweep, **in UTC** (see below). |
+| `./close` | `night_from_utc` | `"22:00"` | where the night begins, `HH:MM` of the **UTC** day (see below). |
+| `./close` | `night_until_utc` | `"04:00"` | where it ends, exclusive; `"24:00"` is the end of the day. Equal to `night_from_utc`: no night at all, nothing is armed (an `in_sweep` still sweeps). |
 
-A `timer` cell has no top-level `cron` param and never will: `TimerParams::parse`
-reads `schedules` and `query_timeout_ms`, and would ignore any other key in
-silence. So the nightly cron is a literal *inside* the schedule, and moving it
-means naming `schedules` -- the key that does exist:
+Since [#1229](https://github.com/mmeyerlein/meclaw/issues/1229) the night is not a
+schedule of `./night` any more (R-AG-1): the timer ships with `schedules: []`, and the
+former thirty-minute night cron -- twelve strikes a night, whether anything was open or
+not -- is gone. Moving the night means naming the two window knobs of `./close`:
 
 ```json
 "override_params": {
-  "session-keeper/close": {"idle_ms": 600000, "close_limit": 20},
-  "session-keeper/night": {"schedules": [{
-    "schedule_id": "<a real uuid>",
-    "schedule_name": "night-close",
-    "cron": "0 0,30 23,0-4 * * *",
-    "emit_to": "../close",
-    "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "night-close"}]},
-    "emit_headers": {}
-  }]}
+  "session-keeper/close": {"idle_ms": 600000, "close_limit": 20,
+                           "night_from_utc": "23:00", "night_until_utc": "05:00"}
 }
 ```
 
-The whole `schedules` array is replaced, not merged, so every field has to be
-there -- including `schedule_id` as a real UUID, because the template's
-`uuid7` token is minted at instantiation and an override takes that moment over.
+An override that still names `schedules` on `./night` seeds strikes the keeper does not
+need: `./close` arms its own either way, and a seeded cron only fires on top of them.
 
 **A standing instance is untouched.** Instantiation is a COPY: a colony grown
 from an earlier version keeps its own `templates/` copy with the old tokens in it
@@ -251,38 +250,35 @@ and goes on reading its `.env`. What stops working is the reverse -- an old
 environment line in a colony grown from `2.2.0` is read by nothing at all, and
 says so nowhere. Move such a line into `override_params` when you regrow.
 
-## The timer computes in UTC. Do the sum.
+## The night is a window of the UTC day. Do the sum.
 
-The `timer` cell resolves cron expressions against UTC -- always, everywhere; there is no
-zone parameter and there will not be one. A schedule that is meant to run through the
-LOCAL night is therefore written as the UTC **image** of that night, and the image moves
-with daylight saving time.
+`./close` holds the window against the UTC clock -- always, everywhere; there is no zone
+parameter and there will not be one. A night that is meant to cover the LOCAL night is
+therefore written as the UTC **image** of that night, and the image moves with daylight
+saving time.
 
 For `Europe/Berlin`, 00:00 until 06:00 local:
 
-| period | local offset | local window | UTC window | cron |
+| period | local offset | local window | `night_from_utc` | `night_until_utc` |
 |---|---|---|---|---|
-| summer (CEST) | UTC+2 | 00:00 – 05:30 | 22:00 – 03:30 | `0 0,30 22-23,0-3 * * *` (**shipped default**) |
-| winter (CET) | UTC+1 | 00:00 – 05:30 | 23:00 – 04:30 | `0 0,30 23,0-4 * * *` |
+| summer (CEST) | UTC+2 | 00:00 – 06:00 | `22:00` | `04:00` (**shipped default**) |
+| winter (CET) | UTC+1 | 00:00 – 06:00 | `23:00` | `05:00` |
 
-Read the default field by field: seconds `0`, minutes `0,30` (twice an hour), hours
-`22-23,0-3` (22, 23, 0, 1, 2, 3 — six hours across midnight UTC), every day. Twelve
-firings, the first at 22:00 UTC = **00:00 CEST**, the last at 03:30 UTC = **05:30 CEST**.
 Rule of thumb: `UTC = local − offset`, and an hour that goes below zero wraps into the
-previous day (00:00 CEST − 2 h = 22:00 UTC **of the day before**), which is why the hour
-list is written as two ranges and not as `22-3`.
+previous day (00:00 CEST − 2 h = 22:00 UTC **of the day before**). That is why the shipped
+window crosses midnight: a `from` later than its `until` means from `from` to midnight and
+from midnight to `until`.
 
-Running the summer cron in winter is not a defect, it is an hour of drift: the sweep opens
-at 23:00 local instead of midnight. Since the idle threshold is what actually ends a
-session, an hour of drift costs nothing -- but if you want the boundary exact,
-override `./night`'s `schedules` per season, or point it at a window wide enough
-for both
-(`0 0,30 22-23,0-4 * * *`).
+Running the summer window in winter is not a defect, it is an hour of drift: the night
+opens at 23:00 local instead of midnight. Since the idle threshold is what actually ends a
+session, an hour of drift costs nothing -- but if you want the boundary exact, override the
+window per season, or name one wide enough for both (`22:00` until `05:00`).
 
-**Missed firings expire.** The timer never catches up (`docs/cell-types.md` § timer), and
-that is exactly right here: the next firing thirty minutes later finds the same idle
-channel, and a night the colony spent switched off is caught by the first firing of the
-next one.
+**Missed strikes fire once, late.** Every strike is a one-shot with `catch_up`
+(`docs/cell-types.en.md` § Watchdog contract): a moment that passed while the colony was
+down fires once on its next start, marked `hop.late`. Inside the night that strike is an
+ordinary firing. Outside it, `./close` seals nothing -- a colony that comes back at noon
+ends no session at noon -- and arms the next opening of the window instead.
 
 ## The protocol, row by row
 
@@ -298,13 +294,29 @@ seal     -> rows_affected 1: ROUTE close with the sealed row's round
          -> rows_affected 0: nothing (someone else sealed it)
 ```
 
-The night pass, once per firing:
+The night pass arms itself, once per new generation -- the stamp's successful `open`
+insert, which the hive edge `./sessions -> ./close` carries here beside the stamp's own
+copy (#1229):
+
+```
+open     -> rows_affected 0, or no night window: nothing
+         -> outside the night: add night-close at the next opening     route night
+         -> inside the night: the firing below, now
+```
+
+Once per firing -- the strike, `in_sweep`, or an open inside the night:
 
 ```
 firing   -> select sessions (closed 0, last_seen < now - IDLE)   phase sweep
+         -> (owed and heal-page beside it, GH #953/#954)
+         -> select sessions (last_seen >= now - IDLE), oldest, limit 1   phase next
 sweep    -> per candidate: update closed=1 where closed=0        phase seal   <- the guard
 seal     -> rows_affected 1: ROUTE close (one per generation)
          -> rows_affected 0: nothing (someone else sealed it)
+next     -> a row: add night-close at last_seen + IDLE + 1 ms     route night
+            (never sooner than now + 1 s; a moment outside the night moves to the next opening)
+         -> no row: nothing -- nothing is open, nothing is armed
+late     -> a strike with hop.late outside the night: no sweep; add night-close at the next opening
 ```
 
 A sweep without a candidate and a lost guard race emit **nothing** (empty multi-send,
@@ -472,8 +484,15 @@ one that is already running — the two are complements, not a choice.
   lean on (constraints are deferred), so the next turn converges on the newest row
   (`order by opened_at desc, limit 1`) and the older one is closed by the next night. A
   duplicate generation costs an extra close request, never a lost turn.
-- **The night is one cron for the whole colony.** Per-channel time zones are not modelled;
-  a keeper serves one local night.
+- **The night is one window per keeper.** Per-channel time zones are not modelled; a keeper
+  serves one local night.
+- **More silent generations than `close_limit` take more than one strike.** A firing seals
+  at most `close_limit`; the rest goes with the next strike, which `next` arms for the next
+  row still inside the idle window. A backlog with no such row left waits for the next
+  generation that opens, or for an `in_sweep`.
+- **A refused order is not sent again.** The keeper draws no edge for `./night`'s
+  `timer_op_error`: an order the timer refuses (`at_in_past`, when it ran out of its lead
+  time in flight) leaves the night unarmed until the next generation opens and arms it again.
 - **Instance-per-day is not this.** v1 runs the logical generation (same cells, new id).
   A talky that IS one day (R-OS-3's target picture) is the experiment after the wave.
 - **A generation opened before its door declared a round has none, forever.** The column
@@ -502,8 +521,16 @@ one that is already running — the two are complements, not a choice.
 ## Pins
 
 - `crates/meclaw-cells/tests/misc_8/session_keeper.rs` -- the shipped `script_inline` against real
-  stdin documents (the lookup, the lazy reopen, the idle cut, the guard) plus the cron
-  arithmetic of the shipped default, computed rather than asserted.
+  stdin documents (the lookup, the lazy reopen, the idle cut, the guard) plus the night
+  window of the shipped default.
+- `gh1229_the_keeper_night_is_armed_by_an_open_generation` (meclaw-cells) -- `./night` ships
+  no schedule; an open generation arms ONE strike for the next opening of the window, arms
+  nothing for an empty window and is the firing itself inside one; the firing's `next` arms
+  the moment the next generation falls silent; both new edges stand in the hive.
+- `gh1229_an_imported_generation_arms_the_keeper_night` (same file) -- the store's answer to
+  the porter's insert of a `sessions` row reaches `./close` (`./sessions -> ./close`,
+  `ses_phase: import`) and arms exactly as an open does: the next opening outside the night,
+  a firing inside it. A keeper that continues an imported generation ends it at night.
 - the same file, colony level -- a running colony with a real store and a real timer: three
   turns with one id, a firing that closes nothing, a firing that closes exactly once, a
   repeated firing that stays silent, and the next turn that opens the next generation.

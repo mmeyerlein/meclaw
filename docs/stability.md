@@ -24,12 +24,15 @@ frame and the receipt frame with their keys, the header that names the sending c
 addresses it is believed from (`params.trusted_proxies`, loopback by default), the
 credential the outgoing POST carries (`params.auth`: a static header, or an OAuth 2.0
 client-credentials bearer), the origins that POST may go to (`params.egress`, nothing without
-it), and the eleven `error_code` strings a refusal carries
+it), and the thirteen `error_code` strings a refusal carries
 ([`cell-types.md`](cell-types.md) § `proxy`). The peer mount is the surface a colony you do not run
 builds against, and the credential is what the proxy in front of it checks.
 
 The documented `error_code` strings are the dead-letter reasons, the cell-type codes, and the
 codes a `/colony` read can answer with. The overview lists them in the sections that emit them.
+A dead-letter reason also travels as `hop.error_code` on the substrate's error replies: the
+routing-error reply to a `reply_to` anchor carries `unresolved_path`, the opt-in TTL notice
+`ttl_expired`.
 
 ## What 0.x promises
 
@@ -44,7 +47,9 @@ listed. The mailbox overflow is the other kind of breaking change, a behaviour a
 may have leaned on: since 0.46.0 a full mailbox no longer holds back the producers of a cell, it
 overflows per cell and only dead-letters above a cap, and a topology that used that back-pressure to
 slow a producer sets the `colony.json` `mailbox_overflow_*` caps lower. The new dead-letter code it
-brings, `mailbox_full`, is additive like any other. meclaw
+brings, `mailbox_full`, is additive like any other. So is `sender_out_of_scope` (GH #1231), the
+mutation refusal of a sender without an edge to `/colony/mutations` whose scope lies outside its own
+hive; the behaviour behind it is the breaking part, named in the changelog. meclaw
 has no deprecation period and no compatibility flag, so the release note is where you find out.
 
 Nothing under `crates/` carries a SemVer guarantee. The Rust crates are internals and move

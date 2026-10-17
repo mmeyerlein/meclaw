@@ -75,6 +75,9 @@ const SCRIPTED: &[Scripted] = &[
             ("idle_ms", "_int"),
             ("close_limit", "_int"),
             ("heal_limit", "_int"),
+            // GH #1229 (R-AG-1): the night window the watchdog is armed into.
+            ("night_from_utc", "_hhmm"),
+            ("night_until_utc", "_hhmm"),
         ],
     },
     Scripted {
@@ -122,7 +125,16 @@ const SUBSTRATE_CODE_PARAMS: &[&str] = &[
 /// the same classes off the name in `scripts/check_tree_rules.py` § R6).
 ///
 /// One entry, and it is the summarizer's writer: an `llm` cell needs a key.
-const ENV_LANE: &[&str] = &["OPENROUTER_API_KEY"];
+///
+/// The two attribution names are the grey-zone call `scripts/check_tree_rules.py`
+/// § R6 makes out loud (`ENV_LANE_EXACT`); the writer carries them since the
+/// owner ruling of 2026-10-16 (every LLM request names its app), in the
+/// memory-hive form.
+const ENV_LANE: &[&str] = &[
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_HTTP_REFERER",
+    "OPENROUTER_X_TITLE",
+];
 
 /// The three template roots this file rules over.
 const ROOTS: &[&str] = &["session-keeper", "summarizer", "dispatcher"];
@@ -362,9 +374,10 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 10,
+        total, 12,
         "the scripted half of this migration is ten knobs, GH #954 added `heal_limit` and \
-         GH #1085 took `phaseout_chars` and `tool_chars` away and added `input_soft_fallback`"
+         GH #1085 took `phaseout_chars` and `tool_chars` away and added `input_soft_fallback`, \
+         GH #1229 added the night window `night_from_utc`/`night_until_utc`"
     );
 }
 
@@ -419,8 +432,9 @@ fn the_idle_window_and_the_close_limit_come_from_the_params() {
     let shipped = emit_with_params("session-keeper/close", json!({}), firing());
     assert_eq!(
         shipped.len(),
-        3,
-        "three questions, asked of the store: sweep, owed, heal-page"
+        4,
+        "four questions, asked of the store: sweep, owed, heal-page and, since \
+         GH #1229, next (the generation that falls silent next arms the watchdog)"
     );
     let op = sweep_of(&shipped);
     assert_eq!(op["limit"], 50, "the shipped runaway guard is fifty");
@@ -460,52 +474,48 @@ fn the_idle_window_and_the_close_limit_come_from_the_params() {
     );
 }
 
-/// GH #138 for the night: the sweep's schedule is a literal the timer's own
-/// `params` carry, and an override is what the REAL parser plans on.
-///
-/// Negative half first: with no override the shipped cron is what
-/// `TimerParams::parse` plans, and it is the same string the declaration carries
-/// -- a timer has no `night_cron` param, so the declaration documents a value
-/// that lives inside `params.schedules[0].cron` and the two are compared here
-/// rather than typed twice. Then the positive half, which is the one that
-/// matters: the schedule a mutation pushes down through `override_params` is the
-/// one the timer plans on -- so the eighteen setups that used to write a
-/// `KEEPER_NIGHT_CRON` line into a `.env` still move the nightly sweep out of
-/// their way. A `.env` line that stopped meaning anything would have been silent:
-/// green tests with a close sweep firing into them.
+/// GH #138 for the night, since GH #1229 (R-AG-1): the keeper's timer carries NO
+/// schedule. It is the night's watchdog, `./close` arms it when a generation
+/// opens and after every firing, and the night itself is the close's knob pair
+/// `night_from_utc`/`night_until_utc` (pinned as a triple above). The timer
+/// declares no setting of its own. The override half stays the one that
+/// matters: the schedule a mutation pushes down through `override_params` is
+/// the one the timer plans on -- `schedules` still EXISTS under `params`, which
+/// is what GH #294 asks of an override.
 #[test]
 fn the_night_fires_on_the_cron_its_params_carry() {
-    let mut cfg = config("session-keeper/night");
-    let declared = cfg["contract"]["settings"]["night_cron"]["default"]
-        .as_str()
-        .expect("the declared nightly cron")
-        .to_string();
-    assert_eq!(
-        declared.split_whitespace().count(),
-        6,
-        "the declared schedule is a six-field Quartz cron: {declared}"
+    let cfg = config("session-keeper/night");
+    let settings = cfg["contract"]["settings"]
+        .as_object()
+        .expect("contract.settings");
+    assert!(
+        settings.is_empty(),
+        "the night timer declares no knob of its own -- the window is ./close's \
+         (GH #1229): {settings:?}"
     );
-    let params = cfg["params"].as_object_mut().expect("params");
-    // The one substitution staging performs on this file: `${uuid7:...}` is not a
-    // UUID until the colony mints one.
-    params["schedules"][0]["schedule_id"] =
-        Value::String("0190a3f2-0000-7000-8000-000000000138".into());
-
+    let params = cfg["params"].as_object().expect("params");
     let shipped = TimerParams::parse(&Value::Object(params.clone())).expect("shipped params");
-    assert_eq!(shipped.schedules.len(), 1, "the keeper ticks one night");
-    let ScheduleKind::Cron(shipped_cron) = &shipped.schedules[0].kind else {
-        panic!("the nightly schedule is a repeating cron, not a one-shot `at`")
-    };
-    assert_eq!(
-        *shipped_cron, declared,
-        "the shipped nightly schedule is a literal and it is the declared one"
+    assert!(
+        shipped.schedules.is_empty(),
+        "the keeper's night is a watchdog with no schedule of its own: a keeper \
+         with nothing open arms nothing (R-AG-1, GH #1229)"
     );
 
     // What a mutation writes: `override_params` replaces the whole `schedules`
     // key (last-write-wins, `mutation::stage::patch_and_substitute_config`), and
     // GH #294 lets it name that key precisely because it EXISTS under `params`.
     let mut overridden = params.clone();
-    overridden["schedules"][0]["cron"] = Value::String("0 0 4 1 1 *".into());
+    overridden.insert(
+        "schedules".into(),
+        json!([{
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000138",
+            "schedule_name": "night-close",
+            "cron": "0 0 4 1 1 *",
+            "emit_to": "../close",
+            "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "night-close"}]},
+            "emit_headers": {}
+        }]),
+    );
     let tuned = TimerParams::parse(&Value::Object(overridden)).expect("overridden params");
     let ScheduleKind::Cron(tuned_cron) = &tuned.schedules[0].kind else {
         panic!("the overridden schedule stopped being a cron")

@@ -48,6 +48,9 @@ const KNOBS: &[(&str, &str)] = &[
     // three knobs.
     ("max_iter", "_int"),
     ("round_idle_ms", "_int"),
+    // GH #1225 (R-IG-1): the head of the last result a capped round quotes,
+    // cut with the mark `…`; a number of the script until then.
+    ("partial_head", "_int"),
     // GH #728 -- the deadline of a consult or a delegation: inside it the answer
     // is a leg of the member's turn, past it a straggler (`hop.late`).
     ("late_after_ms", "_int"),

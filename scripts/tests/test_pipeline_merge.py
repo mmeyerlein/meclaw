@@ -19,6 +19,7 @@ import pathlib
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -333,6 +334,103 @@ class LeaseTest(MergeCase):
             self.f.db.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?,?,?)",
                               (merge.resource("meclaw"), "", None, at, merge.OFFER_TTL_S,
                                strand))
+
+    def test_a_locked_store_never_ends_merge_wait(self):
+        # tm-orch4 (16.10.): a waiter dies on `database is locked` -- `merge --wait`
+        # outlasts it, also when the lease committed and a later write was refused
+        # (a second take would read `already_merging` from its own lease).
+        f = self.f
+        self.a_strand()
+        real_take, real_emit, refused = merge.take_tree, merge.events.emit, []
+
+        def take(*args, **kw):
+            if len(refused) < 3:
+                refused.append("take")
+                raise sqlite3.OperationalError("database is locked")
+            return real_take(*args, **kw)
+
+        def emit(db, name, *args, **kw):
+            if name == "lease_taken" and "emit" not in refused:
+                refused.append("emit")
+                raise sqlite3.OperationalError("database is locked")
+            return real_emit(db, name, *args, **kw)
+        with mock.patch.object(merge, "take_tree", side_effect=take), \
+                mock.patch.object(merge.events, "emit", side_effect=emit), \
+                mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            self.assertTrue(merge.take_tree_waiting(f.db, "meclaw", "S1"))
+        self.assertEqual(["take", "take", "take", "emit"], refused)
+        self.assertEqual("S1", f.lease()["holder"])
+
+    def test_a_refused_commit_is_no_taken_lease(self):
+        # Lease re-check m1: a COMMIT refused as busy leaves the transaction open;
+        # the store then reads the take's own uncommitted lease back. `_took`
+        # must not count it -- the merge would run under a phantom lease that a
+        # second connection never sees, holding the write lock.
+        f = self.f
+        self.a_strand()
+
+        class RefusingCommit:
+            """The fixture's connection, but the first COMMIT is refused as busy."""
+
+            def __init__(self, db):
+                self._db, self.refused = db, 0
+
+            def execute(self, sql, *args):
+                if sql.strip().upper() == "COMMIT" and not self.refused:
+                    self.refused += 1
+                    raise sqlite3.OperationalError("database is locked")
+                return self._db.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._db, name)
+        db = RefusingCommit(f.db)
+        with mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            self.assertTrue(merge.take_tree_waiting(db, "meclaw", "S1"))
+        self.assertEqual(1, db.refused)
+        self.assertFalse(f.db.in_transaction, "the take ends with no open transaction")
+        other = store.open(os.path.join(f.tmp, "p.db"))
+        try:
+            row = store.lease_who(other, merge.resource("meclaw")) or {}
+        finally:
+            other.close()
+        self.assertEqual("S1", row.get("holder"), "the lease is committed, not a phantom")
+
+    def test_a_refused_journal_commit_after_the_lease_is_a_taken_lease(self):
+        # Re-check Kette m1 (the other case): the lease's COMMIT went through, the
+        # journal's (`events.emit` -> `journal_add`, its own transaction) is
+        # refused as busy. The lease is ours: `_took` rolls the open journal back
+        # first and then reads the committed lease -- no second take that reads
+        # `already_merging` from it, no open transaction (k7 of the re-check).
+        f = self.f
+        self.a_strand()
+
+        class RefusingSecondCommit:
+            """The fixture's connection, but the second COMMIT (the journal's) is refused."""
+
+            def __init__(self, db):
+                self._db, self.commits, self.refused = db, 0, 0
+
+            def execute(self, sql, *args):
+                if sql.strip().upper() == "COMMIT":
+                    self.commits += 1
+                    if self.commits == 2:
+                        self.refused += 1
+                        raise sqlite3.OperationalError("database is locked")
+                return self._db.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._db, name)
+        db = RefusingSecondCommit(f.db)
+        with mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            self.assertTrue(merge.take_tree_waiting(db, "meclaw", "S1"))
+        self.assertEqual(1, db.refused)
+        self.assertFalse(f.db.in_transaction, "the take ends with no open transaction")
+        other = store.open(os.path.join(f.tmp, "p.db"))
+        try:
+            row = store.lease_who(other, merge.resource("meclaw")) or {}
+        finally:
+            other.close()
+        self.assertEqual("S1", row.get("holder"), "the committed lease is the merge's")
 
     def test_release_offers_with_short_ttl(self):
         f = self.f
@@ -783,6 +881,26 @@ class MergeWaitTest(MergeCase):
         return mock.patch.dict(os.environ, {"MECLAW_PIPELINE_FAKE_GATE": "",
                                             "MECLAW_MERGE_GATE_CMD": extra})
 
+    def test_merge_wait_queues_the_candidate_run_for_a_lane(self):
+        # K13 (16.10.): with every lane leased the merge gate ended ABORTED --
+        # "a merge gate does not wait for an offer". `merge --wait` waits for
+        # the tree lease, so it waits for the lane as well: its candidate gate
+        # runs with `--wait-admission` (a queue place it takes, as `token take
+        # --wait`); a merge without `--wait` still takes no queue place.
+        f = self.f
+        self.a_strand()
+        f.strand("S2", 102, {"templates/b/bar.txt": "bar\n"})
+        seen = os.path.join(f.root, "..", "gate-args")
+        cmd = ("sh -c 'echo \"[$1]\" >> %s; echo gate: rev = $(git -C {tree} rev-parse HEAD); "
+               "echo GATE-SUMMARY strand "
+               "$(git -C {tree} rev-parse --short=7 HEAD) 1/1 1s GREEN' gate {wait}" % seen)
+        with self.gate_cmd(cmd):
+            for name, wait in (("S1", True), ("S2", False)):
+                rc, _, err = f.merge([name], wait=wait, clock=_Clock())
+                self.assertEqual(rc, 0, err)
+        with open(seen) as fh:
+            self.assertEqual(["[--wait-admission]", "[]"], fh.read().split())
+
     def test_the_candidate_runs_wait_for_its_lane_is_said_and_counted(self):
         # The second wait: the candidate run on its lane behind other runs'
         # cargo lock (the gate's `lock-wait` row) -- said, and part of wait_s.
@@ -797,6 +915,28 @@ class MergeWaitTest(MergeCase):
         self.assertIn("merge: waited 42s for the lane of the candidate run (behind other "
                       "runs' cargo lock)", err)
         self.assertEqual(merge_receipt(f, "S1")["wait_s"], 42)
+
+    def test_the_candidate_runs_wait_for_admission_is_said_and_counted(self):
+        # Re-check 518f70bfb m2: under `merge --wait` the candidate gate waits
+        # in the admission (`--wait-admission`, up to MECLAW_ADMISSION_WAIT_SECS)
+        # with its output captured -- the wait was neither said nor counted. The
+        # gate's line `gate: admission wait <n>s (<reason>)` is said by the merge
+        # and counted in wait_s beside the `lock-wait` row.
+        f = self.f
+        self.a_strand()
+        cmd = ("sh -c 'echo \"gate: queued -- lane build01: busy (waiting for admission)\" >&2; "
+               "echo \"gate: admission wait 300s (lane build01: busy)\" >&2; "
+               "echo gate: rev = $(git -C {tree} rev-parse HEAD); "
+               "echo \"GATE lock-wait [42s behind other runs] 42s NOTE\"; "
+               "echo GATE-SUMMARY strand $(git -C {tree} rev-parse --short=7 HEAD) 1/1 1s GREEN'")
+        with self.gate_cmd(cmd):
+            rc, _, err = f.merge(["S1"], wait=True, clock=_Clock())
+        self.assertEqual(rc, 0, err)
+        self.assertIn("merge: waited 300s for the admission of the candidate run "
+                      "(lane build01: busy)", err)
+        self.assertIn("merge: waited 42s for the lane of the candidate run (behind other "
+                      "runs' cargo lock)", err)
+        self.assertEqual(merge_receipt(f, "S1")["wait_s"], 342)
 
     def test_no_lane_for_the_candidate_run_names_the_reason(self):
         # The merge gate takes no queue place (kit find h): queued -> exit 3,
@@ -957,6 +1097,30 @@ class PreconditionTest(MergeCase):
         rc, _, err = self.f.merge(["S1"])
         self.assertEqual(rc, 0, err)
 
+    def test_merge_reads_every_review_heading_and_the_last_decides(self):
+        # Kit find REVIEW_HEADING (v2-r3-kit2 rebase round): only `## Review` and
+        # `## Fix-Runde Review` were review sections; a later `nein` under
+        # `## Rebase Review` (or Mini-/Minor-Runde/Vor-Batch Review) was passed
+        # over and the earlier `ja` merged -- fail-open. Every `## ... Review ...`
+        # heading is a review section; the last one decides.
+        self.a_strand()
+        # Re-check Kette Minor 3: the word is case-blind -- `review`/`REVIEW` is a
+        # review heading too, its `nein` is not passed over.
+        for heading in ("Rebase Review", "Mini-Runde Review 0123abcd", "Minor-Runde Review",
+                        "Vor-Batch Review (Delta)", "Fix-Runde review 0123abcd", "REVIEW"):
+            with self.subTest(heading=heading):
+                self.set_review("\nVerdikt: ja\n\n## %s\n\nVerdikt: nein (I1)\n" % heading)
+                self.assert_refused("no_review_verdict")
+        self.assertTrue(merge.review_approved("## Review\n\nVerdikt: ja\n\n## Reviewer-Notizen\n\n"
+                                              "Verdikt: nein\n"),
+                        "`Reviewer` is no review heading: its `nein` is no verdict")
+        self.assertTrue(merge.review_approved("## Review\n\nVerdikt: ja\n\n## reviewer notes\n\n"
+                                              "Verdikt: nein\n"),
+                        "case-blind, the word boundary still keeps `reviewer` out")
+        self.set_review("\nVerdikt: nein\n\n## Rebase Review\n\nVerdikt: ja\n")
+        rc, _, err = self.f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+
     def set_outsourced(self, line):
         path = os.path.join(self.f.wdir, "berichte", "S1.md")
         with open(path, encoding="utf-8") as fh:
@@ -989,6 +1153,28 @@ class PreconditionTest(MergeCase):
         self.set_outsourced("**Outsourced findings:** none")
         rc, _, err = self.f.merge(["S1"])
         self.assertEqual(rc, 0, err)
+
+    def test_merge_refuses_an_empty_or_placeholder_title(self):
+        # Runde 3 R3 (3): `strand.sh new` writes `"title": ""`; the merge fell back to the
+        # strand name -- "Merge v2-r2-pre (#1199, #1130, #1112): v2-r2-pre" on master.
+        for title in ("", "   ", "S1", None):
+            with self.subTest(title=title):
+                self.setUp()
+                extra = {"title": title} if title is not None else {}
+                self.a_strand(extra=extra)
+                if title is None:   # no title field at all
+                    path = os.path.join(self.f.wdir, "straenge", "S1.json")
+                    with open(path, encoding="utf-8") as fh:
+                        doc = json.load(fh)
+                    doc.pop("title")
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(doc, fh)
+                self.assert_refused("strand_title_missing")
+        self.setUp()
+        self.a_strand(title="Teach a a trick")
+        rc, _, err = self.f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.f.subject(), "Merge S1 (#101): Teach a a trick")
 
     def test_k_r3_the_review_refuses_before_anything_that_costs(self):
         # K-R3: the verdict refusal came after the reader rules of the
@@ -1119,6 +1305,50 @@ class LiftedFileBansTest(MergeCase):
                                                  {"lifted": ["crates/x/tests/gone.rs"]}, {})
         self.assertEqual((found, paths), ([], []))
         self.assertEqual(notes, ["crates/x/tests/gone.rs: declared lifted, deleted in the diff"])
+
+    # GH #1199 R1.1: the gh877 merge (16.10.) was refused with 13 hits, three
+    # files of them pure R100 moves of a harness refold -- a move lifts nothing.
+    MOVED = "crates/x/tests/refold/gh_lift.rs"
+
+    def moved_strand(self, changed=None):
+        base = self.f.head()
+        s = self.f.strand("S1", 101, {"crates/x/tests/other.rs": CLEAN_RS},
+                          extra={"flaky_fix": True})
+        os.makedirs(os.path.join(s["wt"], os.path.dirname(self.MOVED)))
+        git(s["wt"], "mv", LIFT, self.MOVED)
+        if changed is not None:
+            write(s["wt"], self.MOVED, changed)
+        git(s["wt"], "add", "-A")
+        git(s["wt"], "commit", "-q", "-m", "S1: refold")
+        return base, git(s["wt"], "rev-parse", "HEAD")
+
+    def test_a_pure_move_is_not_lifted_by_a_flaky_fix(self):
+        base, tip = self.moved_strand()
+        found, paths, notes = merge.lifted.check(self.f.root, base, tip, {"flaky_fix": True}, {})
+        self.assertEqual((found, paths, notes), ([], ["crates/x/tests/other.rs"], []))
+
+    def test_a_moved_file_with_a_change_still_counts(self):
+        base, tip = self.moved_strand("// changed\n" + WINDOW_RS.split("\n", 1)[1])
+        found, paths, _ = merge.lifted.check(self.f.root, base, tip, {"flaky_fix": True}, {})
+        self.assertEqual(paths, ["crates/x/tests/other.rs", self.MOVED])
+        self.assertIn("%s:7 rs-short-deadline" % self.MOVED, found)
+
+    def test_a_pure_move_into_a_ban_scope_still_counts(self):
+        # M1 of the v2-r3-bans re-check: a byte-equal move from outside every
+        # ban scope into crates/*/tests/** changes how the bans grade the file
+        # -- only a move within the same scope lifts nothing.
+        outside = "crates/x/fixtures/gh_lift.rs"
+        self.f.master_commit({outside: WINDOW_RS}, msg="outside every scope")
+        base = self.f.head()
+        s = self.f.strand("S1", 101, {"crates/x/tests/other.rs": CLEAN_RS},
+                          extra={"flaky_fix": True})
+        os.makedirs(os.path.join(s["wt"], os.path.dirname(self.MOVED)))
+        git(s["wt"], "mv", outside, self.MOVED)
+        git(s["wt"], "commit", "-q", "-m", "S1: move into tests")
+        tip = git(s["wt"], "rev-parse", "HEAD")
+        found, paths, _ = merge.lifted.check(self.f.root, base, tip, {"flaky_fix": True}, {})
+        self.assertEqual(paths, ["crates/x/tests/other.rs", self.MOVED])
+        self.assertIn("%s:7 rs-short-deadline" % self.MOVED, found)
 
 
 class LiftedResolutionTest(MergeCase):
@@ -1319,6 +1549,35 @@ class MigrationQueueTest(MergeCase):
         rc, _, err = self.f.merge(["S1"])
         self.assertEqual(rc, 0, err)
         self.assertEqual(merge.open_migrations(self.f.root, "master"), {})
+
+
+class StrandReceiptOrderTest(unittest.TestCase):
+    """v2-r3-kit fix round 2 (pre RED): two gate runs of one strand in the same
+    second at two commits. The run id is `<second>-<sha8>`, so the name sorts the
+    pair by its commit hash, not by time: `report` and the merge point read the
+    OLDER run's receipt as the newest. Within one second the later-written run
+    directory is the newer one; across seconds the name stays the order."""
+
+    def archive(self, runs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name, rev, mtime_ns in runs:
+            write(tmp.name, os.path.join(name, "receipt.json"),
+                  json.dumps({"mode": "strand", "rev": rev}))
+            os.utime(os.path.join(tmp.name, name), ns=(mtime_ns, mtime_ns))
+        return tmp.name
+
+    def test_same_second_the_later_written_run_is_the_newest(self):
+        root = self.archive([("20261016T095200Z-c478a68e", "c478a68e", 1_000_000_000),
+                             ("20261016T095200Z-07e92e81", "07e92e81", 2_000_000_000)])
+        self.assertEqual(["07e92e81", "c478a68e"],
+                         [doc["rev"] for _, doc in merge.strand_receipts(root)])
+
+    def test_across_seconds_the_run_id_is_the_order(self):
+        root = self.archive([("20261016T095200Z-07e92e81", "07e92e81", 2_000_000_000),
+                             ("20261016T095201Z-c478a68e", "c478a68e", 1_000_000_000)])
+        self.assertEqual(["c478a68e", "07e92e81"],
+                         [doc["rev"] for _, doc in merge.strand_receipts(root)])
 
 
 class CorpusTest(unittest.TestCase):
@@ -1999,6 +2258,11 @@ class GoldenLaneTest(MergeCase):
         f = self.f
         from pipeline import schedule
         self.schedule = schedule
+        # The lanes here do not exist: their lane tree holds no process. Without
+        # this the release probe gets no answer, and since re-check I1 of
+        # v2-r3-lease (fail-closed) the generator's lease would stay.
+        self.addCleanup(setattr, schedule, "_lane_tree_probe", schedule._lane_tree_probe)
+        schedule._lane_tree_probe = lambda ln: []
         golden_fixture(self)
         write(f.tmp, "lanes", "lane-a test@lane-a.invalid\nlane-b test@lane-b.invalid\n")
         res = schedule.lease_init(f.db, lanes=["lane-a", "lane-b"],
@@ -2549,6 +2813,17 @@ class MergeGateUnnarrowedTest(unittest.TestCase):
             argv = merge.gate_argv("/t", dict(ctx, host=None))
         self.assertEqual(["/t/g", "--strand", "welle-x/S1"], argv)
 
+    def test_the_merge_gate_waits_for_admission_only_under_wait(self):
+        # K13: `merge --wait` queues its candidate gate for a lane.
+        for host in (None, "build04"):
+            for wait in (True, False):
+                ctx = {"rev": "abcdef123456", "base": "b", "label": "S1", "host": host,
+                       "holder": "welle-x/S1", "wait": wait}
+                with mock.patch.dict(os.environ, {"MECLAW_MERGE_GATE_CMD": ""}), \
+                        mock.patch.object(merge, "_lane_target", return_value="x"):
+                    argv = merge.gate_argv("/t", ctx)
+                self.assertEqual(wait, "--wait-admission" in argv, (host, wait, argv))
+
     def test_the_gate_holder_is_the_strand_lease_or_the_batch(self):
         def strand(name, branch, wdir="/r/plans/welle-x-2026-10-11"):
             return argparse.Namespace(name=name, branch=branch, wdir=wdir)
@@ -2580,6 +2855,40 @@ class MergeGateUnnarrowedTest(unittest.TestCase):
                                 io.StringIO(), meta_path="/t/m")
         self.assertEqual(3, rc)
         self.assertIs(False, seen.get("queue"))
+
+    def test_the_admission_wait_is_said_in_one_line(self):
+        # Re-check 518f70bfb m2: `--wait-admission` waited without a word (up to
+        # 4 h) -- the merge under `--wait` captured the gate and counted nothing.
+        # The gate says the wait when the admission ends (admitted or given up):
+        # `gate: admission wait <n>s (<first reason>)`; the clock is injected.
+        # An admission that never queued says nothing.
+        from pipeline import gate, schedule
+
+        def queued_once(db, doc, on_queued=None, **kw):
+            on_queued(schedule.Queued("lane build01: busy"))
+            return schedule.Queued("lane build01: busy -- no admission within 14400 s",
+                                   final=True)
+
+        def never_queued(db, doc, on_queued=None, **kw):
+            return schedule.Queued("lane build01 is off", final=True)
+        o = argparse.Namespace(host="build01", mode="strand", strand="welle-x/S1", wave=None,
+                               holder=None, any_lane=False, wait_admission=True)
+        for fake, ticks, said in ((queued_once, [100.0, 400.0],
+                                   "gate: admission wait 300s (lane build01: busy)\n"),
+                                  (never_queued, [], None)):
+            err, clock = io.StringIO(), iter(ticks)
+            with mock.patch.object(gate.lane, "load_lanes", return_value=[]), \
+                    mock.patch.object(gate, "_sync"), \
+                    mock.patch.object(gate, "holder_key", return_value="welle-x/S1"), \
+                    mock.patch.object(gate, "_clock", side_effect=lambda: next(clock)), \
+                    mock.patch.object(gate.schedule, "admit_waiting", side_effect=fake):
+                rc = gate._run_lane(o, "/t", {"repo": "meclaw"}, {}, None, io.StringIO(),
+                                    err, meta_path="/t/m")
+            self.assertEqual(3, rc)
+            if said:
+                self.assertIn(said, err.getvalue())
+            else:
+                self.assertNotIn("admission wait", err.getvalue())
 
     def test_the_merge_gate_runs_with_the_narrowing_off(self):
         seen = {}

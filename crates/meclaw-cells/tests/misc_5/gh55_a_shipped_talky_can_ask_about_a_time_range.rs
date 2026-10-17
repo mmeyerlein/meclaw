@@ -110,12 +110,6 @@ fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
     std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
 }
 
-/// A fixed schedule id — `${uuid7:*}` is an INSTANTIATION-side substitution, so
-/// a tree written straight to disk carries a real one.
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-0000000c5500";
-/// Never during a test run: the shipped default is the real night.
-const NEVER: &str = "0 0 0 1 1 *";
-
 /// The round these turns are spoken in, in the affinity vocabulary the audience
 /// gate speaks (ADR-0002 E8).
 const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
@@ -218,9 +212,11 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     // behaviour: a schedule the test can never trigger, and the two llm cells
     // pointed at the mock. `${ctx.model}` is an INSTANTIATION substitution; a
     // tree booted from disk carries a literal.
-    patch(root, "main/talky/session-keeper/night/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        // GH #1229: the night is a window of `./close`; an empty one arms
+        // nothing, and no open generation is a firing.
+        v["params"]["night_from_utc"] = json!("00:00");
+        v["params"]["night_until_utc"] = json!("00:00");
     });
     // Every open generation is a candidate the moment the sweep runs. It was a
     // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a

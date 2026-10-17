@@ -20,7 +20,9 @@
       "revert_plan",
       "quality",
       "answer"
-    ]
+    ],
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
   },
   "contract": {
     "version": "1.0.0",

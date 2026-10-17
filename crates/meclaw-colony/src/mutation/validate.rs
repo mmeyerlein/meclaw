@@ -3215,6 +3215,32 @@ pub fn validate_scope_containment(
     Ok(())
 }
 
+/// GH #1231 (R-ZH-2, variant a): a sender WITHOUT an edge to
+/// `/colony/mutations` may mutate only inside `home`, the nearest hive that
+/// holds it. The scope is normalised the way [`validate_scope_containment`]
+/// normalises it (root-clamped `..`), so `/org/a/../b` is judged as `/org/b`.
+/// The caller decides who needs the check: a sender with the door edge, and
+/// the HTTP door (no sender, the root), never reach it.
+pub fn validate_sender_scope(
+    sender: &meclaw_core::Path,
+    home: &meclaw_core::Path,
+    scope: &str,
+) -> Result<(), MutationError> {
+    let root = meclaw_core::Path::new("/");
+    let scope_norm = meclaw_core::Path::resolve(&root, scope);
+    if path_within(home, &scope_norm) {
+        Ok(())
+    } else {
+        Err(MutationError::SenderOutOfScope(format!(
+            "sender `{}` holds no edge to `/colony/mutations` and mutates only inside its \
+             hive `{}`; scope `{}` lies outside",
+            sender.as_str(),
+            home.as_str(),
+            scope_norm.as_str()
+        )))
+    }
+}
+
 /// Segment-aware containment: `inner` is within `scope` iff it equals `scope` or
 /// is a strict path-descendant (`scope`/...). Root scope (`/`) contains every
 /// absolute path. Both inputs are expected pre-normalised.

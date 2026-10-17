@@ -71,6 +71,7 @@ pub use bootstrap_grow::check_growth_overrides;
 pub use build_task::{
     build_long_running_task, build_stateful_task_with_peace, build_stateless_boot_inactive_respawn,
     build_stateless_one_shot_task, build_stateless_task, renotify_stop_wiring,
+    wake_checked_respawn,
 };
 pub use cell_task::{
     cell_task, cell_task_long_running, cell_task_stateful, stateless_dispatcher,

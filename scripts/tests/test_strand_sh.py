@@ -37,6 +37,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 import uuid
 from scripts.pipeline import lane
 from scripts.tests import fake_ssh, kit_time, kit_tree, private_tree, store_isolation
@@ -328,14 +329,13 @@ class TestNew(StrandShTestCase):
                          / "kit.json").is_file())
         # Z-I 2c (2): the scaffold carries the section the merge asks for.
         self.assertRegex(self.report("kit").read_text(), r"(?m)^## Review$")
-        # GH #1196: the field merge asks for, as a placeholder that does not pass.
+        # GH #1196 + K13 (16.10.): the field merge asks for, in the one form it
+        # accepts -- the placeholder `<none | ...>` read as `<none>` and was
+        # refused at the merge point.
         text = self.report("kit").read_text()
-        self.assertRegex(text, r"(?m)^Outsourced findings: <")
+        self.assertRegex(text, r"(?m)^Outsourced findings: none$")
         from scripts.pipeline import merge
-        self.assertFalse(merge.outsourced_findings_ok(text))
-        self.assertTrue(merge.outsourced_findings_ok(
-            text.replace(re.search(r"(?m)^Outsourced findings: .*$", text).group(0),
-                         "Outsourced findings: none")))
+        self.assertTrue(merge.outsourced_findings_ok(text))
 
     def test_new_prompt_points_at_the_rules_and_repeats_none_of_them(self):
         res = run_strand(self.repo, "new", "kit", "--issue", "756")
@@ -482,6 +482,13 @@ class TestMergeAndRevert(StrandShTestCase):
         self.assertEqual(2, res.returncode)
         self.assertIn("merge|revert", res.stderr)
         self.assertIn("strand.sh merge", run_strand(self.repo, "--help").stdout)
+
+    def test_the_usage_names_each_subcommand_apart_from_its_options(self):
+        """Review v2-r3-kit M4: `pre[--strand <S>]` -- a subcommand glued to its
+        first option reads as no subcommand of the kit."""
+        out = run_strand(self.repo, "--help").stdout
+        self.assertIn("strand.sh pre [--strand <S>]", out)
+        self.assertEqual([], re.findall(r"strand\.sh [a-z-]+\[", out))
 
     def test_merge_in_a_strand_tree_takes_the_strand_from_the_branch(self):
         """GH #1199 (a): `gate` and `report` read the strand from the branch
@@ -877,6 +884,63 @@ class TestWaveDetection(StrandShTestCase):
         for d in (OTHER_WAVE_DIR, WAVE_DIR, "--wave <directory>"):   # c23 M-4: English
             self.assertIn(d, res.stderr)
         self.assertFalse(self.report("kit").exists(), "it guessed one of two running waves")
+        # GH #1226: the stop names the two ways out, `--wave` and the prefixed name
+        self.assertIn("<wave>/kit", res.stderr)
+
+    # --- GH #1226: two running waves, the strand says which one is its own ---
+
+    def test_two_running_rows_a_prefixed_name_picks_its_wave(self):
+        """Two running waves on the same lanes (welle-validierung-2 and welle-kfix,
+        16.10.): `new <wave>/<name>` takes the wave of the prefix, no `--wave`."""
+        self._live((OTHER_WAVE_DIR, "**Running since 2026-10-14:** one."),
+                   (WAVE_DIR, "**Running since 2026-10-13:** the other."))
+        res = run_strand(self.repo, "new", "%s/kit" % WAVE, "--issue", "756")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: wave %s (from the prefix %s/)" % (WAVE_DIR, WAVE), res.stderr)
+        self.assertTrue(self.report("kit").exists(), res.stderr)
+        self.assertEqual("%s/kit" % WAVE, header_block(self.report("kit"))["branch"])
+        other = OTHER_WAVE_DIR[:-len("-2026-09-20")]   # welle-y
+        res = run_strand(self.repo, "new", "%s/kat" % other, "--issue", "757")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertTrue((self.worktree("kat") / "plans" / OTHER_WAVE_DIR / "berichte"
+                         / "kat.md").is_file(), res.stderr)
+        self.assertIn("%s/kat" % other,
+                      _git(self.repo, "branch", "--list", "%s/kat" % other).stdout)
+
+    def test_two_running_rows_the_strand_file_of_one_picks_it(self):
+        """The orchestrator wrote `straenge/<S>.json` before `new` (the kinds): of
+        two running waves the one that carries it is the strand's."""
+        self._live((OTHER_WAVE_DIR, "**Running since 2026-10-14:** one."),
+                   (WAVE_DIR, "**Running since 2026-10-13:** the other."))
+        sdir = self.repo / "plans" / WAVE_DIR / "straenge"
+        sdir.mkdir(parents=True)
+        (sdir / "kit.json").write_text('{"strand": "kit", "issue": 756, "title": "", "kind": {}}\n')
+        res = run_strand(self.repo, "new", "kit", "--issue", "756")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: wave %s (its strand file" % WAVE_DIR, res.stderr)
+        self.assertTrue(self.report("kit").exists(), res.stderr)
+
+    def test_a_prefix_that_names_two_running_waves_stops_and_names_both(self):
+        self._live((SAME_PREFIX_WAVE_DIR, "**Running since 2026-10-14:** one."),
+                   (WAVE_DIR, "**Running since 2026-10-13:** the other."))
+        res = run_strand(self.repo, "new", "%s/kit" % WAVE, "--issue", "756")
+        self.assertEqual(2, res.returncode, res.stdout)
+        for d in (SAME_PREFIX_WAVE_DIR, WAVE_DIR, "--wave <directory>"):
+            self.assertIn(d, res.stderr)
+        self.assertFalse(self.worktree("kit").exists(), "it guessed one of two waves of the prefix")
+
+    def test_a_prefix_without_a_wave_or_against_wave_stops(self):
+        res = run_strand(self.repo, "new", "welle-none/kit", "--issue", "756")
+        self.assertEqual(2, res.returncode, res.stdout)
+        self.assertIn("no wave directory plans/welle-none-<date>", res.stderr)
+        self._live((OTHER_WAVE_DIR, "**Running since 2026-10-14:** one."))
+        res = run_strand(self.repo, "new", "%s/kit" % WAVE, "--issue", "756",
+                         "--wave", OTHER_WAVE_DIR)
+        self.assertEqual(2, res.returncode, res.stdout)
+        self.assertIn("the prefix %s/ is not the wave %s" % (WAVE, OTHER_WAVE_DIR), res.stderr)
+        res = run_strand(self.repo, "new", "a/b/kit", "--issue", "756")
+        self.assertEqual(2, res.returncode, res.stdout)
+        self.assertFalse(self.worktree("kit").exists())
 
     def test_a_row_the_core_does_not_read_as_running_is_none_for_the_kit(self):
         """Re-check v2-kit c23 M-5: one reader of the Running row. A date the
@@ -939,6 +1003,39 @@ echo '  persona-receipt: the sources moved'
 echo '         scripts/gate.sh integration --decide persona-receipt=without:"<reason>"'
 exit 4
 """
+
+
+def as_strand_run(repo, tree, name="kit"):
+    """Relabel the newest run of `name`'s archive as a STRAND run -- receipt and
+    summary line. The strand gate is the pipeline's (its archive layout is pinned
+    in test_pipeline_gate_cli); since GH #1156 the kit reaches the old runner with
+    `ci` only, which writes the same layout with mode `ci`. A runner stub that
+    writes no receipt (ASK_STUB) gets one for the tree's head. Since review
+    v2-r3-kit M5 `report` takes no run of another mode: a case that pins what
+    report and close do with a strand archive relabels its run."""
+    root = pathlib.Path(repo) / "plans" / WAVE_DIR / "receipts" / name
+    run = (root / "latest").resolve() if (root / "latest").exists() else None
+    if run is None or not run.is_dir():
+        return
+    found = False
+    for path in run.glob("*.json"):
+        try:
+            doc = json.loads(path.read_text())
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and doc.get("mode") == "ci":
+            doc["mode"] = "strand"
+            (run / "last-strand.json").write_text(json.dumps(doc))
+            found = True
+    if not found and not (run / "last-strand.json").exists():
+        head = _git(tree, "rev-parse", "HEAD").stdout.strip()
+        (run / "last-strand.json").write_text(json.dumps({"mode": "strand", "rev": head}))
+    summary = run / "summary.txt"
+    if summary.exists():
+        text = summary.read_text()
+        for mode in ("ci", "integration"):
+            text = text.replace("GATE-SUMMARY %s " % mode, "GATE-SUMMARY strand ")
+        summary.write_text(text)
 
 
 def ask_stub(tree):
@@ -1131,21 +1228,7 @@ class TestReportAndClose(StrandShTestCase):
         pinning what report and close do with an archive."""
         res = run_strand(self.repo, "gate", "ci", cwd=self.tree,
                          extra_env={"MECLAW_GATE_PLAN": str(self.plan_file(plan_text))})
-        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
-        run = (root / "latest").resolve() if (root / "latest").exists() else None
-        if run is not None and run.is_dir():
-            for path in run.glob("*.json"):
-                try:
-                    doc = json.loads(path.read_text())
-                except ValueError:
-                    continue
-                if isinstance(doc, dict) and doc.get("mode") == "ci":
-                    doc["mode"] = "strand"
-                    (run / "last-strand.json").write_text(json.dumps(doc))
-            summary = run / "summary.txt"
-            if summary.exists():
-                summary.write_text(summary.read_text().replace("GATE-SUMMARY ci ",
-                                                               "GATE-SUMMARY strand "))
+        as_strand_run(self.repo, self.tree)
         return res
 
     def test_report_fills_gate_and_commits_from_the_archive(self):
@@ -1230,6 +1313,61 @@ class TestReportAndClose(StrandShTestCase):
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
 
+    def test_report_writes_the_outsourced_line_merge_accepts(self):
+        # K13 (16.10.): a report carried `Outsourced findings: <none>` and the
+        # merge point refused it (no_outsourced_findings). `report` writes the
+        # line in merge's form: the placeholder `<none>` becomes `none`; one
+        # merge cannot read is refused. Re-check 518f70bfb m4: a MISSING line is
+        # a forgotten answer (#1196) -- refused with a clear line, never added.
+        from scripts.pipeline import merge
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        path = self.report("kit")
+        text = path.read_text()
+        for value in ("<none>", "< none >", "none"):
+            path.write_text(re.sub(r"(?m)^Outsourced findings: .*$",
+                                   "Outsourced findings: " + value, text))
+            res = run_strand(self.repo, "report", cwd=self.tree)
+            self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+            after = path.read_text()
+            self.assertEqual(1, len(re.findall(r"(?m)^Outsourced findings:", after)), after)
+            self.assertRegex(after, r"(?m)^Outsourced findings: none$")
+            self.assertTrue(merge.outsourced_findings_ok(after))
+        path.write_text(re.sub(r"(?m)^Outsourced findings: .*\n", "", text))
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertIn("has no line `Outsourced findings:`", res.stderr)
+        self.assertIn("report never adds it", res.stderr)
+        self.assertNotRegex(path.read_text(), r"(?m)^Outsourced findings:")
+        # a template placeholder other than `<none>` is no answer either
+        path.write_text(re.sub(r"(?m)^Outsourced findings: .*$",
+                               "Outsourced findings: <none or #n (owner-ruling ...)>", text))
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertIn("Outsourced findings: none", res.stderr)
+        path.write_text(re.sub(r"(?m)^Outsourced findings: .*$",
+                               "Outsourced findings: later", text))
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout)
+        self.assertIn("Outsourced findings: none", res.stderr)
+
+    def test_report_reads_no_receipt_that_names_no_mode(self):
+        """Review v2-r3-kit M5 (b): a receipt without `mode`/`stage` is no strand
+        receipt -- the merge point's rule (`merge.strand_receipts`); `report` took it
+        for one and judged the line by its rev. A flat archive's line stands alone."""
+        base = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        run = [d for d in root.iterdir() if d.is_dir() and not d.is_symlink()][0]
+        (root / "summary.txt").write_text((run / "summary.txt").read_text())
+        (root / "receipt.json").write_text(json.dumps({"rev": base}))
+        (root / "latest").unlink()
+        shutil.rmtree(run)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GATE-SUMMARY strand ", header_block(self.report("kit"))["gate"])
+
     def test_report_refuses_a_red_gate(self):
         self.commit()
         self.assertEqual(1, self.gate(PLAN_RED).returncode)
@@ -1280,6 +1418,40 @@ class TestReportAndClose(StrandShTestCase):
         res = run_strand(self.repo, "report", cwd=self.tree)
         self.assertEqual(2, res.returncode, res.stdout + res.stderr)
         self.assertIn("tree changed since", res.stderr)
+
+    def test_report_refuses_a_lift_the_merge_would_refuse_with_its_message(self):
+        # GH #1199 R1.2: the merge's `lifted_bans` (merge.lifted_problem) runs
+        # in report too -- a `lifted` declaration in the strand file is a doc
+        # change that leaves the pre stamp standing, and gh877 met its 13 hits
+        # only at the merge point (16.10.).
+        lift = "crates/x/tests/gh_lift.rs"
+        window = ("use std::time::Duration;\nuse tokio::time::timeout;\n\n"
+                  "#[tokio::test]\nasync fn nothing_arrives() {\n"
+                  "    let (_tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);\n"
+                  "    assert!(timeout(Duration::from_millis(300), rx.recv()).await.is_err());"
+                  "\n}\n")
+        self.commit("scripts/testing_bans.py",
+                    (REPO / "scripts" / "testing_bans.py").read_text(encoding="utf-8"))
+        self.commit(".config/testing-bans.toml",
+                    (REPO / ".config" / "testing-bans.toml").read_text(encoding="utf-8"))
+        self.commit(lift, window)
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        sfile = self.tree / "plans" / WAVE_DIR / "straenge" / "kit.json"
+        doc = json.loads(sfile.read_text())
+        doc["lifted"] = [lift]
+        sfile.write_text(json.dumps(doc) + "\n")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        if str(REPO) not in sys.path:
+            sys.path.insert(0, str(REPO))
+        from scripts.pipeline import merge
+        why = merge.lifted_problem(merge.Strand(str(self.tree), "kit", WAVE_DIR),
+                                   _git(self.tree, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("%s:7 rs-short-deadline" % lift, why)
+        self.assertIn("PRE lifted-bans ", res.stdout + res.stderr)
+        self.assertIn(" RED " + why, res.stdout + res.stderr)
 
     def lane_summary(self, verdict, with_summary=True):
         """The newest run's summary.txt in the lane gate's layout (W3):
@@ -1340,6 +1512,132 @@ class TestReportAndClose(StrandShTestCase):
         res = run_strand(self.repo, "close", cwd=self.tree)
         self.assertEqual(1, res.returncode, res.stdout)
         self.assertNotIn("gh issue close", res.stdout)
+
+    # --- GH #1227: the gate line covers the head it is reported for ---
+
+    def test_report_refuses_a_gate_on_an_uncommitted_change_then_takes_the_heads(self):
+        """The gate ran with the change still uncommitted: its receipt is the
+        base (dirty), not the head. `report` took that line as the head's."""
+        (self.tree / "README.md").write_text("an uncommitted change\n")
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        gated = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        _git(self.tree, "add", "README.md")
+        _git(self.tree, "commit", "-q", "-m", "welle-x P1 (#756): die Änderung")
+        head = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn("gate receipt on %s, the head is %s" % (gated[:9], head[:9]), res.stderr)
+        self.assertIn("README.md", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", header_block(self.report("kit")).get("gate", ""))
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
+
+    def test_report_refuses_a_gate_on_a_dirty_tree_at_the_head(self):
+        self.commit()
+        (self.tree / "README.md").write_text("an uncommitted change\n")
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        _git(self.tree, "checkout", "--", "README.md")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn("dirty tree", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", header_block(self.report("kit")).get("gate", ""))
+
+    def test_report_keeps_a_receipt_followed_by_report_commits_only(self):
+        """The merge point's rule (`turnaround.code_equal_revs`): a commit of the
+        strand's own report after the gate keeps the receipt."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        rel = "plans/%s/berichte/kit.md" % WAVE_DIR
+        _git(self.tree, "add", rel, "plans/%s/straenge/kit.json" % WAVE_DIR)
+        _git(self.tree, "commit", "-q", "-m", "welle-x P1 (#756): Bericht")
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
+
+    def rebase_after_the_gate(self, rel, text):
+        """The real case of 16.10. (rel-3b): a GREEN gate on the head, then
+        master gains `rel` and the strand rebases onto it -- the gated rev is
+        no ancestor of the head. Returns the merge point's answer for the pair
+        (`turnaround.code_equal_revs`, as `merge.preconditions` asks it) and
+        what `report` did."""
+        from scripts.pipeline import turnaround
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        gated = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        path = self.repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        _git(self.repo, "add", rel)
+        _git(self.repo, "commit", "-q", "-m", "master moves")
+        rebased = _git(self.tree, "rebase", "-q", "master")
+        self.assertEqual(0, rebased.returncode, rebased.stderr)
+        head = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(gated, head)
+        same, bad = turnaround.code_equal_revs(str(self.repo), gated, head, WAVE_DIR)
+        return same, bad, run_strand(self.repo, "report", cwd=self.tree)
+
+    def test_report_refuses_like_the_merge_point_after_a_rebase_onto_a_code_change(self):
+        """Review v2-r3-kit I1: report = merge point on the rebased head. A
+        master file outside the wave's report paths makes both refuse, and
+        `report` names the merge point's own reason word for word."""
+        from scripts.pipeline import turnaround
+        same, bad, res = self.rebase_after_the_gate(".config/testing-rulings.toml", "[x]\n")
+        self.assertFalse(same, bad)
+        self.assertIn(".config/testing-rulings.toml", bad)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn(turnaround.describe(bad), res.stderr)
+        self.assertNotIn("GATE-SUMMARY", header_block(self.report("kit")).get("gate", ""))
+
+    def test_report_keeps_like_the_merge_point_after_a_rebase_onto_a_neutral_file(self):
+        """The other half of I1: master gains only a report of the wave --
+        code-equal for the merge point, so `report` keeps the receipt too."""
+        same, bad, res = self.rebase_after_the_gate(
+            "plans/%s/berichte/other.md" % WAVE_DIR, "a report\n")
+        self.assertTrue(same, bad)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GREEN", header_block(self.report("kit"))["gate"])
+
+    def test_report_takes_the_newest_strand_receipt_not_a_newer_release_run(self):
+        """Review v2-r3-kit M1: `report` reads the run the merge point reads
+        (`merge.strand_receipts`, the newest STRAND receipt), not the newest
+        run of any mode -- a newer release run on another rev must not tip it."""
+        self.commit()
+        self.assertEqual(0, self.gate(PLAN_GREEN).returncode)
+        root = self.repo / "plans" / WAVE_DIR / "receipts" / "kit"
+        run = root / "99991231T235959Z-0badc0de"
+        run.mkdir(parents=True)
+        (run / "receipt.json").write_text(json.dumps({"mode": "release", "rev": "0badc0de"}))
+        (run / "summary.txt").write_text("GATE-SUMMARY release 0badc0de 1/3 5s RED\n")
+        (root / "latest").unlink()
+        (root / "latest").symlink_to(run.name)
+        res = run_strand(self.repo, "report", cwd=self.tree)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("GATE-SUMMARY strand ", header_block(self.report("kit"))["gate"])
+
+    def test_report_refuses_an_archive_without_a_strand_run(self):
+        """Review v2-r3-kit M5: with no STRAND receipt in the run archive `report`
+        kept the newest run of any mode -- a GREEN `gate ci` on the head (or a
+        receipt that names no mode) became the head block's gate, while the merge
+        point refuses it (`no_strand_receipt`). No strand run is no gate."""
+        self.commit()
+        res = run_strand(self.repo, "gate", "ci", cwd=self.tree,
+                         extra_env={"MECLAW_GATE_PLAN": str(self.plan_file(PLAN_GREEN))})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        for case in ("ci", "no mode"):
+            with self.subTest(case=case):
+                if case == "no mode":
+                    run = (self.repo / "plans" / WAVE_DIR / "receipts" / "kit" / "latest").resolve()
+                    doc = json.loads((run / "last-ci.json").read_text())
+                    doc.pop("mode", None)
+                    doc.pop("stage", None)
+                    (run / "last-ci.json").unlink()
+                    (run / "receipt.json").write_text(json.dumps(doc))
+                res = run_strand(self.repo, "report", cwd=self.tree)
+                self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+                self.assertIn("no strand gate", res.stderr)
+                self.assertNotIn("GATE-SUMMARY", header_block(self.report("kit"))["gate"])
 
     def test_report_refuses_an_ask_gate(self):
         """ASK is no green: a question for the owner is still open."""
@@ -1729,6 +2027,19 @@ class TestTokenLanes(TokenTestCase):
     def setUp(self):
         super().setUp()
         (self.repo.parent / "lanes").write_text(LANES_FILE)
+        # The lanes here do not exist: a release probes their lane tree (GH
+        # #1228) and, fail-closed since re-check I1 of v2-r3-lease, keeps the
+        # lease when the probe gets no answer. An inert ssh answers every call
+        # with the end marker of the probe alone: nothing lives in their trees.
+        tmp = pathlib.Path(self._tmp.name)
+        b = tmp / "bin-lanes"
+        b.mkdir()
+        (tmp / "empty-tree").write_text(lane.WS_PROBE_END + "\n")
+        env = unittest.mock.patch.dict(os.environ, {"PATH": "%s:%s" % (b, os.environ["PATH"])})
+        env.start()
+        self.addCleanup(env.stop)
+        fake_ssh.install_inert(b, "the lanes of TestTokenLanes do not exist: an empty lane tree",
+                               reply=tmp / "empty-tree", rc=0)
 
     def test_pre_on_another_lane_than_the_held_one_refuses_at_once(self):
         # Kit find (a), 09.10.: `take` without --lane held one lane, the chain
@@ -3404,6 +3715,30 @@ class TestDelegation(TokenTestCase):
                          (latest / "summary.txt").read_text())
         self.assertIn("gate: receipts = somewhere", (latest / "run.log").read_text())
 
+    def test_gate_takes_the_mode_flag_like_the_positional_mode(self):
+        # #1199 K13: `strand.sh gate --mode integration` gated in mode strand and
+        # handed the pipeline two modes; `--mode <m>` is the positional form, and
+        # two different modes are refused before any call
+        record = self.stub()
+        env = dict(NO_LEGACY, STUB_RECORD=str(record))
+        for extra in (("--mode", "integration"), ("--plan-only", "--mode=integration"),
+                      ("integration", "--mode", "integration")):
+            res = run_strand(self.repo, "gate", *extra, "--plan-only", cwd=self.tree, extra_env=env)
+            argv = self.calls(record)[-1]["argv"]
+            self.assertEqual(["gate", "--mode", "integration"], argv[:3], (extra, res.stderr))
+            self.assertNotIn("--mode", argv[3:], extra)
+        calls = len(self.calls(record))
+        for extra in (("strand", "--mode", "release"), ("--mode", "strand", "--mode=release")):
+            res = run_strand(self.repo, "gate", *extra, cwd=self.tree, extra_env=env)
+            self.assertEqual(2, res.returncode, extra)
+            self.assertIn("two modes", res.stderr, extra)
+        res = run_strand(self.repo, "gate", "--no-pre", "--reason", "--mode", "--plan-only",
+                         cwd=self.tree, extra_env=env)
+        argv = self.calls(record)[-1]["argv"]
+        self.assertEqual(calls + 1, len(self.calls(record)), res.stderr)
+        self.assertEqual(["gate", "--mode", "strand"], argv[:3])
+        self.assertEqual("--mode", argv[argv.index("--reason") + 1])
+
     def test_gate_plan_only_names_the_wave_like_the_run(self):
         """re-check m-N3/m-N2: `--plan-only` passes the wave as the run does,
         and the integration narrows from the directory with its date."""
@@ -3448,6 +3783,7 @@ class TestDelegation(TokenTestCase):
         _git(self.tree, "add", "scripts/kit_change.txt")
         _git(self.tree, "commit", "-q", "-m", "welle-x kit (#861): eine Änderung")
         self.assertEqual(0, self.gate().returncode)
+        as_strand_run(self.repo, self.tree)
         res = run_strand(self.repo, "report", cwd=self.tree, extra_env=NO_LEGACY)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertNotIn("not armed", res.stderr)
@@ -3461,6 +3797,7 @@ class TestDelegation(TokenTestCase):
         _git(self.tree, "add", "scripts/kit_change.txt")
         _git(self.tree, "commit", "-q", "-m", "welle-x kit (#861): eine Änderung")
         self.assertEqual(0, self.gate().returncode)
+        as_strand_run(self.repo, self.tree)
         self.assertEqual(0, self.tok("init", "--max", "1").returncode)
         record = self.stub()
         res = run_strand(self.repo, "report", cwd=self.tree,

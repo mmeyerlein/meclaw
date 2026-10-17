@@ -903,6 +903,14 @@ class H(unittest.TestCase):
         import atexit
         import threading
         atexit.register(threading.Event().wait)
+
+
+class K(unittest.TestCase):
+    def test_green(self):
+        pass
+
+    def test_needs_rustc(self):
+        raise unittest.SkipTest("no rustc names the host triple")
 """
 
 
@@ -957,6 +965,33 @@ class PythonClass(unittest.TestCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("| S.test_skipped | 0 | 0 | NOT RUN |", out)
         self.assertIn("ft_fixture_mod.S.test_skipped ran 0 of 2 times -- RED, not run", err)
+
+    def test_a_skip_inside_a_green_class_is_red_and_not_evidenced(self):
+        """GH #1199 (vor-batch): a class id whose one test skips (a lane without
+        `rustc` on PATH) counted green -- 43 of 44 ran, the skipped one was no
+        row and no `short`. A skip is never green: the row says NOT RUN and
+        the series is RED."""
+        rc, out, err = self._main("--unittest", "--host", "local", "--runs", "2", "--no-shuffle",
+                                  "ft_fixture_mod.K")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("| K.test_green | 2 | 0 | 0.00 |", out)
+        self.assertIn("| K.test_needs_rustc | 0 | 0 | NOT RUN |", out)
+        self.assertIn("ft_fixture_mod.K.test_needs_rustc skipped in 2 of 2 runs -- RED, not "
+                      "evidenced (a skip is no green)", err)
+
+    def test_a_skip_gets_no_hint_at_its_id(self):
+        """GH #1199 (re-check M1): a skipped test's id is right -- the not-run
+        line named it with `check the id` all the same. The hint stays for an
+        id that runs nothing."""
+        rc, out, err = self._main("--unittest", "--host", "local", "--runs", "2", "--no-shuffle",
+                                  "ft_fixture_mod.K")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("ft_fixture_mod.K.test_needs_rustc ran 0 of 2 times -- RED, not run\n", err)
+        self.assertNotIn("check the id", err)
+        rc, out, err = self._main("--unittest", "--host", "local", "--runs", "2", "--no-shuffle",
+                                  "ft_fixture_mod.T.test_nope")
+        self.assertIn("ft_fixture_mod.T.test_nope ran 0 of 2 times -- RED, not run: check the id",
+                      err)
 
     def test_an_exit_after_ok_is_red(self):
         """Re-check fix3 M1: the run's exit code was never read -- `os._exit(7)`

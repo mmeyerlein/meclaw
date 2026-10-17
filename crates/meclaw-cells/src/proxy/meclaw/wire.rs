@@ -49,15 +49,23 @@ pub const AUTH_UNAVAILABLE: &str = "auth_unavailable";
 /// verdict, not a carrier failure, so never `peer_unreachable`.
 pub const EGRESS_DENIED: &str = "egress_denied";
 
+/// GH #1105: the client secret of `auth.client_secret_grant_id` has not
+/// arrived from the vault yet, so no token was asked for and nothing was
+/// posted. Transient: the message stays booked and goes once the box opened.
+/// The word the other granted cells use for the same wait (`credential.rs`).
+pub const CREDENTIAL_PENDING: &str = "credential_pending";
+
 /// GH #1012: the outbox gave up after `peer_retry_deadline_s`. The code of
 /// the `expired` receipt and of the dead letter the message becomes.
 pub const PEER_EXPIRED: &str = "peer_expired";
 
-/// GH #1012: a stored carrier code back to its constant. Only the two
-/// retried codes are ever stored; anything else reads as `peer_unreachable`.
+/// GH #1012: a stored carrier code back to its constant. Only the retried
+/// codes are ever stored (GH #1105 added `credential_pending`); anything else
+/// reads as `peer_unreachable`.
 pub fn code_of(code: &str) -> &'static str {
     match code {
         PEER_TIMEOUT => PEER_TIMEOUT,
+        CREDENTIAL_PENDING => CREDENTIAL_PENDING,
         _ => PEER_UNREACHABLE,
     }
 }

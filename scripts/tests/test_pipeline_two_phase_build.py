@@ -282,6 +282,27 @@ class MeasuredDurations(ScheduleCase):
              "(5000 min) -- a finding (TV-K5)"],
             schedule.hang_cap_notes([("a", 10, 57)], [("a", 120, 5000)]))
 
+    def test_a_pass_without_a_lane_caps_by_the_slowest_lane_class(self):
+        # Fix round 4 v2-r3-kit: a pass on this machine (class egon: half the cores,
+        # beside the live Egon) records no seconds of its own and kept the plan's
+        # default cap -- gate-selftest 20 min against a lane P95 of 962 s. Three
+        # HANGs on mm-os01 were shards still running. Its P95 is the slowest lane
+        # class's: a local pass is never faster than a lane.
+        schedule.sync_runners(self.db, [FakeLane("build04", threads=24),
+                                        FakeLane("build01", threads=12),
+                                        FakeLane("mm-os01", threads=4, cls="egon")],
+                              states={"build04": "idle", "build01": "idle", "mm-os01": "idle"})
+        self.history("build04", "strand", {"a": 600.0, "b": 50.0})
+        self.history("build01", "strand", {"a": 900.0})
+        self.history("build01", "integration", {"a": 5000.0, "c": 9.0})   # other mode
+        self.history("mm-os01", "test", {"a": 7000.0})                    # egon: not a lane
+        got = schedule.local_p95(self.db, "meclaw", "strand")
+        self.assertEqual({"a": 900.0, "b": 50.0}, got)
+        out, raised = schedule.with_hang_caps([{"name": "a", "timeout_min": 20}], got)
+        self.assertEqual([("a", 20, 45)], raised)
+        self.assertEqual({}, schedule.local_p95(self.db, "meclaw", "release"))
+        self.assertEqual({}, schedule.local_p95(self.db, "meclaw", "test"))
+
     def lanes24(self):
         schedule.sync_runners(self.db, [FakeLane("build04", threads=24),
                                         FakeLane("build05", threads=24)],

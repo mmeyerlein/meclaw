@@ -415,7 +415,7 @@ filter = '''
   + (binary_id(=meclaw-cells::misc_7) & test(=gh855_a_grown_assistant_is_a_subscriber::a_generation_and_a_member_grown_in_the_shell_become_subscribers))
   + (binary_id(=meclaw-cells::round_2) & (test(=gh933_the_close_pass_never_crosses_a_round::round_ea_files_at_the_source_orders_0_to_2) + test(=gh933_the_close_pass_never_crosses_a_round::round_ea_files_at_the_source_orders_3_to_5) + test(=gh933_the_close_pass_never_crosses_a_round::round_eb_files_at_the_source_orders_0_to_2) + test(=gh933_the_close_pass_never_crosses_a_round::round_eb_files_at_the_source_orders_3_to_5)))
   + (binary_id(=meclaw-cells::misc_3) & (test(=gh422_the_manifest_grows_the_same_stack::a_manifest_grows_the_same_stack_as_the_five_declarations) + test(=gh422_the_manifest_grows_the_same_stack::the_manifest_is_resumable_from_where_it_stopped)))
-  + (binary_id(=meclaw-cells::curator) & test(=curator_cells::a_failed_summary_keeps_the_old_window))
+  + (binary_id(=meclaw-cells::curator_1) & test(=curator_cells::a_failed_summary_keeps_the_old_window))
   + (binary_id(=meclaw-cells::misc_4) & test(=gh466_a_recipe_grown_level_boots::the_rendered_levels_grow_the_tree_the_declarations_grow))
 '''
 test-group = "long-first"
@@ -569,7 +569,7 @@ filter = 'binary_id(=meclaw-cells::misc_3) & (test(=gh422_the_manifest_grows_the
 priority = 32
 # curator_cells: 1, longest 32.2 s
 [[profile.default.overrides]]
-filter = 'binary_id(=meclaw-cells::curator) & test(=curator_cells::a_failed_summary_keeps_the_old_window)'
+filter = 'binary_id(=meclaw-cells::curator_1) & test(=curator_cells::a_failed_summary_keeps_the_old_window)'
 priority = 32
 # gh466_a_recipe_grown_level_boots: 1, longest 30.6 s
 [[profile.default.overrides]]

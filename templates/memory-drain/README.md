@@ -1,4 +1,4 @@
-# `memory-drain@2.1.0`
+# `memory-drain@2.1.1`
 
 The adapter between a write batch and the central memory (GitHub #101).
 

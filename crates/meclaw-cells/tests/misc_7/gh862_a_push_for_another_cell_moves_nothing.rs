@@ -657,7 +657,6 @@ sys.stdout.write(json.dumps({
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "a1", "text": raw}]}))
 "#;
 
-const NEVER: &str = "0 0 0 1 1 *";
 const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
 /// The brain the registry's subscriber row names.
 const BRAIN_A: &str = "/talky/brain";
@@ -740,20 +739,19 @@ fn build_tree(td: &TempDir, base_url: &str) {
         &templates_root().join("llm-registry"),
         &root.join("main/llm_registry"),
     );
-    for (composite, schedule) in [
-        ("talky", "0190a3f2-0000-7000-8000-000000000862"),
-        ("talky_b", "0190a3f2-0000-7000-8000-000000008620"),
-    ] {
+    for composite in ["talky", "talky_b"] {
         copy_cells(
             &templates_root().join("talky"),
             &root.join(format!("main/{composite}")),
         );
         patch(
             root,
-            &format!("main/{composite}/session-keeper/night/config.json"),
+            &format!("main/{composite}/session-keeper/close/config.json"),
             |v| {
-                v["params"]["schedules"][0]["schedule_id"] = json!(schedule);
-                v["params"]["schedules"][0]["cron"] = json!(NEVER);
+                // GH #1229: the night is a window of `./close`; an empty one arms
+                // nothing, and no open generation is a firing.
+                v["params"]["night_from_utc"] = json!("00:00");
+                v["params"]["night_until_utc"] = json!("00:00");
             },
         );
         patch(root, &format!("main/{composite}/brain/config.json"), |v| {

@@ -195,6 +195,19 @@ pub struct LlmParams {
     /// never back to the asking cell, so silence is the only signal there is.
     #[serde(default = "default_credential_wait_ms")]
     pub credential_wait_ms: u64,
+    /// T6-06 (GH #1232): how long a twin waits for its original's handover
+    /// before it runs its parked turns without the inheritance, in
+    /// milliseconds; default 0 = the cell expects no handover and parks
+    /// nothing.
+    ///
+    /// An A-timeout on an in-colony round like `credential_wait_ms`: the
+    /// handover is one message from the original, and silence is the only
+    /// signal that it is not coming. Immutable to a message (an armed wait
+    /// takes an import, which writes `system`); the cell itself writes `0`
+    /// into its overlay when the wait ends either way, so a woken cell never
+    /// waits again.
+    #[serde(default)]
+    pub handover_wait_ms: u64,
     /// P10: how this cell authenticates. Default `api_key` — every pre-P10
     /// config keeps its exact behaviour.
     #[serde(default)]
@@ -1108,6 +1121,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     // GH #457: the parking bound + deadline of that same delivery.
     "credential_wait_max",
     "credential_wait_ms",
+    // T6-06 (GH #1232): the twin's wait for its original's handover.
+    "handover_wait_ms",
     "base_url",
     "temperature",
     "max_tokens",
@@ -1206,6 +1221,12 @@ pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
     "system_max_slots",
     "system_max_leaf_bytes",
     "system_writable",
+    // GH #1232 (review R1): a running cell that waits takes a handover import,
+    // which writes `system` past `system_writable`. A message that could arm
+    // the wait would reopen that write after the next wake, so the key is out
+    // of the message path's reach like the gate above; only the cell's own end
+    // of wait writes it, and only to 0 (`LlmCell::finish_handover`).
+    "handover_wait_ms",
     // GH #853: the run-time endpoint allow list. A message that could widen
     // it would make the guard it is about to pass meaningless.
     "base_url_allow",
@@ -1328,6 +1349,7 @@ mod tests {
             ("system_max_slots", json!(999_999)),
             ("system_max_leaf_bytes", json!(999_999)),
             ("system_writable", json!([])),
+            ("handover_wait_ms", json!(60_000)),
         ] {
             let update = json!({key: value}).as_object().unwrap().clone();
             let err = base.apply_update(&update).unwrap_err();

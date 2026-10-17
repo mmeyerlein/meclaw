@@ -140,6 +140,58 @@ pub fn renotify_stop_wiring(
     }
 }
 
+/// GH #1231 (T6-03, fix round 1): wrap the respawn closure a factory hands out
+/// for a cell that booted INACTIVE, so the cell checks its OWN `cell.db` when it
+/// opens it — on wake (the reconnect arm's `(entry.respawn)()`), not at boot.
+///
+/// The build closures open the file behind an `.expect`, and a respawn closure
+/// runs on the colony task: an unusable database there would panic the whole
+/// colony. The hook used to check at boot and return `None`, which registered
+/// the inert fallback without a word — the woken cell looked healthy and
+/// dead-lettered every delivery as `cell_inactive` (review I2). Checked first,
+/// with [`crate::persist::check_own_cell_db`] (the helper `spawn_cell` uses for
+/// an awake cell at boot), an unusable file now logs a WARN line with path and
+/// reason, reports [`crate::ColonyMsg::CellDbUnusable`] and returns a shape
+/// whose peace already fired, so the watcher stays silent. The colony then
+/// marks the cell `failed`, the verdict an awake cell gets at boot.
+///
+/// Non-blocking like [`renotify_stop_wiring`] (`try_send`, same reason); a full
+/// inbox drops the report with an ERROR line, never silently. Panic-free.
+pub fn wake_checked_respawn(
+    path: Path,
+    cell_dir: std::path::PathBuf,
+    colony_inbox_tx: mpsc::Sender<crate::ColonyMsg>,
+    respawn: RespawnFn,
+) -> RespawnFn {
+    Box::new(move || match crate::persist::check_own_cell_db(&cell_dir) {
+        Ok(()) => respawn(),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.as_str(),
+                error = %error,
+                "own cell.db unusable on wake — the cell is failed"
+            );
+            if colony_inbox_tx
+                .try_send(crate::ColonyMsg::CellDbUnusable {
+                    path: path.clone(),
+                    error,
+                })
+                .is_err()
+            {
+                tracing::error!(
+                    path = %path.as_str(),
+                    "cell.db failure report dropped: colony inbox full or closed"
+                );
+            }
+            let (sender, _receiver) = mpsc::channel::<Message>(1);
+            let (peace_tx, peace_rx) = oneshot::channel::<()>();
+            let _ = peace_tx.send(());
+            let (_backstop_tx, backstop_rx) = oneshot::channel::<()>();
+            (sender, tokio::spawn(async {}), peace_rx, backstop_rx)
+        }
+    })
+}
+
 /// Spawns `cell_task_long_running` together with a peace-pair (`peace_tx` lives
 /// inside the task, `peace_rx` is returned to the caller) and the Phase-13.5
 /// Lifecycle-3b colony-initiated peace-stop wiring: a `stop` pair (`stop_rx`

@@ -11,3 +11,9 @@
 {"test": "not-asked", "text": "What will the weather be like tomorrow?", "words": "money neighbour owes"}
 {"test": "not-asked", "text": "My neighbour waved at me this morning.", "words": "money neighbour owes"}
 {"test": "not-asked", "text": "The doctor was kind.", "words": "ann doctor"}
+{"test": "keeps-aside", "text": "Please don't talk about the money my neighbour owes me anymore.", "words": "money neighbour owes", "asks": "money neighbour owes"}
+{"test": "keeps-aside", "text": "Stop bringing up the money my neighbour owes me.", "words": "money neighbour owes", "asks": "money neighbour owes"}
+{"test": "keeps-aside", "text": "I don't want to talk about the money my neighbour owes me anymore.", "words": "money neighbour owes", "asks": "money neighbour owes"}
+{"test": "no-request", "text": "I don't want to talk anymore."}
+{"test": "no-request", "text": "We did not talk about the money my neighbour owes me anymore."}
+{"test": "confirms", "question": "Which money do you mean, the money your neighbour owes you", "text": "Yes, the money my neighbour owes me.", "words": "money neighbour owes"}

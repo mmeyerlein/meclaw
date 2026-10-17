@@ -12,7 +12,9 @@
     "credential_wait_ms": 30000,
     "base_url": "${PRESENTER_DECIDE_BASE_URL:-}",
     "base_url_allow": [],
-    "external_timeout_ms": 3000
+    "external_timeout_ms": 3000,
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
   },
   "contract": {
     "version": "1.0.0",

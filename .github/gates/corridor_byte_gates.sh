@@ -27,6 +27,8 @@
 # Exit 0 = both corridors are byte-identical to their frozen reference.
 # Exit 1 = a corridor moved (the diff is printed) or an input file is missing.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -uo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -77,4 +79,5 @@ gate() {
 gate "route" "async fn route(" "expected_route_body.txt"
 gate "handle_cell_died" "async fn handle_cell_died(" "expected_handle_cell_died_body.txt"
 
-exit $status
+(exit "$status")
+}; exit $?

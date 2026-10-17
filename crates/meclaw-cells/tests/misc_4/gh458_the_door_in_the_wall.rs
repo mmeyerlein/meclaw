@@ -112,11 +112,6 @@ fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
     std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
 }
 
-/// A fixed schedule id. `${uuid7:*}` is an INSTANTIATION-side substitution.
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-000000000458";
-/// Never during a test run: the shipped default is the real night.
-const NEVER: &str = "0 0 0 1 1 *";
-
 // ────────────────────────────────────────────────────────── the test-only cells
 
 /// The sender. It reads ONE json document out of the harness turn and emits it
@@ -196,14 +191,16 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, src: &std::path::Path, ba
     write(root, "main/sender/config.json", &sender_config());
     copy_cells(src, &root.join(format!("main/{composite}")));
 
-    let keeper = root.join(format!("main/{composite}/session-keeper/night/config.json"));
+    let keeper = root.join(format!("main/{composite}/session-keeper/close/config.json"));
     if keeper.exists() {
         patch(
             root,
-            &format!("main/{composite}/session-keeper/night/config.json"),
+            &format!("main/{composite}/session-keeper/close/config.json"),
             |v| {
-                v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-                v["params"]["schedules"][0]["cron"] = json!(NEVER);
+                // GH #1229: the night is a window of `./close`; an empty one arms
+                // nothing, and no open generation is a firing.
+                v["params"]["night_from_utc"] = json!("00:00");
+                v["params"]["night_until_utc"] = json!("00:00");
             },
         );
     }

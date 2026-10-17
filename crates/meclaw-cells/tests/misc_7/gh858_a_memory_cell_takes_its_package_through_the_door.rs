@@ -76,22 +76,10 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
     }
 }
 
-fn read_json(p: &std::path::Path) -> Value {
-    meclaw_core::serde_json::from_str(&std::fs::read_to_string(p).unwrap())
-        .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-}
-
 fn write(root: &std::path::Path, rel: &str, v: &Value) {
     let p = root.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(p, meclaw_core::serde_json::to_string_pretty(v).unwrap()).unwrap();
-}
-
-fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
-    let p = root.join(rel);
-    let mut v = read_json(&p);
-    f(&mut v);
-    std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
 }
 
 fn code_cell(script: &str, routes: &[&str], extra_hop: Value) -> Value {
@@ -143,8 +131,6 @@ sys.stdout.write(json.dumps({
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "a1", "text": raw}]}))
 "#;
 
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-000000000858";
-const NEVER: &str = "0 0 0 1 1 *";
 /// What every memory cell is BORN on here -- its start value.
 const START: &str = "start/model";
 /// What the targeted replacement moves one of them to.
@@ -214,10 +200,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         &templates_root().join("memory-hive"),
         &root.join("main/memory"),
     );
-    patch(root, "main/memory/clock/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
-    });
+    // The hive's clock carries no schedule since GH #1229 (R-AG-1): only a
+    // written episode arms the night, for the next 03:00 UTC, so no night runs
+    // into this test and there is nothing to push out of its way.
 }
 
 struct Ports {

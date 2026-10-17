@@ -470,7 +470,7 @@ fn the_versions_moved_with_the_declarations() {
              `./assistants` from `assistant@3.6.0`; 2.5.1 only pins `affinity@3.9.0` \
              and `memory-hive@3.8.1` and derives `./assistants` from `assistant@3.6.1` \
              (GH #965, GH #937), the third digit; 2.5.2 only pins `affinity@3.10.0`, \
-             `file-space@1.3.1`, `librarian@1.0.1`, `memory-hive@3.8.2` and `firewall@2.4.0` \
+             `file-space@1.3.1`, `librarian\u{40}1.0.1`, `memory-hive@3.8.2` and `firewall@2.4.0` \
              and derives `./assistants` from `assistant@3.6.2` (GH #979), the third digit; \
              2.5.3 only pins `file-space@1.4.0` and `memory-hive@3.8.3` and derives \
              `./assistants` from `assistant@3.7.0` (GH #980, GH #981, GH #993), the third digit; \
@@ -499,7 +499,7 @@ fn the_versions_moved_with_the_declarations() {
              `memory-hive@3.13.1` (GH #1057, #1074), the third digit; 2.5.20 only derives \
              `./assistants` from `assistant@3.7.11` (GH #1087), the third digit; 2.5.21 only pins \
              `assistant@3.7.12`, `file-space@1.4.6`, `firewall@2.4.1`, \
-             `graph-space\u{40}1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085), the third digit; 2.5.22 only pins \
+             `graph-space\u{40}1.1.1`, `memory-hive@3.13.2` and `objects\u{40}1.0.1` (GH #1085), the third digit; 2.5.22 only pins \
              `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own), the third digit; 2.5.23 only pins \
              `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094), the third digit; 2.5.24 only pins \
              `memory-hive@3.14.0` (GH #1095), the third digit; 2.5.25 only pins \

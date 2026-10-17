@@ -193,6 +193,24 @@ pub fn outbox_targets(conn: &Connection) -> rusqlite::Result<Vec<(String, i64)>>
         .collect()
 }
 
+/// GH #1105: makes every pending row that waits on `code` due at `now` and
+/// returns the targets it touched. The handler calls it when the waited-for
+/// thing arrived (the client secret's box), so the messages go at once
+/// instead of at their backoff's next step; the rows stay, only `next_at`
+/// moves.
+pub fn outbox_release(conn: &Connection, code: &str, now: i64) -> rusqlite::Result<Vec<String>> {
+    let mut st = conn
+        .prepare("SELECT DISTINCT target FROM peer_outbox WHERE state = ?1 AND last_error = ?2")?;
+    let targets: Vec<String> = st
+        .query_map(params![PENDING, code], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    conn.execute(
+        "UPDATE peer_outbox SET next_at = MIN(next_at, ?1) WHERE state = ?2 AND last_error = ?3",
+        params![now, PENDING, code],
+    )?;
+    Ok(targets)
+}
+
 /// Writes back what an attempt changed. `state` is one of the constants
 /// above; the row stays.
 pub fn outbox_update(conn: &Connection, row: &OutRow, state: &str) -> rusqlite::Result<()> {
@@ -267,6 +285,39 @@ mod tests {
             .query_row("SELECT count(*) FROM peer_inbox", [], |r| r.get(0))
             .expect("m");
         assert_eq!((n, m), (3, 1));
+    }
+
+    /// GH #1105: releasing a wait moves only the rows that wait on that code,
+    /// and only earlier.
+    #[test]
+    fn gh1105_a_release_makes_only_the_waiting_rows_due() {
+        let mut c = Connection::open_in_memory().expect("db");
+        setup_peer_book(&c).expect("ddl");
+        for (id, target, error) in [
+            ("1", "t", Some("credential_pending")),
+            ("2", "u", Some("peer_timeout")),
+            ("3", "v", Some("credential_pending")),
+        ] {
+            outbox_enqueue(&mut c, &row(id, target)).expect("q");
+            let mut r = outbox_pending(&c, target).expect("p").remove(0);
+            r.tries = 1;
+            r.next_at = 500;
+            r.last_error = error.map(str::to_string);
+            outbox_update(&c, &r, PENDING).expect("u");
+        }
+        let mut targets = outbox_release(&c, "credential_pending", 100).expect("release");
+        targets.sort();
+        assert_eq!(targets, vec!["t".to_string(), "v".to_string()]);
+        assert_eq!(outbox_pending(&c, "t").expect("p")[0].next_at, 100);
+        assert_eq!(outbox_pending(&c, "u").expect("p")[0].next_at, 500);
+        assert!(
+            outbox_release(&c, "credential_pending", 900)
+                .expect("release")
+                .len()
+                == 2
+                && outbox_pending(&c, "v").expect("p")[0].next_at == 100,
+            "never later than it was"
+        );
     }
 
     /// Fix round 1 (targeted run on the lane, `the_outbox_survives_a_restart`

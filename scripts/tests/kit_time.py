@@ -49,6 +49,28 @@ HANG_MS = int(HANG * 1000)
 OVER_MS = 1
 PAST_MS = -1
 
+# The bound of a lane probe's tool call (`timeout` around it, GH #1224) in whole
+# seconds: the hang marker. No call of a probe that answers runs under a short
+# wall clock (re-check v2-r3-shell M2); the one that plays a call past its bound
+# fires the bound itself (FIRE_BOUND_SH).
+BOUND_S = int(HANG)
+
+# Sh lines for a fake that plays a call past its bound: it sends the `timeout`
+# above it the SIGALRM that timeout's own timer would send -- the bound's event,
+# now, instead of a wait for it -- and notes that pid in $FAKE_BOUND_FILE. A call
+# with no `timeout` above it exits 97 at once (no bound, nothing to fire). The
+# signal goes by Python's os.kill: the kill builtin is banned in test scripts
+# (test_side_effect_guard), and the pid here is the fake's own `timeout`.
+FIRE_BOUND_SH = r'''fb=$$
+while [ "${fb:-0}" -gt 1 ]; do
+    fb=$(ps -o ppid= -p "$fb" 2>/dev/null | tr -d ' ')
+    [ "$(ps -o comm= -p "${fb:-0}" 2>/dev/null)" = timeout ] && break
+done
+[ "${fb:-0}" -gt 1 ] || exit 97
+echo "$fb" >>"$FAKE_BOUND_FILE"
+python3 -I -c 'import os, signal, sys; os.kill(int(sys.argv[1]), signal.SIGALRM)' "$fb"
+'''
+
 
 def virtual(seconds):
     """`seconds` on a test's own clock (`FakeClock`, a lambda clock): plan

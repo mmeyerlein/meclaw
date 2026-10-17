@@ -866,7 +866,11 @@ def keys_for_plan(plan, repo_root, fingerprint, lane_name, *, metadata=None, met
         except (MetadataError, OSError, ValueError, subprocess.SubprocessError):
             return {}
     try:
-        ctx = _Context(repo_root, metadata)
+        # GH #1199 (v2-r3-mergegate): a file the run writes before its readers
+        # (`plan.derived_corpus`) is keyed as the run tests it.
+        index = tree_index(repo_root)
+        index.update(plan.get("derived") or {})
+        ctx = _Context(repo_root, metadata, index=index)
     except (subprocess.CalledProcessError, OSError, KeyError, TypeError):
         return {}
     fingerprint = fingerprint or {}

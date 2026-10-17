@@ -42,12 +42,6 @@ use tokio::sync::mpsc;
 /// python and store round trips.
 const DEADLINE: Duration = Duration::from_secs(30);
 
-/// A fixed schedule id, so the test can trigger the night (an instantiation
-/// substitution does not run on a tree written straight to disk).
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-00000000c954";
-/// Never during a test run: the shipped night must not race the test.
-const NEVER: &str = "0 0 0 1 1 *";
-
 /// The channel of the sealed pair and its round.
 const OLD: &str = "tg:old";
 const ROUND_OLD: &str = r#"["member:alex","agent:scribe"]"#;
@@ -172,11 +166,13 @@ sys.stdout.write(json.dumps({"header": {"route": "closed"},
 "#;
 
 /// The parent around the keeper, as in `session_keeper.rs`: one ingress, the
-/// stamped turn out, the close out, and the door the night is fired through.
+/// stamped turn out, the close out, and the door the night is fired through --
+/// the keeper's own `in_sweep` lane (GH #1229: its timer carries no schedule).
 fn main_config() -> Value {
     json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": ".", "to": "./session-keeper/night",
-         "condition": "hop.route == 'fire_night'"},
+        {"from": ".", "to": "./session-keeper",
+         "condition": "hop.route == 'fire_night'",
+         "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         {"from": "./probe", "to": "./session-keeper",
          "condition": "hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"}}},
@@ -198,12 +194,9 @@ fn build_tree(root: &std::path::Path) {
     let template =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/session-keeper");
     copy_cells(&template, &root.join("main/session-keeper"));
-    let night_path = root.join("main/session-keeper/night/config.json");
-    let mut night: Value =
-        serde_json::from_str(&std::fs::read_to_string(&night_path).unwrap()).unwrap();
-    night["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-    night["params"]["schedules"][0]["cron"] = json!(NEVER);
-    std::fs::write(&night_path, serde_json::to_string_pretty(&night).unwrap()).unwrap();
+    // The shipped night must not race the test: an empty window arms nothing,
+    // and a turn opened inside the shipped one would be a firing (GH #1229).
+    meclaw_testing::quiet_keeper_night(&root.join("main/session-keeper"));
     write(root, "main/probe/config.json", &code_cell(PROBE, &["turn"]));
     write(
         root,
@@ -339,9 +332,7 @@ fn fire() -> Message {
     hop.insert("route".into(), json!("fire_night"));
     MessageBuilder::new(Path::new("/"))
         .hop(hop)
-        .body(Body::Inline(
-            json!({"messages": [], "op": "trigger", "schedule_id": SCHEDULE_ID}),
-        ))
+        .body(Body::Inline(json!({"messages": []})))
         .ttl(64)
         .build()
 }

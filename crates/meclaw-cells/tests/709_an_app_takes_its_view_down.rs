@@ -152,7 +152,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          `graph-space@1.1.0` and derives `./assistants` from `assistant@3.6.0`; 2.5.1 only \
          pins `affinity@3.9.0` and `memory-hive@3.8.1` and derives `./assistants` from \
          `assistant@3.6.1` (GH #965, GH #937); 2.5.2 only pins `affinity@3.10.0`, \
-         `file-space@1.3.1`, `librarian@1.0.1`, `memory-hive@3.8.2` and `firewall@2.4.0` \
+         `file-space@1.3.1`, `librarian\u{40}1.0.1`, `memory-hive@3.8.2` and `firewall@2.4.0` \
          and derives `./assistants` from `assistant@3.6.2` (GH #979); 2.5.3 only pins \
          `file-space@1.4.0` and `memory-hive@3.8.3` and derives `./assistants` from \
          `assistant@3.7.0` (GH #980, GH #981, GH #993); 2.5.4 only pins \
@@ -177,7 +177,7 @@ fn the_app_rim_carries_the_withdrawal_beside_the_view() {
          (GH #1057, #1074); 2.5.20 only derives `./assistants` from \
          `assistant@3.7.11` (GH #1087); 2.5.21 only pins \
          `assistant@3.7.12`, `file-space@1.4.6`, `firewall@2.4.1`, \
-         `graph-space\u{40}1.1.1`, `memory-hive@3.13.2` and `objects@1.0.1` (GH #1085); 2.5.22 only pins \
+         `graph-space\u{40}1.1.1`, `memory-hive@3.13.2` and `objects\u{40}1.0.1` (GH #1085); 2.5.22 only pins \
          `assistant@3.7.13` and `memory-hive@3.13.3` (GH #1085, no window of a role's own); 2.5.23 only pins \
          `assistant@3.7.14` and `memory-hive@3.13.4` (GH #1094); 2.5.24 only pins \
          `memory-hive@3.14.0` (GH #1095); 2.5.25 only pins \

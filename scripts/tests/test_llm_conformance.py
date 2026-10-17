@@ -13,7 +13,7 @@ every deviation as a finding. These tests run it offline against
   * a refused parameter is classified, not hidden (K3), and a catalogue
     parameter the model refuses is red,
   * a wrong parameter injected into every probe is a finding with exit 1,
-  * a lenient local endpoint never yields `taken`,
+  * a lenient local endpoint never yields `taken`, on either wire,
   * response-side breakage (tool arguments, usage, SSE, exhausted reasoning,
     a listing that lies) is red or named,
   * the cost guard stops BEFORE a call, and refuses a typo-sized budget,
@@ -130,6 +130,18 @@ class TestConformance(ConformanceCase):
         for raw in self.fake.bodies:
             self.assertNotIn("provider", json.loads(raw))
             self.assertNotIn("usage", json.loads(raw))
+
+    def test_local_acceptance_is_never_taken_on_the_messages_wire(self):
+        # A 200 proves a parameter only on api.anthropic.com, which refuses
+        # every unknown field; a local Messages server (vLLM, LiteLLM) may drop
+        # it silently -- the GH #993 class (re-check AN3 I2).
+        _, report, out = self.run_tool(
+            "claude-fake-ok", "--wire", "messages", "--only", "K1,K3",
+            endpoint_class="local")
+        self.assertEqual(report["checks"]["K3"]["status"], "green", out)
+        self.assertNotIn("taken", report["params"].values())
+        for name in ("reasoning", "reasoning_effort"):
+            self.assertEqual(report["params"][name], "accepted_unverified", name)
 
     def test_tool_arguments_must_be_a_json_string(self):
         _, report, _ = self.run_tool("fake/broken-tools")
@@ -395,6 +407,174 @@ class TestM1Findings(ConformanceCase):
         lines = [json.loads(l) for l in
                  next(record.rglob("cost.jsonl")).read_text().splitlines()]
         self.assertLessEqual(sum(l["worst"] for l in lines), 0.05)
+
+
+class TestMessagesWire(ConformanceCase):
+    """The native Messages wire (R-T10-1) and the time to the first tool call.
+
+    A direct Claude row is measured on the wire the cell will speak, not on a
+    compatibility endpoint; the latency probe answers R-WP-3 (answer start =
+    wall clock to the tool call, no SSE: K7 forbids `stream`).
+    """
+
+    def run_messages(self, model, *extra):
+        return self.run_tool(model, "--wire", "messages", "--price-in", "1",
+                             "--price-out", "5", *extra, endpoint_class="anthropic")
+
+    # T10-12 ---------------------------------------------------------------
+    def test_messages_wire_sends_the_native_minimal_request(self):
+        secret = "an3-fake-credential-7c1d52e9"
+        name = "AN3_CONFORMANCE_TEST_KEY"
+        os.environ[name] = secret
+        self.addCleanup(os.environ.pop, name, None)
+        record = pathlib.Path(self.tmp.name) / "rec"
+        argv = ["--model", "claude-fake-ok", "--base-url", self.base,
+                "--key-env", name, "--endpoint-class", "anthropic",
+                "--wire", "messages", "--only", "K1,K2,K7,K9",
+                "--price-in", "1", "--price-out", "5", "--record", str(record),
+                "--expect-green"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code, report = conformance.run(argv)
+        self.assertEqual(code, 0, out.getvalue())
+        for k in ("K1", "K2", "K7", "K9"):
+            self.assertEqual(report["checks"][k]["status"], "green", k)
+        self.assertEqual(self.fake.gets, 0, "no listing probe on the Messages wire")
+        path, headers = self.fake.requests[0]
+        self.assertTrue(path.endswith("/messages"), path)
+        self.assertEqual(headers.get("x-api-key"), secret)
+        self.assertEqual(headers.get("anthropic-version"), "2023-06-01")
+        self.assertNotIn("authorization", headers)
+        body = json.loads(self.fake.bodies[0])
+        self.assertEqual(body["system"], conformance.SYSTEM)
+        self.assertEqual(body["messages"], [{"role": "user", "content": conformance.USER}])
+        for field in ("stream", "usage", "provider"):
+            self.assertNotIn(field, body)
+        measured = json.loads((record / "claude-fake-ok" / "measured.json").read_text())
+        self.assertEqual(measured["endpoint_class"], "anthropic")
+        self.assertNotIn(secret, out.getvalue())
+        for p in record.rglob("*"):
+            if p.is_file():
+                self.assertNotIn(secret, p.read_text(), str(p))
+
+    # T10-13 ---------------------------------------------------------------
+    def test_messages_wire_measures_native_sampling_thinking_and_tool_use(self):
+        code, report, out = self.run_messages("claude-fake-ok", "--expect-green")
+        self.assertEqual(report["params"], {
+            "temperature": "refused", "top_p": "refused", "reasoning": "taken",
+            "reasoning_effort": "taken", "thinking_token_budget": "refused"})
+        for k, status in (("K3", "green"), ("K4", "n/a"), ("K5", "green"),
+                          ("K6", "green")):
+            self.assertEqual(report["checks"][k]["status"], status,
+                             f"{k}: {report['checks'][k]['note']}")
+        self.assertEqual(report["reasoning_field"], "thinking")
+        self.assertEqual(code, 0, out)
+        bodies = [json.loads(raw) for raw in self.fake.bodies]
+        # Native forms only: the API refuses every foreign top-level field.
+        for b in bodies:
+            for name in ("reasoning", "reasoning_effort", "thinking_token_budget"):
+                self.assertNotIn(name, b)
+        self.assertIn({"effort": "low"}, [b.get("output_config") for b in bodies])
+        tool_body = [b for b in bodies if b.get("tools")][-1]
+        self.assertIn("input_schema", tool_body["tools"][0])
+        self.assertNotIn("function", tool_body["tools"][0])
+
+    # App id (owner rule 16.10.: every LLM request names the app) ----------
+    def test_every_request_carries_the_app_id_on_every_wire(self):
+        self.run_tool("fake/strict-all", "--only", "K1,K5")
+        self.run_messages("claude-fake-ok", "--only", "K1,K5")
+        self.assertEqual(len(self.fake.requests), 4)
+        # The referer is the tool's own constant, not a literal here: this
+        # module travels with the export, and the audit's R5 reads the project
+        # domain as a name hit (OR-programm-tm.AN3.orch-3). Equality stays
+        # the check; the constant itself must still be an https origin.
+        referer = conformance.APP_HEADERS["HTTP-Referer"]
+        self.assertTrue(referer.startswith("https://"), referer)
+        for path, headers in self.fake.requests:
+            self.assertEqual(headers.get("x-title"), "meclaw-lab conformance", path)
+            self.assertEqual(headers.get("http-referer"), referer, path)
+
+    # T4-02 ----------------------------------------------------------------
+    def test_latency_probe_times_the_tool_call_on_both_wires(self):
+        # n below 20 is refused before any call.
+        code, _, out = self.run_tool("fake/tool-picker", "--latency", "19")
+        self.assertEqual(code, 2, out)
+        self.assertEqual(self.fake.calls + self.fake.gets, 0)
+        cases = conformance.TOOL_CASES
+        for wire, model, cls in (("chat", "fake/tool-picker", "openrouter"),
+                                 ("messages", "claude-fake-tool-picker", "anthropic")):
+            with self.subTest(wire=wire):
+                fake = fake_provider.FakeProvider()
+                self.base = fake.start()
+                self.addCleanup(fake.stop)
+                record = pathlib.Path(self.tmp.name) / wire
+                code, report, out = self.run_tool(
+                    model, "--wire", wire, "--only", "K1", "--latency", "20",
+                    "--price-in", "1", "--price-out", "5", "--record", str(record),
+                    endpoint_class=cls)
+                self.assertEqual(code, 0, out)
+                lat = report["latency"]
+                # The fake misses every fifth call: 4 of 20 answer in text.
+                self.assertEqual((lat["wire"], lat["n"], lat["sent"],
+                                  lat["tool_calls"], lat["hits"]),
+                                 (wire, 20, 20, 16, 16))
+                self.assertLessEqual(lat["p50_ms"], lat["p95_ms"])
+                self.assertIn("LATENCY", out)
+                # Under --only K1 the run still probes `reasoning` once (K3's
+                # probe): the switch is sent only where it is proven.
+                sent = [json.loads(raw) for raw in fake.bodies]
+                probe = (conformance.MESSAGES_NATIVE["reasoning"] if wire == "messages"
+                         else {"reasoning": conformance.NEUTRAL["reasoning"]})
+                self.assertEqual(sum(1 for b in sent if not b.get("tools")
+                                     and probe.items() <= b.items()), 1)
+                self.assertEqual(lat["reasoning"], "off")
+                switch = conformance.REASONING_OFF[wire]
+                bodies = self.latency_bodies(fake)
+                self.assertEqual(len(bodies), 20)
+                for i, b in enumerate(bodies):
+                    self.assertNotIn("stream", b)
+                    self.assertGreaterEqual(len(json.dumps(b)),
+                                            conformance.WINDOW_TOKENS * 3)
+                    self.assertEqual(b["messages"][-1]["content"],
+                                     cases[i % len(cases)][0])
+                    self.assertLessEqual(switch.items(), b.items())
+                    for name in conformance.SAMPLING_PARAMS:
+                        if name not in switch:
+                            self.assertNotIn(name, b)
+                slug = model.replace("/", "__")
+                saved = json.loads((record / slug / "latency.json").read_text())
+                self.assertEqual(saved["hits"], 16)
+                self.assertEqual(saved["reasoning"], "off")
+
+    @staticmethod
+    def latency_bodies(fake):
+        bodies = [json.loads(raw) for raw in fake.bodies]
+        return [b for b in bodies
+                if len(b.get("tools") or []) == len(conformance.LATENCY_TOOLS)]
+
+    def test_latency_reports_reasoning_off_only_when_the_switch_was_sent(self):
+        # Re-check AN3 I1: a model that reasons by default must not be timed
+        # with reasoning and filed as "off" -- T4-03 picks the quick tier from
+        # it (R-WP-2). Not switchable (K3 refused `reasoning`) or unproven
+        # (a local 200) sends no switch and says so.
+        for wire, model, cls, label in (
+                ("chat", "fake/tool-picker-no-reasoning", "openrouter", "not_switchable"),
+                ("chat", "fake/tool-picker", "local", "unknown"),
+                ("messages", "claude-fake-tool-picker", "local", "unknown")):
+            with self.subTest(wire=wire, cls=cls):
+                fake = fake_provider.FakeProvider()
+                self.base = fake.start()
+                self.addCleanup(fake.stop)
+                code, report, out = self.run_tool(
+                    model, "--wire", wire, "--only", "K1", "--latency", "20",
+                    "--price-in", "1", "--price-out", "5", endpoint_class=cls)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(report["latency"]["reasoning"], label)
+                bodies = self.latency_bodies(fake)
+                self.assertEqual(len(bodies), 20)
+                for b in bodies:
+                    for field in ("reasoning", "thinking", "reasoning_effort"):
+                        self.assertNotIn(field, b)
 
 
 def tearDownModule():

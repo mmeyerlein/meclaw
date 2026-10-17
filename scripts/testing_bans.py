@@ -555,20 +555,85 @@ _CLOCK = re.compile(r"\belapsed\s*\(|\bInstant::now\b|\bSystemTime::now\b|\bUtc:
                     r"|\bduration_since\s*\(")
 
 
+# GH #1199 R1.3: GN2 found a wall clock behind a file-local helper
+# (`fn epoch_now() -> f64 { SystemTime::now()... }`) that the ban did not see.
+# A helper counts as a clock when the value it RETURNS is read from one -- its
+# tail expression or a `return` names the clock or a variable of it -- and its
+# return type carries time or a number of it; one level, the file's own fns
+# only. A helper that reads the clock for a deadline (a hang marker) and hands
+# back a count, a body or the event's outcome stays out: the class search over
+# the tree found 18 such files when the body alone decided.
+# OR-TV-12 (coordinator, 2026-10-16): like every diff ban, the helper is judged
+# on ADDED statements only (`scan` hands `findings_in` the added lines); a
+# statement that was there before is not red. The inventory counts it, and the
+# baseline was written once at the stock this sharper detection measures.
+_TIME_RET = re.compile(r"\b(?:Instant|SystemTime|Duration|DateTime|NaiveDateTime"
+                       r"|f32|f64|u16|u32|u64|u128|usize|i32|i64|i128|isize)\b")
+_TEST_FN = re.compile(r"#\[(?:tokio::)?test\b")
+
+
+def _returned(body):
+    """The returned expressions of a fn body: its tail (the text after the last
+    `;` or block `}` on the body's own level) and every `return <expr>`."""
+    depth, cut = 0, -1
+    for i, ch in enumerate(body):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0 and ch == "}":
+                cut = i
+        elif ch == ";" and depth == 0:
+            cut = i
+    return [body[cut + 1:]] + re.findall(r"\breturn\b([^;]*)", body)
+
+
+def _returns_clock(body):
+    out = set()   # the fn's own clock variables, as `_clock_vars` finds them
+    for m in re.finditer(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=([^;]*);", body):
+        if _CLOCK.search(m.group(2)) or any(re.search(r"\b%s\b" % v, m.group(2)) for v in out):
+            out.add(m.group(1))
+    return any(_CLOCK.search(e) or any(re.search(r"\b%s\b" % v, e) for v in out)
+               for e in _returned(body))
+
+
+def _clock_re(src):
+    """`_CLOCK` plus a call of every clock helper of `src` (cached on `src`)."""
+    got = getattr(src, "_clock_helper_re", None)
+    if got is not None:
+        return got
+    names = set()
+    for m in re.finditer(r"\bfn\s+(\w+)\s*(?:<[^>{;]*>)?\s*\(", src.code):
+        block = src.block_after(m.end())
+        if block is None:
+            continue
+        sig = src.code[m.end():block[0]]
+        ret = sig.rsplit("->", 1)[1] if "->" in sig else ""
+        attrs = src.code[max(0, m.start() - 400):m.start()].rsplit("}", 1)[-1]
+        if (_TIME_RET.search(ret) and not _TEST_FN.search(attrs)
+                and _returns_clock(src.code[block[0] + 1:block[1]])):
+            names.add(m.group(1))
+    got = re.compile(_CLOCK.pattern + "".join(
+        r"|\b%s\s*\(" % re.escape(n) for n in sorted(names)))
+    src._clock_helper_re = got
+    return got
+
+
 def _clock_vars(src, fn):
     if fn is None:
         return set()
     body = src.code[fn[1]:fn[2]]
+    clock = _clock_re(src)
     out = set()
     for m in re.finditer(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=([^;]*);", body):
-        if _CLOCK.search(m.group(2)) or any(re.search(r"\b%s\b" % v, m.group(2)) for v in out):
+        if clock.search(m.group(2)) or any(re.search(r"\b%s\b" % v, m.group(2)) for v in out):
             out.add(m.group(1))
     return out
 
 
 def _refine_elapsed(src, m, span, path):
     text = src.code[span[0]:span[1]]
-    if _CLOCK.search(text):
+    if _clock_re(src).search(text):
         return True
     return any(re.search(r"\b%s\b" % re.escape(v), text)
                for v in _clock_vars(src, src.enclosing_fn(m.start())))

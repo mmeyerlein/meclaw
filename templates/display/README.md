@@ -1,4 +1,4 @@
-# `display@2.10.12`
+# `display@2.11.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -137,6 +137,8 @@ The judge writes four things and nothing else: `judged_relevance` and `judged_hi
 window, `bar` and `weights` on the state. The curator writes the rest, `rung`, `since`,
 `score`, `decay`, `age`, `dismissed_at`, `led_until`, `topic_dupe`, the drawing level, each
 tile's rank and `unseen`. What each of them means is `compose/scenarios/pass.py`.
+
+The judge names its app at the provider: `http_referer` / `x_title` (`${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}`, `${OPENROUTER_X_TITLE:-MeClaw}`, the form of the memory-hive cells) go out as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` on `judge`.
 
 ## The pass
 

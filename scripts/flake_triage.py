@@ -731,17 +731,22 @@ def merge_unittest_run(stats, text, ids, rc=0):
     tests the `ids` name; True when the run is red (a red test, or a summary
     that counts more failures than the output names, or none, or an exit code
     other than 0 -- a hang killed after `OK`, `os._exit` after it, the lane's
-    `timeout` 124: fail-closed, re-check fix3 M1)."""
+    `timeout` 124: fail-closed, re-check fix3 M1). A skipped test counts in
+    `skipped`, never in `runs`: a skip is no green (GH #1199 vor-batch, a lane
+    without `rustc` skipped a test its class then called green)."""
     parsed = flakes.parse_unittest_output(text)
     summary = flakes.unittest_summary(text)
     secs = {flakes.unittest_id(m.group(2), m.group(3)): float(m.group(1))
             for m in map(_PY_DURATION.match, text.splitlines()) if m}
     asserts = unittest_asserts(text)
-    for kind in ("passed", "failed"):
+    for kind in ("passed", "failed", "skipped"):
         for tid in parsed[kind]:
             if not any(tid == i or tid.startswith(i + ".") for i in ids):
                 continue
             st = stats.setdefault(tid, {"runs": 0, "red": 0, "secs": [], "asserts": {}})
+            if kind == "skipped":
+                st["skipped"] = st.get("skipped", 0) + 1
+                continue
             st["runs"] += 1
             if tid in secs:
                 st["secs"].append(secs[tid])
@@ -1012,9 +1017,15 @@ def main_unittest(a):
         return 0
     short = [i for i in ids if not any(t == i or t.startswith(i + ".") for t in stats)]
     short += [t for t, st in stats.items() if st["runs"] < n]
+    for name, st in sorted(stats.items()):
+        if st.get("skipped"):   # GH #1199 vor-batch: not evidenced, the series stays RED
+            print(f"flake_triage: {name} skipped in {st['skipped']} of {n} runs -- RED, not "
+                  f"evidenced (a skip is no green)", file=sys.stderr)
     for name in short:
+        # re-check M1: a skip has its own line above -- its id is right, no hint at it
+        hint = "" if stats.get(name, {}).get("skipped") else ": check the id (module.Class.test)"
         print(f"flake_triage: {name} ran {stats.get(name, {}).get('runs', 0)} of {n} times "
-              f"-- RED, not run: check the id (module.Class.test)", file=sys.stderr)
+              f"-- RED, not run{hint}", file=sys.stderr)
     if not any(st["runs"] for st in stats.values()):
         return no_pass(a, n)
     if short:

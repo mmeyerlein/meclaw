@@ -114,31 +114,63 @@ pub async fn apply_bootstrap_plan(
         // BEFORE `spawn_cell` consumes the `ContractView`.
         let nc_emits = contract_view.emits.clone();
         let nc_validate_emits = contract_view.validate_emits;
-        let spawned = factory
-            .spawn_cell(
-                c.path.clone(),
-                c.params.clone(),
-                runtime.outputs_tx.clone(),
-                c.fs_path.clone(),
-                contract_view,
-                runtime.inbox_tx.clone(),
-                idle_timeout,
-                c.cell_timeout,
-                // P3-B-plumb-2: resolve the active B-backstop from the per-cell
-                // `cell.message_timeout` against the colony
-                // `message_timeout_default_ms`. `>0` → backstop, `0`/`-1` → None.
-                crate::resolve_message_timeout(
-                    c.message_timeout,
-                    runtime.colony_config.message_timeout_default_ms,
-                ),
-                runtime.blob_store.clone(),
-                c.mailbox_size
-                    .unwrap_or(runtime.colony_config.mailbox_default_capacity),
-            )
-            .expect("validated in plan-phase: invalid params cannot reach apply");
+        let spawned = factory.spawn_cell(
+            c.path.clone(),
+            c.params.clone(),
+            runtime.outputs_tx.clone(),
+            c.fs_path.clone(),
+            contract_view,
+            runtime.inbox_tx.clone(),
+            idle_timeout,
+            c.cell_timeout,
+            // P3-B-plumb-2: resolve the active B-backstop from the per-cell
+            // `cell.message_timeout` against the colony
+            // `message_timeout_default_ms`. `>0` → backstop, `0`/`-1` → None.
+            crate::resolve_message_timeout(
+                c.message_timeout,
+                runtime.colony_config.message_timeout_default_ms,
+            ),
+            runtime.blob_store.clone(),
+            c.mailbox_size
+                .unwrap_or(runtime.colony_config.mailbox_default_capacity),
+        );
         let (ack_tx, ack_rx) = oneshot::channel();
         match spawned {
-            SpawnedCellKind::Active {
+            Err(e) => {
+                // GH #1231 (T6-03): the planner no longer probes `cell.db`, so
+                // a cell whose OWN database is unusable says so here, when its
+                // factory checks it (`check_own_cell_db`). That fails the cell,
+                // not the boot: registered like the inert boot-inactive
+                // fallback, but `failed`, so deliveries dead-letter loudly and
+                // the registry read names it. Before, every `spawn_cell` error
+                // was an `.expect` panic of the whole boot.
+                tracing::error!(
+                    error = %e,
+                    path = %c.path.as_str(),
+                    "spawn_cell failed at boot — registering the cell failed"
+                );
+                let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
+                runtime
+                    .inbox_tx
+                    .send(ColonyMsg::RegisterDormant {
+                        path: c.path.clone(),
+                        sender,
+                        receiver,
+                        respawn: boot_inactive_inert_respawn(),
+                        wake: None,
+                        restart_limit: c.restart_limit,
+                        cell_id: c.cell_id,
+                        cell_type: c.cell_type.clone(),
+                        active: c.active,
+                        failed: true,
+                        dormant: c.dormant,
+                        eager_on_reconnect: false,
+                        ack: ack_tx,
+                    })
+                    .await
+                    .expect("colony inbox closed");
+            }
+            Ok(SpawnedCellKind::Active {
                 sender,
                 join,
                 peace_rx,
@@ -152,7 +184,7 @@ pub async fn apply_bootstrap_plan(
                 // backstop death of this cell classifies DeathKind::Backstop.
                 backstop_rx,
                 respawn,
-            } => {
+            }) => {
                 // Stateless / long-running cells stay Awake forever → no wake
                 // mechanic (F1-KH2 Schicht 2: a stray parked delivery
                 // dead-letters loudly instead of invoking an inert closure).
@@ -179,7 +211,7 @@ pub async fn apply_bootstrap_plan(
                     .await
                     .expect("colony inbox closed");
             }
-            SpawnedCellKind::Dormant {
+            Ok(SpawnedCellKind::Dormant {
                 sender,
                 receiver,
                 wake,
@@ -188,7 +220,7 @@ pub async fn apply_bootstrap_plan(
                 stop_tx: _,
                 death_ack_rx: _,
                 respawn,
-            } => {
+            }) => {
                 // Phase-13-K-2: stateful Cells starten als `NotYetSpawned` —
                 // The mailbox receiver parks in the status; the cell task only on the first
                 // Wake-Pre-Send (13-I-1) gespawnt.
@@ -380,6 +412,10 @@ async fn register_inactive_non_spawned(
     // post-reconnect delivery (silent loss + false `Awake`). Lazy `spawn_cell`
     // builds NO task (the Dormant pair parks) — boot-gating is preserved.
     // Eager kinds keep the throwaway pair + inert wake (re-spawned, not woken).
+    // GH #1231 (T6-03, fix round 1): a lazy kind opens its own cell.db inside
+    // `spawn_cell`, at boot even when asleep; an `Err` there is the verdict an
+    // awake cell gets (`failed`), not an inert healthy-looking fallback.
+    let mut spawn_failed = false;
     let (sender, receiver, wake, respawn, eager_on_reconnect): (
         tokio::sync::mpsc::Sender<meclaw_core::Message>,
         tokio::sync::mpsc::Receiver<meclaw_core::Message>,
@@ -445,13 +481,15 @@ async fn register_inactive_non_spawned(
             }
             Some(Err(e)) => {
                 // Atomic-strict contract: params were validated in the
-                // plan-phase, a spawn error here is exceptional. Register the
-                // inert fallback; deliveries fail LOUDLY (defense layer).
+                // plan-phase, a spawn error here is exceptional — today an
+                // unusable own cell.db (GH #1231). Register the inert fallback
+                // `failed`, like the awake boot path; deliveries fail LOUDLY.
                 tracing::error!(
                     error = %e,
                     path = %c.path.as_str(),
-                    "boot-inactive spawn_cell failed — registering inert fallback"
+                    "boot-inactive spawn_cell failed — registering the cell failed"
                 );
+                spawn_failed = true;
                 let (sender, receiver) = tokio::sync::mpsc::channel::<meclaw_core::Message>(1);
                 (sender, receiver, None, boot_inactive_inert_respawn(), false)
             }
@@ -487,7 +525,7 @@ async fn register_inactive_non_spawned(
             cell_id: c.cell_id,
             cell_type: c.cell_type.clone(),
             active: c.active,
-            failed: c.failed,
+            failed: c.failed || spawn_failed,
             // GH #491: the declaration, from either of its two sources — a
             // `ref` marker's `birth` at first boot (`declared_inactive`) or the
             // persisted marker of an earlier one (`c.dormant`).

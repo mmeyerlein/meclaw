@@ -568,15 +568,29 @@ fn only_the_bound_ingress_names_a_speaker_and_only_a_close_drops_it() {
             )
         })
         .collect();
+    // GH #1229: the keeper's own arm edge (the store's answer to a new
+    // generation, on its way to `./close`, which arms the night watchdog) drops
+    // it too -- inside the keeper, so a firing never carries a turn's speaker.
     assert_eq!(
         droppers,
-        vec![(
-            "session-keeper/config.json".to_string(),
-            "./stamp".to_string(),
-            ".".to_string(),
-            "has(hop.route) && hop.route == 'close'".to_string(),
-        )],
-        "the speaker is dropped by exactly the keeper's close"
+        vec![
+            (
+                "session-keeper/config.json".to_string(),
+                "./sessions".to_string(),
+                "./close".to_string(),
+                "context.store_origin == 'keeper-stamp' && context.ses_phase == 'open' && \
+                 has(hop.operation) && hop.operation == 'insert' && \
+                 (!has(hop.error_code) || hop.error_code == '')"
+                    .to_string(),
+            ),
+            (
+                "session-keeper/config.json".to_string(),
+                "./stamp".to_string(),
+                ".".to_string(),
+                "has(hop.route) && hop.route == 'close'".to_string(),
+            ),
+        ],
+        "the speaker is dropped by exactly the keeper's close and its arm edge"
     );
 }
 

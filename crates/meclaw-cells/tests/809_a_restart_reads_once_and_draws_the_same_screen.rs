@@ -1118,6 +1118,7 @@ fn reads_the_colony(m: &meclaw_colony::ColonyMsg) -> bool {
         M::Overflow(_) => false,
         M::Stopped { .. } => false,
         M::StopWiringRestored { .. } => false,
+        M::CellDbUnusable { .. } => false,
         M::Mutation { .. } => false,
         M::MutationDoor { .. } => false,
     }

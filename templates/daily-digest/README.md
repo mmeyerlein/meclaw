@@ -1,4 +1,4 @@
-# `daily-digest@2.2.4`
+# `daily-digest@2.2.5`
 
 Scheduled fetch-and-forward: timer → web_fetch → format (code) → Telegram proxy.
 
@@ -41,6 +41,10 @@ each field means.
 |---|---|---|
 | `digest_url` | `https://example.com` | URL fetched on every firing, inside the schedule's `tool_call` args |
 | `chat_id` | *(empty)* | target chat of a SCHEDULED run, on the schedule's `emit_headers` |
+
+| param of `./shelf` | default | purpose |
+|---|---|---|
+| `item_chars` | `240` | the longest item a kept digest carries; a longer one is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
 
 **The chat id ships EMPTY, and that is a change worth reading twice.** Under the environment
 form `TELEGRAM_DIGEST_CHAT_ID` had no default, so a colony that did not set it refused to

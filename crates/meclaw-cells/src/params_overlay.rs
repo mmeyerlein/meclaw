@@ -262,6 +262,33 @@ pub(crate) fn upsert_param_overlay(
     Ok(())
 }
 
+/// T6-05 (GH #1232): the params overlay as a `transfer` document
+/// (`meclaw-cell-export/1`), the form the `transfer` slot gives every content
+/// table. The slot itself never exports `params` (`SUBSTRATE_TABLES`: the
+/// overlay belongs to the substrate, not to the content), so the handover
+/// writes the same form here instead of opening that door for every cell.
+/// `value` stays the JSON text the overlay holds.
+pub(crate) fn overlay_document(conn: &rusqlite::Connection) -> rusqlite::Result<Value> {
+    let mut stmt = conn.prepare("SELECT key, value, updated_at FROM params ORDER BY key")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "key": r.get::<_, String>(0)?,
+                "value": r.get::<_, String>(1)?,
+                "updated_at": r.get::<_, i64>(2)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<Value>>>()?;
+    Ok(serde_json::json!({
+        "format": meclaw_colony::db_transfer::TRANSFER_FORMAT,
+        "table": "params",
+        "key": ["key"],
+        "schema": {"key": "text", "value": "text", "updated_at": "int"},
+        "version": 1,
+        "rows": rows,
+    }))
+}
+
 /// Read the full runtime-param overlay from `cell.db.params`.
 ///
 /// Returns `(param_key, value_json)` pairs. Order is unspecified (caller merges

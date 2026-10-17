@@ -27,6 +27,8 @@
 # excludes the sheet lock too (it is not ignored), so no lock runs twice. Scope
 # `browser` is the probe of the locks alone: no main run, the list of the locks
 # only -- its map is incomplete by design and `coverage build` never installs it.
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -euo pipefail
 # The kit's one Python (`KIT_PY`, lane.PYTHON; re-check tv-bn M7t B-M4).
 # This file's directory with builtins only: an external `dirname` missing from
@@ -106,3 +108,4 @@ secs=$(( $(date +%s) - start ))
     --root "$PWD" --rev "$REV" --runner lane --secs "$secs" --out "$C/coverage.json" \
     --profdata "$TOOLS/llvm-profdata" --llvm-cov "$TOOLS/llvm-cov" --nextest-exit "$rc" \
     --nextest-log "$C/nextest.log" --browser-junit "$BJ"
+}; exit $?

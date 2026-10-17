@@ -4,12 +4,11 @@
 //! unreadable answers a loud error instead of the unfiltered holdings, because
 //! an ignored filter and an empty filter must not look alike from the outside.
 //!
-//! `/colony/registry`, `/colony/templates` and `/colony/trace` still parsed
-//! their filters with `.and_then(|v| v.as_str())` / `.as_bool()` / `.as_u64()`
-//! chains that end in `None` on a type mismatch — and `None` means "no filter".
-//! `/colony/trace` had the sharper case: `Uuid::parse_str(s).ok()` turned a
-//! syntactically broken UUID into "no filter", so a caller asking for one trace
-//! got the newest 100 entries of every trace.
+//! `/colony/registry` and `/colony/templates` still parsed their filters with
+//! `.and_then(|v| v.as_str())` / `.as_bool()` / `.as_u64()` chains that end in
+//! `None` on a type mismatch — and `None` means "no filter". (`/colony/trace`
+//! had the same pins until GH #1231 took it off the emission path: a cell
+//! emission to it is now a hard reject, `tests/hardening/zh_trace_not_dispatchable.rs`.)
 //!
 //! Absent stays absent: a missing `query`, a missing field, or either of them
 //! `null`, is the documented default. And a `limit` out of RANGE is still
@@ -20,7 +19,7 @@
 
 use meclaw_colony::colony_dispatch::{
     build_read_error_reply, build_registry_read_reply, parse_read_query_path_filters,
-    parse_read_query_templates_filters, parse_read_query_trace_filters,
+    parse_read_query_templates_filters,
 };
 use meclaw_colony::{CellStatus, RegistryEntry};
 use meclaw_core::serde_json::{Value, json};
@@ -224,94 +223,6 @@ fn templates_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered() {
         assert_refused(
             &build_read_error_reply("templates", &err),
             "templates",
-            &body.to_string(),
-        );
-    }
-}
-
-// ------------------------------- /colony/trace ------------------------------
-
-#[test]
-fn trace_without_a_filter_answers_everything() {
-    for body in [json!({}), json!({"query": null}), json!({"query": {}})] {
-        let f = parse_read_query_trace_filters(&body)
-            .unwrap_or_else(|e| panic!("absent is the default: {body} -> {e:?}"));
-        assert_eq!(f.trace_id, None);
-        assert_eq!(f.correlation_id, None);
-        assert_eq!(f.path_prefix, None);
-        assert!(!f.only_error);
-        assert_eq!(f.since, None);
-        assert_eq!(f.limit, 100);
-    }
-}
-
-#[test]
-fn trace_with_a_readable_filter_filters() {
-    let id = Uuid::now_v7();
-    let corr = Uuid::now_v7();
-    let f = parse_read_query_trace_filters(&json!({
-        "query": {
-            "trace_id": id.to_string(),
-            "correlation_id": corr.to_string(),
-            "path_prefix": "/a",
-            "only_error": true,
-            "since": 1_700_000_000_i64,
-            "limit": 5,
-        }
-    }))
-    .expect("a readable filter parses");
-    assert_eq!(f.trace_id, Some(id));
-    assert_eq!(f.correlation_id, Some(corr));
-    assert_eq!(f.path_prefix.as_ref().map(|p| p.as_str()), Some("/a"));
-    assert!(f.only_error);
-    assert_eq!(f.since, Some(1_700_000_000));
-    assert_eq!(f.limit, 5);
-}
-
-#[test]
-fn trace_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered() {
-    for body in [
-        json!({"query": "abc"}),
-        json!({"query": {"trace_id": 7}}),
-        json!({"query": {"correlation_id": []}}),
-        json!({"query": {"path_prefix": 7}}),
-        json!({"query": {"only_error": "true"}}),
-        json!({"query": {"since": "yesterday"}}),
-        json!({"query": {"since": 1.5}}), // a fractional second is not a timestamp
-        json!({"query": {"limit": "50"}}),
-        json!({"query": {"limit": 1.5}}),
-    ] {
-        let err = parse_read_query_trace_filters(&body)
-            .expect_err(&format!("a wrong-typed filter is refused: {body}"));
-        assert_refused(
-            &build_read_error_reply("trace", &err),
-            "trace",
-            &body.to_string(),
-        );
-    }
-}
-
-/// The sharper case this issue names: a syntactically broken UUID has the right
-/// JSON type and used to become "no filter" — a caller asking for ONE trace got
-/// the newest 100 entries of EVERY trace back.
-#[test]
-fn a_broken_uuid_is_refused_not_turned_into_no_filter() {
-    for body in [
-        json!({"query": {"trace_id": "not-a-uuid"}}),
-        json!({"query": {"trace_id": ""}}),
-        json!({"query": {"trace_id": "0198e5aa-0000-7000-8000"}}), // truncated
-        json!({"query": {"correlation_id": "not-a-uuid"}}),
-    ] {
-        let err = parse_read_query_trace_filters(&body)
-            .expect_err(&format!("a broken UUID is refused: {body}"));
-        assert!(
-            err.details.contains("UUID") || err.details.contains("uuid"),
-            "the error says the UUID is the problem: {body} -> {}",
-            err.details
-        );
-        assert_refused(
-            &build_read_error_reply("trace", &err),
-            "trace",
             &body.to_string(),
         );
     }

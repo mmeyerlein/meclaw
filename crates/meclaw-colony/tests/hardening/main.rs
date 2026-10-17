@@ -14,3 +14,6 @@ pub mod substrate_fix_add_edges_diff_nodes;
 pub mod substrate_fix_mid_rename_strict_fail;
 pub mod substrate_fix_scope_name_traversal;
 pub mod substrate_fix_staging_atomicity;
+pub mod zh_boot_reads_no_cell_db;
+pub mod zh_door_sender_scope;
+pub mod zh_trace_not_dispatchable;

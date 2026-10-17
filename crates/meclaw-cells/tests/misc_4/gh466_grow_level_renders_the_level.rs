@@ -442,7 +442,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.35"}}));
+                   "template": "org@2.1.36"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -458,7 +458,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.1.35"}}));
+                   "template": "org@2.1.36"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -624,7 +624,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@2.5.31", "door": true});
+                        "template": "member@2.5.32", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));
@@ -843,7 +843,7 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
 /// — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@3.7.18",
+           "name": "scribe", "template": "assistant@3.7.19",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},

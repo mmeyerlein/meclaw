@@ -28,17 +28,15 @@
 //!    (GH #294: only a key the cell already carries under `params` may be
 //!    named at all).
 //!
-//! The two ticks are in here for the same reason `memory-hive/clock` was: a
-//! timer has no top-level `cron` param to migrate onto -- `TimerParams::parse`
-//! reads `schedules` and `query_timeout_ms` and would ignore any other key in
-//! silence -- so its knob is a literal inside `params.schedules[0].cron`, and
-//! an override names `schedules`. Four test setups used to push those two ticks
-//! out of a run's way with a `.env` line; they say it with the param now, and
-//! the clock tests below are the proof that the new form is what the real timer
-//! parser plans on. A `.env` line that silently stopped meaning anything would
-//! not have failed an assert -- it would have left those runs with a sweep
-//! firing into them and nobody saying so.
+//! The two clocks were in here for the same reason `memory-hive/clock` was: a
+//! timer has no top-level `cron` param to migrate onto, so each tick was a
+//! literal inside `params.schedules[0].cron`. Both ticks are gone since
+//! R-AG-1 (GH #1096, GH #1229): each clock ships no schedule, and the cell
+//! beside it arms a one-shot watchdog when something becomes due -- the
+//! argus's cadence is the meter's `cycle_ms` param now, one knob among the
+//! scripted ones. The clock tests below pin both halves.
 
+use meclaw_cells::timer::op::TimerOp;
 use meclaw_cells::timer::params::TimerParams;
 use meclaw_cells::timer::schedule::ScheduleKind;
 use meclaw_core::serde_json::{Map, Value};
@@ -77,7 +75,11 @@ const SCRIPTED: &[Scripted] = &[
     Scripted {
         template: "argus",
         cell: "meter",
-        knobs: &[("max_ledger_rows", "_int"), ("hint_limit", "_int")],
+        knobs: &[
+            ("max_ledger_rows", "_int"),
+            ("hint_limit", "_int"),
+            ("cycle_ms", "_int"),
+        ],
         documented: &[],
     },
     Scripted {
@@ -152,7 +154,14 @@ const SUBSTRATE_CODE_PARAMS: &[&str] = &[
 /// The provider lane, name by name -- the ONLY `${...}` tokens these three
 /// templates may still carry after the migration (ruling R-0904-6; the gate
 /// reads the same classes off the name in `scripts/check_tree_rules.py` § R6).
+///
+/// The two attribution names are the grey-zone call `scripts/check_tree_rules.py`
+/// § R6 makes out loud (`ENV_LANE_EXACT`); argus' judge carries them since the
+/// owner ruling of 2026-10-16 (every LLM request names its app), in the
+/// memory-hive form.
 const ENV_LANE: &[&str] = &[
+    "OPENROUTER_HTTP_REFERER",
+    "OPENROUTER_X_TITLE",
     "ARGUS_JUDGE_PROVIDER",
     "ARGUS_JUDGE_BASE_URL",
     "ARGUS_JUDGE_MODEL",
@@ -388,9 +397,11 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
     }
     // Nineteen since GH #927: the meter's `hint_limit` (how many open hints a
     // judge is shown) joined the inventory as a param from its first day.
+    // Twenty since GH #1229: the meter's `cycle_ms` is the cadence the clock's
+    // `cycle_cron` used to carry, a param of the cell that arms the watchdog.
     assert_eq!(
-        total, 19,
-        "the scripted half of the migration is nineteen knobs"
+        total, 20,
+        "the scripted half of the migration is twenty knobs"
     );
 }
 
@@ -570,79 +581,275 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
     );
 }
 
-/// Both ticks plan on the schedule their own `params` carry (GH #138).
+/// Neither clock ticks any more (GH #1096, GH #1229, R-AG-1).
 ///
-/// The negative half first: with no override the shipped literal is what the
-/// REAL timer parser plans on. Then the positive half, which is the one that
-/// matters: the schedule a mutation pushes down through `override_params` is
-/// the one the timer plans on, so the four test setups that used to write an
-/// `ARGUS_CYCLE_CRON` or `ACCESS_SWEEP_CRON` line into a `.env` still move the
-/// periodic run out of their way. A `.env` line that stopped meaning anything
-/// would have been silent -- green tests with a sweep firing into them.
+/// Both used to plan on a cron literal inside `params.schedules[0]`, and this
+/// test proved the real timer parser planned on the literal and on an
+/// `override_params` replacement of it. Both ticks are gone: each clock ships
+/// no schedule and declares no cadence, and the timer parser plans on nothing
+/// until the cell beside it arms a watchdog -- `access/sweep` for the next
+/// `expires_at`, `argus/meter` for the next cycle while a goal is enabled.
 #[test]
 fn both_ticks_plan_on_the_schedule_their_params_carry() {
-    // GH #1096 (R-AG-1): the access clock no longer ticks. It ships no
-    // schedule and no `cron` setting -- `./sweep` arms its one watchdog for
-    // the next `expires_at` -- so the pair below is argus's alone.
-    let access = config("access", "clock");
-    let shipped = TimerParams::parse(&access["params"]).expect("access/clock params");
-    assert!(
-        shipped.schedules.is_empty(),
-        "access/clock ships a schedule again -- a tick over unchanged grants"
+    for (template, knob, why) in [
+        ("access", "cron", "a tick over unchanged grants"),
+        (
+            "argus",
+            "cycle_cron",
+            "a tick over a charter nobody switched on",
+        ),
+    ] {
+        let cfg = config(template, "clock");
+        let shipped = TimerParams::parse(&cfg["params"])
+            .unwrap_or_else(|e| panic!("{template}/clock params: {e}"));
+        assert!(
+            shipped.schedules.is_empty(),
+            "{template}/clock ships a schedule again -- {why}"
+        );
+        assert!(
+            cfg["contract"]["settings"].get(knob).is_none(),
+            "{template}/clock declares a {knob} it no longer carries"
+        );
+    }
+}
+
+/// R-AG-1 (GH #1229): the argus clock is a watchdog, not a six-hourly tick.
+///
+/// The clock ships no schedule and declares no cadence; the cadence is the
+/// meter's `cycle_ms`, and the meter spends it only in a `goals` step that
+/// found an enabled goal. That step appends ONE one-shot order for the next
+/// cycle on the `clock` lane, which the hive draws onto `./clock`; a charter
+/// with nothing enabled writes its `idle` receipt and orders nothing, so an
+/// inert argus rests until an event (`in_cycle`) arrives. The script runs
+/// with its clock injected -- `datetime.now` frozen at one moment -- so the
+/// moment of the order is compared exactly, and no wall clock judges anything.
+#[test]
+fn gh1229_argus_arms_its_next_cycle_only_while_a_goal_is_enabled() {
+    let clock = config("argus", "clock");
+    assert_eq!(
+        clock["params"]["schedules"],
+        meclaw_core::serde_json::json!([]),
+        "argus/clock ships a schedule -- a tick over a charter nobody switched on"
     );
     assert!(
-        access["contract"]["settings"].get("cron").is_none(),
-        "access/clock declares a cron it no longer carries"
+        clock["contract"]["settings"].get("cycle_cron").is_none(),
+        "argus/clock declares a cadence of its own; the cadence is the meter's cycle_ms"
     );
-    // The one timer knob left (argus); access/clock lost its schedule above.
-    let (template, knob, shipped_cron) = ("argus", "cycle_cron", "0 0 */6 * * *");
-    {
-        let mut cfg = config(template, "clock");
-        // Read before the mutable borrow below: the declared half of this
-        // knob's pair. A timer has no script, so the triple the scripted knobs
-        // get is a PAIR here -- the declaration and the literal inside the
-        // schedule -- and nothing compared the two until now. The two names are
-        // not one name: `argus` declares `cycle_cron`, `access` declares `cron`,
-        // and both mean `params.schedules[0].cron`.
-        let declared = cfg["contract"]["settings"][knob]["default"]
+    let parsed = TimerParams::parse(&clock["params"]).expect("argus/clock params");
+    assert!(parsed.schedules.is_empty(), "the timer plans on nothing");
+
+    let hive_path = templates_root().join("argus/config.json");
+    let hive: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(&hive_path).expect("argus/config.json"),
+    )
+    .expect("argus/config.json is json");
+    let edges = hive["params"]["graph"]["edges"]
+        .as_array()
+        .expect("the hive's edges");
+    assert!(
+        edges.iter().any(|e| e["from"] == "./meter"
+            && e["to"] == "./clock"
+            && e["condition"] == "has(hop.route) && hop.route == 'clock'"),
+        "no edge carries the meter's order onto ./clock"
+    );
+
+    let cycle_ms = meter_params()["cycle_ms"]
+        .as_i64()
+        .expect("the meter ships params.cycle_ms");
+    let goals_step = |rows: Value| -> Vec<Value> {
+        meter_echo(
+            "goals",
+            meclaw_core::serde_json::json!({"operation": "select"}),
+            rows,
+        )
+    };
+    let frozen_ms = METER_NOW_MS;
+
+    // One enabled goal: the cycle goes on (the rules are read) and the next
+    // cycle is ordered, once.
+    let armed = goals_step(meclaw_core::serde_json::json!([{
+        "id": "goal:llm-cost", "metric": "llm_cost", "source": "colony",
+        "direction": "lower", "window_minutes": 60, "min_samples": 30,
+        "min_delta_pct": 10, "quality_gate": "answer_quality", "enabled": 1}]));
+    assert!(
+        armed.iter().any(|m| m["header"]["route"] == "cstore"),
+        "the cycle itself goes on and reads the rules: {armed:?}"
+    );
+    let orders: Vec<&Value> = armed
+        .iter()
+        .filter(|m| m["header"]["route"] == "clock")
+        .collect();
+    assert_eq!(
+        orders.len(),
+        1,
+        "a tick with an enabled goal arms exactly one next cycle: {armed:?}"
+    );
+    let order = orders[0];
+    assert_eq!(order["op"], "add", "{order}");
+    assert_eq!(order["schedule_name"], "argus-cycle", "{order}");
+    assert_eq!(order["emit_to"], "../meter", "{order}");
+    assert_eq!(
+        order["rearm"], true,
+        "the order replaces the standing one: {order}"
+    );
+    let mut body = order.clone();
+    body.as_object_mut().expect("an object").remove("header");
+    match TimerOp::parse(&body).expect("the timer's own parser takes the order") {
+        TimerOp::Add { row, rearm } => {
+            assert!(rearm, "{order}");
+            assert_eq!(row.schedule_name, "argus-cycle");
+            let ScheduleKind::At(at) = row.kind else {
+                panic!("a one-shot `at`, not a cron: {order}")
+            };
+            assert_eq!(
+                at.timestamp_millis(),
+                frozen_ms + cycle_ms,
+                "the next cycle is cycle_ms after this tick: {order}"
+            );
+        }
+        other => panic!("an add, not {other:?}"),
+    }
+
+    // Nothing enabled: the idle receipt, and no order -- the argus rests.
+    let inert = goals_step(meclaw_core::serde_json::json!([]));
+    assert!(
+        !inert.iter().any(|m| m["header"]["route"] == "clock"),
+        "an inert charter arms nothing: {inert:?}"
+    );
+}
+
+/// 2030-01-01T00:00:00Z: the moment the meter script is told it is.
+const METER_NOW_MS: i64 = 1_893_456_000_000;
+
+/// argus/meter's shipped params, `script_inline` taken out.
+fn meter_params() -> Value {
+    let mut params = config("argus", "meter")["params"].clone();
+    params
+        .as_object_mut()
+        .expect("params")
+        .remove("script_inline");
+    params
+}
+
+/// Run argus/meter's shipped script over ONE store echo -- `hop` and the
+/// phase as the hive edge hands them on, `rows` as the tool result -- with its
+/// clock injected (`datetime.now` frozen at `METER_NOW_MS`), and check every
+/// emission against the meter's own contract. The harness of the two R-AG-1
+/// tests (GH #1229) on the meter's cycle order.
+fn meter_echo(phase: &str, hop: Value, rows: Value) -> Vec<Value> {
+    let meter = config("argus", "meter");
+    let script = meclaw_testing::resolve_script_vars(
+        meter["params"]["script_inline"]
             .as_str()
-            .unwrap_or_else(|| panic!("{template}/clock: contract.settings.{knob}.default"))
-            .to_string();
-        let params = cfg["params"].as_object_mut().expect("params");
-        // The one substitution staging performs on this file: `${uuid7:...}` is
-        // not a UUID until the colony mints one.
-        params["schedules"][0]["schedule_id"] =
-            Value::String("0190a3f2-0000-7000-8000-000000000001".into());
+            .expect("script_inline"),
+    );
+    let block: meclaw_colony::config::ContractBlock =
+        meclaw_core::serde_json::from_value(meter["contract"].clone())
+            .expect("the meter's contract parses");
+    let declared =
+        meclaw_core::CompiledEmits::compile(&block.emits).expect("the emits schemas compile");
+    let flat = meclaw_core::serde_json::json!({
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "c1",
+                      "text": rows.to_string()}],
+        "header": {"hop": hop, "context": {"ar_phase": phase, "ar_carry": "{}"}},
+        "params": meter_params(),
+    });
+    let src = format!(
+        concat!(
+            "import sys, io, datetime\n",
+            "class _Frozen(datetime.datetime):\n",
+            "    @classmethod\n",
+            "    def now(cls, tz=None):\n",
+            "        return cls.fromtimestamp({} / 1000.0, tz)\n",
+            "datetime.datetime = _Frozen\n",
+            "_script = {}\n",
+            "sys.stdin = io.StringIO({})\n",
+            "exec(compile(_script, 'cell', 'exec'), {{'__name__': '__main__'}})\n"
+        ),
+        METER_NOW_MS,
+        meclaw_core::serde_json::to_string(&script).unwrap(),
+        meclaw_core::serde_json::to_string(&meclaw_testing::code_stdin(&flat).to_string()).unwrap(),
+    );
+    let out = run_python(&src);
+    assert!(
+        out.status.success(),
+        "argus/meter exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let emitted: Vec<Value> = meclaw_core::serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)));
+    for m in &emitted {
+        meclaw_core::validate_emits(m, &declared)
+            .unwrap_or_else(|e| panic!("the meter's own contract refuses {m}: {e}"));
+    }
+    emitted
+}
 
-        let shipped = TimerParams::parse(&Value::Object(params.clone())).expect("shipped params");
-        assert_eq!(shipped.schedules.len(), 1, "{template} ticks once");
-        let ScheduleKind::Cron(cron) = &shipped.schedules[0].kind else {
-            panic!("{template}'s schedule is a repeating cron, not a one-shot `at`")
-        };
-        assert_eq!(
-            cron, shipped_cron,
-            "{template}: the shipped schedule is a literal, not a token"
+/// R-AG-1 (GH #1229), re-check K-UHREN A I3: the cycle is armed in the
+/// `goals` step, so a store reject on either read before it -- the deadline
+/// read (`stale`) or the charter read (`goals`) -- used to end in the error
+/// branch with a `store_error` receipt and NO order: the strike that started
+/// the cycle was spent, and a loop with an enabled goal stood still until
+/// somebody called `in_cycle`. The error branch now orders the next cycle
+/// too; an inert charter still ends the chain at the next strike, which
+/// reads it again.
+#[test]
+fn gh1229_a_store_reject_before_the_charter_arms_the_next_cycle() {
+    let cycle_ms = meter_params()["cycle_ms"]
+        .as_i64()
+        .expect("the meter ships params.cycle_ms");
+    for phase in ["stale", "goals"] {
+        let out = meter_echo(
+            phase,
+            meclaw_core::serde_json::json!({"operation": "select",
+                                            "error_code": "query_timeout"}),
+            meclaw_core::serde_json::json!([]),
         );
-        assert_eq!(
-            &declared, cron,
-            "{template}/clock: contract.settings.{knob}.default and \
-             params.schedules[0].cron disagree -- a reader of the contract and \
-             the timer would be told different cadences"
+        assert!(
+            out.iter().any(|m| m["header"]["route"] == "error"),
+            "a reject in `{phase}` still says so on the error lane: {out:?}"
         );
+        let orders: Vec<&Value> = out
+            .iter()
+            .filter(|m| m["header"]["route"] == "clock")
+            .collect();
+        assert_eq!(
+            orders.len(),
+            1,
+            "a reject in `{phase}` arms exactly one next cycle: {out:?}"
+        );
+        let mut body = orders[0].clone();
+        body.as_object_mut().expect("an object").remove("header");
+        match TimerOp::parse(&body).expect("the timer's own parser takes the order") {
+            TimerOp::Add { row, rearm } => {
+                assert!(rearm, "{body}");
+                assert_eq!(row.schedule_name, "argus-cycle");
+                let ScheduleKind::At(at) = row.kind else {
+                    panic!("a one-shot `at`, not a cron: {body}")
+                };
+                assert_eq!(
+                    at.timestamp_millis(),
+                    METER_NOW_MS + cycle_ms,
+                    "the next cycle is cycle_ms after the rejected step: {body}"
+                );
+            }
+            other => panic!("an add, not {other:?}"),
+        }
+    }
 
-        // What a mutation writes: `override_params` replaces the whole
-        // `schedules` key (last-write-wins,
-        // `mutation::stage::patch_and_substitute_config`), and GH #294 lets it
-        // name that key precisely because it EXISTS under `params`.
-        let mut overridden = params.clone();
-        overridden["schedules"][0]["cron"] = Value::String("0 0 0 1 1 *".into());
-        let tuned = TimerParams::parse(&Value::Object(overridden)).expect("overridden params");
-        let ScheduleKind::Cron(tuned_cron) = &tuned.schedules[0].kind else {
-            panic!("{template}: the overridden schedule stopped being a cron")
-        };
-        assert_eq!(
-            tuned_cron, "0 0 0 1 1 *",
-            "{template}: the schedule an override names is not the one the timer plans on"
+    // A reject of the receipt itself (`serr`) and of a later step orders
+    // nothing: the cycle was armed in `goals` already, or the chain is the
+    // receipt's own.
+    for phase in ["serr", "rules"] {
+        let out = meter_echo(
+            phase,
+            meclaw_core::serde_json::json!({"operation": "select",
+                                            "error_code": "query_timeout"}),
+            meclaw_core::serde_json::json!([]),
+        );
+        assert!(
+            !out.iter().any(|m| m["header"]["route"] == "clock"),
+            "a reject in `{phase}` orders no cycle: {out:?}"
         );
     }
 }

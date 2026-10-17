@@ -89,7 +89,8 @@ IMPORTERS = (("scripts.tests.test_pipeline_ir_path", "scripts.tests.test_pipelin
              ("scripts.tests.test_pipeline_two_phase_build", "scripts.tests.test_pipeline_gate_cli",
               "PASS_SSH_TEMPLATE"))
 INERT = ("scripts.tests.side_effect_guard", "scripts.tests.test_lane_engstelle",
-         "scripts.tests.test_pipeline_gate_cli", "scripts.tests.test_pipeline_hygiene")
+         "scripts.tests.test_pipeline_gate_cli", "scripts.tests.test_pipeline_hygiene",
+         "scripts.tests.test_strand_sh")
 
 # The scan set: every tracked or new file (`git ls-files`) but the prose of
 # the repository (top directories) and the two files of the rule itself (they

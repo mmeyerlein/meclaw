@@ -25,19 +25,19 @@
         },
         {
           "route": "in_read",
-          "because": "read the control loop's record -- its charter, its cycle receipts, the hints it holds -- page by page and as stored. It decides nothing and starts no cycle, and nothing at this level consumes it, so the lane is the shell's. Derived from argus@1.3.5"
+          "because": "read the control loop's record -- its charter, its cycle receipts, the hints it holds -- page by page and as stored. It decides nothing and starts no cycle, and nothing at this level consumes it, so the lane is the shell's. Derived from argus"
         },
         {
           "route": "in_hint",
-          "because": "hand the control loop a hypothesis: one line with an origin and a confidence, stored and acknowledged, shown to its judge at the earliest in its next cycle and never counted as a measurement. Nothing at this level consumes it, so the lane is the shell's. Derived from argus@1.3.5"
+          "because": "hand the control loop a hypothesis: one line with an origin and a confidence, stored and acknowledged, shown to its judge at the earliest in its next cycle and never counted as a measurement. Nothing at this level consumes it, so the lane is the shell's. Derived from argus"
         },
         {
           "route": "in_hand",
-          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from \"llm-registry@2.8.5\""
+          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from \"llm-registry@2.9.0\""
         },
         {
           "route": "in_select",
-          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from \"llm-registry@2.8.5\""
+          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from \"llm-registry@2.9.0\""
         },
         {
           "route": "in_turn",
@@ -85,11 +85,11 @@
         },
         {
           "route": "in_stats",
-          "because": "a curator's counts coming back to the control loop, answering its `stats` question: body `stats` with the window, the counts per kind, metadata-only samples and whether the count was truncated, `hop.stats_tag` echoing the ask. Nothing at this level wires the loop to a curator yet, so the lane is the shell's to carry; an answer that names no open ask is dropped inside. Derived from argus@1.3.5"
+          "because": "a curator's counts coming back to the control loop, answering its `stats` question: body `stats` with the window, the counts per kind, metadata-only samples and whether the count was truncated, `hop.stats_tag` echoing the ask. Nothing at this level wires the loop to a curator yet, so the lane is the shell's to carry; an answer that names no open ask is dropped inside. Derived from argus"
         },
         {
           "route": "in_eval",
-          "because": "an evaluator's verdict on one text change the control loop proposed: body `eval` with the verdict, the batch and its size, `hop.eval_tag` echoing the order. The loop applies the change only on a passing batch large enough to count. Nothing at this level evaluates, so the lane is the shell's to carry. Derived from argus@1.3.5"
+          "because": "an evaluator's verdict on one text change the control loop proposed: body `eval` with the verdict, the batch and its size, `hop.eval_tag` echoing the order. The loop applies the change only on a passing batch large enough to count. Nothing at this level evaluates, so the lane is the shell's to carry. Derived from argus"
         }
       ],
       "emits": [
@@ -111,11 +111,11 @@
         },
         {
           "route": "read",
-          "because": "the control loop's answer to `in_read`: the rows asked for and the cursor for the next page, or the refusal by name. Derived from argus@1.3.5"
+          "because": "the control loop's answer to `in_read`: the rows asked for and the cursor for the next page, or the refusal by name. Derived from argus"
         },
         {
           "route": "hint_ack",
-          "because": "the control loop's answer to `in_hint`: the id of the stored hint, or the refusal by name. An acknowledgement says the hint is kept, not that anything will be done about it. Derived from argus@1.3.5"
+          "because": "the control loop's answer to `in_hint`: the id of the stored hint, or the refusal by name. An acknowledgement says the hint is kept, not that anything will be done about it. Derived from argus"
         },
         {
           "route": "answer",
@@ -159,15 +159,15 @@
         },
         {
           "route": "stats",
-          "because": "the control loop asking a curator about its own ledger for a goal that names a role: the window, the kinds to count, the role and a tag. Nothing at this level answers it, and a colony that draws no edge for it gets role goals receipted as unanswered and never judged. Derived from argus@1.3.5"
+          "because": "the control loop asking a curator about its own ledger for a goal that names a role: the window, the kinds to count, the role and a tag. Nothing at this level answers it, and a colony that draws no edge for it gets role goals receipted as unanswered and never judged. Derived from argus"
         },
         {
           "route": "eval",
-          "because": "one text change the control loop wants tried on an evaluation batch before anything moves. Nothing at this level evaluates; a colony that draws no edge for it gets every text change discarded as unanswered, which is the safe way for the lane to be missing. Derived from argus@1.3.5"
+          "because": "one text change the control loop wants tried on an evaluation batch before anything moves. Nothing at this level evaluates; a colony that draws no edge for it gets every text change discarded as unanswered, which is the safe way for the lane to be missing. Derived from argus"
         },
         {
           "route": "slot_update",
-          "because": "a text change that passed its evaluation batch, or the way back from one: the slot's name and text, `hop.target` naming the cell. Like `mutate` it reaches only the cells a colony draws an edge to. Derived from argus@1.3.5"
+          "because": "a text change that passed its evaluation batch, or the way back from one: the slot's name and text, `hop.target` naming the cell. Like `mutate` it reaches only the cells a colony draws an edge to. Derived from argus"
         }
       ]
     },

@@ -1212,6 +1212,11 @@ fn the_read_path_selects_the_columns_it_is_going_to_filter_on() {
     // pinned here.
     let out = emitted(&run_hop("recall", &request(asking(&[A, B], CH1, None))));
     let mut seen = 0;
+    // GH #1225 (F2): the lift reads the live mute marks of the colony -- the
+    // marks and nothing a person said. No row of it is ever shown, so it has
+    // no audience gate; it is pinned to stay exactly that narrow.
+    const MARK: [&str; 4] = ["mute_source", "mute_words", "muted_at", "unmuted_at"];
+    let mut marks = 0;
     for a in out.iter().flat_map(ops_of) {
         let Some(table) = a["table"].as_str() else {
             continue;
@@ -1226,6 +1231,10 @@ fn the_read_path_selects_the_columns_it_is_going_to_filter_on() {
             .iter()
             .map(|c| c.as_str().unwrap_or_default().to_string())
             .collect();
+        if table == "episodes" && cols == MARK {
+            marks += 1;
+            continue;
+        }
         seen += 1;
         for want in ["audience_set", "channel"] {
             assert!(
@@ -1235,6 +1244,7 @@ fn the_read_path_selects_the_columns_it_is_going_to_filter_on() {
         }
     }
     assert!(seen >= 2, "tier 0 asks episodes and facts: {out:?}");
+    assert_eq!(marks, 1, "tier 0 reads the live mute marks once: {out:?}");
 }
 
 #[test]

@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.64.3, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.65.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,17 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.65.0: a cell can no longer read the message log through `/colony/trace`, mutates only inside its own hive
+  subtree unless an edge to the mutation door is drawn, and the boot reads no cell's `cell.db` any more (breaking);
+  an `llm` cell hands its state to a successor by message, and a twin parks its turns until the handover is
+  imported; the peer and webhook proxies take their secrets as sealed vault grants; the memory-hive night, the
+  argus cycle and the session-keeper night are one-shot watchdogs armed by the work instead of fixed schedules; the
+  curator's handover, writer, history and push never read a refused store leg as empty and write in one step; a
+  muted topic taken up again comes back in the same session, and everyday phrasings put a topic aside; the
+  dispatcher expands family calls and answers `help`; a routing error to `reply_to` carries `unresolved_path`; nine
+  shipped LLM cells name their app; in the kit, a lane lease no longer ends under a live lane run, release strands
+  go ahead of the rest, shell entry points parse whole before they run, every lane probe runs under its own bound,
+  and the merge candidate gate plans what the strand gate plans for the same diff.
 - v0.64.3: the curator ages a replayed conversation by its own turns, cuts an overflow inside a segment instead of
   refusing the call, rebuilds without a model package and checks every sidecar fact at the source it names; its
   policy and intake write in one step, never read a refused store leg as empty, and the pin set sent last stands;

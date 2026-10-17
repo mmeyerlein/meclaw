@@ -1249,6 +1249,101 @@ class PreChecksTest(Case):
         self.assertIn("overlay", doc)
 
 
+class DefaultBranchTest(unittest.TestCase):
+    """K13-1: check (f) took `master..HEAD` as given. orga-hive and soul2me have
+    only `main`: `pre` was RED with `git log master..HEAD failed`. The range
+    starts at the repo's default branch: local `master`, else local `main`, else
+    the name `origin/HEAD` points at; none of them is a clear RED, not a silent
+    pass. Fix round 5 (M7): a local branch before `origin/HEAD` -- meclaw-core's
+    origin is the export mirror, whose `origin/main` has a history of its own."""
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {turnaround.OWNER_ENV: OWNER})
+        env.start()
+        self.addCleanup(env.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = tmp.name
+
+    def repo_on(self, branch):
+        tm.git(self.repo, "init", "-q", "-b", branch)
+        tm.git(self.repo, "config", "user.name", "test")
+        tm.git(self.repo, "config", "user.email", "test@example.invalid")
+        return commit(self.repo, {"README.md": "start\n"}, "start")
+
+    def foreign_commit(self, rel):
+        env = dict(os.environ, GIT_AUTHOR_NAME="someone", GIT_AUTHOR_EMAIL="x@y.invalid")
+        tm.write(self.repo, rel, "foreign\n")
+        tm.git(self.repo, "add", "-A")
+        subprocess.run(["git", "-C", self.repo, "commit", "-q", "-m", "foreign"], env=env,
+                       check=True)
+        return tm.git(self.repo, "rev-parse", "HEAD")
+
+    def test_a_repo_with_only_main_checks_main_dot_dot_head(self):
+        self.repo_on("main")
+        tm.git(self.repo, "checkout", "-q", "-b", "welle-x/S1")
+        commit(self.repo, {"a.txt": "a\n"})
+        self.assertEqual(turnaround.owner_check(self.repo), ("GREEN", ""))
+        sha = self.foreign_commit("b.txt")
+        verdict, why = turnaround.owner_check(self.repo)
+        self.assertEqual(verdict, "RED")
+        self.assertIn(sha[:9], why)
+        self.assertIn("main..HEAD", why)
+
+    def test_a_local_master_wins_over_origin_head_on_main(self):
+        # meclaw-core with a set origin/HEAD: local master, origin/main = the export mirror.
+        self.repo_on("master")
+        tm.git(self.repo, "checkout", "-q", "-b", "mirror")
+        mirror = self.foreign_commit("mirror.txt")              # the mirror's own history
+        tm.git(self.repo, "update-ref", "refs/remotes/origin/main", mirror)
+        tm.git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        tm.git(self.repo, "checkout", "-q", "master")
+        tm.git(self.repo, "branch", "-q", "-D", "mirror")
+        tm.git(self.repo, "checkout", "-q", "-b", "welle-x/S1")
+        commit(self.repo, {"a.txt": "a\n"})
+        self.assertEqual(turnaround.default_branch(self.repo), "master")
+        self.assertEqual(turnaround.owner_check(self.repo), ("GREEN", ""))
+
+    def test_a_local_main_wins_over_origin_head_on_trunk(self):
+        # Re-check FR5 I1: the local half of M7 was pinned for `master` only -- a
+        # search of local `master` alone stayed green. No local master, a local
+        # main, origin/HEAD -> origin/trunk with a history of its own: `main`.
+        self.repo_on("main")
+        tm.git(self.repo, "checkout", "-q", "-b", "mirror")
+        mirror = self.foreign_commit("mirror.txt")              # the remote's own history
+        tm.git(self.repo, "update-ref", "refs/remotes/origin/trunk", mirror)
+        tm.git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        tm.git(self.repo, "checkout", "-q", "main")
+        tm.git(self.repo, "branch", "-q", "-D", "mirror")
+        tm.git(self.repo, "checkout", "-q", "-b", "welle-x/S1")
+        commit(self.repo, {"a.txt": "a\n"})
+        self.assertEqual(turnaround.default_branch(self.repo), "main")
+        self.assertEqual(turnaround.owner_check(self.repo), ("GREEN", ""))
+
+    def test_origin_head_names_the_branch_when_no_local_master_or_main(self):
+        self.repo_on("trunk")
+        trunk = tm.git(self.repo, "rev-parse", "HEAD")
+        tm.git(self.repo, "update-ref", "refs/remotes/origin/trunk", trunk)
+        tm.git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        self.assertEqual(turnaround.default_branch(self.repo), "trunk")
+        tm.git(self.repo, "checkout", "-q", "--detach")
+        tm.git(self.repo, "branch", "-q", "-D", "trunk")
+        self.assertEqual(turnaround.default_branch(self.repo), "origin/trunk")
+
+    def test_master_before_main_without_origin_head(self):
+        self.repo_on("main")
+        tm.git(self.repo, "branch", "master")
+        self.assertEqual(turnaround.default_branch(self.repo), "master")
+
+    def test_no_default_branch_is_a_clear_red(self):
+        self.repo_on("trunk")
+        self.assertIsNone(turnaround.default_branch(self.repo))
+        verdict, why = turnaround.owner_check(self.repo)
+        self.assertEqual(verdict, "RED")
+        self.assertIn("no default branch", why)
+        self.assertIn("master, main, origin/HEAD", why)
+
+
 # --- (i) --------------------------------------------------------------------------
 
 class PartKeysTest(unittest.TestCase):

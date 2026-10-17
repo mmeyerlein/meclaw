@@ -285,7 +285,7 @@ decides what a statement *means* -- that is the close pass's work and the night'
   turns whose annotation never arrived (`pending_extraction`, status `pending`) as its priority
   list, and sharpens what the per-turn pass left rough. Its blocks travel back through
   `extract-glue`, so it is a second *reader*, never a second write path.
-- `crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs` -- the drift lock, one
+- `crates/meclaw-cells/tests/misc_3/gh299_the_contract_asks_for_both_parts.rs` -- the drift lock, one
   direction now that there is one lane: the block must state the obligation, name both parts,
   show the `nothing` form the ingress actually parses, carry the core list byte-identical to
   [`predicate-core.json`](predicate-core.json), and stay under its length bound. It replaces

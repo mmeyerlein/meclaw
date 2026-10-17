@@ -899,6 +899,16 @@ pub enum ColonyMsg {
         /// `cell.db` close. Pairs with `stop_tx`.
         death_ack_rx: tokio::sync::oneshot::Receiver<()>,
     },
+    /// GH #1231 (T6-03, fix round 1): a cell that booted inactive found its OWN
+    /// `cell.db` unusable when it opened it on wake. Sent by the respawn closure
+    /// ([`crate::wake_checked_respawn`]) — the colony never reads a cell's
+    /// database. Handled by `handle_cell_db_unusable`: the cell is `failed`.
+    CellDbUnusable {
+        /// Path of the cell whose database did not open.
+        path: Path,
+        /// Why, as the cell's own check worded it.
+        error: String,
+    },
     /// Phase 6: a mutation request. The arm handles it via inline skeleton in T12;
     /// T13+ extracts the real logic into `handle_mutation`.
     Mutation {
@@ -1971,6 +1981,31 @@ fn handle_stop_wiring_restored(
     }
 }
 
+/// GH #1231 (T6-03, fix round 1): `ColonyMsg::CellDbUnusable` arm handler.
+///
+/// The verdict an awake cell gets at boot when its own `cell.db` does not open
+/// (`apply_bootstrap_plan`, `spawn_cell` → `Err` → registered `failed`), given
+/// to a cell that booted asleep and met the same file on wake: `failed`, the
+/// mailbox parked (`NotYetSpawned`), the status persisted. Deliveries then
+/// dead-letter loudly and the registry read names it. The respawn closure stays:
+/// a later reconnect checks the file again. Unknown path → nothing to mark.
+async fn handle_cell_db_unusable(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    writer_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    queue_depth: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+    path: Path,
+    error: String,
+) {
+    let Some(entry) = registry.get_mut(&path) else {
+        tracing::debug!(path = %path.as_str(), "CellDbUnusable for unknown cell — ignored");
+        return;
+    };
+    tracing::info!(path = %path.as_str(), error = %error, "marking the cell failed (own cell.db unusable)");
+    entry.failed = true;
+    park_entry_non_running(entry, &path);
+    send_registry_status(writer_tx, queue_depth, path, "failed".into()).await;
+}
+
 /// Outcome of a `handle_cell_died` corridor pass. The corridor stays await-free and
 /// only mutates in-memory registry state; the caller acts on this (e.g. persists the
 /// `failed` status) AFTER the corridor returns.
@@ -2944,6 +2979,16 @@ async fn run_shutdown_teardown(
                 death_ack_rx,
             } => {
                 handle_stop_wiring_restored(registry, path, stop_tx, death_ack_rx);
+            }
+            ColonyMsg::CellDbUnusable { path, error } => {
+                handle_cell_db_unusable(
+                    registry,
+                    &colony_db.writer_tx,
+                    &colony_db.queue_depth,
+                    path,
+                    error,
+                )
+                .await;
             }
             ColonyMsg::MailboxRescued { path, messages } => {
                 // Shutdown-drain: no successor is coming, so
@@ -4286,6 +4331,9 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     ColonyMsg::StopWiringRestored { path, stop_tx, death_ack_rx } => {
                         handle_stop_wiring_restored(&mut registry, path, stop_tx, death_ack_rx);
+                    }
+                    ColonyMsg::CellDbUnusable { path, error } => {
+                        handle_cell_db_unusable(&mut registry, &colony_db.writer_tx, &colony_db.queue_depth, path, error).await;
                     }
                     ColonyMsg::MailboxRescued { path, messages } => {
                         // GH #47: the mailbox is back with the colony, so whatever
@@ -11231,7 +11279,8 @@ fn handle_colony_target(
 }
 
 /// Phase-3a full cascade per spec § Behavior on routing errors:
-///   1. reply_to set → the error reply (terminal, reply_to=None) is returned to
+///   1. reply_to set → the error reply (terminal, reply_to=None, canonical error
+///      shape with `hop.error_code: "unresolved_path"`, GH #1230) is returned to
 ///      the outer routing loop; it runs through the regular route().
 ///   2. otherwise → /colony/dead_letters.
 ///
@@ -11256,10 +11305,28 @@ fn handle_unresolved(
 
     if let Some(reply_target) = message.reply_to.clone() {
         // Step 1: the error reply is terminal — through the outer loop via route().
+        // GH #1230: the reply carries the canonical substrate error shape
+        // (`hop.finish_reason` + `hop.error_code`, as `consumes_violation`,
+        // `contract_violation` and the `ttl_expired` notice do). Before, it was
+        // an empty envelope (hop `{}`, body `null`, pinned red by
+        // `gh1230_the_unresolved_reply_names_its_error_code`): the anchor saw
+        // that a route failed, never why. `context` travels unchanged like the
+        // TTL notice's, so a waiting collector can correlate the reply.
+        let content = meclaw_core::serde_json::json!({
+            "header": {"finish_reason": "error", "error_code": "unresolved_path"},
+            "messages": [{
+                "origin": "assistant",
+                "type": "text",
+                "text": format!("no cell at {}", resolved_target.as_str()),
+            }]
+        });
+        let (hop, body) = split_content_header(content);
         let error_reply = MessageBuilder::new(reply_target)
             .trace_id(message.trace_id)
             .parent_message_id(message.id)
             .ttl(message.ttl) // already decremented by route() → decrement further on the next hop
+            .headers(Headers::from_parts(message.headers.context.clone(), hop))
+            .body(Body::Inline(body))
             .build();
         // error_reply.reply_to is None by default → terminal.
         // The sender_path for the next route() call is "/colony" — the cascade has

@@ -320,6 +320,8 @@
 # ASK: a question for the owner is open and nothing is red. The strand kit's
 # token queue uses 3 as well.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -uo pipefail
 
 usage() {
@@ -1652,4 +1654,5 @@ if [ "$verdict" = RED ]; then
     exit 1
 fi
 [ "$verdict" = ASK ] && exit "$ASK_EXIT"
-exit 0
+true
+}; exit $?

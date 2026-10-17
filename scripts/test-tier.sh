@@ -109,6 +109,8 @@
 # ratchet, cargo-deny, scenario suites) are stations of `scripts/gate.sh`;
 # they are not part of any tier.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -uo pipefail
 
 # This file's directory with builtins only: an external `dirname` missing from
@@ -276,6 +278,8 @@ token_seen_after_run() {
     token_held=0
     "$root/scripts/strand.sh" token check --pid 0 >/dev/null 2>&1 || true
 }
+# SC2317: only the traps of token_traps call it, shellcheck sees no caller in the group (GH #1223)
+# shellcheck disable=SC2317
 token_seen_on_signal() {
     token_seen_after_run
     trap - "$1"
@@ -575,3 +579,4 @@ case "$tier" in
         exit 2
         ;;
 esac
+}; exit $?

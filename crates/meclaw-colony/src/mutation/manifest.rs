@@ -153,7 +153,9 @@ pub enum ManifestOutcome {
     Rejected {
         /// The mutation ids of the entries BEFORE the refused one, in order.
         ids: Vec<String>,
-        /// 1-based position of the refused entry.
+        /// 1-based position of the refused entry; `0` when the manifest was
+        /// refused as a whole before its first entry (GH #1231: the sender
+        /// check, `sender_out_of_scope`), so nothing was applied.
         failed_at: usize,
         /// The refused entry's own mutation id, if it got one.
         id: Option<String>,

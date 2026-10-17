@@ -108,10 +108,12 @@ PIN-code-oversized-inline-sandbox-en	docs/cell-types.en.md	the substrate grants 
 PIN-bash-argv-cap-de	docs/cell-types.md	Ein `command` ab dieser Grenze wird deshalb vor dem Spawn abgelehnt	pinned	a_command_at_the_argv_cap_is_refused_before_the_spawn
 PIN-bash-argv-cap-en	docs/cell-types.en.md	A `command` at or above that line is therefore refused before the spawn	pinned	a_command_at_the_argv_cap_is_refused_before_the_spawn
 #
-PIN-graph-filter-not-dropped-de	docs/meclaw-overview.md	Bei allen fünf Reads wird ein Filter, der ankommt, nie stumm verworfen	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
-PIN-graph-filter-not-dropped-en	docs/meclaw-overview.en.md	At all five reads a filter that arrives is never silently dropped	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
-PIN-read-filter-broken-uuid-de	docs/meclaw-overview.md	`trace_id`/`correlation_id` keine gültige UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
-PIN-read-filter-broken-uuid-en	docs/meclaw-overview.en.md	`trace_id`/`correlation_id` not a valid UUID	pinned	dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace
+PIN-graph-filter-not-dropped-de	docs/meclaw-overview.md	Bei allen vier Reads wird ein Filter, der ankommt, nie stumm verworfen	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
+PIN-graph-filter-not-dropped-en	docs/meclaw-overview.en.md	At all four reads a filter that arrives is never silently dropped	pinned	registry_refuses_a_wrong_typed_filter_instead_of_answering_unfiltered
+PIN-trace-not-dispatchable-de	docs/meclaw-overview.md	`/colony/trace` ist read-only und NICHT EDA-dispatchbar (GH #1231)	pinned	an_emission_to_colony_trace_is_hard_rejected
+PIN-sender-out-of-scope-de	docs/meclaw-overview.md	ein `scope` außerhalb wird mit `sender_out_of_scope` abgewiesen	pinned	a_sender_without_a_door_edge_mutates_only_its_own_hive_subtree
+PIN-trace-not-dispatchable-en	docs/meclaw-overview.en.md	`/colony/trace` is read-only and NOT EDA-dispatchable (GH #1231)	pinned	an_emission_to_colony_trace_is_hard_rejected
+PIN-sender-out-of-scope-en	docs/meclaw-overview.en.md	`scope` outside is refused with `sender_out_of_scope`	pinned	a_sender_without_a_door_edge_mutates_only_its_own_hive_subtree
 #
 PIN-ledger-aggregates-de	docs/meclaw-overview.md	keine Rohzeilen und keine Header-Inhalte	pinned	no_raw_row_and_no_header_content_leaves_the_endpoint
 PIN-ledger-aggregates-en	docs/meclaw-overview.en.md	no raw rows and no header contents	pinned	no_raw_row_and_no_header_content_leaves_the_endpoint
@@ -210,7 +212,7 @@ PIN-talky-tool-exit-default	templates/talky/README.md	**The tool exit stopped na
 PIN-talky-serves-its-own-wall	templates/talky/README.md	**The model reads its own wall since `talky@6.1.0`**	pinned	a_model_reads_its_own_wall_and_never_another
 PIN-cogny-serves-its-own-wall	templates/cogny/README.md	**One tool family is served inside since `5.3.0`: the model's own wall**	pinned	a_model_reads_its_own_wall_and_never_another
 PIN-curator-history-own-wall-only	templates/curator/README.md	and never another model's wall	pinned	a_model_reads_its_own_wall_and_never_another
-PIN-curator-history-never-shortened	templates/curator/README.md	a larger read is refused with `too_large` and its size, never shortened	pinned	read_over_budget_is_too_large_never_cut
+PIN-curator-history-read-in-pages	templates/curator/README.md	A block by its id over the budget is read in pages	pinned	a_block_over_a_tenth_of_the_window_is_read_whole_in_pages
 PIN-no-silencer	templates/terminal/README.md	A `reject` or an `error` lane has exactly **two** honest states	pinned	no_shipped_topology_routes_a_refusal_into_a_cell_that_swallows_it
 PIN-organism-grows-from-templates	examples/organism/README.md	An empty folder, the template library, and **five declarations**	pinned	b_the_registry_records_the_true_origin_at_every_level
 PIN-web-asset-route-de	docs/cell-types.md	erst wird die materialisierte Seitenkarte gefragt, dann die Asset-Karte	pinned	a_page_and_an_asset_do_not_shadow_each_other
@@ -457,3 +459,7 @@ PIN-env-report-names-only-de	docs/meclaw-overview.md	welche strikten `${KEY}`-Re
 PIN-env-report-names-only-en	docs/meclaw-overview.en.md	which strict `${KEY}` references name a key the file does not carry	pinned	the_report_names_exactly_the_unused_and_the_missing_key
 PIN-env-report-no-value-de	docs/meclaw-overview.md	Nur Namen, nie ein Wert.	pinned	no_value_of_the_env_file_is_printed
 PIN-env-report-no-value-en	docs/meclaw-overview.en.md	Names only, never a value.	pinned	no_value_of_the_env_file_is_printed
+PIN-manifest-sender-refusal-failed-at-0-de	docs/meclaw-overview.md	`failed_at: 0` heißt, dass die Tür das Manifest als Ganzes vor dem ersten Eintrag	pinned	a_manifest_refused_for_its_sender_names_no_applied_position
+PIN-manifest-sender-refusal-failed-at-0-en	docs/meclaw-overview.en.md	`failed_at: 0` means the door refused the manifest as a whole before its first entry	pinned	a_manifest_refused_for_its_sender_names_no_applied_position
+PIN-sleeping-cell-db-failed-on-wake-de	docs/meclaw-overview.md	Boot für wache, beim Wecken für schlafende.	pinned	a_sleeping_timer_with_a_corrupt_cell_db_is_failed_on_wake
+PIN-sleeping-cell-db-failed-on-wake-en	docs/meclaw-overview.en.md	at boot for an awake cell, on wake for a sleeping one.	pinned	a_sleeping_timer_with_a_corrupt_cell_db_is_failed_on_wake

@@ -106,16 +106,18 @@ use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem}
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
+use meclaw_testing::deadline::hang_with;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::wait::until_with;
 use mock_openai::{MockOpenAI, canned_chat_completion};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-/// The failure-marker convention of this repo, not a timing discriminator.
-const DEADLINE: Duration = Duration::from_secs(30);
-/// How long a run is left alone before "no further request" is read: long
-/// enough for a summarizer call that should not happen to have been made.
-const SETTLE: Duration = Duration::from_secs(3);
+// Time in this file is only the hang mark (`meclaw_testing::deadline::HANG`,
+// AGENTS rule 11): every wait polls or receives under it, and "no further
+// request" is read after `ColonyHandle::quiesce` (TV-A2) -- every delivery
+// that follows from what was sent has been handed over, a summarizer call
+// included (the `llm` cell holds its ticket until the provider answered).
 
 const NOTE: &str = "Ada introduced herself and planned a trip to Lisbon in May.";
 const PIN: &str = "Ada drinks tea, never coffee.";
@@ -410,15 +412,29 @@ fn renewed(call: &str) -> meclaw_core::Message {
     )
 }
 
+/// The bodies the stub provider recorded, once there are at least `n` -- a
+/// wait under the hang mark; a hang names how many came.
 async fn requests(mock: &MockOpenAI, n: usize) -> Vec<Value> {
-    for _ in 0..300 {
-        let reqs = mock.recorded_requests().await;
-        if reqs.len() >= n {
-            return reqs.into_iter().map(|r| r.body).collect();
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the provider was called fewer than {n} time(s) within {DEADLINE:?}");
+    let seen = Arc::new(AtomicUsize::new(0));
+    let last = seen.clone();
+    until_with(
+        &format!("the provider is called {n} time(s)"),
+        || {
+            let seen = seen.clone();
+            async move {
+                let got = mock.recorded_requests().await.len();
+                seen.store(got, Ordering::Relaxed);
+                got >= n
+            }
+        },
+        move || format!("{} request(s) recorded", last.load(Ordering::Relaxed)),
+    )
+    .await;
+    mock.recorded_requests()
+        .await
+        .into_iter()
+        .map(|r| r.body)
+        .collect()
 }
 
 fn try_ledger(td: &tempfile::TempDir) -> rusqlite::Result<rusqlite::Connection> {
@@ -432,32 +448,75 @@ fn ledger(td: &tempfile::TempDir) -> rusqlite::Connection {
     try_ledger(td).expect("the ledger")
 }
 
-/// Poll the ledger until `sql` counts at least `n`, or give up at the marker.
-async fn until_count(td: &tempfile::TempDir, sql: &str, n: i64) {
-    for _ in 0..300 {
-        let got: i64 = try_ledger(td)
-            .and_then(|c| c.query_row(sql, [], |r| r.get(0)))
-            .unwrap_or(0);
-        if got >= n {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("`{sql}` did not reach {n} within {DEADLINE:?}");
+/// What `sql` counts in the ledger now; `missing` while the ledger cannot be
+/// read yet.
+fn count(td: &tempfile::TempDir, sql: &str, missing: i64) -> i64 {
+    try_ledger(td)
+        .and_then(|c| c.query_row(sql, [], |r| r.get(0)))
+        .unwrap_or(missing)
 }
 
-/// Poll the ledger until `sql` counts nothing, or give up at the marker.
+/// Poll the ledger until `count(sql)` satisfies `done`, under the hang mark;
+/// a hang names the count read last.
+async fn until_counted(
+    td: &tempfile::TempDir,
+    sql: &str,
+    missing: i64,
+    what: String,
+    done: impl Fn(i64) -> bool,
+) {
+    let seen = Arc::new(AtomicI64::new(missing));
+    let last = seen.clone();
+    until_with(
+        &what,
+        || {
+            let got = count(td, sql, missing);
+            seen.store(got, Ordering::Relaxed);
+            std::future::ready(done(got))
+        },
+        move || format!("counted {}", last.load(Ordering::Relaxed)),
+    )
+    .await;
+}
+
+/// Poll the ledger until `sql` counts at least `n`.
+async fn until_count(td: &tempfile::TempDir, sql: &str, n: i64) {
+    until_counted(td, sql, 0, format!("`{sql}` reaches {n}"), |got| got >= n).await;
+}
+
+/// Poll the ledger until `sql` counts nothing.
 async fn until_none(td: &tempfile::TempDir, sql: &str) {
-    for _ in 0..300 {
-        let got: i64 = try_ledger(td)
-            .and_then(|c| c.query_row(sql, [], |r| r.get(0)))
-            .unwrap_or(1);
-        if got == 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("`{sql}` still counted rows after {DEADLINE:?}");
+    until_counted(td, sql, 1, format!("`{sql}` counts nothing"), |got| {
+        got == 0
+    })
+    .await;
+}
+
+/// Receive from the sink until a message routed `route` leaves the hive, under
+/// the hang mark; a hang names the routes passed over.
+async fn leaves(
+    sink: &mut tokio::sync::mpsc::Receiver<meclaw_core::Message>,
+    route: &str,
+) -> meclaw_core::Message {
+    let passed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = passed.clone();
+    hang_with(
+        &format!("a message routed `{route}` leaves the hive"),
+        async move {
+            loop {
+                let m = sink.recv().await.expect("the sink is open");
+                let got = m.headers.hop.get("route").and_then(Value::as_str);
+                if got == Some(route) {
+                    return m;
+                }
+                seen.lock()
+                    .expect("routes")
+                    .push(got.unwrap_or("<none>").to_string());
+            }
+        },
+        move || passed.lock().map(|v| v.clone()).unwrap_or_default(),
+    )
+    .await
 }
 
 const ANSWERED: &str = "SELECT COUNT(*) FROM calls WHERE model != ''";
@@ -734,7 +793,10 @@ async fn the_first_request_of_a_new_session_carries_the_handover() {
         Some(ROUND_E),
         "the leaf's audience stands beside it for `./policy`, bound to its hash (GH #925, I-1)"
     );
-    tokio::time::sleep(SETTLE).await;
+    // "No model call on the way into B" is read once the colony settled
+    // (TV-A2): a note or a condense B's turn caused would have reached the
+    // stub by then.
+    h.quiesce().await;
     assert_eq!(
         mock.recorded_requests().await.len(),
         5,
@@ -775,7 +837,9 @@ async fn without_a_close_the_block_needs_no_model() {
         messages_of(&b1).contains(COMMITMENT) && !system.contains(COMMITMENT),
         "an open commitment is a pin, and stands where the window puts pins"
     );
-    tokio::time::sleep(SETTLE).await;
+    // "None else" is read once the colony settled (TV-A2): a summarizer call
+    // the turns caused would have reached the stub by then.
+    h.quiesce().await;
     let reqs = mock.recorded_requests().await;
     assert_eq!(reqs.len(), 2, "one request per turn and none else");
     assert!(
@@ -855,16 +919,7 @@ async fn the_pack_handover_family_is_untouched() {
         json!({}),
     ))
     .await;
-    let acked = tokio::time::timeout(DEADLINE, async {
-        loop {
-            let m = sink.recv().await.expect("the sink is open");
-            if m.headers.hop.get("route").and_then(Value::as_str) == Some("pack_ack") {
-                return m;
-            }
-        }
-    })
-    .await
-    .expect("the pack is acknowledged");
+    let acked = leaves(&mut sink, "pack_ack").await;
     assert_eq!(
         acked.headers.hop.get("error_code").and_then(Value::as_str),
         Some(""),
@@ -1043,7 +1098,9 @@ async fn the_leaf_stands_the_session_and_falls_at_the_first_rebuild() {
         "after the first rebuild the leaf is gone: {}",
         system_of(&b3)
     );
-    tokio::time::sleep(SETTLE).await;
+    // "The rebuild asked no model" is read once the colony settled (TV-A2):
+    // a condense B's turns caused would have reached the stub by then.
+    h.quiesce().await;
     let reqs = mock.recorded_requests().await;
     assert_eq!(reqs.len(), 5, "three turns of B, A's turn and its note");
     assert!(
@@ -1067,17 +1124,10 @@ async fn a_close_without_turns_hands_nothing_over() {
     h.send(close("s-z")).await;
     // The writer's answer to the close is the sign the close went through the
     // hive; the handover's own reads ran beside it.
-    tokio::time::timeout(DEADLINE, async {
-        loop {
-            let m = sink.recv().await.expect("the sink is open");
-            if m.headers.hop.get("route").and_then(Value::as_str) == Some("write") {
-                return;
-            }
-        }
-    })
-    .await
-    .expect("the close is written");
-    tokio::time::sleep(SETTLE).await;
+    leaves(&mut sink, "write").await;
+    // "Nothing" is read once the colony settled (TV-A2): a summarizer call
+    // or a mark the close caused would have landed by then.
+    h.quiesce().await;
     assert_eq!(
         mock.recorded_requests().await.len(),
         0,
@@ -1123,16 +1173,7 @@ async fn a_renewed_call_gets_the_conversation_without_a_model() {
     h.send(pin(&format!("{PIN} [#abcdefabcdef]"), "orga")).await;
     until_count(&td, "SELECT COUNT(*) FROM pins", 1).await;
     h.send(renewed("call-1")).await;
-    let side = tokio::time::timeout(DEADLINE, async {
-        loop {
-            let m = sink.recv().await.expect("the sink is open");
-            if m.headers.hop.get("route").and_then(Value::as_str) == Some("sidecar") {
-                return m;
-            }
-        }
-    })
-    .await
-    .expect("one sidecar leaves the hive");
+    let side = leaves(&mut sink, "sidecar").await;
     let hop = &side.headers.hop;
     assert_eq!(hop.get("section").and_then(Value::as_str), Some("context"));
     assert_eq!(hop.get("renewal_n").and_then(Value::as_u64), Some(1));
@@ -1166,7 +1207,9 @@ async fn a_renewed_call_gets_the_conversation_without_a_model() {
         "no block id in any form reaches the voice, which would read it out \
          (OR-KY-68, OR-KY-81): {payload}"
     );
-    tokio::time::sleep(SETTLE).await;
+    // "No model" is read once the colony settled (TV-A2): a call the
+    // renewal caused would have reached the stub by then.
+    h.quiesce().await;
     assert_eq!(
         mock.recorded_requests().await.len(),
         2,
@@ -1432,16 +1475,7 @@ async fn a_renewal_carries_no_row_of_a_narrower_round() {
     )
     .await;
     h.send(in_round(renewed("call-1"), ea())).await;
-    let side = tokio::time::timeout(DEADLINE, async {
-        loop {
-            let m = sink.recv().await.expect("the sink is open");
-            if m.headers.hop.get("route").and_then(Value::as_str) == Some("sidecar") {
-                return m;
-            }
-        }
-    })
-    .await
-    .expect("one sidecar leaves the hive");
+    let side = leaves(&mut sink, "sidecar").await;
     let Body::Inline(body) = &side.body else {
         panic!("an inline body")
     };

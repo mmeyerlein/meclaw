@@ -158,6 +158,10 @@ impl CellFactory for ProxyCellFactory {
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
+        // GH #1231 (T6-03): the cell checks its OWN cell.db here, on the
+        // error path `llm` uses, before any build closure opens it behind an
+        // `.expect`: an unusable file makes the cell `failed`, not a boot panic.
+        meclaw_colony::persist::check_own_cell_db(&cell_dir)?;
         // Captured for the restart-side stop-wiring re-notify (I1 / T6b) — taken
         // before `make_build` consumes `path`/`colony_inbox_tx`.
         let respawn_inbox = colony_inbox_tx.clone();
@@ -271,6 +275,11 @@ impl CellFactory for ProxyCellFactory {
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
+        // GH #1231 (T6-03, fix round 1): the sleeping cell checks its own
+        // cell.db when it opens it — on wake, inside the respawn closure
+        // (`wake_checked_respawn`), not here at boot; unusable → `failed`.
+        let (wake_path, wake_dir, wake_inbox) =
+            (path.clone(), cell_dir.clone(), colony_inbox_tx.clone());
         let respawn_inbox = colony_inbox_tx.clone();
         let respawn_path = path.clone();
         let build: BuildFn = match crate::proxy::platform::parse_platform(&params).ok()? {
@@ -342,16 +351,21 @@ impl CellFactory for ProxyCellFactory {
         // task is not spawned until the reconnect arm invokes this closure. When
         // invoked, build with a FRESH live stop pair and re-notify so a later
         // disconnect can peace-stop the reconnected cell (I1 / T6b).
-        Some(Box::new(move || {
-            let (sender, join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build();
-            meclaw_colony::renotify_stop_wiring(
-                &respawn_inbox,
-                respawn_path.clone(),
-                stop_tx,
-                death_ack_rx,
-            );
-            (sender, join, peace_rx, backstop_rx)
-        }))
+        Some(meclaw_colony::wake_checked_respawn(
+            wake_path,
+            wake_dir,
+            wake_inbox,
+            Box::new(move || {
+                let (sender, join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build();
+                meclaw_colony::renotify_stop_wiring(
+                    &respawn_inbox,
+                    respawn_path.clone(),
+                    stop_tx,
+                    death_ack_rx,
+                );
+                (sender, join, peace_rx, backstop_rx)
+            }),
+        ))
     }
 }
 
@@ -680,9 +694,17 @@ fn make_build_meclaw(
         //    the colony.
         let io = MeclawIo::new(&parsed, path_cap.as_str(), Arc::clone(&surfaces_cap))
             .with_cell_db(db_path);
+        // GH #1105: a grant's peer proxy is born without its client secret
+        // and asks for it in `on_start` (key pair and secret are RAM-only).
         let cell = MeclawCell::with_client(&parsed, client.clone())
             .with_io(io)
-            .with_colony_inbox(colony_inbox_cap.clone());
+            .with_colony_inbox(colony_inbox_cap.clone())
+            .with_credential(
+                parsed
+                    .auth
+                    .as_ref()
+                    .and_then(crate::proxy::meclaw::params::PeerAuth::client_secret_grant),
+            );
         let db = DbConn::wrap(conn, Some(Duration::from_millis(parsed.query_timeout_ms)));
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity_cap);
         let (join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build_long_running_task(

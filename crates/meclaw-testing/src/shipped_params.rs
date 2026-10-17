@@ -49,33 +49,29 @@ pub fn override_params_on_disk(cell_dir: &Path, params: &Value) {
     std::fs::write(&path, rendered).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 }
 
-/// Push the session keeper's nightly close sweep out of a run's way.
+/// Push the session keeper's night out of a run's way.
 ///
 /// `keeper_dir` is the `session-keeper` directory -- in a copied template
-/// library, or inside an instantiated composite. The whole `schedules` array is
-/// kept and only its cron is moved, which is what an `override_params` entry
-/// naming `schedules` amounts to for a schedule that is otherwise unchanged.
+/// library, or inside an instantiated composite. Since R-AG-1 (GH #1229) the
+/// night is no schedule of `./night`: `./close` arms a one-shot on it whenever
+/// a generation opens, for the next opening of its night window -- and an open
+/// INSIDE the window is a firing at once. So the window is what is moved here:
+/// `night_from_utc` and `night_until_utc` of `./close` both become `"00:00"`,
+/// which is no night at all, and the keeper arms nothing. An `in_sweep` still
+/// sweeps, which is how a test drives a firing.
 ///
 /// Until `session-keeper@2.2.0` this was a `KEEPER_NIGHT_CRON` line in the
-/// tree's `.env`. The shipped schedule fires through the local night, so a run
-/// that leaves it alone behaves differently depending on the hour it started --
-/// which is why eighteen setups wrote that line, and why the line becoming dead
-/// would have been a flake rather than a failure.
+/// tree's `.env`, and until GH #1229 the cron of `./night`'s schedule. The
+/// shipped night is a few hours of the UTC day, so a run that leaves it alone
+/// behaves differently depending on the hour it started -- which is why
+/// eighteen setups wrote that line, and why the knob becoming dead would have
+/// been a flake rather than a failure.
 ///
 /// # Panics
-/// If the keeper's `night/config.json` is missing.
+/// If the keeper's `close/config.json` is missing.
 pub fn quiet_keeper_night(keeper_dir: &Path) {
-    let path = keeper_dir.join("night/config.json");
-    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let mut cfg: Value =
-        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    assert!(
-        cfg["params"]["schedules"][0]["cron"].is_string(),
-        "{}: the keeper's night carries no schedule to quiet",
-        path.display()
+    override_params_on_disk(
+        &keeper_dir.join("close"),
+        &serde_json::json!({"night_from_utc": "00:00", "night_until_utc": "00:00"}),
     );
-    cfg["params"]["schedules"][0]["cron"] = Value::String(NEVER_CRON.to_string());
-    let rendered =
-        serde_json::to_string_pretty(&cfg).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    std::fs::write(&path, rendered).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 }

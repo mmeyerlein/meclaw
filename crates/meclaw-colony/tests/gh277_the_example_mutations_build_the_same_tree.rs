@@ -847,7 +847,15 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// instead of fourteen (the watchdog round trip `./sweep -> ./clock` and
 /// `./clock -> ./sweep`, and the nudge `./policy -> ./sweep`). One access in
 /// the example: 1 x 3. Measured red in the integration run (463 against 460).
-const EDGES: usize = 463;
+///
+/// Moved 463 -> 470 with GH #1229 (R-AG-1, the clocks become watchdogs):
+/// every `session-keeper` three edges more -- two arm events into `./close`
+/// (`./sessions -> ./close` for the stamp's open and for the porter's import
+/// of a generation) and the order `./close -> ./night` -- and `argus` one more
+/// (`./meter -> ./clock`, the order). Two talkies, one keeper each, and one
+/// argus: 2 x 3 + 1 x 1. Measured red in the strand's gate at 468 with two
+/// keeper edges; the import arm of fix round 1 adds 2 x 1.
+const EDGES: usize = 470;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

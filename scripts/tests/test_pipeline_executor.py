@@ -628,7 +628,7 @@ class TestExecutorScheduling(ExecutorCase):
         self.assertEqual(124, end["exit"])
         log = (self.ws / "logs" / "slow.log").read_text()
         self.assertIn("HANG: station slow exceeded 0.02 min", log)
-        self.assertIn("--- process tree (ps -o pid,etime,args --forest) ---", log)
+        self.assertIn(executor.HANG_TREE_HEAD, log)
 
 
 class HangDiagnosis(unittest.TestCase):
@@ -664,8 +664,47 @@ class HangDiagnosis(unittest.TestCase):
         self.assertEqual(40, len(tail.splitlines()), tail)
         self.assertNotIn("line-5\n", tail)
         self.assertIn("line-45\n", tail)
-        tree = text.split("--- process tree (ps -o pid,etime,args --forest) ---\n", 1)[1]
+        tree = text.split(executor.HANG_TREE_HEAD + "\n", 1)[1]
         self.assertIn(self.MARK, tree)
+
+    def test_the_diagnosis_names_state_fds_stack_and_outside_pipe_holders(self):
+        # Fix round 4 v2-r3-kit: three HANG dumps showed a Python stack waiting on a
+        # child and a tree without that child. The diagnosis now names, for every
+        # process of the session, its state and wait channel, its open fds and its
+        # kernel stack, and who OUTSIDE the session holds one of its pipes. A
+        # sleeping fake child (blocked on a pipe whose writer is this test) is the
+        # rendezvous: the event `ready <pid>`, no time.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "hung.log")
+        pathlib.Path(path).write_text("$ a station\n")
+        leader = subprocess.Popen(
+            [sys.executable, "-c",
+             "import subprocess, sys\n"
+             "kid = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()', %r],\n"
+             "                       stdin=sys.stdin)\n"
+             "print('ready', kid.pid, flush=True)\n"
+             "kid.wait()\n" % self.MARK],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(leader.wait)
+        self.addCleanup(leader.stdout.close)
+        self.addCleanup(leader.stdin.close)
+        word, kid = leader.stdout.readline().split()
+        self.assertEqual("ready", word)
+        with open(path, "a", encoding="utf-8") as log:
+            executor.hang_diagnosis({"name": "hung", "timeout_min": 20}, log, leader.pid)
+        text = pathlib.Path(path).read_text()
+        tree = text.split(executor.HANG_TREE_HEAD + "\n", 1)[1]
+        self.assertRegex(tree, r"PID +PPID +STAT +WCHAN")
+        row = [ln for ln in tree.splitlines() if ln.split()[:2] == [kid, str(leader.pid)]]
+        self.assertEqual(1, len(row), tree)
+        self.assertRegex(row[0].split()[2], r"^[DRSTtZI]", row)   # its state, then wchan
+        for pid in (str(leader.pid), kid):
+            fds = text.split("--- fds of %s (ls -l /proc/%s/fd) ---\n" % (pid, pid), 1)[1]
+            self.assertRegex(fds.split("---", 1)[0], r"(?m)^0 -> pipe:\[\d+\]$")
+            self.assertIn("--- kernel stack of %s (/proc/%s/stack) ---\n" % (pid, pid), text)
+        outside = text.split("--- pipes of the session held outside it ---\n", 1)[1]
+        self.assertRegex(outside, r"(?m)^pipe:\[\d+\] .*\bpid %d\b" % os.getpid())
 
 
 class HangDump(unittest.TestCase):
@@ -1877,23 +1916,222 @@ class TestExportCaches(unittest.TestCase):
             rc = self.ett.main([])
         return rc, seen
 
-    def test_export_tree_tests_workdir_is_persistent_per_index_tree(self):
+    # R5 of welle-validierung-2 (GH #1199): ONE target per lane across exports.
+    # A stub export is a dict {path: content}; its git tree id is "<letter>" * 40.
+    # The stub build stamps `target/built` with the newest tree file's mtime (a
+    # build runs after the sync; cargo: stale only when a source is NEWER than
+    # its dep-info); `seen["built"]` is that mtime before the run.
+
+    def _sync(self, work, tree, files, changed=None, fail_extract=False):
+        """One run of the station on the stub export `files`; `changed` is what
+        `changed_paths` answers (default: the diff to the previous stub)."""
+        seen = {"before": {}}
+        prev = getattr(self, "_prev_files", None)
+
+        def extract(_tree, dest):
+            if fail_extract:
+                raise RuntimeError("archive broke")
+            for rel, text in files.items():
+                p = pathlib.Path(dest) / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text)
+
+        def changed_paths(old, new, repo=None):
+            if changed is not None:
+                return changed(old, new)
+            if prev is None:
+                return None
+            return {k for k in set(prev) | set(files) if prev.get(k) != files.get(k)}
+
+        def judge(tree, selection, runner=None, env=None):
+            target = pathlib.Path(env["CARGO_TARGET_DIR"])
+            seen["target"] = target
+            seen["built_before"] = (target / "built").is_file()
+            seen["built"] = (target / "built").stat().st_mtime_ns if seen["built_before"] else None
+            seen["stray_before"] = (pathlib.Path(tree) / "stray.txt").exists()
+            for rel in files:
+                seen["before"][rel] = (pathlib.Path(tree) / rel).stat().st_mtime_ns
+            (pathlib.Path(tree) / "stray.txt").write_text("state\n")
+            for hook in getattr(self, "_after_tests", ()):
+                hook(pathlib.Path(tree))
+            if seen.get("build", True):
+                built = target / "built"
+                built.write_text(tree.name + "\n")
+                ns = max(seen["before"].values())
+                os.utime(built, ns=(ns, ns))
+            return []
+        seen["build"] = getattr(self, "_build", True)
+        m = self.mock
+        with m.patch.dict(os.environ, {"MECLAW_EXPORT_WORKDIR": str(work)}), \
+                m.patch.object(self.ett, "export_index_tree", return_value=("a" * 40, tree)), \
+                m.patch.object(self.ett, "extract_tree", side_effect=extract), \
+                m.patch.object(self.ett, "changed_paths", side_effect=changed_paths), \
+                m.patch.object(self.ett, "select", return_value={"c1": ["t1"]}), \
+                m.patch.object(self.ett, "judge", side_effect=judge), \
+                m.patch.object(self.ett.shutil, "which", return_value="/bin/cargo"):
+            rc = self.ett.main([])
+        if not fail_extract:
+            self._prev_files = files
+        return rc, seen
+
+    def test_export_tree_tests_workdir_is_one_lane_target_across_exports(self):
         work = self.root / "export"
-        rc1, first = self._run_tree_tests({"MECLAW_EXPORT_WORKDIR": str(work)})
-        rc2, second = self._run_tree_tests({"MECLAW_EXPORT_WORKDIR": str(work)})
+        rc1, first = self._sync(work, "c" * 40, {"Cargo.toml": "[workspace]\n", "src/a.rs": "1"})
+        rc2, second = self._sync(work, "d" * 40, {"Cargo.toml": "[workspace]\n", "src/a.rs": "2"})
         self.assertEqual((0, 0), (rc1, rc2))
-        base = work / ("c" * 40)
-        # B-M6: the tree is unpacked fresh on every run -- nothing a test wrote into
-        # it reaches the next run; only the target is kept.
-        self.assertEqual([("c" * 40, base / "tree")], first["extract"])
-        self.assertEqual([("c" * 40, base / "tree")], second["extract"])
+        base = work / self.ett.LANE_DIR
+        self.assertEqual(base / "target", first["target"])
+        self.assertEqual(base / "target", second["target"], "a new export keeps the lane target")
+        self.assertTrue(second["built_before"], "the second export starts from the first build")
+        # B-M6: the tree is unpacked fresh on every run -- nothing a test wrote into it
+        # reaches the next run.
         self.assertFalse(second["stray_before"], "a fresh tree per run")
-        for seen in (first, second):
-            self.assertEqual([(base / "tree", str(base / "target"), True)], seen["judge"])
-        self.assertTrue((base / "tree" / "Cargo.toml").is_file(), "no rmtree after the run")
-        self.assertTrue((base / "target" / "built").is_file(), "the target is kept")
-        # One fixed mtime: the same content never looks newer than its build to cargo.
-        self.assertEqual(self.ett.TREE_MTIME, (base / "tree" / "Cargo.toml").stat().st_mtime)
+        self.assertEqual("d" * 40, (base / "target" / self.ett.STAMP).read_text().split()[0])
+        self.assertEqual([], [p.name for p in work.iterdir() if p.name != self.ett.LANE_DIR],
+                         "no directory per export any more")
+
+    def test_export_tree_tests_changed_file_is_newer_than_its_build(self):
+        """Pin 1: a file the export changed must look newer than the lane's build
+        (cargo: source mtime > dep-info mtime => rebuild). Mutant without the touch:
+        the changed file keeps its old mtime, cargo keeps the stale build -- red."""
+        work = self.root / "export"
+        self._sync(work, "c" * 40, {"Cargo.toml": "[workspace]\n", "src/a.rs": "1"})
+        _rc, second = self._sync(work, "d" * 40, {"Cargo.toml": "[workspace]\n", "src/a.rs": "2",
+                                                 "src/new.rs": "n"})
+        self.assertGreater(second["before"]["src/a.rs"], second["built"], "changed: rebuilt")
+        self.assertGreater(second["before"]["src/new.rs"], second["built"], "added: rebuilt")
+        self.assertLessEqual(second["before"]["Cargo.toml"], second["built"], "unchanged: kept")
+
+    def test_export_tree_tests_unchanged_export_builds_incrementally(self):
+        """Pin 2: what the export did not change keeps an mtime older than the lane's
+        build, on the same export and on a new one -- cargo keeps those units."""
+        work = self.root / "export"
+        files = {"Cargo.toml": "[workspace]\n", "src/a.rs": "1", "src/b.rs": "1"}
+        self._sync(work, "c" * 40, files)
+        _rc, same = self._sync(work, "c" * 40, dict(files))
+        _rc, other = self._sync(work, "d" * 40, dict(files, **{"src/a.rs": "2"}))
+        for rel in files:
+            self.assertLessEqual(same["before"][rel], same["built"], "same export: %s kept" % rel)
+        self.assertLessEqual(other["before"]["src/b.rs"], other["built"], "unchanged file kept")
+        self.assertLessEqual(other["before"]["Cargo.toml"], other["built"], "unchanged file kept")
+
+    def test_export_tree_tests_change_without_a_build_stays_newer(self):
+        """A change a run did not build (not selected, or the run broke) must still
+        look newer on the next export: the kept mtime is the one the last run set,
+        not the fixed one."""
+        work = self.root / "export"
+        self._sync(work, "c" * 40, {"src/a.rs": "1", "src/b.rs": "1"})
+        self._build = False
+        self._sync(work, "d" * 40, {"src/a.rs": "2", "src/b.rs": "1"})
+        self._build = True
+        _rc, third = self._sync(work, "e" * 40, {"src/a.rs": "2", "src/b.rs": "2"})
+        self.assertGreater(third["before"]["src/a.rs"], third["built"], "moved in run 2, unbuilt")
+        self.assertGreater(third["before"]["src/b.rs"], third["built"], "moved in run 3")
+
+    def test_export_tree_tests_test_rewound_mtime_does_not_hide_an_unbuilt_change(self):
+        """M3 (re-check v2-r3-export): a test that rewrites a tracked source with an
+        older mtime (`copy2`, `utime`) must not hide a change the run did not build.
+        The kept mtime is the one the sync SET, carried in the stamp -- not the one
+        the tree holds after the tests. Mutant (old behaviour: read the mtime from
+        the previous tree): the rewound file looks older than the build -- red."""
+        work = self.root / "export"
+        self._sync(work, "c" * 40, {"src/a.rs": "1", "src/b.rs": "1"})
+
+        def rewind(tree):
+            os.utime(tree / "src" / "a.rs", ns=(1, 1))
+        self._build, self._after_tests = False, (rewind,)
+        self._sync(work, "d" * 40, {"src/a.rs": "2", "src/b.rs": "1"})
+        self._build, self._after_tests = True, ()
+        _rc, third = self._sync(work, "e" * 40, {"src/a.rs": "2", "src/b.rs": "2"})
+        self.assertGreater(third["before"]["src/a.rs"], third["built"],
+                           "moved in run 2, unbuilt, rewound by a test")
+        self.assertGreater(third["before"]["src/b.rs"], third["built"], "moved in run 3")
+
+    def _foreign_stamp(self, work, tree, files, build=False):
+        """A writer that syncs `files` and rewrites the stamp in the old form
+        (tree only) but leaves the mtime record alone -- the pre-fix code of this
+        strand on the same lane. `build`: it also builds (target newer than all)."""
+        target = work / self.ett.LANE_DIR / "target"
+        (target / self.ett.STAMP).write_text(tree + "\n")
+        if build:
+            ns = (target / "built").stat().st_mtime_ns + 1  # after every mtime the sync set
+            (target / "built").write_text("foreign\n")
+            os.utime(target / "built", ns=(ns, ns))
+        self._prev_files = files
+
+    def test_export_tree_tests_foreign_mtime_record_touches_everything(self):
+        """Minor 1 (re-check 8618835b9): the mtime record is bound to the stamp
+        (tree sha + stamp id). A record that belongs to another stamp is foreign,
+        dropped, and every file gets a fresh mtime. Mutant (old behaviour, record
+        unbound): export A's mtimes under the stamp of an unbuilt B pass A's build
+        as fresh for a path B changed -- red."""
+        work = self.root / "export"
+        self._sync(work, "c" * 40, {"src/a.rs": "1", "src/b.rs": "1"})
+        self._foreign_stamp(work, "d" * 40, {"src/a.rs": "2", "src/b.rs": "1"})
+        _rc, third = self._sync(work, "e" * 40, {"src/a.rs": "2", "src/b.rs": "2"})
+        self.assertGreater(third["before"]["src/a.rs"], third["built"],
+                           "moved under a foreign stamp, unbuilt")
+        self.assertTrue(all(ns > third["built"] for ns in third["before"].values()), third)
+        record = json.loads((work / self.ett.LANE_DIR / "target" / self.ett.MTIMES).read_text())
+        stamp = (work / self.ett.LANE_DIR / "target" / self.ett.STAMP).read_text().split()
+        self.assertEqual(["e" * 40, record["stamp"]], stamp, "the record names its stamp")
+        self.assertEqual("e" * 40, record["tree"])
+
+    def test_export_tree_tests_same_tree_foreign_stamp_touches_everything(self):
+        """The tree sha alone does not bind: a foreign writer that built another
+        export and then re-stamped the SAME tree leaves a record whose tree
+        matches, but whose mtimes are older than the foreign build. The stamp id
+        tells them apart. Mutant (tree sha only): the foreign build looks fresh."""
+        work = self.root / "export"
+        files = {"src/a.rs": "1", "src/b.rs": "1"}
+        self._sync(work, "c" * 40, files)
+        self._foreign_stamp(work, "c" * 40, dict(files), build=True)
+        _rc, third = self._sync(work, "e" * 40, dict(files, **{"src/b.rs": "2"}))
+        self.assertGreater(third["before"]["src/a.rs"], third["built"],
+                           "a foreign build since the record: no kept mtime")
+
+    def test_export_tree_tests_unknown_history_touches_everything(self):
+        """Fail-closed: no stamp, an unreadable diff, or a sync that broke halfway --
+        every file looks newer than the build, the lane target rebuilds the tree."""
+        work = self.root / "export"
+        files = {"src/a.rs": "1", "src/b.rs": "1"}
+        self._sync(work, "c" * 40, files)
+        _rc, unknown = self._sync(work, "d" * 40, files, changed=lambda old, new: None)
+        self.assertTrue(all(ns > unknown["built"] for ns in unknown["before"].values()), unknown)
+        self._sync(work, "e" * 40, files)
+        rc, _ = self._sync(work, "f" * 40, files, fail_extract=True)
+        self.assertEqual(2, rc)
+        self.assertFalse((work / self.ett.LANE_DIR / "target" / self.ett.STAMP).exists(),
+                         "a half-synced tree carries no stamp")
+        _rc, after = self._sync(work, "f" * 40, files, changed=lambda old, new: set())
+        self.assertTrue(all(ns > after["built"] for ns in after["before"].values()), after)
+
+    def test_export_changed_paths_reads_the_git_trees(self):
+        repo = self.root / "repo"
+        repo.mkdir()
+
+        def git(*a):
+            return subprocess.run(["git", "-C", str(repo), *a], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git("init", "-q")
+        (repo / "keep.rs").write_text("k")
+        (repo / "edit.rs").write_text("1")
+        (repo / "gone.rs").write_text("g")
+        (repo / "run.sh").write_text("x")
+        git("add", "-A")
+        old = git("write-tree")
+        (repo / "edit.rs").write_text("2")
+        (repo / "gone.rs").unlink()
+        (repo / "sub").mkdir()
+        (repo / "sub" / "new.rs").write_text("n")
+        (repo / "run.sh").chmod(0o755)
+        git("add", "-A")
+        new = git("write-tree")
+        self.assertEqual({"edit.rs", "gone.rs", "sub/new.rs", "run.sh"},
+                         self.ett.changed_paths(old, new, repo=repo))
+        self.assertEqual(set(), self.ett.changed_paths(new, new, repo=repo))
+        self.assertIsNone(self.ett.changed_paths("0" * 40, new, repo=repo))
+        self.assertIsNone(self.ett.changed_paths("", new, repo=repo))
 
     def test_export_tree_tests_without_workdir_stays_temporary(self):
         env = {k: v for k, v in os.environ.items() if k != "MECLAW_EXPORT_WORKDIR"}
@@ -2638,6 +2876,30 @@ class TestBrowserBooking(BrowserLane):
         rc, evs = self.run_exec(d)
         self.assertEqual("GREEN", self.ended(evs)["browser:display"]["verdict"], self.err_text)
         self.assertEqual(["b=1", "p="], sorted(seen.read_text().split()))
+
+    def test_a_run_that_books_no_engine_never_probes_the_browsers(self):
+        """#1199 K14 (16.10.: all four lanes, five hand fixes): a docs-only run, a
+        satellite or a plan without a browser station probed the browsers of ITS tree
+        and the register took the answer -- a tree without `workshop/tools` said
+        "refused" over a lane whose engines start. Only a run that checks the
+        browsers measures them; the fingerprint of any other run says nothing."""
+        calls = []
+
+        def probe(tree, env):
+            calls.append(tree)
+            return {"chromium": "ok", "webkit": "ok"}
+
+        with mock.patch.object(executor, "browser_probe", side_effect=probe):
+            rc, evs = self.run_exec(self.dispatch([station("docs", "true")]))
+            fp = [e["data"] for e in evs if e["event"] == "lane_fingerprint"]
+            self.assertEqual(0, rc, self.err_text)
+            self.assertEqual([], calls)
+            self.assertEqual(1, len(fp))
+            self.assertNotIn("browsers", fp[0])
+            rc, evs = self.run_exec(self.dispatch(self.booked()))
+            fp = [e["data"] for e in evs if e["event"] == "lane_fingerprint"]
+            self.assertEqual(1, len(calls))
+            self.assertEqual({"chromium": "ok", "webkit": "ok"}, fp[0]["browsers"])
 
 
 class TestNeedsField(unittest.TestCase):

@@ -759,7 +759,10 @@ applied, and the receipt says at which position it stopped. The audit carries on
 ```
 
 `failed_at` is 1-based, because an operator counts entries and not indices. `remaining` is the
-number of entries never looked at, and `id` is the refused entry's mutation id if it got one. No new
+number of entries never looked at, and `id` is the refused entry's mutation id if it got one.
+`failed_at: 0` means the door refused the manifest as a whole before its first entry (today only
+`sender_out_of_scope`): nothing was applied, `remaining` counts every entry, and `details` names the
+refused entry's position. No new
 `error_code` is minted: the slot carries the refusing entry's own code, and a form-broken manifest
 is `schema`. HTTP mapping is as for the single form: `committed` gives 200, `rejected` gives 422.
 
@@ -887,7 +890,7 @@ The error message to `reply_to`, if set, carries:
 
 `error_code` is an enum: `schema` | `match_no_hit` | `naming_collision` | `cycle` | `edge_schema` |
 `template_missing` | `env_var_missing` | `unsupported_substitution` | `ctx_key_missing` |
-`scope_out_of_bounds` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` |
+`scope_out_of_bounds` | `sender_out_of_scope` | `unknown_cell_type` | `stop_wiring_unavailable` | `term_timeout` |
 `resume_requires_stopped_cell` | `subtree_resume_unsupported` | `resume_type_mismatch` |
 `contract_incomplete` | `invalid_params` | `hive_port_boundary` | `hive_contract` |
 `required_drain_missing` | `template_ref_cycle` | `requirement_missing` | `invalid_template_name` |
@@ -912,6 +915,11 @@ a future code. Notes on the substrate codes:
 - `scope_out_of_bounds`: a top-level diff path (`add_nodes[].name`, `*_edges[].from`/`.to`,
   `match.name`) resolves outside the mutation `scope`. Checked before any filesystem or registry
   mutation; emitted by `validate_scope_containment` (`mutation/validate.rs`).
+- `sender_out_of_scope`: the sender of a mutation emission holds no edge to `/colony/mutations`,
+  and the mutation's `scope` (for a manifest, an entry's) lies outside its home hive, the nearest
+  hive that holds it (GH #1231). Checked before the door, spurless (no mutation id), for a manifest
+  over every entry before any is applied (receipt `failed_at: 0`); emitted by
+  `validate_sender_scope` (`mutation/validate.rs`).
 - `unknown_cell_type`: `add_nodes` or `swap_nodes` references a cell type without a registered
   factory.
 - `stop_wiring_unavailable`: disconnect or swap of a cell whose stop wiring is not restorable after
@@ -1055,7 +1063,11 @@ in this phase, so `expected_version` and its relatives are absent; colony's sequ
 processing serialises concurrent mutations by itself. It can be retrofitted additively.
 
 meclaw has no permission layer either. That is a boundary, not a backlog item (ruling 2026-08-19).
-Whoever can deliver a mutation message to `/colony/mutations` routing-wise can mutate. Permission is
+The right is topology (GH #1231, ruling R-ZH-2): a drawn edge from the sender to
+`/colony/mutations` is the right to mutate anywhere. Without that edge a sender mutates only in its
+own hive subtree, below the nearest hive that holds it (a sender with no hive above it has `/`); a
+`scope` outside is refused with `sender_out_of_scope`. The HTTP door and `--apply` have no sender
+and are the root. Permission is
 a topology question, not an identity check, and the `mutate-graph` capability in the cell contract
 is a discovery hint for the builder composer and audit tools rather than a runtime check.
 Authentication belongs to a reverse proxy in front of this substrate; meclaw knows no identities, it
@@ -1229,22 +1241,21 @@ in the body:
 
 - `/colony/mutations` takes top-level `{ scope, diff, ctx }`: the mutation diff plus the `scope`
   plus an optional `ctx` substitution context. It is the only writable EDA endpoint.
-- `/colony/registry`, `/colony/templates`, `/colony/graph`, `/colony/trace` and `/colony/ledger`
+- `/colony/registry`, `/colony/templates`, `/colony/graph` and `/colony/ledger`
   take top-level `{ query: { … } }`, whose fields correspond to the HTTP query parameters of the
   endpoint (`registry`: `path`/`path_prefix`/`cell_type`/`active`/`limit`/`tag`; `templates`:
-  `cell_type`/`name`/`limit`; `trace`:
-  `trace_id`/`path_prefix`/`correlation_id`/`only_error`/`since`/`limit`; `graph`: `scope`/`tag`;
+  `cell_type`/`name`/`limit`; `graph`: `scope`/`tag`;
   `ledger`: `since`/`until`/`path_prefix`/`cycle_id`/`group_by`/`tag`/`scan_budget`). If `query` or
   a single field is missing, the defaults apply (`limit` default 100, hard cap 1000; on the `ledger`
   `since` defaults to `now - 3600`, `until` to `now`, `scan_budget` to 50000). The read reply goes
   to the sender path.
-  At all five reads a filter that arrives is never silently dropped (GH #341, GH #359). If a field
+  At all four reads a filter that arrives is never silently dropped (GH #341, GH #359). If a field
   is present but unreadable, the endpoint answers with an error instead of the unfiltered holdings:
   `{"<slot>": {"status": "error", "error_code": "invalid_query", "details": "…"}}`, with no result
   list. Unreadable means `query` not an object,
   `scope`/`path`/`path_prefix`/`cell_type`/`name`/`group_by`/`tag`/`cycle_id` not a string,
-  `active`/`only_error` not a boolean, `since`/`until`/`limit`/`scan_budget` not a number,
-  `trace_id`/`correlation_id` not a valid UUID, `group_by` other than a declared value (`model`,
+  `active` not a boolean, `since`/`until`/`limit`/`scan_budget` not a number,
+  `group_by` other than a declared value (`model`,
   `path`, `error_code`), or `cycle_id` longer than 64 characters. A field that is missing or `null`
   still means the documented default. Clamping applies only within the valid values: a `limit` that
   is a non-negative integer stays clamped to 1 through 1000, and a `scan_budget` that is one stays
@@ -1285,7 +1296,7 @@ Endpoint classification for cell emissions (W2d ruling 2026-06-12): the outputs 
 
 - `/colony/mutations` is EDA-writable. A cell-emitted mutation is executed. It is the only writable
   dispatch endpoint.
-- `/colony/registry`, `/colony/templates`, `/colony/graph`, `/colony/trace` and `/colony/ledger` are
+- `/colony/registry`, `/colony/templates`, `/colony/graph` and `/colony/ledger` are
   read-only and EDA-readable. A cell may read them via emission, with the reply going to its path.
 - `/colony/dead_letters` is read-only and NOT EDA-dispatchable. The DLQ is read and drained
   exclusively via the dedicated inbox variants `ColonyMsg::ReadDeadLetters`/`DrainDeadLetters` (HTTP
@@ -1299,6 +1310,10 @@ Endpoint classification for cell emissions (W2d ruling 2026-06-12): the outputs 
   endpoints.~~ Retracted in half (GH #267, ruling Q14 of 2026-08-21): the line runs between raw rows
   and counts, so `/colony/messages` stays non-dispatchable because it hands out header content,
   while aggregates over the same log are EDA-readable at `/colony/ledger`.
+- `/colony/trace` is read-only and NOT EDA-dispatchable (GH #1231): the trace hands out
+  the raw message-log rows of every cell, foreign state, the same class as `/colony/messages`. An
+  emission there is hard-rejected like one to `dead_letters` (`colony_endpoint_unimplemented`,
+  sender pass-through, no reply). The trace is read over HTTP `GET /colony/trace` or `meclaw ask`.
 - An unknown `/colony/<x>` gives `colony_endpoint_unimplemented`.
 
 What the `ledger` sums, and along which axis (GH #463): the endpoint sums exactly what is in the hop
@@ -1843,7 +1858,10 @@ downstream registry lookup answers. `route()` therefore has exactly one error so
 When a resolved path does not exist in colony's registry (a cell removed by mutation, a subtree
 never instantiated, a typo):
 
-1. If `reply_to` is set, an error message goes back to `reply_to`.
+1. If `reply_to` is set, an error message goes back to `reply_to`, in the substrate's canonical
+   error shape (GH #1230): `hop.finish_reason: "error"`, `hop.error_code: "unresolved_path"` and
+   one text turn naming the resolved target; `context` travels unchanged. The error message
+   carries no `reply_to` of its own, so if its route fails it lands in the queue.
 2. If `reply_to` is `None`, the message goes to `/colony/dead_letters`.
 3. Colony logs with `trace_id`, resolved path, original target and reason.
 
@@ -2181,10 +2199,16 @@ the mutation flow, and the mutation vocabulary has no verb for it.
 `open_or_create_cell_db_with_status` returns `(Connection, OpenStatus)` with `OpenStatus::Created |
 Resumed`. `Created` is the seed trigger for `store` (the factory calls `load_seed_if_present`
 exclusively on `Created`, otherwise it would duplicate rows). `Resumed` means an existing `cell.db`
-was reopened, with no re-initialisation. On an FS-IO error, DB corruption or a permissions problem
-`open_or_create_cell_db` panics: the factory closure does `.expect(...)`, so an initial spawn is a
-bootstrap or mutation error, and a restart runs the supervisor loop until `restart_limit` and then
-marks the cell `failed`.
+was reopened, with no re-initialisation. The open also checks the file's `schema_version` and
+refuses a foreign one. The colony reads no `cell.db` at boot (GH #1231, `--validate` neither): each
+cell checks its own in `spawn_cell` through `check_own_cell_db`, and an unusable file (FS-IO error,
+no database, foreign version, permissions problem) makes `spawn_cell` an `Err`. The cell is `failed`
+as soon as it opens its database: at boot for an awake cell, on wake for a sleeping one. A
+boot-inactive cell opens its file only when a reconnect starts it; there `wake_checked_respawn`
+checks it with the same helper, writes a WARN line and reports the cell `failed`. The boot goes on;
+at a mutation it is a refusal. Only a later restart
+opens the file in the factory closure behind `.expect(...)`: it runs the supervisor loop until
+`restart_limit` and then marks the cell `failed`.
 
 Canonical ordering at panic hooks and backstop cancellation:
 

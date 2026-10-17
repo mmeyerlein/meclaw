@@ -381,8 +381,36 @@ fn a_tier0_request_asks_the_store_as_deep_as_its_window() {
         }
         out
     };
-    assert_eq!(limits(""), vec![json!(12), json!(20), json!(10)]);
-    assert_eq!(limits("250000"), vec![json!(75), json!(125), json!(63)]);
+    // GH #1225: the live mutes ride the same message after the three legs
+    // (`lift_marks`, close-glue's page 512); OR-KF-46: the session's turns are
+    // the episodes leg's own read, as deep as the lift reads (`lift_turns`,
+    // 512), so the leg's window shows where the lift reads less
+    assert_eq!(
+        limits(""),
+        vec![json!(512), json!(20), json!(10), json!(512)]
+    );
+    assert_eq!(
+        limits("250000"),
+        vec![json!(512), json!(125), json!(63), json!(512)]
+    );
+    let narrow = |soft: &str| -> Vec<Value> {
+        let mut d = doc(soft);
+        d["params"] = json!({"lift_turns": 8, "lift_marks": 8});
+        ops(&recall(&d))
+            .into_iter()
+            .filter(|op| {
+                op["operation"] == "select"
+                    && ["episodes", "beliefs", "facts"]
+                        .contains(&op["table"].as_str().unwrap_or(""))
+            })
+            .map(|op| op["limit"].clone())
+            .collect()
+    };
+    assert_eq!(narrow(""), vec![json!(12), json!(20), json!(10), json!(8)]);
+    assert_eq!(
+        narrow("250000"),
+        vec![json!(75), json!(125), json!(63), json!(8)]
+    );
 }
 
 // ============================================== 4. the graph leg's cuts said

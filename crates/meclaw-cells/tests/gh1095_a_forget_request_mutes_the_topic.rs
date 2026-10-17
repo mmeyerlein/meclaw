@@ -39,6 +39,10 @@
 //!   keeps its mute; a request not muted says why (`mute_skipped`).
 //!   The sentences of these locks are language data in
 //!   `fixtures/mute_<code>.jsonl`, every case in every language.
+//! - OR-KF-48: a mark from before the speaker rode on it, whose request turn
+//!   lies beyond the pass, is lifted only after the pass read that turn once;
+//!   the drivers here answer that read like the store (`close_pass`), so the
+//!   lift locks above run the cold path, not past it.
 
 #[path = "support/memory_hive_subject.rs"]
 mod support;
@@ -56,6 +60,9 @@ const MUTE_EN: &str = include_str!("fixtures/mute_en.jsonl");
 const MUTE_DE: &str = include_str!("fixtures/mute_de.jsonl");
 const AUDIENCE: &str = r#"["agent:a","member:e"]"#;
 const MARK: &str = "forget_request:r1";
+/// OR-KF-48: `MARK` as the pass rewrites it once it read who asked (`r1`,
+/// said by the member, `turn`).
+const MARK_E: &str = "forget_request:r1@member:e";
 const ASKED: &str = "2026-02-10T09:00:00Z";
 const REQUEST: &str = "Please forget what I told you about the money my neighbour owes me.";
 
@@ -114,14 +121,83 @@ fn parked(kind: &str, rows: Value) -> Value {
 
 /// One close pass over `turns`, with the mutes the meeting read parked.
 fn close(turns: Vec<Value>, mutes: Value) -> Vec<Value> {
-    let rows = json!([
-        parked("turns", Value::Array(turns)), parked("facts", json!([])),
-        parked("topics", json!([])), parked("exceptions", json!([])),
-        parked("mutes", mutes),
+    close_pass(turns, mutes).1
+}
+
+/// One close pass over `turns` from its prompt: OR-KF-48, where a mark without
+/// its speaker lies beyond the window, the prompt reads its request turn once
+/// (`prompt-asks`, answered as the store would: every request turn of this
+/// file is the member's, `turn`), parks the mutes as resolved (`prompt-asked`)
+/// and the apply runs over that parking. (every message of the read, the apply)
+fn close_pass(turns: Vec<Value>, mutes: Value) -> (Vec<Value>, Vec<Value>) {
+    let meeting = |mutes: &Value| {
+        vec![
+            parked("turns", Value::Array(turns.clone())),
+            parked("facts", json!([])),
+            parked("topics", json!([])),
+            parked("exceptions", json!([])),
+            parked("mutes", mutes.clone()),
+        ]
+    };
+    let mut mutes = mutes;
+    let mut read = Vec::new();
+    let mut out = back("prompt", "select", Value::Array(meeting(&mutes)));
+    while let Some(call) = out
+        .iter()
+        .find(|m| {
+            m["header"]["route"] == "cstore"
+                && matches!(
+                    m["header"]["phase"].as_str(),
+                    Some("prompt-asks" | "prompt-asked")
+                )
+        })
+        .cloned()
+    {
+        assert!(read.len() < 8, "the read ran away: {read:?}");
+        read.extend(out.iter().cloned());
+        let phase = call["header"]["phase"].as_str().expect("phase").to_string();
+        let mut legs: Vec<(String, Value)> = Vec::new();
+        for x in call["messages"].as_array().expect("calls") {
+            let id = x["id"].as_str().expect("id").to_string();
+            let op: Value = serde_json::from_str(x["text"].as_str().expect("op")).expect("op");
+            if id == "c-park-mutes" {
+                let parcel: Value =
+                    serde_json::from_str(op["row"]["payload"].as_str().expect("payload"))
+                        .expect("parcel");
+                mutes = parcel["rows"].clone();
+            }
+            legs.push((id, op));
+        }
+        let answers: Vec<(String, Value)> = legs
+            .iter()
+            .map(|(id, op)| {
+                let rows = match id.as_str() {
+                    "c-meet" => Value::Array(meeting(&mutes)),
+                    "c-mute-up-asks" => Value::Array(
+                        op["where"]["id"]["in"]
+                            .as_array()
+                            .expect("the request turns")
+                            .iter()
+                            .map(|r| turn(r.as_str().expect("id"), "user", REQUEST, ASKED))
+                            .collect(),
+                    ),
+                    _ => json!([]),
+                };
+                (id.clone(), rows)
+            })
+            .collect();
+        let legs: Vec<(&str, Value)> = answers
+            .iter()
+            .map(|(id, rows)| (id.as_str(), rows.clone()))
+            .collect();
+        out = back_bundle(&phase, &legs);
+    }
+    let mut rows = meeting(&mutes);
+    rows.push(json!(
         {"key": "close:s-2", "kind": "verdict", "created_at": "2026-01-01T00:00:00Z",
-         "payload": json!({"nothing_to_add": true, "forget": [], "close_group": 0}).to_string()}
-    ]);
-    emit_all(
+         "payload": json!({"nothing_to_add": true, "forget": [], "close_group": 0}).to_string()}));
+    let rows = Value::Array(rows);
+    let applied = emit_all(
         &shipped_script(CLOSE),
         &json!({
             "params": config(CLOSE)["params"].clone(),
@@ -130,7 +206,8 @@ fn close(turns: Vec<Value>, mutes: Value) -> Vec<Value> {
                        "hop": {"operation": "select"}},
             "messages": [{"origin": "tool", "type": "tool_result", "text": rows.to_string()}]
         }),
-    )
+    );
+    (read, applied)
 }
 
 fn back(phase: &str, op: &str, rows: Value) -> Vec<Value> {
@@ -210,7 +287,7 @@ fn a_request_mutes_and_never_closes() {
     assert_eq!(searches.len(), 4, "{searches:?}");
     for (phase, op) in &searches {
         assert!(
-            phase.ends_with(&format!("|r1|{ASKED}|money,neighbour,owes")),
+            phase.ends_with(&format!("|r1|{ASKED}|money,neighbour,owes|member:e")),
             "{phase}"
         );
         assert!(op.get("limit").is_none(), "a mute may be broad: {op}");
@@ -280,11 +357,21 @@ fn the_store_declares_the_mute_on_every_row_a_request_reaches() {
 fn gate(phase: &str, query: &str, rows: Value) -> String {
     let script = shipped_script(RECALL);
     let program = format!(
-        "import re, json\nphase = {}\nquery = {}\nctx = {{'recall_query': query}}\ndef visible(a, c):\n    return True\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\nprint(json.dumps([visible_row(r) for r in json.loads({})]))",
+        "import re, json\nP = json.loads({})\nphase = {}\nquery = {}\nctx = {{'recall_query': query}}\ndef visible(a, c):\n    return True\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\nprint(json.dumps([visible_row(r) for r in json.loads({})]))",
+        serde_json::to_string(
+            &json!({"question_words": config(RECALL)["params"]["question_words"].clone()})
+                .to_string()
+        )
+        .expect("params"),
         serde_json::to_string(phase).expect("phase"),
         serde_json::to_string(query).expect("query"),
+        block_of(&script, "def _knob"),
+        block_of(&script, "def _data"),
+        block_of(&script, "QUESTION_WORDS"),
+        block_of(&script, "def is_question"),
         block_of(&script, "FORGET_SOURCE"),
         block_of(&script, "def forgotten"),
+        block_of(&script, "LIFTED"),
         block_of(&script, "def muted"),
         block_of(&script, "def words_of"),
         block_of(&script, "PUSH_PREFIX"),
@@ -480,7 +567,9 @@ fn the_member_taking_the_topic_up_again_lifts_the_mute() {
     assert_eq!(tables, ["episodes", "facts", "beliefs"], "{lifted:?}");
     for op in &lifted {
         assert_eq!(op["operation"], "update");
-        assert_eq!(op["where"]["mute_source"], MARK);
+        // OR-KF-48: the pass read who asked and rewrote the mark; its lift
+        // reaches the rows in either form, the rewrite landed or not
+        assert_eq!(op["where"]["mute_source"], json!({"in": [MARK_E, MARK]}));
         assert_eq!(
             op["set"]
                 .as_object()
@@ -771,7 +860,7 @@ fn every_op_of_the_mute_chain_is_one_the_store_runs() {
         "select",
         json!([{"id": "f-owes"}]),
     )));
-    ops.extend(tool_calls(&close(
+    let (read, applied) = close_pass(
         vec![turn(
             "t1",
             "user",
@@ -779,14 +868,24 @@ fn every_op_of_the_mute_chain_is_one_the_store_runs() {
             "2026-03-01T09:00:00Z",
         )],
         stored_mute(),
-    )));
+    );
+    ops.extend(tool_calls(&read));
+    ops.extend(tool_calls(&applied));
     ops.extend(tool_calls(&exceptions_answer(json!([
         {"id": "r1", "closure_source": MARK, "content": REQUEST,
          "happened_at": ASKED, "closed_at": "2026-02-10T10:00:00Z"}
     ]))));
     ops.extend(tool_calls(&back_bundle("meet", &[])));
     let phases: Vec<&str> = ops.iter().map(|(p, _)| p.as_str()).collect();
-    for want in ["exceptions", "meet", "unmuted", "muted", "prompt"] {
+    for want in [
+        "exceptions",
+        "meet",
+        "unmuted",
+        "muted",
+        "prompt",
+        "prompt-asks",
+        "prompt-asked",
+    ] {
         assert!(phases.contains(&want), "no `{want}` op: {phases:?}");
     }
     for (phase, op) in &ops {
@@ -858,7 +957,7 @@ fn keeping_a_topic_aside_is_no_taking_it_up() {
         if s(&c, "asks").is_empty() {
             assert!(own.is_empty(), "{text}: {own:?}");
         } else {
-            let tail = format!("|{}", s(&c, "asks").replace(' ', ","));
+            let tail = format!("|{}|member:e", s(&c, "asks").replace(' ', ","));
             assert!(
                 !own.is_empty() && own.iter().all(|p| p.ends_with(&tail)),
                 "{text}: its own request: {own:?}"
@@ -1358,9 +1457,13 @@ fn a_backfilled_mute_lifts_through_the_real_store() {
         .expect("fact");
     }
 
-    // The pass from its first read to the meeting, every op through the store.
+    // The pass from its first read to the meeting, every op through the store
+    // -- OR-KF-48 included: the request lies in an older session, so the
+    // prompt reads who asked once (`prompt-asks`), the pass rewrites the mark
+    // and meets again (`prompt-asked`) over the mutes parked as resolved.
     let mut out = back("window", "insert", json!([]));
     let mut meeting = None;
+    let mut asks = Vec::new();
     for _ in 0..32 {
         let Some(m) = out
             .iter()
@@ -1383,8 +1486,36 @@ fn a_backfilled_mute_lifts_through_the_real_store() {
             .collect();
         let answers: Vec<(String, Value)> =
             calls.iter().map(|(id, op)| (id.clone(), run(op))).collect();
-        if phase == "prompt" {
-            meeting = Some(answers[0].1.clone());
+        asks.extend(
+            calls
+                .iter()
+                .filter(|(id, _)| id == "c-mute-up-asks")
+                .map(|(_, op)| op.clone()),
+        );
+        if phase == "prompt" || phase == "prompt-asked" {
+            let rows = answers
+                .iter()
+                .find(|(id, _)| phase == "prompt" || id == "c-meet")
+                .expect("the meeting")
+                .1
+                .clone();
+            let next = if phase == "prompt" {
+                back(&phase, "select", rows.clone())
+            } else {
+                let legs: Vec<(&str, Value)> = answers
+                    .iter()
+                    .map(|(id, rows)| (id.as_str(), rows.clone()))
+                    .collect();
+                back_bundle(&phase, &legs)
+            };
+            if next
+                .iter()
+                .any(|m| m["header"]["route"] == "cstore" && m["header"]["phase"] == "prompt-asks")
+            {
+                out = next;
+                continue;
+            }
+            meeting = Some(rows);
             break;
         }
         out = if calls.len() > 1 || phase == "exceptions" || phase == "meet" {
@@ -1402,6 +1533,22 @@ fn a_backfilled_mute_lifts_through_the_real_store() {
         };
     }
     let mut rows = meeting.expect("the pass reached its meeting");
+    assert_eq!(asks.len(), 1, "who asked is read once: {asks:?}");
+    assert_eq!(
+        asks[0]["where"]["id"],
+        json!({"in": ["req-debt"]}),
+        "{asks:?}"
+    );
+    for table in ["episodes", "facts"] {
+        let old: i64 = conn
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE mute_source = ?1"),
+                [LIFT_MARK],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(old, 0, "{table}: the mark is rewritten with its speaker");
+    }
     let parked_mutes = rows
         .as_array()
         .expect("rows")

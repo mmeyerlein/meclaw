@@ -3432,6 +3432,16 @@ class TestShell(unittest.TestCase):
             self.assertEqual(["legacy"] + argv, self.calls()[-1], argv)
         self.assertNotIn("pipeline", [c[0] for c in self.calls()])
 
+    def test_the_mode_flag_anywhere_goes_to_the_pipeline(self):
+        # #1199 K13: `--mode <m>` is the positional form; without a leading mode
+        # word the shell sent it to the old runner, which refused "--repo" as a mode
+        for argv in (["--repo", "/r", "--mode", "strand", "--plan-only"],
+                     ["--mode=integration", "--strand", "s"]):
+            res = self.shell(*argv)
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertEqual(["pipeline", "gate"] + argv, self.calls()[-1], argv)
+        self.assertNotIn("legacy", [c[0] for c in self.calls()])
+
 
     def cwds(self):
         path = pathlib.Path(str(self.record) + ".cwd")
@@ -3488,6 +3498,120 @@ def setUpModule():
 
 def tearDownModule():
     store_isolation.restore()
+
+
+# The kit's shell entry points (GH #1223): every executable shell file of the
+# kit's three public shell globs (`gate_plan.SHELL_GLOBS[:SHELL_GLOBS_PUBLIC]`).
+# A file without the executable bit is a library the kit sources -- `source`
+# reads a file whole before it runs a line of it.
+ENTRY_GLOBS = ("scripts/*.sh", ".github/gates/*.sh", "scripts/pipeline/*.sh")
+ENTRY_OPEN = "{"
+ENTRY_CLOSE = "}; exit $?"
+
+
+def kit_entries(root=REPO):
+    """The kit's shell entry points under `root`, sorted by path."""
+    found = set()
+    for pattern in ENTRY_GLOBS:
+        for path in root.glob(pattern):
+            if path.is_file() and os.stat(path).st_mode & 0o111:
+                found.add(path)
+    return sorted(found)
+
+
+def entry_body_line(lines):
+    """The index of the first line that is neither the shebang, blank nor a comment."""
+    for i, line in enumerate(lines):
+        if i == 0 and line.startswith("#!"):
+            continue
+        if line.strip() and not line.lstrip().startswith("#"):
+            return i
+    return len(lines)
+
+
+class TestEntryParsedWhole(unittest.TestCase):
+    """GH #1223: a kit entry point is parsed whole before its first command runs.
+
+    bash and sh read a script while they run it; a file edited in place under a
+    running shell (truncate + write, same inode: the agents' edit tool, editors)
+    moved the bytes under the read offset, and `strand.sh` of a strand gate ended
+    with `syntax error: unexpected end of file`. The form that holds: the body is
+    one brace group, `{` before the first command, `}; exit $?` as the last line --
+    the shell parses the whole group before it runs it and never reads the file
+    again. One case checks the form of every entry, one runs every entry, edits it
+    in place during a pause and holds that the old content runs to its end.
+    """
+
+    def test_every_entry_is_one_group_with_exit_on_its_last_line(self):
+        entries = kit_entries()
+        self.assertIn(REPO / "scripts" / "strand.sh", entries)
+        bad = []
+        for path in entries:
+            text = path.read_text(encoding="utf-8")
+            lines = text.split("\n")
+            if not text.endswith("\n") or lines[-2] != ENTRY_CLOSE:
+                bad.append("%s: last line is not %r" % (path.relative_to(REPO), ENTRY_CLOSE))
+            i = entry_body_line(lines)
+            if i >= len(lines) or lines[i] != ENTRY_OPEN:
+                bad.append("%s: first command line is not %r" % (path.relative_to(REPO), ENTRY_OPEN))
+        self.assertEqual([], bad)
+
+    def _paused(self, text):
+        """`text` with a pause before its first command: inside the group when the
+        file has one. The pause is an external program (`head`): a shell syncs its
+        read offset on every fork, the shape of the gate's long runs."""
+        lines = text.split("\n")
+        i = entry_body_line(lines)
+        if i < len(lines) and lines[i] == ENTRY_OPEN:
+            i += 1
+        pause = ["echo paused", "head -n 1 >/dev/null", "echo old-ran", "exit 0"]
+        return "\n".join(lines[:i] + pause + lines[i:])
+
+    def _run_edited(self, path, text):
+        """Run `text` (a copy of `path`) with its own interpreter, edit the file in
+        place during the pause, release the pause; the finished process."""
+        tmp = pathlib.Path(self._tmp.name)
+        copy = tmp / path.name
+        copy.write_text(self._paused(text), encoding="utf-8")
+        copy.chmod(0o755)
+        proc = subprocess.Popen([str(copy)], cwd=str(tmp), stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            first = proc.stdout.readline()
+            if first == "paused\n":
+                size = copy.stat().st_size
+                with open(copy, "r+", encoding="utf-8") as fh:   # in place: same inode
+                    fh.truncate(0)
+                    fh.write("echo edited; exit 9\n" * (size // 20 + 64))
+            out, err = proc.communicate("go\n", timeout=kit_time.HANG)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        return first, proc.returncode, out, err
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_an_entry_edited_in_place_while_it_runs_runs_its_old_content_to_the_end(self):
+        for path in kit_entries():
+            with self.subTest(entry=str(path.relative_to(REPO))):
+                first, rc, out, err = self._run_edited(path, path.read_text(encoding="utf-8"))
+                self.assertEqual("paused\n", first, err)
+                self.assertEqual((0, "old-ran\n", ""), (rc, out, err))
+
+    def test_without_the_group_the_same_edit_runs_the_new_bytes(self):
+        # the mutant: strand.sh without its group -- the case is able to see the fault
+        path = REPO / "scripts" / "strand.sh"
+        lines = path.read_text(encoding="utf-8").split("\n")
+        i = entry_body_line(lines)
+        self.assertEqual(ENTRY_OPEN, lines[i])
+        self.assertEqual(ENTRY_CLOSE, lines[-2])
+        bare = "\n".join(lines[:i] + lines[i + 1:-2] + [""])
+        first, rc, out, err = self._run_edited(path, bare)
+        self.assertEqual("paused\n", first, err)
+        self.assertNotEqual((0, "old-ran\n", ""), (rc, out, err))
 
 
 if __name__ == "__main__":

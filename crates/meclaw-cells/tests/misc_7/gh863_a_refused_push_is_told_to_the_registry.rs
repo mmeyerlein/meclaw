@@ -351,8 +351,6 @@ sys.stdout.write(json.dumps({
     "messages": [{"origin": "assistant", "type": "tool_call", "id": "a1", "text": raw}]}))
 "#;
 
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-000000000863";
-const NEVER: &str = "0 0 0 1 1 *";
 /// What the brain is BORN on -- its start value.
 const START: &str = "start/model";
 /// The replacement: a catalogue row on an endpoint the brain may not reach.
@@ -420,9 +418,11 @@ fn build_tree(td: &TempDir, base_url: &str) {
         &root.join("main/llm_registry"),
     );
     copy_cells(&templates_root().join("talky"), &root.join("main/talky"));
-    patch(root, "main/talky/session-keeper/night/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        // GH #1229: the night is a window of `./close`; an empty one arms
+        // nothing, and no open generation is a firing.
+        v["params"]["night_from_utc"] = json!("00:00");
+        v["params"]["night_until_utc"] = json!("00:00");
     });
     patch(root, "main/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);

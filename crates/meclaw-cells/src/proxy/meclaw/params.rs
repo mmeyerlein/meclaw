@@ -299,6 +299,7 @@ const OAUTH_KEYS: &[&str] = &[
     "token_url",
     "client_id",
     "client_secret",
+    "client_secret_grant_id",
     "scope",
     "audience",
 ];
@@ -337,7 +338,8 @@ pub struct StaticAuth {
     pub value: String,
 }
 
-/// `{"token_url": ..., "client_id": ..., "client_secret": "${VAR}", "scope", "audience"}`.
+/// `{"token_url": ..., "client_id": ..., "client_secret": "${VAR}", "scope", "audience"}`,
+/// or with `"client_secret_grant_id": "<grant>"` in place of `client_secret`.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OAuthAuth {
@@ -345,8 +347,16 @@ pub struct OAuthAuth {
     pub token_url: String,
     /// The client the grant is for; not a secret.
     pub client_id: String,
-    /// The client secret; `${VAR}` in the file, resolved in memory.
+    /// The client secret; `${VAR}` in the file, resolved in memory. Empty
+    /// when `client_secret_grant_id` names the grant the vault delivers it
+    /// under (GH #1105); the `${VAR}` is the one-release transition.
+    #[serde(default)]
     pub client_secret: String,
+    /// GH #1105: the grant under which the vault delivers the client secret,
+    /// sealed. Not a secret itself. Set together with a non-empty
+    /// `client_secret` it is refused: one secret, one source.
+    #[serde(default)]
+    pub client_secret_grant_id: Option<String>,
     /// Optional `scope` form field; empty means not sent.
     #[serde(default)]
     pub scope: String,
@@ -380,6 +390,7 @@ impl std::fmt::Debug for OAuthAuth {
             .field("token_url", &self.token_url)
             .field("client_id", &self.client_id)
             .field("client_secret", &"<redacted>")
+            .field("client_secret_grant_id", &self.client_secret_grant_id)
             .field("scope", &self.scope)
             .field("audience", &self.audience)
             .finish()
@@ -498,14 +509,54 @@ impl PeerAuth {
                 if a.client_id.is_empty() {
                     return Err("auth.client_id: required and non-empty".to_string());
                 }
-                if a.client_secret.is_empty() {
-                    return Err(
-                        "auth.client_secret: required and non-empty (use ${VAR})".to_string()
-                    );
+                // GH #1105: the secret has exactly one source. Both set would
+                // leave a reader guessing which one crosses; neither leaves the
+                // token endpoint a request it refuses on every crossing.
+                match (a.secret_grant(), a.client_secret.is_empty()) {
+                    (Some(_), false) => {
+                        return Err(CLIENT_SECRET_TWICE.to_string());
+                    }
+                    (None, true) => {
+                        return Err(CLIENT_SECRET_MISSING.to_string());
+                    }
+                    _ => {}
                 }
             }
         }
         Ok(())
+    }
+}
+
+/// GH #1105: `auth.client_secret` and `auth.client_secret_grant_id` both set.
+pub const CLIENT_SECRET_TWICE: &str = "auth: client_secret and client_secret_grant_id are both \
+     set; the client secret comes from one source — the grant (sealed from the vault) or, for one \
+     release, the ${VAR} — never both; the value is not echoed";
+
+/// GH #1105: neither `auth.client_secret` nor `auth.client_secret_grant_id`.
+pub const CLIENT_SECRET_MISSING: &str = "auth.client_secret: required — name the grant in \
+     auth.client_secret_grant_id (the vault delivers the secret sealed); a ${VAR} client_secret \
+     is the one-release transition";
+
+impl OAuthAuth {
+    /// GH #1105: the grant the client secret comes under, if one is named.
+    /// The empty string is not a grant (`credential::grant_param`'s rule).
+    #[must_use]
+    pub fn secret_grant(&self) -> Option<&str> {
+        self.client_secret_grant_id
+            .as_deref()
+            .filter(|g| !g.is_empty())
+    }
+}
+
+impl PeerAuth {
+    /// GH #1105: the grant of the OAuth form's client secret; `None` for the
+    /// static form and for an OAuth form on its `${VAR}`.
+    #[must_use]
+    pub fn client_secret_grant(&self) -> Option<&str> {
+        match self {
+            PeerAuth::OAuth(a) => a.secret_grant(),
+            PeerAuth::Header(_) => None,
+        }
     }
 }
 
@@ -752,5 +803,67 @@ mod tests {
             Ok(()),
             "no auth, nothing to check"
         );
+    }
+    /// GH #1105: the client secret named by its grant parses without a
+    /// `client_secret`, and the declared-file check has nothing to refuse
+    /// (a grant id is not a secret).
+    #[test]
+    fn gh1105_the_oauth_form_takes_its_secret_from_a_grant() {
+        let auth = json!({"token_url": "https://idp.example/token", "client_id": "north",
+                          "client_secret_grant_id": "grant:peer_client_secret@agent/peer"});
+        let p = MeclawParams::parse(&base(auth.clone())).expect("parses");
+        let Some(PeerAuth::OAuth(ref a)) = p.auth else {
+            panic!("the OAuth form")
+        };
+        assert_eq!(
+            a.secret_grant(),
+            Some("grant:peer_client_secret@agent/peer")
+        );
+        assert!(a.client_secret.is_empty());
+        assert_eq!(
+            p.auth.as_ref().and_then(PeerAuth::client_secret_grant),
+            Some("grant:peer_client_secret@agent/peer")
+        );
+        assert_eq!(validate_declared(&base(auth)), Ok(()));
+    }
+
+    /// GH #1105: secret and grant together are a configuration error that
+    /// names both keys and never the value; neither is refused naming the grant.
+    #[test]
+    fn gh1105_client_secret_and_its_grant_together_are_refused() {
+        let e = MeclawParams::parse(&base(json!({"token_url": "https://i/t", "client_id": "n",
+            "client_secret": SECRET, "client_secret_grant_id": "grant:g@a/p"})))
+        .expect_err("refused");
+        assert!(
+            e.contains("client_secret") && e.contains("client_secret_grant_id"),
+            "{e}"
+        );
+        assert!(!e.contains(SECRET), "{e}");
+        let e = MeclawParams::parse(&base(json!({"token_url": "https://i/t", "client_id": "n",
+            "client_secret_grant_id": ""})))
+        .expect_err("an empty grant is no grant");
+        assert!(e.contains("client_secret_grant_id"), "{e}");
+        let e = MeclawParams::parse(&base(json!({"token_url": "https://i/t", "client_id": "n",
+            "client_secret_grant_id": 7})))
+        .expect_err("a grant id is a string");
+        assert!(e.contains("client_secret_grant_id"), "{e}");
+    }
+
+    /// GH #1105: the grant id is not a secret and may appear in `Debug`; the
+    /// secret still does not, also once the opened box has put it next to
+    /// the grant (the shape `PeerClient::with_client_secret` builds).
+    #[test]
+    fn gh1105_debug_names_the_grant_and_redacts_the_secret() {
+        let p = MeclawParams::parse(&base(json!({"token_url": "https://i/t", "client_id": "n",
+            "client_secret_grant_id": "grant:g@a/p"})))
+        .expect("parses");
+        let Some(PeerAuth::OAuth(mut grant)) = p.auth else {
+            panic!("the grant form is OAuth");
+        };
+        grant.client_secret = SECRET.to_string();
+        let d = format!("{grant:?}");
+        assert!(d.contains("grant:g@a/p"), "{d}");
+        assert!(!d.contains(SECRET), "{d}");
+        assert!(d.contains("<redacted>"), "{d}");
     }
 }

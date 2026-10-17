@@ -61,7 +61,7 @@ WHAT USES IT
   * `merge`: a branch whose diff is gate-neutral only merges without gate and
     without report (plan-only).
   * `pre` checks `main_tree` (the fast-forward would hit `main_tree_dirty`)
-    and `owner` (author and committer of `master..HEAD`).
+    and `owner` (author and committer of `<default branch>..HEAD`, `default_branch`).
 """
 
 import hashlib
@@ -646,8 +646,40 @@ def foreign_commits(repo, rng, who=None):
     return who, bad
 
 
-def owner_check(repo, rng="master..HEAD"):
-    """`(verdict, reason)` of check (f)."""
+DEFAULT_BRANCHES = ("master", "main")
+
+
+def default_branch(repo):
+    """The repo's default branch, or None: local `master`, else local `main`, else
+    the name `origin/HEAD` points at (its local branch, else `origin/<name>`), else
+    `origin/master`, else `origin/main` (K13-1: orga-hive and soul2me have only
+    `main`). A local branch comes first (fix round 5 v2-r3-kit, M7): meclaw-core's
+    origin is the export mirror, and a set `origin/HEAD` would name its `main`."""
+    def has(ref):
+        return _lines(repo, "rev-parse", "--verify", "--quiet", ref) is not None
+
+    for name in DEFAULT_BRANCHES:
+        if has("refs/heads/" + name):
+            return name
+    head = _lines(repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    names = ([head[0].rsplit("/", 1)[-1]] if head else []) + list(DEFAULT_BRANCHES)
+    for name in names:
+        for ref, shown in (("refs/heads/" + name, name),
+                           ("refs/remotes/origin/" + name, "origin/" + name)):
+            if has(ref):
+                return shown
+    return None
+
+
+def owner_check(repo, rng=None):
+    """`(verdict, reason)` of check (f): author and committer of
+    `<default branch>..HEAD` (`default_branch`), or of `rng`."""
+    if rng is None:
+        base = default_branch(repo)
+        if base is None:
+            return "RED", ("no default branch in %s (looked for master, main, origin/HEAD) -- "
+                           "the owner check has no range" % repo)
+        rng = "%s..HEAD" % base
     who, bad = foreign_commits(repo, rng)
     if who is None:
         return "RED", "no owner identity (set git config --global user.name/user.email or $%s)" % OWNER_ENV

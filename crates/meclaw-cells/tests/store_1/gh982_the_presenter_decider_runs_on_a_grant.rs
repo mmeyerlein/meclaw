@@ -260,7 +260,7 @@ fn a_grant_follows_the_template_not_the_app_name() {
     if !shipped() {
         return;
     }
-    for (app, template) in [("presenter", "objects@1.0.1"), ("deck", "presenter@1.2.11")] {
+    for (app, template) in [("presenter", "objects@1.0.2"), ("deck", "presenter@1.3.0")] {
         let refused = render_from(app, template, credential());
         assert_eq!(
             refused["header"]["error_code"],

@@ -1,4 +1,4 @@
-# `presenter@1.2.11`
+# `presenter@1.3.0`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -120,6 +120,8 @@ model: every turn ends as `no_selector` and nothing is shown. A model registry c
 leaves as `model_refused`. The door drops the hive's inner context, and a refusal that does not
 name this decider (a push for another cell, or one without `subscriber`) leaves as `error`
 `decide_refused`, never as a dead letter inside the presenter.
+
+`decide` names its app at the provider: `http_referer` / `x_title` (`${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}`, `${OPENROUTER_X_TITLE:-MeClaw}`, the form of the memory-hive cells) go out as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` on `decide`.
 
 **The decider's key can be a grant** ([#976](https://github.com/mmeyerlein/meclaw/issues/976)),
 exactly as on the talky and cogny brains. `decide` carries `credential_grant_id` (empty as

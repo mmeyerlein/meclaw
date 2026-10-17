@@ -370,6 +370,12 @@ pub enum MutationError {
     ScopeOutOfBounds {
         path: Path,
     },
+    /// GH #1231 (R-ZH-2, variant a): the knocking sender holds no edge to
+    /// `/colony/mutations`, and the mutation's scope lies outside the sender's
+    /// own hive subtree. A drawn edge to the door is the right to mutate; without
+    /// one a cell mutates only below the nearest hive that holds it. Carries the
+    /// sender, its home hive and the refused scope.
+    SenderOutOfScope(String),
     /// Unknown cell type encountered during mutation validation.
     UnknownCellType(String),
     /// `add_nodes` targets an existing path whose cell is currently `Awake`
@@ -548,6 +554,7 @@ impl MutationError {
             Self::EnvValueUnsafe(_) => "env_value_unsafe",
             Self::RequirementMissing(_) => "requirement_missing",
             Self::ScopeOutOfBounds { .. } => "scope_out_of_bounds",
+            Self::SenderOutOfScope(_) => "sender_out_of_scope",
             Self::UnknownCellType(_) => "unknown_cell_type",
             Self::ResumeRequiresStoppedCell(_) => "resume_requires_stopped_cell",
             Self::ResumeTypeMismatch(_) => "resume_type_mismatch",
@@ -600,6 +607,7 @@ impl MutationError {
             | Self::CtxKeyMissing(s)
             | Self::EnvValueUnsafe(s)
             | Self::RequirementMissing(s)
+            | Self::SenderOutOfScope(s)
             | Self::UnknownCellType(s)
             | Self::ResumeRequiresStoppedCell(s)
             | Self::ResumeTypeMismatch(s)
@@ -773,6 +781,7 @@ mod tests {
                 path: Path::new("/b"),
             }
             .error_code(),
+            MutationError::SenderOutOfScope("x".into()).error_code(),
             MutationError::UnknownCellType("x".into()).error_code(),
             MutationError::ResumeRequiresStoppedCell("x".into()).error_code(),
             MutationError::ResumeTypeMismatch("x".into()).error_code(),
@@ -822,6 +831,8 @@ mod tests {
             "unsupported_substitution",
             "ctx_key_missing",
             "scope_out_of_bounds",
+            // GH #1231: the door binds the sender (R-ZH-2, variant a).
+            "sender_out_of_scope",
             "unknown_cell_type",
             "stop_wiring_unavailable",
             "term_timeout",
@@ -878,7 +889,7 @@ mod tests {
              `error_code` is documented as an ENUM, so a caller matching on it \
              would meet a token the contract never named"
         );
-        assert_eq!(spec.len(), 36, "the documented enum is 36 tokens wide");
+        assert_eq!(spec.len(), 37, "the documented enum is 37 tokens wide");
     }
 
     #[test]

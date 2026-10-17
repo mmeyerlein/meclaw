@@ -674,13 +674,8 @@ fn build_tree(td: &tempfile::TempDir, judge_url: &str, break_stores: bool) {
     );
     copy_tree(&shipped().expect("guarded"), &root.join("main/argus"));
 
-    // The id a growth would mint, and a cron that does not fire during a test
-    // (same fixture as gh462): every cycle here is one the test asked for.
-    let clock_path = root.join("main/argus/clock/config.json");
-    let mut clock = read_json(&clock_path);
-    clock["params"]["schedules"][0]["schedule_id"] = json!("01930000-0000-7000-8000-000000000928");
-    clock["params"]["schedules"][0]["cron"] = json!("0 0 0 1 1 *");
-    write_json(&clock_path, &clock);
+    // The clock ships no schedule (R-AG-1, GH #1229): every cycle here is one
+    // the test asked for.
 
     if break_stores {
         let receipts_path = root.join("main/argus/receipts/config.json");

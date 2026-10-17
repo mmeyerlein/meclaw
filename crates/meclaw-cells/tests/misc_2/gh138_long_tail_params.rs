@@ -666,10 +666,10 @@ fn every_declared_setting_of_the_three_clocks_is_the_literal_inside_the_schedule
 /// above reports rather than skipping.
 fn schedule_side(row: &Value, knob: &str) -> Option<Value> {
     match knob {
-        // `argus/clock` calls its cadence `cycle_cron`; both names mean the
-        // schedule's own `cron`, and naming both here keeps this helper the one
-        // place the mapping is written down.
-        "cron" | "cycle_cron" => Some(row["cron"].clone()),
+        // The schedule's own `cron`. `argus/clock` used to call its cadence
+        // `cycle_cron`; since R-AG-1 (GH #1229) it carries no schedule, and its
+        // cadence is the meter's `cycle_ms`.
+        "cron" => Some(row["cron"].clone()),
         "schedule_id" => Some(row["schedule_id"].clone()),
         // The digest's URL rides inside the `tool_call` the schedule emits, as
         // the `url` argument of its JSON body -- one hop deeper than a plain

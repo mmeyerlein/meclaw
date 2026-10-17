@@ -85,10 +85,8 @@ fn tree() -> tempfile::TempDir {
         &templates.join("terminal"),
     );
     copy_tree(&templates_root().join("door"), &templates.join("door"));
-    // A cron this run will never reach: the point here is the boot, not a tick.
-    let clock = templates.join("argus/clock/config.json");
-    let raw = std::fs::read_to_string(&clock).unwrap();
-    std::fs::write(&clock, raw.replace("0 0 */6 * * *", "0 0 0 1 1 *")).unwrap();
+    // The clock ships no schedule since R-AG-1 (GH #1229), so nothing ticks
+    // into this run: the point here is the boot.
     std::fs::write(
         root.join(".env"),
         "OPENROUTER_API_KEY=test-key\nMODEL_CORE=gpt-4o-mock\n",

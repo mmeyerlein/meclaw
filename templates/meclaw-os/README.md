@@ -1,4 +1,4 @@
-# `meclaw-os@2.2.61`
+# `meclaw-os@2.2.62`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -592,7 +592,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.61"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.62"}}
 ```
 
 ```bash
@@ -662,6 +662,8 @@ with them. Since `meclaw-os@1.10.0` it is nine: the model registry's translator 
 `LLM_REGISTRY_TRANSLATOR_MODEL` and `LLM_REGISTRY_TRANSLATOR_BASE_URL`, its start value, both
 with defaults.
 Since #801 it is seven: `OPENROUTER_API_KEY` and `LOCAL_LLM_API_KEY` are gone, a key lives in the vault.
+Since every LLM request names its app it is nine again: `OPENROUTER_HTTP_REFERER` and `OPENROUTER_X_TITLE`
+(`https://meclaw.ai` / `MeClaw`) reach the judge, the translator and the composer, both with defaults.
 Two of the remaining keys are worth knowing before you start:
 [`MODEL_BUILDER`](../builder/) and `LOCAL_LLM_BASE_URL` are what the composer asks its model
 through, they default to empty, and unset they leave the authoring path inert — the shell boots,
@@ -676,7 +678,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.61"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.62"}],
           "add_edges": []}}
 ```
 
@@ -698,7 +700,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.35"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.36"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

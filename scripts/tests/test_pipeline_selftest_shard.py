@@ -10,6 +10,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -1153,7 +1154,9 @@ class TestSignal(unittest.TestCase):
                 self.assertEqual(["TERM"], child.signals, child.argv)
                 self.assertFalse(child.kw.get("start_new_session"),
                                  "a shard stays in the station's group (the executor's stop)")
-                self.assertTrue(child.kw.get("preexec_fn"), "the shard dies with the runner")
+                self.assertNotIn("preexec_fn", child.kw)
+                wrap = selftest_shard.die_with_runner(["x"], os.getpid())[:-1]
+                self.assertEqual(wrap, child.argv[:len(wrap)], "the shard dies with the runner")
             # `tempfile.tempdir` is patched: the shard dirs really sat in tmp during the run
             self.assertTrue(any(d.startswith("meclaw-selftest-") for d in children[0].dirs))
             self.assertEqual([], [d for d in os.listdir(tmp) if d.startswith("meclaw-selftest-")],
@@ -1289,6 +1292,184 @@ class TestRunnerKilled(ShardCase):
     def test_the_runner_grace_ends_before_the_executors(self):
         from pipeline import executor
         self.assertLessEqual(selftest_shard.KILL_GRACE_S * 2, executor.KILL_GRACE_S)
+
+
+class TestDieWithRunner(unittest.TestCase):
+    """A child dies with the runner without `preexec_fn` (fix round 3: a shard started
+    from a pool thread with `preexec_fn` can deadlock before exec, Python's documented
+    hazard; gate bba60d7 hung 19.5 min there). `setpriv --pdeathsig KILL` sets the
+    death signal in the child, a shell refuses the exec when the runner is already gone."""
+
+    # Roots of the kit's Python; every file there is scanned.
+    ROOTS = ("scripts", os.path.join("plans", "export-fixtures"))
+    CALL = re.compile(r"\bpreexec_fn\s*=")
+    THREADS = re.compile(r"^\s*(?:import|from)\s+(?:threading|concurrent)\b", re.M)
+
+    @classmethod
+    def thread_reachable(cls, rel, text):
+        """A file reaches threads when it imports them, or when it is a module of the
+        runner package (`scripts/pipeline/`, loaded by the executor's station threads)."""
+        return bool(cls.THREADS.search(text)) or rel.startswith("scripts/pipeline/")
+
+    def test_no_thread_reachable_file_starts_a_child_with_preexec_fn(self):
+        hits = []
+        for root in self.ROOTS:
+            for dirpath, _dirs, files in os.walk(REPO / root):
+                for name in files:
+                    if not name.endswith(".py"):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    rel = os.path.relpath(path, REPO).replace(os.sep, "/")
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        text = fh.read()
+                    if not self.thread_reachable(rel, text):
+                        continue
+                    for no, line in enumerate(text.splitlines(), 1):
+                        if self.CALL.search(line.split("#", 1)[0]):
+                            hits.append("%s:%d" % (rel, no))
+        self.assertEqual([], hits, "preexec_fn in a file that reaches threads")
+
+    def test_the_runner_package_counts_as_thread_reachable(self):
+        self.assertTrue(self.thread_reachable("scripts/pipeline/x.py", ""))
+        self.assertTrue(self.thread_reachable("scripts/y.py", "import concurrent.futures\n"))
+        self.assertFalse(self.thread_reachable("scripts/y.py", "import os\n"))
+
+    def run_wrapped(self, runner):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "ran")
+            argv = selftest_shard.die_with_runner(
+                [sys.executable, "-I", "-c", "import sys; open(sys.argv[1], 'w').close()", marker],
+                runner)
+            proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                  timeout=kit_time.HANG)
+            return argv, proc, os.path.exists(marker)
+
+    def test_a_child_of_the_runner_runs_its_program(self):
+        argv, proc, ran = self.run_wrapped(os.getpid())
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertTrue(ran, argv)
+
+    def test_a_child_whose_runner_is_gone_before_exec_never_runs(self):
+        # No skip (fix round 5, I4): without setpriv on Linux `die_with_runner` raises,
+        # and this test is red with the tool's name. The child's parent is this process, not the named runner: as if the runner had
+        # died between fork and the death signal (the child would be reparented).
+        argv, proc, ran = self.run_wrapped(os.getppid())
+        self.assertEqual(137, proc.returncode, proc.stderr)
+        self.assertFalse(ran, argv)
+
+    def test_on_linux_a_missing_setpriv_is_an_error(self):
+        # Fault injection (fix round 5, I4): setpriv is gone on a Linux host. The plain
+        # argv would start a child that outlives its runner, silently.
+        with mock.patch.object(selftest_shard.sys, "platform", "linux"), \
+                mock.patch.object(selftest_shard.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(selftest_shard.SetprivMissing, r"^setpriv not found"):
+                selftest_shard.die_with_runner(["true"], os.getpid())
+
+    def test_off_linux_the_plain_argv(self):
+        with mock.patch.object(selftest_shard.sys, "platform", "darwin"):
+            self.assertEqual(["true"], selftest_shard.die_with_runner(["true"], os.getpid()))
+
+    def test_on_linux_a_run_without_setpriv_starts_nothing_and_names_it(self):
+        def no_start(*_a, **_kw):
+            raise AssertionError("a child started without setpriv")
+
+        err = io.StringIO()
+        with mock.patch.object(selftest_shard.sys, "platform", "linux"), \
+                mock.patch.object(selftest_shard.shutil, "which", return_value=None), \
+                mock.patch.object(selftest_shard, "_popen", no_start), \
+                mock.patch.object(selftest_shard.sys, "stderr", err), \
+                mock.patch.dict(os.environ):
+            rc = selftest_shard.main(["unittest", "test_does_not_exist"])
+        self.assertEqual(2, rc)
+        self.assertIn("setpriv", err.getvalue())
+
+    def test_every_child_start_wraps_its_argv(self):
+        started = []
+
+        class Proc:
+            def __init__(self, argv, **kw):
+                self.argv, self.kw = argv, kw
+                started.append(self)
+
+            def wait(self):
+                return 0
+
+        with mock.patch.object(selftest_shard, "_popen", Proc), \
+                mock.patch.object(selftest_shard.shutil, "which", return_value="/usr/bin/setpriv"):
+            selftest_shard.Children().start(["true"])
+            selftest_shard.run_single(["true"])
+        for proc in started:
+            self.assertNotIn("preexec_fn", proc.kw)
+            self.assertEqual(["/usr/bin/setpriv", "--pdeathsig", "KILL", "--"], proc.argv[:4])
+            self.assertEqual(["true"], proc.argv[-1:])
+            self.assertEqual(str(os.getpid()), proc.argv[-2])
+
+
+class TestNoInheritedStdin(unittest.TestCase):
+    """Fix round 4 v2-r3-kit: no test process of the selftest path reads the runner's
+    stdin. A test that leaves a child holding the write end of a pipe (a leftover of
+    the test before) must not block the next test's child that reads its stdin: a
+    shard got DEVNULL already, `run_single` handed the runner's stdin on. Judged by
+    the child's own word (its fd 0 over a fifo), never by time."""
+
+    CHILD = ("import os, sys\n"
+             "with open(os.environ['PROBE_FIFO'], 'w') as fh:\n"
+             "    fh.write(os.readlink('/proc/self/fd/0') + '\\n')\n"
+             "sys.stdin.read()\n")
+    SINGLE = ("import sys\n"
+              "sys.path.insert(0, %(scripts)r)\n"
+              "from pipeline import selftest_shard\n"
+              "sys.exit(selftest_shard.run_single([sys.executable, '-c', %(child)r]))\n")
+    SHARD = ("import os, sys\n"
+             "sys.path.insert(0, %(scripts)r)\n"
+             "from pipeline import selftest_shard\n"
+             "rc, _text, _secs = selftest_shard.run_shard(\n"
+             "    [sys.executable, '-c', %(child)r], dict(os.environ), os.getcwd(), %(log)r,\n"
+             "    selftest_shard.Children())\n"
+             "sys.exit(rc)\n")
+
+    def fd_zero_of_the_test(self, runner_src):
+        """What the test started by `runner_src` reads as fd 0, while the runner's own
+        stdin is a pipe whose only writer is a leftover child that lives on."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fifo = os.path.join(tmp.name, "probe")
+        os.mkfifo(fifo)
+        r, w = os.pipe()
+        leftover = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                    stdin=subprocess.PIPE, pass_fds=(w,))
+        os.close(w)   # the write end lives in the leftover only
+        src = runner_src % {"scripts": str(SCRIPTS), "child": self.CHILD,
+                            "log": os.path.join(tmp.name, "shard.log")}
+        runner = subprocess.Popen([sys.executable, "-I", "-c", src], stdin=r, cwd=str(REPO),
+                                  env=dict(os.environ, PROBE_FIFO=fifo))
+        os.close(r)
+        # LIFO: the leftover ends first, then the test's child sees EOF and the runner ends
+        self.addCleanup(leftover.wait)
+        self.addCleanup(runner.wait)
+        self.addCleanup(leftover.stdin.close)
+        # Event wait with a hang marker (fix round 5, M8): a runner that dies before
+        # its child opens no writer, and a blocking open would wait for the station cap.
+        fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        got = bytearray()
+
+        def line():
+            try:
+                got.extend(os.read(fd, 4096))
+            except BlockingIOError:
+                pass
+            return bytes(got) if b"\n" in got else None
+
+        data = kit_time.until("the test's child writes its fd 0 to the probe fifo", line,
+                              state=lambda: ("runner rc", runner.poll(), bytes(got)))
+        return data.split(b"\n", 1)[0].decode("utf-8").strip()
+
+    def test_a_single_run_gives_its_test_no_stdin_of_the_runner(self):
+        self.assertEqual("/dev/null", self.fd_zero_of_the_test(self.SINGLE))
+
+    def test_a_shard_gives_its_test_no_stdin_of_the_runner(self):
+        self.assertEqual("/dev/null", self.fd_zero_of_the_test(self.SHARD))
 
 
 class TestGateLine(unittest.TestCase):

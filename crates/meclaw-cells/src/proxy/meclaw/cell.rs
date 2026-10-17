@@ -41,6 +41,7 @@ use super::lanes::{self, Direction, Refusal};
 use super::mount::{MeclawIo, PeerEvent, PeerReconfig, Wake, now_ms};
 use super::params::{Lanes, MeclawParams, refuse_params_update};
 use super::wire;
+use crate::credential::CredentialSlots;
 
 /// The code a `params` slot and a mount that could not be taken are refused
 /// with; the house word for a request this cell will not take.
@@ -72,6 +73,28 @@ pub struct MeclawCell {
     deadline_ms: i64,
     /// GH #1015: inbox rows handed on and not yet booked `done`, oldest first.
     handed: std::collections::VecDeque<(String, tokio::time::Instant)>,
+    /// GH #1105: the client secret comes sealed from the vault
+    /// (`auth.client_secret_grant_id`). `None` = no grant: the secret is the
+    /// `${VAR}` of the one-release transition, or there is no OAuth form.
+    credential: Option<PeerCredential>,
+}
+
+/// GH #1105: the grant of a peer proxy whose client secret the vault delivers.
+/// Key pair and secret live in RAM only, so every (re)start asks again.
+struct PeerCredential {
+    /// `params.auth.client_secret_grant_id`.
+    grant: String,
+    /// The slot of that grant. Nothing is parked in it: a message sent before
+    /// the box is booked in the outbox as `credential_pending` and leaves once
+    /// the box opened (`book::outbox_release`).
+    slots: CredentialSlots<()>,
+    /// When the question in flight was asked; `None` before the first.
+    asked_at: Option<tokio::time::Instant>,
+    /// How long a question is given before an outbox pass that still finds no
+    /// secret asks again; doubles per question up to `wait_max_ms`.
+    wait_ms: u64,
+    /// The ceiling of `wait_ms`.
+    wait_max_ms: u64,
 }
 
 /// GH #1015: how long a handed-on inbox row stays `pending`. The hand-on is an
@@ -117,6 +140,148 @@ impl MeclawCell {
             deadline_ms: i64::try_from(p.peer_retry_deadline_s.saturating_mul(1_000))
                 .unwrap_or(i64::MAX),
             handed: std::collections::VecDeque::new(),
+            credential: None,
+        }
+    }
+
+    /// GH #1105: the client secret comes from the vault, sealed, under
+    /// `grant` (`auth.client_secret_grant_id`). The cell asks in `on_start`;
+    /// until the box opened, a message is booked and deferred as
+    /// `credential_pending` with no request to the token endpoint, and an
+    /// outbox pass that still finds no secret asks again once the last
+    /// question's wait ran out. The client this cell was built with carries no
+    /// secret (the params refuse a `client_secret` next to the grant). `None`
+    /// or `""` = the unchanged cell.
+    #[must_use]
+    pub fn with_credential(mut self, grant: Option<&str>) -> Self {
+        let Some(grant) = grant.filter(|g| !g.is_empty()) else {
+            return self;
+        };
+        let on_expired: crate::credential::ExpiryFn<()> = Arc::new(|_, _| Box::pin(async {}));
+        let wait_ms = crate::credential::default_credential_wait_ms();
+        self.credential = Some(PeerCredential {
+            grant: grant.to_string(),
+            slots: CredentialSlots::new(
+                wait_ms,
+                crate::credential::default_credential_wait_max(),
+                on_expired,
+            ),
+            asked_at: None,
+            wait_ms,
+            wait_max_ms: crate::credential_rounds::default_credential_backoff_max_ms(),
+        });
+        self
+    }
+
+    /// The public recipient key of the client-secret question in flight
+    /// (tests/diagnosis; never a secret).
+    pub fn credential_recipient_hex(&self) -> Option<String> {
+        let c = self.credential.as_ref()?;
+        c.slots.recipient_hex(&c.grant)
+    }
+
+    /// GH #1105: ask the access hive for the client secret. Emitted towards
+    /// `emit_to` like every other source emission of this cell; the
+    /// template's edge on `hop.route == "credential_request"` decides where it
+    /// goes.
+    async fn ask_for_secret(&mut self, sink: &OriginSink) {
+        let Some(c) = self.credential.as_mut() else {
+            return;
+        };
+        let content = match c.slots.request(&c.grant) {
+            Ok(content) => content,
+            Err(e) => {
+                tracing::error!(error = %e, "proxy/meclaw: no random source for a credential request");
+                return;
+            }
+        };
+        if c.asked_at.is_some() {
+            c.wait_ms = c.wait_ms.saturating_mul(2).min(c.wait_max_ms);
+        }
+        c.asked_at = Some(tokio::time::Instant::now());
+        tracing::info!(grant = %c.grant, "proxy/meclaw: asking the vault for the client secret");
+        let _ = sink
+            .emit(CellOutput {
+                target: self.emit_to.clone(),
+                content,
+            })
+            .await;
+    }
+
+    /// GH #1105: an outbox pass met `credential_pending`. Asks again when the
+    /// last question's wait ran out — a lost `on_start` question (broker not
+    /// spawned yet, vault locked) would otherwise hold every message until its
+    /// deadline.
+    async fn reask_if_due(&mut self, sink: &OriginSink) {
+        let due = self.credential.as_ref().is_some_and(|c| {
+            c.slots.secret(&c.grant).is_none()
+                && c.asked_at
+                    .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(c.wait_ms))
+        });
+        if due {
+            tracing::warn!("proxy/meclaw: no sealed client secret arrived in time — asking again");
+            self.ask_for_secret(sink).await;
+        }
+    }
+
+    /// GH #1105: take a sealed delivery. Opened → the client carries the
+    /// secret and every message waiting on it is due now. Not opened → the
+    /// messages stay booked; the next outbox pass asks again after the wait.
+    /// Never echoes a value, never answered with an emission.
+    async fn accept_secret(&mut self, content: &Value, db: &mut DbConn) {
+        let Some(c) = self.credential.as_mut() else {
+            tracing::warn!(
+                "proxy/meclaw: a sealed box arrived, but this peer proxy has no \
+                 auth.client_secret_grant_id — discarded"
+            );
+            return;
+        };
+        match c.slots.accept_sealed(content).await {
+            Ok(accepted) => {
+                let Some(secret) = c.slots.secret_handle(&accepted.grant) else {
+                    tracing::warn!(
+                        grant = %accepted.grant,
+                        "proxy/meclaw: the sealed client secret opened empty — messages stay booked"
+                    );
+                    return;
+                };
+                tracing::info!(
+                    grant = %accepted.grant,
+                    "proxy/meclaw: client secret received sealed and opened in RAM"
+                );
+                self.client = self.client.with_client_secret(secret.expose());
+            }
+            Err(refusal) => {
+                match refusal.detail() {
+                    None => tracing::warn!(
+                        "proxy/meclaw: a sealed client secret of an earlier round arrived late \
+                         and was discarded"
+                    ),
+                    Some(detail) => tracing::warn!(
+                        %detail,
+                        "proxy/meclaw: the sealed client secret was refused — messages stay \
+                         booked and the next outbox pass asks again"
+                    ),
+                }
+                return;
+            }
+        }
+        if !self.ensure_book(db).await {
+            return;
+        }
+        let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+        match db
+            .call(move |c| book::outbox_release(c, wire::CREDENTIAL_PENDING, now))
+            .await
+        {
+            Ok(targets) => {
+                for target in targets {
+                    self.wake(&target, now);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "proxy/meclaw: waiting rows keep their backoff");
+            }
         }
     }
 
@@ -441,6 +606,10 @@ impl MeclawCell {
                     emit(sink, &self.emit_to, content, trace).await;
                 }
                 Err(r) if r.transient => {
+                    // GH #1105: still no client secret — maybe ask again.
+                    if r.error_code == wire::CREDENTIAL_PENDING {
+                        self.reask_if_due(sink).await;
+                    }
                     let wait = BACKOFF_FIRST_MS
                         .saturating_mul(1_i64 << (row.tries - 1).clamp(0, 20))
                         .min(BACKOFF_MAX_MS);
@@ -594,8 +763,21 @@ impl LongRunningCell for MeclawCell {
         run_peer_io(io, events_tx, reconfig_rx)
     }
 
+    /// GH #1105: a grant's peer proxy asks for its client secret before
+    /// anything else; key pair and secret are RAM-only, so a respawn asks
+    /// again.
+    #[allow(clippy::manual_async_fn)]
+    fn on_start<'a>(
+        &'a mut self,
+        sink: &'a OriginSink,
+        _db: &'a mut DbConn,
+    ) -> impl Future<Output = ()> + Send + 'a {
+        async move { self.ask_for_secret(sink).await }
+    }
+
     /// The outgoing direction: one receipt per message, crossed, deferred or
-    /// refused.
+    /// refused. GH #1105: a sealed delivery is the client secret, not a
+    /// message to send — taken, never answered.
     #[allow(clippy::manual_async_fn)]
     fn handle<'a>(
         &'a mut self,
@@ -605,6 +787,13 @@ impl LongRunningCell for MeclawCell {
         _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            if let Body::Inline(body) = &msg.body
+                && body.get("sealed").is_some()
+            {
+                let body = body.clone();
+                self.accept_secret(&body, db).await;
+                return;
+            }
             let content = self.cross(&msg, db).await;
             let _ = sink
                 .push(CellOutput {

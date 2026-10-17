@@ -1,4 +1,4 @@
-# `file-space@1.4.9`
+# `file-space@1.5.0`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -196,11 +196,15 @@ The three projection tools ([#980](https://github.com/mmeyerlein/meclaw/issues/9
 | `derive` | `summary_on_commit`, `embed`, `ask_sections`, `section_lines` | "1", "1", 4, 60 | a summary on every main-line head move (birth always gets one); embeddings per section; sections one `ask` hands the model; lines per window where a file has no headings |
 | `derive` | `input_soft_fallback`, `embed_input_soft_fallback` (rows in `input_soft_fallback_row`, `embed_input_soft_fallback_row`) | catalogue rows | the summarizer's and the embedder's window in tokens, the `input_soft` of the catalog rows of the models they are born on ([#1085](https://github.com/mmeyerlein/meclaw/issues/1085), OR-IG-9): the summarizer's model is a birth token (`MODEL_FILE_SPACE`), so its row is the llm-registry's `light` tier, `openai/gpt-6-luna`; the embedder's is the embedding row of its default model, `google/gemini-embedding-2`. The `_row` params are labels the drift lock `gh1085_fallback_windows_match_the_catalog` reads, not the script. A summary reads half the window (a longer file is cut with the mark naming the sections left out), a section over the embedding window is embedded as several pieces at line borders. 0: whole; a summary the summarizer refuses as too long is asked once more with half of the window the refusal names |
 | `derive`, `read` | `nodes_max`, `links_max`, `extract_max_bytes`, `key_depth` | 2000, 5000, 2 MiB, 3 | the most nodes / links one version keeps (`truncated` above), the largest text extracted (`too_large` above), the depth of `key:` nodes |
+| `derive`, `read` | `node_oneline_max` | 120 | the characters of a node's one line; a longer one is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
+| `derive` | `oneline_max` | 120 | the characters of a file's summary line; a longer one is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
+| `ingest` | `oneline_max` | 120 | the characters of the summary line the address line of an upload carries; a longer one is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
 | `read` | `near_scan_max` | 5000 | the most files one `near` compares |
 | `extract` | `extract_cmd`, `extract_max_pages`, `extract_timeout_ms` | `pdftotext`, 500, 30000 | the program that turns a PDF into pages (a name found in `/usr/bin:/bin`, the only `PATH` it runs with, or an absolute path), the most pages one `create` carries as `derived`, the time one extraction may take |
 | `embed` | `endpoint`, `model`, `dim` | the `memory-hive` embedding settings (`MEMORY_EMBED_*`) | one embedding model, one dimension and one binary form per member |
 | `schemas` | `projection_tools` | "0" | "1" puts `file_ws_exec`, `file_ws_export` and `file_ws_push` on the menu ([#980](https://github.com/mmeyerlein/meclaw/issues/980)); the owner sets it beside the projection's `base_path`, so no model sees a tool that always refuses |
 | `summarizer` | `model` | `${MODEL_FILE_SPACE}`, no default -- growth is refused without it (`env_var_missing`), as for the `MODEL_*` of `memory-hive` | the model that writes summaries and answers `ask`; the llm-registry may move it through `in_model` |
+| `summarizer` | `http_referer`, `x_title` | `${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}`, `${OPENROUTER_X_TITLE:-MeClaw}` | the app attribution (the form of `memory-hive` and `./embed`), sent as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` |
 
 ## Versioning
 

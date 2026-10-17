@@ -1,4 +1,4 @@
-# `talky@6.8.0`
+# `talky@6.8.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -65,13 +65,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.1.3"}}
+{"cell": {"type": "ref", "template": "collector@5.1.4"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.8.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.8.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -692,7 +692,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.8.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.8.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1281,7 +1281,7 @@ a TEMPLATE kept inside a person's charter is a promise every hand-written charte
 
 The block is short on purpose: it is carried on every single turn, so its length is paid
 for once per call. The file stays the authority -- one drift lock
-(`crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs`) holds the block to
+(`crates/meclaw-cells/tests/misc_3/gh299_the_contract_asks_for_both_parts.rs`) holds the block to
 what this lane can actually read, a second
 (`crates/meclaw-cells/tests/misc_5/gh525_a_grown_brain_carries_the_extraction_contract.rs`) holds
 the collector's copy byte-identical to it -- and a discipline each persona invents for
@@ -1334,7 +1334,8 @@ below names the CELL the knob belongs to, because that is what an
 | knob | where | default | unit |
 |---|---|---|---|
 | `idle_ms` | param | `7200000` | session-keeper/close -- silence before a generation may end (2 h) |
-| `schedules[0].cron` | param | `0 0,30 22-23,0-3 * * *` | session-keeper/night -- the sweep, **in UTC** (summer image of 00:00-05:30 CEST). A timer has no top-level `cron` param: an override names the whole `schedules` array |
+| `night_from_utc` | param | `"22:00"` | session-keeper/close -- where the night begins, **in UTC** (summer image of 00:00 CEST; winter `"23:00"`). Since #1229 the night is a watchdog `./close` arms, not a cron of `./night` |
+| `night_until_utc` | param | `"04:00"` | session-keeper/close -- where the night ends, exclusive (06:00 CEST; winter `"05:00"`). Equal to `night_from_utc`: no night, nothing is armed |
 | `close_limit` | param | `50` | session-keeper/close -- generations one firing may seal |
 | `max_iter` | param | `8` | collector -- **the loop bound**; at the cap the seam leaves on `answer` |
 | `round_idle_ms` | param | `120000` | collector -- idle window of one tool round |

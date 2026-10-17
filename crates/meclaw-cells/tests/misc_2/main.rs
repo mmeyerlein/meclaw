@@ -6,7 +6,11 @@ pub mod gh118_system_gate;
 pub mod gh1199_a_row_is_replaced_in_one_step;
 pub mod gh1199_b_a_failed_write_keeps_the_row_it_replaces;
 pub mod gh1209_the_product_carries_no_test_switch;
+pub mod gh1225_a_cut_says_it_is_cut;
+pub mod gh1225_a_row_outside_the_curator_is_written_in_one_step;
+pub mod gh1225_a_translation_without_its_key_is_asked_again_at_boot;
 pub mod gh1225_fifty_concurrent_slot_pushes_leave_no_duplicate;
+pub mod gh1229_the_keeper_night_is_armed_by_an_open_generation;
 pub mod gh135_happened_at_over_ubf;
 pub mod gh138_affinity_firewall_params;
 pub mod gh138_keeper_summarizer_dispatcher_params;
@@ -55,10 +59,6 @@ pub mod gh298_nothing_is_a_value;
 pub mod gh298_per_turn_annotation;
 pub mod gh298_the_batch_lane_is_gone;
 pub mod gh298_the_queue_is_an_exception_list;
-pub mod gh299_the_contract_asks_for_both_parts;
-pub mod gh300_the_close_pass_has_a_lane;
-pub mod gh300_the_close_pass_reads_the_whole_session;
-pub mod gh300_the_four_point_contract;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

@@ -156,6 +156,18 @@ MECLAW_BIN = frozenset({"scenarios:memory", "scenarios:builder", "browser:displa
 NEXTEST = {"tests": "default", "scenario-tests": "scenario", "browser:display": "browser",
            "browser:alone": "browser"}
 
+# GH #1199 (v2-r3-mergegate): the generated librarian corpus. A strand that
+# moves one of its sources leaves it stale on purpose -- the merge point
+# regenerates it (`merge.regenerate_corpus`), never merges it -- and the run's
+# `corpus` station rewrites it in the run's tree. The plan plans the tree the
+# run tests: the corpus as the station writes it joins the diff and its blob
+# keys the cache (`derived`), so a strand gate and the merge candidate of the
+# same diff plan the same selection under the same keys. Measured KR 05214ae:
+# the merge re-ran `tests` (852 s) and `browser:display` (303 s), every part
+# key moved with the corpus blob under `dir:templates`.
+CORPUS = "templates/builder-librarian/store/seed/docs.jsonl"
+CORPUS_TOOL = "workshop/tools/build_librarian_seed.py"
+
 # Weg d (GH #1162): `browser:display` needs only its lock binaries (about 12 s
 # of warm build on build04), not the whole `build` (192 s in A2). Phase 1
 # `build:browser` builds exactly them, in the call of the full build that builds
@@ -372,12 +384,27 @@ def _github_main_base(root):
 
 
 def resolve_base(repo_root, mode, base):
-    """`(base, full_scope)` the way `scripts/gate.sh` settles them."""
+    """`(base, full_scope)` the way `scripts/gate.sh` settles them. A strand
+    without a merge base with `master` gets `""`: no base, no narrowing."""
+    return _resolve_base(repo_root, mode, base)[:2]
+
+
+def _resolve_base(repo_root, mode, base):
+    """`(base, full_scope, unresolved)`: `unresolved` says why a strand has no
+    merge base (None when it has one). There is no `HEAD~1` stand-in for it --
+    that diff hid every strand commit but the last (GH #1199, re-check I3);
+    `changed_scope` reads it as an unreadable diff and `build_plan` fails
+    closed. `HEAD~1` stays for the merge base that IS HEAD (master itself)."""
     if not base:
         if mode == "strand":
             rev = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
-            base = _git(repo_root, "merge-base", "master", "HEAD", check=False).stdout.strip()
-            if not base or base == rev:
+            proc = _git(repo_root, "merge-base", "master", "HEAD", check=False)
+            base = proc.stdout.strip() if proc.returncode == 0 else ""
+            if not base:
+                return "", False, "git merge-base master HEAD: rc=%d %s" % (
+                    proc.returncode,
+                    ((proc.stderr or "").strip().splitlines() or ["no merge base"])[0])
+            if base == rev:
                 if _dirty_files(repo_root):
                     base = rev
                 else:
@@ -387,29 +414,90 @@ def resolve_base(repo_root, mode, base):
         elif mode in ("integration", "release"):
             base = _github_main_base(repo_root)
         elif mode == "ci":
-            return "", True
+            return "", True, None
     if mode == "ci" and base:
         known = _git(repo_root, "rev-parse", "--verify", "--quiet", base + "^{commit}",
                      check=False).returncode == 0
         if set(base) == {"0"} or not known:
-            return "", True
-    return base or "", False
+            return "", True, None
+    return base or "", False, None
 
 
 def changed_files(repo_root, mode, base):
     """The changed paths of a pass, sorted: `git diff --name-only <base> HEAD`
     plus the dirty tree, or every tracked file when the scope is full (ci
     without a usable base) -- the same list `scripts/gate.sh` plans from."""
-    base, full = resolve_base(repo_root, mode, base)
+    return changed_scope(repo_root, mode, base)[0]
+
+
+def changed_scope(repo_root, mode, base):
+    """`(paths, unreadable)`: `changed_files`, and why git could not diff
+    against the base (None when it could). An unclear base -- a diff git
+    cannot read (GH #1199, re-check I2) or a strand without a merge base (I3)
+    -- is no narrower diff: the paths are the whole tree (every tracked path
+    plus the dirty tree), and `build_plan` plans every station of the stage
+    from them (re-check I4, `unclear_base_note`)."""
+    base, full, unreadable = _resolve_base(repo_root, mode, base)
     if full:
-        return sorted(set(_git(repo_root, "ls-files").stdout.splitlines()))
+        return sorted(set(_git(repo_root, "ls-files").stdout.splitlines())), None
     diff = []
     if base:
         # Both sides of a rename (re-check tb-s2 h1 m1): a Rust file moved under
         # plans/ is still a Rust change, like `_dirty_files`.
-        diff = _git(repo_root, "diff", "--name-only", "--no-renames", base, "HEAD",
-                    check=False).stdout.splitlines()
-    return sorted({p for p in diff + _dirty_files(repo_root) if p})
+        proc = _git(repo_root, "diff", "--name-only", "--no-renames", base, "HEAD",
+                    check=False)
+        if proc.returncode != 0:
+            unreadable = "git diff %s HEAD: rc=%d %s" % (
+                base[:12], proc.returncode, ((proc.stderr or "").strip().splitlines() or [""])[0])
+        else:
+            diff = proc.stdout.splitlines()
+    if unreadable:
+        diff = _git(repo_root, "ls-files").stdout.splitlines()
+    return sorted({p for p in diff + _dirty_files(repo_root) if p}), unreadable
+
+
+def unclear_base_note(why):
+    """The one rule both planners keep for a diff base that is not clear (no
+    merge base, or a diff git cannot read): no narrower plan -- every station
+    of the stage runs, and the NOTE says why. `build_plan` here plans from the
+    whole tree, `register.build_plan` with `all_stations` (GH #1199, re-check
+    I4: only the export audit ran in full here, every other station planned
+    from the dirty tree)."""
+    return "diff base unresolved (%s) -- every station of the stage runs" % why
+
+
+PRECHECK_WHOLE_TREE = ("set -o pipefail; git ls-files --cached --others --exclude-standard"
+                       " | python3 scripts/precheck.py --files-from -")
+
+
+def _fail_closed(rows, mode, why):
+    """An unclear base (`changed_scope`): the rows are the plan of the whole
+    tree. The two stations that carry their paths on the argv take the whole
+    tree without them (ARG_MAX: 23 177 paths in the private tree) -- precheck
+    lists the tree itself, the strand's export audit drops `--diff-paths` and
+    keeps the resolver module. -> the NOTE lines."""
+    note = unclear_base_note(why)
+    pre = next((r for r in rows if r.get("name") == "precheck"), None)
+    if pre is not None:
+        pre.pop("cmds", None)
+        pre["cmd"] = ["bash", "-c", PRECHECK_WHOLE_TREE]
+        pre["reason"] = list(pre.get("reason") or []) + ["fail-closed: whole tree"]
+    if mode != "strand":
+        return [note]
+    gp = _gp()
+    row = next((r for r in rows if r.get("name") == "export-audit"), None)
+    if row is None:
+        order = list(gp.STATION_ORDER)
+        at = order.index("export-audit")
+        pos = next((i for i, r in enumerate(rows)
+                    if r.get("name") in order and order.index(r["name"]) > at), len(rows))
+        row = {"name": "export-audit", "cargo": False}
+        rows.insert(pos, row)
+    row.pop("cmds", None)
+    row["cmd"] = gp.strand_audit_cmd(None, kit=False)
+    row["scope"] = "R1-R17 dry, no gate receipt, whole tree"
+    row["reason"] = list(row.get("reason") or []) + ["fail-closed: whole tree"]
+    return [note]
 
 
 # --- the resolver -------------------------------------------------------------
@@ -458,6 +546,34 @@ def default_resolver(repo_root, mode, files):
     if proc.returncode != 0:
         raise ValueError("gate_plan.py failed: %s" % proc.stderr.strip())
     return json.loads(proc.stdout)
+
+
+def derived_corpus(repo_root, files):
+    """`{CORPUS: blob}` of the corpus the `corpus` station writes into the run's
+    tree -- when `files` moves a corpus source (the station regenerates then)
+    and the regenerated corpus differs from the tree's; else `{}`. Written to a
+    temporary file, never into the tree. A missing or failing generator derives
+    nothing: the `corpus` station says so in the run."""
+    gp = _gp()
+    if not any("corpus_source" in gp._classes_of_path(f) for f in files):
+        return {}
+    tool = os.path.join(str(repo_root), CORPUS_TOOL)
+    if not os.path.isfile(tool):
+        return {}
+    with tempfile.TemporaryDirectory(prefix="meclaw-corpus-") as tmp:
+        out = os.path.join(tmp, "docs.jsonl")
+        try:
+            proc = subprocess.run([sys.executable, "-I", tool, "--out", out], cwd=str(repo_root),
+                                  capture_output=True, timeout=300)
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        if proc.returncode != 0 or not os.path.isfile(out):
+            return {}
+        fresh = _git(repo_root, "hash-object", out, check=False).stdout.strip()
+    here = os.path.join(str(repo_root), CORPUS)
+    now = (_git(repo_root, "hash-object", here, check=False).stdout.strip()
+           if os.path.isfile(here) else "")
+    return {CORPUS: fresh} if fresh and fresh != now else {}
 
 
 _GP = None
@@ -869,10 +985,18 @@ def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *
     repo_root = str(repo_root)
     if mode == "merge":
         mode, stage = "strand", "merge"
+    unreadable = None
     if files is None:
         base_resolved, _full = resolve_base(repo_root, mode, base)
-        files = changed_files(repo_root, mode, base)
+        files, unreadable = changed_scope(repo_root, mode, base)
         base = base_resolved
+        if unreadable:   # re-check I4: no clear base, no narrowing
+            narrow = False
+    # GH #1199 (v2-r3-mergegate): the corpus the run's `corpus` station writes is
+    # part of the diff the run tests -- as it is of the merge candidate's.
+    derived = derived_corpus(repo_root, files)
+    if derived:
+        files = sorted(set(files) | set(derived))
     # the release guard behind `split_alone` reads the real tree's units, so it
     # runs behind the real resolver only (a test's fake resolver plans a fake tree)
     real_resolver = resolver is None or resolver is default_resolver
@@ -941,6 +1065,9 @@ def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *
     elif mode == "integration":
         scope = ("integration", None, None, wave,
                  "narrowing off (narrow=False or MECLAW_GATE_NARROW=0)")
+    if unreadable:   # GH #1199 (re-checks I2-I4): every station, never a narrower plan
+        notes = list(notes or []) + _fail_closed(raw.setdefault("stations", []), mode,
+                                                 unreadable)
     if mode == "release":
         notes += _release_full_suite(raw.get("stations") or [], repo_root)
     narrowing = _narrowing(raw.get("stations") or [], *scope, notes=notes) if scope else None
@@ -1036,6 +1163,13 @@ def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *
         doc["full_pass"] = dict(full)
     if graph_info:
         doc["graph_build"] = dict(graph_info)
+    if derived and any(s["name"] == "corpus" and s["run"] for s in stations):
+        doc["derived"] = dict(derived)
+        # A consumer that started beside `corpus` would read either blob; the
+        # keys name the regenerated one, so every consumer waits for it.
+        for s in stations:
+            if s["name"] in BUILD_CONSUMERS and "corpus" not in s["after"]:
+                s["after"].append("corpus")
     return doc
 
 

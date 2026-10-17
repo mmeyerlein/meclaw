@@ -99,6 +99,11 @@ KILL_GRACE_S = 10
 # only the backstop this many seconds later.
 HANG_BACKSTOP_S = 60
 HANG_TAIL_LINES = 40
+# Fix round 4 v2-r3-kit: a Python stack that waits on a child says nothing about
+# the child. The tree names state and wait channel of every process of the
+# station's session; fds, kernel stack and the pipes held outside follow it.
+HANG_PS = ["ps", "-o", "pid,ppid,stat,wchan:32,etime,cmd", "--forest"]
+HANG_TREE_HEAD = "--- process tree (%s) ---" % " ".join(HANG_PS)
 # The test a nextest or unittest log names as running: nextest's `SLOW`/`START`/
 # `TERMINATING` lines (`SLOW [> 60.000s] <binary> <test>`), unittest's `-v` line
 # without its verdict (`test_x (mod.Class) ... `).
@@ -127,7 +132,7 @@ def running_test(lines):
 def hang_diagnosis(st, log, pid):
     """Write the hang diagnosis of a station over its cap into its log, before
     the kill: the line, the running test, the last 40 log lines and the
-    process tree of the command's session (`ps -o pid,etime,args --forest`)."""
+    process tree of the command's session (`HANG_PS`) and `session_detail`."""
     try:
         log.flush()
         with open(log.name, encoding="utf-8", errors="replace") as fh:
@@ -136,20 +141,80 @@ def hang_diagnosis(st, log, pid):
         lines = []
     tail = lines[-HANG_TAIL_LINES:]
     try:
-        tree = subprocess.run(["ps", "-o", "pid,etime,args", "--forest", "--sid", str(pid)],
+        tree = subprocess.run(HANG_PS + ["--sid", str(pid)],
                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               timeout=10).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         tree = "ps failed: %s\n" % exc
     out = ["", hang_line(st.get("name"), st.get("timeout_min")),
            "running test: %s" % (running_test(lines) or "none named in the log"),
-           "--- last %d log lines ---" % HANG_TAIL_LINES] + tail + [
-           "--- process tree (ps -o pid,etime,args --forest) ---"]
+           "--- last %d log lines ---" % HANG_TAIL_LINES] + tail + [HANG_TREE_HEAD]
     try:
-        log.write("\n".join(out) + "\n" + tree)
+        log.write("\n".join(out) + "\n" + tree + "\n".join(session_detail(pid)) + "\n")
         log.flush()
     except (OSError, ValueError):
         pass
+
+
+def _fds(pid):
+    """{fd: target} of `pid` (`ls -l /proc/<pid>/fd`), or None when unreadable."""
+    try:
+        names = os.listdir("/proc/%d/fd" % pid)
+    except OSError:
+        return None
+    out = {}
+    for fd in names:
+        try:
+            out[int(fd)] = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _cmd(pid):
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            return fh.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()[:160]
+    except OSError:
+        return "?"
+
+
+def session_detail(sid):
+    """Lines for every process of session `sid`: its open fds and its kernel stack
+    (or why not), then each of their pipes that a process OUTSIDE the session holds
+    -- the writer a reader in the session waits on without end (fix round 4 v2-r3-kit)."""
+    pids, others = [], []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            (pids if os.getsid(int(name)) == sid else others).append(int(name))
+        except OSError:
+            continue
+    out, pipes = [], {}
+    for pid in sorted(pids):
+        fds = _fds(pid)
+        out.append("--- fds of %d (ls -l /proc/%d/fd) ---" % (pid, pid))
+        if fds is None:
+            out.append("unreadable")
+        for fd in sorted(fds or {}):
+            out.append("%d -> %s" % (fd, fds[fd]))
+            if fds[fd].startswith("pipe:"):
+                pipes.setdefault(fds[fd], set()).add(pid)
+        out.append("--- kernel stack of %d (/proc/%d/stack) ---" % (pid, pid))
+        try:
+            with open("/proc/%d/stack" % pid, encoding="utf-8", errors="replace") as fh:
+                out.append(fh.read().rstrip() or "(empty)")
+        except OSError as exc:
+            out.append("unreadable: %s" % (exc.strerror or exc))
+    out.append("--- pipes of the session held outside it ---")
+    held = []
+    for pid in sorted(others):
+        for fd, target in sorted((_fds(pid) or {}).items()):
+            if target in pipes:
+                held.append("%s in session pids %s, fd %d of pid %d (%s)" % (
+                    target, ",".join(map(str, sorted(pipes[target]))), fd, pid, _cmd(pid)))
+    return out + (held or ["none"])
 
 
 GREENISH = ("GREEN", "CACHED")   # a FLAKY is a finding (OR-TV-2), green only as legacy
@@ -758,10 +823,24 @@ def fingerprint_drift(fp, expected):
     """The keys in which the lane `fp` differs from its register `expected`: a
     measure (FINGERPRINT_MEASURES) never, a value None on either side (a probe
     that timed out under load, a key the register did not have) never -- the
-    rule of `hygiene.fingerprint_drift`."""
+    rule of `hygiene.fingerprint_drift`. `build_env` is compared in the cache's
+    form (`cache._semantic_env`): a verdict variable (MECLAW_GATE_MODE, ...) is the
+    run's, not the lane's -- the register measured without it, every run with it
+    (Runde 3 R3 (4), ops-build01: `lane-drift [build_env]` in 46 receipts)."""
+    from . import cache, lane  # the one form of a build environment (re-check tv-bn M7r A-M2)
+
+    def same(k, a, b):
+        if k == "build_env" and isinstance(a, dict) and isinstance(b, dict):
+            try:
+                return cache._semantic_env(a) == cache._semantic_env(b)
+            except lane.LaneError:
+                # a tree without `lane_sync.sh` names no verdict variable: the whole
+                # environment then, a NOTE too many -- never a run that dies on a NOTE
+                return a == b
+        return a == b
     return sorted(k for k, v in (expected or {}).items()
                   if k in fp and k not in FINGERPRINT_MEASURES
-                  and v is not None and fp[k] is not None and fp[k] != v)
+                  and v is not None and fp[k] is not None and not same(k, fp[k], v))
 
 
 # Every field of a fingerprint (V0 section 2.3), the order of `lane_fingerprint.sh`.
@@ -773,8 +852,9 @@ FINGERPRINT_FIELDS = ("rustc", "cargo", "nextest", "node", "playwright", "python
 
 def _run_fingerprint_sh(args, env, argv=None, prelude="", cwd=None):
     """`lane_fingerprint.sh <args>` under `env` in `cwd`: `(answer, None)`, or `(None, why)`
-    when it did not answer -- no start, a time-out, an exit other than 0, no JSON
-    object (re-check tv-bn M7r A-M1: a half answer is no answer). `argv`: a
+    when it did not answer -- no start, a time-out, an exit other than 0 (with the
+    last line of its stderr: a hung tool call by name and its process tree, GH #1224),
+    no JSON object (re-check tv-bn M7r A-M1: a half answer is no answer). `argv`: a
     command that runs the script from its stdin (`sh -s`) on a lane instead,
     `prelude` before the script on that stdin. `cwd`: the tree whose toolchain
     rustup picks (re-check bundle N kit-fp M1, N-K1); a local run without one
@@ -794,7 +874,10 @@ def _run_fingerprint_sh(args, env, argv=None, prelude="", cwd=None):
     except (OSError, subprocess.SubprocessError) as exc:
         return None, "no answer (%s)" % exc.__class__.__name__
     if r.returncode != 0:
-        return None, "exit %d" % r.returncode
+        # the script's last word on stderr goes with it: a tool call past its bound
+        # names itself there with its process tree (GH #1224), into `unanswered`
+        last = (r.stderr or "").strip().splitlines()
+        return None, "exit %d%s" % (r.returncode, (": " + last[-1].strip()) if last else "")
     try:
         said = json.loads(r.stdout)
     except ValueError:
@@ -902,7 +985,7 @@ def stations_build(ln, plus_env, repo, host_tree=None):
         "sh -s -- --build-env %s; exit $?\n" % shlex.quote(host_tree)))[0])
 
 
-def lane_fingerprint(tree, target, env):
+def lane_fingerprint(tree, target, env, browsers=True):
     """V0 section 2.3: `lane_fingerprint.sh --tree <tree> <target>`,
     the one producer of a fingerprint (re-check tv-bn M7q M1, OR-T11-22).
 
@@ -918,13 +1001,21 @@ def lane_fingerprint(tree, target, env):
 
     A script that does not answer -- or misses a field -- is NO fingerprint (M7r
     A-M1, fail-closed): every field None and `unanswered` says why; no cache key is
-    made from it, no entry recorded under it, and the register keeps what it had."""
+    made from it, no entry recorded under it, and the register keeps what it had.
+
+    `browsers=False` (a run that books no engine, #1199 K14): no probe and no
+    `browsers` field -- the register keeps the last answer of a run that checked
+    them (`schedule.merge_register`). On 16.10. docs-only, satellite and
+    browser-less runs wrote the refusal of their own tree over all four lanes."""
     said, why = _run_fingerprint_sh(["--tree", tree, target], env, cwd=tree)
     missing = [k for k in FINGERPRINT_FIELDS if k != "browsers" and k not in (said or {})]
     if why is None and missing:
         why = "no field %s" % ",".join(missing)
     fp = {k: (None if why else said.get(k)) for k in FINGERPRINT_FIELDS}
-    fp["browsers"] = browser_probe(tree, env)
+    if browsers:
+        fp["browsers"] = browser_probe(tree, env)
+    else:
+        fp.pop("browsers", None)
     if why:
         fp["unanswered"] = why
     return fp
@@ -2578,7 +2669,10 @@ class _Run:
         expected = self.d.get("fingerprint_expected") or {}
         # the linker, the build environment and the incremental policy are the
         # stations' own (`base_env`), measured -- never the register's echo (M7t A-M3)
-        fp = lane_fingerprint(self.tree, self.target, self.base_env)
+        # the browsers only for a run that checks them (#1199 K14): any other run's
+        # tree says nothing about the lane's engines
+        booked = {e for st in self.by_name.values() for e in _booked_engines(st)}
+        fp = lane_fingerprint(self.tree, self.target, self.base_env, bool(booked))
         self.head["fingerprint"] = fp
         self.emit("lane_fingerprint", fp)
         if fp.get("unanswered"):   # M7r A-M1: said in the run, not only in the event
@@ -2590,7 +2684,6 @@ class _Run:
         # A booked engine that does not start is said in the run, not only in the
         # receipt (Re-Check S3 Teil 2, point 5): the scheduler books it 0 on this
         # lane. A run that books no engine says nothing (no node in most test lanes).
-        booked = {e for st in self.by_name.values() for e in _booked_engines(st)}
         refused = {e: why for e, why in sorted((fp.get("browsers") or {}).items())
                    if why != "ok" and e in booked}
         if refused:

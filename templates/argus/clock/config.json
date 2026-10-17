@@ -1,56 +1,71 @@
 {
   "cell": {
-    "type": "timer"
+    "type": "timer",
+    "timeout": -1
   },
   "params": {
-    "schedules": [
-      {
-        "schedule_id": "${uuid7:argus-cycle}",
-        "schedule_name": "argus-cycle",
-        "cron": "0 0 */6 * * *",
-        "emit_to": "../meter",
-        "emit_body": {
-          "messages": [
-            {
-              "origin": "user",
-              "type": "text",
-              "text": "argus-cycle"
-            }
-          ]
-        },
-        "emit_headers": {}
-      }
-    ]
+    "query_timeout_ms": 5000,
+    "schedules": []
   },
   "contract": {
     "version": "1.0.0",
-    "settings": {
-      "cycle_cron": {
-        "type": "string",
-        "secret": false,
-        "default": "0 0 */6 * * *",
-        "description": "6-field Quartz cron of the cycle, in UTC. Every six hours by default: a control loop that ticks faster than its measurement window can fill only measures noise. Documentation, not a params field of its own: a timer cell has no top-level `cron` param, the value lives inside the schedule at params.schedules[0].cron. Since GH #138 it is a LITERAL there rather than an environment token, so an instance retunes the cycle by overriding `schedules` (the key exists, which is what GH #294 asks of an override) or at runtime with a modify op by schedule_id -- and not by a colony-wide environment two loops would have to share."
-      }
-    },
-    "consumes": {},
+    "write_surface": "internal",
+    "settings": {},
     "emits": {
       "body": {
         "messages": {
           "type": "array",
-          "required": false
+          "required": true
         }
       },
       "hop": {
+        "event_id": {
+          "type": "string",
+          "required": true
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": true
+        },
         "schedule_name": {
           "type": "string",
           "required": true
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": true
+        },
+        "fired_at": {
+          "type": "string",
+          "required": true
+        },
+        "iteration_n": {
+          "type": "number",
+          "required": false
         }
       }
-    }
+    },
+    "consumes": {
+      "body": {
+        "op": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
   },
   "description": {
-    "purpose": "The cycle tick. Six-field Quartz cron, UTC.",
-    "use_when": "One per argus hive. Event triggers (a DLQ spike, a cost alert) are additional edges into ./meter, not a second timer.",
-    "not_in_scope": "No judgement -- it emits a tick and nothing else."
+    "purpose": "The cycle watchdog of R-AG-1 (GH #1229). It carries no schedule of its own: ./meter keeps one one-shot named `argus-cycle` under a fixed id and re-arms it (`rearm`) `cycle_ms` ahead after every tick that found an enabled goal. When it strikes, ./meter runs the next cycle.",
+    "use_when": "One per argus hive, always. It is not a poll: an argus whose charter has nothing enabled orders nothing, and the hive rests until an event arrives on `in_cycle` -- a cost alert, a DLQ spike, or the parent's own call after it switched a goal on.",
+    "not_in_scope": "No cron, and no judgement -- it strikes once when the moment the meter ordered comes, and nothing else. The cadence is the meter's `cycle_ms`, not a setting of this cell.",
+    "emits_meaning": "A plain strike, schedule_name `argus-cycle`, which is what the hive's edge to ./meter recognises.",
+    "consumes_meaning": "Schedule ops (add/modify/remove by schedule_id) as body.op -- in practice the one `add` with `rearm` that ./meter sends.",
+    "examples": [
+      "a tick at 06:00:00 that finds an enabled goal -> one order for 12:00:00 -> one strike at 12:00:00 -> ./meter runs the cycle and orders 18:00:00",
+      "a tick that finds every goal disabled -> its `idle` receipt and no order -> no strike until `in_cycle`"
+    ]
   }
 }

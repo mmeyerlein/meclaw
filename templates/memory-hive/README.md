@@ -1,4 +1,4 @@
-# `memory-hive@3.14.7`
+# `memory-hive@3.15.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Sixteen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -64,7 +64,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     closed on arrival, so the as-of leg could not see them while keyword and semantic still
     could. The rules state what to DO rather than a run of prohibitions, they are carried on
     every single turn, and their drift lock is
-    `crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs` — one direction now
+    `crates/meclaw-cells/tests/misc_3/gh299_the_contract_asks_for_both_parts.rs` — one direction now
     that there is one lane, plus a length bound, because what is in that block is paid for once
     per call. **Since 3.4.0 the hive does not merely SHIP the discipline, it OFFERS it**
     ([#606](https://github.com/mmeyerlein/meclaw/issues/606)): `./schemas` hands the
@@ -202,7 +202,7 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
     ([`inline-contract.md`](inline-contract.md), GH #299), which is the only thing the annotating
     model is handed and which reaches it as this hive's own `sidecar[]` offer since GH #606 —
     pinned there by
-    `crates/meclaw-cells/tests/misc_2/gh299_the_contract_asks_for_both_parts.rs`. Next to it
+    `crates/meclaw-cells/tests/misc_3/gh299_the_contract_asks_for_both_parts.rs`. Next to it
     [`predicate-core.json`](predicate-core.json) states the fate of the speech-act class and the
     `fact_kind: foresight` each example lands on. No
     speech act is seeded and none ever will be; the subject-matter
@@ -362,7 +362,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | Lane | Direction | The edge must carry |
 |---|---|---|
 | `in_episode` | in → `./memory` | one turn to remember — **one message carries one turn and its own provenance**, which is why `speaker` is answerable at all: identity travels per message, so two turns of one session can name two different people (GH #272). `session_id`/`turn_id` are ingress context keys and travel by themselves; optionally `set_context: {happened_at: "hop.happened_at"}` for historical ingest. **Plus the provenance of the turn, and it is not optional**: `set_context: {audience_set: …, channel: …, speaker: …}` (or `agent_id` on an assistant turn). Missing `audience_set` or `channel` → nothing is written and the turn leaves on `reject` — see [The audience gate](#the-audience-gate--who-may-be-told-what-244) |
-| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Two more keys are read and neither is required**: `session_id` scopes the session read (the tier-0 leg answers with THAT session's episodes; a question naming none reads a session called `default`), and `recall_caller` is a **reply-to token this hive never reads** -- whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how one hive serves several askers and each of them gets ITS answer ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). It has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by `crates/meclaw-cells/tests/misc_2/gh173_shipped_hive_contracts.rs`. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
+| `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Three more keys are read and none is required**: `session_id` scopes the session read (the tier-0 leg answers with THAT session's episodes; a question naming none reads a session called `default`), `speaker` names who asks (a `member:` of the round, set by the caller's lane; without it the asker is the one member of a 1:1 `audience_now`, in a group nobody, and an ask of nobody lifts no muted topic), and `recall_caller` is a **reply-to token this hive never reads** -- whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how one hive serves several askers and each of them gets ITS answer ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). It has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by `crates/meclaw-cells/tests/misc_2/gh173_shipped_hive_contracts.rs`. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
 | `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the annotation itself: the door stamps `store_origin`/`mem_phase` inside. The form comes from [`inline-contract.md`](inline-contract.md), and **since 3.4.0 this hive hands the model-facing copy out itself**, on `sidecar[]` of `in_schemas` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)) — what arrives here is the `memory` SECTION of one ```` ```sidecar ```` block, cut out by the asker's splitter and carried on a message of its own. *That the model writes a ```` ```memory ```` fence of its own is retracted, not quietly reworded*: one fence with one top-level key per section is the frame now, the asking collector owns it, and this hive owns one key of it. *That the front model's composite CARRIES the contract text is retracted with it* (GH #525 put it there, #606 takes it back to the reader) — the collector composes what it was offered. The old `extraction` shape stays readable at the ingress on purpose, so the rewiring goes in two phases ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). The section has TWO parts (#299): `facts`, the delta of world state the turn carried, and `topic`, where the conversation stands — a `topic` with `movement: "start"` or `"end"` writes the topics row next to the facts, `continue` writes none, and a turn that carried nothing still sends `{"memory":{"nothing_new":true,"facts":[],"topic":{"movement":"continue"}}}` rather than nothing at all. The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
 | `in_close_pass` | in → `./memory` | a session that just ended, to be read WHOLE once (GH #300, ruling Q9 of 2026-08-21). **Nothing travels in the body** — the lane names a session and the hive reads its own turns. The context is the same provenance every write lane of this hive demands and is not optional: `set_context: {session_id: …, audience_set: …, channel: …}`; the pass proposes writes, so a pass without them would mint sharpened rows nobody can filter afterwards. The shipped caller already has all three — `talky`'s `./session-keeper → ./collector` close edge promotes exactly this set. Wire `close_report` in the SAME mutation. The pass costs one strong-model call per session — see [What a close pass costs](#what-a-close-pass-costs-measured) |
 | `in_export` | in → `./memory` | `hop.export_to` names the run's directory, relative to the fence this hive's store declares in `params.transfer.base_path`; without it the hive's own name. The store writes `<dir>/memory-hive/seed/<table>.jsonl` for every table of the walk and `export_final.json` last, and the hive says `export_done` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `export_done` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
@@ -377,7 +377,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing, and since [#261](https://github.com/mmeyerlein/meclaw/issues/261) exactly ONE message of it: the receipt of an applied import, for the whole directory rather than per part (`hop.export_of` counts the tables applied, `hop.rows_written` the rows that were new, `hop.export_final` is always `'1'` because a directory is applied whole or not at all) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
 | `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve and in `sidecar[]` the section this hive asks for in return: one `{section, required, schema, instruction}` with `section: "memory"` and `required: true` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)). All three slots are `required: true` in the emitted body — `schemas` carries `contract.version` `1.1.0` for the new one — and `sidecar[]` is filled on EVERY answer of the cell, the `tools_missing` one included, because a section is not a response to a name. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. `verify_failed` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) is for facts the curator's word-for-word check refused and kept (`sidecar_verify` with `"mode": "mark"`, the item carries `failed`): such a fact is filed under no source -- a quote of the advice labelled `person` would otherwise become the person's -- and the receipt counts them, never echoing. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. `verify_failed` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) is for facts the curator's word-for-word check refused and kept (`sidecar_verify` with `"mode": "mark"`, the item carries `failed`): such a fact is filed under no source -- a quote of the advice labelled `person` would otherwise become the person's -- and the receipt counts them, never echoing. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. `op_not_accepted` ([#1229](https://github.com/mmeyerlein/meclaw/issues/1229)) is the writer refusing a `clock_op` that is not a `trigger` of the night: the lane ends at `./writer`, and an `add`, `modify` or `remove` from outside never reaches the clock (section *The night* below). See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -698,6 +698,7 @@ and both of those are filtered. A row you cannot reach visibly, you do not see.
 | `in_query` | `audience_now` | **yes** | JSON list of who is present right now |
 | `in_query` | `channel` | **yes** | where the question is being asked |
 | `in_query` | `channel_open_history` | no, default closed | true for `1`/`true`/`yes`/`on`; anything else, absence included, is closed |
+| `in_query` | `speaker` | no | who asks, a `member:` of the round, set by the caller's lane. Absent, the asker is the one member of a 1:1 `audience_now`; in a group it is nobody, and an ask of nobody lifts no muted topic |
 
 Sets travel as a **JSON string** (the store column is text); a native list in the context is
 accepted too. The stored form is always the string.
@@ -1004,18 +1005,24 @@ Deleting is not this feature.
   letters or more that are not filler (one where the sentence says the thing was told), matched in
   a fact's `claim` (never its subject, so a name alone reaches nobody's every fact) or an episode's
   `content`, only open facts, and nothing from after the request turn (a fact by its `valid_from`,
-  an episode by its `happened_at`). The search reaches every room the round sits in (`covers`),
-  since the person asking is in each of them. It is not bounded: a mute hides nothing from a
+  an episode by its `happened_at`). The search reaches every row the person asking was present
+  for (`covers` names the speaker alone): the rooms of the round and the speaker's own 1:1 rooms
+  too, so "forget X" said in the group keeps X aside when the member talks alone with the agent
+  ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)). The rows of the other members' rooms
+  stay theirs; a turn without a speaker of the round falls back to the round. It is not bounded: a mute hides nothing from a
   question and one turn lifts it, so "forget everything about the doctor" mutes every row that
   names the doctor (the 64-row `forget_too_broad` cut of the closing semantics is gone).
 - The mute is four columns on `episodes`, `facts` and `beliefs`: `muted_at` (when the member asked),
-  `mute_source` (`forget_request:<turn id>`), `mute_words` (the words of the thing) and
+  `mute_source` (`forget_request:<turn id>@<speaker>`, the one who asked: the request's speaker
+  where its round has one, else the one member of a 1:1 request; a group request without a
+  speaker names nobody and is written `forget_request:<turn id>`), `mute_words` (the words of the thing) and
   `unmuted_at`. `closed_at`, `expired_at` and `closure_source` are never touched, and nothing is
   deleted: the rows stay, so the log stays the audit.
 - Recall raises no muted row unasked, on the gate every leg already passes (`visible_row`): the
   tier-0 bundle, built per turn without a question, never shows one, and an ask shows one only
   where its words carry every word of the row's `mute_words`, or, where the asker's own words are
-  a question (a `?`), all of them but one and at least one -- the member's "how much does my
+  a question (a `?`, or a sentence that opens with a word of the language's `question_words`, so a
+  transcript without punctuation still asks), all of them but one and at least one -- the member's "how much does my
   neighbour still owe me?" about "money neighbour owes", "what did the doctor say?" about a
   two-word topic with the doctor in it, or the model's `memory_recall` naming the thing. A
   statement that names part of a topic raises nothing. The mode is the asker's words, not a knob,
@@ -1030,12 +1037,36 @@ Deleting is not this feature.
   (`in_query` with `subject`) answers a muted fact only where the subject itself names the thing.
 - The member lifts a mute by taking the topic up again: a turn of their own after the request,
   not itself asking to forget, that carries every word of `mute_words` (inflected as above) sets `unmuted_at` on every
-  row of that request in the next close pass (`unmuted` on the report). The agent naming it, a
-  peer, a turn before the request or a part of the words lift nothing. Neither does a turn that
+  row of that request in the next close pass (`unmuted` on the report), even where the closer
+  fails: the lift needs no verdict, so a pass that ends in `closer_failed` still carries `unmuted`
+  ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)). Recall reads the same rule
+  (`takes_up`, the same bytes as the close pass), so the member who takes the topic up sees it at
+  once in the same session; other sessions see it after the close. Only the member who asked
+  lifts: the speaker the mark names (`@<speaker>`); another member of the round naming the topic
+  lifts nothing, in the group or anywhere the mute reached. A turn, an ask or a request without a
+  speaker is the one member of its `audience_set` where that is a 1:1 (recall reads the ask's
+  `speaker` context key and its `audience_now`); in a group it is nobody, and nobody lifts and is
+  lifted: a turn or an ask of nobody takes nothing up, and a request of nobody stays muted.
+  A mark without a speaker (written before the speaker rode on it, or a group request of nobody)
+  takes who said the request turn it names where that turn is among the session's turns.
+  Where it is not (a request of an earlier session) and a turn names the topic, the lift reads that
+  one request turn (`speaker`, `audience_set`), once, and the same rule applies: only the one who
+  asked lifts, in the group and in any 1:1. The close pass rewrites such a mark into its new form
+  on every table it reached (`forget_request:<turn id>@<who asked>`, or `forget_request:<turn id>@`
+  for a request of nobody, which stays muted), so it is read once; recall only reads. A read that fails or finds no turn leaves the
+  mark muted and says so (`lift_unread` = the store's `error_code` or `request_not_found`: on the
+  tier-0 answer, in the tier-1 cut note, and on a `close_report` of phase `mute-up`, which names
+  the request turns in `lift_unread_requests`).
+  How far the lift reads is bounded: recall reads the newest `lift_turns` turns of the
+  session and `lift_marks` live mutes (both 512, close-glue's `close_turn_rows`), and a page that
+  comes back full is said (`lift_cut` on the tier-0 answer, `complete_reason` on tier 1), never
+  silent. Tier 0 reads the session once: its episode leg is made as deep as the lift needs.
+  The words are compared first; the grammar below runs only on a turn that names the topic.
+  The agent naming it, a peer, a turn before the request or a part of the words lift nothing. Neither does a turn that
   keeps the topic aside ("don't bring up the money my neighbour owes me again", the language's
   `keeps_muted`; where the grammar reads such a sentence it is a request of its own) or a yes to
   the other side's question which topic was meant (a turn opening with the language's `affirms`
-  right after a question). A request the member takes up again later in its own session is not
+  right after a question). Mute and turn times are compared as times (UTC), never as strings. A request the member takes up again later in its own session is not
   muted at all, and a request already muted is not honoured twice (the pass reads the live mutes
   before it meets, `mutes` among its parked sets, and the session's own turns carry their mark).
   Both reads run on an index (`episodes(mute_source)`, `episodes(closure_source)`; the store
@@ -1052,7 +1083,9 @@ and `false` honours only a request the closer cites, still checked against the t
 honours only the verbs of the language's `fallback_verbs` (forget, and "don't bring up / mention ... again"): "delete
 the reminder for the dentist" speaks to an appointment, so delete and erase mute only where the closer cites the
 turn. Only an ask counts, a sentence that
-starts with the verb or puts "please", "can you" or "I want you to" before it and names a thing;
+starts with the verb or puts "please", "can you" or "I want you to" before it and names a thing,
+or one of the everyday forms of the language's `asks` ("Please don't talk about X anymore",
+"Stop bringing up X", or in German "X, no more talking please" and "Can you forget the thing with X?");
 "I always forget my keys" states something and "forget it" names nothing, so neither mutes a row.
 The facts of a muted episode go with it through their provenance (`episode_id`), and a fact
 is searched in the window of its `valid_from`, so a fact said before the request is reached even
@@ -1237,7 +1270,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.14.7` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.15.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1644,7 +1677,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.5.31",
+{"add_nodes": [{"name": "alex", "template": "member@2.5.32",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1749,6 +1782,8 @@ say "no legacy subject at all".
 | `query_safe_chars` | `null` (package; `200` without) | A query at or below this length reaches the legs untouched. Above it the hygiene guard runs (GH #88) |
 | `query_max_chars` | `null` (package; `250` without) | Hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
 | `query_tokens` | `null` (package; `24` without) | How many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
+| `lift_turns` | `512` | How many turns of the session (newest first) the lift of a muted topic in the same session reads (GH #1225); close-glue's `close_turn_rows` default. A full page is said: `lift_cut` on a tier-0 answer, `complete_reason` on tier 1 |
+| `lift_marks` | `512` | How many live mutes that lift reads (GH #1225), the same bound and the same report of a full page |
 
 ### The params of `./dream-glue`
 
@@ -1799,34 +1834,52 @@ knob's name on stderr -- a typo never reads as "off".
 | `count_page` | `500` | GH #1057: rows one count read of a subject may return; a subject that is no entity yet becomes one at `min_facts`, so a full page means enough, and the canonical name is chosen from it |
 | `newborn_hits` | `200` | GH #1057: facts one mention search of an entity born in the night's window may return; a full page is said in the journal, and a mention beyond it gets no edge from that night |
 
-### The nightly tick: `./clock`
+### Language data in the params ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225), [#1089](https://github.com/mmeyerlein/meclaw/issues/1089))
+
+Three params are lists per language, keyed by language code (`en`, `de`); every language is tried
+at once, so a member who switches language mid-session is read either way. They are data, never
+guessed: a language without its key gets nothing from that rule, and nothing else is inferred.
+
+| param | cells | effect |
+|---|---|---|
+| `forget_lang.<lang>` | `./close-glue`, `./recall` | The grammar of a request to forget: `cues`, `stopwords`, `told`, `thing`, `asks`, `reminds`, `negation`, `conjunction`, `fallback_verbs`, `keeps_muted` and `affirms`. Built from `close-glue/lang/<lang>.json`; recall carries the same block, so the lift it shows in the session is the lift the close pass makes. |
+| `question_words.<lang>` | `./close-glue`, `./recall` | The words that make a sentence a question when they open it, with or without a `?` (a spoken turn often has none). Asked-for topics and lifts read it the same way in both cells. |
+| `entity_stop_lang.<lang>` | `./recall`, `./entity-glue` | The words that are never part of a name: forms of address, pronouns, polite forms, articles, common nouns. German capitalises every noun, so a run of capitalised words is cut at each of them before it is looked up or matched as a name ("Herrn Beckers Tochter Anna" reads as no single name). The same lists ride the curator's push; a drift lock holds the copies equal. Absent, nothing is cut. |
+
+### The night: `./clock`, armed by `./writer`
 
 The timer is called `clock` since 3.2.0 ([#551](https://github.com/mmeyerlein/meclaw/issues/551),
 ruling R-0904-5: a `timer` whose schedules carry nothing but the tick is named `clock`; a tick
-whose NAME carries the semantics, like `session-keeper/night`, keeps it). It has no top-level
-`cron` param -- a timer's schedule lives inside `params.schedules[]` -- so the value is a literal
-there and an instance retunes the night by overriding the whole `schedules` key. The clock takes
-no `modify` at runtime: it is born with `accept_ops: ["trigger"]` (below).
+whose NAME carries the semantics, like `session-keeper/night`, keeps it). Since
+[#1229](https://github.com/mmeyerlein/meclaw/issues/1229) (R-AG-1: no tick without an event) it
+carries no schedule of its own (`schedules: []`) and takes nothing but `add`
+(`accept_ops: ["add"]`): it is a watchdog, and `./writer` is its only sender. Every episode the
+writer writes orders ONE one-shot `nightly-dream` for the next `night_at_utc` at least a minute
+ahead, under the fixed id the watchdog block derives from the name and with `rearm`, so every
+further episode of the same day orders the identical moment and changes nothing
+([#690](https://github.com/mmeyerlein/meclaw/issues/690)), and a day nobody wrote arms no night.
+A night missed while the colony was down fires once on its next start (`catch_up`). The strike
+reaches `./dream-glue` the way the cron strike did: same body, its own `dream_run`/`dream_to`,
+its own `consolidation_log` row.
 
 | where | default | effect |
 |---|---|---|
-| `params.schedules[0].cron` | `0 0 3 * * *` | 6-field Quartz schedule of the nightly run, **in UTC**. The `timer` cell type plans every occurrence on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the field for the UTC hour you want, not for the local one |
+| `writer` `params.night_at_utc` | `03:00` | `HH:MM` of the night a written day arms, **in UTC**. The `timer` cell type plans on `DateTime<Utc>` and has no timezone knob (`crates/meclaw-cells/src/timer/io.rs`), so the default fires at 03:00 UTC — 05:00 in Berlin summer time, 04:00 in winter. Pick the UTC moment you want, not the local one. An empty value arms no night (a run that fires its nights by hand through `clock_op`); a value that is not `HH:MM` arms none either and says so on stderr |
 
 **The night, now (`clock_op`, since 3.9.0, [#1019](https://github.com/mmeyerlein/meclaw/issues/1019)).** The
 hive is sealed and its clock sits behind the rim, so a POST at `<hive>/clock` ends as
-`hive_boundary`. The lane `clock_op` at the hive path is the way in: the body is a timer op, and
-`{"messages": [], "op": "trigger", "schedule_name": "nightly-dream"}` runs one night now, exactly
-as the cron strike would (same body, its own `dream_run`/`dream_to`, its own `consolidation_log`
-row), while the cron and the next due time stay as they were. The name is the address because the
-schedule id is minted at instantiation and no API reads it; `schedule_id` works as well when the
-caller has it. A replay fires one night per recorded day this way and reads the receipt in
-`consolidation_log`; an unknown name is refused by the timer (`schedule_not_found`) and fires
-nothing. The lane carries `trigger` and nothing else: the clock is born with
-`accept_ops: ["trigger"]`, so `add`, `modify`, `remove` and a `params` slot arriving there are
-refused as `op_not_accepted` and change nothing. An `add` would otherwise plant a strike the clock
-emits from inside the hive, at any inner cell past the rim, and a `modify` or `remove` could move or
-switch off the night. The refusal is the timer's own error message; no edge carries it on, so it
-lands as a dead letter where the run would have been read.
+`hive_boundary`. The lane `clock_op` at the hive path is the way in, and since #1229 it ends at
+`./writer`, not at the clock: `{"messages": [], "op": "trigger", "schedule_name": "nightly-dream"}`
+(the name may be left out) makes the writer order the night two seconds ahead under the night's
+own id. That replaces a night armed for `night_at_utc`, the run is the one a nightly strike would
+start, and the next written episode arms the next night. A replay fires one night per recorded day
+this way and reads the receipt in `consolidation_log` -- and waits for it before it writes the
+next day, because an episode written in those two seconds orders the night for `night_at_utc`
+again. The lane carries the trigger and nothing else: `add`, `modify`, `remove`, a `params` slot,
+a `schedule_id` or another name are refused by the writer on the hive's `reject` lane
+(`reject_reason: op_not_accepted`) and never reach the clock. An `add` would otherwise plant a
+strike the clock emits from inside the hive, at any inner cell past the rim, and a `modify` or
+`remove` could move or switch off the night.
 
 ### No model call over an unchanged store ([#857](https://github.com/mmeyerlein/meclaw/issues/857))
 
@@ -2017,7 +2070,12 @@ fan-out, and since the `store` cell answers **N ops in one bundle**
 
 So the three legs travel as three `tool_call` turns in ONE message (`hop.phase == 'legs'`, ids
 `r-leg-episodes`, `r-leg-beliefs`, `r-leg-foresight`) and come back as one bundle
-(`hop.operation == 'bundle'`): schema-pure `tool_result` turns in call order plus a top-level
+(`hop.operation == 'bundle'`). Since [#1225](https://github.com/mmeyerlein/meclaw/issues/1225)
+two reads ride the same message after the legs, in tier 0 and in the tier-1 fan alike
+(`r-leg-mutes`/`r-leg-session`, `r-fan-mutes`/`r-fan-session`, before `emb_models`): the live
+mutes and the session's newest 512 turns, so a topic the member takes up again is visible in the
+same session by close-glue's rule; they are no leg and add no round trip. The bundle holds
+schema-pure `tool_result` turns in call order plus a top-level
 `results[]` slot holding each leg's own `operation`, `rows_affected`, `duration_ms` and, if it
 failed, `error_code` — correlated by `tool_call_id`, because the UBF turn schema is closed and a
 turn cannot carry metadata of its own. That single hop gates the rows, projects them, folds the

@@ -94,16 +94,20 @@ fn tree(broken: bool) -> tempfile::TempDir {
     copy_tree(&templates_root().join("door"), &templates.join("door"));
     let clock = templates.join("argus/clock/config.json");
     let raw = std::fs::read_to_string(&clock).unwrap();
-    // A cron this run will never reach: the point here is the staging, not a tick.
-    let mut cfg: Value =
-        meclaw_core::serde_json::from_str(&raw.replace("0 0 */6 * * *", "0 0 0 1 1 *")).unwrap();
+    let mut cfg: Value = meclaw_core::serde_json::from_str(&raw).unwrap();
     if broken {
-        let schedule = cfg["params"]["schedules"][0]
-            .as_object_mut()
-            .expect("the shipped schedule is an object");
-        schedule.remove("schedule_id");
+        // The shipped clock carries no schedule since R-AG-1 (GH #1229), so the
+        // copy gets one back -- with a cron this run never reaches, and without
+        // the `schedule_id` the `timer` schema requires, as #401 shipped it.
+        cfg["params"]["schedules"] = json!([{
+            "schedule_name": "argus-cycle",
+            "cron": "0 0 0 1 1 *",
+            "emit_to": "../meter",
+            "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "argus-cycle"}]},
+            "emit_headers": {}
+        }]);
         assert!(
-            schedule.get("schedule_id").is_none(),
+            cfg["params"]["schedules"][0].get("schedule_id").is_none(),
             "the defect has to be in the copy, or this test proves nothing"
         );
     }

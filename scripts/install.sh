@@ -27,6 +27,8 @@
 #   MECLAW_INSTALL_DIR  install here instead of ~/.local/bin
 #   MECLAW_REPO         owner/name of the GitHub repository
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -eu
 
 REPO="${MECLAW_REPO:-mmeyerlein/meclaw}"
@@ -254,3 +256,4 @@ case ":${PATH}:" in
         say "    meclaw --version"
         ;;
 esac
+}; exit $?

@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -31,8 +32,22 @@ def clean_env(**extra):
     exclusion list) of this process, plus `extra` -- nothing else. Since orchestrator
     OR-T12-18 A-M1 the build environment is the WHOLE environment minus the
     exclusion list, so a test that wants to see one name change starts from a
-    known environment instead of filtering this process's."""
+    known environment instead of filtering this process's.
+
+    And the toolchain store of this process (review v2-r3-kit I2): the rustup
+    proxies on PATH read their toolchains from RUSTUP_HOME, else `$HOME/.rustup`.
+    The public runner's form (`export_tree_tests.ci_runner`) gives the suite a HOME
+    of its own and the store as RUSTUP_HOME; without it the script's probes asked
+    rustup in an empty HOME, rustup installed the tree's pinned toolchain there
+    (about 1 GB, four shards into one HOME), and a probe during that answered
+    nothing -- `linker: null`, gate aba3473. RUSTUP_AUTO_INSTALL=0: a probe never
+    installs, a store without the toolchain is no answer, never a download."""
     env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    store = os.environ.get("RUSTUP_HOME") or (os.path.join(os.environ["HOME"], ".rustup")
+                                              if os.environ.get("HOME") else "")
+    if store and os.path.isdir(store):
+        env["RUSTUP_HOME"] = os.path.abspath(store)
+    env["RUSTUP_AUTO_INSTALL"] = "0"
     env.update(extra)
     return env
 
@@ -617,10 +632,18 @@ class TestBrowserStartProbe(BrowserLaneCase):
         self.assertIn("does not start (goto): page.goto: net::ERR_FAILED at file://", got["chromium"])
 
     def test_a_hanging_launch_is_a_reason_within_the_engines_seconds(self):
+        # The budget is the hanging engine's; the other engine's "ok" is its kept one.
+        # A fresh chromium start under the 1-s budget was a wall-clock verdict: red at
+        # mm-os01 load 15 / 8 vCPU ("no answer within 1s", fix round 2 v2-r3-kit).
+        self.env["FAKE_PW_WEBKIT"] = "launch"
+        self.assertEqual("ok", self.lane()["chromium"])
+        before = len(self.launches())
         self.env.update(FAKE_PW_WEBKIT="hang", MECLAW_BROWSER_PROBE_SECS="1")
         got = self.lane()
         self.assertEqual("ok", got["chromium"])
         self.assertIn("no answer within 1s at launch", got["webkit"])
+        # the hang of one engine starts no other one again
+        self.assertEqual([], [s for s in self.launches()[before:] if s.startswith("chromium")])
 
     def test_no_chromium_for_findBrowser_is_not_ok(self):
         # MECLAW_CHROMIUM wins in findBrowser; a system chromium on PATH would else answer
@@ -674,8 +697,9 @@ class TestBuildEnvironment(unittest.TestCase):
         return json.loads(res.stdout)
 
     def base(self):
-        """`build_env` of `clean_env()`: PATH alone (HOME is excluded)."""
-        return {"PATH": digest(os.environ["PATH"])}
+        """`build_env` of `clean_env()`: all of it but HOME (excluded) -- PATH and the
+        toolchain store's names."""
+        return {k: digest(v) for k, v in clean_env().items() if k != "HOME"}
 
     def with_(self, extra):
         return dict(self.base(), **{k: digest(v) for k, v in extra.items()})
@@ -718,10 +742,12 @@ class TestBuildEnvironment(unittest.TestCase):
         dashes (dash drops it from its variables) and the C driver's paths entered no
         key. The rule is the WHOLE environment minus a closed exclusion list: every
         name the re-check measured, and a name nobody ever heard of, is in."""
-        triple = subprocess.run(["rustc", "-vV"], capture_output=True, text=True,
-                                timeout=kit_time.HANG).stdout if shutil.which("rustc") else ""
-        host = next((ln.split(": ", 1)[1] for ln in triple.splitlines() if ln.startswith("host: ")), "")
-        target = "CARGO_TARGET_%s_" % host.upper().replace("-", "_").replace(".", "_")
+        # The triple comes from the rustc cargo runs (RUSTC): one that names it, so
+        # the pin needs no toolchain of the host -- a lane's test PATH has none (the
+        # case skipped there), and the host's answered nothing where HOME held no
+        # store (review v2-r3-kit I2, gate aba3473).
+        rustc = self.fake_rustc("9.9.9")
+        target = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_"
         for name, value in (("RUSTC", "/opt/other/rustc"), ("CARGO_BUILD_RUSTC", "/opt/other/rustc"),
                             ("RUSTC_BOOTSTRAP", "1"), ("RUSTC_WORKSPACE_WRAPPER", "clippy-driver"),
                             ("RUSTUP_TOOLCHAIN", "nightly"), ("CARGO", "/opt/other/cargo"),
@@ -762,14 +788,13 @@ class TestBuildEnvironment(unittest.TestCase):
                      "CLAUDE_CODE_SESSION_ID", "PWD", "SHLVL", "MECLAW_GATE_ARCHIVE"):
             with self.subTest(out=name):
                 self.assertEqual(self.base(), self.build(**{name: "1"})["build_env"])
-        if not host:
-            self.skipTest("no rustc names the host triple")
         mold = "-C link-arg=-fuse-ld=mold"
         for extra, linker in (({target + "RUSTFLAGS": mold}, "mold"), ({target + "LINKER": "clang"}, "clang"),
                               # cargo's order: RUSTFLAGS before the target's, the target's before build's
                               ({target + "RUSTFLAGS": mold, "RUSTFLAGS": "-C link-arg=-fuse-ld=wild"}, "wild"),
                               ({target + "RUSTFLAGS": mold, "CARGO_BUILD_RUSTFLAGS": "-C linker=gcc"}, "mold"),
                               ({target + "LINKER": "clang", "RUSTFLAGS": "-C linker=gcc"}, "gcc")):
+            extra = dict(extra, RUSTC=rustc)
             with self.subTest(extra=extra):
                 got = self.build(**extra)
                 self.assertEqual(linker, got["linker"])
@@ -780,15 +805,54 @@ class TestBuildEnvironment(unittest.TestCase):
     def test_a_relative_value_writes_nothing_into_the_callers_tree(self):
         """M7y: the probes of the script resolve a relative HOME against the cwd;
         a run from the worktree left `1/.rustup` in it (untracked, found after the
-        M7x run). The helper runs in a directory of its own."""
+        M7x run). The helper runs in a directory of its own. The probes answer from
+        a toolchain on PATH that writes `$HOME/.rustup` as rustup does: the real
+        shim installed the tree's toolchain under the relative HOME -- a download
+        inside a fingerprint, 13-18 s alone and past the 20-s bound of a tool call
+        under the load of a pre (GH #1224, OR-V2.R2.3)."""
         rel = "m7y-rel-home-%d" % os.getpid()
-        self.build(HOME=rel)
+        self.build(HOME=rel, PATH=self.rustup_like_bin() + os.pathsep + os.environ["PATH"])
         self.assertFalse(os.path.exists(rel))
         self.assertFalse((pathlib.Path(__file__).resolve().parents[2] / rel).exists())
 
+    def test_a_home_of_its_own_installs_no_toolchain(self):
+        """Review v2-r3-kit I2: with a HOME of its own (the public runner's form, the
+        HOME row of the exclusion list) the script's probes asked rustup in a HOME
+        without a store, and rustup installed the tree's toolchain into it. The
+        store is this process's: nothing lands in the HOME, the same rustc answers.
+        The proxies stay where this process's HOME put them (the script finds them
+        as `$HOME/.cargo/bin`; a lane's test PATH has no other).
+        The HOME is an empty one of its own, not `scratch_home()`: that one carries
+        fake proxies in `.cargo/bin` (GH #1224), and this test needs a HOME without
+        any toolchain (batch v2-r3-batch, shell x kit)."""
+        home_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(home_dir.cleanup)
+        home = home_dir.name
+        cargo_bin = os.path.join(os.environ.get("CARGO_HOME") or os.path.join(os.environ["HOME"], ".cargo"), "bin")
+        got = self.build(HOME=home, PATH=cargo_bin + os.pathsep + os.environ["PATH"])
+        self.assertEqual([], sorted(os.listdir(home)))
+        self.assertEqual(self.build()["rustc"], got["rustc"])
+
     def scratch_home(self):
+        """A HOME of its own whose `.cargo/bin` answers for rustc and cargo (the
+        script puts it first on its PATH): an empty one made rustup install the
+        tree's toolchain into it -- a download inside a fingerprint, past the
+        bound of a tool call (GH #1224, OR-V2.R2.1)."""
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
+        return toolchain_env(d.name)["HOME"]
+
+    def rustup_like_bin(self):
+        """An absolute directory whose rustc and cargo answer as the fakes do and,
+        like a rustup shim, first create `$HOME/.rustup` -- relative to their cwd
+        when HOME is relative."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        for name, body in (("cargo", FAKE_CARGO), ("rustc", FAKE_RUSTC)):
+            path = pathlib.Path(d.name, name)
+            path.write_text(body.replace("#!/bin/sh\n", "#!/bin/sh\nmkdir -p \"$HOME/.rustup\"\n", 1),
+                            encoding="utf-8")
+            path.chmod(0o755)
         return d.name
 
     def test_no_value_is_in_clear(self):
@@ -1030,6 +1094,76 @@ class TestTheTreesToolchain(unittest.TestCase):
             self.assertIn("cargo_config", reasons[name])
 
 
+class TestOneMeasureForRegisterAndRun(unittest.TestCase):
+    """Runde 3 R3 (4), ops-build01 16.10.: `lane-drift [build_env]` in 46 receipts of the wave,
+    on every lane. A strand run measured `build_env` with the stations' PATH (`lane.REMOTE_PATH`
+    in front) and the run's MECLAW_GATE_* words (the mode, the runner's floor), `lanes
+    fingerprint` wrote the register without them: the first run after every `lanes
+    fingerprint` noted a drift of a lane that had not changed. One rule for both: the register
+    is measured in the stations' command form, the floor is the kit's (BUILD_ENV_NOT), and the
+    mode is a verdict variable of the run, compared the cache's way (`cache._semantic_env`)."""
+
+    setUp = TestTheTreesToolchain.setUp   # the fake toolchain and tree, nothing of its cases
+
+    def host(self):
+        from scripts.pipeline import lane
+        host_home = self.tmp / "host-home"
+        (host_home / ".cargo" / "bin").mkdir(parents=True, exist_ok=True)
+
+        def remote_argv(ln, script, **kw):
+            return ["env", "-i", "PATH=%s" % self.path, "HOME=%s" % host_home, "bash", "-c", script]
+        return lane.Lane(name="lane-h", ssh="builder@lane-h.invalid",
+                         root=str(self.tmp / "host")), remote_argv
+
+    def test_the_register_and_a_strand_run_measure_one_build_environment(self):
+        from unittest import mock
+        from scripts.pipeline import executor, lane
+        ln, remote_argv = self.host()
+        (self.tmp / "host").mkdir()
+        with mock.patch.object(lane, "_remote_argv", side_effect=remote_argv):
+            register = lane.fingerprint(ln)
+            for mode in ("strand", "integration"):
+                with self.subTest(mode=mode):
+                    plus = dict(lane.env_for(ln, mode), MECLAW_GATE_MODE=mode)
+                    run = executor.stations_build(ln, plus, str(self.tree),
+                                                  str(self.tmp / "host" / "tree"))
+                    self.assertIsInstance(run["build_env"], dict)
+                    self.assertEqual([], executor.fingerprint_drift(
+                        {"build_env": run["build_env"]}, {"build_env": register["build_env"]}))
+                    self.assertEqual(register["build_env"].get("PATH"), run["build_env"].get("PATH"))
+                    self.assertNotIn("MECLAW_GATE_LANE_MIN_FREE_G", run["build_env"])
+
+    def test_lane_sync_measures_under_the_registers_stations_path(self):
+        """Review v2-r3-kit M3: `lane_sync.sh fingerprint` (the `fp` of `lanes status`)
+        measured under its own spelling of the stations' PATH, a second copy of
+        `lane.REMOTE_PATH` that no pin bound. Both now send one string: the same
+        host answers both with the same `build_env` PATH."""
+        from unittest import mock
+        from scripts.pipeline import lane
+        ln, remote_argv = self.host()
+        (self.tmp / "host").mkdir()
+        with mock.patch.object(lane, "_remote_argv", side_effect=remote_argv):
+            register = lane.fingerprint(ln)
+        env = {"PATH": self.path, "HOME": str(self.tmp / "host-home"),
+               "MECLAW_LANE_NAME": ln.name, "MECLAW_LANE_ROOT": ln.root}
+        res = subprocess.run(["bash", str(REPO / "scripts" / "lane_sync.sh"), "fingerprint", "local"],
+                             env=env, capture_output=True, text=True, timeout=kit_time.HANG)
+        self.assertEqual(0, res.returncode, res.stderr)
+        sync = json.loads(res.stdout)
+        self.assertTrue(register["build_env"]["PATH"])
+        self.assertEqual(register["build_env"]["PATH"], sync["build_env"]["PATH"])
+
+    def test_a_verdict_variable_is_no_drift_a_build_variable_is(self):
+        from scripts.pipeline import executor
+        reg = {"build_env": {"PATH": "p1", "RUSTFLAGS": "r1"}}
+        self.assertEqual([], executor.fingerprint_drift(
+            {"build_env": dict(reg["build_env"], MECLAW_GATE_MODE="m1")}, reg))
+        self.assertEqual(["build_env"], executor.fingerprint_drift(
+            {"build_env": dict(reg["build_env"], RUSTFLAGS="r2")}, reg))
+        self.assertEqual(["build_env"], executor.fingerprint_drift(
+            {"build_env": dict(reg["build_env"], PATH="p2")}, reg))
+
+
 @unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh")
 class TestNoAnswer(unittest.TestCase):
     """Re-check tv-bn M7r A-M1 (fail-open): a lane_fingerprint.sh that did not
@@ -1146,6 +1280,175 @@ class TestIncrementalPolicy(unittest.TestCase):
         # no third spelling of the rule
         from scripts.pipeline import lane
         self.assertFalse(hasattr(lane, "INCREMENTAL_ON") or hasattr(lane, "INCREMENTAL_OFF"))
+
+
+# A tool that never answers (GH #1224: `cargo --version` held a station 79 min on
+# build01): it notes its pid, fires the bound it runs under (kit_time.FIRE_BOUND_SH:
+# the bound's event now, re-check v2-r3-shell M2), then sleeps in the place of the
+# call. The sleep's length is a name for the process tree, never a measure of anything.
+FAKE_HANGS = """#!/bin/sh
+case "$*" in
+    %(hangs)s) echo $$ >"$FAKE_PID_FILE"
+%(fire)s
+        exec sleep %(name)d ;;
+    --version) echo "%(tool)s 1.90.0 (fake 2026-01-01)" ;;
+    nextest*) echo "cargo-nextest 0.9.146 (fake)" ;;
+    *) exit 1 ;;
+esac
+"""
+
+
+@unittest.skipUnless(shutil.which("sh") and shutil.which("timeout") and shutil.which("setsid"),
+                     "needs a POSIX sh, timeout and setsid")
+class TestToolBound(unittest.TestCase):
+    """GH #1224: every tool call of a lane probe runs under its own bound. A call
+    past it is said by name with the process tree it hangs in, the probe ends
+    (exit 3, no answer) and the tool's tree goes with it. The bound is the hang
+    marker (MECLAW_FP_TOOL_SECS = kit_time.BOUND_S), so no call that answers runs
+    under a short wall clock; the hung fake fires it itself (re-check v2-r3-shell
+    M2). What is held is the event -- the bound fired, the name, the tree, the end
+    of the hung process -- never how long anything took."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name)
+        self.pid_file = self.root / "hung.pid"
+        self.bound_file = self.root / "bound.fired"
+        self.name = 86400 + os.getpid() % 10000
+
+    def hanging(self, tool, hangs):
+        """A HOME whose `.cargo/bin` holds the toolchain fakes and `tool`, which
+        hangs on the arguments `hangs`."""
+        env = toolchain_env(self.root, MECLAW_FP_TOOL_SECS=str(kit_time.BOUND_S),
+                            FAKE_PID_FILE=str(self.pid_file), FAKE_BOUND_FILE=str(self.bound_file))
+        path = pathlib.Path(env["HOME"]) / ".cargo" / "bin" / tool
+        path.write_text(FAKE_HANGS % {"hangs": hangs, "name": self.name, "tool": tool,
+                                      "fire": kit_time.FIRE_BOUND_SH},
+                        encoding="utf-8")
+        path.chmod(0o755)
+        return env
+
+    def assert_said_and_gone(self, stderr, call, whole=True):
+        """The bound fired; `stderr` names `call` with its tree -- the hung
+        process in it -- on the last line (and, `whole`, says the end of the
+        probe before it); the hung process is gone."""
+        self.assertTrue(self.bound_file.exists(), "the bound never fired: " + stderr)
+        lines = stderr.strip().splitlines()
+        self.assertTrue(lines, "nothing said")
+        bound = kit_time.BOUND_S
+        self.assertIn("'%s' hung past %ds, its process tree:" % (call, bound), lines[-1])
+        pid = int(self.pid_file.read_text().strip())
+        tree = lines[-1].split("its process tree: ", 1)[1]
+        self.assertRegex(tree, r"(?:^|;)%d " % pid, "the hung call is not in its tree")
+        if whole:
+            self.assertTrue(any("'%s' gave no answer within %ds" % (call, bound) in ln
+                                for ln in lines), stderr)
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return
+        try:
+            ready, _, _ = select.select([fd], [], [], kit_time.HANG)
+            self.assertEqual([fd], ready, "the hung tool %d outlived the probe" % pid)
+        finally:
+            os.close(fd)
+
+    def test_a_tool_past_its_bound_ends_the_probe_by_name_with_its_tree(self):
+        env = self.hanging("cargo", "--version")
+        for stdin in (False, True):
+            with self.subTest(stdin=stdin):
+                res = fingerprint(str(self.root), stdin=stdin, env=env)
+                self.assertEqual((3, ""), (res.returncode, res.stdout), res.stderr)
+                self.assert_said_and_gone(res.stderr, "cargo --version")
+
+    def test_the_run_carries_the_hang_into_its_unanswered(self):
+        from scripts.pipeline import executor
+        tree = self.root / "tree"
+        tree.mkdir()
+        shutil.copy(REPO / "rust-toolchain.toml", tree)
+        said, why = executor._run_fingerprint_sh(["--build-env", str(tree)],
+                                                  self.hanging("cargo", "--version"), cwd=str(tree))
+        self.assertIsNone(said)
+        self.assertTrue(why.startswith("exit 3: "), why)
+        self.assert_said_and_gone(why, "cargo --version", whole=False)   # the last line
+
+    def test_the_status_inventory_names_its_hung_tool(self):
+        lane_root = self.root / "lane"
+        (lane_root / "sccache").mkdir(parents=True)
+        env = dict(self.hanging("sccache", "--show-stats"), MECLAW_LANE_ROOT=str(lane_root),
+                   MECLAW_LANE_NAME="lane-l")
+        res = subprocess.run([str(REPO / "scripts" / "lane_sync.sh"), "status", "local"], env=env,
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                             timeout=2 * kit_time.HANG, cwd=str(self.root))
+        self.assertEqual("reachable  state hung\n", res.stdout, res.stderr)
+        self.assert_said_and_gone(res.stderr, "sccache --show-stats")
+
+
+# A rustup proxy (rustc, cargo) in a tree whose pinned toolchain the host lacks
+# (re-check v2-r3-shell I1): with RUSTUP_AUTO_INSTALL=0 it says so at once, in
+# rustup 1.29.1's words (berichte/logs-v2-r3-shell/i1-rustup-real.log); without it
+# rustup downloads the toolchain -- a long runner, played past the probe's bound.
+FAKE_RUSTUP_PROXY = """#!/bin/sh
+if [ "${RUSTUP_AUTO_INSTALL:-}" = 0 ]; then
+    echo "error: toolchain '1.98.0-x86_64-unknown-linux-gnu' is not installed" >&2
+    echo "help: run \\`rustup toolchain install\\` to install it" >&2
+    exit 1
+fi
+echo "info: syncing channel updates for '1.98.0-x86_64-unknown-linux-gnu'" >&2
+echo $$ >"$FAKE_PID_FILE"
+%(fire)s
+exec sleep %(name)d
+"""
+
+
+@unittest.skipUnless(shutil.which("sh") and shutil.which("timeout") and shutil.which("setsid"),
+                     "needs a POSIX sh, timeout and setsid")
+class TestNeverInstalls(unittest.TestCase):
+    """Re-check v2-r3-shell I1: the probe measures, it never installs. A tree
+    whose pinned toolchain the host lacks made rustup's proxy download it under
+    the probe's bound -- said as a hang, killed mid-install, a full-pass mark on
+    a wrong diagnosis. Now every rustup proxy of the probe runs without
+    auto-install, and a toolchain that is not there is a named no-answer: exit 3,
+    `toolchain not installed`, the call by name, nothing started that installs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name)
+        self.pid_file = self.root / "install.pid"
+        self.env = toolchain_env(self.root, MECLAW_FP_TOOL_SECS=str(kit_time.BOUND_S),
+                                 FAKE_PID_FILE=str(self.pid_file),
+                                 FAKE_BOUND_FILE=str(self.root / "bound.fired"))
+        for tool in ("rustc", "cargo"):
+            path = pathlib.Path(self.env["HOME"]) / ".cargo" / "bin" / tool
+            path.write_text(FAKE_RUSTUP_PROXY % {"fire": kit_time.FIRE_BOUND_SH,
+                                                 "name": 86400 + os.getpid() % 10000},
+                            encoding="utf-8")
+            path.chmod(0o755)
+
+    def assert_named_not_installed(self, last, said):
+        self.assertIn("'rustc --version' toolchain not installed", last, said)
+        self.assertIn("is not installed", last, said)
+        self.assertNotIn("hung past", said)
+        self.assertFalse(self.pid_file.exists(), "the probe started an install: " + said)
+
+    def test_a_missing_toolchain_is_a_named_no_answer(self):
+        for stdin in (False, True):
+            with self.subTest(stdin=stdin):
+                res = fingerprint(str(self.root), stdin=stdin, env=self.env)
+                self.assertEqual((3, ""), (res.returncode, res.stdout), res.stderr)
+                self.assert_named_not_installed(res.stderr.strip().splitlines()[-1], res.stderr)
+
+    def test_the_run_carries_it_into_its_unanswered(self):
+        from scripts.pipeline import executor
+        tree = self.root / "tree"
+        tree.mkdir()
+        shutil.copy(REPO / "rust-toolchain.toml", tree)
+        said, why = executor._run_fingerprint_sh(["--build-env", str(tree)], self.env, cwd=str(tree))
+        self.assertIsNone(said)
+        self.assertTrue(why.startswith("exit 3: "), why)
+        self.assert_named_not_installed(why, why)
 
 
 if __name__ == "__main__":

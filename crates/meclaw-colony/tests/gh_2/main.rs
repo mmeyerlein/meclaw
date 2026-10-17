@@ -47,3 +47,4 @@ pub mod gh47_a_timer_cannot_hold_the_drain;
 pub mod gh47_the_drain_waits_for_quiescence;
 pub mod gh47_the_ledger_counts_what_the_router_hands_over;
 pub mod gh47_the_teardown_behaves_exactly_as_before;
+pub mod gh491_a_node_born_asleep_stays_asleep;

@@ -25,6 +25,8 @@
 # Fallback without the nextest variables: one directory per binary (the stem
 # of the executable without cargo's hash) -- the map is then per binary.
 # A `--list` call (nextest lists through the runner too) keeps no profile.
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -u
 base=${MECLAW_COVERAGE_PROFILE_DIR:?MECLAW_COVERAGE_PROFILE_DIR is not set}
 profdata=${MECLAW_LLVM_PROFDATA:-llvm-profdata}
@@ -73,4 +75,5 @@ if [ -e "$1" ]; then
         rmdir "$dir" 2>/dev/null
     fi
 fi
-exit $rc
+(exit "$rc")
+}; exit $?

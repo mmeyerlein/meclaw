@@ -174,6 +174,48 @@ class EveryBanIsRedInAnAddedLine(Case):
             "#[tokio::test(start_paused = true)]", head="use tokio::time::Instant;\n"),
             "rs-elapsed-verdict")
 
+    # GH #1199 R1.3: GN2 found a wall clock behind a file-local helper fn
+    # (`fn epoch_now() -> f64 { SystemTime::now()... }`) that the ban did not
+    # see -- one level, file-local, a helper whose return type carries time.
+    def test_rs_elapsed_verdict_behind_a_system_time_helper_is_red(self):
+        self.assert_red("rs-elapsed-verdict", RS, fn_rs(
+            "    let t0 = epoch_now();\n    run().await;\n"
+            "    assert!(epoch_now() - t0 < 2.0);",
+            head="fn epoch_now() -> f64 {\n    SystemTime::now().duration_since(UNIX_EPOCH)"
+                 ".unwrap().as_secs_f64()\n}\n\n"))
+
+    def test_rs_elapsed_verdict_behind_an_instant_helper_through_a_variable_is_red(self):
+        self.assert_red("rs-elapsed-verdict", RS, fn_rs(
+            "    let a = now_ms();\n    run().await;\n    let took = now_ms() - a;\n"
+            "    assert!(took < 500, \"slow\");",
+            head="fn now_ms() -> u128 {\n    START.get_or_init(Instant::now).elapsed()"
+                 ".as_millis()\n}\n\n"))
+
+    def test_rs_elapsed_verdict_behind_a_chrono_helper_is_red(self):
+        self.assert_red("rs-elapsed-verdict", RS, fn_rs(
+            "    let t = stamp();\n    run().await;\n    assert_eq!(stamp() - t, 0);",
+            head="fn stamp() -> i64 {\n    chrono::Utc::now().timestamp_millis()\n}\n\n"))
+
+    def test_rs_elapsed_verdict_on_a_helper_that_returns_no_time_is_green(self):
+        # a wait helper reads the clock for its deadline (a hang marker) and
+        # returns the event's outcome: the assert judges the event, not time
+        self.assert_green(RS, fn_rs(
+            "    assert!(wait_ok(&rx).await);",
+            head="async fn wait_ok(rx: &Rx) -> bool {\n    let end = Instant::now() + HANG;\n"
+                 "    while Instant::now() < end {\n        if rx.ready() {\n"
+                 "            return true;\n        }\n    }\n    false\n}\n\n"),
+            "rs-elapsed-verdict")
+
+    def test_rs_elapsed_verdict_on_a_counting_helper_with_a_deadline_is_green(self):
+        # a number-returning helper whose clock is only its hang marker: the
+        # value it returns is a count, not a time (class search, 18 files)
+        self.assert_green(RS, fn_rs(
+            "    assert_eq!(count_for(&rx).await, 2);",
+            head="async fn count_for(rx: &Rx) -> usize {\n    let end = Instant::now() + HANG;\n"
+                 "    let mut n = 0;\n    while Instant::now() < end {\n        n += rx.take();\n"
+                 "    }\n    n\n}\n\n"),
+            "rs-elapsed-verdict")
+
     def test_rs_short_deadline_in_an_added_line_is_red(self):
         self.assert_red("rs-short-deadline", RS, fn_rs(
             "    let m = timeout(Duration::from_millis(200), rx.recv()).await.unwrap();"))
@@ -398,6 +440,27 @@ class EveryBanIsRedInAnAddedLine(Case):
 class OnlyAddedLinesCount(Case):
 
     SLEEP = fn_rs("    std::thread::sleep(D);", "#[test]")
+
+    # OR-TV-12: the clock behind a file-local helper is judged on added lines
+    # only, like every diff ban; the statements that were there stay out
+    HELPER = "fn epoch_now() -> f64 {\n    SystemTime::now().duration_since(UNIX_EPOCH)" \
+             ".unwrap().as_secs_f64()\n}\n\n"
+    VERDICT = "    assert!(epoch_now() - t0 < 2.0);"
+
+    def test_an_existing_verdict_behind_a_clock_helper_is_not_graded(self):
+        before = fn_rs("    let t0 = epoch_now();\n    run().await;\n" + self.VERDICT,
+                       head=self.HELPER)
+        r = Repo(self, base={RS: before})
+        r.write(RS, before.replace("run().await;", "run().await;\n    other().await;"))
+        r.commit()
+        self.assertEqual([], ids(r.bans([RS])))
+
+    def test_an_added_verdict_behind_an_existing_clock_helper_is_red(self):
+        before = fn_rs("    let t0 = epoch_now();\n    run().await;", head=self.HELPER)
+        r = Repo(self, base={RS: before})
+        r.write(RS, before.replace("run().await;", "run().await;\n" + self.VERDICT))
+        r.commit()
+        self.assertEqual(["rs-elapsed-verdict"], ids(r.bans([RS]), "RED"))
 
     def test_a_moved_file_is_not_an_added_line(self):
         r = Repo(self, base={RS: self.SLEEP})

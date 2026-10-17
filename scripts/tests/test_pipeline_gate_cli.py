@@ -15,6 +15,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -305,6 +306,37 @@ class TestGateLocal(GateCase):
         self.assertEqual(db.execute("SELECT count(*) FROM leases").fetchone()[0], 0)
         legacy = self.repo / "target" / "gate" / self.repo.name / ("strand-%s.json" % self.rev())
         self.assertTrue(legacy.is_file())
+
+    def test_a_local_pass_says_it_takes_no_lane_lease(self):
+        # Lease find R3b (welle-validierung-2, 16.10.): `strand.sh gate --host
+        # build01` of a kit-only diff ran here (`GATE-LANE local`); the lease
+        # build01 lay idle and was reclaimed after 15 min while the gate ran.
+        # I3 (ruling test-cc19, 16.10.): only a plan without a cargo station,
+        # without `--host` and without a held lane lease runs here -- it needs
+        # no lane lease, takes none, and says so in one line.
+        self.python_plan()
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"(?m)^GATE-LANE local ")
+        self.assertIn("gate: NOTE local pass (no cargo station, no --host, no lane lease): runs "
+                      "on this machine, takes and needs no lane lease\n", out)
+        self.assertFalse(self.lane_root.exists(), "a python-only plan never touches a lane")
+        db = store.open()
+        self.assertEqual(db.execute("SELECT count(*) FROM leases").fetchone()[0], 0)
+
+    def test_a_local_run_without_a_browser_station_keeps_the_browsers(self):
+        """#1199 K14: the local lane's register follows the lanes' rule -- a run that
+        books no engine measures no browsers, and the register keeps their value."""
+        ok = {"chromium": "ok", "webkit": "ok"}
+        path = pathlib.Path(gate._local_fp_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"vcpu": 8, "browsers": ok}))
+        self.python_plan()
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
+        self.assertEqual(rc, 0, out + err)
+        reg = json.loads(path.read_text())
+        self.assertEqual(ok, reg["browsers"])
+        self.assertIn("rustc", reg, "the run wrote its own fingerprint")
 
     def test_local_cargo_below_the_disk_floor_is_aborted_by_hygiene(self):
         # Delta A I-neu-1: a local cargo pass keeps legacy's floor
@@ -1049,6 +1081,89 @@ class TestGateLane(GateCase):
         self.assertTrue((latest / "logs").is_dir())
         self.assertIn("GATE-SUMMARY", (latest / "summary.txt").read_text())
 
+    def test_a_plan_without_cargo_runs_on_the_named_lane(self):
+        # I3 (ruling test-cc19, 16.10.): a cargo-free kit plan (gate-selftest,
+        # export-tree-tests --kit) with `--host build03` ran on this machine
+        # beside the live Egon (~120 % load, a load-flake). With `--host` it runs
+        # on that lane under the admission's lease, as a cargo plan: its stations
+        # and no others (no empty build), the receipt, the archive.
+        self.python_plan()
+        archive = self.tmp / "archive"
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l",
+                                 "--archive", str(archive))
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.verdicts(out), {"claims": "GREEN", "tree-rules": "GREEN"})
+        self.assertRegex(out, r"(?m)^GATE-LANE lane-l ")
+        self.assertNotIn("local pass", out)
+        got = json.loads((archive / "latest" / "receipt.json").read_text())
+        self.assertEqual(["claims", "tree-rules"], sorted(s["name"] for s in got["stations"]))
+        self.assertIn("GATE-SUMMARY", (archive / "latest" / "summary.txt").read_text())
+        gate_dir = self.repo / "target" / "gate" / self.repo.name
+        self.assertEqual("GREEN", json.loads(
+            (gate_dir / ("strand-%s.json" % self.rev())).read_text())["verdict"])
+
+    def test_a_plan_without_cargo_runs_on_the_held_lane(self):
+        # I3: without `--host`, a strand that holds a lane lease runs its
+        # cargo-free plan on that lane too -- never here beside the live Egon.
+        self.python_plan()
+        db = store.open()
+        self.assertEqual(0, schedule.lease_init(db, lanes="lane-l",
+                                                lanes_file=str(self.lanes_file)).code)
+        self.assertEqual(0, schedule.lease_take(db, "welle-x/t1", lane="lane-l").code)
+        db.close()
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.verdicts(out), {"claims": "GREEN", "tree-rules": "GREEN"})
+        self.assertRegex(out, r"(?m)^GATE-LANE lane-l ")
+        self.assertNotIn("local pass", out)
+
+    def held(self, holder="welle-x/t1"):
+        db = store.open()
+        self.assertEqual(0, schedule.lease_init(db, lanes="lane-l",
+                                                lanes_file=str(self.lanes_file)).code)
+        self.assertEqual(0, schedule.lease_take(db, holder, lane="lane-l").code)
+        db.close()
+
+    def test_a_batch_plan_without_cargo_runs_on_its_members_held_lane(self):
+        # re-check v2-r3-lease n1: a batch `<wave>/S1+S2` whose member holds a
+        # lane spoke for nobody in `_held_lane` -- its cargo-free plan ran here,
+        # while its admission speaks for the member (`schedule._batch_speaker`).
+        self.python_plan()
+        self.held()
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test",
+                                 "--strand", "welle-x/t1+t2")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"(?m)^GATE-LANE lane-l ")
+        self.assertNotIn("local pass", out)
+        db = store.open()
+        o = types.SimpleNamespace(strand="welle-x/t1+t2", wave="", holder=None, host=None,
+                                  lane=False)
+        self.assertEqual("lane-l", gate._held_lane(db, str(self.repo), o))
+        self.assertFalse(gate._runs_here(o, str(self.repo), db, cargo=False))
+        db.close()
+
+    def test_plan_only_keys_on_the_held_lane(self):
+        # re-check v2-r3-lease n2: since I3 `--plan-only` keys its plan on the held
+        # lane (a cargo plan without `--host` too) -- pinned under a held lease.
+        self.kern_plan()
+        self.held()
+        db = store.open()
+        schedule.sync_runners(db, lane.load_lanes(str(self.lanes_file)), states={"lane-l": "idle"})
+        db.execute("INSERT OR IGNORE INTO runners (name, state) VALUES ('lane-other', 'idle')")
+        db.execute("UPDATE runners SET fingerprint = '{\"k\": 1}', updated_at = "
+                   "CASE name WHEN 'lane-l' THEN '2000-01-01T00:00:00Z' "
+                   "ELSE '2999-01-01T00:00:00Z' END")
+        db.commit()
+        db.close()
+        rc, out, err = self.gate("strand", "--plan-only")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"(?m)^GATE-PLAN strand \S+ .* lane=lane-l ")
+        with mock.patch.object(gate, "_held_lane", return_value=""):
+            rc, out2, err = self.gate("strand", "--plan-only")
+        self.assertEqual(rc, 0, out2 + err)
+        self.assertRegex(out2, r"(?m)^GATE-PLAN strand \S+ .* lane=lane-other ",
+                         "without the held lane the plan keys on the runner updated last")
+
     def test_lane_pass_dispatches_the_store_runner_class(self):
         # #1158 (S0): the gate's flags (`+nice` from `--no-nice`) never stand in
         # for the runner class; the store's `runners.class` travels as its own key.
@@ -1125,21 +1240,21 @@ class TestGateLane(GateCase):
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"(?m)^gate: rev = %s$" % self.rev())
 
-    def test_a_core_plan_without_cargo_stays_local_despite_host(self):
-        # Delta A M-neu-4: the admission put the pass in `wt/<name>` (no
+    def test_a_core_plan_without_cargo_goes_to_wt_name_on_the_named_lane(self):
+        # Delta A M-neu-4: the admission puts the pass in `wt/<name>` (no
         # station needs cargo there); guard, hold and push follow it. Z17:
         # the fixture's `build` without `needs` was the one plan the routing
         # (`gate._needs_cargo`, name rule) and the admission (`schedule._needs`)
-        # read differently; with one rule a core plan without cargo never
-        # reaches a lane -- `wt/<name>` is the satellites' (W10 pins), and
-        # `tree/` stays untouched either way.
+        # read differently -- one rule. I3 (ruling test-cc19, 16.10.) turns
+        # Review Z-A R2 M3 ("never reaches a lane"): with `--host` a core plan
+        # without cargo runs on that lane, in `wt/<name>`; `tree/` stays untouched.
         self.plan(station("shellcheck"), station("claims"))
         rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
         self.assertEqual(rc, 0, out + err)
         self.assertFalse((self.lane_root / "tree").exists())
-        # Review Z-A R2 M3: it never reached the lane -- local, no lane root.
-        self.assertFalse(self.lane_root.exists())
-        self.assertRegex(out, r"(?m)^GATE-PLAN strand \S+ .* lane=local\b")
+        self.assertTrue((self.lane_root / "wt" / self.repo.name).is_dir())
+        self.assertRegex(out, r"(?m)^GATE-PLAN strand \S+ .* lane=lane-l\b")
+        self.assertRegex(out, r"(?m)^GATE-LANE lane-l ")
         # Z14: the plan line says the pass's cargo, not a fixed 1.
         self.assertRegex(out, r"(?m)^GATE-PLAN strand \S+ .* cargo=0 ")
 
@@ -1245,6 +1360,20 @@ class TestGateLane(GateCase):
         self.assertGreaterEqual(d["capacity"]["colony"], widest)
         self.assertEqual([gate.plan.resolve_colony(gate.plan.COLONY_REST, want)],
                          [s["needs"]["colony"] for s in d["stations"]])
+
+    def test_a_local_pass_raises_a_cap_below_three_times_the_lane_p95(self):
+        # Fix round 4 v2-r3-kit: TV-K5 (b) held on the lane only; the local pass kept
+        # the plan's default cap (gate-selftest 20 min, three HANGs of running shards
+        # on mm-os01). It now raises like the lane, by `schedule.local_p95`.
+        self.plan(station("lab-rest"))
+        with mock.patch.object(gate.lane, "exec_stream", wraps=lane.exec_stream) as ex, \
+                mock.patch.object(gate.schedule, "local_p95", return_value={"lab-rest": 600.0}) as p95:
+            rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(("meclaw", "strand"), tuple(p95.call_args.args[1:3]))
+        d = ex.call_args.args[1]
+        self.assertEqual([30], [s["timeout_min"] for s in d["stations"]])
+        self.assertIn("gate: NOTE cap lab-rest 1 -> 30 min", out)
 
     def test_a_lane_pass_dispatches_its_colonies_resolved_on_the_lane(self):
         # Re-check tb-s3 h1 m-2: `_run_lane` resolves COLONY_REST with the admitted
@@ -1526,10 +1655,26 @@ class TestGateLane(GateCase):
         self.assertEqual(1, len(live), live)
         self.assertEqual([], released)
 
-    def _raising_run(self, exc, where):
-        """A lane run whose `exec_stream` (or whose stream) raises `exc`: the
-        lease is closed lost on the way out, the exception goes on."""
+    @staticmethod
+    def _open_runs(db):
+        """The runs the admission still counts before their deadline (`_live_runs`
+        without a clock): workpackages `active` or `stopped/lost`."""
+        return db.execute("SELECT key FROM items WHERE type = 'workpackage' AND "
+                          "(state = 'active' OR (state = 'stopped' AND reason = 'lost'))"
+                          ).fetchall()
+
+    def _raising_run(self, exc, where, scoped=False, gone=("inactive", ""), armed=False):
+        """A lane run whose `exec_stream` (or whose stream) raises `exc`; the
+        exception goes on. Returns (close mock, err, live runs, lease holders).
+        #1228 round 3 (K13): every way out after the admission frees the lease
+        -- before the executor started at once, after it when the lane probe
+        (`schedule.run_gone`, faked by `gone`) shows the run gone."""
         self.kern_plan()
+        if armed:
+            db = store.open()
+            self.assertEqual(0, schedule.lease_init(db, lanes="lane-l",
+                                                    lanes_file=str(self.lanes_file)).code)
+            db.close()
 
         class _Out:
             def __iter__(self):
@@ -1538,26 +1683,210 @@ class TestGateLane(GateCase):
             def close(self):
                 pass
 
-        fake = types.SimpleNamespace(stdout=_Out(), wait=lambda: 0)
+        fake = types.SimpleNamespace(stdout=_Out(), wait=lambda: 0, scoped=scoped)
         side = {"side_effect": exc} if where == "exec" else {"return_value": fake}
+        errbuf = io.StringIO()
         with mock.patch.object(gate.lane, "exec_stream", **side), \
+                mock.patch.object(gate.lane, "abort", return_value=0) as abort, \
+                mock.patch.object(gate.schedule, "run_gone", return_value=gone) as probe, \
                 mock.patch.object(gate.schedule, "close", wraps=schedule.close) as close:
             with self.assertRaises(type(exc)):
-                self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
+                gate.run_gate(["strand", "--no-pre", "--reason", "test", "--host", "lane-l"],
+                              io.StringIO(), errbuf)
         self.assertEqual(close.call_count, 1, close.call_args_list)
+        # Ctrl-C in the stream asks the executor to abort itself (`_stream_to_end`)
+        own = 1 if where == "stream" and isinstance(exc, KeyboardInterrupt) else 0
+        if where == "exec" or not scoped:
+            self.assertEqual(0, probe.call_count, "no executor started, or no unit to ask (I1)")
+            self.assertEqual(own, abort.call_count)
+        else:
+            self.assertEqual(own + 1, abort.call_count,
+                             "the executor is asked to abort on the way out")
+            self.assertEqual(1, probe.call_count)
+        db = store.open()
+        live = self._open_runs(db)
+        holders = [r["holder"] for r in db.execute("SELECT holder FROM leases")]
+        db.close()
+        return close, errbuf.getvalue(), live, holders
+
+    def _assert_freed(self, close, live, holders):
+        self.assertFalse(close.call_args.kwargs.get("lost"), close.call_args)
+        self.assertEqual("ABORTED", close.call_args.args[2]["data"]["verdict"], close.call_args)
+        self.assertEqual([], live, "the admission binds the lane no more")
+        self.assertEqual([], holders, "the run's lease went with its close")
+
+    def test_exec_stream_raising_frees_the_lease(self):
+        close, err, live, holders = self._raising_run(RuntimeError("boom"), "exec", armed=True)
+        self._assert_freed(close, live, holders)
+        self.assertIn("ended before its executor started", err)
+
+    def test_exec_stream_lane_error_frees_the_lease(self):
+        # K13: the kern broke after the admission with a LaneError, the lease stayed
+        self.kern_plan()
+        db = store.open()
+        self.assertEqual(0, schedule.lease_init(db, lanes="lane-l",
+                                                lanes_file=str(self.lanes_file)).code)
+        db.close()
+        with mock.patch.object(gate.lane, "exec_stream",
+                               side_effect=lane.LaneError(2, "the executor did not start")), \
+                mock.patch.object(gate.schedule, "close", wraps=schedule.close) as close:
+            rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
+        self.assertEqual(2, rc, out + err)
+        db = store.open()
+        live = self._open_runs(db)
+        holders = [r["holder"] for r in db.execute("SELECT holder FROM leases")]
+        db.close()
+        self.assertEqual(1, close.call_count, close.call_args_list)
+        self._assert_freed(close, live, holders)
+
+    def test_exec_stream_interrupted_frees_the_lease(self):
+        close, _, live, holders = self._raising_run(KeyboardInterrupt(), "exec", armed=True)
+        self._assert_freed(close, live, holders)
+
+    def test_a_signal_before_the_executor_frees_the_lease(self):
+        def term(*_a, **_k):
+            os.kill(os.getpid(), signal.SIGTERM)    # the handler raises at the next bytecode
+            raise AssertionError("SIGTERM did not unwind the pass")
+        self.kern_plan()
+        db = store.open()
+        self.assertEqual(0, schedule.lease_init(db, lanes="lane-l",
+                                                lanes_file=str(self.lanes_file)).code)
+        db.close()
+        before = signal.getsignal(signal.SIGTERM)
+        with mock.patch.object(gate.lane, "exec_stream", side_effect=term), \
+                mock.patch.object(gate.schedule, "close", wraps=schedule.close) as close:
+            with self.assertRaisesRegex(SystemExit, r"^%d$" % (128 + signal.SIGTERM)):
+                self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
+        self.assertIs(before, signal.getsignal(signal.SIGTERM), "the pass restores the handler")
+        db = store.open()
+        live = self._open_runs(db)
+        holders = [r["holder"] for r in db.execute("SELECT holder FROM leases")]
+        db.close()
+        self._assert_freed(close, live, holders)
+
+    def _armed_kern(self):
+        self.kern_plan()
+        db = store.open()
+        self.assertEqual(0, schedule.lease_init(db, lanes="lane-l",
+                                                lanes_file=str(self.lanes_file)).code)
+        db.close()
+
+    def _leases(self):
+        db = store.open()
+        live = self._open_runs(db)
+        holders = [r["holder"] for r in db.execute("SELECT holder FROM leases")]
+        db.close()
+        return live, holders
+
+    def test_a_signal_in_the_spawn_window_keeps_the_lease_while_the_executor_lives(self):
+        # Re-check v2-r3-lease m1: the executor is spawned inside `exec_stream`;
+        # a signal between the spawn and `started.append` ended the pass as
+        # "not started" -- ABORTED, lease free, executor running on the lane.
+        # Fault injection: the signal lands after the spawn, before the return.
+        for sig, exc, said in ((signal.SIGTERM, SystemExit, r"^%d$" % (128 + signal.SIGTERM)),
+                               (signal.SIGHUP, SystemExit, r"^%d$" % (128 + signal.SIGHUP)),
+                               (signal.SIGINT, KeyboardInterrupt, r"^$")):
+            with self.subTest(sig=sig.name):
+                self.tearDown()
+                self.setUp()
+                self._armed_kern()
+                fake = types.SimpleNamespace(stdout=iter(()), wait=lambda: 0, scoped=True)
+
+                def spawn(*_a, **_k):
+                    os.kill(os.getpid(), sig)    # the executor lives: the spawn is done
+                    return fake
+                alive = ("active", "pipe-x.scope is active")
+                with mock.patch.object(gate.lane, "exec_stream", side_effect=spawn), \
+                        mock.patch.object(gate.lane, "abort", return_value=0) as abort, \
+                        mock.patch.object(gate.schedule, "run_gone", return_value=alive) as probe, \
+                        mock.patch.object(gate.schedule, "close", wraps=schedule.close) as close:
+                    with self.assertRaisesRegex(exc, said):
+                        self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
+                self.assertEqual(1, abort.call_count, "the started executor is asked to abort")
+                self.assertEqual(1, probe.call_count, "the lane is probed, not trusted empty")
+                self.assertTrue(close.call_args.kwargs.get("lost"), close.call_args)
+                live, holders = self._leases()
+                self.assertEqual(1, len(live), "the run stays open while its executor lives")
+                self.assertEqual(1, len(holders), "the lease stays while the executor lives")
+
+    def test_a_sighup_unwinds_the_pass_like_sigterm(self):
+        # Re-check v2-r3-lease m2: SIGHUP (a closed terminal or tmux pane) is trapped too.
+        def hup(*_a, **_k):
+            self.assertNotIn(signal.getsignal(signal.SIGHUP), (signal.SIG_DFL, signal.SIG_IGN),
+                             "the pass traps SIGHUP")
+            os.kill(os.getpid(), signal.SIGHUP)
+            raise lane.LaneError(2, "the executor did not start")
+        self._armed_kern()
+        before = signal.getsignal(signal.SIGHUP)
+        with mock.patch.object(gate.lane, "exec_stream", side_effect=hup), \
+                mock.patch.object(gate.schedule, "close", wraps=schedule.close) as close:
+            with self.assertRaisesRegex(SystemExit, r"^%d$" % (128 + signal.SIGHUP)):
+                self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
+        self.assertIs(before, signal.getsignal(signal.SIGHUP), "the pass restores the handler")
+        live, holders = self._leases()
+        self._assert_freed(close, live, holders)
+
+    def test_a_second_signal_on_the_way_out_does_not_break_the_close(self):
+        # Re-check v2-r3-lease m2: the trap is one-shot -- a second SIGTERM or
+        # SIGHUP while the way out closes the run is ignored, the close lands.
+        def term(*_a, **_k):
+            os.kill(os.getpid(), signal.SIGTERM)
+            raise lane.LaneError(2, "the executor did not start")
+        seen, real_close = [], schedule.close
+
+        def close_twice_signalled(*a, **k):
+            seen.append((signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)))
+            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), signal.SIGHUP)
+            return real_close(*a, **k)
+        self._armed_kern()
+        with mock.patch.object(gate.lane, "exec_stream", side_effect=term), \
+                mock.patch.object(gate.schedule, "close",
+                                  side_effect=close_twice_signalled) as close:
+            with self.assertRaisesRegex(SystemExit, r"^%d$" % (128 + signal.SIGTERM)):
+                self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
+        self.assertEqual([(signal.SIG_IGN, signal.SIG_IGN)], seen,
+                         "after the first signal both are ignored until the restore")
+        live, holders = self._leases()
+        self._assert_freed(close, live, holders)
+
+    def test_stream_raising_with_the_run_gone_frees_the_lease(self):
+        close, err, live, holders = self._raising_run(RuntimeError("boom"), "stream", scoped=True,
+                                                      armed=True)
+        self._assert_freed(close, live, holders)
+        self.assertIn("shows the run gone", err)
+
+    def test_stream_interrupted_with_the_run_gone_frees_the_lease(self):
+        close, _, live, holders = self._raising_run(KeyboardInterrupt(), "stream", scoped=True,
+                                                    armed=True)
+        self._assert_freed(close, live, holders)
+
+    def test_stream_raising_with_the_run_alive_closes_the_lease_lost(self):
+        for gone in (("active", "pipe-x.scope is active"), (None, "the probe got no answer"),
+                     ("inactive", "pid 7 live in /srv/ws")):
+            with self.subTest(gone=gone):
+                close, err, live, holders = self._raising_run(
+                    RuntimeError("boom"), "stream", scoped=True, gone=gone, armed=True)
+                self.assertTrue(close.call_args.kwargs.get("lost"), close.call_args)
+                self.assertEqual(1, len(live), live)
+                self.assertEqual(1, len(holders), holders)
+                self.assertIn(gone[1], err)
+                db = store.open()
+                db.execute("DELETE FROM leases")
+                db.execute("DELETE FROM lease_entries")
+                db.execute("DELETE FROM items")
+                db.commit()
+                db.close()
+
+    def test_stream_raising_without_a_scope_closes_the_lease_lost(self):
+        # I1: a run without a scope has no unit to ask -- no probe, the lease stays
+        close, err, live, holders = self._raising_run(RuntimeError("boom"), "stream")
         self.assertTrue(close.call_args.kwargs.get("lost"), close.call_args)
+        self.assertIn("without a scope", err)
 
-    def test_exec_stream_raising_closes_the_lease_lost(self):
-        self._raising_run(RuntimeError("boom"), "exec")
-
-    def test_exec_stream_interrupted_closes_the_lease_lost(self):
-        self._raising_run(KeyboardInterrupt(), "exec")
-
-    def test_stream_raising_closes_the_lease_lost(self):
-        self._raising_run(RuntimeError("boom"), "stream")
-
-    def test_stream_interrupted_closes_the_lease_lost(self):
-        self._raising_run(KeyboardInterrupt(), "stream")
+    def test_stream_interrupted_without_a_scope_closes_the_lease_lost(self):
+        close, _, _, _ = self._raising_run(KeyboardInterrupt(), "stream")
+        self.assertTrue(close.call_args.kwargs.get("lost"), close.call_args)
 
     # welle-tb S3 (#1161): a record the store refused ended GREEN with exit 0
     # (run-7b40b01d16cb lost its flake register that way). Fail-closed: a
@@ -1927,6 +2256,37 @@ class TestGateLane(GateCase):
         self.assertEqual(rc, 3, out + err)
         self.assertNotIn("GATE-SUMMARY", out)
 
+    def test_a_merge_gate_waits_in_the_merge_class(self):
+        # K14: `merge --wait` runs the candidate gate under MECLAW_GATE_MODE=merge
+        # with `--wait-admission`; the admission must hear it is a merge.
+        self.kern_plan()
+        final = schedule.Queued("lane-l is off", final=True)
+        for mode, want in (("merge", True), ("", False)):
+            with self.subTest(mode=mode), \
+                    mock.patch.dict(os.environ, {"MECLAW_GATE_MODE": mode}), \
+                    mock.patch.object(gate.schedule, "admit_waiting", return_value=final) as wait:
+                rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host",
+                                         "lane-l", "--wait-admission")
+            self.assertEqual(rc, 3, out + err)
+            self.assertIs(want, wait.call_args.kwargs.get("merge"), wait.call_args)
+
+    def test_a_gate_hands_its_tree_for_the_release_class_with_and_without_waiting(self):
+        # Re-check Kette Minor 2: the release class needs the caller's tree (its
+        # strand file). `gate --wait-admission` handed it as `wait_tree`, a gate
+        # without it handed none -- a declared release strand queued as program.
+        # Both hand `release_tree` (the class only: a gate without the wait keeps
+        # no place for the tree's lifetime).
+        self.kern_plan()
+        final = schedule.Queued("lane-l is off", final=True)
+        repo = os.path.abspath(str(self.repo))
+        for verb, extra in (("admit", ()), ("admit_waiting", ("--wait-admission",))):
+            with self.subTest(verb=verb), \
+                    mock.patch.object(gate.schedule, verb, return_value=final) as call:
+                rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host",
+                                         "lane-l", *extra)
+            self.assertEqual(rc, 3, out + err)
+            self.assertEqual(repo, call.call_args.kwargs.get("release_tree"), call.call_args)
+
     def test_wait_admission_ends_on_a_lane_that_is_off(self):
         # Review Z-A2 I1: `_sync` runs once per gate, so no round of the wait
         # turns `off` to `idle` -- the wait ends at once with exit 3.
@@ -1942,6 +2302,26 @@ class TestGateLane(GateCase):
         rc, out, err = got[0]
         self.assertEqual(rc, 3, out + err)
         self.assertIn("lane-a is off", err)
+
+    def test_a_locked_store_never_ends_the_admission_wait_of_a_gate(self):
+        # tm-orch4 (16.10.): with `--wait-admission` the lane sync before the wait
+        # outlasts a locked store too; without it a refusal stays STORE_EXIT (below).
+        self.kern_plan()
+        final = schedule.Queued("lane-l is off", final=True)
+        real, refused = schedule.sync_runners, []
+
+        def sync(*args, **kw):
+            if len(refused) < 3:
+                refused.append(1)
+                raise sqlite3.OperationalError("database is locked")
+            return real(*args, **kw)
+        with mock.patch.object(gate.schedule, "sync_runners", side_effect=sync), \
+                mock.patch.object(gate.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)), \
+                mock.patch.object(gate.schedule, "admit_waiting", return_value=final):
+            rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host",
+                                     "lane-l", "--wait-admission")
+        self.assertEqual(rc, 3, out + err)
+        self.assertEqual(3, len(refused))
 
     def test_a_store_error_at_the_admission_is_its_own_exit(self):
         # Review Z-A2 R2 M2: a locked store was a traceback with exit 1, RED's code.
@@ -2441,6 +2821,32 @@ class TestModeFlag(unittest.TestCase):
         o = gate.parse(["--mode", "strand", "--plan-only"], io.StringIO())
         self.assertEqual((o.mode, o.plan_only), ("strand", True))
         self.assertEqual(gate.parse(["--mode"], io.StringIO()), 2)
+
+    def test_the_mode_flag_stands_anywhere_like_the_positional_form(self):
+        # #1199 K13: `pipeline.py gate --repo <r> --mode strand` ended "unknown mode:
+        # --repo"; only a leading mode was read. `--mode <m>` is the positional form.
+        import io
+        for argv in (["--repo", "/r", "--mode", "strand"], ["--repo", "/r", "--mode=strand"],
+                     ["--plan-only", "--mode", "strand", "--repo", "/r"],
+                     ["strand", "--repo", "/r", "--mode", "strand"],
+                     ["strand", "--repo", "/r"]):
+            o = gate.parse(argv, io.StringIO())
+            self.assertNotEqual(2, o, argv)
+            self.assertEqual(("strand", "/r"), (o.mode, o.repo), argv)
+        # a value that reads like the flag is the value (`--reason --mode`)
+        o = gate.parse(["strand", "--no-pre", "--reason", "--mode"], io.StringIO())
+        self.assertEqual(("strand", "--mode"), (o.mode, o.reason))
+
+    def test_two_different_modes_are_refused(self):
+        import io
+        for argv in (["strand", "--mode", "release"], ["--mode", "strand", "--mode=integration"],
+                     ["--repo", "/r", "--mode", "strand", "release"]):
+            err = io.StringIO()
+            self.assertEqual(2, gate.parse(argv, err), argv)
+            self.assertIn("gate: two modes", err.getvalue(), argv)
+        err = io.StringIO()
+        self.assertEqual(2, gate.parse(["--repo", "/r", "--plan-only"], err))
+        self.assertIn("gate: no mode", err.getvalue())
 
     def test_gate_accepts_a_holder_suffix(self):
         # GH #1146: a second lease of one strand (`<strand>:<n>`).

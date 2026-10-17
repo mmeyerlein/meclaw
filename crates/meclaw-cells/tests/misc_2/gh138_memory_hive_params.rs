@@ -97,6 +97,11 @@ const SCRIPTED: &[Scripted] = &[
             ("input_soft_fallback", "_int"),
             // GH #1095: the stop words are language data beside the cell.
             ("stopwords_lang", "_data"),
+            // GH #1225 (R-KF-2, B3): close-glue's grammar and question words, one
+            // rule in both cells; GH #1089: the words never part of a name.
+            ("forget_lang", "_data"),
+            ("question_words", "_data"),
+            ("entity_stop_lang", "_data"),
             ("rrf_k", "_int"),
             ("rrf_w_keyword", "_float"),
             ("rrf_w_semantic", "_float"),
@@ -108,6 +113,9 @@ const SCRIPTED: &[Scripted] = &[
             ("query_safe_chars", "_pkg"),
             ("query_max_chars", "_pkg"),
             ("query_tokens", "_pkg"),
+            // GH #1225 (OR-KF-46): how far the lift of a muted topic reads.
+            ("lift_turns", "_int"),
+            ("lift_marks", "_int"),
         ],
         documented: &[],
     },
@@ -139,6 +147,8 @@ const SCRIPTED: &[Scripted] = &[
             ("close_fact_rows", "_int"),
             ("forget_lang", "_data"),
             ("forget_fallback", "_flag"),
+            // GH #1225 (kfm B3): the words a question opens with, language data.
+            ("question_words", "_data"),
         ],
         documented: &[],
     },
@@ -158,10 +168,19 @@ const SCRIPTED: &[Scripted] = &[
         knobs: &[
             ("min_facts", "_int"),
             ("min_episodes", "_int"),
+            // GH #1089: the words never part of a name, language data.
+            ("entity_stop_lang", "_data"),
             ("hub_degree", "_int"),
             ("count_page", "_int"),
             ("newborn_hits", "_int"),
         ],
+        documented: &[],
+    },
+    // GH #1229 (R-AG-1): the moment a written day arms the night for -- the
+    // clock behind the rim carries no schedule of its own.
+    Scripted {
+        cell: "writer",
+        knobs: &[("night_at_utc", "_str")],
         documented: &[],
     },
 ];
@@ -461,7 +480,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 59,
+        total, 67,
         "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040), \
          `generation_idle_ms` (GH #1042), `require_quote` (GH #1079), `tier1_graph_node_facts` \
          and the four graph page sizes of `recall`, the three thresholds and two page sizes of \
@@ -469,7 +488,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
          its switch `forget_fallback` (R-TR-25), less `tier0_episode_chars` and \
          `tier1_item_chars` (GH #1085: an item has no length of its own), plus \
          `input_soft_fallback` (GH #1085), plus the language data `stopwords_lang` of `recall` \
-         (GH #1095)"
+         (GH #1095), plus the language data `question_words` of `close-glue` and `recall` and `forget_lang` of `recall` (GH #1225), plus the language data `entity_stop_lang` of `recall` and `entity-glue` (GH #1089), plus the lift bounds `lift_turns` and `lift_marks` of `recall` (GH #1225), plus `night_at_utc` of `writer` (GH #1229)"
     );
 }
 
@@ -586,13 +605,15 @@ fn a_blank_knob_falls_back_and_a_string_number_is_read() {
 /// GH #551 -- the tick is called `clock`, and it plans on the schedule its own
 /// `params` carry.
 ///
-/// The negative half first: with no override the shipped literal is what the
-/// REAL timer parser plans on. Then the positive half, which is the one that
-/// matters: the schedule a mutation pushes down through `override_params` is
-/// the one the timer plans on, so the five test setups that used to write a
-/// `MEMORY_DREAM_CRON` line into a `.env` still move the nightly run out of
-/// their way. A `.env` line that stopped meaning anything would have been
-/// silent -- green tests with a nightly job firing into them.
+/// Since GH #1229 (R-AG-1) that is NO schedule: the clock is the night's
+/// watchdog, `./writer` orders the night with every episode it writes, and the
+/// moment is the writer's knob `night_at_utc` (pinned three times above). The
+/// shipped half is therefore empty, and the clock declares no setting of its
+/// own. The override half stays the one that matters: the schedule a mutation
+/// pushes down through `override_params` is the one the timer plans on, so the
+/// test setups that move the nightly run out of their way with a quiet
+/// `schedules` row still say something -- `schedules` still EXISTS under
+/// `params`, which is what GH #294 asks of an override.
 #[test]
 fn the_clock_ticks_on_the_schedule_its_params_carry() {
     let dir = hive_root().join("clock");
@@ -601,41 +622,38 @@ fn the_clock_ticks_on_the_schedule_its_params_carry() {
         "templates/memory-hive/clock is missing -- the tick is called `clock` \
          since GH #551 (ruling R-0904-5)"
     );
-    let mut cfg = config("clock");
-    // Read before the mutable borrow below: the declared half of this knob's
-    // pair. A timer has no script, so the triple the nine scripted knobs get is
-    // a PAIR here -- the declaration and the literal inside the schedule -- and
-    // nothing compared the two until now.
-    let declared = cfg["contract"]["settings"]["cron"]["default"]
-        .as_str()
-        .expect("contract.settings.cron.default")
-        .to_string();
-    let params = cfg["params"].as_object_mut().expect("params");
-    // The one substitution staging performs on this file: `${uuid7:...}` is not
-    // a UUID until the colony mints one.
-    params["schedules"][0]["schedule_id"] =
-        Value::String("0190a3f2-0000-7000-8000-000000000001".into());
-
-    let shipped = TimerParams::parse(&Value::Object(params.clone())).expect("shipped params");
-    assert_eq!(shipped.schedules.len(), 1, "the hive ticks once a night");
-    let ScheduleKind::Cron(shipped_cron) = &shipped.schedules[0].kind else {
-        panic!("the nightly schedule is a repeating cron, not a one-shot `at`")
-    };
-    assert_eq!(
-        shipped_cron, "0 0 3 * * *",
-        "the shipped nightly schedule is a literal, not a token"
+    let cfg = config("clock");
+    let settings = cfg["contract"]["settings"]
+        .as_object()
+        .expect("contract.settings");
+    assert!(
+        settings.is_empty(),
+        "the clock declares no knob of its own -- the night's moment is \
+         ./writer's `night_at_utc` (GH #1229): {settings:?}"
     );
-    assert_eq!(
-        &declared, shipped_cron,
-        "contract.settings.cron.default and params.schedules[0].cron disagree -- a \
-         reader of the contract and the timer would be told different nights"
+    let params = cfg["params"].as_object().expect("params");
+    let shipped = TimerParams::parse(&Value::Object(params.clone())).expect("shipped params");
+    assert!(
+        shipped.schedules.is_empty(),
+        "the clock is a watchdog with no schedule of its own: a day nobody wrote \
+         arms no night (R-AG-1, GH #1229)"
     );
 
     // What a mutation writes: `override_params` replaces the whole `schedules`
     // key (last-write-wins, `mutation::stage::patch_and_substitute_config`), and
     // GH #294 lets it name that key precisely because it EXISTS under `params`.
     let mut overridden = params.clone();
-    overridden["schedules"][0]["cron"] = Value::String("0 0 4 1 1 *".into());
+    overridden.insert(
+        "schedules".into(),
+        meclaw_core::serde_json::json!([{
+            "schedule_id": "0190a3f2-0000-7000-8000-000000000001",
+            "schedule_name": "nightly-dream",
+            "cron": "0 0 4 1 1 *",
+            "emit_to": "../dream-glue",
+            "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "nightly-dream"}]},
+            "emit_headers": {}
+        }]),
+    );
     let tuned = TimerParams::parse(&Value::Object(overridden)).expect("overridden params");
     let ScheduleKind::Cron(tuned_cron) = &tuned.schedules[0].kind else {
         panic!("the overridden schedule stopped being a cron")

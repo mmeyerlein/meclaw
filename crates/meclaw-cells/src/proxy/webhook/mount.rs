@@ -14,6 +14,16 @@
 //! `405` from the router and reads no body. Nothing waits for the emission to
 //! be routed: a webhook is one-way, and a sender that wants its delivery
 //! repeated repeats it itself.
+//!
+//! GH #1106: a mount whose secret comes from a credential grant
+//! (`verify.secret_grant_id`) registers at once but stays CLOSED -- every POST
+//! `503` and a `credential_pending` receipt -- until the handler half opened
+//! the sealed box and handed the secret over the reconfigure channel. The
+//! secret then reaches every connection through one `watch` channel, so a
+//! keep-alive connection a reverse proxy opened before the box does not keep
+//! answering `503`. While it waits, this half keeps the round clock
+//! (`crate::credential_rounds`): a round without a box asks the handler to ask
+//! again.
 
 use axum::Router;
 use axum::body::Bytes;
@@ -27,7 +37,11 @@ use tokio::sync::mpsc;
 
 use super::params::{VerifyKind, WebhookParams};
 use super::verify::{Unverified, verify};
+use crate::credential::Secret;
+use crate::credential_rounds::{RoundClock, Wake, next_wake};
 use crate::mount_guard::MountGuard;
+use crate::proxy::io::CredentialWait;
+use tokio::sync::watch;
 
 /// What the mount half needs: its name, its proof rule, which headers travel,
 /// the mount table and the way to the handler.
@@ -35,8 +49,16 @@ use crate::mount_guard::MountGuard;
 pub struct WebhookIo {
     pub(crate) mount: String,
     pub(crate) kind: VerifyKind,
-    /// The resolved secret. Held in memory only; never logged, never echoed.
-    pub(crate) secret: Arc<str>,
+    /// The secret the mount checks against. Held in memory only; never
+    /// logged, never echoed. GH #1106: a `watch` so the secret a grant
+    /// delivers later reaches every connection, also one opened before it.
+    pub(crate) secret: watch::Receiver<Arc<str>>,
+    /// The writing end of [`Self::secret`]; only `run_io` writes.
+    pub(crate) secret_tx: Arc<watch::Sender<Arc<str>>>,
+    /// GH #1106: the secret comes sealed from the vault (`secret_grant_id`).
+    pub(crate) sealed: bool,
+    /// GH #1106: the waiting schedule of the credential rounds.
+    pub(crate) wait: CredentialWait,
     /// The proof header, lower-case; `""` with kind `none`.
     pub(crate) header: String,
     pub(crate) prefix: String,
@@ -53,6 +75,7 @@ impl std::fmt::Debug for WebhookIo {
         f.debug_struct("WebhookIo")
             .field("mount", &self.mount)
             .field("kind", &self.kind)
+            .field("sealed", &self.sealed)
             .field("header", &self.header)
             .field("cell_path", &self.cell_path)
             .finish_non_exhaustive()
@@ -62,10 +85,17 @@ impl std::fmt::Debug for WebhookIo {
 impl WebhookIo {
     /// The mount half of the cell at `cell_path`, registering on `surfaces`.
     pub fn new(p: &WebhookParams, cell_path: &str, surfaces: Arc<SurfaceRegistry>) -> Self {
+        let (secret_tx, secret) = watch::channel::<Arc<str>>(Arc::from(p.secret()));
         Self {
             mount: p.mount.clone(),
             kind: p.kind(),
-            secret: Arc::from(p.secret()),
+            secret,
+            secret_tx: Arc::new(secret_tx),
+            sealed: p.grant().is_some(),
+            wait: CredentialWait {
+                wait_ms: crate::credential::default_credential_wait_ms(),
+                backoff_max_ms: crate::credential_rounds::default_credential_backoff_max_ms(),
+            },
             header: p
                 .verify
                 .header
@@ -81,10 +111,22 @@ impl WebhookIo {
         }
     }
 
+    /// The secret as it stands now (`""` until a grant's box opened).
+    fn current_secret(&self) -> Arc<str> {
+        Arc::clone(&self.secret.borrow())
+    }
+
     /// Whether a proof is required but there is no secret to check it with
     /// (the variable is bound blank). Such a mount answers every POST `503`.
+    /// A grant's mount is never "missing": it waits ([`Self::credential_pending`]).
     pub fn secret_missing(&self) -> bool {
-        self.kind != VerifyKind::None && self.secret.is_empty()
+        self.kind != VerifyKind::None && !self.sealed && self.current_secret().is_empty()
+    }
+
+    /// GH #1106: a grant's mount whose box has not opened yet. It answers
+    /// every POST `503` -- never open, the same rule as a blank variable.
+    pub fn credential_pending(&self) -> bool {
+        self.kind != VerifyKind::None && self.sealed && self.current_secret().is_empty()
     }
 }
 
@@ -99,12 +141,30 @@ pub enum HookEvent {
     SecretMissing,
     /// The name could not be taken; the cell stays up and serves nobody.
     MountFailed(String),
+    /// GH #1106: a POST reached a grant's mount before its box opened; it was
+    /// answered `503` and nothing of it is emitted.
+    CredentialPending,
+    /// GH #1106: a credential round ended without a box; the handler asks
+    /// again. `round`/`wait_ms` are the NEW round's.
+    CredentialRoundExpired {
+        /// Number of the round that starts now.
+        round: u32,
+        /// Its wait in ms.
+        wait_ms: u64,
+    },
 }
 
-/// Nothing travels on the reconfig channel: every key of a `webhook` proxy is
-/// immutable, so the channel closing is the whole signal.
+/// What the handler half tells the mount. Every key of a `webhook` proxy is
+/// immutable, so no params travel here; GH #1106 adds the one thing that
+/// arrives after birth: the secret a grant delivered (printed `<sealed>`).
 #[derive(Debug)]
-pub enum HookReconfig {}
+pub enum HookReconfig {
+    /// The opened secret of `verify.secret_grant_id`.
+    Credential {
+        /// The secret; `Debug` prints `<sealed>`.
+        secret: Secret,
+    },
+}
 
 /// The router a handed connection is served with: POST on `/<mount>/` and
 /// below, nothing else. `post` answers every other method `405` itself.
@@ -140,7 +200,15 @@ async fn receive(io: &WebhookIo, path: &str, headers: &HeaderMap, raw: &[u8]) ->
         // Only reachable if a router were built outside `run_io`.
         return (StatusCode::SERVICE_UNAVAILABLE, "no handler\n").into_response();
     };
-    if io.secret_missing() {
+    let secret = io.current_secret();
+    if io.kind != VerifyKind::None && secret.is_empty() {
+        if io.sealed {
+            // GH #1106: the box has not opened yet. Closed, like a blank
+            // variable -- and booked, so a sender hammering a closed mount is
+            // visible.
+            let _ = events_tx.send(HookEvent::CredentialPending).await;
+            return (StatusCode::SERVICE_UNAVAILABLE, "credential pending\n").into_response();
+        }
         // Never open: a blank secret would otherwise let anyone sign.
         return (StatusCode::SERVICE_UNAVAILABLE, "secret missing\n").into_response();
     }
@@ -149,7 +217,7 @@ async fn receive(io: &WebhookIo, path: &str, headers: &HeaderMap, raw: &[u8]) ->
     } else {
         headers.get(io.header.as_str()).map(|v| v.as_bytes())
     };
-    if let Err(u) = verify(io.kind, &io.secret, proof, &io.prefix, raw) {
+    if let Err(u) = verify(io.kind, &secret, proof, &io.prefix, raw) {
         // The receipt is booked; the answer does not wait for it to matter.
         let _ = events_tx.send(HookEvent::Refused(u)).await;
         return (StatusCode::UNAUTHORIZED, "unverified\n").into_response();
@@ -241,6 +309,8 @@ fn is_json(content_type: &str) -> bool {
 /// cell's whole life — the `meclaw` platform's `run_io`
 /// (`crate::proxy::meclaw::io::run_io`), with one addition: a mount that needs
 /// a secret and holds none reports it once, then answers every POST `503`.
+/// GH #1106: a grant's mount serves (closed) from the start and keeps the
+/// round clock until its secret arrives on the reconfigure channel.
 pub async fn run_io(
     io: WebhookIo,
     events_tx: mpsc::Sender<HookEvent>,
@@ -295,10 +365,38 @@ pub async fn run_io(
         });
     }
 
-    // Only the handler going away ends this half. `HookReconfig` has no
-    // values, so the only thing `recv` can return is `None`.
-    if let Some(never) = reconfig_rx.recv().await {
-        match never {}
+    // GH #1106: a grant's mount sleeps on the round clock until the box. A
+    // round without one is reported, and the handler asks again -- else a
+    // lost `on_start` question (vault locked, broker not spawned yet) would
+    // keep the mount closed for ever.
+    let mut open = !io.sealed;
+    if io.sealed {
+        let mut clock = RoundClock::start(io.wait.wait_ms, io.wait.backoff_max_ms);
+        while !open {
+            match next_wake(&mut reconfig_rx, &mut clock).await {
+                Wake::Reconfig(HookReconfig::Credential { secret }) => {
+                    open = !secret.expose().is_empty();
+                    io.secret_tx.send_replace(Arc::from(secret.expose()));
+                }
+                Wake::Closed => break,
+                Wake::RoundExpired { round, wait_ms } => {
+                    let event = HookEvent::CredentialRoundExpired { round, wait_ms };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Only the handler going away ends this half. The handler hands over one
+    // box per life (`CredentialSlots::accept_sealed` takes the recipient with
+    // the first opened box), so a rotation means a respawn, which asks again;
+    // this loop keeps the mount up until then.
+    if open {
+        while let Some(HookReconfig::Credential { secret }) = reconfig_rx.recv().await {
+            io.secret_tx.send_replace(Arc::from(secret.expose()));
+        }
     }
     drop(serving);
     drop(registration);
@@ -438,5 +536,34 @@ mod tests {
         assert_eq!(io("token", "t").header, "x-probe-token");
         let d = format!("{:?}", io("token", "tok-921-dbg"));
         assert!(!d.contains("tok-921-dbg"), "{d}");
+    }
+
+    /// GH #1106: a grant's mount is pending, never "missing", until its
+    /// secret arrives; then it is neither, for every clone of the half.
+    #[test]
+    fn a_grant_mount_is_pending_until_its_secret_arrives() {
+        let p = WebhookParams::parse(&json!({"platform": "webhook", "mount": "probe-hook",
+            "route": "probe", "emit_to": "/", "verify": {"kind": "hmac_sha256",
+            "secret_grant_id": "grant:probe-hook@t/hook", "header": "X-Probe-Signature"}}))
+        .expect("params");
+        let hook = WebhookIo::new(&p, "/hook", Arc::new(SurfaceRegistry::new()));
+        let served = hook.clone(); // what a connection's router holds
+        assert!(hook.credential_pending());
+        assert!(
+            !hook.secret_missing(),
+            "a grant waits, it is not misconfigured"
+        );
+        hook.secret_tx.send_replace(Arc::from("stub-1106-secret"));
+        assert!(
+            !served.credential_pending(),
+            "the clone sees the delivered secret"
+        );
+        assert_eq!(&*served.current_secret(), "stub-1106-secret");
+        assert!(
+            !io("token", "t").credential_pending(),
+            "no grant, never pending"
+        );
+        let d = format!("{served:?}");
+        assert!(!d.contains("stub-1106-secret"), "{d}");
     }
 }

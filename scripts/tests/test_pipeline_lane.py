@@ -1917,6 +1917,20 @@ class TestWsProcsFailClosed(unittest.TestCase):
         self.addCleanup(stop)
         return proc
 
+    def test_ws_kill_signals_only_a_pid_still_in_the_tree(self):
+        # Re-check v2-r3-lease M1: between the probe and the kill a pid may
+        # end and be reused by a process outside the tree -- `ws_kill` checks
+        # each pid against the tree again at the signal, by the probe's rule.
+        outside = self.tmp / "src"
+        outside.mkdir()
+        stranger = self.hand_run(outside)
+        inside = self.hand_run(self.root / "tree")
+        left = lane.ws_kill(self.lane, str(self.root), [stranger.pid, inside.pid],
+                            timeout=2 * kit_time.HANG)
+        self.assertIsNotNone(left, "HANG: ws_kill gave no answer")
+        kit_time.until("the tree pid ends", lambda: inside.poll() is not None)
+        self.assertIsNone(stranger.poll(), "a pid outside the tree was signalled")
+
     def test_a_target_dir_in_the_environment_is_found(self):
         # H1: the source tree outside the root, only CARGO_TARGET_DIR below it.
         outside = self.tmp / "src"

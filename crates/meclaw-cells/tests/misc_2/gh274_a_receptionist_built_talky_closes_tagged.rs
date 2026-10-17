@@ -9,8 +9,8 @@
 //! generation behind it will ever know about the room and the round.
 //!
 //! The sweep is the whole point, and here it is the real one: no operator lane
-//! and no forced firing, just the keeper's own night timer wound down to a
-//! second. A firing carries no `context`, so nothing on the close path can know
+//! and no forced firing, just the keeper's own night watchdog under a night that
+//! never ends. A firing carries no `context`, so nothing on the close path can know
 //! the round from the message it is handling. Everything the episode row says
 //! about its round has to come off the generation row the keeper wrote when the
 //! CONVERSATION opened it -- which is what makes the reception's edge the whole
@@ -167,10 +167,13 @@ const AUDIENCE_CEL: &str = r#"'["member:alex","agent:scribe"]'"#;
 /// The room, stamped by the surface and never parsed out of a session id.
 const ROOM: &str = "c-42";
 
-/// The night, wound down to a second: this test wants the keeper's OWN sweep,
-/// not an operator lane, because the reception draws no sweep edge and a real
-/// deployment never gets one either.
-const FAST_NIGHT: &str = "*/1 * * * * *";
+/// A night that never ends (UTC window 00:00 to 24:00): this test wants the
+/// keeper's OWN sweep, not an operator lane, because the reception draws no
+/// sweep edge and a real deployment never gets one either. Since GH #1229 the
+/// opening generation arms the keeper's watchdog for the moment it falls
+/// silent, so a night that always holds strikes right after the idle window.
+const NIGHT_FROM: &str = "00:00";
+const NIGHT_UNTIL: &str = "24:00";
 /// How long a generation has to be silent before a firing may seal it. Long
 /// enough that the turn in flight is never swept out from under itself, short
 /// enough that the seal happens while the test is still watching.
@@ -343,11 +346,10 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     // shipped two-hour window would leave this test waiting for a close that
     // cannot come. The library copy is this tree's own, so writing the keys into
     // it is what an `override_params` entry does to a staged config.
-    patch(root, "templates/session-keeper/night/config.json", |v| {
-        v["params"]["schedules"][0]["cron"] = json!(FAST_NIGHT)
-    });
     patch(root, "templates/session-keeper/close/config.json", |v| {
-        v["params"]["idle_ms"] = json!(IDLE_MS)
+        v["params"]["idle_ms"] = json!(IDLE_MS);
+        v["params"]["night_from_utc"] = json!(NIGHT_FROM);
+        v["params"]["night_until_utc"] = json!(NIGHT_UNTIL);
     });
 }
 

@@ -158,6 +158,8 @@
 # code (0 ok, 2 aborted), 3 when this tree has no
 # `scripts/pipeline/hygiene.py`, 255 when ssh lost the host.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -uo pipefail
 # A trace of the run (`set -x`) for a test that waits on one of its steps
 # (`+ stop_watcher`): the privileged shell ignores SHELLOPTS from the caller.
@@ -728,8 +730,6 @@ remote() {   # target, command string
     "$SSH_CHECKED" "${SSH_OPTS[@]}" "$target" "$(remote_env_i "$*")"
 }
 
-lane_url() { if [ "$1" = local ]; then echo "$2"; else echo "$1:$2"; fi; }
-
 # git push to a lane's bare repository: over ssh with the checked program,
 # git-receive-pack on the host under `env -i` like every remote command (re-check
 # tv-bn M7j A-M4, orchestrator OR-T10-11); a `local` lane pushes to the path.
@@ -1020,7 +1020,8 @@ stop_watcher() {   # <pid> <handshake fd> <seconds to wait for the handshake>
 # runs, so its locals are in scope. A watcher already stopped is not stopped
 # again: a TERM during `wait "$wp"` found its handshake read and sent the
 # TERM to the bare PID of a watcher that may be reaped (tb-s7 Restfenster i).
-# shellcheck disable=SC2154
+# SC2317: only the trap of run_guarded calls it, shellcheck sees no caller in the group (GH #1223)
+# shellcheck disable=SC2154,SC2317
 guard_abort() {   # <exit code>
     [ -n "$tp" ] && kill -TERM -- "-$tp" 2>/dev/null
     [ -n "$wp" ] && [ -z "$watcher_stopped" ] && stop_watcher "$wp" "$hfd" 0
@@ -1541,7 +1542,7 @@ cmd_fetch() {
 # The fingerprint of the lane (V0 section 2.3) as one JSON line: the script
 # `scripts/pipeline/lane_fingerprint.sh` of THIS tree runs there on stdin.
 cmd_fingerprint() {
-    local target="$1" fp here pol words
+    local target="$1" fp here pol words rpath
     here="$KIT_HERE/pipeline/lane_fingerprint.sh"
     [ -f "$here" ] || die "no fingerprint script at $here"
     pol=""   # the policy itself is the script's (re-check tv-bn M7q, one source)
@@ -1549,7 +1550,13 @@ cmd_fingerprint() {
     # under the stations' words (`lane_env`): the linker and the build environment
     # are read from them there, never sent as a word of their own (M7r A-M2)
     words=$(lane_env test) || die "no lane environment for $target"
-    fp=$(remote "$target" "env $words sh -s -- $(q "$ROOT") $(q "$pol")" <"$here") \
+    # under the stations' PATH too (`lane.REMOTE_PATH`, Runde 3 R3 (4)): the register
+    # measured the login PATH, every run the stations' -- a `lane-drift [build_env]`;
+    # the one spelling is lane.py's, read from there (review v2-r3-kit M3)
+    rpath=$("${KIT_PY[@]}" -c 'import sys; sys.path.insert(0, sys.argv[1]); from pipeline import lane; print(lane.REMOTE_PATH)' "$KIT_HERE") \
+        || rpath=""
+    [ -n "$rpath" ] || die "no lane.REMOTE_PATH under $KIT_HERE/pipeline"
+    fp=$(remote "$target" "$rpath && env $words sh -s -- $(q "$ROOT") $(q "$pol")" <"$here") \
         || die "the host $target did not answer"
     printf '%s\n' "$fp"
 }
@@ -1559,7 +1566,7 @@ cmd_fingerprint() {
 # `workshop/tools/package.json` -- the package list is that version's
 # `install-deps --dry-run`, never one kept here. Its exit code is the answer.
 cmd_browsers() {
-    local target="$1" mode="$2" here pkg pin words=""
+    local target="$1" mode="$2" here pkg pin bound words=""
     shift 2
     # `install` is apt as root: never on this machine or the owner's (re-check
     # tb-s3 h2 M-1; strand.sh refuses first, this is the second line).
@@ -1571,8 +1578,20 @@ cmd_browsers() {
     pin=$(sed -n 's/^ *"playwright": *"\([^"]*\)".*/\1/p' "$pkg" 2>/dev/null | head -n 1)
     [ -n "$pin" ] || die "no playwright pin in $pkg"
     for e in "$@"; do words="$words $(q "$e")"; done
-    remote "$target" "sh -s -- $(q "$ROOT") $(q "$pin") $(q "$mode")$words" \
-        <"$here/pipeline/lane_browser_deps.sh"
+    # every tool call of the recipe under the probe bound (re-check v2-r3-shell M1):
+    # the block goes ahead of it on stdin, a call past it is exit 2 (cannot tell)
+    bound=$(bound_block) || die "no bounded block in $here/pipeline/lane_fingerprint.sh"
+    { printf 'fp_who=lane_browser_deps.sh fp_exit=2\n%s\n' "$bound"; cat "$here/pipeline/lane_browser_deps.sh"; } \
+        | remote "$target" "sh -s -- $(q "$ROOT") $(q "$pin") $(q "$mode")$words"
+}
+
+# The code of the `bounded` block of lane_fingerprint.sh, without its comments
+# (the narrow point reads the words of a command, prose too): the one bound of a
+# lane probe's tool calls (GH #1224), for INVENTORY ($2) and the browser recipe.
+bound_block() {
+    local b
+    b=$(sed -n '/^# >>> bounded/,/^# <<< bounded/{/^[[:space:]]*#/d;p;}' "$KIT_HERE/pipeline/lane_fingerprint.sh")
+    [ -n "$b" ] && printf '%s\n' "$b"
 }
 
 # The short form: the first 8 hex of the hash over the fingerprint WITHOUT its
@@ -1584,27 +1603,30 @@ fp_short() {
 # The inventory of the lane, run THERE by `bash -c` with the root as $1:
 # `key value` lines. Generations: test binaries (`<stem>-<16 hex>`, executable)
 # in target/debug/deps against their distinct stems -- 5 binaries per stem are
-# 5 generations of artefacts nobody clears yet (W2).
+# 5 generations of artefacts nobody clears yet (W2). Every tool call runs under
+# the bound of `lane_fingerprint.sh` (its `bounded` block, $2, GH #1224):
+# a hung call is said by name with its process tree and the inventory ends with
+# exit 3 -- `cmd_status` says `state hung` and passes the words on.
 # shellcheck disable=SC2016
-INVENTORY='root=$1; t="$root/target/debug"
-df -BG --output=fstype,avail "$root" 2>/dev/null | tail -1 | awk "{print \"fs \" \$1; gsub(/[^0-9]/, \"\", \$2); print \"free \" \$2}"
-g() { [ -d "$1" ] && du -s -BG "$1" 2>/dev/null | awk "{gsub(/G/, \"\", \$1); print \$1}" || echo 0; }
+INVENTORY='root=$1; t="$root/target/debug"; fp_who="lane_sync.sh status"; eval "$2"
+bounded df -BG --output=fstype,avail "$root" 2>/dev/null | tail -1 | awk "{print \"fs \" \$1; gsub(/[^0-9]/, \"\", \$2); print \"free \" \$2}"
+g() { [ -d "$1" ] && bounded du -s -BG "$1" 2>/dev/null | awk "{gsub(/G/, \"\", \$1); print \$1}" || echo 0; }
 echo "deps $(g "$t/deps")"
 echo "incr $(g "$t/incremental")"
 if [ -d "$t/deps" ]; then
-    find "$t/deps" -maxdepth 1 -type f -perm -u+x -regextype posix-extended -regex ".*/[a-z0-9_]+-[0-9a-f]{16}" -printf "%f\n" 2>/dev/null \
+    bounded find "$t/deps" -maxdepth 1 -type f -perm -u+x -regextype posix-extended -regex ".*/[a-z0-9_]+-[0-9a-f]{16}" -printf "%f\n" 2>/dev/null \
         | awk "{ n++; sub(/-[0-9a-f]+\$/, \"\"); s[\$0] = 1 } END { k = 0; for (x in s) k++; print \"gen \" n + 0 \"/\" k }"
 else echo "gen 0/0"; fi
-echo "wt $(find "$root/wt" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
-if test -d "$root/meclaw.git"; then echo "bare $(git --git-dir="$root/meclaw.git" for-each-ref refs/heads/lane | wc -l)"; else echo "bare none"; fi
+echo "wt $(bounded find "$root/wt" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+if test -d "$root/meclaw.git"; then echo "bare $(bounded git --git-dir="$root/meclaw.git" for-each-ref refs/heads/lane | wc -l)"; else echo "bare none"; fi
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 if command -v sccache >/dev/null 2>&1 && [ -d "$root/sccache" ]; then
-    SCCACHE_DIR="$root/sccache" sccache --show-stats 2>/dev/null | awk "/^Cache hits rate  / { gsub(/ /, \"\"); sub(/Cachehitsrate/, \"\"); print \"sccache \" \$0; f = 1 } END { if (!f) print \"sccache on\" }"
+    SCCACHE_DIR="$root/sccache" bounded sccache --show-stats 2>/dev/null | awk "/^Cache hits rate  / { gsub(/ /, \"\"); sub(/Cachehitsrate/, \"\"); print \"sccache \" \$0; f = 1 } END { if (!f) print \"sccache on\" }"
 else echo "sccache -"; fi
-if pgrep -x cargo >/dev/null 2>&1 || pgrep -x cargo-nextest >/dev/null 2>&1 || pgrep -x rustc >/dev/null 2>&1; then echo "state busy"; else echo "state idle"; fi'
+if bounded pgrep -x cargo >/dev/null 2>&1 || bounded pgrep -x cargo-nextest >/dev/null 2>&1 || bounded pgrep -x rustc >/dev/null 2>&1; then echo "state busy"; else echo "state idle"; fi'
 
 cmd_status() {
-    local target="$1" out err rc fp
+    local target="$1" out err rc fp bound
     # One line per lane for `strand.sh lanes status`: reachable or not, the
     # file system and free G of the lane root, the bare repository, and the
     # inventory (GH #942, W1): deps-G, incremental-G, generations
@@ -1612,8 +1634,15 @@ cmd_status() {
     # Unreachable is `off` (no answer) or `booting` (the host refuses ssh:
     # it is up, sshd is not yet).
     err=$(mktemp) || die "no temp file"
-    out=$(remote "$target" "bash -c $(q "$INVENTORY") _ $(q "$ROOT")" 2>"$err")
+    bound=$(bound_block) || { rm -f "$err"; die "no bounded block in $KIT_HERE/pipeline/lane_fingerprint.sh"; }
+    out=$(remote "$target" "bash -c $(q "$INVENTORY") _ $(q "$ROOT") $(q "$bound")" 2>"$err")
     rc=$?
+    if [ "$rc" = 3 ] && grep -q ' hung past ' "$err"; then
+        cat "$err" >&2   # the hung call by name, with its process tree (GH #1224)
+        rm -f "$err"
+        echo "reachable  state hung"
+        return 0
+    fi
     if [ "$rc" != 0 ] || [ -z "$out" ]; then
         if grep -q 'Connection refused' "$err"; then echo "unreachable  state booting"
         else echo "unreachable  state off"; fi
@@ -1621,7 +1650,9 @@ cmd_status() {
         return 0
     fi
     rm -f "$err"
-    fp=$(cmd_fingerprint "$target" 2>/dev/null | fp_short)
+    # a hung probe call or a toolchain the probe will not install names itself on
+    # stderr (GH #1224); the rest stays quiet
+    fp=$(cmd_fingerprint "$target" 2> >(grep ' hung past \| gave no answer within \| toolchain not installed ' >&2) | fp_short)
     kv() { printf '%s\n' "$out" | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }
     local bare fs free
     bare=$(kv bare); fs=$(kv fs); free=$(kv free)
@@ -1684,3 +1715,4 @@ case "$sub" in
             tool_bin "$1"; printf '%s\n' "$TOOL_CHECKED" ;;
     *) die "unknown subcommand: $sub" ;;
 esac
+}; exit $?

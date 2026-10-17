@@ -14,7 +14,9 @@ is tested, not the branch):
        merge, which takes it on its next call -- or at once with `--wait`,
        which blocks on the pool's wake file the release rings and says its
        reason and queue place at the start and on each change (`wait_s` in
-       the merge receipt, V2-A10).
+       the merge receipt, V2-A10). With `--wait` the candidate gate waits for
+       its lane too (`gate --wait-admission`, K13); without it a lane it
+       cannot have ends the merge at once (ABORTED, no queue place).
     2. preconditions: the newest strand receipt is GREEN on the branch head
        (its base may be older than master -- that is what the merge gate is
        for), the strand's pre stamp is fresh, the report has its head block
@@ -74,6 +76,7 @@ import select
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -183,13 +186,17 @@ def on_branch(root, branch, rel):
     return git(root, "cat-file", "-e", "refs/heads/%s:%s" % (branch, rel)).returncode == 0
 
 
-def tree_text(root, branch, rel):
-    """`rel` as the branch tip carries it, else as the main tree has it, else None.
+def tree_text(root, branch, rel, rev=None):
+    """`rel` as the branch tip (or the commit `rev`) carries it, else as the
+    main tree has it, else None.
 
     Strands commit their report and strand file on the branch; the main tree
-    holds them only when `plans/` is not tracked there."""
-    if branch:
-        res = git(root, "show", "refs/heads/%s:%s" % (branch, rel))
+    holds them only when `plans/` is not tracked there. `rev` is the tree pre
+    and report grade (`pre.worktree_rev`): the declarations come from the same
+    tree as the files (I1 of the v2-r3-bans re-check)."""
+    ref = rev or (branch and "refs/heads/%s" % branch)
+    if ref:
+        res = git(root, "show", "%s:%s" % (ref, rel))
         if res.returncode == 0:
             return res.stdout
     try:
@@ -229,9 +236,10 @@ def list_field(value):
 
 class Strand:
     """Everything the merge reads about one strand: report and strand file from
-    the branch tip (the main tree as fallback), receipts from the main tree."""
+    the branch tip -- or from `rev`, the worktree commit of pre and report --
+    (the main tree as fallback), receipts from the main tree."""
 
-    def __init__(self, root, name, wave=None):
+    def __init__(self, root, name, wave=None, rev=None):
         self.root, self.name = root, name
         self.wdir = wave_dir(root, name, wave)
         self.report = os.path.join(self.wdir, "berichte", "%s.md" % name)
@@ -239,30 +247,44 @@ class Strand:
         rel = os.path.relpath(self.wdir, root)
         report_rel = os.path.join(rel, "berichte", "%s.md" % name)
         default = default_branch(self.wdir, name)
-        self.head, self.body = parse_head(tree_text(root, default, report_rel))
+        self.head, self.body = parse_head(tree_text(root, default, report_rel, rev))
         self.branch = (self.head or {}).get("branch") or default
-        if self.branch != default:
+        if self.branch != default and not rev:
             self.head, self.body = parse_head(tree_text(root, self.branch, report_rel))
         path = versions.strand_file(self.wdir, name)
         try:
             self.doc = versions.strand_doc(
-                tree_text(root, self.branch, os.path.relpath(path, root)), path)
+                tree_text(root, self.branch, os.path.relpath(path, root), rev), path)
         except versions.VersionError as exc:
             raise Refused("strand_file_invalid", str(exc))
         head = self.head or {}
         self.issues = versions.issues_of(self.doc) or list_field(head.get("issues"))
         self.title = self.doc.get("title") or name
+        self.strand_file = path
         self.migrations = versions.migrations_of(self.doc)
 
 
 # --- receipts --------------------------------------------------------------------------
 
 def strand_receipts(archive):
-    """Run directories of `archive` that hold a STRAND receipt, newest first."""
+    """Run directories of `archive` that hold a STRAND receipt, newest first.
+
+    A run id is `<UTC second>-<sha8>`: two runs in one second at two commits
+    sort by their hash, not by time. The second orders, and within it the
+    later-written directory is the newer run (fix round 2 of v2-r3-kit: report
+    read the older receipt as the head's)."""
     if not os.path.isdir(archive):
         return []
+
+    def newest_first(d):
+        try:
+            written = os.stat(os.path.join(archive, d)).st_mtime_ns
+        except OSError:
+            written = 0
+        return d.split("-", 1)[0], written, d
+
     found = []
-    for d in sorted(os.listdir(archive), reverse=True):
+    for d in sorted(os.listdir(archive), key=newest_first, reverse=True):
         path = os.path.join(archive, d)
         if d == "latest" or not os.path.isdir(path) or os.path.islink(path):
             continue
@@ -330,9 +352,14 @@ def pre_ok(root, branch, tip, gated=None):
     return ok, why
 
 
-# The review sections: `## Review` (the scaffold of `strand.sh new`) or the
-# form the reports write, `## Fix-Runde Review <sha>` (Z-I 2c (2)).
-REVIEW_HEADING = re.compile(r"^## (?:Fix-Runde )?Review\b", re.M)
+# The review sections: `## Review` (the scaffold of `strand.sh new`), the form
+# the reports write, `## Fix-Runde Review <sha>` (Z-I 2c (2)), and every other
+# `## ... Review ...` heading (Rebase/Mini-Runde/Minor-Runde/Vor-Batch Review):
+# reading only the first two passed a later `nein` under another one over and
+# merged on the earlier `ja` -- fail-open (kit find, v2-r3-kit2 rebase round).
+# `Review` is a word: `## Reviewer-Notizen` is no review section. The word is
+# case-blind (re-check Kette Minor 3): `## Fix-Runde review <sha>` is one too.
+REVIEW_HEADING = re.compile(r"^## [^\n]*\bReview\b[^\n]*$", re.M | re.I)
 # A verdict line (review Z-I gap I1): `Verdikt: ja`, `**Verdikt: JA**`,
 # `reviews-cc-xhigh/<file>.md: Verdikt ja` -- `nein`/`no` is a verdict too.
 REVIEW_VERDICT = re.compile(r"\b(?:Verdikt|Verdict)\b[\s:*_`]*(ja|yes|nein|no)\b", re.I)
@@ -420,6 +447,15 @@ def review_first(s, base, tip, no_pre=None):
         preconditions(s, tip, no_pre)
 
 
+def title_ok(s):
+    """Runde 3 R3 (3): the strand file names the merge commit (`Merge <S> (#n): <title>`).
+    `strand.sh new` writes `"title": ""` and the merge filled the gap with the strand's
+    name -- "Merge v2-r2-pre (#1199, #1130, #1112): v2-r2-pre" and nine more on master by
+    15.10. An empty title, one of blanks, or the bare strand name is no title."""
+    title = (s.doc or {}).get("title")
+    return isinstance(title, str) and title.strip() not in ("", s.name)
+
+
 def preconditions(s, tip, no_pre=None):
     """Every failing precondition in ONE `Refused` (GH #1167 c); returns the receipt.
 
@@ -438,6 +474,10 @@ def preconditions(s, tip, no_pre=None):
         missing.append(("no_review_verdict", "%s: the last verdict line under the last review "
                         "heading is not `Verdikt: ja` (regex %s)" % (s.report,
                                                                      REVIEW_VERDICT.pattern)))
+    if not title_ok(s):
+        missing.append(("strand_title_missing", "%s has no title (empty, or only the strand name "
+                        "%s) -- write the English one-line title of the merge commit" % (
+                            s.strand_file, s.name)))
     if s.head is not None and not outsourced_findings_ok(s.body):
         missing.append(("no_outsourced_findings", "%s has no line `Outsourced findings: none` or "
                         "`Outsourced findings: #<n> (owner-ruling <reference>)`" % s.report))
@@ -795,18 +835,32 @@ def take_tree_waiting(db, repo, holder, on_queued=None, clock=None):
     (4 h) -- False, still queued. `on_queued(first)` hears every queued
     round (V2-A10: the merge says its wait and each change of it -- a round
     follows a ring, or the watchdog); a `Refused` from it ends the wait as it
-    is. `clock` is the kit clock of the take (`store.now`)."""
+    is. `clock` is the kit clock of the take (`store.now`). A locked store
+    holds the wait up to its limit (`schedule.while_locked`, tm-orch4)."""
     secs = schedule.wait_secs(os.environ, "MECLAW_TOKEN_WAIT_SECS", "30")
     limit = schedule.wait_secs(os.environ, "MECLAW_ADMISSION_WAIT_SECS", "14400")
     end, path, said = time.monotonic() + limit, schedule._db_path(db), False
     clock = clock or store.now
+
+    def take():
+        at = clock()
+        try:
+            return take_tree(db, repo, holder, at=at)
+        except (sqlite3.OperationalError, store.StoreWriteError) as exc:
+            # refused after the lease committed (its events): the lease is ours,
+            # a second take would read `already_merging` from it
+            if schedule.store_locked(exc) and _took(db, repo, holder, at):
+                _ring(db)
+                return True
+            raise
     while True:
         fd = schedule._wake_open(path)
         try:
-            if take_tree(db, repo, holder, at=clock()):
+            if schedule.while_locked(take, end=end, reset=lambda: schedule._rollback(db)):
                 return True
             if on_queued:
-                on_queued(not said)
+                schedule.while_locked(lambda: on_queued(not said), end=end,
+                                      reset=lambda: schedule._rollback(db))
             said = True
             left = end - time.monotonic()
             if left <= 0:
@@ -815,6 +869,21 @@ def take_tree_waiting(db, repo, holder, on_queued=None, clock=None):
         finally:
             if fd is not None:
                 os.close(fd)
+
+
+def _took(db, repo, holder, at):
+    """Did the take at `at` commit `holder`'s tree lease? (`take_tree` writes `at`.)
+
+    A refused COMMIT leaves its transaction open, so it is rolled back first
+    and only the committed state is read (re-check Kette m1, both COMMITs):
+    the lease's own COMMIT refused -- the row was a phantom no other
+    connection sees, now gone: not taken, the next round takes again (lease
+    re-check m1); the journal's COMMIT refused after the lease's went through
+    -- the committed lease is ours: taken, no second take that reads
+    `already_merging` from it."""
+    schedule._rollback(db)
+    row = store.lease_who(db, resource(repo)) or {}
+    return row.get("holder") == holder and row.get("taken_at") == at
 
 
 def lease_resolves(strands, base, no_pre):
@@ -1279,6 +1348,9 @@ def _lane_target(lane):
 # (`gate.py _run_lane`) and the `lock-wait` NOTE row (`executor._take_lock`).
 LANE_QUEUED = re.compile(r"^gate: queued -- (.*)$")
 LOCK_WAIT = re.compile(r"^GATE lock-wait \[[^\]]*\] (\d+(?:\.\d+)?)s NOTE\b")
+# Re-check v2-r3-lease m2: under `merge --wait` the gate waits in the admission
+# (`--wait-admission`) and says it on stderr when the wait ends (`gate.py _run_lane`).
+ADMISSION_WAIT = re.compile(r"^gate: admission wait (\d+)s(?: \((.*)\))?$")
 
 
 def _summary_rev(line):
@@ -1325,11 +1397,17 @@ def gate_holder(strands):
 
 
 def gate_argv(tree, ctx):
+    # K13 (16.10.): `merge --wait` waits for the tree lease and so for the lane
+    # of its candidate run too -- the gate queues (`--wait-admission`, a queue
+    # place it comes back for); without `--wait` it takes none (kit find (h)).
+    wait = ["--wait-admission"] if ctx.get("wait") else []
     custom = os.environ.get("MECLAW_MERGE_GATE_CMD")
     if custom:
-        return [w.format(tree=tree, base=ctx.get("gate_base") or ctx["base"],
-                         strand=ctx["label"], holder=ctx.get("holder") or "")
-                for w in shlex.split(custom)]
+        words = [w.format(tree=tree, base=ctx.get("gate_base") or ctx["base"],
+                          strand=ctx["label"], holder=ctx.get("holder") or "",
+                          wait=" ".join(wait))
+                 for w in shlex.split(custom)]
+        return [w for w in words if w]
     own = ["--strand", ctx["holder"]] if ctx.get("holder") else []
     # GH #1167 (b): the gate plans from `gate_base` -- the strand tip when the
     # strand receipt covers it, else master (the full strand diff).
@@ -1337,8 +1415,8 @@ def gate_argv(tree, ctx):
     if ctx.get("host"):
         _lane_target(ctx["host"])  # an unknown lane refuses here (`no_lane`)
         return [os.path.join(tree, "scripts", "gate.sh"), "strand", "--host", ctx["host"],
-                "--base", base] + own
-    return [os.path.join(tree, "scripts", "gate.sh"), "strand", "--base", base] + own
+                "--base", base] + own + wait
+    return [os.path.join(tree, "scripts", "gate.sh"), "strand", "--base", base] + own + wait
 
 
 def run_gate(tree, ctx):
@@ -1377,12 +1455,14 @@ def run_gate(tree, ctx):
         fh.write(proc.stdout + proc.stderr)
     if line:
         _check_rev(ctx, _full_rev(proc.stdout) or _summary_rev(line), "the gate summary")
-    # V2-A10: the candidate run's wait for its lane. The merge gate takes no
-    # queue place (kit find h): a lane it cannot have ends it at once (exit 3,
+    # V2-A10: the candidate run's wait for its lane. Without `--wait` the merge
+    # gate takes no queue place (kit find h): a lane it cannot have ends it at once (exit 3,
     # `gate: queued -- <reason>` went to the gate log only); a lane whose cargo
     # lock other runs hold makes it wait -- the gate's `lock-wait` row.
     lane = [m.group(1) for m in map(LANE_QUEUED.match, proc.stderr.splitlines()) if m]
     waits = [float(m.group(1)) for m in map(LOCK_WAIT.match, proc.stdout.splitlines()) if m]
+    admitted = [m for m in map(ADMISSION_WAIT.match, proc.stderr.splitlines()) if m]
+    adm_s = sum(int(m.group(1)) for m in admitted)
     if not line and lane:
         text = "gate exit %d without a summary (not judged): no lane free for the candidate " \
                "run: %s" % (proc.returncode, lane[-1])
@@ -1391,7 +1471,8 @@ def run_gate(tree, ctx):
     else:
         text = line
     return {"verdict": verdict, "line": text, "secs": secs, "log": log,
-            "lane_wait_s": int(sum(waits))}
+            "lane_wait_s": int(sum(waits)) + adm_s, "admission_wait_s": adm_s,
+            "admission_why": (admitted[-1].group(2) or "") if admitted else ""}
 
 
 # --- the operation ----------------------------------------------------------------------
@@ -1590,7 +1671,7 @@ def land(db, ctx, strands, base, depth=0):
             "strand_run": (ctx["receipts"][strands[0].name]["run"] if len(strands) == 1
                            else None),
             "host": ctx.get("host"), "wave": os.path.basename(strands[0].wdir.rstrip("/")),
-            "holder": gate_holder(strands)}
+            "holder": gate_holder(strands), "wait": bool(ctx.get("wait"))}
     hits = golden_hits(cand, result.get("merge_point") or [])
     goldens = None
     if hits:
@@ -1626,10 +1707,16 @@ def land(db, ctx, strands, base, depth=0):
             golden_give_back(db, gctx, ctx["err"])
         ctx["out"].write("%s\n" % verdict["line"])
         lane_s = verdict.get("lane_wait_s") or 0
+        adm_s = verdict.get("admission_wait_s") or 0
         if lane_s:
             ctx["lane_wait_s"] = ctx.get("lane_wait_s", 0) + lane_s
+        if adm_s:
+            why = verdict.get("admission_why") or ""
+            ctx["err"].write("merge: waited %ds for the admission of the candidate run%s\n"
+                             % (adm_s, " (%s)" % why if why else ""))
+        if lane_s - adm_s:
             ctx["err"].write("merge: waited %ds for the lane of the candidate run (behind other "
-                             "runs' cargo lock)\n" % lane_s)
+                             "runs' cargo lock)\n" % (lane_s - adm_s))
         if verdict["verdict"] != "GREEN":
             steps.done(verdict["verdict"])
             reason = "gate_aborted" if verdict["verdict"] == "ABORTED" else "gate_red"
@@ -1773,7 +1860,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
         # fast-forwarded it between the first read and the take.
         base = out(root, "rev-parse", "master")
         ctx = {"root": root, "repo": repo, "host": host, "mids": mids, "out": out_,
-               "receipts": {}, "holder": holder, "err": err, "steps": steps,
+               "receipts": {}, "holder": holder, "err": err, "steps": steps, "wait": wait,
                "wait_s": waited(db, repo, mids, created if not said else set())}
         ready, plans_only, tips = [], [], {}
         steps.at("preconditions")

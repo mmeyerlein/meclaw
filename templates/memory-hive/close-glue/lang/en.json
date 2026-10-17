@@ -25,13 +25,25 @@
     {
       "pattern": "(?:please\\s+)?(?:don'?t|do\\s+not|never)\\s+(?:ever\\s+)?(?P<verb>bring\\s+up|mention)\\s+{thing}(?=.*\\bagain\\b)",
       "reminder": false
+    },
+    {
+      "pattern": "(?:please\\s+)?(?:don'?t|do\\s+not|never)\\s+(?:ever\\s+)?(?P<verb>talk\\s+about|speak\\s+about|bring\\s+up|mention)\\s+{thing}(?=.*\\b(?:again|anymore|any\\s+more)\\b)",
+      "reminder": false
+    },
+    {
+      "pattern": "(?:please\\s+)?stop\\s+(?P<verb>bringing\\s+up|mentioning|talking\\s+about|speaking\\s+about)\\s+{thing}",
+      "reminder": false
+    },
+    {
+      "pattern": "i\\s+(?:don'?t|do\\s+not)\\s+want\\s+to\\s+(?:talk|speak|hear)\\s+about\\s+{thing}(?=.*\\b(?:anymore|any\\s+more|again)\\b)",
+      "reminder": false
     }
   ],
   "negation": "",
-  "told": "\\b(?:told|said|mentioned|shared|say|tell)\\b|\\bthat\\s+about\\b",
+  "told": "\\b(?:told|said|mentioned|shared|say|tell)\\b|\\bthat\\s+about\\b|\\btalk(?:ing)?\\s+about\\b|\\bspeak(?:ing)?\\s+about\\b",
   "conjunction": "\\b(?:and|or)\\b",
-  "stopwords": "the and that this with about what said say says for from you your his her him she they them their our was were are has have had not but all any can please forget remember don dont thing things told tell telling mentioned keep want know knew just could would should will okay hey delete erase stop remembering everything also really again earlier before recently yesterday today talked spoke shared wrote regarding",
-  "fallback_verbs": "forget|bring\\s+up|mention",
+  "stopwords": "the and that this with about what said say says for from you your his her him she they them their our was were are has have had not but all any can please forget remember don dont thing things told tell telling mentioned keep want know knew just could would should will okay hey delete erase stop remembering everything also really again earlier before recently yesterday today talked spoke shared wrote regarding anymore more talk talking speak speaking bringing mentioning",
+  "fallback_verbs": "forget|bring\\s+up|mention|talk\\s+about|speak\\s+about|bringing\\s+up|mentioning|talking\\s+about|speaking\\s+about",
   "keeps_muted": [
     "\\b(?:don'?t|do\\s+not|never|stop)\\s+(?:ever\\s+)?(?:bring(?:ing)?\\s+(?:\\w+\\s+)?up|mention(?:ing)?|talk(?:ing)?\\s+about|ask(?:ing)?\\s+(?:me\\s+)?about)\\b",
     "\\b(?:don'?t|do\\s+not)\\s+want\\s+to\\s+(?:talk|hear)\\s+about\\b",

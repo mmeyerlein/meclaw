@@ -83,10 +83,8 @@ fn tree() -> tempfile::TempDir {
         &templates.join("terminal"),
     );
     copy_tree(&templates_root().join("door"), &templates.join("door"));
-    // A cron the run will never reach: the loop must not tick during the test.
-    let clock = templates.join("argus/clock/config.json");
-    let raw = std::fs::read_to_string(&clock).unwrap();
-    std::fs::write(&clock, raw.replace("0 0 */6 * * *", "0 0 0 1 1 *")).unwrap();
+    // The clock ships no schedule since R-AG-1 (GH #1229): the loop cannot
+    // tick during the test.
     std::fs::write(
         root.join(".env"),
         "OPENROUTER_API_KEY=test-key\nMODEL_CORE=gpt-4o-mock\n",
@@ -322,9 +320,9 @@ async fn the_old_swap_nodes_shape_is_refused_by_the_mutation_lane() {
 async fn a_grown_argus_changes_nothing_until_a_goal_is_enabled() {
     // The resting state, proven on a live colony rather than on the seed file:
     // it boots, it grows, and it reaches nothing outside itself. Since GH #462 a
-    // TICK is no longer silent -- it leaves an `idle` receipt -- but this test
-    // never lets the clock fire, so what it measures is the same thing it always
-    // measured: growing the hive costs the colony nothing.
+    // TICK is no longer silent -- it leaves an `idle` receipt -- and since
+    // GH #1229 the clock carries no schedule, so nothing ticks a grown argus
+    // until an event does: growing the hive costs the colony nothing.
     let Some(_) = shipped_argus() else {
         return;
     };

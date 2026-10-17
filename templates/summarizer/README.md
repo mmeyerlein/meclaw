@@ -1,4 +1,4 @@
-# `summarizer@2.2.10`
+# `summarizer@2.3.0`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -110,6 +110,8 @@ Wire the ports in the **same mutation** that instantiates the hive: an island wi
 crossing edge derives inactive and never spawns. Instantiation needs `ctx.model` -- a
 **resolved literal** per the K-H2 convention (the builder reads `MODEL_<ROLE>` from
 `.env` and passes the value, not the `${...}` token).
+
+`./writer` names its app at the provider: `http_referer` / `x_title` (`${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}`, `${OPENROUTER_X_TITLE:-MeClaw}`, the form of the memory-hive cells) go out as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` on `writer`.
 
 ### The model door (`in_model`, [#858](https://github.com/mmeyerlein/meclaw/issues/858))
 

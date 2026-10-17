@@ -15,6 +15,7 @@ pub mod gh1176_the_ack_goes_out_before_the_seal_is_read;
 pub mod gh119_ttl_notice;
 pub mod gh1200_an_emission_in_the_reboot_window_waits_for_its_target;
 pub mod gh1208_settle_answers_at_quiescence;
+pub mod gh1230_the_unresolved_reply_names_its_error_code;
 pub mod gh133_hive_port_boundary;
 pub mod gh140_subtree_override_params;
 pub mod gh144_fresh_hive_keeps_its_egress;

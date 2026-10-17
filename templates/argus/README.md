@@ -1,4 +1,4 @@
-# `argus@1.3.5`
+# `argus@1.4.0`
 
 The colony's watcher and its control loop, as a hive of eight cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -20,7 +20,7 @@ turns "the system can improve itself" from a claim into something you can check.
 | `probe` | `code` | the immediate health check |
 | `receipts` | `store` | one append-only row per cycle |
 | `door` | `code` | reads the record and takes a hint, for another part of the colony |
-| `clock` | `timer` | the tick (six-field Quartz cron, **UTC**) |
+| `clock` | `timer` | the cycle watchdog: one one-shot `argus-cycle`, re-armed by `meter` while a goal is enabled (R-AG-1, no tick) |
 
 ## The loop
 
@@ -167,7 +167,8 @@ and named as one, not a footnote.
 - The **window** answers *was that a good idea* -- in hours, over real traffic.
 
 They fail on different timescales. A loop with only the second one leaves a
-broken colony broken while it patiently collects evidence.
+broken colony broken while it patiently collects evidence. Neither of them is
+the `clock` cell: the cycle itself has no tick (see *The resting state*).
 
 The probe asks three mechanical questions of the colony's own ledger: **did this
 cycle's params update reach the cell it names**, has the colony produced errors
@@ -217,12 +218,27 @@ does not start paying for opinions about it.
 turns a row on. For a loop that reaches into the tree it runs in, that is the
 only defensible default.
 
-**It is not, however, a silent one.** A tick against an inert charter writes a
-receipt with `outcome: idle` and `reason_code: no_enabled_goal`. Before #462 it
+**No tick (R-AG-1, [#1229](https://github.com/mmeyerlein/meclaw/issues/1229)).** `./clock` carries no schedule. A cycle
+that finds an enabled goal orders the next one: one one-shot watchdog
+(`argus-cycle`, `rearm`) `cycle_ms` ahead, six hours by default, and its strike
+is the next cycle. A cycle an event forced on `in_cycle` re-arms the same
+watchdog, so it pushes the next cycle out rather than adding a second one. An
+inert charter orders nothing, so a fresh argus is quiet: it rests until an event
+arrives on `in_cycle` -- the parent's own call after it switched a goal on is
+the usual one. Until #1229 the clock ticked every six hours regardless, and an
+argus nobody had switched on wrote an `idle` row four times a day about data
+nothing had changed. A store reject on a read before the charter answered (the
+deadline read `stale`, the charter read `goals`) writes its `store_error` row and
+orders the next cycle as well: the strike that started the cycle is spent, and
+a refused read must not stop a loop with an enabled goal for good.
+
+**Quiet is not silent.** Every tick that does come -- an event against an inert
+charter included -- writes a receipt, with `outcome: idle` and
+`reason_code: no_enabled_goal` when nothing is enabled. Before #462 such a tick
 wrote nothing at all, which meant a watcher whose clock had stopped and a
 watcher with an empty charter produced the same empty table, and no reader could
-tell them apart. The evidence that the loop is running must not be the same
-evidence as that it decided something.
+tell them apart. The evidence that the loop ran must not be the same evidence as
+that it decided something.
 
 ## The chain has no holes
 
@@ -246,7 +262,7 @@ and it is named for what a caller asks for, never for the cell it lands on.
 
 | lane | direction | carries |
 |---|---|---|
-| `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike). The timer is the ordinary trigger; this is the extra one |
+| `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike, or the parent's own call after it switched a goal on). It is what starts a resting argus; the clock's watchdog only carries a loop with an enabled goal from one cycle to the next |
 | `in_model` | in → the hive | a model package for `./judge`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.2.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
 | `model_refused` | out → the hive | a model push `./judge` refused: its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of as a decision at `./mutator`. `meclaw-os` carries it back to its registry. Since 1.2.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `mutate` | out → the hive | a params update — body `{system:{}, params:{…}}`, `hop.target` naming the cell it is for. A parent draws one edge per cell the loop may reach |
@@ -364,17 +380,11 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.3.5",
+ "nodes": [{"name": "argus", "template": "argus@1.4.0",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},
-              "clock": {"schedules": [{"schedule_id": "<uuid7>",
-                                       "schedule_name": "argus-cycle",
-                                       "cron": "0 0 * * * *",
-                                       "emit_to": "../meter",
-                                       "emit_body": {"messages": [
-                                         {"origin": "user", "type": "text",
-                                          "text": "argus-cycle"}]}}]}}}]}
+              "meter": {"cycle_ms": 3600000}}}]}
 ```
 
 The mutation door accepts those keys precisely because they EXIST under `params`
@@ -392,7 +402,7 @@ arrives as something else.
 
 | cell | param | default | meaning |
 |---|---|---|---|
-| `./clock` | `schedules[0].cron` | `0 0 */6 * * *` | the tick, UTC. A loop that ticks faster than its window can fill measures only noise. A timer has no top-level `cron` param -- `TimerParams` reads `schedules` -- so an override replaces the whole array |
+| `./meter` | `cycle_ms` | 21600000 | how far ahead a cycle that found an enabled goal arms the next one (six hours). A loop that ticks faster than its window can fill measures only noise. It is the whole cadence: `./clock` carries no schedule, and an inert charter arms nothing |
 | `./meter` | `max_ledger_rows` | 200000 | the `scan_budget` the meter **asks** `/colony/ledger` for: the hard bound on the rows each windowed sub-query may read. Since [#385](https://github.com/mmeyerlein/meclaw/issues/385) an answer that hit the bound is **discarded** -- the cycle is receipted as not measured rather than ruled on a part of the window -- so a budget smaller than the colony's traffic in one window means the meter never measures at all and the loop stands still. Generous is the safe direction |
 | `./mutator` | `max_numeric_step_pct` | 50 | how far one cycle may move a numeric param |
 | `./mutator` | `numeric_param_keys` | `["temperature", "max_tokens", "external_timeout_ms", "attachment_timeout_ms"]` | the numeric half of the radius, as a key set. The default is the `llm` cell's runtime-mutable numeric params; a key outside it is refused with `key_outside_radius_<key>` rather than receipted as applied. A JSON array, or a comma-separated string, which is read the same way |
@@ -407,6 +417,7 @@ The provider lane, in `.env`, and all of it:
 | `ARGUS_JUDGE_MODEL` | `anthropic/claude-opus-5.5` | the thinking model. The one cell in the hive where a weaker model is a false economy: it decides what the colony does to itself |
 | `ARGUS_JUDGE_PROVIDER` | `openai` | provider adapter of the judge. `openai` is the only value `LlmParams` accepts today; it names the Chat-Completions **wire**, not the vendor, and the endpoint it talks to is `ARGUS_JUDGE_BASE_URL` ([#387](https://github.com/mmeyerlein/meclaw/issues/387)) |
 | `ARGUS_JUDGE_BASE_URL` | `https://openrouter.ai/api/v1` | provider endpoint of the judge |
+| `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | the app attribution of the judge (`http_referer` / `x_title`), sent as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` |
 
 The judge's key is no environment value (#801): `./judge` names a grant
 (`credential_grant_id`, set by whoever grows the loop -- `meclaw-os` seeds

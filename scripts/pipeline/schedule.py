@@ -30,6 +30,7 @@ import argparse
 import calendar
 import contextlib
 import dataclasses
+import glob
 import json
 import math
 import os
@@ -110,6 +111,10 @@ _lane_override = None
 # not a marker: a hand run is exactly the run that carries no marker.
 # Tests replace the probe: a callable `(lane.Lane) -> [pid, ...] | None`.
 _lane_tree_probe = None
+# GH #1228: a forced release ends what lives in the lane tree (`lane.ws_kill`).
+# Tests replace it: a callable `(lane.Lane, [pid, ...]) -> [pid, ...] | None`
+# (what still lives there afterwards, None for no answer).
+_lane_tree_kill = None
 _UNPROBED = object()
 
 ADDITIVE_DDL = (
@@ -129,11 +134,19 @@ ADDITIVE_DDL = (
     # 14.10.), and a column of `lease_entries` an older core's `_save` drops.
     "CREATE TABLE IF NOT EXISTS lease_progress (pool TEXT, holder TEXT, since TEXT, "
     "at TEXT, state TEXT, line TEXT, PRIMARY KEY (pool, holder, since))",
+    # K14 (16.10.): the class of a waiter (`merge` = a merge candidate's gate) and the
+    # merges granted in a row while strands waited -- side tables like `lease_holds`,
+    # which an older core's `_save` never drops.
+    "CREATE TABLE IF NOT EXISTS lease_classes (pool TEXT, holder TEXT, since TEXT, "
+    "class TEXT, PRIMARY KEY (pool, holder, since))",
+    "CREATE TABLE IF NOT EXISTS lease_streak (pool TEXT PRIMARY KEY, merges INTEGER)",
 )
 # `lease_entries.hold_min`: the explicit `take --ttl` of a holder -- a lease
 # held on purpose, which the idle reclaim (R-TV-W21 b) leaves to its hold TTL.
 ADDITIVE_COLUMNS = (("runners", "root", "TEXT"), ("runners", "spec", "TEXT"),
-                    ("lease_entries", "hold_min", "INTEGER"))
+                    ("lease_entries", "hold_min", "INTEGER"),
+                    # lease re-check m2: the release cap's streak beside the merges'
+                    ("lease_streak", "releases", "INTEGER"))
 
 
 # --- small helpers -------------------------------------------------------------------------
@@ -353,6 +366,50 @@ def runner_capacity(lane, fingerprint):
     return {k: cap[k] for k in CAPACITY_KEYS}
 
 
+# The fields of a fingerprint the TREE of a run decides, not the lane (#1199 K13):
+# the toolchain and configuration of the tree (`executor.BUILD_PART`), its
+# station environment's increment policy, the playwright of its
+# `workshop/tools/node_modules` and the engines that playwright starts. On
+# 16.10. an orga-hive pass (no `workshop/tools`) wrote "no playwright ... (npm ci
+# there)" over build04's register and the admission refused every meclaw
+# browser pass there. The register's top level holds the core repo's tree; a
+# satellite's tree fields live under `repos.<repo>` (`register_view`).
+TREE_FIELDS = ("rustc", "cargo", "linker", "build_env", "cargo_config",
+               "incremental_policy", "playwright", "browsers")
+
+
+def merge_register(old, new, repo):
+    """The register after a run of `repo` said `new` (`ingest`): the lane's own fields
+    from `new`; the tree fields at the top level only from a core-repo run -- a
+    satellite's go under `repos.<repo>` and never touch the core's (K13). A tree
+    field the run did not measure -- `browsers` of a run that books no engine
+    (K14, `executor.lane_fingerprint`) -- keeps the register's value."""
+    old = old if isinstance(old, dict) else {}
+    repos = dict(old.get("repos") or {})
+    if not repo or repo == _core_repo():
+        kept = {k: old[k] for k in TREE_FIELDS if k in old and k not in new}
+        return dict(new, **kept, **({"repos": repos} if repos else {}))
+    out = {k: v for k, v in new.items() if k not in TREE_FIELDS}
+    out.update({k: old[k] for k in TREE_FIELDS if k in old})
+    own = dict(repos.get(repo) or {})
+    own.update({k: new[k] for k in TREE_FIELDS if k in new})
+    repos[repo] = own
+    out["repos"] = repos
+    return out
+
+
+def register_view(fingerprint, repo):
+    """The register as a run of `repo` expects it (`fingerprint_expected`, the cache
+    keys of `--plan-only`): the lane's fields with the tree fields of `repo` -- the
+    top level for the core repo, `repos.<repo>` for a satellite (none: the core's)."""
+    fp = dict(fingerprint or {})
+    repos = fp.pop("repos", None) or {}
+    own = repos.get(repo) if repo and repo != _core_repo() else None
+    if isinstance(own, dict):
+        fp.update({k: v for k, v in own.items() if k in TREE_FIELDS})
+    return fp
+
+
 def browser_refusals(fingerprint):
     """The engines a lane's fingerprint says do not start, with the reason (GH #1161:
     build02's WebKit could not load libGL.so.1 and every WebKit proof SKIPped green).
@@ -453,6 +510,54 @@ def _lane_of(row):
                          cls=row["class"] or "lane", threads=spec.get("threads") or 0,
                          jobs=spec.get("jobs") or 0, slots=spec.get("slots") or 1,
                          opts=spec.get("opts") or {})
+
+
+# #1199 K14 (16.10.: all four lanes, five hand fixes): the admission refused browser
+# passes for a register value a run had written before the lane was provisioned.
+# Tests replace the measure (a lane -> its fingerprint, None = no answer).
+_browser_remeasure = None
+# lane -> the browsers of its last fresh measure in this process: a register that
+# still says exactly that is the fresh answer, and no round measures it again
+_FRESH_BROWSERS = {}
+
+
+def _refresh_browsers(db, names):
+    """Measure the browsers of the lanes `names` afresh (`lane.fingerprint`, the
+    lane root's tree -- the core's, as `lanes fingerprint`) and write them and their
+    capacity into the register. True when one was written. Once per register value:
+    a lane whose register holds its own fresh answer is not measured again. No
+    answer keeps the register and its refusal (fail-closed)."""
+    wrote = False
+    for name in names:
+        row = db.execute("SELECT * FROM runners WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            continue
+        reg = json.loads(row["fingerprint"] or "{}")
+        if name in _FRESH_BROWSERS and _FRESH_BROWSERS[name] == reg.get("browsers"):
+            continue
+        ln = _lane_of(row)
+        try:
+            if _browser_remeasure is not None:
+                fp = _browser_remeasure(ln)
+            else:
+                from . import lane as lane_mod
+                fp = lane_mod.fingerprint(ln)
+        except Exception:  # noqa: BLE001 -- fail-closed: no answer keeps the refusal
+            fp = None
+        said = fp.get("browsers") if isinstance(fp, dict) else None
+        if not isinstance(said, dict):
+            continue
+        _FRESH_BROWSERS[name] = said
+        with _tx(db):
+            row = db.execute("SELECT * FROM runners WHERE name = ?", (name,)).fetchone()
+            reg = dict(json.loads(row["fingerprint"] or "{}"), browsers=said)
+            cap = json.loads(row["capacity"] or "{}")
+            cap.update({k: v for k, v in runner_capacity(ln, reg).items()
+                        if k.startswith("browser_")})
+            db.execute("UPDATE runners SET fingerprint = ?, capacity = ? WHERE name = ?",
+                       (json.dumps(reg, sort_keys=True), json.dumps(cap, sort_keys=True), name))
+        wrote = True
+    return wrote
 
 
 # --- plan facts ----------------------------------------------------------------------------
@@ -627,13 +732,16 @@ def _target_g(db, lane):
 # --- admission -----------------------------------------------------------------------------
 
 def admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, wait, tree_name=None,
-          wait_tree="", any_lane=False, queue=True):
+          wait_tree="", any_lane=False, queue=True, merge=False, release_tree=""):
     """Admit one pass: `Admission`, or `Queued` (exit 3), or `ScheduleError` (exit 2).
 
     Admission never blocks: a queued strand keeps its place in the lease
     queue; `wait` only words the queue line for a caller that blocks itself
     (`admit_waiting`, GH #1145), `wait_tree` is that caller's tree: the place
-    stays while the tree does (R2 M3). integration and release take only the
+    stays while the tree does (R2 M3). `release_tree` is the caller's tree for
+    the release class alone (`_release_class`, re-check Kette Minor 2): a gate
+    without the wait hands it too, without keeping its place for the tree's
+    lifetime. integration and release take only the
     widest lane unless `any_lane` (`WIDEST_MODES`). `queue=False` (the merge
     gate, which never comes back for an offer) and a pass without a holder take
     no queue place: a waiter that never takes its offer blocks the pool (kit
@@ -641,11 +749,19 @@ def admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, wait, tre
     _ensure(db)
     now = _now(now)
     lane_procs = _probe_stale_lanes(db, strand or wave or "", lane_pref or "", now, batch=True)
+    kw = dict(repo=repo, mode=mode, strand=strand or "", wave=wave or "", base=base,
+              lane_pref=lane_pref, now=now, tree_name=tree_name, wait=wait,
+              wait_tree=wait_tree, any_lane=any_lane, queue=queue, lane_procs=lane_procs,
+              merge=merge, release_tree=release_tree)
+    stale = []
     with _tx(db):
-        return _admit(db, plan, repo=repo, mode=mode, strand=strand or "", wave=wave or "",
-                      base=base, lane_pref=lane_pref, now=now, tree_name=tree_name, wait=wait,
-                      wait_tree=wait_tree, any_lane=any_lane, queue=queue,
-                      lane_procs=lane_procs)
+        res = _admit(db, plan, stale_browsers=stale, **kw)
+    # #1199 K14: a lane refused only for its browsers is measured once afresh --
+    # outside the transaction, like the lane tree probe -- before the refusal stands
+    if isinstance(res, Queued) and stale and _refresh_browsers(db, stale):
+        with _tx(db):
+            res = _admit(db, plan, **kw)
+    return res
 
 
 def wait_secs(env, name, default):
@@ -660,6 +776,48 @@ def wait_secs(env, name, default):
     return secs
 
 
+# tm-orch4 (16.10.): `token take --wait` died on `database is locked` with 18
+# waiters. A waiter outlasts a locked store: first pause, cap (doubling).
+LOCKED_PAUSE_S = (0.25, 5.0)
+
+
+def store_locked(exc):
+    """A refusal a waiter outlasts: the store answered locked or busy (also
+    once `store.retry_write` gave up on it)."""
+    return isinstance(exc, store.StoreWriteError) or store._busy(exc)
+
+
+def while_locked(fn, *, end, reset=None):
+    """`fn()` for a waiter (`take --wait`, `gate --wait-admission`, `merge
+    --wait`): a store that answers locked or busy never ends the wait; `fn`
+    runs again after a growing pause (`LOCKED_PAUSE_S`) until the monotonic
+    `end`, the waiter's own limit -- then the last refusal is raised. Every
+    other error passes at once; a caller that does not wait never gets here.
+    `reset()` runs after each refusal (a transaction a refused COMMIT left
+    open must not swallow the next round). The pause runs outside the
+    `except`, as in `store.retry_write`. `fn` must be safe to repeat."""
+    pause = LOCKED_PAUSE_S[0]
+    while True:
+        try:
+            return fn()
+        except (sqlite3.OperationalError, store.StoreWriteError) as exc:
+            if not store_locked(exc) or time.monotonic() >= end:
+                raise
+        if reset:
+            reset()
+        time.sleep(max(0.0, min(pause, end - time.monotonic())))
+        pause = min(pause * 2, LOCKED_PAUSE_S[1])
+
+
+def _rollback(db):
+    """Drop a transaction a refused statement left open (`while_locked` reset)."""
+    try:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+    except sqlite3.Error:
+        pass
+
+
 def admit_waiting(db, plan, *, secs=None, on_queued=None, **kw):
     """`admit` until it is no longer queued (`gate --wait-admission`, GH #1145).
 
@@ -672,7 +830,8 @@ def admit_waiting(db, plan, *, secs=None, on_queued=None, **kw):
     once, and the whole wait ends after `MECLAW_ADMISSION_WAIT_SECS` (4 h) --
     each as a final `Queued` that has left the queue (Review Z-A2 I1).
     `on_queued(Queued)` hears the first queued round only; a `ScheduleError`
-    ends the wait as it is."""
+    ends the wait as it is; a locked store does not (`while_locked`, up to the
+    4-h limit)."""
     secs = float(secs) if secs is not None else wait_secs(os.environ, "MECLAW_TOKEN_WAIT_SECS", "30")
     limit = wait_secs(os.environ, "MECLAW_ADMISSION_WAIT_SECS", "14400")
     end = time.monotonic() + limit
@@ -681,7 +840,8 @@ def admit_waiting(db, plan, *, secs=None, on_queued=None, **kw):
         while True:
             fd = _wake_open(db_path)
             try:
-                adm = admit(db, plan, wait=True, **kw)
+                adm = while_locked(lambda: admit(db, plan, wait=True, **kw), end=end,
+                                   reset=lambda: _rollback(db))
                 if not isinstance(adm, Queued) or adm.final:
                     return adm
                 if not said and on_queued:
@@ -823,6 +983,20 @@ def measured_p95(db, repo, mode, lane):
     return out
 
 
+def local_p95(db, repo, mode):
+    """{station: P95 seconds} for a pass without a lane: per station the largest
+    `measured_p95` over the lanes (class `lane`) in `runners`. The pass on this
+    machine (class egon: half the cores, beside the live Egon) records no seconds of
+    its own and is never faster than a lane; without this it kept the plan's default
+    cap (fix round 4 v2-r3-kit: gate-selftest 20 min against a lane P95 of 962 s)."""
+    out = {}
+    for row in db.execute("SELECT name FROM runners WHERE class = 'lane' ORDER BY name"):
+        for name, secs in measured_p95(db, repo, mode, row["name"]).items():
+            if secs > out.get(name, 0.0):
+                out[name] = secs
+    return out
+
+
 def with_hang_caps(stations, p95):
     """(stations, raised): every `timeout_min` at least `plan.hang_cap_min` of the
     station's P95 -- raised, never lowered; `raised` = [(name, old, new)], each a
@@ -932,7 +1106,8 @@ def tree_under(root, tree):
 
 
 def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_name, wait=False,
-           wait_tree="", any_lane=False, queue=True, lane_procs=None):
+           wait_tree="", any_lane=False, queue=True, lane_procs=None, merge=False,
+           stale_browsers=None, release_tree=""):
     stations = list(plan.get("stations") or [])
     check_cpu(stations)
     names = [s["name"] for s in stations]
@@ -985,9 +1160,7 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                 raise ScheduleError("%s holds lane %s, not %s -- release it first, then take %s"
                                     % (holder_key, held_lane, lane_pref, lane_pref))
         else:
-            names_q = [w["strand"] for w in st["waiting"]]
-            pos = names_q.index(holder_key) if holder_key in names_q else len(names_q)
-            left = _lanes_left(st, st["waiting"][:pos])
+            left = _lanes_left(st, _ahead_of(st, holder_key, merge))
 
     if lane_pref:
         order = [lane_pref]
@@ -1055,6 +1228,9 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                                    " (%s)" % refused[k] if k in refused else "")
                  for k in CAPACITY_KEYS if need[k] > int(cap.get(k) or 0)]
         if never:
+            if stale_browsers is not None and all(
+                    k in refused for k in CAPACITY_KEYS if need[k] > int(cap.get(k) or 0)):
+                stale_browsers.append(name)   # only the register's browsers refuse (K14)
             reasons.append("lane %s can never take the pass: needs %s" % (name, ", ".join(never)))
             continue
         why = _fit(cap, [x for x in live if x["lane"] == name], need, tree)
@@ -1086,7 +1262,9 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                     "the pass names no holder (--strand)" if not holder_key
                     else "a merge gate does not wait for an offer"))
             msg = _enqueue(st, ctx, holder_key, lane_pref or "", wait_tree or "",
-                           wait="gate --wait-admission" if wait else False)
+                           wait="gate --wait-admission" if wait else False, merge=merge,
+                           release=_release_class(holder_key, release_tree or wait_tree or "",
+                                                  mode))
             _save(db, st, ctx)
             return Queued(msg)
         if pool_lanes:
@@ -1136,7 +1314,7 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
                 mine["ttl_min"] = max(mine.get("ttl_min") or st["ttl_min"], ttl_min)
                 mine["run"] = run
             else:
-                _grant(st, ctx, holder_key, lane_name, "", ttl_min=ttl_min, run=run)
+                _grant(st, ctx, holder_key, lane_name, "", ttl_min=ttl_min, run=run, merge=merge)
                 lease_taken = True
         _save(db, st, ctx)
 
@@ -1241,7 +1419,7 @@ def _dispatch(db, plan, runner, run, stations, names, demand, cargo, tree, now, 
                   "station": name}, run=run, item=tid, at=at)
     db.execute("UPDATE runners SET state = 'busy', updated_at = ? WHERE name = ?", (at, lane))
 
-    fp = json.loads(runner["fingerprint"] or "{}")
+    fp = register_view(json.loads(runner["fingerprint"] or "{}"), repo)  # K13: repo's own tree
     egon = runner["class"] == "egon"
     try:
         from . import lane as lane_mod
@@ -1348,7 +1526,13 @@ def ingest(db, admission, line):
         elif event == "lane_fingerprint" and not data.get("unanswered"):
             # re-check tv-bn M7r A-M1: a lane that did not answer keeps its register
             # (nulls there keyed the next run's cache over no tool versions)
-            fp = {k: v for k, v in data.items() if k != "run"}
+            # #1199 K13: a satellite's tree fields go under `repos.<repo>`, the
+            # core's stay (`merge_register`) -- an orga-hive tree refused build04's
+            # browsers for every meclaw pass
+            row = db.execute("SELECT fingerprint FROM runners WHERE name = ?",
+                             (admission.lane,)).fetchone()
+            fp = merge_register(json.loads(row["fingerprint"]) if row and row["fingerprint"] else {},
+                                {k: v for k, v in data.items() if k != "run"}, admission.repo)
             db.execute("UPDATE runners SET fingerprint = ? WHERE name = ?",
                        (json.dumps(fp, sort_keys=True), admission.lane))
     return ev
@@ -1482,6 +1666,41 @@ def _run_pids(db, run, doc):
     return sorted(pids)
 
 
+# The words of a lane probe without an answer in `run_gone`'s why (m3 keys on them).
+NO_ANSWER = "got no answer"
+
+
+class ProbeUnanswered(ScheduleError):
+    """`release_run` refused because the lane probe got no answer (re-check v2-r3-lease m3)."""
+
+
+def run_gone(lane, run, ws, tree, probe):
+    """Whether the lane shows `run` gone: `(unit_state, "")` when its
+    `pipe-<run>.scope` is gone and nothing lives in its workspace `ws` or its
+    tree (`tree`, `wt/<name>`, `slot/<n>`, below `lane.root`), else
+    `(unit_state, why)`. Fail-closed: a probe without an answer is a why. The
+    tree probe is #1228 round 3: a run without a scope reads `inactive` (I1),
+    its cargo lives in the tree, not in ws. `probe` is the lane module."""
+    unit = "pipe-%s.scope" % run
+    state = probe.unit_state(lane, run)
+    if state not in UNIT_GONE_STATES:
+        return state, "%s on %s is %s -- not an orphan" % (
+            unit, lane.name, state or "unknown (the probe %s)" % NO_ANSWER)
+    if not ws:
+        return state, "%s names no workspace to probe" % run
+    paths = [("workspace", ws)]
+    if tree:
+        paths.append(("tree", tree if tree.startswith("/") else os.path.join(lane.root, tree)))
+    for what, path in paths:
+        procs = probe.ws_procs(lane, path)
+        if procs is None:
+            return state, "the %s probe of %s on %s %s" % (what, path, lane.name, NO_ANSWER)
+        if procs:
+            return state, "pid %s on %s live in %s -- not an orphan" % (
+                ", ".join(str(p) for p in procs), lane.name, path)
+    return state, ""
+
+
 def release_run(db, lane, run, *, by, probe, now=None):
     """Close the orphaned run `run` on `lane` (a `lane.Lane`); `probe` is the
     lane module (`unit_state`, `ws_procs`). Returns the closed task-run ids;
@@ -1502,7 +1721,11 @@ def release_run(db, lane, run, *, by, probe, now=None):
         "SELECT task_runs.* FROM task_runs JOIN items ON items.id = task_runs.item "
         "WHERE items.parent = ? AND task_runs.ws = ? AND task_runs.state = 'dispatched'",
         (wp["id"], ws)).fetchall() if ws else []
-    if wp["state"] != "active" and not open_trs:
+    # #1228 round 3: a `stopped/lost` run is open -- `close(lost=True)` keeps its
+    # lease, run and runner, and `_live_runs` counts it until its deadline; the
+    # verb that knew only `active` said "nothing open" and the lease stood.
+    lost = wp["state"] == "stopped" and wp["reason"] == "lost"
+    if wp["state"] != "active" and not open_trs and not lost:
         raise ScheduleError("lanes release: %s has nothing open (workpackage %s %s/%s)"
                             % (run, wp["key"], wp["state"], wp["reason"] or "-"))
     # (a) no local driver of the run lives
@@ -1514,21 +1737,10 @@ def release_run(db, lane, run, *, by, probe, now=None):
     if alive:
         raise ScheduleError("lanes release: driver pid %s of %s is alive -- not an orphan"
                             % (", ".join(str(p) for p in alive), run))
-    # (b) the lane shows neither the run's scope nor a process in its workspace
-    unit = "pipe-%s.scope" % run
-    state = probe.unit_state(lane, run)
-    if state not in UNIT_GONE_STATES:
-        raise ScheduleError("lanes release: %s on %s is %s -- not an orphan"
-                            % (unit, lane.name, state or "unknown (the probe got no answer)"))
-    if not ws:
-        raise ScheduleError("lanes release: %s names no workspace to probe" % run)
-    procs = probe.ws_procs(lane, ws)
-    if procs is None:
-        raise ScheduleError("lanes release: the workspace probe of %s on %s got no answer"
-                            % (ws, lane.name))
-    if procs:
-        raise ScheduleError("lanes release: pid %s on %s live in %s -- not an orphan"
-                            % (", ".join(str(p) for p in procs), lane.name, ws))
+    # (b) the lane shows neither the run's scope nor a process in its workspace or tree
+    state, why = run_gone(lane, run, ws, doc.get("tree") or "", probe)
+    if why:
+        raise (ProbeUnanswered if NO_ANSWER in why else ScheduleError)("lanes release: " + why)
     # the close: the store's own `close()` on the run's round
     tasks, task_runs = {}, {}
     for row in db.execute(
@@ -1555,6 +1767,71 @@ def release_run(db, lane, run, *, by, probe, now=None):
                  "workpackage": wp["key"], "task_runs": closed,
                  "unit_state": state}, run=run, item=wp["id"], at=_iso(now))
     return closed
+
+
+LOST_PROBE_BY = "lost-probe"
+# Re-check v2-r3-lease m3: a lane that gave no answer for a run is asked again
+# for it only after this window -- every `take` sweeps, and a dead lane cost each
+# one an ssh connect timeout (10 s). Fail-closed: the run keeps its lease meanwhile.
+LOST_PROBE_RETRY_S = 300
+LOST_PROBE_UNANSWERED = "lost_probe_unanswered"
+
+
+def _unanswered_lately(db, run, lane, now):
+    """True when the lost-run probe of `run` on `lane` got no answer within `LOST_PROBE_RETRY_S`."""
+    row = db.execute("SELECT at FROM journal WHERE run = ? AND event = 'lease_noted' AND "
+                     "json_extract(data, '$.verb') = ? AND json_extract(data, '$.resource') = ? "
+                     "ORDER BY seq DESC LIMIT 1",
+                     (run, LOST_PROBE_UNANSWERED, "lost-probe:" + lane)).fetchone()
+    return row is not None and now - _epoch(row["at"]) < LOST_PROBE_RETRY_S
+
+
+def _close_dead_runs(db, now):
+    """#1228 round 3: close every run `_live_runs` still counts -- `stopped/lost`, or
+    `active` with its driver dead (a SIGKILL ends no `finally`) -- whose lane probe
+    finds it gone: `release_run`'s checks, unchanged: no live local driver (asked
+    first, no ssh for a live one), the scope gone, nothing in its workspace or tree. Any refusal, a probe
+    without an answer included, keeps the run and its lease (fail-closed, I1).
+    Runs BEFORE the verb's transaction (ssh probes). Returns ([(run, lane)], faults):
+    a fault is an exception other than a refusal, kept for a line (never a silent
+    "no answer", re-check tv-kit fix14 H2)."""
+    if _lane_override is not None:
+        mod = _lane_override
+    else:
+        from . import lane as mod
+    closed, faults = [], []
+    for r in _live_runs(db, now):
+        row = db.execute("SELECT state, reason FROM items WHERE id = ?", (r["item"],)).fetchone()
+        if not row or (row["state"] != "active"
+                       and (row["state"], row["reason"]) != ("stopped", "lost")):
+            continue
+        if _unanswered_lately(db, r["run"], r["lane"], now):
+            continue    # m3: no answer lately -- the lease stays, no new timeout
+        try:
+            ln = _lane_named(db, r["lane"])
+            if ln is None:
+                continue
+            release_run(db, ln, r["run"], by=LOST_PROBE_BY, probe=mod, now=now)
+        except ProbeUnanswered as e:
+            # lease re-check m3: the note sits inside the fail-closed net -- a
+            # locked store here keeps the run and its lease and says so as a fault
+            try:
+                events.emit(db, "lease_noted", "note",
+                            {"resource": "lost-probe:" + r["lane"], "holder": r["key"] or "-",
+                             "run": r["run"], "ttl_s": LOST_PROBE_RETRY_S,
+                             "verb": LOST_PROBE_UNANSWERED, "detail": str(e)},
+                            run=r["run"], at=_iso(now))
+            except Exception as note:  # noqa: BLE001 -- fail-closed like the probe's faults
+                faults.append("%s on %s: %s: %s" % (r["run"], r["lane"],
+                                                    type(note).__name__, note))
+            continue
+        except ScheduleError:
+            continue    # a refusal: the run may live
+        except Exception as e:  # noqa: BLE001 -- fail-closed: a fault keeps the lease too
+            faults.append("%s on %s: %s: %s" % (r["run"], r["lane"], type(e).__name__, e))
+            continue
+        closed.append((r["run"], r["lane"]))
+    return closed, faults
 
 
 def _release_run_cli(argv, env, cwd):
@@ -1666,6 +1943,8 @@ def _load(db):
         st["lanes"] = lanes
     holds = {(r["holder"], r["since"]): r["hold_min"] for r in db.execute(
         "SELECT holder, since, hold_min FROM lease_holds WHERE pool = ?", (POOL,))}
+    classes = {(r["holder"], r["since"]): r["class"] for r in db.execute(
+        "SELECT holder, since, class FROM lease_classes WHERE pool = ?", (POOL,))}
     for e in db.execute("SELECT * FROM lease_entries WHERE pool = ? ORDER BY seq", (POOL,)):
         if e["resource"]:
             h = {"strand": e["holder"], "since": _epoch(e["since"]), "seen": _epoch(e["seen"]),
@@ -1683,8 +1962,107 @@ def _load(db):
                 w["offered"] = {"at": _epoch(e["offered_at"])}
                 if e["offered"]:
                     w["offered"]["lane"] = e["offered"]
+            cls = classes.get((e["holder"], e["since"]))
+            if cls in ("merge", "release"):
+                w[cls] = True
             st["waiting"].append(w)
+    row = db.execute("SELECT merges, releases FROM lease_streak WHERE pool = ?",
+                     (POOL,)).fetchone()
+    st["merge_streak"] = int(row["merges"] or 0) if row else 0
+    st["release_streak"] = int(row["releases"] or 0) if row else 0
+    st["waiting"] = _queue_order(st["waiting"], st["merge_streak"], st["release_streak"])
     return st
+
+
+# K14 (16.10.): merges go first, but at most this many in a row while strands wait.
+# A merge holds the tree lease of master, so merges come one at a time; three in
+# a row (one strand gate of ~15-25 min each) bound a strand's extra wait to about
+# an hour, well under the admission wait (4 h), and a wave close of three strands
+# still merges without a strand gate between them.
+MERGE_STREAK_MAX = 3
+
+
+# K14 (16.10.): a wave's release path (its `rel-*` strands, the release gate runs
+# `rel-0643-10`, `rel3`) goes before the program. The name is the convention, not
+# the class (lease re-check m2): `_release_class` also asks the pass.
+RELEASE_NAME = re.compile(r"rel(?:[-_0-9]|$)")
+
+
+# Lease re-check m2: the release class has its own cap, like the merges'. Merges
+# and release grants in a row while a program strand waits count together; after
+# this many the oldest program strand goes first once. Four = the merge cap (3)
+# plus the one release it lets through, so a stream of merges and releases holds
+# a program strand about one hour, well under the admission wait (4 h).
+RELEASE_STREAK_MAX = 4
+
+
+def _release_path(key):
+    """Is `key` (`<wave>/<strand>[:<n>]`) on a wave's release path? Its strand
+    name -- the last `/` segment without the holder suffix -- is `rel`,
+    `rel-*`, `rel_*` or `rel<digit>*` (K14)."""
+    return bool(RELEASE_NAME.match(key.split(":", 1)[0].rsplit("/", 1)[-1]))
+
+
+def _release_class(key, tree="", mode=""):
+    """Is `key` (`<wave>/<strand>[:<n>]`) on a wave's release path (K14)? Lease
+    re-check m2: the name alone is no class -- a program strand `rel-notes` would
+    lead the program. The name follows the convention (`_release_path`) AND the
+    pass says so: a release gate (`mode` release), or the strand file
+    `plans/<wave>[-*]/straenge/<strand>.json` in the caller's `tree` declares
+    `"release": true`. The answer is taken once, when the waiter queues
+    (`_enqueue`), and kept as its class (`lease_classes`)."""
+    if not _release_path(key):
+        return False
+    if mode == "release":
+        return True
+    if not tree:
+        return False
+    wave, _, strand = key.split(":", 1)[0].rpartition("/")
+    # `plans/<wave>` or `plans/<wave>-<date>`: `<wave>*` also matched a wave
+    # `<wave>X-...` with a strand of the same name (re-check Kette Minor 2)
+    dirs = [glob.escape(wave), glob.escape(wave) + "-*"] if wave else ["*"]
+    paths = [p for d in dirs for p in glob.glob(os.path.join(
+        glob.escape(tree), "plans", d, "straenge", glob.escape(strand) + ".json"))]
+    for path in sorted(paths):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if json.load(fh).get("release") is True:
+                    return True
+        except (OSError, ValueError, AttributeError):
+            continue
+    return False
+
+
+def _queue_order(waiting, streak, release_streak=0):
+    """The queue in offer order (K14): merge candidates, then the release path
+    (`release`, `_release_class`), then the program, FIFO within each class;
+    after `MERGE_STREAK_MAX` merges granted in a row while others waited, the
+    oldest non-merge in that order goes first once; after `RELEASE_STREAK_MAX`
+    merge or release grants in a row while the program waited, the oldest
+    program strand goes first once (lease re-check m2)."""
+    merges = [w for w in waiting if w.get("merge")]
+    rest = [w for w in waiting if not w.get("merge")]
+    program = [w for w in rest if not w.get("release")]
+    rest = [w for w in rest if w.get("release")] + program
+    if merges and rest and streak >= MERGE_STREAK_MAX:
+        order = rest[:1] + merges + rest[1:]
+    else:
+        order = merges + rest
+    if program and len(program) < len(order) and release_streak >= RELEASE_STREAK_MAX:
+        order = program[:1] + [w for w in order if w is not program[0]]
+    return order
+
+
+def _ahead_of(st, key, merge=False):
+    """The waiters ahead of `key` in offer order -- for a caller not yet queued,
+    where its entry would stand (a merge goes ahead of the strands, K14)."""
+    names = [w["strand"] for w in st["waiting"]]
+    if key in names:
+        return st["waiting"][:names.index(key)]
+    probe = {"strand": key, "merge": True} if merge else {"strand": key}
+    order = _queue_order(st["waiting"] + [probe], st.get("merge_streak", 0),
+                         st.get("release_streak", 0))
+    return order[:next(i for i, w in enumerate(order) if w is probe)]
 
 
 def _hold_ttl(h, st):
@@ -1693,7 +2071,17 @@ def _hold_ttl(h, st):
 
 def _save(db, st, ctx):
     """Write the pool back -- every write states which waiter a free token is offered to."""
+    st["waiting"] = _queue_order(st["waiting"], st.get("merge_streak", 0),
+                                 st.get("release_streak", 0))
     _mark_offers(st, ctx)
+    db.execute("DELETE FROM lease_classes WHERE pool = ?", (POOL,))
+    for w in st["waiting"]:
+        cls = "merge" if w.get("merge") else "release" if w.get("release") else ""
+        if cls:
+            db.execute("INSERT OR REPLACE INTO lease_classes (pool, holder, since, class) "
+                       "VALUES (?,?,?,?)", (POOL, w["strand"], _iso(w["since"]), cls))
+    db.execute("INSERT OR REPLACE INTO lease_streak (pool, merges, releases) VALUES (?, ?, ?)",
+               (POOL, int(st.get("merge_streak") or 0), int(st.get("release_streak") or 0)))
     db.execute("DELETE FROM lease_entries WHERE pool = ?", (POOL,))
     for h in st["holders"]:
         db.execute("INSERT INTO lease_entries (pool, holder, resource, want, since, seen, pids, "
@@ -1953,22 +2341,46 @@ def _lane_tree_procs(db, name):
     the lease unprobed (re-check tv-kit fix10 M2). The test hook is asked first,
     so a test never reads the host file of the machine."""
     from . import lane as lane_mod
-    row = db.execute("SELECT * FROM runners WHERE name = ?", (name,)).fetchone()
     if _lane_tree_probe is not None:
-        return _lane_tree_probe(_lane_of(row) if row is not None
-                                else lane_mod.Lane(name=name, ssh=""))
-    if row is not None:
-        ln = _lane_of(row)
-    else:
-        try:
-            ln = next((x for x in lane_mod.load_lanes() if x.name == name), None)
-        except ValueError:      # fix11 H3: a host file that is no UTF-8 is no answer
-            return None
-        if ln is None:
-            return None
+        return _lane_tree_probe(_lane_named(db, name, hook=True))
+    ln = _lane_named(db, name)
+    if ln is None:
+        return None
     try:
         return lane_mod.ws_procs(ln, ln.root)
     except lane_mod.LaneError:
+        return None
+
+
+def _lane_named(db, name, hook=False):
+    """The lane `name` from its runner row, else from the host file; None when it
+    is known nowhere (or the host file is no UTF-8, fix11 H3). `hook`: for a test
+    hook, which never reads the host file of the machine (a bare lane instead)."""
+    from . import lane as lane_mod
+    row = db.execute("SELECT * FROM runners WHERE name = ?", (name,)).fetchone()
+    if row is not None:
+        return _lane_of(row)
+    if hook:
+        return lane_mod.Lane(name=name, ssh="")
+    try:
+        return next((x for x in lane_mod.load_lanes() if x.name == name), None)
+    except ValueError:
+        return None
+
+
+def _lane_tree_end(db, name, pids):
+    """End the pids `pids` found in the lane tree of `name` (GH #1228, `release
+    --force`): what still lives there afterwards, None without an answer. Never
+    raises -- an exception is no answer, kept for the line as `_tree_answer` does."""
+    from . import lane as lane_mod
+    _PROBE_FAULTS.pop(name, None)
+    try:
+        if _lane_tree_kill is not None:
+            return _lane_tree_kill(_lane_named(db, name, hook=True), pids)
+        ln = _lane_named(db, name)
+        return None if ln is None else lane_mod.ws_kill(ln, ln.root, pids)
+    except Exception as e:  # noqa: BLE001 -- no answer, said in the line
+        _PROBE_FAULTS[name] = "%s: %s" % (type(e).__name__, e)
         return None
 
 
@@ -2093,17 +2505,44 @@ def _busy_spell(db, h):
 
 def _release_probe(db, holder, force):
     """The lane tree probe of `lease_release` -- BEFORE its `BEGIN IMMEDIATE`, as
-    `_probe_stale_lanes`: only for a lane lease a `stale-but-busy` note speaks for
-    (`_busy_note`), never under `--force` (k3 narrowed, re-check fix12 M1).
-    Returns {lane: answer}; a note that appears between this read and the
-    transaction finds no answer and keeps the lease (fail-closed)."""
-    if force:
-        return {}
+    `_probe_stale_lanes` -- for every lane lease, also under `--force` (GH #1228:
+    a lane run outlived its released lease; a release waits for what lives in the
+    tree, a forced one ends it). Returns ({lane: answer}, {lane: (ended, rest)}):
+    under `--force` a pid in the tree is ended here (`_lane_tree_end`), `rest`
+    what still lives there afterwards (None: no answer)."""
     st = _load(db)
     mine = _holder(st, holder) if st else None
-    if not mine or not mine.get("lane") or not _busy_note(db, mine)[1]:
-        return {}
-    return {mine["lane"]: _tree_answer(db, mine["lane"])}
+    if not mine or not mine.get("lane"):
+        return {}, {}
+    ln = mine["lane"]
+    procs = _tree_answer(db, ln)
+    if not force or not procs:
+        return {ln: procs}, {}
+    # re-check v2-r3-lease M1: the kill stays outside `BEGIN IMMEDIATE` (TERM,
+    # up to 5 s, a second probe -- under the write lock every other verb would
+    # wait for it), so the lease is read again after the probe and the pids are
+    # ended only while the SAME lease stands (lane and take time); the kill
+    # script checks each pid against the tree again at the signal (`ws_kill`).
+    st = _load(db)
+    now = _holder(st, holder) if st else None
+    if not now or (now.get("lane"), now.get("since")) != (ln, mine.get("since")):
+        return {ln: _UNPROBED}, {}
+    return {ln: procs}, {ln: (procs, _lane_tree_end(db, ln, procs))}
+
+
+def _own_line():
+    """This process and its ancestors: a release from inside a driver that entered
+    its pid at the lease (`check --pid`) never waits for itself."""
+    pids, pid = set(), os.getpid()
+    while pid > 1 and pid not in pids:
+        pids.add(pid)
+        try:
+            with open("/proc/%d/stat" % pid) as fh:
+                pid = int(fh.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    # the parent without /proc as well -- seeded before the walk it ended the walk there
+    return pids | {os.getppid()}
 
 
 def _prune(st, ctx, key, want=None):
@@ -2146,8 +2585,17 @@ def _prune(st, ctx, key, want=None):
         _mark_offers(st, ctx)
 
 
-def _grant(st, ctx, key, lane, tree, ttl_min=None, run=None):
+def _grant(st, ctx, key, lane, tree, ttl_min=None, run=None, merge=False):
+    release = any(w.get("release") for w in st["waiting"] if w["strand"] == key)
     st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
+    # K14: count the merges granted in a row while others wait; anything else ends the streak
+    others = any(not w.get("merge") for w in st["waiting"])
+    st["merge_streak"] = int(st.get("merge_streak") or 0) + 1 if merge and others else 0
+    # lease re-check m2: merges and releases in a row while the program waits; a
+    # program grant ends that streak
+    program = any(not w.get("merge") and not w.get("release") for w in st["waiting"])
+    st["release_streak"] = (int(st.get("release_streak") or 0) + 1
+                            if (merge or release) and program else 0)
     if lane:
         resource = "lane:" + lane
     else:
@@ -2164,20 +2612,34 @@ def _grant(st, ctx, key, lane, tree, ttl_min=None, run=None):
     return entry
 
 
-def _enqueue(st, ctx, key, want, tree, wait=False):
+def _enqueue(st, ctx, key, want, tree, wait=False, merge=False, release=False):
     """Queue `key` (or keep its place) and return the refusal line of `take`;
-    `wait`: the caller blocks itself (`take --wait`, `gate --wait-admission`)."""
+    `wait`: the caller blocks itself (`take --wait`, `gate --wait-admission`);
+    `merge`: a merge candidate's gate, which waits ahead of the strands (K14);
+    `release`: a release-path strand (`_release_class`), ahead of the program."""
     names = [w["strand"] for w in st["waiting"]]
-    pos = names.index(key) if key in names else len(names)
     free = st["max"] - len(st["holders"])
     if key not in names:
         entry = {"strand": key, "since": ctx.now, "tree": tree}
         if want:
             entry["lane"] = want
+        if merge:
+            entry["merge"] = True
+        if release:
+            entry["release"] = True
         st["waiting"].append(entry)
         ctx.log("wait", key, ("lane " + want) if want else "")
-    elif want:
-        st["waiting"][pos]["lane"] = want
+    else:
+        entry = st["waiting"][names.index(key)]
+        if want:
+            entry["lane"] = want
+        if merge:
+            entry["merge"] = True
+        if release:
+            entry["release"] = True
+    st["waiting"] = _queue_order(st["waiting"], st.get("merge_streak", 0),
+                                 st.get("release_streak", 0))
+    pos = [w["strand"] for w in st["waiting"]].index(key)
     held = ", ".join("%s %d min" % (h["strand"], ctx.mins(h["since"])) for h in st["holders"])
     if free <= 0:
         head = "all %d cargo tokens are held (%s)" % (st["max"], held)
@@ -2511,11 +2973,16 @@ def lease_release(db, holder, *, now=None, branch=None, path="", force=False):
     whose last journal note is `stale-but-busy` (a hand run or no answer in its
     lane tree, re-check tv-kit fix10 M1) since its take: the release probes the
     lane tree (before the transaction) and frees it only when the probe finds it
-    empty; a pid or no answer is exit 3 (fix12 M1). `--force` frees it unprobed
-    and journals `release --force` with the note's finding."""
+    empty; a pid or no answer is exit 3 (fix12 M1). Without a note the same
+    probe runs for every lane lease (GH #1228): a pid in the tree, a live pid
+    the holder entered, or no answer (fail-closed, re-check I1) is exit 3, so
+    is a lease no probe saw (it changed after the probe: "release again").
+    `--force` probes too, ends the pids found in the tree (never an entered
+    local pid), frees the lease and journals `release --force` with what it
+    saw -- a lease no probe saw is freed with a warning, never silently."""
     _ensure(db)
     ctx = _Ctx(db, _now(now), branch, path)
-    ctx.lane_procs = _release_probe(db, holder, force)
+    ctx.lane_procs, ended = _release_probe(db, holder, force)
     try:
         with _tx(db):
             st = _load(db)
@@ -2549,7 +3016,7 @@ def lease_release(db, holder, *, now=None, branch=None, path="", force=False):
             at, note = _busy_note(db, mine) if mine.get("lane") else ("", {})
             hand = bool(note)
             what = str(note.get("detail")).rsplit("; ", 1)[-1] if hand else ""
-            procs = ctx.lane_procs.get(mine["lane"], _UNPROBED) if hand else _UNPROBED
+            procs = ctx.lane_procs.get(mine["lane"], _UNPROBED) if mine.get("lane") else _UNPROBED
             if hand and not force and procs == []:
                 hand, what = False, "tree probed empty"
             elif hand and not force:
@@ -2572,19 +3039,76 @@ def lease_release(db, holder, *, now=None, branch=None, path="", force=False):
                 ctx.say("%s holds lane %s: stale-but-busy since %s; %s: %s -- %s"
                         % (key, mine["lane"], at, when, seen, way))
                 return ctx.result(3)
+            if not force and mine.get("lane"):
+                # GH #1228: the end of a lane lease waits for the lane run --
+                # a pid in the lane tree, or a live pid the holder entered
+                # (`check --pid`, e.g. `strand.sh test` before its lane side runs)
+                own = _own_line()
+                entered = sorted(p for p in mine["pids"] if p not in own and _alive(p))
+                if isinstance(procs, list) and procs:
+                    seen, way = ("pid %s live in the lane tree" % ", ".join(str(p) for p in procs),
+                                 "release again once it ended; --force ends it")
+                elif entered:
+                    seen, way = ("pid %s entered at the lease is alive"
+                                 % ", ".join(str(p) for p in entered),
+                                 "release again once it ended; --force frees it under it")
+                elif procs is None:
+                    # re-check I1 (ruling test-cc15, fail-closed): no answer is no
+                    # proof the tree is idle -- a lane run may still write there
+                    seen, way = (_no_answer(mine["lane"]),
+                                 "lane does not answer -- `release --force` frees it")
+                elif procs is _UNPROBED:
+                    # re-check 518f70bfb m1 (the class of #1228): the lease moved to
+                    # this lane or was taken anew after `_release_probe` -- no probe
+                    # saw its tree, so nothing says the lane run ended; the next
+                    # release probes it. Never "probed at" beside no probe (fix14 H1).
+                    ctx.say("%s holds lane %s: the lease changed after the probe at %s -- "
+                            "no probe of this tree ran yet -- release again"
+                            % (key, mine["lane"], _iso(ctx.now)))
+                    return ctx.result(3)
+                else:
+                    seen = ""
+                if seen:
+                    ctx.say("%s holds lane %s: %s (probed at %s) -- %s"
+                            % (key, mine["lane"], seen, _iso(ctx.now), way))
+                    return ctx.result(3)
             st["holders"] = [h for h in st["holders"] if h["strand"] != key]
             st["waiting"] = [w for w in st["waiting"] if w["strand"] != key]
             _save(db, st, ctx)
             by = _by(ctx, key)
-            verb = ("release" if not by else "release-by") + (" --force" if live or hand else "")
+            done, rest = ended.get(mine.get("lane"), ((), []))
+            # re-check 518f70bfb m1: under --force a lease no probe saw (it changed
+            # after the probe) is freed as documented -- under the run, said so
+            unseen = bool(mine.get("lane")) and procs is _UNPROBED and not hand
+            verb = ("release" if not by else "release-by") + (
+                " --force" if live or hand or done or unseen else "")
             # fix11 H2: a force over the note says why, on stderr and in the journal
             over = ("; over stale-but-busy since %s: %s" % (at, what) if hand else
                     "; %s" % what if what else "")
+            if done:
+                over += "; ended pid %s in the lane tree" % ", ".join(str(p) for p in done)
+            if unseen:
+                over += "; no probe of lane %s (the lease changed after the probe)" % mine["lane"]
             ctx.log(verb, key, "held %d min%s" % (ctx.mins(mine["since"]), over),
                     resource=mine["resource"], run=mine.get("run"))
             if hand:
                 ctx.say("warning: released %s over stale-but-busy since %s (%s) -- a hand run "
                         "may still write in the tree of lane %s" % (key, at, what, mine["lane"]))
+            if done:
+                ctx.say("ended pid %s in the lane tree of lane %s"
+                        % (", ".join(str(p) for p in done), mine["lane"]))
+                if rest is None or rest:
+                    ctx.say("warning: after the kill %s -- check lane %s by hand" % (
+                        _no_answer(mine["lane"]) if rest is None else
+                        "pid %s still live in the lane tree" % ", ".join(str(p) for p in rest),
+                        mine["lane"]))
+            elif procs is None and not hand:
+                ctx.say("warning: %s -- released %s without a look into the tree of lane %s"
+                        % (_no_answer(mine["lane"]), key, mine["lane"]))
+            elif unseen:
+                ctx.say("warning: released %s without a probe of the tree of lane %s (the lease "
+                        "changed after the probe) -- a lane run may still write there"
+                        % (key, mine["lane"]))
             if st["waiting"] and st.get("lanes") and mine.get("lane"):
                 freed, nxt = mine["lane"], None
                 for i, w in enumerate(st["waiting"]):
@@ -2621,7 +3145,7 @@ def _enter_pid(entry, pid):
 
 
 def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=None, run=None,
-               path="", wait=False, pid=None, queue=True):
+               path="", wait=False, pid=None, queue=True, release_tree=""):
     """`take [--lane x] [--ttl min] [--pid n]`: a token or a lane, or a place in
     the queue (exit 3). `--pid` enters the process that uses the lease (kit
     find "holder push", Welle Testing 10/12: a run on the lane of a holder
@@ -2629,10 +3153,20 @@ def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=Non
     -- and the lease fell away after its TTL under the running load).
     `queue=False` (the merge point's golden generator, #1199 V2-A17): exit 3
     without a queue place -- like the merge gate's admission (kit find (h)),
-    a caller that never comes back for an offer must not hold one."""
+    a caller that never comes back for an offer must not hold one.
+    `release_tree`: the caller's tree for the release class alone (a second
+    holder `S:n` in the strand's own tree, re-check Kette Minor 2) -- `tree`
+    also keeps a waiter's place and ends a holder whose tree is gone."""
     _ensure(db)
     ctx = _Ctx(db, _now(now), branch, path)
     key, want = holder, lane or ""
+    if _armed(db):
+        lost_closed, lost_faults = _close_dead_runs(db, ctx.now)
+        for lost_run, lost_lane in lost_closed:
+            ctx.say("closed the dead run %s on lane %s -- its driver, scope, workspace and "
+                    "tree are gone (stopped/aborted, reason orphan)" % (lost_run, lost_lane))
+        for fault in lost_faults:
+            ctx.say("kept the run %s -- the close failed" % fault)
     ctx.lane_procs = _probe_stale_lanes(db, key, want, ctx.now)
     try:
         with _tx(db):
@@ -2687,7 +3221,8 @@ def lease_take(db, holder, *, lane=None, ttl=None, tree="", now=None, branch=Non
                     ("lane %s is leased to another strand or a waiter ahead" % want) if want
                     else "every lane is leased to another strand or a waiter ahead"))
                 return ctx.result(3)
-            msg = _enqueue(st, ctx, key, want, tree, wait=wait)
+            msg = _enqueue(st, ctx, key, want, tree, wait=wait,
+                           release=_release_class(key, tree or release_tree))
             _save(db, st, ctx)
             ctx.say(msg)
             return ctx.result(3)
@@ -2887,6 +3422,10 @@ def _fingerprint_cli(argv, env):
         _ensure(db)
         sync_runners(db, lanes)
         with _tx(db):
+            # the lane root's tree is the core's; the satellites' keep theirs (K13)
+            row = db.execute("SELECT fingerprint FROM runners WHERE name = ?", (argv[0],)).fetchone()
+            fp = merge_register(json.loads(row["fingerprint"]) if row and row["fingerprint"] else {},
+                                fp, _core_repo())
             db.execute("UPDATE runners SET fingerprint = ? WHERE name = ?",
                        (json.dumps(fp, sort_keys=True), argv[0]))
         sync_runners(db, lanes)  # the capacity of the new fingerprint
@@ -3050,7 +3589,8 @@ def run_lanes(argv, env=None, cwd=None, emit=None):
     without a retry clock (R-AG-1): each round carries one watchdog of
     `MECLAW_TOKEN_WAIT_SECS` (default 30 s) for the causes without an event.
     The queue line is said once; the words of the round that ends the wait are
-    said too. `emit(out, err)` hands the first round's output out at once (the
+    said too. A locked store holds a round instead of ending the wait
+    (`while_locked`, up to `MECLAW_ADMISSION_WAIT_SECS` locked in a row). `emit(out, err)` hands the first round's output out at once (the
     CLI), else it is part of the return value."""
     env = dict(os.environ if env is None else env)
     cwd = cwd or os.getcwd()
@@ -3063,6 +3603,7 @@ def run_lanes(argv, env=None, cwd=None, emit=None):
         rest = argv     # `--wait` stays: the queue line says that this process blocks
         try:
             secs = wait_secs(env, "MECLAW_TOKEN_WAIT_SECS", "30")
+            limit = wait_secs(env, "MECLAW_ADMISSION_WAIT_SECS", "14400")
         except ScheduleError as exc:
             return exc.code, "", "lanes: %s\n" % exc
         db_path = _paths(env)[0]
@@ -3070,7 +3611,10 @@ def run_lanes(argv, env=None, cwd=None, emit=None):
         while True:
             fd = _wake_open(db_path)
             try:
-                code, out, err = _run_once(rest, env, cwd)
+                # tm-orch4: a locked store holds the round, up to the wait limit
+                # (each round opens and closes its own connection)
+                code, out, err = while_locked(lambda: _run_once(rest, env, cwd),
+                                              end=time.monotonic() + limit)
                 tries += 1
                 if tries == 1:
                     if emit:
@@ -3211,7 +3755,10 @@ def _run_verb(argv, env, cwd):
         else:
             res = lease_take(db, key, lane=opts["lane"] or None, ttl=opts["ttl"],
                              tree=tree if branch == key else "", now=now, branch=branch,
-                             path=db_path, wait=opts["wait"], pid=opts["pid"])
+                             path=db_path, wait=opts["wait"], pid=opts["pid"],
+                             # re-check Kette Minor 2: `--holder <n>` in the strand's
+                             # own tree keeps the release class of the strand
+                             release_tree=tree if branch == key.split(":", 1)[0] else "")
     finally:
         db.close()
     if res.code == 0 and verb in WAKE_VERBS:

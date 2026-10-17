@@ -66,8 +66,6 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 const TALKY: &str = "/talky";
 const SUB_ID: &str = "sub:gh872-self";
 const CLOCK_ID: &str = "01916f00-0000-7000-8000-000000000872";
-const KEEPER_ID: &str = "0190a3f2-0000-7000-8000-000000000872";
-const NEVER: &str = "0 0 0 1 1 *";
 
 // ───────────────────────────────────────────────────────────── the shipped tree
 
@@ -231,9 +229,11 @@ fn build_tree(
         // several push ticks fire inside the failure marker.
         v["params"]["schedules"][0]["cron"] = json!("*/2 * * * * *");
     });
-    patch(root, "main/talky/session-keeper/night/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        // GH #1229: the night is a window of `./close`; an empty one arms
+        // nothing, and no open generation is a firing.
+        v["params"]["night_from_utc"] = json!("00:00");
+        v["params"]["night_until_utc"] = json!("00:00");
     });
     patch(root, "main/talky/brain/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);

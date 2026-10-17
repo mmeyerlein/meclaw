@@ -168,8 +168,6 @@ fn blank_seed(root: &std::path::Path, rel: &str) {
 /// `main/`, so the hive `main/talky` answers to `/talky`.
 const TALKY: &str = "/talky";
 const CLOCK_ID: &str = "01916f00-0000-7000-8000-000000000488";
-const KEEPER_ID: &str = "0190a3f2-0000-7000-8000-000000000488";
-const NEVER: &str = "0 0 0 1 1 *";
 
 /// The port wiring around the two hives. The identity door is verbatim the one
 /// `templates/talky/README.md` prints; the rest is drains, so nothing this test
@@ -223,9 +221,11 @@ fn build_tree(
         // test's own budget.
         v["params"]["schedules"][0]["cron"] = json!("*/2 * * * * *");
     });
-    patch(root, "main/talky/session-keeper/night/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(KEEPER_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        // GH #1229: the night is a window of `./close`; an empty one arms
+        // nothing, and no open generation is a firing.
+        v["params"]["night_from_utc"] = json!("00:00");
+        v["params"]["night_until_utc"] = json!("00:00");
     });
     // Every open generation is a candidate the moment a sweep runs. It was a
     // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a

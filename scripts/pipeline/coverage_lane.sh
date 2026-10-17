@@ -15,6 +15,8 @@
 # for its own rev) never uses
 # it. The lane deadline lives with the caller (`timeout` 2 h, the abort
 # watchdog); the host part carries its own `timeout` as well.
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -euo pipefail
 
 [ $# -eq 3 ] || [ $# -eq 4 ] || { echo "usage: coverage_lane.sh <ssh-target> <strand> <out-dir> [full|browser]" >&2; exit 2; }
@@ -54,3 +56,5 @@ PY
     echo "coverage: the tree carries an overlay -- the map is rev-dirty, impact never takes it" >&2
 fi
 echo "coverage: $(( $(date +%s) - start ))s, map in $out/coverage.json"
+true
+}; exit $?

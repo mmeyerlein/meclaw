@@ -321,6 +321,13 @@ impl Lab {
         let templates = root.join("templates");
         copy_tree(&repo("templates"), &templates);
         quiet_crons(&templates);
+        // GH #1229: the keeper's night is a window of `./close`, and an open
+        // inside it is a firing at once -- with `idle_ms` 1 (set by the grow
+        // below) that ends the generation it opened before its turn stands on
+        // the wall (22:00-04:00 UTC). The window is closed here, in the library
+        // the grow instantiates, so only the sweep ends a session, whatever the
+        // hour of the run.
+        meclaw_testing::quiet_keeper_night(&templates.join("session-keeper"));
         probe_channel(&templates.join(PROBE_CHANNEL));
         road::point_llms_at_stubs(
             &templates,

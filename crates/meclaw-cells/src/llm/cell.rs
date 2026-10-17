@@ -35,6 +35,28 @@ struct ParkedTurn {
     started_at_unix_ms: i64,
 }
 
+/// T6-06 (GH #1232): a twin's wait for its original's handover.
+///
+/// The turns live in RAM only (OR-programm-tm.H2.5); the wake timer is a task
+/// of its own that sends the cell `{"handover": {"operation": "expire"}}` to
+/// its own address. Dropping the wait (end of the wait, sleep, death) aborts
+/// the timer, so a cell that no longer waits is not woken for nothing.
+#[derive(Default)]
+struct Handover {
+    /// The inference turns held back, in arrival order.
+    parked: std::collections::VecDeque<ParkedTurn>,
+    /// The wake timer, armed by the first parked turn.
+    timer: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for Handover {
+    fn drop(&mut self) {
+        if let Some(timer) = self.timer.take() {
+            timer.abort();
+        }
+    }
+}
+
 /// GH #457 / GH #1058: what the warden of a round does with the turns it held
 /// when the round ends without a box — the deadline line, then every turn's
 /// `credential_pending` receipt.
@@ -323,6 +345,10 @@ pub struct LlmCell {
     /// has no finite size. `handle` drains this queue after the delivery is
     /// done, which is the same order with a flat call stack.
     released: std::collections::VecDeque<ParkedTurn>,
+    /// T6-06 (GH #1232): the twin's wait for its original's handover. `Some`
+    /// only for a cell built with `handover_wait_ms` above 0; the end of the
+    /// wait writes `0` into the overlay, so a woken cell is built with `None`.
+    handover: Option<Handover>,
     /// GH #853: the START value — the birth params (`config.json`, already
     /// `${VAR}`-substituted). `$reset` falls back to it, and the params line
     /// names a key's source against it.
@@ -364,6 +390,7 @@ impl LlmCell {
                 expiry_receipts(),
             ),
             released: std::collections::VecDeque::new(),
+            handover: (params.handover_wait_ms > 0).then(Handover::default),
             // A cell built from parsed params alone treats them as its start
             // value; the factory uses [`Self::restored`] with the real birth.
             start: meclaw_core::serde_json::to_value(&params).unwrap_or_default(),
@@ -585,6 +612,275 @@ impl LlmCell {
             }
         }
         None
+    }
+
+    /// T6-06 (GH #1232): park an inference turn of a twin that waits for its
+    /// original's handover. `None` = parked; `Some` hands the message back.
+    /// The first parked turn arms the wake: `handover_wait_ms` is the A-timeout
+    /// of the wait, and the cell is told by a direct message to its own
+    /// address, never along its edges.
+    fn park_for_handover(
+        &mut self,
+        msg: Message,
+        sink: &OutputSink,
+        reply_target: Path,
+        started_at_unix_ms: i64,
+    ) -> Option<(Message, Path)> {
+        let wait_ms = self.params.handover_wait_ms;
+        let Some(wait) = self.handover.as_mut() else {
+            return Some((msg, reply_target));
+        };
+        if wait.timer.is_none() {
+            let at = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+            let wake = sink.clone();
+            let timer = tokio::spawn(async move {
+                tokio::time::sleep_until(at).await;
+                // A closed sink means the colony is going down; nothing to do.
+                let _ = wake
+                    .push_direct_reply(meclaw_core::CellOutput {
+                        target: wake.sender_path().clone(),
+                        content: meclaw_core::serde_json::json!({
+                            "handover": {"operation": "expire"}
+                        }),
+                    })
+                    .await;
+            });
+            wait.timer = Some(timer.abort_handle());
+        }
+        wait.parked.push_back(ParkedTurn {
+            provider: "openai",
+            msg,
+            sink: sink.clone(),
+            reply_target,
+            started_at_unix_ms,
+        });
+        None
+    }
+
+    /// T6-06 (GH #1232): whether the effective params name a reasoning budget
+    /// key. Read from the serialized params, because the start value of a
+    /// cell built by [`Self::new`] carries every default: set = neither null
+    /// nor 0.
+    fn names_a_budget_key(&self) -> bool {
+        let Ok(Value::Object(effective)) = meclaw_core::serde_json::to_value(&self.params) else {
+            return true;
+        };
+        meclaw_colony::mutation::twin::BUDGET_KEYS
+            .iter()
+            .any(|key| {
+                effective
+                    .get(*key)
+                    .is_some_and(|v| !v.is_null() && v.as_u64() != Some(0))
+            })
+    }
+
+    /// T6-06 (GH #1232): the end of a twin's wait, by import or by expiry.
+    /// `budget` is the original's reasoning budget as a set, applied only when
+    /// this cell names none of its keys (the twin rule of `mutation::twin`: an
+    /// inherited effort beside a declared limit is the request a provider
+    /// refuses). A cell that waited writes `handover_wait_ms: 0`, also when
+    /// the budget is refused, so a wake never waits again. The parked turns go
+    /// to the drain queue whatever the write did: a turn is never lost to a
+    /// failed overlay write.
+    async fn finish_handover(
+        &mut self,
+        budget: meclaw_core::serde_json::Map<String, Value>,
+        db: &mut meclaw_colony::DbConn,
+        path: &Path,
+    ) {
+        let waited = self.handover.take();
+        let update = if self.names_a_budget_key() {
+            meclaw_core::serde_json::Map::new()
+        } else {
+            budget
+        };
+        if !update.is_empty() || waited.is_some() {
+            // Review N1: a refused budget (an import's `max_tokens: -1`, an
+            // inherited effort beside a `decisions` rule) still ends the wait
+            // in `cell.db` -- the cell runs on its own params plus the `0`.
+            // Without the `0` a wake rebuilt the wait from the start value and
+            // took a second import past the SystemGate.
+            let change = self.apply_run_time_update(&update).or_else(|detail| {
+                tracing::warn!(
+                    %detail,
+                    "llm: the handover's params were refused; the cell runs on its own params"
+                );
+                if waited.is_none() {
+                    return Err(());
+                }
+                Ok(crate::params_overlay::OverlayChange {
+                    merged: self.params.clone(),
+                    overlay: self.overlay.clone(),
+                    set: Vec::new(),
+                    reset: Vec::new(),
+                })
+            });
+            if let Ok(mut change) = change {
+                // Review R1: `handover_wait_ms` is immutable to a message,
+                // so the end of the wait writes its `0` beside the update
+                // rules -- the one writer of the key, and only downwards.
+                if waited.is_some() {
+                    let zero = ("handover_wait_ms".to_string(), Value::from(0));
+                    change.overlay.insert(zero.0.clone(), zero.1.clone());
+                    change.set.push(zero);
+                    change.merged.handover_wait_ms = 0;
+                }
+                let now = unix_secs_now();
+                let set = change.set.clone();
+                let reset = change.reset.clone();
+                let written = db
+                    .call(move |conn| {
+                        crate::params_overlay::persist_overlay_change(conn, &set, &reset, now)
+                    })
+                    .await;
+                match written {
+                    Ok(()) => {
+                        self.params = change.merged;
+                        self.overlay = change.overlay;
+                        tracing::info!(
+                            target: package::PARAMS_LOG_TARGET,
+                            "{}",
+                            self.params_line(path.as_str())
+                        );
+                    }
+                    Err(e) => tracing::error!(
+                        error = %e,
+                        "llm: the handover's params write failed; the cell runs on its own params"
+                    ),
+                }
+            }
+        }
+        if let Some(mut wait) = waited {
+            self.released.extend(wait.parked.drain(..));
+        }
+    }
+
+    /// T6-05/T6-06 (GH #1232): one operation of the `handover` slot. Every
+    /// write runs on this cell's own connection; the substrate never opens
+    /// this `cell.db` for a successor (cell boundary, R-ZH-1).
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_handover(
+        &mut self,
+        slot: &Value,
+        msg: &Message,
+        sink: &OutputSink,
+        db: &mut meclaw_colony::DbConn,
+        reply_target: Path,
+        started_at_unix_ms: i64,
+    ) {
+        let refusal = match slot.get("operation").and_then(Value::as_str) {
+            Some("export") => {
+                // The parts are personal: answered to the asker alone, directly,
+                // never along this cell's edges.
+                let Some(asker) = msg.reply_to.clone() else {
+                    return self
+                        .refuse_handover(
+                            sink,
+                            reply_target,
+                            "a handover export is answered to reply_to only",
+                            started_at_unix_ms,
+                        )
+                        .await;
+                };
+                match db.call(|conn| state::handover_export(conn)).await {
+                    Ok(content) => {
+                        // A closed sink means the colony is going down.
+                        let _ = sink
+                            .push_direct_reply(meclaw_core::CellOutput {
+                                target: asker,
+                                content,
+                            })
+                            .await;
+                        return;
+                    }
+                    Err(e) => format!("cell.db handover export failed: {e}"),
+                }
+            }
+            Some("import") => {
+                // Only a twin that waits takes a handover (re-check H2, I1):
+                // the import writes `system` past the SystemGate
+                // (`system_writable`, `system_max_slots`, GH #118) and the
+                // budget past the params-slot rules (GH #853/#862), which is
+                // sound for the one message a twin was born to wait for and
+                // for nothing else — not for a running cell, not after the
+                // wait ended. Refused here, nothing is written.
+                if self.handover.is_none() {
+                    return self
+                        .refuse_handover(
+                            sink,
+                            reply_target,
+                            "a handover import is taken only while the cell waits for one \
+                             (handover_wait_ms)",
+                            started_at_unix_ms,
+                        )
+                        .await;
+                }
+                let Some(parts) = slot.get("parts").and_then(Value::as_array).cloned() else {
+                    return self
+                        .refuse_handover(
+                            sink,
+                            reply_target,
+                            "a handover import carries its parts as a list",
+                            started_at_unix_ms,
+                        )
+                        .await;
+                };
+                let budget = state::handover_budget(&parts);
+                match db
+                    .call(move |conn| state::handover_import_system(conn, &parts))
+                    .await
+                {
+                    Ok(_) => {
+                        self.finish_handover(budget, db, &msg.target).await;
+                        return;
+                    }
+                    // OR-programm-tm.H2.10: a refused import changes nothing;
+                    // a waiting twin keeps waiting until its expiry.
+                    Err(e) => format!("handover import refused, nothing written: {e}"),
+                }
+            }
+            Some("expire") => {
+                // A timer of a wait that already ended is answered with silence.
+                if self.handover.is_some() {
+                    tracing::warn!(
+                        wait_ms = self.params.handover_wait_ms,
+                        "llm: no handover arrived in time; the twin runs on without its \
+                         original's state"
+                    );
+                    self.finish_handover(meclaw_core::serde_json::Map::new(), db, &msg.target)
+                        .await;
+                }
+                return;
+            }
+            _ => "unknown handover operation (export, import or expire)".to_string(),
+        };
+        self.refuse_handover(sink, reply_target, &refusal, started_at_unix_ms)
+            .await;
+    }
+
+    /// T6-05/T6-06 (GH #1232): a `handover` message that cannot be served.
+    async fn refuse_handover(
+        &self,
+        sink: &OutputSink,
+        target: Path,
+        detail: &str,
+        started_at_unix_ms: i64,
+    ) {
+        output::emit_error_for(
+            &self.params.provider,
+            sink,
+            target,
+            "invalid_input",
+            detail,
+            "parse",
+            vec![],
+            started_at_unix_ms,
+            0,
+            None,
+            None,
+            None,
+        )
+        .await;
     }
 
     /// GH #957: one call of a `decisions` cell. The body's `decide` slot is
@@ -1253,7 +1549,10 @@ impl StatefulCell for LlmCell {
             //
             // The loop terminates because a released turn finds the credential
             // in RAM and therefore never parks: `released` is filled only from
-            // the delivery path, and the delivery is what set it.
+            // the delivery path, and the delivery is what set it. T6-06 (GH
+            // #1232) fills it from the end of a twin's handover wait too; that
+            // path has taken the wait (`handover` is `None` after it), so a
+            // released turn never parks for a handover again.
             while let Some(turn) = self.released.pop_front() {
                 let ParkedTurn { msg, sink, .. } = turn;
                 self.handle_one(msg, &sink, db).await;
@@ -1656,6 +1955,15 @@ impl LlmCell {
                 return;
             }
 
+            // Step 1e (T6-05/T6-06, GH #1232): the `handover` slot, the state a
+            // successor inherits by message on this cell's own connection
+            // instead of the colony opening this `cell.db` (`carry_system`).
+            if let Some(slot) = content_obj.get("handover") {
+                self.handle_handover(slot, &msg, sink, db, reply_target, started_at_unix_ms)
+                    .await;
+                return;
+            }
+
             // GH #957: the provider fork. A `decisions` cell reads its own
             // `decide` slot and none of the chat path below (no system tree,
             // no history, no tools) -- one `match` on the provider, here,
@@ -1730,6 +2038,19 @@ impl LlmCell {
             // delivered box does not open (`Refusal::into_refused`), or the bound is
             // full (here). Every one of them names a message; none of them is
             // silence.
+            // T6-06 (GH #1232): a twin waiting for its original's handover
+            // holds its inference turns back before anything else: run first,
+            // a turn would reach the model without the original's identity,
+            // tools and budget (GH #1034: 0/52 tools in the 06.10. lab).
+            // Plain `system`/`params` writes run at once.
+            let (msg, reply_target) = if is_turn {
+                match self.park_for_handover(msg, sink, reply_target, started_at_unix_ms) {
+                    Some(back) => back,
+                    None => return,
+                }
+            } else {
+                (msg, reply_target)
+            };
             let Some((_msg, reply_target)) = self
                 .park_without_credential(msg, sink, reply_target, started_at_unix_ms, &clock)
                 .await

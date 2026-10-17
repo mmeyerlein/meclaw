@@ -64,7 +64,10 @@ or when it says `always: true`. Mode `release` (and `ci`, and `--all`) plans
 every station of the stage -- the satellites' full pass. The diff is
 `git diff --name-only <base> HEAD` plus the dirty tree; the base is the
 merge base with the satellite's main branch (`main` or `master`, whichever
-exists), like `plan.resolve_base` does against meclaw's `master`.
+exists), like `plan.resolve_base` does against meclaw's `master`. A strand
+without that merge base (no main branch, foreign history), or whose diff git
+cannot read, has no diff to narrow from: every station of the stage runs, with
+a NOTE (GH #1199) -- the rule `plan.build_plan` keeps as well.
 
 THE PLAN
 ========
@@ -445,31 +448,54 @@ def _dirty_files(root):
 
 
 def resolve_base(repo_root, mode, base=None):
-    """The diff base: `base`, else the merge base with the main branch.
+    """The diff base: `base`, else the merge base with the main branch; `""`
+    without one (no narrowing, see `_resolve_base`)."""
+    return _resolve_base(repo_root, mode, base)[0]
 
-    On the main branch itself: HEAD with a dirty tree, else HEAD~1 (the empty
-    tree for a first commit) -- the rule of `plan.resolve_base`."""
+
+def _resolve_base(repo_root, mode, base=None):
+    """`(base, unresolved)`: `unresolved` says why there is no merge base with
+    the main branch (None when there is one). There is no `HEAD~1` stand-in
+    for it -- that diff hid every strand commit but the last (GH #1199, the
+    re-check I3 class); `build_plan` runs every station of the stage instead.
+
+    On the main branch itself (the merge base IS HEAD): HEAD with a dirty
+    tree, else HEAD~1 (the empty tree for a first commit) -- the rule of
+    `plan.resolve_base`."""
     if base:
-        return base
-    rev = _git(repo_root, "rev-parse", "HEAD") or ""
+        return base, None
     ref = main_branch(repo_root)
-    mb = _git(repo_root, "merge-base", ref, "HEAD") if ref else None
-    if mb and mb != rev:
-        return mb
+    if not ref:
+        return "", "no main or master branch"
+    mb = _git(repo_root, "merge-base", ref, "HEAD")
+    if not mb:
+        return "", "git merge-base %s HEAD: no merge base" % ref
+    if mb != (_git(repo_root, "rev-parse", "HEAD") or ""):
+        return mb, None
     if _dirty_files(repo_root):
-        return rev
-    return _git(repo_root, "rev-parse", "--verify", "--quiet", "HEAD~1") or EMPTY_TREE
+        return mb, None
+    return (_git(repo_root, "rev-parse", "--verify", "--quiet", "HEAD~1") or EMPTY_TREE), None
 
 
 def changed_files(repo_root, base):
     """`git diff --name-only --no-renames <base> HEAD` plus the dirty tree,
     sorted: a rename names both sides, so a station whose inputs match only the
     source is planned too."""
+    return _changed_scope(repo_root, base)[0]
+
+
+def _changed_scope(repo_root, base):
+    """`(paths, unresolved)`: `changed_files`, and why git could not diff
+    against `base` (None when it could) -- a failing diff is no empty diff,
+    `build_plan` runs every station then (GH #1199, re-check I4)."""
     diff = []
+    unresolved = None
     if base:
-        diff = (_git(repo_root, "diff", "--name-only", "--no-renames", base, "HEAD")
-                or "").splitlines()
-    return sorted({p for p in diff + _dirty_files(repo_root) if p})
+        out = _git(repo_root, "diff", "--name-only", "--no-renames", base, "HEAD")
+        if out is None:
+            unresolved = "git diff %s HEAD: failed" % base[:12]
+        diff = (out or "").splitlines()
+    return sorted({p for p in diff + _dirty_files(repo_root) if p}), unresolved
 
 
 # --- the plan -------------------------------------------------------------------
@@ -781,10 +807,14 @@ def build_plan(repo_root, mode, base, files=None, *, pipeline_dir=None, python=N
         critical_path_s, critical_path}"""
     root = os.path.abspath(str(repo_root))
     reg = load_register(root)
+    unresolved = None
     if files is None:
-        base = resolve_base(root, mode, base)
-        files = changed_files(root, base)
-    rows = resolve(reg, files, mode, all_stations=all_stations)
+        base, unresolved = _resolve_base(root, mode, base)
+        files, unreadable = _changed_scope(root, base)
+        unresolved = unresolved or unreadable
+    # GH #1199: no clear base, no diff -- fail closed, never a narrower one
+    # (`plan.unclear_base_note`, the rule both planners share)
+    rows = resolve(reg, files, mode, all_stations=all_stations or bool(unresolved))
     pool, pool_name = _slot_list(slots), "slots"
     if pool is None and colony_slots(reg):
         pool, pool_name = [str(i) for i in range(colony_slots(reg))], "colony slots"
@@ -847,6 +877,8 @@ def build_plan(repo_root, mode, base, files=None, *, pipeline_dir=None, python=N
     }
     if only:
         doc["only"] = list(only)
+    if unresolved:
+        doc.setdefault("notes", []).append(_plan.unclear_base_note(unresolved))
     if density_note:
         doc.setdefault("notes", []).append(density_note)
     return doc

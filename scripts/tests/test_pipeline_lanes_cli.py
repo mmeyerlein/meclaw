@@ -849,6 +849,11 @@ class TestTokenLanes(TokenTestCase):
     def setUp(self):
         super().setUp()
         self.lanes_file.write_text(LANES_FILE)
+        # The lanes here do not exist: their lane tree holds no process. A
+        # release probes it (GH #1228) and, fail-closed since re-check I1 of
+        # v2-r3-lease, keeps the lease when the probe gets no answer.
+        self.addCleanup(setattr, schedule, "_lane_tree_probe", schedule._lane_tree_probe)
+        schedule._lane_tree_probe = lambda ln: []
 
     def test_take_hands_out_lanes_in_the_order_of_init(self):
         self.arm("--lanes", "south,north")
@@ -935,6 +940,21 @@ class TestTokenLanes(TokenTestCase):
         res = self.token("take", "--strand", "welle-x/a", "--holder", "a/b")
         self.assertEqual(2, res.returncode)
         self.assertIn("--holder", res.stderr)
+
+    def test_a_second_holder_of_a_release_strand_waits_as_a_release(self):
+        # Re-check Kette Minor 2: `take --holder <n>` in the strand's own tree
+        # handed no tree (only `key == branch` did) -- a declared release strand's
+        # `S:n` waited as program. The tree goes along for the class.
+        self.arm("--lanes", "north")
+        rel = git_repo(self.tmp / "rel", "%s/rel-3c" % WAVE)
+        d = rel / "plans" / ("%s-2026-10-16" % WAVE) / "straenge"
+        d.mkdir(parents=True)
+        (d / "rel-3c.json").write_text(json.dumps({"strand": "rel-3c", "release": True}))
+        self.assertEqual("lane north", self.take_lane("welle-x/a", "north").stdout.strip())
+        self.assertEqual(3, self.take_lane("welle-x/s1", "north", minutes=1).returncode)
+        res = self.token("take", "--holder", "2", "--lane", "north", cwd=rel, minutes=2)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["%s/rel-3c:2" % WAVE, "welle-x/s1"], self.waiting())
 
     def test_take_wait_wakes_on_the_release_not_on_a_clock(self):
         # Review A I3 / C M7: no retry clock -- the waiter blocks on the pool's
@@ -1251,6 +1271,22 @@ class TestLanesFingerprint(TokenTestCase):
         self.assertEqual("north browsers ok\n", res.stdout)
         self.assertEqual(1, self.capacity("north")["browser_webkit"])
         self.assertNotIn("refused", self.token("status", "north").stdout)
+
+    def test_a_new_fingerprint_keeps_the_satellites_tree_fields(self):
+        # #1199 K13: the lane root's tree is the core's; `repos.<repo>` (what a
+        # satellite's run said about its own tree) stays beside it
+        self.token("fingerprint", "north")
+        with self._db() as db:
+            db.execute("UPDATE runners SET fingerprint = json_set(fingerprint, '$.repos', "
+                       "json('{\"orga\": {\"playwright\": null}}')) WHERE name = 'north'")
+            db.commit()
+        BrowserLanes.browsers = {"chromium": "ok", "webkit": "ok"}
+        self.assertEqual(0, self.token("fingerprint", "north").returncode)
+        with self._db() as db:
+            fp = json.loads(db.execute("SELECT fingerprint FROM runners WHERE name = 'north'")
+                            .fetchone()["fingerprint"])
+        self.assertEqual(({"orga": {"playwright": None}}, "ok"),
+                         (fp.get("repos"), fp["browsers"]["webkit"]))
 
     def test_an_unknown_lane_is_refused(self):
         res = self.token("fingerprint", "nowhere")

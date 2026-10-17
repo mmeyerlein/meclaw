@@ -196,11 +196,14 @@ fn assert_row(row: &Row, doc: &Doc, names: &[&str], tags: &[&str], stage: &str) 
     if doc.oneline.chars().count() <= 300 {
         assert_eq!(line, doc.oneline, "{at}: {row:#?}");
     } else {
+        // GH #1225 (OR-KF-43): the cut says itself -- the head and the mark
+        // `…`, inside the bound.
+        let head = line.strip_suffix('…').unwrap_or_default();
         assert!(
-            !line.is_empty()
+            !head.is_empty()
                 && line.chars().count() <= 300
-                && doc.oneline.starts_with(line.trim_end()),
-            "{at}: the one line is cut to at most 300 characters: {line:?}"
+                && doc.oneline.starts_with(head.trim_end()),
+            "{at}: the one line is cut to at most 300 characters with the mark: {line:?}"
         );
     }
     let v = librarian::v12(&doc.version);

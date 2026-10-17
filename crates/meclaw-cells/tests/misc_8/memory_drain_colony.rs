@@ -210,6 +210,11 @@ fn main_config() -> Value {
         // this fixture deliberately does not run.
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'embed'"},
+        // GH #1229: every written episode also orders the night from the
+        // hive's clock. This colony has no clock -- the night is not the write
+        // path -- so that leg ends in the void as well.
+        {"from": "./memory/writer", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'clock'"},
         {"from": "./memory/store", "to": "./void",
          "condition": "context.store_origin == 'episode'"}
     ]}}})

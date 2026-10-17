@@ -1037,6 +1037,30 @@ def _feeds_the_kit_stations(path):
     return path == MAKE_EXPORT or "gate_infra" in _classes_of_path(path)
 
 
+# The strand form of `export-audit` (V2-A18; RC-KX I1, RC-XA I1): dry, no gate
+# receipt, the working tree, `--parent HEAD`. `pipeline/plan.py` plans the same
+# form when it cannot read the diff (GH #1199, re-check I2).
+STRAND_AUDIT = ("python3", MAKE_EXPORT, "--keep-going", "--skip-cargo", "--worktree",
+                "--no-gate-receipt", "--parent", "HEAD")
+
+
+def strand_audit_cmd(files, kit):
+    """The strand audit of `files`; `files=None` judges the whole tree.
+
+    `kit`: the same plan carries the kit half of `export-tree-tests`, which runs
+    the resolver module (`scripts.tests.test_gate_plan`) in the export tree.
+    Only then does the audit drop it (`--no-public-resolver`, 90 of R15's 97 s).
+    The module holds real-tree tests over the crates' test units and the
+    templates as well, so a test or template diff without a kit station keeps
+    it (GH #1199, re-check I1): a switch rides on the station that carries what
+    it drops, in the same plan, or not at all."""
+    cmd = list(STRAND_AUDIT) + (["--no-public-resolver"] if kit else [])
+    if files is None:
+        return cmd
+    return cmd + ["--diff-paths"] + [p for p in files
+                                     if p == MAKE_EXPORT or _is_exported_test(p)]
+
+
 def _classes_of_path(path):
     """Every class this single path carries."""
     cls = set()
@@ -4339,7 +4363,11 @@ def plan(paths, mode, repo=None):
               # #1075 (lo-funde, taken over in r1-kit): the stop watch of long runs
               "scripts.tests.test_stop_watch",
               # GH #1199: the kit's progress lines, loud refusals and liveness
-              "scripts.tests.test_pipeline_progress"]])
+              "scripts.tests.test_pipeline_progress",
+              # GH #1199 (v2-r3-mergegate): merge/strand plan parity and the
+              # strand export audit narrowed to its diff
+              "scripts.tests.test_pipeline_merge_gate_parity",
+              "scripts.tests.test_export_audit_scope"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that
@@ -4692,10 +4720,12 @@ def plan(paths, mode, repo=None):
         # or missing one would turn the strand red regardless of its diff.
         # `--keep-going` builds no commit and never reads the parent. I/R keep
         # the default -- there the check is wanted.
+        # GH #1199 (v2-r3-mergegate): the strand judges its diff -- R2b/R2c/R2d
+        # over the exported tests it touches (make_export.py among them: the
+        # whole tree). Profiled 16.10.: 162 s, of which R15 97 s and R2b-R2d 26 s.
         out["export-audit"] = station(
             "export-audit", "R1-R17 dry, no gate receipt", False,
-            [["python3", MAKE_EXPORT, "--keep-going", "--skip-cargo", "--worktree",
-              "--no-gate-receipt", "--parent", "HEAD"]])
+            [strand_audit_cmd(files, kit="export-tree-tests" in out)])
 
     if ci:
         # One rule, not eight conditions spread through the builder above:

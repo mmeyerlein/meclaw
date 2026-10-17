@@ -422,31 +422,6 @@ pub struct BootstrapPlan {
     pub advisories: Vec<String>,
 }
 
-/// Probe for cell.db integrity. Returns `Ok(())` for absent or healthy DBs and
-/// `Err(reason)` on quick_check ≠ "ok" or a schema_version mismatch.
-fn probe_cell_db(path: &std::path::Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(()); // absent = first-boot, OK
-    }
-    let conn =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| format!("open: {e}"))?;
-    // GH #98: boot-path read — carry the busy budget.
-    crate::persist::apply_busy_timeout(&conn).map_err(|e| format!("busy_timeout: {e}"))?;
-    let qc: String = conn
-        .query_row("PRAGMA quick_check", [], |r| r.get(0))
-        .map_err(|e| format!("quick_check: {e}"))?;
-    if qc != "ok" {
-        return Err(format!("quick_check: {qc}"));
-    }
-    let v =
-        crate::persist::read_schema_version(&conn).map_err(|e| format!("schema_version: {e}"))?;
-    if v != 1 {
-        return Err(format!("schema_version: {v} (expected 1)"));
-    }
-    Ok(())
-}
-
 /// GH #555 — `params.transfer.base_path`, parsed and nothing more.
 ///
 /// The **pure** half, in the sense `file`'s `parse_params_pure` is pure: it
@@ -1054,14 +1029,12 @@ pub fn plan_bootstrap_with_env(
                 continue;
             }
 
-            let cell_db_path = fs_path.join("cell.db");
-            if let Err(reason) = probe_cell_db(&cell_db_path) {
-                errors.push(BootstrapError::CorruptCellDb {
-                    path: cell_db_path,
-                    reason,
-                });
-                continue;
-            }
+            // GH #1231 (T6-03): no `cell.db` probe here any more. The planner
+            // opened every cell's database read-only (`quick_check`,
+            // `schema_version`) — a colony-side read of a database that belongs
+            // to one cell alone (overview § Datenbank-Isolation). The cell
+            // checks its own when it opens it (`check_own_cell_db`), and an
+            // unusable database makes that cell `failed`, not the boot.
 
             // Phase-13.5 Lifecycle-3a: identity overlay. A known path (present
             // in `colony.db`'s registry from a prior boot) reuses its persisted
@@ -1516,7 +1489,9 @@ fn collect_header_contract_findings(
 /// - `Inconsistent`: the file exists but its persistence tables are unreadable
 ///   — not a colony.db. STRICT-FAIL. Real DATA corruption inside readable
 ///   tables is caught loudly at the schema/read layer instead (edge and
-///   hive-scope hydration hard-fail, cell.db quick_check).
+///   hive-scope hydration hard-fail). A cell's own `cell.db` is no boot
+///   matter any more (GH #1231): the cell checks header and `schema_version`
+///   when it opens the file and is `failed` if it does not open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootState {
     /// File absent, no InitialApply traces, or resumable first apply (marker).
@@ -1765,14 +1740,6 @@ pub enum BootstrapError {
     NoRootDir,
     /// Filesystem path could not be mapped to a meclaw path.
     InvalidPath { reason: String },
-    /// cell.db exists but is corrupt (quick_check failed or a schema_version
-    /// mismatch). Probed in plan_bootstrap (T19); apply never fails at this point.
-    CorruptCellDb {
-        /// Path to the broken cell.db.
-        path: PathBuf,
-        /// Diagnostic string (the quick_check result or the schema_version value).
-        reason: String,
-    },
     /// colony.db exists but cannot be opened as a database (probe_boot_state,
     /// T20). A STRICT FAIL against external corruption. Since GH #89,
     /// count-level "mixed" table states are NOT this error — they classify as
@@ -3058,25 +3025,6 @@ mod plan_tests {
         );
     }
 
-    #[test]
-    fn plan_bootstrap_rejects_corrupt_cell_db() {
-        let td = TempDir::new().unwrap();
-        write(td.path(), "main/config.json", r#"{"cell":{"type":"hive"}}"#);
-        write(
-            td.path(),
-            "main/a/config.json",
-            r#"{"cell":{"type":"echo"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
-        );
-        // A deliberately broken cell.db
-        std::fs::write(td.path().join("main/a/cell.db"), b"not a sqlite file").unwrap();
-        let err = plan_bootstrap(td.path(), &factories_with_echo(), &empty_overlay()).unwrap_err();
-        assert!(
-            err.items()
-                .iter()
-                .any(|e| matches!(e, BootstrapError::CorruptCellDb { .. }))
-        );
-    }
-
     /// Issue #56: an unparseable on-disk asset is a NAMED plan error, so
     /// `--validate` sees it instead of the cell's first wake.
     #[test]
@@ -3337,15 +3285,6 @@ mod error_tests {
         let r: Result<i32, _> = errs.into_result(42);
         assert!(r.is_err());
         assert_eq!(r.unwrap_err().len(), 1);
-    }
-
-    #[test]
-    fn bootstrap_error_has_corrupt_cell_db_variant() {
-        let e = BootstrapError::CorruptCellDb {
-            path: std::path::PathBuf::from("/tmp/x"),
-            reason: "quick_check failed".into(),
-        };
-        assert!(matches!(e, BootstrapError::CorruptCellDb { .. }));
     }
 
     #[test]

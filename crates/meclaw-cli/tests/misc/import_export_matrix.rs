@@ -260,39 +260,6 @@ async fn boot_and_shutdown(root: &std::path::Path) -> meclaw_colony::BootstrapRe
     report
 }
 
-/// Boot expecting the bootstrap to REJECT, and return the rendered error. Used
-/// by the restore cells whose contract is "fail loudly", not "come up wrong".
-async fn boot_expect_bootstrap_error(root: &std::path::Path) -> String {
-    let (inbox_tx, inbox_rx) = mpsc::channel(64);
-    let (outputs_tx, outputs_rx) = mpsc::channel(64);
-    let db = ColonyDb::open(&root.join("colony.db")).expect("open colony.db");
-    let f = factories();
-    let colony_join = tokio::spawn(colony_task(meclaw_colony::ColonyTaskConfig::new(
-        inbox_tx.clone(),
-        inbox_rx,
-        outputs_tx.clone(),
-        outputs_rx,
-        db,
-        f.clone(),
-        root.to_path_buf(),
-        ColonyConfig::default(),
-        None,
-        None,
-    )));
-    let runtime = ColonyRuntime {
-        inbox_tx: inbox_tx.clone(),
-        outputs_tx,
-        colony_config: ColonyConfig::default(),
-        blob_store: None,
-    };
-    let errors = bootstrap_from_filesystem(root, &f, &runtime)
-        .await
-        .expect_err("the bootstrap was expected to reject this root");
-    let rendered = format!("{errors:?}");
-    shutdown(inbox_tx, colony_join).await;
-    rendered
-}
-
 async fn send_mutation(
     inbox_tx: &mpsc::Sender<ColonyMsg>,
     payload: meclaw_core::serde_json::Value,
@@ -1345,16 +1312,19 @@ async fn c5_db_copy_without_wal_sidecars_silently_restores_stale_state() {
     );
 }
 
-/// **c6** — a restore that carries a DAMAGED `cell.db` is rejected loudly, and
-/// nothing is spawned. The partial-failure counterpart to `c5`.
+/// **c6** — a restore that carries a DAMAGED `cell.db` boots, and the damaged
+/// cell comes up `failed`: never an empty cell that quietly lost its state. The
+/// partial-failure counterpart to `c5`.
 ///
 /// `c5` shows the dangerous case (a plausible-looking database with stale
 /// content boots silently). This is the other end: a truncated / garbled
-/// `cell.db` — the classic half-written backup — must never boot into an empty
-/// cell that quietly loses its state. `plan_bootstrap` probes every `cell.db`
-/// before the apply phase, so the whole boot fails before a single spawn.
+/// `cell.db` — the classic half-written backup. Since GH #1231 the boot planner
+/// reads no cell's database (overview § Database isolation, "a read counts as access"); the
+/// cell checks its OWN when it opens it, and an unusable one fails that cell,
+/// not the whole boot. `--validate` no longer sees the damage for the same
+/// reason: it reads no `cell.db` either.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c6_restore_with_a_damaged_cell_db_is_rejected_before_any_spawn() {
+async fn c6_restore_with_a_damaged_cell_db_boots_that_cell_failed() {
     let src = tempfile::TempDir::new().unwrap();
     write_tree(src.path(), "0 0 5 * * *");
     boot_and_shutdown(src.path()).await;
@@ -1369,21 +1339,33 @@ async fn c6_restore_with_a_damaged_cell_db_is_rejected_before_any_spawn() {
     let _ = std::fs::remove_file(restored.join("main/tick/cell.db-wal"));
     let _ = std::fs::remove_file(restored.join("main/tick/cell.db-shm"));
 
-    let rendered = boot_expect_bootstrap_error(&restored).await;
+    let (inbox, colony, apply) = boot(&restored).await;
+    apply
+        .await
+        .expect("a damaged cell.db must not fail the boot");
+    let (ack, rx) = oneshot::channel();
+    inbox
+        .send(ColonyMsg::ReadRegistry {
+            path: Some(meclaw_core::Path::new("/tick")),
+            path_prefix: None,
+            cell_type: None,
+            active: None,
+            limit: 10,
+            ack,
+        })
+        .await
+        .expect("colony inbox");
+    let reply = rx.await.expect("registry read");
+    assert_eq!(reply.entries.len(), 1, "/tick is registered");
     assert!(
-        rendered.contains("CorruptCellDb"),
-        "a damaged cell.db must fail the boot LOUDLY in the plan phase, never \
-         start an empty cell, got: {rendered}"
+        reply.entries[0].failed,
+        "the cell whose cell.db does not open is failed, not an empty cell"
     );
-    assert!(
-        rendered.contains("tick"),
-        "the diagnostic must name the offending cell directory, got: {rendered}"
-    );
+    shutdown(inbox, colony).await;
 
-    // `--validate` gives the operator the same verdict without booting.
     assert!(
-        run(cli_validate(&restored, false)).await.is_err(),
-        "--validate must reject a damaged cell.db too (nginx -t role)"
+        run(cli_validate(&restored, false)).await.is_ok(),
+        "--validate reads no cell.db (GH #1231)"
     );
 }
 

@@ -112,6 +112,14 @@
         "kind": "text",
         "at": "text",
         "detail": "json"
+      },
+      "credential_waits": {
+        "requirement_hash": "text",
+        "catalogue_hash": "text",
+        "at": "text",
+        "tries": "int",
+        "asked_boot": "text",
+        "detail": "text"
       }
     },
     "query_timeout_ms": 5000

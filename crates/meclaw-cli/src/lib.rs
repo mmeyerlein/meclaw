@@ -867,7 +867,7 @@ pub async fn run_with_hooks_tuned(
     // scan, two further checks run **without** spawning colony/axum
     // (--validate returns before the `colony_task::spawn` at Z.~210):
     //   1. `plan_bootstrap` — the filesystem bootstrap plan (MultipleRootDirs /
-    //      NoRootDir / InvalidParams / CorruptCellDb).
+    //      NoRootDir / InvalidParams; it reads no cell.db since GH #1231).
     //   2. `probe_boot_state` — colony.db consistency. Since GH #89 the probe
     //      flags only unreadable persistence tables as
     //      `BootState::Inconsistent`; count-level "mixed" states are

@@ -8,7 +8,7 @@
       "accepts": [
         {
           "route": "in_cycle",
-          "because": "run a cycle NOW rather than at the next tick -- a cost alert or a DLQ spike is a reason not to wait for the clock"
+          "because": "run a cycle NOW -- a cost alert or a DLQ spike is a reason not to wait for the clock. It is also what starts a resting argus: the clock carries no schedule, R-AG-1 (GH #1229), and only a cycle that found an enabled goal arms the next one, so after switching a goal on the parent calls this lane once"
         },
         {
           "route": "in_model",
@@ -138,6 +138,11 @@
               "ar_carry": "''"
             }
           }
+        },
+        {
+          "from": "./meter",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'clock'"
         },
         {
           "from": "./meter",
@@ -505,9 +510,9 @@
   },
   "description": {
     "purpose": "Scope marker of the argus hive: the colony's control loop and its watcher. Charter -> measure -> judge (and simulate) -> params update to the named cell -> health check -> measure the effect -> keep or revert -> receipt. EVERY tick leaves a receipt, the tick that found nothing enabled and the cycle that died at a store reject included, so the table is a chain rather than a list of the moments something was decided. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches a cell in here; a caller names the hive and a lane on `hop.route`.",
-    "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown argus changes nothing until somebody turns a row on -- it does still tick, and every one of those ticks is receipted as `idle`, because a loop whose clock has stopped and a loop with an empty charter must not write the same nothing.",
+    "use_when": "Once per colony, under /colony's sibling level. The charter ships every goal DISABLED, so a freshly grown argus changes nothing until somebody turns a row on -- and it does not tick either, R-AG-1 (GH #1229): only a cycle that found an enabled goal arms the next one, so an inert argus stays silent until an event on `in_cycle` arrives. Every tick that does come is receipted, as `idle` when nothing is enabled, because a loop whose clock has stopped and a loop with an empty charter must not write the same nothing.",
     "not_in_scope": "No operator lane -- a change leaves as an ordinary message and only reaches a cell a human wired an edge to. No mutation at all, in fact: nothing in here authors a diff, so the loop cannot add, remove or rewire a cell. No topology change either: the radius is model choice, numeric params and text slots, and a topology proposal is recorded for a human rather than executed. And no second bookkeeping: what it measures, it reads out of the substrate's own ledger, read-only.",
-    "contract_in": "Three lanes, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock. in_stats -- a curator's counts, answering the meter's `stats` question. in_eval -- an evaluator's verdict on one text change, answering the mutator's `eval` order. Which cell starts or resumes a cycle is this hive's business.",
+    "contract_in": "Three lanes, at the hive path. in_cycle -- run a cycle now instead of waiting for the clock; for a resting argus it is the first cycle there is. in_stats -- a curator's counts, answering the meter's `stats` question. in_eval -- an evaluator's verdict on one text change, answering the mutator's `eval` order. Which cell starts or resumes a cycle is this hive's business.",
     "contract_out": "Six lanes, out of the hive path. mutate -- the decided change as an ordinary params update, hop.target naming the cell it is for; a parent wires one edge per cell the loop may reach, and a parent that wires none gets an argus that measures and receipts and changes nothing. slot_update -- the same for a text slot, applied only after an evaluation batch backed it. stats -- a question to a curator about its own ledger. eval -- a text change sent for evaluation before anything moves. alert -- a watched symptom crossed zero, deterministically and without a model: the metric, its count and the window. error -- a step of the cycle could not complete."
   }
 }

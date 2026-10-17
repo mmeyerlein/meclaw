@@ -230,7 +230,8 @@ pub struct Hive {
 }
 
 /// GH #1225: the cells the hive runs `resident`, the way they ship.
-pub const RESIDENT_CELLS: [&str; 1] = ["intake"];
+/// `push` since strand KP: its RAM is a cache of in-flight writes only (A1).
+pub const RESIDENT_CELLS: [&str; 2] = ["intake", "push"];
 
 // Folded, this module is `pub` at a harness root, so clippy::new_without_default
 // applies to `Hive::new` (W5 clippy).

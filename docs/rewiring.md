@@ -212,7 +212,7 @@ afterwards.
 
 ## Security surfaces you open by wiring
 
-Connecting a tool is a decision about a capability. Three cases are worth naming
+Connecting a tool is a decision about a capability. Four cases are worth naming
 out loud instead of inheriting.
 
 - `bash`: the sandbox is the whole fence (`params.sandbox`). The template
@@ -226,6 +226,10 @@ out loud instead of inheriting.
 - Ingress edges: who may talk to a colony is a `condition` on the entry edge,
   and no configuration value carries it. A second chat platform without the same
   condition opens the same memory to everyone.
+- The mutation door: an edge to `/colony/mutations` is the right to rebuild the
+  whole colony. Without one a cell mutates only below its own hive, and anything
+  else is `sender_out_of_scope` (GH #1231). Draw the edge only for what really
+  builds everywhere.
 
 ## Checking that it worked
 
@@ -414,7 +418,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.2.1",
        "override_params": {"bot_token_grant_id": "grant:telegram-bot@<subject>/channels-telegram"}},
-      {"name": "talky", "template": "talky@6.8.0"}
+      {"name": "talky", "template": "talky@6.8.1"}
     ]
   }
 }

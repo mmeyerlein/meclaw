@@ -16,7 +16,10 @@ LOCAL (this machine, no cargo, <= 15 s): every check of `scripts/precheck.py`
 (the same functions the gate station `precheck` runs), the locks of
 `scripts/pipeline/locks.py`, the dry version cascade (`cascade_dry.py`,
 GH #1173), `hygiene.py check --local` where it exists,
-`shellcheck` on touched `.sh`. Beside it, in parallel, the unit tests of the
+`shellcheck` on touched `.sh`, and the merge's refusal `lifted_bans` as the
+check `lifted-bans` (`merge.lifted_problem` over the worktree, GH #1199 R1.2;
+`--lifted-check` runs it alone for `strand.sh report`). Beside it, in
+parallel, the unit tests of the
 CHANGED `scripts/tests/test_*.py` modules (only those -- `test_gate_sh` and
 `test_strand_sh` alone take minutes), through `selftest_shard.py` like
 gate-selftest: side by side, at most 4 shards next to the live egon, a heavy
@@ -790,6 +793,63 @@ def turnaround_checks(repo, paths):
     return out
 
 
+def worktree_rev(repo):
+    """HEAD, or a commit of the worktree on top of it (HEAD and the overlay, in
+    a scratch index) -- the tree a gate would see, for a check that reads
+    commits. The commit stays unreferenced; git's gc takes it."""
+    head = _git(repo, "rev-parse", "HEAD").strip()
+    if not overlay_paths(repo):
+        return head
+    env = dict(gitenv.without_repo_env(os.environ), GIT_AUTHOR_NAME="kit",
+               GIT_AUTHOR_EMAIL="kit@invalid", GIT_COMMITTER_NAME="kit",
+               GIT_COMMITTER_EMAIL="kit@invalid")
+    with tempfile.TemporaryDirectory(prefix="meclaw-pre-") as tmp:
+        index = os.path.join(tmp, "index")
+        own = _git(repo, "rev-parse", "--path-format=absolute", "--git-path", "index").strip()
+        if os.path.isfile(own):
+            shutil.copyfile(own, index)   # the stat cache: `add -A` hashes changes only
+        env["GIT_INDEX_FILE"] = index
+
+        def git(*args):
+            res = subprocess.run(["git", "-C", repo] + list(args), capture_output=True,
+                                 text=True, env=env)
+            if res.returncode != 0:
+                raise RuntimeError("git %s: %s" % (args[0], res.stderr.strip()))
+            return res.stdout.strip()
+        if not os.path.isfile(own):
+            git("read-tree", head)
+        git("add", "-A")
+        return git("commit-tree", git("write-tree"), "-p", head, "-m", "pre: worktree")
+
+
+def lifted_check(repo, strand, wave=None):
+    """GH #1199 R1.2: the merge's refusal `lifted_bans` before the gate -- the
+    same code (`merge.lifted_problem`), over the worktree. The gh877 merge
+    (16.10.) met its 13 hits only at the merge point. [] outside a wave strand
+    (no wave knows `strand`): there is nothing the merge would grade. Files and
+    declarations come from one tree, the worktree commit: an uncommitted
+    `lifted` or `flaky_fix` counts here as it will at the merge (I1 of the
+    v2-r3-bans re-check)."""
+    if not strand:
+        return []
+    from pipeline import merge, turnaround
+    t0 = time.monotonic()
+    try:
+        rev = worktree_rev(repo)
+    except RuntimeError as exc:
+        return [Result("lifted-bans", time.monotonic() - t0, "RED",
+                       "cannot grade the lifted files: %s" % exc)]
+    try:
+        s = merge.Strand(repo, merge.strand_name(strand),
+                         wave or turnaround.branch_wave(repo), rev=rev)
+    except merge.Refused as exc:
+        if exc.reason == "no_wave":
+            return []
+        return [Result("lifted-bans", time.monotonic() - t0, "RED", exc.text)]
+    why = merge.lifted_problem(s, rev)
+    return [Result("lifted-bans", time.monotonic() - t0, "RED" if why else "GREEN", why or "")]
+
+
 REPO = "meclaw"
 
 
@@ -973,6 +1033,7 @@ def run_pre(repo, base=None, runner=None, allow_bump=None, strand=None, lane=Non
         lane_f = pool.submit(lane_half, cmds, runner) if (cmds and runner) else None
         results = local_half(paths, repo, ctx)
         results += turnaround_checks(repo, paths)
+        results += lifted_check(repo, strand)
         results += ut.result()
         if lane_f is not None:
             results += lane_f.result()
@@ -1026,6 +1087,10 @@ def _args(ap):
     ap.add_argument("--tree-hash", action="store_true", help="print the tree hash and exit")
     ap.add_argument("--stamp-check", action="store_true",
                     help="exit 0 with a fresh GREEN stamp of this tree, 2 otherwise")
+    ap.add_argument("--lifted-check", action="store_true",
+                    help="the check lifted-bans alone (strand.sh report): its line, "
+                         "exit 1 on RED")
+    ap.add_argument("--wave", default=None, help="the strand's wave (--lifted-check)")
 
 
 def _cmd(args):
@@ -1038,6 +1103,11 @@ def _cmd(args):
         ok, line = stamp_status(repo)
         print(line, file=sys.stdout if ok else sys.stderr)
         return 0 if ok else 2
+    if args.lifted_check:
+        got = lifted_check(repo, args.strand, args.wave)
+        for r in got:
+            print(r.line())
+        return 1 if any(r.verdict == "RED" for r in got) else 0
     runner = None
     if args.lane_target and not args.no_lane and not args.fast:
         runner = ssh_runner(args.lane_target, args.strand or "pre", repo)

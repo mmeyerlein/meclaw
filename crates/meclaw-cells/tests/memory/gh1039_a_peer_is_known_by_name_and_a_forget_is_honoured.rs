@@ -240,10 +240,16 @@ fn recall_renders_the_name_beside_the_reference() {
 fn recall_shows_nothing_marked_forgotten() {
     let script = shipped_script(RECALL);
     let program = format!(
-        "import re\nASKED_WORDS = {{'neighbour', 'owes', 'money'}}\nphase = 't1-fan'\nctx = {{'recall_query': 'neighbour owes money'}}\ndef visible(a, c):\n    return True\n{}\n{}\n{}\n{}\n{}\n{}\n{}\nimport json\nprint(json.dumps([visible_row(r) for r in json.loads({})]))",
+        "import re, json\nP = json.loads({})\nASKED_WORDS = {{'neighbour', 'owes', 'money'}}\nphase = 't1-fan'\nctx = {{'recall_query': 'neighbour owes money'}}\ndef visible(a, c):\n    return True\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\nprint(json.dumps([visible_row(r) for r in json.loads({})]))",
+        meclaw_core::serde_json::to_string(&meclaw_core::serde_json::json!({"question_words": read_json(&repo("templates/memory-hive/recall/config.json"))["params"]["question_words"].clone()}).to_string()).expect("params"),
+        block_of(&script, "def _knob"),
+        block_of(&script, "def _data"),
+        block_of(&script, "QUESTION_WORDS"),
+        block_of(&script, "def is_question"),
         block_of(&script, "FORGET_SOURCE"),
         block_of(&script, "PUSH_PREFIX"),
         block_of(&script, "def forgotten"),
+        block_of(&script, "LIFTED"),
         block_of(&script, "def muted"),
         block_of(&script, "def names_word"),
         block_of(&script, "def asked_for"),
@@ -480,7 +486,7 @@ fn a_forget_request_marks_and_never_deletes() {
     assert_eq!(marks.len(), 1, "{calls:?}");
     assert_eq!(marks[0]["where"]["id"], json!({"in": ["f-debt"]}));
     // R-TR-25: a mute, never a closure
-    assert_eq!(marks[0]["set"]["mute_source"], "forget_request:e3");
+    assert_eq!(marks[0]["set"]["mute_source"], "forget_request:e3@member:e");
     assert_eq!(marks[0]["set"]["mute_words"], "kolja owes");
     assert!(
         marks[0]["set"].get("closure_source").is_none(),
@@ -509,10 +515,10 @@ fn a_forget_request_marks_and_never_deletes() {
             phase.contains("|e3|2026-01-01T10:02:00Z|kolja,owes"),
             "the request, its time and its words ride in the phase: {phase}"
         );
-        assert_eq!(
-            op["where"]["audience_set"]["covers"],
-            json!(["agent:a", "member:e", "peer:rq"])
-        );
+        // GH #1225 (kfm E7, decision: the mute covers 1:1 too): every row the
+        // member who asks was present for -- this round's rooms and their own
+        // 1:1 rooms -- never a row of a room without them.
+        assert_eq!(op["where"]["audience_set"]["covers"], json!(["member:e"]));
         assert!(op.get("limit").is_none(), "a mute may be broad: {op}");
     }
     let fact_search = &searches
@@ -558,7 +564,10 @@ fn a_forget_request_marks_and_never_deletes() {
         beliefs[0]["where"]["source_fact_ids"],
         json!({"covers": ["f-debt"]})
     );
-    assert_eq!(beliefs[0]["set"]["mute_source"], "forget_request:e3");
+    assert_eq!(
+        beliefs[0]["set"]["mute_source"],
+        "forget_request:e3@member:e"
+    );
     assert!(
         beliefs[0]["set"].get("active").is_none(),
         "the mark alone, never active"
@@ -971,7 +980,7 @@ async fn gh1039_a_peer_turn_through_the_door_answers_to_the_name() {
              FROM facts WHERE id = 'f-rumour'"
         ),
         vec![vec![
-            "forget_request:e3".to_string(),
+            "forget_request:e3@member:e".to_string(),
             String::new(),
             String::new()
         ]],
@@ -982,7 +991,10 @@ async fn gh1039_a_peer_turn_through_the_door_answers_to_the_name() {
             &db,
             "SELECT mute_source, CAST(active AS TEXT) FROM beliefs WHERE id = 'b-rumour'"
         ),
-        vec![vec!["forget_request:e3".to_string(), "1".to_string()]],
+        vec![vec![
+            "forget_request:e3@member:e".to_string(),
+            "1".to_string()
+        ]],
         "the belief made of the rumour carries the mute"
     );
     h.shutdown().await;

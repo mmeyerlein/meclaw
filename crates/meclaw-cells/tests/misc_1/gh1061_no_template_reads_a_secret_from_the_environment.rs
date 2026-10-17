@@ -229,10 +229,17 @@ fn gh1061_start_sh_hands_its_daemon_no_provider_key() {
         .find("\n# 1. Install.")
         .expect("start.sh lost its `# 1. Install.` marker");
     let (prologue, rest) = script.split_at(cut);
+    // GH #1223: the script's body is one group (`{` … `}; exit $?`), parsed whole
+    // before it runs -- the prologue opens it, so the slice closes it after `env`.
+    let close = if script.trim_end().ends_with("}; exit $?") {
+        "}\n"
+    } else {
+        ""
+    };
     for flavour in ["", "hard-shell", "meclaw-os", "organism"] {
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c")
-            .arg(format!("{prologue}\nenv\n"))
+            .arg(format!("{prologue}\nenv\n{close}"))
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", std::env::temp_dir())

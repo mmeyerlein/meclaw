@@ -17,6 +17,123 @@
 use crate::llm::system_gate::{GateReject, SystemGate};
 use meclaw_core::serde_json::{self, Value};
 
+/// T6-05 (GH #1232): the handover an `llm` cell answers an `export` with: its
+/// whole `system` table and its params overlay, each a `transfer` document
+/// (`meclaw-cell-export/1`), already in the import form, so whoever forwards
+/// it to the successor unchanged has handed over (OR-programm-tm.H2.1).
+pub(crate) fn handover_export(conn: &rusqlite::Connection) -> Result<Value, String> {
+    use meclaw_colony::db_transfer::{TransferOutcome, export_document};
+    let mut args = serde_json::Map::new();
+    args.insert("table".into(), Value::from("system"));
+    let system = match export_document(conn, &args)? {
+        TransferOutcome::Done { payload, .. } => payload,
+        other => return Err(format!("export of the system table: {other:?}")),
+    };
+    let params = crate::params_overlay::overlay_document(conn)
+        .map_err(|e| format!("export of the params overlay: {e}"))?;
+    Ok(serde_json::json!({
+        "handover": {"operation": "import", "parts": [system, params]}
+    }))
+}
+
+/// The part of a handover that carries `table`.
+fn handover_part<'a>(
+    parts: &'a [Value],
+    table: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    parts
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|p| p.get("table").and_then(Value::as_str) == Some(table))
+}
+
+/// T6-06 (GH #1232, OR-programm-tm.H2.orch-1): write the original's `system`
+/// rows on the twin's own connection with the ORIGINAL winning per slot,
+/// unlike a `transfer` import, which the receiver wins: a seed slot the
+/// original overwrote at run time must not fall back to its seed value on the
+/// swap, or the handover is worthless for exactly those slots. A slot only the
+/// twin holds stays (OR-programm-tm.H2.9). One transaction, whole or nothing;
+/// a malformed part changes nothing.
+pub(crate) fn handover_import_system(
+    conn: &mut rusqlite::Connection,
+    parts: &[Value],
+) -> Result<usize, String> {
+    let format = meclaw_colony::db_transfer::TRANSFER_FORMAT;
+    let Some(part) = handover_part(parts, "system") else {
+        return Ok(0);
+    };
+    if part.get("format").and_then(Value::as_str) != Some(format) {
+        return Err(format!("the system part is not a {format} document"));
+    }
+    let rows = part
+        .get("rows")
+        .and_then(Value::as_array)
+        .ok_or("the system part carries no rows")?;
+    // Every row is checked before the first write (re-check H2, I2):
+    // `read_system_tree` reads each value back as a JSON leaf object on every
+    // later turn (`expect`), and `insert_into_tree` needs objects on the way
+    // down, so one row that is no JSON object (`"x"`, or `"\"x\""` next to a
+    // slot `x.y`) would panic every turn of this cell, across restarts, since
+    // the row lies in its cell.db. One such row refuses the whole import.
+    let mut checked = Vec::with_capacity(rows.len());
+    for row in rows {
+        let slot = row
+            .get("slot_path")
+            .and_then(Value::as_str)
+            .ok_or("a system row without a slot_path")?;
+        let value = row
+            .get("value")
+            .and_then(Value::as_str)
+            .ok_or("a system row without a text value")?;
+        if serde_json::from_str::<serde_json::Map<String, Value>>(value).is_err() {
+            return Err(format!(
+                "the system row {slot} carries no JSON object as its value"
+            ));
+        }
+        let updated_at = row.get("updated_at").and_then(Value::as_i64).unwrap_or(0);
+        checked.push((slot, value, updated_at));
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for (slot, value, updated_at) in checked {
+        tx.execute(
+            "INSERT INTO system (slot_path, value, updated_at) VALUES (?, ?, ?)
+             ON CONFLICT(slot_path) DO UPDATE SET
+                 value = excluded.value,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![slot, value, updated_at],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(rows.len())
+}
+
+/// T6-06 (GH #1232): the reasoning budget of a handover's params part, the
+/// keys `mutation::twin::BUDGET_KEYS` names (the twin rule, no copy of the
+/// list), each value parsed back from the overlay's JSON text
+/// (OR-programm-tm.H2.3: the overlay travels whole, only the budget is taken).
+pub(crate) fn handover_budget(parts: &[Value]) -> serde_json::Map<String, Value> {
+    use meclaw_colony::mutation::twin::BUDGET_KEYS;
+    let mut out = serde_json::Map::new();
+    let rows = handover_part(parts, "params")
+        .and_then(|p| p.get("rows"))
+        .and_then(Value::as_array);
+    for row in rows.into_iter().flatten() {
+        let (Some(key), Some(text)) = (
+            row.get("key").and_then(Value::as_str),
+            row.get("value").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if BUDGET_KEYS.contains(&key)
+            && let Ok(value) = serde_json::from_str::<Value>(text)
+        {
+            out.insert(key.to_string(), value);
+        }
+    }
+    out
+}
+
 /// Walks a UBF system-subtree and returns flat `(dotted-leaf-path, leaf-json)` pairs.
 ///
 /// A "leaf" is a JSON object containing `text` or `text_id` keys. Recursion stops

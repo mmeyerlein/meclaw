@@ -4,7 +4,8 @@
 #
 #     scripts/strand.sh -C <worktree> <subcommand> ...
 #         (as `git -C`: a `cd <worktree>` first, for every subcommand)
-#     scripts/strand.sh new <name> --issue <nr> [options]
+#     scripts/strand.sh new [<wave>/]<name> --issue <nr> [options]
+#         (the prefix names the wave when section Live runs several; GH #1226)
 #     scripts/strand.sh pre [--strand <S>] [--no-lane] [--host <lane>] [--holder <n>] [--allow-bump <reason>]
 #         (the pre-run before a strand gate: form, locks, cargo check; writes the stamp)
 #     scripts/strand.sh gate [<mode>] [--host <lane>] [--holder <n>] [--no-pre --reason <text>] [gate.sh options]
@@ -110,7 +111,9 @@
 #     token take ... --wait                         block until taken (start it in the background;
 #                                                   the queue line says it blocks, it never returns queued)
 #     token release [--strand S] [--force]         give it back, name the next (a lease of a live
-#                                                   run stays, exit 3: its close frees it)
+#                                                   run, a process in the lane tree or a lane that
+#                                                   does not answer stays, exit 3: its end frees it;
+#                                                   --force ends the lane tree)
 #     token who                                    holders, queue, last events
 #     token check [--pid P]                        what the gate and the tier call
 #     token off [--force]                          disarm (refuses over a queue; the log stays)
@@ -257,8 +260,11 @@
 # workpackage `stopped/aborted`, open task runs `failed/orphan`, journal
 # `run_closed reason=orphan by=<who>`) -- only when no local driver pid of the
 # run lives (workpackage doc, lease entries, journal), the lane reports the
-# run's `pipe-<run>.scope` gone and no process lives in its workspace. Any
-# other answer, or none, refuses with the reason and exit 2.
+# run's `pipe-<run>.scope` gone and no process lives in its workspace or its
+# tree. Any other answer, or none, refuses with the reason and exit 2. A run
+# closed `stopped/lost` (its lease, run and runner stay until the deadline) is
+# open too (#1228 round 3), and `token take` closes such a run -- or an
+# `active` one whose driver died -- by itself on the same checks.
 #
 # THE HEADER BLOCK is the point of all of it. Every report starts with a YAML
 # block (strang, branch, issues, basis, gate, commits) and
@@ -284,6 +290,8 @@
 # GREEN 0, RED 1, ABORTED or a refused argument 2, queued 3, ASK 4, a lane
 # that refuses this tree 5, a store error at the admission 6.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -uo pipefail
 
 # The kit's directory, absolute before the entry below changes the working
@@ -413,10 +421,10 @@ wave_dir() {
     # The Running rows are read by the one reader `wave open`/`wave close` write
     # them for (`pipeline wave running`, wave.RUNNING): a second spelling of the
     # marker here would take rows the core does not (re-check v2-kit c23 M-5).
-    names=$("${KIT_PY[@]}" "$(pipeline_py)" wave running "$plans/README.md") \
+    names=$(running_waves "$plans") \
         || die "plans/README.md section Live is unreadable -- pass --wave <directory>"
     while IFS= read -r cand; do
-        [ -n "$cand" ] && [ -d "$plans/$cand" ] && running+=("$cand")
+        [ -n "$cand" ] && running+=("$cand")
     done <<<"$names"
     if [ ${#running[@]} -eq 1 ]; then
         echo "strand: wave ${running[0]} (Running row of plans/README.md section Live)" >&2
@@ -441,6 +449,70 @@ wave_dir() {
         return 0
     done < <(live_rows "$plans/README.md")
     die "no wave directory found in plans/README.md section Live -- pass --wave"
+}
+
+# The Running rows of section Live whose directory exists, one per line -- the
+# one reader `wave open`/`wave close` write them for (`pipeline wave running`).
+# Exit 1 when the reader fails.
+running_waves() {
+    local plans="$1" names cand
+    names=$("${KIT_PY[@]}" "$(pipeline_py)" wave running "$plans/README.md") || return 1
+    while IFS= read -r cand; do
+        [ -n "$cand" ] && [ -d "$plans/$cand" ] && printf '%s\n' "$cand"
+    done <<<"$names"
+    return 0
+}
+
+# GH #1226: the wave `new` sets a strand up in when `--wave` does not say it. Two
+# waves ran on the same lanes (welle-validierung-2 and welle-kfix, 16.10.), section
+# Live named both, and every `new` stopped for a `--wave` by hand -- although the
+# strand already said which wave is its own. In this order:
+#   1. the prefix of `new <wave>/<name>` -- the branch the strand will carry: the
+#      one directory `plans/<wave>-<date>` (of several, the one Running row);
+#      a prefix that names none, or several Running ones, is a stop;
+#   2. of two or more Running rows, the one wave whose `straenge/<name>.json` the
+#      orchestrator wrote before `new` (the kinds, PREAMBLE section 4);
+#   3. nothing -- `wave_dir` decides, as for every other command; with two or
+#      more Running rows and no answer above, the stop names both ways out.
+new_wave_hint() {
+    local plans="$1" prefix="$2" name="$3" cand list
+    local -a hits=() running=() owners=() live=()
+    list=$(running_waves "$plans" 2>/dev/null) || list=""
+    while IFS= read -r cand; do
+        [ -n "$cand" ] && running+=("$cand")
+    done <<<"$list"
+    if [ -n "$prefix" ]; then
+        for cand in "$plans/$prefix"-*/; do
+            [ -d "$cand" ] || continue
+            cand=$(basename -- "${cand%/}")
+            # `welle-x-2-<date>` matches the glob of `welle-x` too: the name decides
+            [ "$(wave_name "$cand")" = "$prefix" ] && hits+=("$cand")
+        done
+        [ ${#hits[@]} -gt 0 ] \
+            || die "new: no wave directory plans/$prefix-<date> for the prefix $prefix/ -- pass --wave <directory>"
+        if [ ${#hits[@]} -gt 1 ]; then
+            for cand in "${hits[@]}"; do
+                case " ${running[*]} " in *" $cand "*) live+=("$cand") ;; esac
+            done
+            [ ${#live[@]} -eq 1 ] && hits=("${live[@]}")
+        fi
+        [ ${#hits[@]} -eq 1 ] \
+            || die "new: the prefix $prefix/ names ${#hits[@]} waves (${hits[*]}) -- pass --wave <directory>"
+        echo "strand: wave ${hits[0]} (from the prefix $prefix/)" >&2
+        printf '%s\n' "${hits[0]}"
+        return 0
+    fi
+    [ ${#running[@]} -gt 1 ] || return 0
+    for cand in "${running[@]}"; do
+        [ -f "$plans/$cand/straenge/$name.json" ] && owners+=("$cand")
+    done
+    if [ ${#owners[@]} -eq 1 ]; then
+        echo "strand: wave ${owners[0]} (its strand file plans/${owners[0]}/straenge/$name.json)" >&2
+        printf '%s\n' "${owners[0]}"
+        return 0
+    fi
+    die "plans/README.md section Live names ${#running[@]} running waves (${running[*]})"\
+        "-- pass --wave <directory> or name the strand <wave>/$name"
 }
 
 # `<dir>\t<text>` for every row of the section Live table of a plans README.
@@ -505,11 +577,25 @@ cmd_new() {
         esac
     done
     [ ${#issues[@]} -gt 0 ] || die "new needs at least one --issue"
+    # GH #1226: `new <wave>/<name>` -- the prefix is the wave of the branch.
+    local prefix=""
+    case "$name" in
+        */*/*) die "new: a strand name carries at most one prefix (<wave>/<name>): $name" ;;
+        */*) prefix=${name%%/*}; name=${name#*/}
+             { [ -n "$prefix" ] && [ -n "$name" ]; } || die "new: <wave>/<name> needs both parts" ;;
+    esac
 
     local root plans wdir wave branch tree report basis issue_list
     root=$(main_root) || exit 2
     plans="$root/plans"
-    wdir=$(wave_dir "$plans" "$wave_in") || exit 2
+    if [ -n "$wave_in" ]; then
+        [ -z "$prefix" ] || [ "$(wave_name "${wave_in%/}")" = "$prefix" ] \
+            || die "new: the prefix $prefix/ is not the wave $wave_in -- drop one of them"
+        wdir=$(wave_dir "$plans" "$wave_in") || exit 2
+    else
+        wdir=$(new_wave_hint "$plans" "$prefix" "$name") || exit 2
+        [ -n "$wdir" ] || wdir=$(wave_dir "$plans" "") || exit 2
+    fi
     wave=$(wave_name "$wdir")
     branch="$wave/$name"
     tree="$(dirname -- "$root")/$(basename -- "$root")-wt-$name"
@@ -560,9 +646,11 @@ cmd_new() {
         printf '## Versionsart\n\n(kind je Template in plans/%s/straenge/%s.json: fix|feature|break; fehlt es → fix; der Merge vergibt die Nummern)\n\n' "$wdir" "$name"
         printf '## Gate\n\n(die Summenzeile steht im Kopfblock)\n\n'
         printf '## Offene Punkte\n\n'
-        # The field merge asks for (GH #1196, merge.OUTSOURCED); the
-        # placeholder itself is refused until the strand fills it in.
-        printf 'Outsourced findings: <none | #<n> (owner-ruling <reference>)>\n\n'
+        # The field merge asks for (GH #1196, merge.OUTSOURCED), in the one
+        # form it accepts (K13): `none`, or `#<n> (owner-ruling <reference>)`
+        # items the strand writes in its place. The old placeholder
+        # `<none | ...>` was copied as `<none>` and refused at the merge point.
+        printf 'Outsourced findings: none\n\n'
         printf '## Strang-Rulings\n\n'
         # The section `merge` asks for (Z-I 2c (2)); fix rounds may also
         # write `## Fix-Runde Review <sha>`. Empty it is refused: merge wants
@@ -678,9 +766,8 @@ detached_head() {
 # it happened twice in one day on 2026-09-21 (GH #802). The run id starts
 # with a UTC timestamp, so the directories sort chronologically by name,
 # and it carries the commit that was gated, so a reader knows WHICH run
-# without opening it. `open_run_dir <archive-root>` sets RUN_DIR, and
-# PREV_LATEST to what `latest` named before (for `restore_latest`).
-RUN_DIR=""; PREV_LATEST=""
+# without opening it. `open_run_dir <archive-root>` sets RUN_DIR.
+RUN_DIR=""
 open_run_dir() {
     local archive_root="$1" run_id suffix=1 base
     run_id="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=8 HEAD 2>/dev/null || echo nohead)"
@@ -692,21 +779,11 @@ open_run_dir() {
     done
     RUN_DIR="$archive_root/$run_id"
     mkdir -p "$RUN_DIR" || die "cannot create the archive $RUN_DIR"
-    PREV_LATEST=$(readlink "$archive_root/latest" 2>/dev/null || true)
     # `rm` first: `ln -sfn` onto an existing SYMLINK TO A DIRECTORY would
     # otherwise put the new link inside the old target.
     rm -f "$archive_root/latest" 2>/dev/null
     ln -s "$run_id" "$archive_root/latest" 2>/dev/null \
         || printf '%s\n' "$run_id" >"$archive_root/latest.txt"
-}
-
-# A run that never reached a verdict (a lane lost mid-run) must not be what
-# `latest` -- and so `report` -- points at.
-restore_latest() {
-    local archive_root="$1"
-    rm -f "$archive_root/latest" 2>/dev/null
-    [ -n "$PREV_LATEST" ] && ln -s "$PREV_LATEST" "$archive_root/latest" 2>/dev/null
-    return 0
 }
 
 # Red, asking and aborted stations of a run log -- the lines a report needs
@@ -1114,14 +1191,24 @@ cmd_report() {
     rtree=$(git -C "$(dirname -- "$REPORT")" rev-parse --show-toplevel 2>/dev/null) || rtree=""
     if [ -n "$rtree" ] && [ -f "$rtree/scripts/pipeline/pre.py" ] \
             && (cd -- "$rtree" && pre_applies); then
+        # GH #1199 R1.2: the merge's `lifted_bans` (merge.lifted_problem, the
+        # same code as pre's check `lifted-bans`) -- a `lifted` declaration in
+        # the strand file is a doc change the pre stamp survives.
+        "${KIT_PY[@]}" "$rtree/scripts/pipeline/pre.py" --repo "$rtree" --lifted-check \
+            --strand "$(basename -- "$S_REL" .md)" --wave "$(basename -- "$(dirname -- "$(dirname -- "$S_REL")")")" \
+            || die "report: the merge would refuse lifted_bans (the line above) -- fix the hits, then pre and report"
         "${KIT_PY[@]}" "$rtree/scripts/pipeline/pre.py" --repo "$rtree" --stamp-check >/dev/null \
             || die "report: $rtree has no fresh pre-GREEN stamp on its head -- run strand.sh pre first"
     fi
-    MECLAW_S_REPORT="$REPORT" MECLAW_S_ARCHIVE="$ARCHIVE" "${KIT_PY[@]}" - <<'PY'
-import os, re, subprocess, sys
+    MECLAW_S_REPORT="$REPORT" MECLAW_S_ARCHIVE="$ARCHIVE" MECLAW_S_ROOT="$(main_root)" \
+        MECLAW_S_KIT="$KIT_DIR" MECLAW_S_WAVE="$(basename -- "$(dirname -- "$(dirname -- "$S_REL")")")" \
+        "${KIT_PY[@]}" - <<'PY'
+import json, os, re, subprocess, sys
 
 report = os.environ["MECLAW_S_REPORT"]
 archive = os.environ["MECLAW_S_ARCHIVE"]
+sys.path.insert(0, os.environ["MECLAW_S_KIT"])
+from pipeline import merge  # noqa: E402 -- the merge point's own reading of the line
 FIELDS = ["strang", "branch", "issues", "basis", "gate", "commits"]
 
 
@@ -1186,16 +1273,97 @@ if base:
 # gate writes `GATE-LANE ...` after it (W3), and the station lines before it.
 # A file without one fails closed: the header gets a non-GREEN gate first,
 # so an earlier GREEN cannot stay behind for `close`.
+# The run is the one the merge point reads (review v2-r3-kit M1): the newest
+# STRAND receipt (`merge.strand_receipts`), not the newest run of any mode --
+# a later release or integration run in the archive is not the strand's gate.
+# No strand run in the archive is no gate (review v2-r3-kit M5): a GREEN `gate
+# ci` or a receipt that names no mode stood in the head block while the merge
+# point refuses it (`no_strand_receipt`).
+# An archive from before the per-run layout stays as it is.
+no_strand_run = None
+if os.path.basename(archive) == "latest" or re.match(r"\d{8}T\d{6}Z-", os.path.basename(archive)):
+    sys.path.insert(0, os.path.dirname(os.environ["MECLAW_S_KIT"]))
+    from scripts.pipeline import merge
+    runs = merge.strand_receipts(os.path.dirname(archive))
+    if runs:
+        archive = runs[0][0]
+    else:
+        no_strand_run = os.path.dirname(archive)
 summary = os.path.join(archive, "summary.txt")
 no_summary = False
-if os.path.isfile(summary):
+not_head = None
+
+
+def receipt_rev(line):
+    """`(rev, dirty)` of the gate run the line comes from: the run's receipt
+    (`receipt.json`, or the `last-strand.json` copy), else -- an archive from
+    before the per-run layout -- the rev of the summary line itself."""
+    for fn in ("last-strand.json", "receipt.json"):
+        try:
+            with open(os.path.join(archive, fn), encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or doc.get("mode", doc.get("stage")) != "strand":
+            continue   # the merge point's filter (`merge.strand_receipts`)
+        if doc.get("rev"):
+            return doc["rev"], doc.get("dirty") is True
+    words = line.split()
+    return (words[2] if len(words) > 2 else ""), False
+
+
+def covers_head(line):
+    """GH #1227: why the gate line does NOT stand for the head, or None. The
+    gate ran with the change still uncommitted: its receipt was the base, and
+    `report` copied its line as the head's. The merge point's rule
+    (`merge.preconditions`, `receipt_not_branch_head`): the receipt's rev is
+    the head, or code-equal to it (`turnaround.code_equal_revs`: only the
+    strand's own report and strand files moved since); and the run saw no
+    uncommitted change (`dirty: true` in the receipt)."""
+    rev, dirty = receipt_rev(line)
+    head_sha = git("rev-parse", "%s^{commit}" % tip)
+    gated = git("rev-parse", "--verify", "--quiet", "%s^{commit}" % rev) if rev else ""
+    why = []
+    if gated != head_sha:
+        sys.path.insert(0, os.path.join(os.environ["MECLAW_S_KIT"], "pipeline"))
+        import turnaround
+        same, bad = (turnaround.code_equal_revs(os.environ["MECLAW_S_ROOT"], gated, head_sha,
+                                                os.environ["MECLAW_S_WAVE"])
+                     if gated and head_sha else (False, {"?": "no such rev %s" % (rev or "-")}))
+        if not same:
+            why.append("gate receipt on %s, the head is %s; code changed since: %s"
+                       % ((gated or rev or "?")[:9], head_sha[:9], turnaround.describe(bad)))
+    if dirty:
+        why.append("the gate ran on a dirty tree (uncommitted changes, receipt dirty: true)")
+    return "; ".join(why) or None
+
+
+if no_strand_run:
+    head["gate"] = '"no strand gate"'
+elif os.path.isfile(summary):
     lines = [ln.strip() for ln in open(summary) if ln.strip()]
     sums = [ln for ln in lines if ln.startswith("GATE-SUMMARY ")]
     if sums:
-        head["gate"] = '"%s"' % sums[-1]
+        # only a GREEN line is a candidate: RED/ASK keep their own refusal below
+        not_head = covers_head(sums[-1]) if sums[-1].endswith(" GREEN") else None
+        head["gate"] = ('"%s"' % sums[-1]) if not_head is None else '"gate not on the head"'
     elif lines:
         head["gate"] = '"no GATE-SUMMARY"'
         no_summary = True
+
+# K13 (16.10.): the `Outsourced findings:` line in the form the merge point
+# accepts (`merge.outsourced_findings_ok`): the placeholder `<none>` is
+# written as `none`; any other value the merge cannot read stays and the
+# report refuses below, with merge's words. Re-check v2-r3-lease m4: a
+# MISSING line is a forgotten answer (#1196) -- refused below, never added.
+found = list(merge.OUTSOURCED.finditer(body))
+if found:
+    last = found[-1]
+    if re.fullmatch(r"<\s*none\s*>", last.group(1), re.I):
+        line = last.group(0)
+        body = (body[:last.start()]
+                + line[:line.index(last.group(1), line.index(":"))] + "none"
+                + body[last.end(1):])
 
 seen, keys = set(), []
 for k in FIELDS + order:
@@ -1205,9 +1373,24 @@ for k in FIELDS + order:
 open(report, "w").write(
     "---\n" + "\n".join("%s: %s" % (k, head[k]) for k in keys) + "\n---\n" + body)
 
+if no_strand_run:
+    sys.exit("strand: no strand gate in %s -- its runs are of other modes (ci, integration, "
+             "release) or name none; run `strand.sh gate` on the head, then report" % no_strand_run)
 if no_summary:
     sys.exit("strand: %s has no GATE-SUMMARY line -- run the gate again"
              % summary)
+if not_head:
+    sys.exit("strand: the gate line does not stand for the head: %s -- run the gate on "
+             "the committed head, then report" % not_head)
+if not found:
+    sys.exit("strand: %s has no line `Outsourced findings:` -- write `Outsourced findings: none` "
+             "under `## Offene Punkte`, or `#<n> (owner-ruling <reference>)` per issue a finding "
+             "moved to; report never adds it (GH #1196: a missing line is a forgotten answer)"
+             % report)
+if not merge.outsourced_findings_ok(body):
+    sys.exit("strand: %s: the line `Outsourced findings:` is neither `Outsourced findings: none` "
+             "nor `Outsourced findings: #<n> (owner-ruling <reference>)` -- the merge point "
+             "refuses it (no_outsourced_findings)" % report)
 
 missing = [f for f in FIELDS
            if not head[f].strip() or head[f].strip() in ('""', "[]")]
@@ -1401,9 +1584,9 @@ cmd_gate() {
         cmd_gate_legacy "$@"
         return $?
     fi
-    local mode="strand" strand_in="" wave_in="" args=() have_archive=0 plan_only=0
+    local mode="strand" strand_in="" wave_in="" args=() have_archive=0 plan_only=0 modes=() m
     if [ $# -ge 1 ]; then
-        case "$1" in strand|integration|release) mode="$1"; shift ;; esac
+        case "$1" in strand|integration|release) modes+=("$1"); shift ;; esac
     fi
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -1411,12 +1594,25 @@ cmd_gate() {
                 usage
                 echo "gate options pass through to scripts/pipeline.py gate -- see scripts/gate.sh --help"
                 return 0 ;;
+            # `--mode <m>` is the positional form (#1199 K13); a value flag's
+            # value is never read as one (`--reason --mode`)
+            --mode)      need_value "$1" "$#"; modes+=("$2"); shift 2 ;;
+            --mode=*)    modes+=("${1#--mode=}"); shift ;;
+            --base|--only|--decide|--host|--reason|--repo|--slots|--holder|--cache)
+                         need_value "$1" "$#"; args+=("$1" "$2"); shift 2 ;;
             --strand)    need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
             --wave)      need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
             --archive|--log-dir) have_archive=1; args+=("$1"); shift ;;
             --plan-only) plan_only=1; args+=("$1"); shift ;;
             *)           args+=("$1"); shift ;;
         esac
+    done
+    for m in ${modes[@]+"${modes[@]}"}; do
+        case "$m" in strand|integration|release) ;;
+            *) die "gate: unknown mode: $m (expected strand|integration|release)" ;; esac
+        [ "$m" = "${modes[0]}" ] \
+            || die "gate: two modes: ${modes[0]} and $m (--mode <m> and the positional <m> name the same one)"
+        mode="$m"
     done
 
     local gate root plans wdir name archive_root log rc summary run
@@ -1859,3 +2055,4 @@ case "$sub" in
     wave)   cmd_wave "$@" ;;
     *) die "unknown subcommand: $sub (expected new|pre|gate|test|report|close|merge|revert|token|lanes|bench|wave)" ;;
 esac
+}; exit $?

@@ -13,3 +13,5 @@ pub mod timer_handle_modify_remove;
 pub mod timer_io_loop;
 pub mod timer_params_message;
 pub mod timer_shutdown_sanity;
+pub mod zh_corrupt_timer_cell_db_boots_failed;
+pub mod zh_sleeping_timer_corrupt_cell_db_wakes_failed;

@@ -387,12 +387,14 @@ fn an_episode_neighbour_becomes_an_episode_candidate_gated_from_episodes() {
             "muted_at",
             "unmuted_at",
             "mute_words",
+            "mute_source",
             "speaker_name"
         ]),
         "an episode carries its own gate columns and no axis — plus, since GH #691, \
          what the duplicate fold reads (normal form and recency), and, since GH #1039, \
          the forget mark the recall gate reads and the name a peer is rendered by, and, since \
-         GH #1095, the mute the same gate reads: {ep_aud}"
+         GH #1095, the mute the same gate reads, and, since GH #1225, the request a lift in \
+         the same session names: {ep_aud}"
     );
 }
 

@@ -74,6 +74,10 @@ impl CellFactory for HarnessCellFactory {
         blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Result<SpawnedCellKind, String> {
+        // GH #1231 (T6-03): the cell checks its OWN cell.db here, on the
+        // error path `llm` uses, before any build closure opens it behind an
+        // `.expect`: an unusable file makes the cell `failed`, not a boot panic.
+        meclaw_colony::persist::check_own_cell_db(&cell_dir)?;
         let respawn_inbox = colony_inbox_tx.clone();
         let respawn_path = path.clone();
         let build = make_build(
@@ -127,6 +131,11 @@ impl CellFactory for HarnessCellFactory {
         blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
         mailbox_capacity: usize,
     ) -> Option<RespawnFn> {
+        // GH #1231 (T6-03, fix round 1): the sleeping cell checks its own
+        // cell.db when it opens it — on wake, inside the respawn closure
+        // (`wake_checked_respawn`), not here at boot; unusable → `failed`.
+        let (wake_path, wake_dir, wake_inbox) =
+            (path.clone(), cell_dir.clone(), colony_inbox_tx.clone());
         let respawn_inbox = colony_inbox_tx.clone();
         let respawn_path = path.clone();
         let build = make_build(
@@ -141,16 +150,21 @@ impl CellFactory for HarnessCellFactory {
             contract.transfer_bounds(),
         )
         .ok()?;
-        Some(Box::new(move || {
-            let (sender, join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build();
-            meclaw_colony::renotify_stop_wiring(
-                &respawn_inbox,
-                respawn_path.clone(),
-                stop_tx,
-                death_ack_rx,
-            );
-            (sender, join, peace_rx, backstop_rx)
-        }))
+        Some(meclaw_colony::wake_checked_respawn(
+            wake_path,
+            wake_dir,
+            wake_inbox,
+            Box::new(move || {
+                let (sender, join, peace_rx, stop_tx, death_ack_rx, backstop_rx) = build();
+                meclaw_colony::renotify_stop_wiring(
+                    &respawn_inbox,
+                    respawn_path.clone(),
+                    stop_tx,
+                    death_ack_rx,
+                );
+                (sender, join, peace_rx, backstop_rx)
+            }),
+        ))
     }
 }
 

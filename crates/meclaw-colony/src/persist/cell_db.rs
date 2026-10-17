@@ -6,10 +6,14 @@
 //! `setup_cell_db` is idempotent (CREATE TABLE IF NOT EXISTS), so it can be
 //! called on the resume path without harm.
 //!
-//! Called exclusively from the factory's RespawnFn closure — before
-//! `tokio::spawn(cell_task_stateful(..., conn))`. An open failure is a `panic!`
-//! inside the closure → supervisor restart loop up to `restart_limit` (phase 5
-//! § Restart strategy, "deterministically panicking cell").
+//! Called from the factory's RespawnFn closure — before
+//! `tokio::spawn(cell_task_stateful(..., conn))`. An open failure there is a
+//! `panic!` inside the closure → supervisor restart loop up to `restart_limit`
+//! (phase 5 § Restart strategy, "deterministically panicking cell"). At
+//! `spawn_cell` the factory checks first, on the error path
+//! ([`check_own_cell_db`], GH #1231), so a database that is unusable at boot
+//! makes the cell `failed` instead; a cell that booted asleep runs the same
+//! check on wake (`crate::wake_checked_respawn`).
 
 /// Open an existing cell.db or create a new one (M1 resume-with-state).
 ///
@@ -30,7 +34,38 @@ pub fn open_or_create_cell_db(path: &std::path::Path) -> rusqlite::Result<rusqli
     }
     let conn = rusqlite::Connection::open(path)?;
     crate::persist::setup_cell_db(&conn)?;
+    // GH #1231 (T6-03): the version check moved here from the boot planner,
+    // which read every cell's database (`probe_cell_db`, removed). The DDL's
+    // `INSERT OR IGNORE` keeps an existing version, so a database of another
+    // schema still says so after `setup_cell_db` and is refused. A file that is
+    // no database at all already fails `setup_cell_db` (NOTADB). No
+    // `quick_check` here: this runs on every wake and respawn, and its cost
+    // grows with the database (OR-programm-tm.H1.2).
+    let version = crate::persist::read_schema_version(&conn)?;
+    if version != 1 {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISMATCH),
+            Some(format!("cell.db schema_version {version}, expected 1")),
+        ));
+    }
     Ok(conn)
+}
+
+/// GH #1231 (T6-03): a cell factory's check of its OWN `cell.db`, on the error
+/// path — called at the top of `spawn_cell` before any build closure opens the
+/// file behind an `.expect`. An unusable database makes `spawn_cell` return
+/// `Err`, and the boot registers the cell `failed` instead of panicking.
+///
+/// An absent file is fine and stays absent: creating it here would turn the
+/// build closure's first open into `Resumed` and skip the seed.
+pub fn check_own_cell_db(cell_dir: &std::path::Path) -> Result<(), String> {
+    let path = cell_dir.join("cell.db");
+    if !path.exists() {
+        return Ok(());
+    }
+    open_or_create_cell_db(&path)
+        .map(drop)
+        .map_err(|e| format!("open cell.db: {e}"))
 }
 
 /// Discriminator returned by [`open_or_create_cell_db_with_status`].

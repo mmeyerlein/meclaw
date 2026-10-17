@@ -192,6 +192,84 @@ class Resolve(Satellite):
         self.assertFalse(register.is_satellite(self._tmp.name))
 
 
+class AMissingMainBaseRunsEveryStation(Satellite):
+    """GH #1199 (vor-batch, the I3 class in the register): a strand without a
+    merge base with the main branch has no diff to narrow from. The register
+    plans every station of the stage with a NOTE -- never the `HEAD~1` diff,
+    which hid every strand commit but the last."""
+
+    def strand_of_two(self):
+        self.commit("scripts/b.py", "B = 1\n")   # commit 1: hits `unit`
+        self.commit("docs/b.md", "# b\n")        # commit 2: hits `docs`
+
+    def assert_every_station(self, plan, why):
+        self.assertEqual(["unit", "docs", "set", "lint"], [s["name"] for s in plan["stations"]])
+        self.assertEqual("", plan["base"])
+        notes = [n for n in plan.get("notes") or [] if n.startswith("diff base unresolved")]
+        self.assertEqual(1, len(notes), plan.get("notes"))
+        self.assertIn(why, notes[0])
+        self.assertIn("every station of the stage runs", notes[0])
+
+    def test_no_main_branch_runs_every_station(self):
+        self.strand_of_two()
+        git(self.root, "branch", "-q", "-D", "main")
+        self.assertEqual("", register.resolve_base(self.root, "strand"))
+        self.assert_every_station(register.build_plan(self.root, "strand", None),
+                                  "no main or master branch")
+
+    def test_a_failing_merge_base_runs_every_station(self):
+        self.strand_of_two()
+        real = register._git
+
+        def no_merge_base(root, *args):
+            return None if args[:1] == ("merge-base",) else real(root, *args)
+
+        with mock.patch.object(register, "_git", side_effect=no_merge_base):
+            self.assertEqual("", register.resolve_base(self.root, "strand"))
+            plan = register.build_plan(self.root, "strand", None)
+        self.assert_every_station(plan, "git merge-base main HEAD: no merge base")
+
+    def test_an_unreadable_diff_runs_every_station(self):
+        """Re-check I4, the I2 path: `git diff <base> HEAD` that fails is no
+        empty diff -- before the fix an unknown base planned from the dirty
+        tree alone (`lint` only)."""
+        self.strand_of_two()
+        real = register._git
+
+        def no_diff(root, *args):
+            return None if args[:1] == ("diff",) else real(root, *args)
+
+        with mock.patch.object(register, "_git", side_effect=no_diff):
+            plan = register.build_plan(self.root, "strand", self.main)
+        self.assertEqual(["unit", "docs", "set", "lint"], [s["name"] for s in plan["stations"]])
+        notes = [n for n in plan.get("notes") or [] if n.startswith("diff base unresolved")]
+        self.assertEqual(1, len(notes), plan.get("notes"))
+        self.assertIn("git diff %s HEAD: failed" % self.main[:12], notes[0])
+        self.assertIn("every station of the stage runs", notes[0])
+
+    def test_both_planners_share_the_unclear_base_rule(self):
+        """One decision, two planners: the NOTE comes from `plan.unclear_base_note`."""
+        self.strand_of_two()
+        git(self.root, "branch", "-q", "-D", "main")
+        plan = register.build_plan(self.root, "strand", None)
+        self.assertIn(register._plan.unclear_base_note("no main or master branch"), plan["notes"])
+
+    def test_a_merge_base_plans_from_it(self):
+        self.strand_of_two()
+        plan = register.build_plan(self.root, "strand", None)
+        self.assertEqual(self.main, plan["base"])
+        self.assertEqual(["unit", "docs", "lint"], [s["name"] for s in plan["stations"]])
+        self.assertNotIn("notes", plan)
+
+    def test_the_last_commit_on_main_stays_a_head1_diff(self):
+        git(self.root, "checkout", "-q", "main")
+        self.strand_of_two()
+        plan = register.build_plan(self.root, "strand", None)
+        self.assertEqual(git(self.root, "rev-parse", "HEAD~1"), plan["base"])
+        self.assertEqual(["docs", "lint"], [s["name"] for s in plan["stations"]])
+        self.assertNotIn("notes", plan)
+
+
 class LaneEnv(Satellite):
     """welle-tb tb-zcol A: the kit hands the lane only the variables a
     satellite's register declares (`lane_env`), by exact name, fail-closed --

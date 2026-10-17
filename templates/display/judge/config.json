@@ -12,7 +12,9 @@
     "temperature": 0,
     "external_timeout_ms": 8000,
     "system_order": ["instructions"],
-    "provider_extra": {"response_format": {"type": "json_object"}}
+    "provider_extra": {"response_format": {"type": "json_object"}},
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
   },
   "contract": {
     "version": "1.0.0",

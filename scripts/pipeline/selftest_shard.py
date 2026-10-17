@@ -445,22 +445,40 @@ _popen = subprocess.Popen
 # state before the executor's SIGKILL reaches the group.
 KILL_GRACE_S = 5
 RUNNER_PID_FILE = "runner.pid"
-PR_SET_PDEATHSIG = 1
-try:
-    import ctypes
-    _LIBC = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
-except (ImportError, OSError):
-    _LIBC = None
+# The shell between setpriv and the shard: a child whose runner died between fork and
+# the death signal was reparented and never runs (`$1` is the runner's pid).
+_RUNNER_GUARD = '[ "$PPID" = "$1" ] || exit 137; shift; exec "$@"'
 
 
-def _die_with_runner(runner):
-    """`preexec_fn` of a shard: the kernel sends SIGKILL when the runner's thread that
-    started it ends (the worker waits for its shard, so: when the runner dies)."""
-    def preexec():
-        _LIBC.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
-        if os.getppid() != runner:  # the runner died before prctl
-            os._exit(137)
-    return preexec if _LIBC is not None else None
+class SetprivMissing(RuntimeError):
+    """Linux without `setpriv`: a child would outlive its runner (fix round 5 v2-r3-kit)."""
+
+
+def setpriv_path():
+    """The `setpriv` that binds a child to its runner; None off Linux (no pdeathsig
+    there). On Linux a missing one is `SetprivMissing`, never the plain argv: a shard
+    would then outlive a killed runner, and nothing would say so."""
+    if not sys.platform.startswith("linux"):
+        return None
+    path = shutil.which("setpriv")
+    if path is None:
+        raise SetprivMissing("setpriv not found on PATH (util-linux): on Linux every child "
+                             "of the runner dies with it via `setpriv --pdeathsig KILL`")
+    return path
+
+
+def die_with_runner(argv, runner):
+    """`argv` of a child the kernel SIGKILLs when the runner's thread that started it
+    ends (the worker waits for its shard, so: when the runner dies). No `preexec_fn`:
+    in a threaded runner the child can deadlock before exec (Python's documented hazard,
+    fix round 3 v2-r3-kit); `setpriv --pdeathsig` sets the signal in the child, and the
+    shell refuses the exec when `runner` is no longer its parent. Off Linux the plain
+    `argv`; on Linux without setpriv `SetprivMissing` (`setpriv_path`)."""
+    setpriv = setpriv_path()
+    if setpriv is None:
+        return list(argv)
+    return [setpriv, "--pdeathsig", "KILL", "--", "/bin/sh", "-c", _RUNNER_GUARD,
+            "die-with-runner", str(runner)] + list(argv)
 
 
 def sweep_dead_runs(tmp):
@@ -499,7 +517,7 @@ class Children:
         with self.lock:
             if self.stopped is not None:
                 return None
-            proc = _popen(argv, preexec_fn=_die_with_runner(os.getpid()), **kw)
+            proc = _popen(die_with_runner(argv, os.getpid()), **kw)
             self.procs.append(proc)
             return proc
 
@@ -538,11 +556,13 @@ def guard(snap):
 
 
 def run_single(argv):
-    """`argv` as one child in this terminal; SIGTERM/SIGINT reach it, and
+    """`argv` as one child (stdin /dev/null); SIGTERM/SIGINT reach it, and
     its exit is returned (128 + signal when a signal ended it)."""
     # Dies with the runner like a shard (pre's timeout kills the runner; re-check
-    # tb-s2 h2 m5): no orphan keeps a hung test running.
-    proc = _popen(argv, preexec_fn=_die_with_runner(os.getpid()))
+    # tb-s2 h2 m5): no orphan keeps a hung test running. No test reads the runner's
+    # stdin (fix round 4 v2-r3-kit): a pipe whose writer a leftover holds would
+    # block a test that reads it, as a shard's DEVNULL already rules out.
+    proc = _popen(die_with_runner(argv, os.getpid()), stdin=subprocess.DEVNULL)
     old = {}
 
     def forward(sig, _frame):
@@ -608,6 +628,11 @@ def main(argv):
     modules = [a for a in ut_args if not a.startswith("-")]
     if not modules:
         return usage("no modules")
+    if not plan_only:
+        try:
+            setpriv_path()   # before any child: none may outlive the runner
+        except SetprivMissing as exc:
+            return usage(str(exc))
     nproc = _nproc()
     try:
         n = min(plan.selftest_shards(nproc, os.environ), nproc)

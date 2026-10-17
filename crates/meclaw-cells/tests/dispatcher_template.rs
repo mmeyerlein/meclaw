@@ -461,6 +461,89 @@ fn a_malformed_tool_call_becomes_a_synthetic_error_result() {
 }
 
 #[test]
+fn a_family_call_unfolds_to_its_op_and_only_the_exact_shape_does() {
+    // R-WM-1: the model sees a folded menu, one tool `F{op, args}` per family,
+    // while every answerer stays flat and keeps its single-op name. The split
+    // is the only cell that sees the whole bundle, so it unfolds: `F` with
+    // exactly `{op, args}` leaves as `F_op` carrying `args` alone. A tool that
+    // has an `op` of its own beside other keys (`file{op, path}`) is not a
+    // family call and leaves as it came.
+    let out = emit_with(
+        json!({"async_tools": ["web_research"]}),
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn("c1", "file", r#"{"op":"read","args":{"path":"a.md"}}"#),
+                call_turn("c2", "file", r#"{"op":"read","path":"a.md"}"#),
+                call_turn("c3", "web", r#"{"op":"research","args":{"q":"x"}}"#),
+            ],
+        ),
+    );
+
+    assert_eq!(out.len(), 4, "{out:?}");
+    assert_eq!(hop_str(&out[1], "tool_name"), "file_read");
+    assert_eq!(hop_str(&out[1], "tool_call_id"), "c1");
+    let args: Value =
+        meclaw_core::serde_json::from_str(turns_of(&out[1])[0]["text"].as_str().unwrap())
+            .expect("unfolded args are json");
+    assert_eq!(args, json!({"path": "a.md"}), "only the inner args travel");
+
+    assert_eq!(
+        hop_str(&out[2], "tool_name"),
+        "file",
+        "own op: not unfolded"
+    );
+    assert_eq!(
+        turns_of(&out[2])[0]["text"],
+        r#"{"op":"read","path":"a.md"}"#
+    );
+
+    // Unfolding comes BEFORE the async check: the class is declared for the
+    // single op, so the unfolded name is the one that is classified.
+    assert_eq!(hop_str(&out[3], "tool_name"), "web_research");
+    assert_eq!(hop_str(&out[3], "async"), "1");
+    assert_eq!(hop_str(&out[0], "async_calls"), "c3");
+}
+
+#[test]
+fn a_help_call_comes_back_as_a_result_naming_its_family() {
+    // R-WM-4: `op: "help"` of a folded family goes to no answerer. It comes
+    // back at once on the result lane, like a refused call, carrying the
+    // family in `help_for` and the request in its text; the collector fills
+    // the answer from its menu store.
+    let out = emit(brain_doc(
+        "tool_calls",
+        vec![
+            call_turn("c1", "file", r#"{"op":"help","args":{"op":"read"}}"#),
+            call_turn("c2", "web_search", "{}"),
+        ],
+    ));
+
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert_eq!(
+        route_of(&out[0]),
+        "calls",
+        "the expectation still comes first"
+    );
+    assert_eq!(route_of(&out[1]), "result");
+    assert_eq!(hop_str(&out[1], "tool_call_id"), "c1");
+    assert_eq!(hop_str(&out[1], "help_for"), "file");
+    assert_eq!(hop_str(&out[1], "error_code"), "", "help is not an error");
+    assert_eq!(
+        hop_str(&out[1], "tool_name"),
+        "",
+        "help is dispatched nowhere"
+    );
+    let turn = &turns_of(&out[1])[0];
+    assert_eq!(turn["type"], "tool_result");
+    assert_eq!(turn["id"], "c1");
+    let asked: Value = meclaw_core::serde_json::from_str(turn["text"].as_str().unwrap())
+        .expect("the help request is json");
+    assert_eq!(asked, json!({"op": "read"}));
+    assert_eq!(hop_str(&out[2], "tool_name"), "web_search");
+}
+
+#[test]
 fn a_turn_that_is_neither_a_bundle_nor_an_answer_is_terminal() {
     // The llm error path echoes the INPUT conversation back with
     // finish_reason "error". Forwarding that onto the answer lane would write

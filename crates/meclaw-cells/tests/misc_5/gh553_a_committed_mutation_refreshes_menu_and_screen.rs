@@ -290,22 +290,18 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
         &root.join("main/agent/collector/assemble/config.json"),
         |v| v["params"]["tools"] = json!(["web_search", "web_fetch"]),
     );
-    // The one timer this tree still carries is the keeper's nightly close, and
-    // it is pushed past the run: what is measured here is the ABSENCE of a tick.
-    let night = root.join("main/agent/session-keeper/night/config.json");
-    if night.exists() {
-        patch(&night, |v| {
-            v["params"]["schedules"][0]["schedule_id"] =
-                json!("0190a3f2-0000-7000-8000-000000000553");
-            v["params"]["schedules"][0]["cron"] = json!("0 0 0 1 1 *");
-        });
-    }
     // Every open generation is a candidate the moment the sweep runs. It was a
     // `KEEPER_IDLE_MS=0` line in the `.env` below until GH #138; the knob is a
-    // param of `./close` now, so such a line would be read by NOTHING.
+    // param of `./close` now, so such a line would be read by NOTHING. The
+    // keeper's night watchdog is switched off (an empty window arms nothing,
+    // GH #1229): what is measured here is the ABSENCE of a tick.
     let close = root.join("main/agent/session-keeper/close/config.json");
     if close.exists() {
-        patch(&close, |v| v["params"]["idle_ms"] = json!(0));
+        patch(&close, |v| {
+            v["params"]["idle_ms"] = json!(0);
+            v["params"]["night_from_utc"] = json!("00:00");
+            v["params"]["night_until_utc"] = json!("00:00");
+        });
     }
     std::fs::write(
         root.join(".env"),

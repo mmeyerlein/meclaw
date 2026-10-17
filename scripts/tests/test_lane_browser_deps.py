@@ -14,6 +14,7 @@ directory, `sudo` runs its command or refuses like a password prompt would.
 import json
 import os
 import pathlib
+import select
 import shutil
 import subprocess
 import tempfile
@@ -41,9 +42,21 @@ def playwright_pin():
 # what goes through `lane_sync.sh`, which reads the tree's pin, takes `playwright_pin()`.
 FIXTURE_PIN = "1.50.1"
 
+# A fake's call past its bound (re-check v2-r3-shell M1): on a call whose words
+# (its name, then its arguments) hold $FAKE_HANG_ON it notes its pid, fires the
+# bound it runs under and sleeps in the place of the call (kit_time.FIRE_BOUND_SH;
+# the sleep is a name, never a measure).
+HANG_HOOK = r"""if [ -n "${FAKE_HANG_ON:-}" ]; then
+    case " ${0##*/} $* " in *" $FAKE_HANG_ON "*)
+        echo $$ >"$FAKE_PW_STATE/hung.pid"
+""" + kit_time.FIRE_BOUND_SH + r"""        exec sleep 86413 ;;
+    esac
+fi
+"""
+
 FAKE_NODE = r"""#!/bin/sh
 # plays `node <cli.js> install-deps [--dry-run] <engine...>` of the pinned playwright
-state="$FAKE_PW_STATE"
+""" + HANG_HOOK + r"""state="$FAKE_PW_STATE"
 [ -f "$state/eats_stdin" ] && cat >/dev/null
 case " $* " in
     *" install --dry-run webkit "*)
@@ -88,6 +101,7 @@ FAKE_UNDER_SUDO=1 exec "$@"
 FAKE_LDD = r"""#!/bin/sh
 # plays `ldd <file>`: a file names what it links as `NEEDS <soname>` lines; a soname
 # resolves from LD_LIBRARY_PATH first, then from the system ($FAKE_PW_STATE/syslib)
+""" + HANG_HOOK + r"""
 for lib in $(sed -n 's/^NEEDS //p' "$1"); do
     hit=""
     for d in $(echo "${LD_LIBRARY_PATH:-}" | tr ':' ' ') "$FAKE_PW_STATE/syslib"; do
@@ -298,6 +312,57 @@ class TestBrowserDeps(_Lane):
                 self.assertIn("never installs", res.stderr)
                 self.assertEqual([], self.lines("install"))
                 self.assertEqual([], self.lines("argv"), "the recipe was sent")
+
+
+@unittest.skipUnless(shutil.which("sh") and shutil.which("timeout") and shutil.which("setsid"),
+                     "needs a POSIX sh, timeout and setsid")
+class TestCheckIsBounded(_Lane):
+    """Re-check v2-r3-shell M1 (GH #1224): `check` is a lane probe too -- every
+    tool call of it runs under the bound of `lane_fingerprint.sh` (its `bounded`
+    block, which `lane_sync.sh browsers` sends ahead of the recipe). A call past
+    it is said by name with its process tree, the check ends with exit 2 (cannot
+    tell, never "ok"), and the call's tree goes with it. The bound is the hang
+    marker; the hung fake fires it itself -- the event, never a duration."""
+
+    def check_hung_on(self, hang_on, installed):
+        self.playwright(playwright_pin())
+        if installed:
+            (self.state / "installed").touch()
+        bound_file = self.base / "bound.fired"
+        res = subprocess.run(["bash", str(LANE_SYNC), "browsers", "local", "check", "webkit"],
+                             capture_output=True, text=True, timeout=2 * kit_time.HANG,
+                             env=dict(self.env, MECLAW_LANE_ROOT=str(self.root),
+                                      MECLAW_FP_TOOL_SECS=str(kit_time.BOUND_S),
+                                      FAKE_HANG_ON=hang_on, FAKE_BOUND_FILE=str(bound_file)))
+        said = res.stdout + res.stderr
+        self.assertTrue(bound_file.exists(), "the bound never fired: " + said)
+        self.assertEqual(2, res.returncode, said)
+        self.assertNotIn("browser-deps ok", res.stdout)
+        hung = [ln for ln in res.stderr.splitlines()
+                if " hung past %ds, its process tree: " % kit_time.BOUND_S in ln]
+        self.assertEqual(1, len(hung), said)
+        self.assertTrue(hung[0].startswith("lane_browser_deps.sh: '"), hung[0])
+        self.assertIn(hang_on, hung[0].split("' hung past", 1)[0])
+        pid = int((self.state / "hung.pid").read_text().strip())
+        self.assertRegex(hung[0].split("its process tree: ", 1)[1], r"(?:^|;)%d " % pid)
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return
+        try:
+            ready, _, _ = select.select([fd], [], [], kit_time.HANG)
+            self.assertEqual([fd], ready, "the hung call %d outlived the check" % pid)
+        finally:
+            os.close(fd)
+
+    def test_a_hung_package_dry_run_is_said_and_ends_the_check(self):
+        self.check_hung_on("install-deps --dry-run webkit", installed=False)
+
+    def test_a_hung_bundle_question_is_said_and_ends_the_check(self):
+        self.check_hung_on("install --dry-run webkit", installed=True)
+
+    def test_a_hung_ldd_is_said_and_ends_the_check(self):
+        self.check_hung_on("ldd", installed=True)
 
 
 @unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh")

@@ -223,6 +223,7 @@ fn the_semantic_page_is_not_spent_on_copies_of_the_question() {
             "muted_at",
             "unmuted_at",
             "mute_words",
+            "mute_source",
             "speaker_name"
         ]),
         "{ep_aud}"

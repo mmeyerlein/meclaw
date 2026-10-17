@@ -1,7 +1,6 @@
 //! Bootstrap-apply crash atomicity (data-integrity finding run 5/5b, reproduced
 //! 2×): the workspace directory is missing → `--validate` PASS (U11 shape:
-//! validate does not check the path), the boot panics MID-apply at the
-//! `bootstrap_apply.rs` `.expect("validated in plan-phase")` anchor → colony.db
+//! validate does not check the path), the boot panics MID-apply → colony.db
 //! stays in a mixed state (registry>0 / edges=0 / hive_scopes=0) → the following
 //! boot ran into the `Inconsistent` panic, without a healing path.
 //!
@@ -18,6 +17,11 @@
 //! `boot_state_edges_only_without_marker_returns_reboot`,
 //! `boot_state_registry_only_without_marker_returns_first_boot` in
 //! `bootstrap.rs`.
+//!
+//! Since GH #1231 a `spawn_cell` error no longer panics the apply (the cell is
+//! registered `failed` instead, `bootstrap_apply.rs`), so the crash is injected
+//! as a panic INSIDE the factory's `spawn_cell` -- any mid-apply panic (a factory
+//! bug) still leaves the mixed state this healing path exists for.
 
 use meclaw_colony::{
     BootState, CellFactory, CellFactoryRegistry, ColonyConfig, ColonyDb, ColonyMsg, ColonyRuntime,
@@ -29,7 +33,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 /// U11-shape factory: `validate_params` passes WITHOUT checking the
-/// `params.requires` directory; `spawn_cell` fails when it is missing (the
+/// `params.requires` directory; `spawn_cell` panics when it is missing (the
 /// canonicalize-at-spawn asymmetry that produced the Run-5 boot panic). On
 /// success it delegates to the echo factory (a real, working cell task).
 struct RequiresDirFactory {
@@ -62,7 +66,9 @@ impl CellFactory for RequiresDirFactory {
             .unwrap_or_default()
             .to_string();
         if !std::path::Path::new(&requires).exists() {
-            return Err(format!("workspace dir missing: {requires}"));
+            // GH #1231: an `Err` would make the cell `failed` and the boot
+            // complete; the crash under test needs a mid-apply panic.
+            panic!("workspace dir missing: {requires}");
         }
         self.echo.clone().spawn_cell(
             path,
@@ -212,13 +218,13 @@ async fn interrupted_first_apply_heals_on_reboot_never_inconsistent() {
     write_topology(td.path(), &workspace);
     let db_path = td.path().join("colony.db");
 
-    // --- Boot 1: workspace missing → spawn fails → apply panics mid-apply. ---
+    // --- Boot 1: workspace missing → spawn panics → apply dies mid-apply. ---
     let (inbox1, colony1, apply1) = boot(td.path());
     let apply_err = apply1.await;
     assert!(
         apply_err.is_err(),
-        "crash injection: the apply task must panic at the \
-         `.expect(\"validated in plan-phase\")` anchor"
+        "crash injection: the apply task must die with the panic \
+         of the fragile cell's `spawn_cell`"
     );
     // The colony task survived the apply panic — flush everything it committed
     // (worst case for atomicity: all Register upserts are on disk).

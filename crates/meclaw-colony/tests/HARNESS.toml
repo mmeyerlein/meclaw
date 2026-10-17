@@ -14,7 +14,7 @@ match = "^paket_"
 harness = "paket"
 
 [[rule]]
-match = "^(hardening|substrate|pre14|audit|a[0-9])_"
+match = "^(hardening|substrate|pre14|audit|zh|a[0-9])_"
 harness = "hardening"
 
 [[rule]]

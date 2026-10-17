@@ -7,8 +7,8 @@
 //! 1. THE STAMP -- every inbound turn of a channel carries the same session id
 //!    until the session ends. The id is minted at the surface, once, and the
 //!    rest of the tree only consumes it.
-//! 2. THE CLOSE -- a session ends by ARITHMETIC, not by judgement: a nightly
-//!    timer plus an idle threshold. No counselor, no model, no "is the
+//! 2. THE CLOSE -- a session ends by ARITHMETIC, not by judgement: a night
+//!    window plus an idle threshold. No counselor, no model, no "is the
 //!    conversation over?" call.
 //! 3. THE NEW GENERATION -- reopening is lazy. Nothing pre-creates a session;
 //!    the next turn after a close opens the next generation by itself.
@@ -484,12 +484,13 @@ fn on_phase(out: &[serde_json::Value], phase: &str) -> serde_json::Value {
 #[test]
 fn the_night_sweep_asks_only_for_the_channels_that_fell_silent() {
     let out = close(firing());
-    // Three questions since GH #953/#954, each a read: the idle sweep, the
-    // sentinel for an answer that never came, and a page of the heal.
+    // Four questions since GH #953/#954/#1229, each a read: the idle sweep, the
+    // sentinel for an answer that never came, a page of the heal, and the row
+    // that falls silent next (the moment the night watchdog is armed for).
     assert_eq!(
         out.len(),
-        3,
-        "sweep, owed and heal-page, asked of the store: {out:?}"
+        4,
+        "sweep, owed, heal-page and next, asked of the store: {out:?}"
     );
     for m in &out {
         assert_eq!(m["header"]["route"], "kstore");
@@ -604,7 +605,7 @@ fn every_idle_generation_is_sealed_under_a_guard() {
 
 #[test]
 fn a_sweep_that_finds_nobody_stays_silent() {
-    // The normal night on a busy channel: the timer fires twelve times and the
+    // The normal strike on a busy channel: the sweep finds nobody and the
     // colony sees nothing at all. A firing is a question, not an event.
     let out = close(reply_doc(
         "keeper-close",
@@ -1367,63 +1368,51 @@ fn the_close_a_round_change_sends_leaves_the_triggering_turn_behind() {
 // ==================================================================== THE NIGHT
 
 #[test]
-fn the_night_schedule_is_declared_in_utc_and_lands_on_the_local_night() {
-    let night = config_of("night/config.json");
-    assert_eq!(night["cell"]["type"], "timer");
-    let sched = &night["params"]["schedules"][0];
-    assert_eq!(
-        sched["emit_to"], "../close",
-        "the firing goes to the close pass of this hive"
-    );
-    assert_eq!(sched["schedule_name"], "night-close");
+fn the_night_window_is_declared_in_utc_and_lands_on_the_local_night() {
+    // R-AG-1 (GH #1229): the night is no cron of `./night` any more but a
+    // window of `./close`, which arms the timer as a watchdog. The window is
+    // held against UTC -- always, everywhere, no zone parameter exists -- so
+    // the shipped default is the UTC IMAGE of the local night, and the README
+    // does the sum for the other half of the year.
+    let close = config_of("close/config.json");
+    let script = script_of("close");
+    for (knob, shipped) in [("night_from_utc", "22:00"), ("night_until_utc", "04:00")] {
+        assert_eq!(close["params"][knob], shipped, "params.{knob}");
+        assert_eq!(
+            close["contract"]["settings"][knob]["default"], shipped,
+            "contract.settings.{knob}.default"
+        );
+        assert!(
+            script.contains(&format!("_hhmm(\"{knob}\", \"{shipped}\")")),
+            "the script's own fallback for {knob} is the shipped value"
+        );
+    }
 
-    // The timer computes in UTC -- always, everywhere, no zone parameter
-    // exists. So the shipped default is the UTC IMAGE of the local night, and
-    // the README does the sum for the other half of the year.
-    // A literal since `session-keeper@2.2.0`, not a `${KEEPER_NIGHT_CRON:-…}`
-    // token: the schedule is a param of this timer now (GH #138), which is what
-    // makes it addressable by an `override_params` entry naming `schedules`.
-    let cron = sched["cron"].as_str().expect("cron").to_string();
-    let parser = croner::parser::CronParser::builder()
-        .seconds(croner::parser::Seconds::Required)
-        .build();
-    let parsed = parser.parse(&cron).expect("6-field Quartz pattern");
-
-    use chrono::{TimeZone, Utc};
-    let occurrences = |from: chrono::DateTime<Utc>, n: usize| {
-        let mut at = from;
-        let mut out = Vec::new();
-        for _ in 0..n {
-            at = parsed
-                .find_next_occurrence(&at, false)
-                .expect("an occurrence exists");
-            out.push(at);
-        }
-        out
+    // Computed, not asserted: the shipped window, read off the params, lands
+    // on 00:00 until 06:00 in Berlin's summer (CEST, UTC+2).
+    use chrono::TimeZone;
+    let cest = chrono::FixedOffset::east_opt(2 * 3600).expect("UTC+2");
+    let local = |knob: &str, day: u32| {
+        let (h, m) = close["params"][knob]
+            .as_str()
+            .and_then(|v| v.split_once(':'))
+            .unwrap_or_else(|| panic!("{knob} is HH:MM"));
+        chrono::Utc
+            .with_ymd_and_hms(2026, 8, day, h.parse().unwrap(), m.parse().unwrap(), 0)
+            .unwrap()
+            .with_timezone(&cest)
+            .format("%d %H:%M")
+            .to_string()
     };
-
-    // Berlin is UTC+2 in summer: 22:00 UTC IS midnight, local.
-    let noon = Utc.with_ymd_and_hms(2026, 8, 13, 12, 0, 0).unwrap();
-    let night_run = occurrences(noon, 13);
     assert_eq!(
-        night_run[0],
-        Utc.with_ymd_and_hms(2026, 8, 13, 22, 0, 0).unwrap(),
-        "the night opens at 00:00 CEST = 22:00 UTC"
+        local("night_from_utc", 13),
+        "14 00:00",
+        "the night opens at 00:00 CEST = 22:00 UTC of the day before"
     );
     assert_eq!(
-        night_run[1],
-        Utc.with_ymd_and_hms(2026, 8, 13, 22, 30, 0).unwrap(),
-        "every thirty minutes"
-    );
-    assert_eq!(
-        night_run[11],
-        Utc.with_ymd_and_hms(2026, 8, 14, 3, 30, 0).unwrap(),
-        "the last firing is 05:30 CEST -- the window is 00:00 until 06:00"
-    );
-    assert_eq!(
-        night_run[12],
-        Utc.with_ymd_and_hms(2026, 8, 14, 22, 0, 0).unwrap(),
-        "and then nothing until the next night: twelve firings, not a poll"
+        local("night_until_utc", 14),
+        "14 06:00",
+        "and it ends at 06:00 CEST = 04:00 UTC"
     );
 }
 
@@ -1481,14 +1470,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-
-/// A fixed schedule id. `${uuid7:*}` is an INSTANTIATION-side substitution
-/// (mutation, not bootstrap), so a tree written straight to disk has to carry a
-/// real one -- and a fixed one is what lets the test trigger that schedule.
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-00000000c105";
-/// Never during a test run: the shipped default is the real night, and a test
-/// that boots at 22:30 UTC must not race a real firing.
-const NEVER: &str = "0 0 0 1 1 *";
 
 /// The shipped template, copied cell by cell: only `config.json` files travel,
 /// so the tree under test IS the template and nothing else.
@@ -1610,13 +1591,15 @@ sys.stdout.write(json.dumps({"header": {"route": "closed"},
 ///
 /// GH #612: `./session-keeper/night` is not an address from outside. The keeper
 /// declares `params.ports: []`, so the only address it has is its own path, and
-/// a message that names an interior cell of it is refused `hive_boundary`. A
-/// parent may reach the timer -- birth topology is authorship -- and this is what
-/// that looks like: the parent draws the lane and the caller names the parent.
+/// a message that names an interior cell of it is refused `hive_boundary`. The
+/// firing therefore takes the keeper's own `in_sweep` lane (R-AG-1, GH #1229:
+/// the timer carries no schedule a trigger could name): the parent draws the
+/// lane and the caller names the parent.
 fn main_config(answered: bool) -> Value {
     let mut cfg = json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": [
-        {"from": ".", "to": "./session-keeper/night",
-         "condition": "hop.route == 'fire_night'"},
+        {"from": ".", "to": "./session-keeper",
+         "condition": "hop.route == 'fire_night'",
+         "modifier": {"set_hop": {"route": "'in_sweep'"}}},
         {"from": "./probe", "to": "./session-keeper",
          "condition": "hop.route == 'turn'",
          "modifier": {"set_hop": {"route": "'in_turn'"}}},
@@ -1672,13 +1655,10 @@ fn build_tree_with(td: &tempfile::TempDir, idle_ms: Option<i64>, answered: bool)
     let template =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/session-keeper");
     copy_cells(&template, &root.join("main/session-keeper"));
-    // Two patches, both about the clock rather than about behaviour.
-    let night_path = root.join("main/session-keeper/night/config.json");
-    let mut night: Value =
-        serde_json::from_str(&std::fs::read_to_string(&night_path).unwrap()).unwrap();
-    night["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-    night["params"]["schedules"][0]["cron"] = json!(NEVER);
-    std::fs::write(&night_path, serde_json::to_string_pretty(&night).unwrap()).unwrap();
+    // Two patches, both about the clock rather than about behaviour. The night
+    // window goes empty (GH #1229): a generation opened inside the shipped
+    // window would be a firing at once, so the run would depend on its hour.
+    meclaw_testing::quiet_keeper_night(&root.join("main/session-keeper"));
     if let Some(ms) = idle_ms {
         let close_path = root.join("main/session-keeper/close/config.json");
         let mut close: Value =
@@ -1753,21 +1733,18 @@ fn turn(channel: &str, text: &str) -> Message {
         .build()
 }
 
-/// The firing, as an operator or a test drives it: `trigger` runs the schedule
-/// once, now, without changing its plan -- and a triggered run is not
-/// distinguishable from a cron run (docs/cell-types.md § timer).
+/// The firing, as an operator or a test drives it: the keeper's `in_sweep`
+/// lane, contextless like a strike of the night watchdog, and the same
+/// firing to the close pass (GH #1229: the timer has no schedule to trigger).
 ///
 /// Addressed at the LEVEL, on the lane the level opened (see [`main_config`]).
-/// The keeper is a sealed hive, so its own path is its only address and the
-/// timer inside it is reached through the door its parent drew -- GH #612.
+/// The keeper is a sealed hive, so its own path is its only address -- GH #612.
 fn fire() -> Message {
     let mut hop = meclaw_core::serde_json::Map::new();
     hop.insert("route".into(), json!("fire_night"));
     MessageBuilder::new(Path::new("/"))
         .hop(hop)
-        .body(Body::Inline(
-            json!({"messages": [], "op": "trigger", "schedule_id": SCHEDULE_ID}),
-        ))
+        .body(Body::Inline(json!({"messages": []})))
         .ttl(64)
         .build()
 }
@@ -2003,9 +1980,12 @@ fn delivered(td: &tempfile::TempDir, from: &str, to: &str, phase: Option<&str>) 
 /// statement rather than a race.
 ///
 /// Counted by phase and not by message count (GH #953/#954): a firing asks
-/// three things since then -- the sweep, the sentinel for an owed answer, a
-/// page of the heal -- so a raw count of deliveries to the pass no longer says
-/// which of them were answered.
+/// four things since then -- the sweep, the sentinel for an owed answer, a
+/// page of the heal, the row that falls silent next (GH #1229) -- so a raw
+/// count of deliveries to the pass no longer says which of them were
+/// answered. And the store hands the pass one more thing it never asked for:
+/// the stamp's insert of a new generation (phase `open`), the event that arms
+/// the night -- an answer to the stamp, not to the pass.
 async fn await_close_pass(td: &tempfile::TempDir, firings: i64) {
     const CLOSE: &str = "/session-keeper/close";
     const SESSIONS: &str = "/session-keeper/sessions";
@@ -2013,7 +1993,8 @@ async fn await_close_pass(td: &tempfile::TempDir, firings: i64) {
     loop {
         let sweeps = delivered(td, SESSIONS, CLOSE, Some("sweep"));
         let asked = delivered(td, CLOSE, SESSIONS, None);
-        let answered = delivered(td, SESSIONS, CLOSE, None);
+        let answered =
+            delivered(td, SESSIONS, CLOSE, None) - delivered(td, SESSIONS, CLOSE, Some("open"));
         if sweeps >= firings && answered == asked {
             return;
         }
@@ -2100,9 +2081,9 @@ async fn an_idle_channel_is_closed_once_and_reopens_on_the_next_turn() {
     );
 
     // The second firing of the same night: the generation is already sealed,
-    // and a sealed generation is not a candidate. Missed firings expire, and
-    // repeated ones are silent -- that is what makes the timer safe to run
-    // twelve times a night.
+    // and a sealed generation is not a candidate. Repeated firings are silent
+    // -- that is what makes a strike, a late one and an `in_sweep` safe to
+    // meet on the same night.
     h.send(fire()).await;
     await_close_pass(&td, 2).await;
     assert!(

@@ -1266,19 +1266,6 @@ fn read_limit(q: QueryObject<'_>) -> Result<usize, ReadQueryError> {
     Ok((raw as usize).clamp(1, 1000))
 }
 
-/// Read an optional UUID field. A string of the wrong SHAPE is refused just like
-/// a value of the wrong TYPE — `Uuid::parse_str(s).ok()` used to turn a broken
-/// UUID into "no filter", so a caller asking for one trace got every trace.
-fn read_opt_uuid(q: QueryObject<'_>, field: &str) -> Result<Option<Uuid>, ReadQueryError> {
-    match read_opt_str(q, field)? {
-        Some(s) => Uuid::parse_str(s).map(Some).map_err(|e| ReadQueryError {
-            key: format!("query.{field}"),
-            details: format!("`query.{field}` must be a valid UUID: {e}"),
-        }),
-        None => Ok(None),
-    }
-}
-
 /// The filters a `/colony/registry` read carries (GH #359).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryReadFilters {
@@ -1305,23 +1292,6 @@ pub struct TemplatesReadFilters {
     pub cell_type: Option<String>,
     /// Exact match on `template.json::name`.
     pub name: Option<String>,
-    /// Hard cap on returned entries.
-    pub limit: usize,
-}
-
-/// The filters a `/colony/trace` read carries (GH #359).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceReadFilters {
-    /// Filter on `trace_id`.
-    pub trace_id: Option<Uuid>,
-    /// Prefix match on `to_path`.
-    pub path_prefix: Option<Path>,
-    /// Filter on `correlation_id`.
-    pub correlation_id: Option<Uuid>,
-    /// Only rows carrying an `error_code`.
-    pub only_error: bool,
-    /// Only rows with `created_at >= since` (Unix seconds).
-    pub since: Option<i64>,
     /// Hard cap on returned entries.
     pub limit: usize,
 }
@@ -1357,26 +1327,6 @@ pub fn parse_read_query_templates_filters(
     Ok(TemplatesReadFilters {
         cell_type: read_opt_str(q, "cell_type")?.map(String::from),
         name: read_opt_str(q, "name")?.map(String::from),
-        limit: read_limit(q)?,
-    })
-}
-
-/// Parse `body.query.{trace_id,path_prefix,correlation_id,only_error,since,limit}`
-/// for `/colony/trace` reads.
-///
-/// GH #359: the sharp case lives here — `Uuid::parse_str(s).ok()` turned a
-/// syntactically broken UUID into "no filter", so a caller asking for ONE trace
-/// got the newest 100 entries of EVERY trace. A broken UUID is now refused.
-pub fn parse_read_query_trace_filters(
-    body: &meclaw_core::serde_json::Value,
-) -> Result<TraceReadFilters, ReadQueryError> {
-    let q = read_query_object(body)?;
-    Ok(TraceReadFilters {
-        trace_id: read_opt_uuid(q, "trace_id")?,
-        path_prefix: read_opt_str(q, "path_prefix")?.map(Path::new),
-        correlation_id: read_opt_uuid(q, "correlation_id")?,
-        only_error: read_opt_bool(q, "only_error")?.unwrap_or(false),
-        since: read_opt_i64(q, "since")?,
         limit: read_limit(q)?,
     })
 }
@@ -1698,7 +1648,7 @@ fn build_mutation_reply(
 /// GH #422 — the receipt of one manifest roll-off, in its OWN top-level slot.
 ///
 /// The `/colony` replies each answer in a slot named after what was asked:
-/// `mutation`, `graph`, `registry`, `templates`, `trace`, `ledger`, `rescan`.
+/// `mutation`, `graph`, `registry`, `templates`, `ledger`, `rescan`.
 /// A manifest is a different question and gets a different slot; the slot holds
 /// an OBJECT, as `ledger` does.
 ///
@@ -1847,12 +1797,6 @@ pub fn build_read_error_reply(slot: &str, err: &ReadQueryError) -> meclaw_core::
     })
 }
 
-fn build_trace_reply(reply: &crate::api_dto::ReadTraceReply) -> meclaw_core::serde_json::Value {
-    meclaw_core::serde_json::json!({
-        "trace": meclaw_core::serde_json::to_value(&reply.entries).unwrap_or_default(),
-    })
-}
-
 /// GH #267: the `/colony/ledger` answer under its own top-level slot. Unlike
 /// its four siblings the slot holds an OBJECT, not a list — the ledger answers
 /// aggregates, so `reply["ledger"].as_array()` is `None` on both the answer and
@@ -1974,6 +1918,86 @@ pub(crate) async fn run_mutation_door(
             )
             .await,
         ),
+    }
+}
+
+/// GH #1231 (T6-02, R-ZH-2 variant a): the mutation door binds its sender.
+///
+/// Before, whoever could deliver to `/colony/mutations` could rewrite the whole
+/// colony — the door asked nothing of the knocker. Now a drawn edge from the
+/// sender to the door is the right (the one live door edge, `./os ->
+/// /colony/mutations` in `examples/meclaw-os/seed-ref`, keeps it); a sender
+/// WITHOUT one mutates only inside its home, the nearest hive holding it, with
+/// `/` for a top-level sender. Only the EDA arm calls this: the HTTP door and
+/// `--apply` have no sender and are the root. `None` = let the door decide;
+/// `Some` = the refusal, spurless (no id), in the body form that knocked. A
+/// malformed manifest is not judged here — the door names that error itself.
+/// Pure and panic-free: it runs on the colony hot path
+/// (`colony-hot-path-panic-free`).
+fn door_sender_refusal(
+    edges: &crate::edge_table::EdgeTable,
+    hive_scopes: &crate::hive_scope::HiveScopeTable,
+    sender: &Path,
+    body: &meclaw_core::serde_json::Value,
+) -> Option<crate::mutation::MutationDoorOutcome> {
+    use crate::mutation::{ManifestOutcome, MutationDoorOutcome, MutationOutcome};
+    if edges.has_edge_to(sender, &Path::new("/colony/mutations")) {
+        return None;
+    }
+    let home = sender_home(hive_scopes, sender);
+    let check = |v: &meclaw_core::serde_json::Value| {
+        let scope = v.get("scope").and_then(|s| s.as_str()).unwrap_or("/");
+        crate::mutation::validate::validate_sender_scope(sender, &home, scope)
+    };
+    match crate::mutation::ManifestBody::detect(body) {
+        Some(Ok(manifest)) => {
+            // Fix round 1 (review I1): this check runs over every entry BEFORE
+            // the door, so nothing was applied. `failed_at: 0` and no ids say
+            // exactly that; `remaining` is every entry, so a resubmission from
+            // `failed_at` resubmits all of it. A 1-based position here would
+            // claim the entries before it applied (`ManifestOutcome::Rejected`).
+            // The refused entry's position travels in `details`.
+            let entries = manifest.entries();
+            entries.iter().enumerate().find_map(|(i, entry)| {
+                check(entry).err().map(|e| {
+                    MutationDoorOutcome::Manifest(ManifestOutcome::Rejected {
+                        ids: Vec::new(),
+                        failed_at: 0,
+                        id: None,
+                        error_code: e.error_code().to_string(),
+                        details: format!("manifest entry {}: {}", i + 1, e.message()),
+                        remaining: entries.len(),
+                    })
+                })
+            })
+        }
+        Some(Err(_)) => None,
+        None => check(body).err().map(|e| {
+            MutationDoorOutcome::Single(MutationOutcome::Rejected {
+                id: None,
+                error_code: e.error_code().to_string(),
+                details: e.message(),
+                violations: Vec::new(),
+            })
+        }),
+    }
+}
+
+/// GH #1231: the nearest hive at or above `sender` — its home for the door's
+/// sender check. `/` when no hive holds it.
+fn sender_home(hive_scopes: &crate::hive_scope::HiveScopeTable, sender: &Path) -> Path {
+    let mut p = sender.clone();
+    loop {
+        if hive_scopes.get(&p).is_some() {
+            return p;
+        }
+        // `parent()` is a fixpoint at `/` and on a path without a slash, so
+        // the walk ends either way.
+        let up = p.parent();
+        if up == p {
+            return Path::new("/");
+        }
+        p = up;
     }
 }
 
@@ -2116,36 +2140,43 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             // GH #553: read before the body moves into the door (see
             // `receipt_scope_of`).
             let receipt_scope = crate::colony::receipt_scope_of(&body);
-            let outcome = run_mutation_door(
-                registry,
-                hive_scopes,
-                edges,
-                node_contracts,
-                dead_letters,
-                in_flight,
-                writer_tx,
-                templates_snapshot,
-                factories,
-                root,
-                templates_root,
-                inbox_self_tx,
-                outputs_tx,
-                body,
-                reply_to.clone(),
-                trace_id,
-                parent_message_id,
-                idle_default_ms,
-                message_timeout_default_ms,
-                mailbox_default_capacity,
-                restart_max_retries,
-                strict_validation,
-                blob_store.clone(),
-                blob_inline_max_bytes,
-                env_source,
-                None, // /colony/mutations dispatch path: no test sync hook
-                pulse,
-            )
-            .await;
+            // GH #1231 (T6-02): the door binds the sender BEFORE it opens; a
+            // refusal takes the same reply and receipt path as any verdict.
+            let refusal = door_sender_refusal(edges, hive_scopes, &sender, &body);
+            let outcome = if let Some(refused) = refusal {
+                refused
+            } else {
+                run_mutation_door(
+                    registry,
+                    hive_scopes,
+                    edges,
+                    node_contracts,
+                    dead_letters,
+                    in_flight,
+                    writer_tx,
+                    templates_snapshot,
+                    factories,
+                    root,
+                    templates_root,
+                    inbox_self_tx,
+                    outputs_tx,
+                    body,
+                    reply_to.clone(),
+                    trace_id,
+                    parent_message_id,
+                    idle_default_ms,
+                    message_timeout_default_ms,
+                    mailbox_default_capacity,
+                    restart_max_retries,
+                    strict_validation,
+                    blob_store.clone(),
+                    blob_inline_max_bytes,
+                    env_source,
+                    None, // /colony/mutations dispatch path: no test sync hook
+                    pulse,
+                )
+                .await
+            };
             // GH #553: the receipt is the door's own event and goes back into
             // the loop as its own work item — the verdict below stays exactly
             // the answer it always was.
@@ -2169,7 +2200,13 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             let reply_body = build_registry_read_reply(registry, &body);
             emit_reply_or_done(reply_to, reply_body)
         }
-        "/colony/dead_letters" => {
+        // GH #1231 (T6-01): `/colony/trace` joins the hard reject. Its read
+        // hands out the raw message-log rows of EVERY cell — foreign state a
+        // cell may not read (overview § Datenbank-Isolation), the same class
+        // as `/colony/messages`, which never had an arm. The owner reads it
+        // over HTTP `GET /colony/trace` or `meclaw ask`; no template read it
+        // by emission.
+        "/colony/dead_letters" | "/colony/trace" => {
             // W2d (Substrat, ruling 2026-06-12): `/colony/dead_letters` is
             // a READ-ONLY diagnostic sink, served EXCLUSIVELY via the dedicated
             // API inbox variants `ColonyMsg::ReadDeadLetters`/`DrainDeadLetters`
@@ -2184,7 +2221,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             tracing::warn!(
                 endpoint = %endpoint.as_str(),
                 sender = %sender.as_str(),
-                "write to read-only /colony/dead_letters — hard-reject (no re-injection)"
+                "emission to a /colony read that is not served by dispatch — hard-reject (no re-injection)"
             );
             let resolved = endpoint.clone();
             crate::colony::push_dead_letter(
@@ -2224,32 +2261,9 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             let reply_body = build_graph_read_reply(registry, edges, &body);
             emit_reply_or_done(reply_to, reply_body)
         }
-        "/colony/trace" => {
-            // Not a `build_*_read_reply` helper like its three siblings: the
-            // read itself is async and needs the colony DB, so the refusal is
-            // taken here, before the query runs.
-            let reply_body = match parse_read_query_trace_filters(&body) {
-                Ok(f) => {
-                    let reply = handle_read_trace(
-                        db_path,
-                        f.trace_id,
-                        f.path_prefix,
-                        f.correlation_id,
-                        f.only_error,
-                        f.since,
-                        f.limit,
-                    )
-                    .await;
-                    build_trace_reply(&reply)
-                }
-                Err(e) => refuse_read("/colony/trace", "trace", &e),
-            };
-            emit_reply_or_done(reply_to, reply_body)
-        }
         "/colony/ledger" => {
-            // GH #267 (ruling Q14): same class as `/colony/trace` and for the
-            // same reason — the read is async and needs the colony DB, so the
-            // refusal is taken here, before the query runs. A filter that
+            // GH #267 (ruling Q14): the read is async and needs the colony DB,
+            // so the refusal is taken here, before the query runs. A filter that
             // cannot be read never reaches `handle_read_ledger` at all.
             let reply_body = match parse_read_query_ledger_filters(&body) {
                 Ok(f) => {
@@ -3301,102 +3315,6 @@ mod tests {
                 );
             }
             _ => panic!("expected Cascade reply from /colony/registry dispatch"),
-        }
-        let _ = outputs_rx.try_recv();
-
-        colony_db.shutdown_async().await;
-    }
-
-    /// GH #359 — the wiring proof for `/colony/trace`. Its three siblings answer
-    /// through a pure `build_*_read_reply` helper that the integration test
-    /// drives directly; the trace read is async and needs the colony DB, so its
-    /// refusal is taken inside the dispatcher and has to be pinned there.
-    ///
-    /// A syntactically broken UUID used to become "no filter": a caller asking
-    /// for ONE trace got the newest 100 entries of EVERY trace back.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn dispatch_trace_refuses_a_broken_uuid_instead_of_reading_every_trace() {
-        use crate::CellFactoryRegistry;
-        use crate::edge_table::EdgeTable;
-        use crate::persist::colony_db::ColonyDb;
-        use meclaw_core::{Body, MessageBuilder, Path};
-        use std::collections::{HashMap, VecDeque};
-
-        let td = tempfile::TempDir::new().expect("tempdir");
-        let colony_db = ColonyDb::open(&td.path().join("c.db")).expect("open colony.db");
-        let mut registry = HashMap::new();
-        let mut edges = EdgeTable::new();
-        let mut dead_letters = VecDeque::new();
-        let mut in_flight = crate::drain::DrainLedger::default();
-        let factories: CellFactoryRegistry = HashMap::new();
-        let templates_snapshot = crate::templates::TemplatesRegistry::from_entries(Vec::new());
-
-        let (inbox_self_tx, _inbox_self_rx) = tokio::sync::mpsc::channel(8);
-        let (outputs_tx, mut outputs_rx) = tokio::sync::mpsc::channel(8);
-
-        let msg = MessageBuilder::new(Path::new("/colony/trace"))
-            .body(Body::Inline(meclaw_core::serde_json::json!({
-                "query": { "trace_id": "not-a-uuid" }
-            })))
-            .reply_to(Path::new("/probe"))
-            .build();
-
-        let templates_rows = colony_db.read_templates().unwrap_or_default();
-        let rescan_future: Option<RescanFuture<'_>> = Some(Box::pin(handle_rescan_templates(
-            &colony_db,
-            td.path(),
-            &td.path().join("local"),
-        )));
-        let db_path = colony_db.db_path().to_path_buf();
-
-        let action = dispatch_colony_endpoint(
-            &mut registry,
-            &mut crate::hive_scope::HiveScopeTable::new(),
-            &mut edges,
-            &mut HashMap::new(),
-            &mut dead_letters,
-            &mut in_flight,
-            &colony_db.writer_tx,
-            &db_path,
-            templates_snapshot,
-            templates_rows,
-            rescan_future,
-            &factories,
-            td.path(),
-            &td.path().join("templates"),
-            &inbox_self_tx,
-            &outputs_tx,
-            Path::new("/colony/trace"),
-            msg,
-            Path::new("/probe"),
-            60_000,
-            60_000,
-            1000,
-            5,
-            false,
-            None,
-            0,
-            None,
-            &crate::watchdog::WorkPulse::silent(),
-            // GH #553: these unit tests are not about receipts.
-            None,
-        )
-        .await;
-
-        match action {
-            crate::colony::RouteAction::Cascade { msg, .. } => {
-                let body = match msg.body {
-                    Body::Inline(v) => v,
-                    other => panic!("expected inline reply body, got {other:?}"),
-                };
-                assert!(
-                    body["trace"].as_array().is_none(),
-                    "a refused filter must not answer a trace list: {body}"
-                );
-                assert_eq!(body["trace"]["status"], "error");
-                assert_eq!(body["trace"]["error_code"], "invalid_query");
-            }
-            _ => panic!("expected Cascade reply from /colony/trace dispatch"),
         }
         let _ = outputs_rx.try_recv();
 

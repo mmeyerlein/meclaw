@@ -1261,6 +1261,129 @@ class Stamp(Fixture):
                          "(outside the allowlist))" % stamp["at"], line)
 
 
+LIFT = "crates/meclaw-demo/tests/gh_lift.rs"
+# The old-format file of the merge's lifted-file pins (test_pipeline_merge):
+# a 300 ms absence window on line 7, in a line the strand does not change.
+WINDOW_RS = ("use std::time::Duration;\nuse tokio::time::timeout;\n\n"
+             "#[tokio::test]\nasync fn nothing_arrives() {\n"
+             "    let (_tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);\n"
+             "    assert!(timeout(Duration::from_millis(300), rx.recv()).await.is_err());\n}\n")
+
+
+class LiftedBans(Fixture):
+    """GH #1199 R1.2: the merge's `lifted_bans` refusal (`merge.lifted_problem`,
+    the same code) is a check of `pre` -- the gh877 merge (16.10.) met its 13
+    hits only at the merge point."""
+
+    WAVE = "welle-x-2026-10-16"
+
+    def setUp(self):
+        super().setUp()
+        bans = (SCRIPTS.parent / ".config" / "testing-bans.toml").read_text(encoding="utf-8")
+        write(self.root, ".config/testing-bans.toml", bans)
+        write(self.root, LIFT, WINDOW_RS)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "old format")
+        git(self.root, "checkout", "-q", "-b", "welle-x/S1")
+        write(self.root, LIFT, "// lifted\n" + WINDOW_RS.split("\n", 1)[1])
+        git(self.root, "commit", "-q", "-am", "S1: lift")
+
+    def strand_file(self, doc):
+        write(self.root, "plans/%s/straenge/S1.json" % self.WAVE, json.dumps(dict(
+            {"strand": "S1", "issue": 1, "title": "Lift"}, **doc)) + "\n")
+
+    def lifted_line(self, lines):
+        got = [l for l in lines if l.startswith("PRE lifted-bans ")]
+        self.assertEqual(1, len(got), lines)
+        return got[0]
+
+    def test_a_declared_lift_with_a_ban_hit_is_red_with_the_merge_message(self):
+        from pipeline import merge
+        self.strand_file({"lifted": [LIFT]})
+        doc, lines = self.run_pre(strand="S1")
+        why = merge.lifted_problem(merge.Strand(self.root, "S1", self.WAVE),
+                                   git(self.root, "rev-parse", "HEAD"))
+        self.assertIn("%s:7 rs-short-deadline" % LIFT, why)
+        self.assertRegex(self.lifted_line(lines), r"^PRE lifted-bans \d+s RED ")
+        self.assertTrue(self.lifted_line(lines).endswith(" RED " + why), lines)
+        self.assertEqual("RED", doc["verdict"])
+
+    def test_the_worktree_counts_not_only_the_commit(self):
+        # pre grades the tree a gate would see: an uncommitted lift is graded too
+        self.strand_file({"lifted": [LIFT]})
+        write(self.root, LIFT, "// lifted\n" + CLEAN_RS)
+        _doc, lines = self.run_pre(strand="S1")
+        self.assertRegex(self.lifted_line(lines), r"^PRE lifted-bans \d+s GREEN$")
+
+    def commit_declarations(self):
+        """Strand file and report committed without a lift -- the rule from the
+        strand's first commit (I1 of the v2-r3-bans re-check)."""
+        self.strand_file({})
+        self.report("")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "S1: declarations committed")
+
+    def report(self, extra):
+        write(self.root, "plans/%s/berichte/S1.md" % self.WAVE,
+              "---\nstrang: S1\nbranch: welle-x/S1\n%s---\n\n# S1\n" % extra)
+
+    def assert_red_as_the_merge_after_the_commit(self, line):
+        from pipeline import merge
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "S1: declaration")
+        why = merge.lifted_problem(merge.Strand(self.root, "S1", self.WAVE),
+                                   git(self.root, "rev-parse", "HEAD"))
+        self.assertIn("%s:7 rs-short-deadline" % LIFT, why)
+        self.assertTrue(line.endswith(" RED " + why), line)
+
+    def test_an_uncommitted_lift_in_a_committed_strand_file_is_read(self):
+        # I1: pre graded the worktree but read the declaration from the branch
+        # tip -- GREEN here, then the merge refused `lifted_bans`.
+        self.commit_declarations()
+        self.strand_file({"lifted": [LIFT]})
+        _doc, lines = self.run_pre(strand="S1")
+        self.assert_red_as_the_merge_after_the_commit(self.lifted_line(lines))
+
+    def test_an_uncommitted_flaky_fix_in_a_committed_report_is_read(self):
+        # I1, the report head: `flaky_fix` typically stands uncommitted in the
+        # tree when `strand.sh report` asks the --lifted-check entry.
+        self.commit_declarations()
+        self.report("flaky_fix: true\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = pre.main(["--repo", self.root, "--lifted-check", "--strand", "S1",
+                           "--wave", self.WAVE])
+        self.assertEqual(1, rc, out.getvalue())
+        self.assert_red_as_the_merge_after_the_commit(out.getvalue().rstrip("\n"))
+
+    def test_a_strand_without_a_lift_is_green(self):
+        self.strand_file({})
+        _doc, lines = self.run_pre(strand="S1")
+        self.assertRegex(self.lifted_line(lines), r"^PRE lifted-bans \d+s GREEN$")
+
+    def test_a_tree_outside_a_wave_has_no_lifted_check(self):
+        _doc, lines = self.run_pre(strand="S1")
+        self.assertFalse([l for l in lines if l.startswith("PRE lifted-bans ")], lines)
+
+    def test_the_lifted_check_entry_prints_the_same_line(self):
+        # `strand.sh report` asks this entry: one line, exit 1 on RED
+        from pipeline import merge
+        self.strand_file({"lifted": [LIFT]})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = pre.main(["--repo", self.root, "--lifted-check", "--strand", "S1",
+                           "--wave", self.WAVE])
+        why = merge.lifted_problem(merge.Strand(self.root, "S1", self.WAVE),
+                                   git(self.root, "rev-parse", "HEAD"))
+        self.assertEqual(1, rc)
+        self.assertTrue(out.getvalue().rstrip("\n").endswith(" RED " + why), out.getvalue())
+
+
+CLEAN_RS = ("#[tokio::test]\nasync fn nothing_arrives() {\n"
+            "    let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);\n"
+            "    tx.send(1).await.unwrap();\n    assert_eq!(rx.recv().await, Some(1));\n}\n")
+
+
 class Store(Fixture):
     """`pre` is a workpackage `mode: pre` in the W0 store, its metric `pipe_pre`."""
 
@@ -1474,6 +1597,13 @@ class Gate(unittest.TestCase):
             dst = os.path.join(self.main, "scripts", rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(SCRIPTS / rel, dst)
+        # pre's check lifted-bans is the merge's code (`merge.lifted_problem`,
+        # GH #1199 R1.2), and the merge module loads half the package
+        shutil.copytree(SCRIPTS / "pipeline", os.path.join(self.main, "scripts", "pipeline"),
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+        # ... whose lazy imports (`metrics`) leave byte code after the stamp;
+        # the real tree ignores it (.gitignore), so does this one
+        write(self.main, ".gitignore", "__pycache__/\n")
         kit_tree.seed(os.path.join(self.main, "scripts"), "strand.sh")
         write(self.main, "scripts/gate.sh", FAKE_GATE, 0o755)
         write(self.main, "plans/w-2026-01-01/README.md", "# w\n")

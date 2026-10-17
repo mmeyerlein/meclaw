@@ -42,6 +42,8 @@
 # `lanes fingerprint` under the lane's `lane_sync.sh env` words. Never echoed by
 # a caller, never measured a second time.
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 only_browsers=""
 tree_dir=""
 only_build=""
@@ -58,6 +60,62 @@ if [ -n "${CARGO_INCREMENTAL+x}" ]; then incremental="$CARGO_INCREMENTAL"; else 
 
 PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export PATH
+# The probe measures, it never installs (re-check v2-r3-shell I1): a tree whose
+# pinned toolchain the host lacks made rustup's proxy download it under the bound
+# of the first `rustc --version` -- said as a hang, killed mid-install. Without
+# auto-install the proxy answers at once that the toolchain is not installed, and
+# the probe says so by name (`not_installed`). Only this process and its calls:
+# the stations build with their own environment and install as before.
+RUSTUP_AUTO_INSTALL=0
+export RUSTUP_AUTO_INSTALL
+
+# >>> bounded -- the bound of a lane probe's tool calls; lane_sync.sh runs this
+# block before its INVENTORY (one source, GH #1224). POSIX sh, lower-case names.
+# Every tool call of a lane probe runs under its own bound: one call that hangs
+# (build01 15.10.: `cargo --version`, 79 min until the station's hang mark) is
+# said by name the moment it passes the bound, with the process tree it hangs in
+# (`ps --forest` with the wait channel: what it waits on), and the probe ends with
+# exit 3 -- no answer, fail-closed like any other (fp_exit: a caller whose 3 means
+# something else names its own code, lane_browser_deps.sh 2). The tool runs in a session of
+# its own: its tree is one group, read whole and killed whole. Two lines on
+# stderr, the last names the call and carries the tree (a caller keeps the last).
+# MECLAW_FP_TOOL_SECS: the bound in seconds (default 20 -- the executor gives the
+# whole script 60; measured 16.10. on build03 and mm-os01, the slowest probe call,
+# `install-deps --dry-run` of lane_browser_deps.sh, had a P95 of 1.4 s: 20 s is over
+# 3x P95 with room for load; a download is no probe call, the probe never installs).
+# Tests keep the hang marker and fire the bound from the hung fake. Without
+# `timeout` or `setsid` on the host: unbounded.
+fp_secs="${MECLAW_FP_TOOL_SECS:-20}"
+case "$fp_secs" in ''|*[!0-9]*|0) fp_secs=20 ;; esac
+fp_who="${fp_who:-lane_fingerprint.sh}"
+fp_exit="${fp_exit:-3}"
+fp_main=$$
+exec 9>&2
+trap 'exit "$fp_exit"' USR2
+fp_bounded=""
+if command -v timeout >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then fp_bounded=1; fi
+# The watch of one call ($1 who, $2 bound, $3 the probe's pid, then the call): the
+# call in its own session, the wait for it ended by the bound's USR1.
+# shellcheck disable=SC2016
+fp_watch='w=$1; s=$2; m=$3; shift 3; x=$*; c=""
+fp_hung() {
+    kill -s USR2 "$m" 2>/dev/null
+    echo "$w: '"'"'$x'"'"' gave no answer within ${s}s -- the probe ends without an answer (GH #1224)" >&9
+    t=$(ps -o pid=,ppid=,stat=,etime=,wchan:24=,args= --forest -s "$c" 2>/dev/null | sed "s/^ *//; s/  */ /g" | tr "\n" ";" | sed "s/;$//")
+    echo "$w: '"'"'$x'"'"' hung past ${s}s, its process tree: ${t:-gone}" >&9
+    env kill -s KILL -- "-$c" 2>/dev/null || kill -s KILL "$c" 2>/dev/null
+    exit 124
+}
+trap fp_hung USR1
+setsid "$@" </dev/null &
+c=$!
+wait "$c"'
+# <tool> [<arg>...]: the call's output and exit, under the bound.
+bounded() {
+    if [ -z "$fp_bounded" ]; then "$@" </dev/null; return; fi
+    timeout --foreground -s USR1 -k 5 "$fp_secs" sh -c "$fp_watch" fp_watch "$fp_who" "$fp_secs" "$fp_main" "$@"
+}
+# <<< bounded
 
 # A JSON string, also for an empty value; a control character is a space
 # (one in the output made the whole fingerprint no JSON, re-check tv-bn M7r A-M1).
@@ -75,7 +133,18 @@ jn() {
 }
 # The first line of a command's output, or nothing when it is missing.
 # (`--browsers` asks none of them: the executor has its own.)
-first() { [ -n "$only_browsers" ] && return; "$@" 2>/dev/null | head -n 1; }
+first() { [ -n "$only_browsers" ] && return; bounded "$@" 2>/dev/null | head -n 1; }
+# <answer> <tool> [<arg>...]: an empty answer of a rustup proxy, asked again for its
+# reason -- a toolchain the tree pins and the host lacks (RUSTUP_AUTO_INSTALL=0
+# above) ends the probe by name, exit 3: no answer, and no hang either.
+not_installed() {
+    if [ -n "$1" ] || [ -n "$only_browsers" ]; then return 0; fi
+    shift
+    ni_why=$(bounded "$@" 2>&1 >/dev/null | sed -n '/is not installed/{p;q;}')
+    [ -n "$ni_why" ] || return 0
+    echo "$fp_who: '$*' toolchain not installed -- the probe never installs (GH #1224): $ni_why" >&2
+    exit 3
+}
 
 # The build environment -- THE one rule of it (re-check tv-bn M7r A-M2, OR-T11-22):
 # the cache key's `build_env` (`cache.keys_for_plan`) is this script's answer, never
@@ -151,6 +220,7 @@ NOTIFY_SOCKET              systemd: the notification socket of that unit
 MECLAW_GATE_ARCHIVE        the kit: where strand.sh archives the receipt, after the stations
 MECLAW_GATE_WAVE           the kit: which wave directory receives the receipt
 MECLAW_GATE_LOCK           the kit: the lock file of the gate queue
+MECLAW_GATE_LANE_MIN_FREE_G the kit: the free-space floor of the runner on a lane (lane.env_for), where not what
 MECLAW_CARGO_LOCK_HELD     the kit: whether the runner already holds the cargo lock
 MECLAW_PIPELINE_DB         the kit: where the pipeline store lies
 MECLAW_STRAND_TOKEN_SKIP   the kit: the ruling that lets a pass run without a lease
@@ -205,7 +275,7 @@ build_env_json() {
 # when no rustc answers. Asked only when a CARGO_TARGET_*_RUSTFLAGS/_LINKER is set.
 target_prefix() {
     tp_t="${CARGO_BUILD_TARGET:-}"
-    [ -n "$tp_t" ] || tp_t=$("$rustc_bin" -vV 2>/dev/null | sed -n 's/^host: //p')
+    [ -n "$tp_t" ] || tp_t=$(bounded "$rustc_bin" -vV 2>/dev/null | sed -n 's/^host: //p')
     [ -n "$tp_t" ] || return 0
     printf 'CARGO_TARGET_%s_' "$(printf '%s' "$tp_t" | tr 'a-z.-' 'A-Z__')"
 }
@@ -313,6 +383,8 @@ rustc_bin="${RUSTC:-${CARGO_BUILD_RUSTC:-rustc}}"
 linker=$(linker_of)
 rustc_v=$(first "$rustc_bin" --version)
 cargo_v=$(first cargo --version)
+not_installed "$rustc_v" "$rustc_bin" --version
+not_installed "$cargo_v" cargo --version
 cargo_config=$(cargo_config_of "$cc_start")
 if [ -n "$only_build" ]; then
     # the build part of a fingerprint (`executor.build_fingerprint`): the gate lays it
@@ -372,17 +444,17 @@ if [ -n "$cores" ] && [ "$cores" = "$cpus" ] \
     cores=""
 fi
 ram_g=$(awk '/^MemTotal:/ { printf "%d", $2 / 1048576 + 0.5 }' /proc/meminfo 2>/dev/null)
-fs=$(df -BG --output=fstype "$root" 2>/dev/null | tail -n 1 | tr -d ' ')
-free_g=$(df -BG --output=avail "$root" 2>/dev/null | tail -n 1 | tr -dc 0-9)
+fs=$(bounded df -BG --output=fstype "$root" 2>/dev/null | tail -n 1 | tr -d ' ')
+free_g=$(bounded df -BG --output=avail "$root" 2>/dev/null | tail -n 1 | tr -dc 0-9)
 # dash and bash both know it; POSIX leaves it open
 # shellcheck disable=SC3045
 nofile=$(ulimit -n 2>/dev/null)
 sccache_v=$(first sccache --version)
 linger=""
 if command -v loginctl >/dev/null 2>&1; then
-    linger=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)
+    linger=$(bounded loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)
 fi
-pdf_v=$(pdftotext -v 2>&1 | head -n 1)
+pdf_v=$(bounded pdftotext -v 2>&1 | head -n 1)
 command -v pdftotext >/dev/null 2>&1 || pdf_v=""
 venv=""
 [ -x "$root/pool/portal-venv/bin/python" ] && venv="$root/pool/portal-venv"
@@ -545,7 +617,7 @@ bp_start() {
                  ls -ln "$HOME/.cache/ms-playwright" 2>&1
                  ls -ln "$bp_wkdeps" "$bp_wkdeps/root" 2>&1
                  ls -lnR "$2" 2>&1; cksum <"$bp_dpkg"; cksum <"$bp_wkenv"
-                 cksum <"$pwdir/package.json"; node --version </dev/null 2>&1
+                 cksum <"$pwdir/package.json"; bounded node --version 2>&1
                  if [ "$1" = chromium ]; then
                      cksum <"${MECLAW_APPARMOR_DIR:-/etc/apparmor.d}/meclaw-playwright-chromium" 2>&1
                      cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>&1
@@ -615,9 +687,9 @@ bp_probe() {
         # executable" with exit 1 and knows nothing; the real start decides
         if [ "$(head -c 2 "$bundle/$b" 2>/dev/null)" = "#!" ]; then continue; fi
         if [ -n "$llp" ]; then
-            out=$(LD_LIBRARY_PATH="$llp" ldd "$bundle/$b" </dev/null 2>/dev/null)
+            out=$(bounded env LD_LIBRARY_PATH="$llp" ldd "$bundle/$b" 2>/dev/null)
         else
-            out=$(ldd "$bundle/$b" </dev/null 2>/dev/null)
+            out=$(bounded ldd "$bundle/$b" 2>/dev/null)
         fi
         # an ldd that fails says nothing about the libraries (Re-Check S3 m-1)
         lrc=$?
@@ -655,3 +727,4 @@ printf '"kernel": %s, "vcpu": %s, "cores": %s, "ram_g": %s, "target_fs": %s, "ta
 printf '"incremental_policy": %s, "linker": %s, "build_env": %s, "cargo_config": %s, "sccache": %s, "linger": %s, "pdftotext": %s, "portal_venv": %s, ' \
     "$(js "$incremental")" "$(js "$linker")" "$(build_env_json)" "$(js "$cargo_config")" "$(js "$sccache_v")" "$(js "$linger")" "$(js "$pdf_v")" "$(js "$venv")"
 printf '"browsers": {"chromium": %s, "webkit": %s}}\n' "$(js "$bp_chromium")" "$(js "$bp_webkit")"
+}; exit $?

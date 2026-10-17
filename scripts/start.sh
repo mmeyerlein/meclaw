@@ -61,6 +61,8 @@
 #   MECLAW_TEMPLATES_URL a tar.gz to take templates/ and examples/ from,
 #                        instead of the release asset (mirrors, offline hosts)
 
+# One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
+{
 set -eu
 
 REPO="${MECLAW_REPO:-mmeyerlein/meclaw}"
@@ -711,3 +713,4 @@ else
     say "talk to it: ${MECLAW} ask --api ${api} --target /door \"...\""
 fi
 say "by hand:  https://github.com/${REPO}/blob/main/docs/installation.md"
+}; exit $?

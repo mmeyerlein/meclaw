@@ -1556,6 +1556,52 @@ def ws_procs(lane, ws, timeout=30):
     return [int(w) for w in words[:-1] if w.isascii() and w.isdigit()]
 
 
+WS_KILL_GRACE_TENTHS = 50   # TERM, then up to 5 s for the run to end, then KILL
+
+
+def ws_kill(lane, ws, pids, timeout=30):
+    """End the pids `pids` that a `ws_procs` probe found in the run workspace
+    `ws` (GH #1228: a forced lease release ends the lane run under it): TERM,
+    up to `WS_KILL_GRACE_TENTHS` tenths of a second for them to end, KILL the
+    rest, then probe `ws` again. Returns what still lives there (a list, empty
+    when the tree is idle) or None when the lane gave no answer. A zombie is
+    ended (it waits only for its parent's reap). Each pid is checked again at
+    the signal, by the probe's own rule (`ws_procs`: cwd at or below `ws`, or
+    `ws` as a word of cmdline/environ): a pid that left the tree since the
+    probe -- ended and reused by another process -- is never signalled
+    (re-check v2-r3-lease M1)."""
+    if not ws or not ws.startswith("/") or ws.rstrip("/") in ("", "/"):
+        raise LaneError(2, "no workspace path to end pids in: %r" % ws)
+    words = [str(p) for p in pids if isinstance(p, int) and p > 1]
+    if words:
+        script = (
+            ": %s; ws=%s; wr=$(readlink -f -- \"$ws\" 2>/dev/null); "
+            "case \"$wr\" in /?*) ;; *) wr=$ws ;; esac; "
+            "own() { d=/proc/$1; grep -aqsF -- %s \"$d/cmdline\" && return 1; "
+            "c=$(readlink \"$d/cwd\" 2>/dev/null); "
+            "case \"$c\" in \"$ws\"|\"$ws\"/*|\"$wr\"|\"$wr\"/*) return 0 ;; esac; "
+            "grep -aqsF -e \"$ws\" -e \"$wr\" -- \"$d/cmdline\" \"$d/environ\" "
+            "&& cat -- \"$d/cmdline\" \"$d/environ\" 2>/dev/null | tr '\\0' '\\n' "
+            "| awk -v a=\"$ws\" -v b=\"$wr\" %s; }; "
+            "ps=; for p in %s; do own $p && ps=\"$ps $p\"; done; "
+            "[ -z \"$ps\" ] || kill -TERM $ps 2>/dev/null; "
+            "up() { for p in $ps; do [ -d /proc/$p ] && "
+            "! grep -qs '^State:[[:space:]]*[ZX]' /proc/$p/status && own $p && echo $p; done; }; "
+            "i=0; while [ $i -lt %d ] && [ -n \"$(up)\" ]; do sleep 0.1; i=$((i+1)); done; "
+            "left=$(up); [ -z \"$left\" ] || kill -KILL $left 2>/dev/null; echo %s"
+            % (WS_PROBE_MARK, shlex.quote(ws.rstrip("/")), WS_PROBE_MARK, shlex.quote(WS_PATH_WORD),
+               " ".join(words), WS_KILL_GRACE_TENTHS, WS_PROBE_END))
+        try:
+            res = subprocess.run(_remote_argv(lane, script), stdin=subprocess.DEVNULL,
+                                 capture_output=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        out = res.stdout.decode(errors="replace").split()
+        if not out or out[-1] != WS_PROBE_END:
+            return None
+    return ws_procs(lane, ws, timeout=timeout)
+
+
 def fingerprint(lane, script=None):
     """The lane's fingerprint (V0 section 2.3) as a dict: W1's
     `lane_fingerprint.sh` beside this module, sent on stdin (`sh -s`), so the
@@ -1571,7 +1617,12 @@ def fingerprint(lane, script=None):
     # (re-check tv-bn M7r A-M2, one source); `incremental_policy` too (M7t A-M3)
     # (`test`: the words alone, without the runner's floor, which is no lane word)
     words = " ".join("%s=%s" % (k, q(v)) for k, v in env_for(lane, "test").items())
-    res = _remote(lane, "env %s sh -s -- %s" % (words, q(lane.root)),
+    # ... and under the stations' PATH (REMOTE_PATH, as `exec_stream` and
+    # `executor.stations_build` start them): without it the register's `build_env`
+    # carried the login PATH and the first run after every `lanes fingerprint` noted
+    # `lane-drift [build_env]` -- 46 receipts of welle-validierung-2, all four lanes
+    # (ops-build01, Runde 3 R3 (4))
+    res = _remote(lane, "%s && env %s sh -s -- %s" % (REMOTE_PATH, words, q(lane.root)),
                   input=body, fail="the host %s did not answer" % lane.name)
     try:
         fp = json.loads(res.stdout.decode())

@@ -32,8 +32,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
-meclaw-core = { path = "../meclaw-core", version = "0.64.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.64.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.65.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.65.0" }
 # GH #383: `meclaw-surface` is gone from here. GH #381 moved the LiveView
 # machinery out of this crate so the `web` cell could speak the protocol without
 # depending on the HTTP API; #383 removed this crate's last consumer of it (the

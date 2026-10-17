@@ -8,6 +8,7 @@ import dataclasses
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -88,6 +89,15 @@ class ScheduleCase(unittest.TestCase):
         # get no answer and keep every stale lane lease (fail-closed).
         self.addCleanup(setattr, schedule, "_lane_tree_probe", schedule._lane_tree_probe)
         schedule._lane_tree_probe = lambda ln: []
+        # nothing lives there, so a forced release has nothing to end (GH #1228)
+        self.addCleanup(setattr, schedule, "_lane_tree_kill", getattr(schedule, "_lane_tree_kill", None))
+        schedule._lane_tree_kill = lambda ln, pids: []
+        # K14: the fresh browser measure of an admission refusal never reaches a lane
+        # here (a FakeLane's host does not exist): no answer, unless a test says one
+        self.addCleanup(setattr, schedule, "_browser_remeasure", schedule._browser_remeasure)
+        schedule._browser_remeasure = lambda ln: None
+        self.addCleanup(schedule._FRESH_BROWSERS.clear)
+        schedule._FRESH_BROWSERS.clear()
 
     def tearDown(self):
         self.db.close()
@@ -1183,7 +1193,10 @@ class TestStaleButBusy(TestLeaseKitFinds):
         res = schedule.lease_release(self.db, "welle-x/a", now=later + 120, branch="welle-x/a",
                                      force=True)
         self.assertEqual(0, res.code, res.err)
-        self.assertEqual([], self.probed, "--force is the hand's word; it probes nothing")
+        # GH #1228 (OR-V2.v2-r3-lease.1): --force probes the tree to end what
+        # lives there -- the hand's word frees the lease, the kit ends the run
+        self.assertEqual([("north", "/srv/target")], self.probed)
+        self.assertIn("ended pid 4242 in the lane tree of lane north", res.err)
         self.assertIn("warning: released welle-x/a over stale-but-busy", res.err)
         (rel,) = self.journal("lease_released")
         self.assertEqual("release --force", rel["verb"])
@@ -1389,7 +1402,7 @@ class TestStaleButBusy(TestLeaseKitFinds):
         # `BEGIN IMMEDIATE` has no probe yet; "no answer ... --force" sent the
         # hand to --force although a second release would probe.
         later, _ = self.busy_spell([4242])
-        with unittest.mock.patch.object(schedule, "_release_probe", lambda *a, **k: {}):
+        with unittest.mock.patch.object(schedule, "_release_probe", lambda *a, **k: ({}, {})):
             res = schedule.lease_release(self.db, "welle-x/a", now=later + 120,
                                          branch="welle-x/a")
         self.assertEqual(3, res.code, res.err)
@@ -1400,6 +1413,178 @@ class TestStaleButBusy(TestLeaseKitFinds):
         self.assertIn("noted after the probe at ", res.err)
         self.assertNotIn("probed at", res.err)
         self.assertEqual({"welle-x/a": "north"}, self.holders())
+
+
+class TestReleaseEndsTheLaneRun(ScheduleCase):
+    """GH #1228: a lane run outlived its released lease -- a test run on build03
+    went on after its agent was stopped and the lease freed (15.10. 21:36Z), a
+    `strand.sh test` on build01 ran eight minutes while `token who` showed the
+    lane free. The end of a lane lease now waits for the lane process tree: a
+    release finds a live process there (or a live process the holder entered)
+    and keeps the lease (exit 3); `release --force` ends the tree, then frees.
+    The run here is a real process in a real local lane tree (no fake probe)."""
+
+    def setUp(self):
+        super().setUp()
+        schedule._lane_tree_probe = None
+        self.addCleanup(setattr, schedule, "_lane_tree_kill", schedule._lane_tree_kill)
+        schedule._lane_tree_kill = None
+        root = os.path.join(self._tmp.name, "lane-root")
+        self.tree = os.path.join(root, "tree")
+        os.makedirs(self.tree)
+        schedule.sync_runners(self.db, [FakeLane("north", ssh="local", transport="local",
+                                                 root=root, threads=24)],
+                              states={"north": "idle"})
+        lanes_file = os.path.join(self._tmp.name, "lanes")
+        with open(lanes_file, "w") as fh:
+            fh.write("north local %s\n" % root)
+        self.assertEqual(0, schedule.lease_init(self.db, lanes="north", lanes_file=lanes_file,
+                                                now=T0).code)
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/a", lane="north", now=T0).code)
+
+    def lane_run(self, cwd=None):
+        """A fake lane run: a process that lives in `cwd` (the lane tree) until it is ended."""
+        run = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                               cwd=cwd or self.tree, stdin=subprocess.PIPE)
+
+        def end():
+            if run.poll() is None:
+                run.kill()
+            run.stdin.close()
+            run.wait()
+        self.addCleanup(end)
+        return run
+
+    def held(self):
+        return {r["holder"]: r["resource"] for r in self.db.execute(
+            "SELECT holder, resource FROM lease_entries WHERE resource IS NOT NULL")}
+
+    def test_a_release_waits_while_a_run_lives_in_the_lane_tree(self):
+        run = self.lane_run()
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60)
+        self.assertEqual(3, res.code, res.err)
+        self.assertIn("pid %d" % run.pid, res.err)
+        self.assertIn("--force ends it", res.err)
+        self.assertEqual({"welle-x/a": "lane:north"}, self.held())
+        self.assertIsNone(run.poll(), "a release without --force never ends the run")
+        run.stdin.close()
+        run.wait()
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 120)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual({}, self.held())
+
+    def test_release_force_ends_the_run_in_the_lane_tree(self):
+        run = self.lane_run()
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60, force=True)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual({}, self.held())
+        kit_time.until("the forced release ends the run", lambda: run.poll() is not None)
+        self.assertIn("ended pid %d in the lane tree" % run.pid, res.err)
+        detail = [d["detail"] for d in self.journal("lease_released")]
+        self.assertEqual(1, len(detail), detail)
+        self.assertIn("ended pid %d" % run.pid, detail[0])
+
+    def test_a_live_process_the_holder_entered_keeps_the_lease(self):
+        # `strand.sh test` enters its own pid at the lease (`check --pid`); its
+        # lane side may not be in the tree yet -- the local driver alone counts.
+        driver = self.lane_run(cwd=self._tmp.name)
+        self.assertEqual(0, schedule.lease_check(self.db, "welle-x/a", pid=driver.pid,
+                                                 caller=os.getpid(), now=T0 + 30).code)
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60)
+        self.assertEqual(3, res.code, res.err)
+        self.assertIn("pid %d" % driver.pid, res.err)
+        self.assertEqual({"welle-x/a": "lane:north"}, self.held())
+
+    def test_a_probe_without_an_answer_keeps_the_lease(self):
+        # Error path (fault injection): the probe raises. Fail-closed (ruling
+        # test-cc15, re-check I1): without an answer nobody knows whether a lane
+        # run still writes in the tree -- the lease stays, exit 3, and the line
+        # names the way out (a powered-off lane is freed with --force).
+        def broken(ln):
+            raise RuntimeError("probe down")
+        schedule._lane_tree_probe = broken
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60)
+        self.assertEqual(3, res.code, res.err)
+        self.assertIn("lane tree probe got no answer (RuntimeError: probe down)", res.err)
+        self.assertIn("lane does not answer -- `release --force` frees it", res.err)
+        self.assertEqual({"welle-x/a": "lane:north"}, self.held())
+        self.assertEqual([], self.journal("lease_released"))
+
+    def test_release_force_never_ends_an_entered_driver_outside_the_tree(self):
+        # Re-check I2: `--force` ends the pids its probe found in the lane tree
+        # of this lease -- never a local pid the holder entered (`check --pid`,
+        # the driver of `strand.sh test`) nor any process outside the tree.
+        run = self.lane_run()
+        driver = self.lane_run(cwd=self._tmp.name)
+        self.assertEqual(0, schedule.lease_check(self.db, "welle-x/a", pid=driver.pid,
+                                                 caller=os.getpid(), now=T0 + 30).code)
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60, force=True)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual({}, self.held())
+        kit_time.until("the forced release ends the tree run", lambda: run.poll() is not None)
+        self.assertIn("ended pid %d in the lane tree" % run.pid, res.err)
+        self.assertNotIn("pid %d" % driver.pid, res.err)
+        self.assertIsNone(driver.poll(), "the entered driver outside the tree lives on")
+
+    def test_release_force_kills_only_while_the_probed_lease_stands(self):
+        # Re-check M1: the probe and the kill run before `BEGIN IMMEDIATE`. A
+        # lease that changed under the probe (taken anew: another take time)
+        # is not the lease whose tree was probed -- nothing is ended.
+        killed = []
+
+        def probe(ln):
+            self.db.execute("UPDATE lease_entries SET since = ? WHERE holder = ?",
+                            ("2027-01-15T09:00:00Z", "welle-x/a"))
+            return [4242]
+        schedule._lane_tree_probe = probe
+        schedule._lane_tree_kill = lambda ln, pids: killed.append(pids) or []
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60, force=True)
+        self.assertEqual([], killed, "a kill under a lease the probe did not see")
+        # Re-check 518f70bfb m1: `--force` frees it under the run, as documented --
+        # but says so: no probe saw this lease's tree, a lane run may still write.
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual({}, self.held())
+        self.assertIn("warning: released welle-x/a without a probe of the tree of lane north "
+                      "(the lease changed after the probe)", res.err)
+        detail = [d["detail"] for d in self.journal("lease_released")]
+        self.assertEqual(1, len(detail), detail)
+        self.assertIn("no probe of lane north (the lease changed after the probe)", detail[0])
+
+    def test_a_release_whose_lease_changed_after_the_probe_keeps_it(self):
+        # Re-check 518f70bfb m1 (the class of #1228): the probe runs before
+        # `BEGIN IMMEDIATE`; a lease that moved to another lane in between had
+        # no probe of its tree -- no probe is no proof the lane run ended. Exit 3,
+        # "release again", the lease stays; the next release probes that tree.
+        probed = []
+
+        def probe(ln):
+            probed.append(ln)
+            if len(probed) == 1:
+                self.db.execute("UPDATE lease_entries SET resource = 'lane:south' "
+                                "WHERE holder = 'welle-x/a'")
+                self.db.commit()
+            return []
+        schedule._lane_tree_probe = probe
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60)
+        self.assertEqual(3, res.code, res.err)
+        self.assertIn("welle-x/a holds lane south: the lease changed after the probe", res.err)
+        self.assertIn("no probe of this tree ran yet -- release again", res.err)
+        self.assertNotIn("probed at", res.err)
+        self.assertEqual({"welle-x/a": "lane:south"}, self.held())
+        self.assertEqual([], self.journal("lease_released"))
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 120)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual(2, len(probed), "the second release probes the tree of the moved lease")
+        self.assertEqual({}, self.held())
+
+    def test_a_forced_release_without_a_probe_answer_frees_and_says_so(self):
+        def broken(ln):
+            raise RuntimeError("probe down")
+        schedule._lane_tree_probe = broken
+        res = schedule.lease_release(self.db, "welle-x/a", now=T0 + 60, force=True)
+        self.assertEqual(0, res.code, res.err)
+        self.assertIn("lane tree probe got no answer", res.err)
+        self.assertEqual({}, self.held())
 
 
 class TestMergeGateHolder(TestLeaseKitFindsWave):
@@ -1459,6 +1644,229 @@ class TestMergeGateHolder(TestLeaseKitFindsWave):
         self.finish(adm, {})
         self.assertIsNone(member()["run"])
         self.assertEqual("south", member()["lane"])
+
+
+class TestMergeGoesFirst(TestLeaseKitFindsWave):
+    """K14 (16.10., zu #1228): a waiting merge candidate (`MECLAW_GATE_MODE=merge`,
+    `merge --wait` -> `gate --wait-admission`) goes ahead of every waiting strand,
+    pre and test run; FIFO within each class; held leases are never displaced;
+    at most `MERGE_STREAK_MAX` merges in a row while strands wait."""
+
+    def offered(self):
+        return [r["holder"] for r in self.db.execute(
+            "SELECT holder FROM lease_entries WHERE resource IS NULL AND offered IS NOT NULL "
+            "ORDER BY seq")]
+
+    def strands_wait(self, *names, minutes=0, tree=""):
+        for n in names:
+            self.assertEqual(3, schedule.lease_take(self.db, n, lane="north", tree=tree,
+                                                    now=T0 + 60 * minutes).code)
+
+    def release_tree(self, *strands):
+        """A caller's tree whose strand files declare `strands` release strands
+        (`"release": true`, lease re-check m2) -- the name alone is no class."""
+        tree = os.path.join(self._tmp.name, "rt")
+        d = os.path.join(tree, "plans", "welle-x-2026-10-16", "straenge")
+        os.makedirs(d, exist_ok=True)
+        for s in strands:
+            with open(os.path.join(d, s + ".json"), "w") as fh:
+                json.dump({"strand": s, "release": True}, fh)
+        return tree
+
+    def merge_waits(self, name, minutes=1):
+        queued = self.admit(cargo_plan(), strand=name, lane_pref="north", minutes=minutes,
+                            merge=True)
+        self.assertIsInstance(queued, schedule.Queued)
+
+    def free_north(self, holder, minutes):
+        if isinstance(holder, schedule.Admission):    # a merge run ends: its close frees the lane
+            pe = json.loads(ev("pass_ended", {"verdict": "GREEN", "secs": 50}, holder.run))
+            schedule.close(self.db, holder, pe, now=T0 + 60 * minutes)
+            return
+        self.assertEqual(0, schedule.lease_release(self.db, holder, now=T0 + 60 * minutes,
+                                                   branch=holder).code)
+
+    def test_a_merge_gets_the_next_offer_before_three_waiting_strands(self):
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        self.strands_wait("welle-x/s1", "welle-x/s2", "welle-x/s3")
+        self.merge_waits("welle-x/m")
+        self.assertEqual(["welle-x/m", "welle-x/s1", "welle-x/s2", "welle-x/s3"],
+                         [h for h, _ in self.queue()], "FIFO within the strands, the merge first")
+        self.assertEqual(["welle-x/x"], [h["strand"] for h in schedule._load(self.db)["holders"]],
+                         "the held lease is not displaced")
+        self.free_north("welle-x/x", 2)
+        self.assertEqual(["welle-x/m"], self.offered())
+        self.assertEqual(3, schedule.lease_take(self.db, "welle-x/s1", lane="north",
+                                                now=T0 + 180).code)
+        adm = self.admit(cargo_plan(), strand="welle-x/m", lane_pref="north", minutes=3, merge=True)
+        self.assertEqual("north", getattr(adm, "lane", None), adm)
+
+    def test_strands_get_a_lane_after_merge_streak_max_merges_in_a_row(self):
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        self.strands_wait("welle-x/s1", "welle-x/s2")
+        holder, minute = "welle-x/x", 1
+        for i in range(schedule.MERGE_STREAK_MAX):
+            merge = "welle-x/m%d" % i
+            self.merge_waits(merge, minutes=minute)
+            self.free_north(holder, minute + 1)
+            self.assertEqual([merge], self.offered())
+            adm = self.admit(cargo_plan(), strand=merge, lane_pref="north", minutes=minute + 1,
+                             merge=True)
+            self.assertEqual("north", getattr(adm, "lane", None), adm)
+            holder, minute = adm, minute + 2
+        self.merge_waits("welle-x/m-next", minutes=minute)
+        self.assertEqual(["welle-x/s1", "welle-x/m-next", "welle-x/s2"],
+                         [h for h, _ in self.queue()], "after the streak the oldest strand leads")
+        self.free_north(holder, minute + 1)
+        self.assertEqual(["welle-x/s1"], self.offered())
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/s1", lane="north",
+                                                now=T0 + 60 * (minute + 1)).code)
+        self.assertEqual(["welle-x/m-next", "welle-x/s2"], [h for h, _ in self.queue()],
+                         "a strand served ends the streak: merges lead again")
+
+    def test_the_release_wave_waits_between_the_merges_and_the_program(self):
+        # K14 (16.10.): merge > release wave > the rest, FIFO within each class.
+        # A release strand is `rel*` by name (`rel-3c`, `rel3`, `rel-0643-10`),
+        # with or without the wave prefix and a holder suffix `:n` -- and declared
+        # as one by its strand file in the caller's tree (lease re-check m2).
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        rt = self.release_tree("rel-3c", "rel3")
+        self.strands_wait("welle-x/s1", "welle-x/relay", tree=rt)
+        self.strands_wait("welle-x/rel-3c", "welle-x/s2", "welle-x/rel3:2", minutes=1, tree=rt)
+        self.merge_waits("welle-x/m", minutes=2)
+        self.assertEqual(["welle-x/m", "welle-x/rel-3c", "welle-x/rel3:2", "welle-x/s1",
+                          "welle-x/relay", "welle-x/s2"], [h for h, _ in self.queue()])
+        self.free_north("welle-x/x", 3)
+        self.assertEqual(["welle-x/m"], self.offered())
+        adm = self.admit(cargo_plan(), strand="welle-x/m", lane_pref="north", minutes=3, merge=True)
+        self.assertEqual("north", getattr(adm, "lane", None), adm)
+        self.free_north(adm, 4)
+        self.assertEqual(["welle-x/rel-3c"], self.offered(), "the release before the program")
+        # the streak cap still serves the oldest non-merge first -- the release
+        self.assertEqual(
+            ["rel-a", "m1", "s1"],
+            [w["strand"] for w in schedule._queue_order(
+                [{"strand": "s1"}, {"strand": "m1", "merge": True},
+                 {"strand": "rel-a", "release": True}],
+                schedule.MERGE_STREAK_MAX)])
+
+    def test_a_program_strand_named_rel_gets_no_release_lead(self):
+        # Lease re-check m2: the name alone made `rel-notes` (a program strand)
+        # a release strand. Only a declared one leads the program: its strand
+        # file says `"release": true`, or the pass is a release gate.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        rt = self.release_tree("rel-3c")
+        self.strands_wait("welle-x/s1", "welle-x/rel-notes", tree=rt)
+        self.strands_wait("welle-x/rel-3c", minutes=1, tree=rt)
+        self.assertEqual(["welle-x/rel-3c", "welle-x/s1", "welle-x/rel-notes"],
+                         [h for h, _ in self.queue()])
+        self.assertTrue(schedule._release_class("welle-x/rel-0643-10", "", "release"),
+                        "a release gate is the release path without a strand file")
+        self.assertFalse(schedule._release_class("welle-x/s1", "", "release"),
+                         "the name convention stays a condition")
+
+    def test_a_stream_of_merges_and_releases_lets_the_program_through(self):
+        # Lease re-check m2: the release class has its own cap. Merges and
+        # releases granted in a row while a program strand waits count together;
+        # after `RELEASE_STREAK_MAX` of them the oldest program strand goes first once.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        rt = self.release_tree(*["rel-%d" % i for i in range(schedule.RELEASE_STREAK_MAX + 1)])
+        self.strands_wait("welle-x/s1", tree=rt)
+        holder, minute = "welle-x/x", 1
+        for i in range(schedule.RELEASE_STREAK_MAX):
+            name = ("welle-x/m%d" if i % 2 == 0 else "welle-x/rel-%d") % i
+            if i % 2 == 0:
+                self.merge_waits(name, minutes=minute)
+            else:
+                self.strands_wait(name, minutes=minute, tree=rt)
+            self.free_north(holder, minute + 1)
+            self.assertEqual([name], self.offered())
+            if i % 2 == 0:
+                holder = self.admit(cargo_plan(), strand=name, lane_pref="north",
+                                    minutes=minute + 1, merge=True)
+                self.assertEqual("north", getattr(holder, "lane", None), holder)
+            else:
+                self.assertEqual(0, schedule.lease_take(self.db, name, lane="north", tree=rt,
+                                                        now=T0 + 60 * (minute + 1)).code)
+                holder = name
+            minute += 2
+        self.merge_waits("welle-x/m-next", minutes=minute)
+        self.strands_wait("welle-x/rel-%d" % schedule.RELEASE_STREAK_MAX, minutes=minute, tree=rt)
+        self.assertEqual(["welle-x/s1", "welle-x/m-next",
+                          "welle-x/rel-%d" % schedule.RELEASE_STREAK_MAX],
+                         [h for h, _ in self.queue()], "after the cap the program strand leads")
+        self.free_north(holder, minute + 1)
+        self.assertEqual(["welle-x/s1"], self.offered())
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/s1", lane="north", tree=rt,
+                                                now=T0 + 60 * (minute + 1)).code)
+        self.assertEqual(["welle-x/m-next", "welle-x/rel-%d" % schedule.RELEASE_STREAK_MAX],
+                         [h for h, _ in self.queue()], "a program strand served ends the streak")
+        # Re-check Kette I1 (a): the program grant set the count to zero -- a
+        # program strand queued after it waits behind the merge and the release
+        # again (without the reset every program strand would lead from now on).
+        self.strands_wait("welle-x/s2", minutes=minute + 2, tree=rt)
+        self.assertEqual(["welle-x/m-next", "welle-x/rel-%d" % schedule.RELEASE_STREAK_MAX,
+                          "welle-x/s2"], [h for h, _ in self.queue()],
+                         "after the reset the merge and the release lead the program again")
+
+    def test_a_release_gate_waits_ahead_of_the_program(self):
+        # Re-check Kette I1 (b): the release class on the admission path. A
+        # `gate release` (its mode) and the gate of a declared release strand
+        # (its tree: `--wait-admission` hands it as `wait_tree`, a gate without
+        # it as `release_tree`, Minor 2) queue ahead of a program strand that
+        # waited first; a program strand's gate stays program.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        rt = self.release_tree("rel-3c", "rel-4")
+        self.strands_wait("welle-x/s1", tree=rt)
+        for minute, (name, kw) in enumerate((
+                ("welle-x/s2", {"wait_tree": rt}),
+                ("welle-x/rel-0643-10", {"mode": "release"}),
+                ("welle-x/rel-3c", {"wait_tree": rt}),
+                ("welle-x/rel-4", {"release_tree": rt})), start=1):
+            queued = self.admit(cargo_plan(), strand=name, lane_pref="north", minutes=minute, **kw)
+            self.assertIsInstance(queued, schedule.Queued, name)
+        self.assertEqual(["welle-x/rel-0643-10", "welle-x/rel-3c", "welle-x/rel-4",
+                          "welle-x/s1", "welle-x/s2"], [h for h, _ in self.queue()])
+
+    def test_a_take_of_a_second_holder_keeps_the_release_class(self):
+        # Re-check Kette Minor 2: `lanes take --holder <n>` from the strand's own
+        # tree hands the tree for the class (`release_tree`) -- a declared
+        # release strand's `S:n` waits as a release, not as program.
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        rt = self.release_tree("rel-3c")
+        self.strands_wait("welle-x/s1", tree=rt)
+        self.assertEqual(3, schedule.lease_take(self.db, "welle-x/rel-3c:2", lane="north",
+                                                release_tree=rt, now=T0 + 60).code)
+        self.assertEqual(["welle-x/rel-3c:2", "welle-x/s1"], [h for h, _ in self.queue()])
+
+    def test_the_strand_file_of_another_wave_is_no_release_class(self):
+        # Re-check Kette Minor 2 (side note): `plans/<wave>*` also matched a wave
+        # `<wave>X-...` with a strand of the same name; the strand file counts in
+        # `plans/<wave>/` or `plans/<wave>-*/` only.
+        tree = os.path.join(self._tmp.name, "other")
+        for wave_dir, release in (("welle-xy-2026-10-16", True), ("welle-x-2026-10-16", False)):
+            d = os.path.join(tree, "plans", wave_dir, "straenge")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "rel-3c.json"), "w") as fh:
+                json.dump({"strand": "rel-3c", "release": release}, fh)
+        self.assertFalse(schedule._release_class("welle-x/rel-3c", tree),
+                         "the strand file of wave welle-xy declares nothing for welle-x")
+        self.assertTrue(schedule._release_class("welle-xy/rel-3c", tree))
+        for wave_dir in ("welle-x", "welle-x-2026-10-17"):
+            d = os.path.join(tree, "plans", wave_dir, "straenge")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "rel-5.json"), "w") as fh:
+                json.dump({"strand": "rel-5", "release": True}, fh)
+            with self.subTest(wave_dir=wave_dir):
+                self.assertTrue(schedule._release_class("welle-x/rel-5", tree))
+                os.remove(os.path.join(d, "rel-5.json"))
 
 
 class TestLeaseLiveRunClass(ScheduleCase):
@@ -1768,6 +2176,74 @@ class TestAdmitWaitingEnds(ScheduleCase):
                 self.assertIn("lane north can never take the pass: needs colony %d > %d"
                               % (cap + 1, cap), q.reason)
 
+    # tm-orch4 (16.10.): `token take --wait` died on `database is locked` with 18
+    # waiters -- busy_timeout 5 s and the bounded retries were all a waiter had.
+    def locked(self, n, real, before=None):
+        """A stand-in for `real` that the store refuses `n` times (locked), then `real`."""
+        calls = []
+
+        def fake(*args, **kw):
+            calls.append(1)
+            if len(calls) <= n:
+                if before:
+                    before(*args)
+                raise sqlite3.OperationalError("database is locked")
+            return real(*args, **kw)
+        return fake, calls
+
+    def lanes_env(self, **extra):
+        return dict(os.environ, MECLAW_PIPELINE_DB=os.path.join(self._tmp.name, "pipeline.db"),
+                    MECLAW_LANES_FILE=os.path.join(self._tmp.name, "lanes"),
+                    MECLAW_STRAND_TOKENS=os.path.join(self._tmp.name, "tok"), **extra)
+
+    def test_a_locked_store_never_ends_the_admission_wait(self):
+        self.arm("north")
+        # the refusal leaves the transaction open (a COMMIT refused as busy): the
+        # next round must not join it and lose its writes on close
+        fake, calls = self.locked(4, schedule.admit,
+                                  before=lambda db, *_: db.execute("BEGIN IMMEDIATE"))
+        with unittest.mock.patch.object(schedule, "admit", side_effect=fake), \
+                unittest.mock.patch.object(schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            adm = self.wait()
+        self.assertEqual(5, len(calls))
+        self.assertEqual("north", getattr(adm, "lane", None), adm)
+        other = store.open(os.path.join(self._tmp.name, "pipeline.db"))
+        try:
+            self.assertEqual(["welle-x/a"], [h["strand"] for h in schedule._load(other)["holders"]],
+                             "the admission's lease is committed")
+        finally:
+            other.close()
+
+    def test_a_store_locked_beyond_the_wait_limit_ends_the_wait_loud(self):
+        self.arm("north")
+        fake, calls = self.locked(10 ** 9, schedule.admit)
+        with unittest.mock.patch.object(schedule, "admit", side_effect=fake), \
+                unittest.mock.patch.object(schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            exc = self.wait(env={"MECLAW_ADMISSION_WAIT_SECS": "0.2"})
+        self.assertIsInstance(exc, sqlite3.OperationalError, exc)
+        self.assertGreater(len(calls), 1, "the waiter outlasts a locked store up to the limit")
+
+    def test_a_locked_store_never_ends_take_wait(self):
+        self.arm("north")
+        fake, calls = self.locked(4, schedule._run_once)
+        with unittest.mock.patch.object(schedule, "_run_once", side_effect=fake), \
+                unittest.mock.patch.object(schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            code, out, err = schedule.run_lanes(
+                ["take", "--wait", "--strand", "welle-x/a", "--lane", "north"],
+                env=self.lanes_env(), cwd=self._tmp.name)
+        self.assertEqual(0, code, (out, err))
+        self.assertEqual(5, len(calls))
+        self.assertEqual(["welle-x/a"], [h["strand"] for h in schedule._load(self.db)["holders"]])
+
+    def test_a_take_without_wait_still_fails_on_a_locked_store(self):
+        self.arm("north")
+        fake, calls = self.locked(1, schedule._run_once)
+        with unittest.mock.patch.object(schedule, "_run_once", side_effect=fake), \
+                self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+            schedule.run_lanes(["take", "--strand", "welle-x/a", "--lane", "north"],
+                               env=self.lanes_env(), cwd=self._tmp.name)
+        self.assertEqual(1, len(calls))
+
     def test_take_wait_refuses_nonsense_wait_seconds(self):
         # GH #1155 (2): `take --wait` read MECLAW_TOKEN_WAIT_SECS unchecked.
         env = dict(os.environ, MECLAW_PIPELINE_DB=os.path.join(self._tmp.name, "pipeline.db"))
@@ -1824,6 +2300,125 @@ class TestBrowserLanes(ScheduleCase):
         self.assertTrue(q.final, q.reason)
         self.assertIn("browser_webkit 1 > 0", q.reason)
         self.assertIn("libGL.so.1", q.reason)
+
+    def foreign_browsers(self):
+        """The real `lane_fingerprint.sh --browsers` over a fake satellite tree without
+        `workshop/tools` (the orga-hive tree of 16.10.): every engine refused."""
+        tree = os.path.join(self._tmp.name, "orga-tree")
+        os.makedirs(os.path.join(tree, "docs"))
+        script = os.path.join(os.path.dirname(schedule.__file__), "lane_fingerprint.sh")
+        res = subprocess.run(["sh", script, "--browsers", tree], check=True,
+                             capture_output=True, text=True, timeout=kit_time.HANG)
+        said = json.loads(res.stdout)
+        self.assertEqual({"chromium", "webkit"}, set(schedule.browser_refusals({"browsers": said})))
+        return said
+
+    def run_on(self, repo, fingerprint, plan=None):
+        plan = plan or light_plan()
+        adm = schedule.admit(self.db, plan, repo=repo, mode="test", strand="welle-x/a",
+                             wave="welle-x", base=plan["base"], lane_pref=None, now=T0, wait=False)
+        self.assertNotIsInstance(adm, schedule.Queued, adm)
+        schedule.ingest(self.db, adm, ev("lane_fingerprint", dict(fingerprint, vcpu=24), adm.run,
+                                         kind="note"))
+        self.finish(adm, {"unittests": "GREEN"})
+        return adm
+
+    def test_a_foreign_tree_never_refuses_the_browsers_of_the_core(self):
+        """#1199 K13 (16.10.): an orga-hive pass (a tree without `workshop/tools`) ran on
+        build04 after a meclaw pass; its fingerprint said "no playwright in
+        workshop/tools/node_modules (npm ci there)", the register took it and the
+        admission refused every meclaw browser pass there ("can never take the pass").
+        Two trees: the meclaw tree's probe said ok, the satellite's comes from the
+        real script. The meclaw browser pass is admitted after the satellite's run."""
+        lanes = self.lanes("north")
+        self.run_on("meclaw", {"playwright": "1.63.0", "browsers": {"chromium": "ok", "webkit": "ok"}})
+        foreign = self.foreign_browsers()
+        self.run_on("orga", {"playwright": None, "browsers": foreign})
+        schedule.sync_runners(self.db, lanes)  # as every `lanes status` and admission round
+        cap = json.loads(self.runner("north")["capacity"])
+        self.assertEqual((1, 1), (cap["browser_chromium"], cap["browser_webkit"]))
+        adm = self.admit(self.browser_plan())
+        self.assertNotIsInstance(adm, schedule.Queued, adm)
+        self.assertEqual("north", adm.lane)
+        # the core's run expects its own tree, the satellite's its own (`register_view`)
+        self.assertEqual("1.63.0", adm.dispatch["fingerprint_expected"]["playwright"])
+        self.assertNotIn("repos", adm.dispatch["fingerprint_expected"])
+
+    def test_a_satellite_run_expects_its_own_tree_fields(self):
+        # the class of K13: every field the tree decides (TREE_FIELDS), not only browsers
+        self.lanes("north")
+        self.run_on("meclaw", {"rustc": "rustc 1.98.0", "playwright": "1.63.0", "kernel": "6.8"})
+        self.run_on("orga", {"rustc": "rustc 1.90.0", "playwright": None, "kernel": "6.9"})
+        reg = json.loads(self.runner("north")["fingerprint"])
+        self.assertEqual(("rustc 1.98.0", "1.63.0", "6.9"),
+                         (reg["rustc"], reg["playwright"], reg["kernel"]))
+        sat = self.run_on("orga", {"rustc": "rustc 1.90.0", "playwright": None, "kernel": "6.9"})
+        want = sat.dispatch["fingerprint_expected"]
+        self.assertEqual(("rustc 1.90.0", None, "6.9"),
+                         (want["rustc"], want["playwright"], want["kernel"]))
+        core = self.admit(light_plan())
+        self.assertEqual("rustc 1.98.0", core.dispatch["fingerprint_expected"]["rustc"])
+
+    def test_a_run_that_checked_no_browsers_keeps_the_lanes_value(self):
+        """#1199 K14 (16.10.: all four lanes, five hand fixes): a docs-only meclaw run
+        and a satellite run without a browser station wrote the browsers of their tree
+        over the lane's. Their fingerprint carries no `browsers` now (the executor
+        probes only for a run that books an engine), and the register keeps what the
+        last check said: "ok" stays ok, and the browser pass is admitted."""
+        lanes = self.lanes("north")
+        ok = {"chromium": "ok", "webkit": "ok"}
+        self.run_on("meclaw", {"playwright": "1.63.0", "browsers": ok})
+        self.run_on("orga", {"playwright": None, "browsers": self.WEBKIT_DOWN})
+        self.run_on("meclaw", {"playwright": "1.63.0"})          # docs-only
+        self.run_on("orga", {"playwright": None})                 # satellite, docs-only
+        reg = json.loads(self.runner("north")["fingerprint"])
+        self.assertEqual(ok, reg["browsers"])
+        self.assertEqual(self.WEBKIT_DOWN, reg["repos"]["orga"]["browsers"])
+        schedule.sync_runners(self.db, lanes)
+        adm = self.admit(self.browser_plan())
+        self.assertNotIsInstance(adm, schedule.Queued, adm)
+        self.assertEqual("north", adm.lane)
+
+    def test_a_stale_browser_refusal_is_measured_once_before_it_refuses(self):
+        """#1199 K14: a refusal "browsers refused" read a register value that a run
+        had written before the lane was provisioned. The admission measures the lane
+        once afresh before it refuses for good: a fresh "ok" admits the pass, a fresh
+        refusal refuses with its own reason -- and the next round measures no more."""
+        lanes = self.lanes("north")
+        self.probed("north", self.WEBKIT_DOWN)
+        schedule.sync_runners(self.db, lanes)
+        said = [{"vcpu": 24, "browsers": {"chromium": "ok", "webkit": "ok"}}]
+        asked = []
+
+        def fresh(ln):
+            asked.append(ln.name)
+            return said[0]
+
+        self.addCleanup(setattr, schedule, "_browser_remeasure", schedule._browser_remeasure)
+        schedule._browser_remeasure = fresh
+        adm = self.admit(self.browser_plan())
+        self.assertNotIsInstance(adm, schedule.Queued, adm)
+        self.assertEqual(("north", ["north"]), (adm.lane, asked))
+        cap = json.loads(self.runner("north")["capacity"])
+        self.assertEqual((1, 1), (cap["browser_chromium"], cap["browser_webkit"]))
+        self.finish(adm, {"browser:display": "GREEN"})
+        # still refused after the fresh measure: the refusal stands, measured once
+        self.probed("north", self.WEBKIT_DOWN)
+        schedule.sync_runners(self.db, lanes)
+        said[0] = {"vcpu": 24, "browsers": dict(self.WEBKIT_DOWN, webkit="still no libGL.so.1")}
+        q = self.wait(secs=0.05, plan=self.browser_plan())
+        self.assertIsInstance(q, schedule.Queued, q)
+        self.assertTrue(q.final, q.reason)
+        self.assertIn("still no libGL.so.1", q.reason)
+        self.assertEqual(["north", "north"], asked)
+        q = self.admit(self.browser_plan())     # the register is the fresh answer now
+        self.assertIsInstance(q, schedule.Queued, q)
+        self.assertEqual(["north", "north"], asked)
+
+    def test_tree_fields_cover_the_build_part(self):
+        from scripts.pipeline import executor
+        self.assertLessEqual(set(executor.BUILD_PART), set(schedule.TREE_FIELDS))
+        self.assertLessEqual(set(schedule.TREE_FIELDS), set(executor.FINGERPRINT_FIELDS))
 
     def test_a_lane_not_yet_probed_keeps_its_engines(self):
         # Before its first run with the probe a lane is not refused: the executor

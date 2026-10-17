@@ -583,8 +583,14 @@ fn a_tier_zero_recall_costs_one_store_round_trip() {
         .collect();
     assert_eq!(
         ids,
-        ["r-leg-episodes", "r-leg-beliefs", "r-leg-foresight"],
-        "the one message carries all three legs, in leg order"
+        [
+            "r-leg-episodes",
+            "r-leg-beliefs",
+            "r-leg-foresight",
+            "r-leg-mutes"
+        ],
+        "the one message carries all four legs, in leg order (GH #1225: the live \
+         mute marks ride the same round trip)"
     );
 
     let answered = run_recall(bundle_reply(call, None));

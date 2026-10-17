@@ -77,6 +77,12 @@ pub struct Verify {
     /// is set but blank: the cell then answers every POST `503`.
     #[serde(default)]
     pub secret: Option<String>,
+    /// GH #1106: the credential grant under which the vault delivers the
+    /// secret sealed, instead of `secret`. Exactly one of the two with
+    /// `hmac_sha256` and `token`; the mount stays closed (`503`) until the
+    /// box opened. `""` is no grant (GH #271).
+    #[serde(default)]
+    pub secret_grant_id: Option<String>,
     /// The request header that carries the signature or the token.
     #[serde(default)]
     pub header: Option<String>,
@@ -103,6 +109,7 @@ impl std::fmt::Debug for Verify {
                     }
                 }),
             )
+            .field("secret_grant_id", &self.secret_grant_id)
             .field("header", &self.header)
             .field("prefix", &self.prefix)
             .field("because", &self.because)
@@ -147,9 +154,19 @@ impl WebhookParams {
         VerifyKind::parse(&self.verify.kind).unwrap_or(VerifyKind::None)
     }
 
-    /// The resolved secret, `""` when the variable is blank or the kind needs none.
+    /// The resolved secret, `""` when the variable is blank, the kind needs
+    /// none, or the secret comes from a grant.
     pub fn secret(&self) -> &str {
         self.verify.secret.as_deref().unwrap_or("")
+    }
+
+    /// GH #1106: the grant the secret comes sealed under, if one is named.
+    /// The empty string is no grant (GH #271).
+    pub fn grant(&self) -> Option<&str> {
+        self.verify
+            .secret_grant_id
+            .as_deref()
+            .filter(|g| !g.is_empty())
     }
 
     /// The value refusals, in a fixed order, each naming the field. The
@@ -171,11 +188,26 @@ impl WebhookParams {
         let kind = VerifyKind::parse(&self.verify.kind)?;
         match kind {
             VerifyKind::HmacSha256 | VerifyKind::Token => {
-                if self.verify.secret.is_none() {
-                    return Err(format!(
-                        "verify.secret: required with kind {:?} (write it as ${{VAR}})",
-                        kind.as_str()
-                    ));
+                // GH #1106: one source of the secret, never two. A literal
+                // beside a grant would be a second key nobody rotates, and
+                // which one the mount checks would be a reading of the code.
+                match (self.verify.secret.is_some(), self.grant().is_some()) {
+                    (true, true) => {
+                        return Err(format!(
+                            "verify.secret_grant_id: not together with verify.secret (kind {:?}); \
+                             the secret comes either sealed from the vault or from ${{VAR}}, \
+                             never both",
+                            kind.as_str()
+                        ));
+                    }
+                    (false, false) => {
+                        return Err(format!(
+                            "verify.secret: required with kind {:?} (name a credential grant in \
+                             verify.secret_grant_id, or write it as ${{VAR}})",
+                            kind.as_str()
+                        ));
+                    }
+                    _ => {}
                 }
                 let header = self.verify.header.as_deref().unwrap_or("");
                 if header.is_empty() {
@@ -206,6 +238,7 @@ impl WebhookParams {
                 }
                 for (key, set) in [
                     ("secret", self.verify.secret.is_some()),
+                    ("secret_grant_id", self.verify.secret_grant_id.is_some()),
                     ("header", self.verify.header.is_some()),
                     ("prefix", self.verify.prefix.is_some()),
                 ] {
@@ -433,6 +466,57 @@ mod tests {
     fn a_blank_secret_parses() {
         let p = WebhookParams::parse(&with(&["verify", "secret"], json!(""))).expect("parses");
         assert_eq!(p.secret(), "");
+    }
+
+    /// GH #1106: the secret named by a grant parses without `secret`; the
+    /// mount then holds no secret until the box opened.
+    #[test]
+    fn a_grant_stands_in_for_the_secret() {
+        for kind in ["hmac_sha256", "token"] {
+            let mut v = with(&["verify", "secret"], json!(null));
+            v["verify"]["kind"] = json!(kind);
+            v["verify"]["secret_grant_id"] = json!("grant:probe-hook@t/hook");
+            let p = WebhookParams::parse(&v).expect(kind);
+            assert_eq!(p.grant(), Some("grant:probe-hook@t/hook"), "{kind}");
+            assert_eq!(p.secret(), "", "{kind}: no secret before the box");
+        }
+        assert_eq!(WebhookParams::parse(&base()).expect("base").grant(), None);
+    }
+
+    /// GH #1106: two sources of one secret are a configuration error naming
+    /// the grant key; no source at all names `verify.secret` and the grant;
+    /// an empty grant is no grant; `none` takes no grant. No refusal echoes
+    /// the secret.
+    #[test]
+    fn a_grant_beside_a_secret_or_beside_none_is_refused() {
+        let both = with(
+            &["verify", "secret_grant_id"],
+            json!("grant:probe-hook@t/hook"),
+        );
+        let e = WebhookParams::parse(&both).expect_err("both");
+        assert!(e.starts_with("verify.secret_grant_id"), "{e}");
+        assert!(!e.contains(SECRET), "{e}");
+
+        let mut empty = with(&["verify", "secret"], json!(null));
+        empty["verify"]["secret_grant_id"] = json!("");
+        let e = WebhookParams::parse(&empty).expect_err("empty grant");
+        assert!(e.starts_with("verify.secret:"), "{e}");
+        assert!(e.contains("verify.secret_grant_id"), "{e}");
+
+        let none = json!({"platform": "webhook", "mount": "m", "route": "r", "emit_to": "/",
+                          "verify": {"kind": "none", "because": "x",
+                                     "secret_grant_id": "grant:x@t/hook"}});
+        let e = WebhookParams::parse(&none).expect_err("none");
+        assert!(e.starts_with("verify.secret_grant_id"), "{e}");
+    }
+
+    /// GH #1106: the file form of a grant-only mount has no `verify.secret`
+    /// to check.
+    #[test]
+    fn a_grant_only_file_passes_the_declared_check() {
+        let mut v = with(&["verify", "secret"], json!(null));
+        v["verify"]["secret_grant_id"] = json!("grant:probe-hook@t/hook");
+        assert_eq!(validate_declared(&v), Ok(()));
     }
 
     #[test]

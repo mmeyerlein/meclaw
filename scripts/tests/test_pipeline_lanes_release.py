@@ -13,6 +13,7 @@ from a fake lane module (`schedule._lane_override`), the pid probe is patched
 import dataclasses
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from typing import Optional
@@ -223,6 +224,174 @@ class TestReleaseRun(ReleaseRunCase):
         self.assertNotEqual(0, code)
         self.assertIn("north", err)
         self.assert_untouched(adm)
+
+
+class TestReleaseLostRun(ReleaseRunCase):
+    """#1228 round 3 (16.10.): run-4005045395d9 ended `stopped/lost` on build04 --
+    its driver gone, its scope inactive, nothing in its workspace -- and kept the
+    lane until its deadline: `_live_runs` counts a lost run, `release-run` said
+    "has nothing open" (it knew only `active`), and nothing probed it again.
+    A lost run is open: the verb closes it fail-closed, and `take` closes it --
+    or an `active` run whose driver died (K13) -- by itself when the lane probe
+    finds the run gone (no answer keeps it, as I1)."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(0, schedule.lease_init(self.db, lanes="north",
+                                                lanes_file=self.lanes_file, now=T0).code)
+
+    def lost(self):
+        adm = self.orphan()
+        self.assertTrue(adm.lease_taken, "the admission took the lane lease of the run")
+        schedule.close(self.db, adm, None, lost=True, now=T0 + 120)
+        self.assertEqual(("stopped", "lost"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+        return adm
+
+    def take(self, minutes=6):
+        return schedule.lease_take(self.db, "welle-x/b", lane="north", now=T0 + 60 * minutes)
+
+    def holders(self):
+        return [r["holder"] for r in self.db.execute("SELECT holder FROM leases")]
+
+    def assert_held(self, adm):
+        self.assertEqual(("stopped", "lost"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+        self.assertIn("welle-x/a", self.holders())
+        self.assertEqual([], self.journal("run_closed"))
+
+    def test_release_run_closes_a_lost_run_and_frees_its_lease(self):
+        adm = self.lost()
+        with mock.patch.object(schedule, "_alive", lambda pid: True):
+            self.assertEqual(3, self.take().code, "a lost run with a live driver keeps the lane")
+        with mock.patch.object(schedule, "_alive", lambda pid: False):
+            code, out, err = self.release(adm.run)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("nothing open", err)
+        self.assertEqual(("stopped", "aborted"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+        self.assertNotIn("welle-x/a", self.holders(), "the run's lease goes with its close")
+        self.assertIn(("ws", "north", "/srv/target/tree"), self.fake.asked,
+                      "the run's tree is probed beside its workspace")
+        with mock.patch.object(schedule, "_alive", lambda pid: True):
+            res = self.take(minutes=7)
+        self.assertEqual(0, res.code, res.err)
+
+    def test_release_run_keeps_a_lost_run_when_the_probe_has_no_answer(self):
+        adm = self.lost()
+        self.fake.unit = None
+        with mock.patch.object(schedule, "_alive", lambda pid: False):
+            code, _, err = self.release(adm.run)
+        self.assertEqual(2, code, err)
+        self.assertIn("no answer", err)
+        self.assert_held(adm)
+
+    def test_take_closes_a_lost_run_whose_lane_probes_empty(self):
+        adm = self.lost()
+        with mock.patch.object(schedule, "_alive", lambda pid: False):
+            res = self.take()
+        self.assertEqual(0, res.code, res.err)
+        self.assertIn(adm.run, res.err)
+        self.assertEqual(("stopped", "aborted"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+        closed = self.journal("run_closed")
+        self.assertEqual([(adm.run, "lost-probe")], [(c["run"], c["by"]) for c in closed])
+        self.assertEqual(["welle-x/b"], self.holders())
+
+    def test_take_keeps_a_lost_run_when_the_probe_has_no_answer(self):
+        for unit, procs in ((None, ()), ("active", ()), ("inactive", (3131,))):
+            with self.subTest(unit=unit, procs=procs):
+                self.tearDown()
+                self.setUp()
+                adm = self.lost()
+                self.fake.unit, self.fake.procs = unit, list(procs)
+                with mock.patch.object(schedule, "_alive", lambda pid: False):
+                    res = self.take()
+                self.assertEqual(3, res.code, res.err)
+                self.assert_held(adm)
+
+    def test_take_names_a_probe_fault_and_keeps_the_lost_run(self):
+        adm = self.lost()
+
+        def boom(lane, run, timeout=None):
+            raise RuntimeError("probe broke")
+        with mock.patch.object(schedule, "_alive", lambda pid: False), \
+                mock.patch.object(self.fake, "unit_state", boom):
+            res = self.take()
+        self.assertEqual(3, res.code, res.err)
+        self.assertIn("RuntimeError: probe broke", res.err)
+        self.assertIn("the close failed", res.err)
+        self.assert_held(adm)
+
+    def test_take_keeps_the_lost_run_when_the_no_answer_note_meets_a_locked_store(self):
+        # Lease re-check m3: the no-answer note (`events.emit` in the
+        # `except ProbeUnanswered`) stood outside the fail-closed net of
+        # `_close_dead_runs`. A locked store there ended a `take` without `--wait`
+        # (and the golden lease) instead of keeping the run and saying so.
+        adm = self.lost()
+        self.fake.unit = None
+        real = schedule.events.emit
+
+        def emit(db, name, *args, **kw):
+            if name == "lease_noted":
+                raise sqlite3.OperationalError("database is locked")
+            return real(db, name, *args, **kw)
+        with mock.patch.object(schedule, "_alive", lambda pid: False), \
+                mock.patch.object(schedule.events, "emit", side_effect=emit):
+            res = self.take()
+        self.assertEqual(3, res.code, res.err)
+        self.assertIn("OperationalError: database is locked", res.err)
+        self.assertIn("the close failed", res.err)
+        self.assert_held(adm)
+
+    def test_take_closes_an_active_run_whose_driver_died(self):
+        # driver death (SIGKILL): no `finally` ran, the workpackage stays active
+        adm = self.orphan()
+        self.assertEqual("active", self.wp(adm)["state"])
+        with mock.patch.object(schedule, "_alive", lambda pid: True):
+            self.assertEqual(3, self.take().code, "a live driver keeps its run")
+        with mock.patch.object(schedule, "_alive", lambda pid: False):
+            res = self.take(minutes=7)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual(("stopped", "aborted"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+        self.assertEqual(["welle-x/b"], self.holders())
+
+    def test_take_asks_an_unanswering_lane_once_per_retry_window(self):
+        # Re-check v2-r3-lease m3: every take swept a lost run on a dead lane
+        # again -- one ssh connect timeout (10 s) per take. The no-answer is
+        # remembered per run until `LOST_PROBE_RETRY_S`; the lease stays (fail-closed).
+        adm = self.lost()
+        retry_min = schedule.LOST_PROBE_RETRY_S // 60
+        self.fake.unit = None
+        with mock.patch.object(schedule, "_alive", lambda pid: False):
+            self.assertEqual(3, self.take(minutes=6).code)
+            self.assertEqual(1, len(self.fake.asked), self.fake.asked)
+            for minutes in (7, 8, 5 + retry_min):
+                self.assertEqual(3, self.take(minutes=minutes).code)
+            self.assertEqual(1, len(self.fake.asked), "no answer is not asked again in its window")
+            self.assert_held(adm)
+            self.fake.unit = "inactive"
+            res = self.take(minutes=6 + retry_min)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual(("stopped", "aborted"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+
+    def test_take_asks_again_a_lane_that_answered(self):
+        # the window is for "no answer" only: an answering lane costs no timeout,
+        # and a run whose pid just ended is freed at the next take
+        adm = self.lost()
+        self.fake.procs = [3131]
+        with mock.patch.object(schedule, "_alive", lambda pid: False):
+            self.assertEqual(3, self.take(minutes=6).code)
+            asked = len(self.fake.asked)
+            self.fake.procs = []
+            res = self.take(minutes=7)
+        self.assertEqual(0, res.code, res.err)
+        self.assertGreater(len(self.fake.asked), asked)
+        self.assertEqual(("stopped", "aborted"), (self.wp(adm)["state"], self.wp(adm)["reason"]))
+
+    def test_take_keeps_a_lost_run_whose_driver_lives(self):
+        adm = self.lost()
+        with mock.patch.object(schedule, "_alive", lambda pid: True):
+            res = self.take()
+        self.assertEqual(3, res.code, res.err)
+        self.assert_held(adm)
+        self.assertEqual([], self.fake.asked, "a live driver keeps the run before the lane is asked")
 
 
 def setUpModule():

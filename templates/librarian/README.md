@@ -1,4 +1,4 @@
-# `librarian@1.0.1`
+# `librarian@1.0.2`
 
 The catalogue of one knowledge space ([#950](https://github.com/mmeyerlein/meclaw/issues/950)): one row per source with its path, kind, format, summary line, tags and the names of its top-level items, kept current from the space's own announcements, so that "where is the thing called X" is answered from one store and wakes no file. The hive is sealed (`params.ports: []`). Cells: `index` (code: announcement, pull, write), `query` (code: the questions), `tools` and `schemas` (code: the tool adapter and the menu), `store` (store, `write_surface: internal`). No model, no embedding request, no network.
 
@@ -39,4 +39,5 @@ The catalogue keeps every word run and its parts at case boundaries (`HTTPServer
 | Cell | Param | Default | Meaning |
 |---|---|---|---|
 | `index` | `names_max` | 64 | the most top-level names one source keeps |
+| `index` | `oneline_max` | 300 | the characters of an entry's summary line; a longer one is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
 | `query` | `scan_max` | 2000 | the most rows one `find` reads (`truncated` when reached) |

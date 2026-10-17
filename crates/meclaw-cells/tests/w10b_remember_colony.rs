@@ -154,10 +154,6 @@ fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
     std::fs::write(&p, meclaw_core::serde_json::to_string_pretty(&v).unwrap()).unwrap();
 }
 
-const SCHEDULE_ID: &str = "0190a3f2-0000-7000-8000-0000000c10b0";
-/// Never during a test run: the shipped default is the real night.
-const NEVER: &str = "0 0 0 1 1 *";
-
 const SURFACE: &str = r#"
 import sys, json
 doc = json.load(sys.stdin)
@@ -384,6 +380,11 @@ fn main_config() -> Value {
         // assertions are what makes the "nothing was lost" claim mean anything.
         {"from": "./memory/writer", "to": "./void",
          "condition": "has(hop.route) && hop.route == 'embed'"},
+        // GH #1229: every written episode also orders the night from the
+        // hive's clock (`route: clock`); this island has no clock, so that leg
+        // ends here too.
+        {"from": "./memory/writer", "to": "./void",
+         "condition": "has(hop.route) && hop.route == 'clock'"},
         // GH #1057: after its inserts extract-glue hands the written fact ids to
         // `./entity-glue` on `route: entity`; this island does not instantiate
         // the entity producer either, so that leg ends here for the same reason.
@@ -449,9 +450,11 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     // the collector's own params; GH #298 made the lane ship ON, and GH #889
     // moved the knob to the curator's writer (default "1"), so the collector
     // has no such param left and what runs below is the shipped instance.
-    patch(root, "main/talky/session-keeper/night/config.json", |v| {
-        v["params"]["schedules"][0]["schedule_id"] = json!(SCHEDULE_ID);
-        v["params"]["schedules"][0]["cron"] = json!(NEVER);
+    patch(root, "main/talky/session-keeper/close/config.json", |v| {
+        // GH #1229: the night is a window of `./close`; an empty one arms
+        // nothing, and no open generation is a firing.
+        v["params"]["night_from_utc"] = json!("00:00");
+        v["params"]["night_until_utc"] = json!("00:00");
     });
     // Every open generation is a candidate the moment the sweep runs. It was a
     // `KEEPER_IDLE_MS=0` line in the `.env` above until GH #138; the knob is a

@@ -117,6 +117,40 @@
           "condition": "context.store_origin == 'keeper-stamp'"
         },
         {
+          "from": "./sessions",
+          "to": "./close",
+          "condition": "context.store_origin == 'keeper-stamp' && context.ses_phase == 'open' && has(hop.operation) && hop.operation == 'insert' && (!has(hop.error_code) || hop.error_code == '')",
+          "modifier": {
+            "delete_context": [
+              "asker",
+              "audience_now",
+              "audience_set",
+              "chat_id",
+              "counterpart",
+              "counterpart_name",
+              "keeper_body",
+              "speaker",
+              "turn_id",
+              "user_id"
+            ]
+          }
+        },
+        {
+          "from": "./sessions",
+          "to": "./close",
+          "condition": "context.store_origin == 'kporter' && context.port_phase == 'import-applied' && context.port_table == 'sessions' && has(hop.operation) && hop.operation == 'insert' && (!has(hop.error_code) || hop.error_code == '')",
+          "modifier": {
+            "set_context": {
+              "ses_phase": "'import'"
+            },
+            "delete_context": [
+              "port_phase",
+              "port_run",
+              "port_table"
+            ]
+          }
+        },
+        {
           "from": "./close",
           "to": "./sessions",
           "condition": "has(hop.route) && hop.route == 'kstore'",
@@ -139,6 +173,11 @@
           "from": "./night",
           "to": "./close",
           "condition": "has(hop.schedule_name) && hop.schedule_name == 'night-close'"
+        },
+        {
+          "from": "./close",
+          "to": "./night",
+          "condition": "has(hop.route) && hop.route == 'night'"
         },
         {
           "from": "./stamp",

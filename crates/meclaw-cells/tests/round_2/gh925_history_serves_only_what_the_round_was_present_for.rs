@@ -1754,7 +1754,13 @@ async fn a_closed_session_hands_the_memory_only_what_its_round_was_present_for()
     let close = root.join("main/talky/session-keeper/close/config.json");
     let mut cfg = read_json(&close);
     cfg["params"]["idle_ms"] = json!(0);
+    // GH #1229: the keeper's night is a window of `./close`, and an open
+    // inside it is a firing at once -- with `idle_ms` 0 that ends the
+    // generation it opened before its turn stands on the wall (22:00-04:00
+    // UTC). The window is closed here, so only the sweep ends a session,
+    // whatever the hour of the run.
     write_json(&close, &cfg);
+    meclaw_testing::quiet_keeper_night(&root.join("main/talky/session-keeper"));
     let (h, mut ports) = boot(&td).await;
     await_menu(&h, &root, "talky").await;
 

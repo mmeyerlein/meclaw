@@ -48,6 +48,10 @@ home differs. Three guards keep the exception honest:
     gate instead, and whoever lands it must either move the anchor into the file
     or renew the exception knowingly.
 
+The 0002 exception ended on 2026-10-16 (#1199): the owner's edit had landed long
+before (bc270f4d), `precheck`'s `adr-pinned-by` refused the file without its own
+line, and the anchor moved into the ADR. The mechanism stays for the next case.
+
 WHY THE **COMMITTED** BLOB AND NOT THE FILE ON DISK
 ---------------------------------------------------
 `git show HEAD:<path>` is what is hashed, not the working copy. The working copy
@@ -111,26 +115,7 @@ COLUMNS = ("adr", "status", "anchor_home", "target")
 # ADR file -> (targets, sha256 of the COMMITTED file, why). The hash is what
 # makes the exception expire: it is taken over `git show HEAD:<path>`, so ANY
 # landed change to the ADR trips the gate. See "THE 0002 EXCEPTION" above.
-EXTERNAL_ANCHORS: dict[str, tuple[tuple[str, ...], str, str]] = {
-    "0002-kanal-talky-generation-und-das-publikum-einer-erinnerung.md": (
-        (
-            "test:the_brief_answers_a_disclosed_audience_and_a_stranger_gets_nothing",
-            "test:the_edge_pinned_audience_set_is_a_round_in_both_directions",
-            "test:a_round_change_ends_the_generation",
-        ),
-        "cf838e3e506ef5b175b7f7f119ff016cd5acdf56b1544c1f2a9d57216532d862",
-        "the spec owner's edit landed as bc270f4d (Nachtrag 2026-08-20, E7 "
-        "resolved) but the ADR still carries no Pinned-by line of its own; "
-        "its anchor is carried by plans/adr/README.md (GH #303). Exception "
-        "renewed 2026-08-21 after re-checking both anchored tests still "
-        "exist and still describe the audience decision. Second anchor MOVED "
-        "2026-08-24: GH #330 retired the `participants` alias and merged "
-        "`the_audience_set_spelling_is_a_round_in_both_directions` into "
-        "`the_edge_pinned_audience_set_is_a_round_in_both_directions`, which "
-        "carries the same decision — re-anchored, not superseded; ADR-0002 "
-        "itself is unchanged (hash still valid)",
-    ),
-}
+EXTERNAL_ANCHORS: dict[str, tuple[tuple[str, ...], str, str]] = {}
 
 STATUS_RE = re.compile(r"^\s*[-*]?\s*\**Status:?\**", re.IGNORECASE)
 PINNED_RE = re.compile(r"^\s*[-*]?\s*\**Pinned-by:?\**", re.IGNORECASE)
