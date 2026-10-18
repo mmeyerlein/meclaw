@@ -90,3 +90,8 @@ harness = "llm"
 [[rule]]
 match = "sandbox|code|harness_"
 harness = "code"
+
+[[rule]]
+# the npc template pins (GH #1267): a harness of their own, so misc keeps its eight parts
+match = "^npc_"
+harness = "npc"

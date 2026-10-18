@@ -116,10 +116,30 @@ fn override_cmd(scope: &str, matching: &str, model: &str) -> Value {
            "call_id": "c1"})
 }
 
-/// `(subscriber, params)` of every push in the output.
+/// `(subscriber, params)` of every push in the output that MOVES a cell.
+///
+/// GH #1261: a cell born on a catalogue row gets that row's package at rank
+/// `start` (the fixture rows were never pushed). That keeps the cell on its
+/// own start model and is no move, so it is left out here -- and it never
+/// names a row of the other protocol.
 fn pushes(out: &[Value]) -> Vec<(String, Value)> {
     out.iter()
         .filter(|m| m["header"]["route"] == "update")
+        .filter(|m| {
+            if m["header"]["rank"] != "start" {
+                return true;
+            }
+            let chat = m["header"]["subscriber"] == CHAT_CELL;
+            let own = if chat { CHAT_A } else { DECIDER_A };
+            assert_eq!(m["params"]["model"], own, "{m}");
+            // The invariant of this file holds on the start push too: a
+            // decisions cell is never handed a dialect (re-check M-4).
+            assert!(
+                chat || m["params"].get("wire_dialect").is_none(),
+                "a decisions cell got a dialect with its start package: {m}"
+            );
+            false
+        })
         .map(|m| {
             (
                 m["header"]["subscriber"]

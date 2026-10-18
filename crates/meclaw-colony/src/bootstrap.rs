@@ -1021,7 +1021,23 @@ pub fn plan_bootstrap_with_env(
                     );
                 }
             }
-            if let Err(reason) = factory.validate_params(&cfg.params) {
+            // GH #1268: a parked node (`<name>~<version>`, see GH #1084 above)
+            // keeps its placeholders verbatim, so the factory checks that read
+            // RESOLVED values (`validate_params`, `validate_cell_dir`) would
+            // judge `"${VAR}"` instead of the value: a `code` cell whose
+            // `params.sandbox.filesystem.read` held `${PROBE_DIR}` failed with
+            // `must be an absolute path` and the whole colony did not boot
+            // after a `replace_nodes` lift. A parked node at rest is never
+            // spawned (`register_inactive_non_spawned`), so there is nothing
+            // to validate-equal-spawn against; the `move_nodes` that unparks
+            // it runs both checks on its env-resolved params before anything
+            // is renamed (`colony.rs`, relocation read loop). Only a parked row
+            // whose persisted status says `active` (it would spawn) is still
+            // checked, so no node ever spawns unvalidated. The declared-params
+            // check below reads the file form and stays for every node.
+            let parked_at_rest = crate::mutation::validate::is_parked_path(mc_path.as_str())
+                && !matches!(overlay.get(&mc_path), Some((_id, status)) if status == "active");
+            if !parked_at_rest && let Err(reason) = factory.validate_params(&cfg.params) {
                 errors.push(BootstrapError::InvalidParams {
                     path: fs_path.clone(),
                     reason,
@@ -1047,7 +1063,8 @@ pub fn plan_bootstrap_with_env(
             // syntactic mistake is a named plan error — reported by
             // `meclaw --validate [--validate-strict]` with exit != 0 — instead of a
             // crash on the cell's first message (validate-equals-spawn).
-            if let Err(reason) = factory.validate_cell_dir(&cfg.params, fs_path) {
+            if !parked_at_rest && let Err(reason) = factory.validate_cell_dir(&cfg.params, fs_path)
+            {
                 errors.push(BootstrapError::InvalidCellDir {
                     path: fs_path.clone(),
                     reason,

@@ -294,7 +294,7 @@ decides what a statement *means* -- that is the close pass's work and the night'
   `crates/meclaw-cells/tests/misc_2/gh298_nothing_is_a_value.rs` -- the coverage half: a turn this
   block spoke for is never extracted a second time, and a well-formed "nothing" covers its turn
   while a malformed block does not.
-- `crates/meclaw-cells/tests/misc_2/gh298_per_turn_annotation.rs` -- the second part of the
+- `crates/meclaw-cells/tests/misc_3/gh298_per_turn_annotation.rs` -- the second part of the
   annotation: the three movements, at most one topic op per block, and the name copied verbatim.
 - `crates/meclaw-cells/tests/misc_8/w10b_inline_gate.rs` -- the enforced rules above, as the quality
   gate the inline lane needs and the invariance gate cannot give it: predicate spread per axis,

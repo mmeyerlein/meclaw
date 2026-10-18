@@ -56,13 +56,14 @@ NARROW_ENV = "MECLAW_GATE_NARROW"  # = pipeline.narrow.ENV
 COVERAGE_DIR_ENV = "MECLAW_PIPELINE_COVERAGE_DIR"  # = pipeline.narrow.coverage_dir
 GRAPH_DIR_ENV = "MECLAW_PIPELINE_GRAPH_DIR"  # = pipeline.graph.graph_dir
 GRAPH_AUTO_ENV = "MECLAW_PIPELINE_GRAPH_AUTO"  # = pipeline.graph.AUTO_ENV
+REPOS_ENV = "MECLAW_PIPELINE_REPOS"  # = pipeline.register.REPOS_ENV
 
 
 def isolate():
     """Point the store at a temporary directory; returns the store path."""
     tmp = tempfile.mkdtemp(prefix="pipeline-store-")
     names = (DB_ENV, NIGHT_ENV, LOCK_ENV, FLAKE_ISSUES_ENV, FLAKE_DRAFTS_ENV, NARROW_ENV,
-             COVERAGE_DIR_ENV, GRAPH_DIR_ENV, GRAPH_AUTO_ENV) \
+             COVERAGE_DIR_ENV, GRAPH_DIR_ENV, GRAPH_AUTO_ENV, REPOS_ENV) \
         + OUTBOUND_ENVS + OUTER_RUN_ENVS
     saved = {name: os.environ.get(name) for name in names}
     _SAVED.append((tmp, saved))
@@ -82,6 +83,9 @@ def isolate():
     # never into the machine's graph directory, and only where a test asks.
     os.environ[GRAPH_DIR_ENV] = str(pathlib.Path(tmp) / "graph")
     os.environ[GRAPH_AUTO_ENV] = "0"
+    # GH #1262: the register words come from the built-in entries alone, never
+    # from the machine's host file (absent here; a test writes its own).
+    os.environ[REPOS_ENV] = str(pathlib.Path(tmp) / "pipeline-repos.json")
     for name in OUTBOUND_ENVS + OUTER_RUN_ENVS:
         os.environ.pop(name, None)
     side_effect_guard.install()

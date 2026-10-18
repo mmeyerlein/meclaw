@@ -1082,6 +1082,43 @@ else printf 'head %%s\n' "$(git -C "$1" rev-parse -q --verify HEAD 2>/dev/null)"
     ORIGIN_FILE, ORIGIN_FILE)
 
 
+# Whose a tree from before the origin file is (re-check v2-r3-lanetree N1): the id
+# its commit carries by the gate's own rule (`register.is_satellite`, `gate`'s
+# `origin`) -- the core's kit (`scripts/gate_plan.py`) is the core, a station register
+# without it names its `repo` -- read from the commit on the lane, not its checkout.
+OWNER_PROBE = r'''if git -C "$1" cat-file -e HEAD:scripts/gate_plan.py 2>/dev/null; then echo core
+elif git -C "$1" cat-file -e HEAD:%(r)s 2>/dev/null; then echo register; git -C "$1" show HEAD:%(r)s
+else echo none; fi''' % {"r": _register.REGISTER_PATH}
+
+
+def tree_owner(lane, tree):
+    """The repository id the commit of the lane tree `tree` carries: `schedule.CORE_REPO`
+    for the core's kit, a satellite register's `repo` -- or None for every other answer
+    (fail closed: a failed probe, no kit and no register, a register that does not parse,
+    another schema, an id `register.repo_words` does not know, a host file of
+    repositories that does not parse)."""
+    res = _remote(lane, "bash -c %s _ %s" % (q(OWNER_PROBE), q(tree)))
+    if res.returncode != 0:
+        return None
+    word, _, rest = res.stdout.decode(errors="replace").partition("\n")
+    if word == "core" and not rest.strip():
+        return _schedule.CORE_REPO
+    if word != "register":
+        return None
+    try:
+        doc = json.loads(rest)
+    except ValueError:
+        return None
+    try:
+        words = _register.repo_words()
+    except _register.RegisterError:
+        return None
+    if (isinstance(doc, dict) and doc.get("schema") == _register.SCHEMA
+            and doc.get("repo") in words):
+        return doc["repo"]
+    return None
+
+
 def check_origin(lane, top, tree, origin):
     """Refuse (`LaneError` code 5) a push of the repository `origin` into a lane tree
     another repository checked out -- nothing travels, the tree stays as it is (No-Delete).
@@ -1089,7 +1126,10 @@ def check_origin(lane, top, tree, origin):
     with this tree AFTER the checkout had rewritten the foreign one. A tree from before
     the origin file counts as this repository's only when its HEAD is a commit this
     repository knows. Fail closed (re-check M1): only `none` (nothing at the path), this
-    repository's `origin` and a known `head` pass; every other answer refuses."""
+    repository's `origin` and a known `head` pass; every other answer refuses. The
+    refusal of an unknown `head` names a way out (write the origin by hand) only when
+    the id the tree's commit carries (`tree_owner`) is `origin` -- a foreign tree's
+    refusal names its repository and no step that writes (re-check N1)."""
     said = _remote(lane, "bash -c %s _ %s" % (q(ORIGIN_PROBE), q(tree)),
                    fail="the host %s did not answer" % lane.name).stdout.decode(errors="replace")
     lines = said.splitlines()
@@ -1104,13 +1144,23 @@ def check_origin(lane, top, tree, origin):
         if subprocess.run(["git", "-C", top, "cat-file", "-e", value + "^{commit}"],
                           capture_output=True).returncode == 0:
             return
-        foreign = "a commit %s this repository does not know" % value[:12]
-        # re-check M4: a tree of this repository whose last pushed commit is gone here
-        # (a rebased or dropped strand) has no other way out -- No-Delete keeps it
-        way = ("if it is this repository's tree whose commit was dropped here (a rebased or "
-               "discarded strand), write its origin once on %s as a hand step the wave records: "
-               "echo %s >\"$(git -C %s rev-parse --absolute-git-dir)/%s\" -- never delete the "
-               "tree" % (lane.name, origin, q(tree), ORIGIN_FILE))
+        owner = tree_owner(lane, tree)
+        if owner != origin:
+            # re-check N1: a foreign tree from before the file gets no step that writes
+            # -- its origin by hand would make the next push rewrite it
+            foreign = "a commit %s this repository does not know, of %s" % (
+                value[:12], "the repository %r" % owner if owner else
+                "a repository its commit does not name (no core kit, no station register)")
+        else:
+            foreign = ("a commit %s this repository does not know, of this repository %r "
+                       "by the id the commit carries" % (value[:12], origin))
+            # re-check M4: a tree of this repository whose last pushed commit is gone here
+            # (a rebased or dropped strand) has no other way out -- No-Delete keeps it
+            way = ("if that commit was dropped here (a rebased or discarded strand -- look at "
+                   "it on %s first: git -C %s log -1 --format='%%H %%s'), write its origin once "
+                   "on %s as a hand step the wave records: echo %s >\"$(git -C %s rev-parse "
+                   "--absolute-git-dir)/%s\" -- never delete the tree"
+                   % (lane.name, q(tree), lane.name, origin, q(tree), ORIGIN_FILE))
     elif word == "origin" and value:
         foreign = "the repository %r" % value
     elif word == "unreadable" and not value:

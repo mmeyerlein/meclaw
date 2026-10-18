@@ -1,0 +1,17 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "collector@5.2.0"
+  },
+  "override_params": {
+    "assemble": {
+      "tools": [
+        "*"
+      ],
+      "sidecar": "1",
+      "fold_tools": "0",
+      "memory_tier": "0",
+      "max_iter": 8
+    }
+  }
+}

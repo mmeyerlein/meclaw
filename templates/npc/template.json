@@ -1,0 +1,44 @@
+{
+  "name": "npc",
+  "version": "1.0.0",
+  "description": {
+    "purpose": "A non-player character for a shared world: one identity seeded at instantiation, ONE llm brain behind a curator, a memory hive, the world's tools as the menu of each move, a handset. A slimmed-down agent in hive form: sealed, its own `./access` with vault grants, the `in_model` door; the tool round inside is cogny's.",
+    "use_when": "One instance per character, in a world colony or a player's own colony alike.",
+    "not_in_scope": "No companion, no counselor, no member, no apps, no session keeper: the night closes the day.",
+    "examples": [
+      "obs -> one brain call -> intent; night -> close pass + dream -> night"
+    ]
+  },
+  "requires": {
+    "ctx": {
+      "model": {
+        "type": "string",
+        "required": true,
+        "because": "the model the one brain infers with -- a RESOLVED literal"
+      }
+    },
+    "credentials": [
+      {
+        "cred_ref": "cred:openrouter",
+        "consumers": [
+          "brain",
+          "curator/summarizer",
+          "memory-hive/closer",
+          "memory-hive/dialectic",
+          "memory-hive/dreamer",
+          "memory-hive/judge",
+          "memory-hive/embed"
+        ],
+        "because": "deposit with `meclaw --vault-add cred:openrouter` (#801)"
+      }
+    ]
+  },
+  "tags": [
+    "npc",
+    "character",
+    "llm",
+    "memory"
+  ],
+  "author": "@mmeyerlein",
+  "license": "MIT"
+}

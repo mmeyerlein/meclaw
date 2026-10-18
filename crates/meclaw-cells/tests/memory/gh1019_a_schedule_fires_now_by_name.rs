@@ -424,6 +424,11 @@ fn read_only(p: &std::path::Path) -> Option<rusqlite::Connection> {
 /// id per name, so every order replaces the last (GH #1229).
 const NIGHT_ID: &str = "804e2ea8-9f6a-57fc-9a55-551efa8c0aa5";
 
+/// The id the writer orders the night asked for NOW under (GH #1266):
+/// `watchdog_id("nightly-dream-now")`, beside [`NIGHT_ID`], so the re-arm of
+/// an episode written before it fires cannot replace it.
+const NOW_ID: &str = "301ad080-b16d-5360-829b-370013a6aed0";
+
 /// Every row of the hive clock, in any status:
 /// `(schedule_id, schedule_name, kind, at_utc, status)`, `at_utc` '' for a cron.
 fn clock_rows(td: &TempDir) -> Vec<(String, String, String, String, String)> {
@@ -606,12 +611,62 @@ async fn gh1019_the_night_runs_now_from_outside_the_sealed_hive() {
     assert_eq!(
         clock_rows_unclocked(&td),
         vec![(
-            NIGHT_ID.to_string(),
+            NOW_ID.to_string(),
             "nightly-dream".to_string(),
             "at".to_string(),
             "completed".to_string(),
         )],
         "the clock holds the one night the trigger armed, fired once"
+    );
+    h.shutdown().await;
+}
+
+/// GH #1266: the night asked for now stands under an id of its own. An episode
+/// written before it fires re-arms the night at `night_at_utc` beside it and
+/// leaves this one standing: the night runs now, and the clock keeps both
+/// orders. Under one id the episode's re-arm moved the night to the next
+/// `night_at_utc`, and the night asked for never ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1266_an_episode_written_meanwhile_keeps_the_night_asked_for_now() {
+    if !shipped() {
+        eprintln!("gh1266: the memory hive is not in this tree, skipped (GH #49)");
+        return;
+    }
+    let td = TempDir::new().expect("tempdir");
+    build(&td, &[]);
+    let (h, _rx) = boot(&td).await;
+
+    h.send(clock_op(
+        json!({"messages": [], "op": "trigger", "schedule_name": "nightly-dream"}),
+    ))
+    .await;
+    h.send(in_episode("s-1266#1", "The bakery opens at six."))
+        .await;
+    let written = until("the episode is written", || recorded_at(&td, "s-1266#1")).await;
+    h.quiesce().await;
+    let ids: Vec<String> = clock_rows(&td).into_iter().map(|r| r.0).collect();
+    assert_eq!(
+        ids,
+        vec![NOW_ID.to_string(), NIGHT_ID.to_string()],
+        "the night asked for now and the episode's night are two orders"
+    );
+    let done = until(
+        "the night asked for now runs although an episode was written meanwhile",
+        || {
+            let n = nights(&td);
+            n.iter().any(|(_, s)| s == "done").then_some(n)
+        },
+    )
+    .await;
+    assert_eq!(done.len(), 1, "one trigger, one night");
+    let night = clock_rows(&td)
+        .into_iter()
+        .find(|r| r.0 == NIGHT_ID)
+        .expect("the episode's night");
+    assert_eq!(
+        (night.3, night.4),
+        (next_night(&written), "active".to_string()),
+        "the episode armed the next night_at_utc beside the night asked for now"
     );
     h.shutdown().await;
 }
@@ -665,7 +720,7 @@ async fn gh1019_the_rim_carries_the_trigger_and_nothing_else() {
     assert_eq!(
         clock_rows_unclocked(&td),
         vec![(
-            NIGHT_ID.to_string(),
+            NOW_ID.to_string(),
             "nightly-dream".to_string(),
             "at".to_string(),
             "completed".to_string(),

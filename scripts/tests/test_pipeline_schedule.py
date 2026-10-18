@@ -2438,6 +2438,15 @@ class TestBrowserLanes(ScheduleCase):
         self.assertEqual((1, 0), (cap["browser_chromium"], cap["browser_webkit"]))
         self.assertEqual("south", self.admit(self.browser_plan()).lane)
 
+    def test_the_dispatch_names_the_lane_root(self):
+        """GH #1263: the executor finds the lane's core tools for a tree without its own
+        under the root the admission names -- never a guess from the tree's path."""
+        self.lanes("north", root="/srv/lane-n/")
+        self.probed("north", {"chromium": "ok", "webkit": "ok"})
+        adm = self.admit(self.browser_plan())
+        self.assertEqual("/srv/lane-n", adm.dispatch["+lane_root"])
+        self.assertTrue(adm.dispatch["tree"].startswith("/srv/lane-n/"), adm.dispatch["tree"])
+
     def test_no_lane_that_starts_webkit_refuses_with_the_reason(self):
         lanes = self.lanes("north")
         self.probed("north", self.WEBKIT_DOWN)

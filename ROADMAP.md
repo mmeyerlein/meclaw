@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.66.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.67.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,11 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.67.0: a new `npc` template for a non-player character in a shared world, with one identity, one brain behind
+  a curator, a memory hive, the world's tools as its moves, a handset and a night that closes the day; the memory
+  hive's night runs its entity and recurrence passes again and writes in the language it read; a parked node no
+  longer blocks the boot; the curator's bridge never refuses the request it covers; a brain born on a catalogue
+  model gets its package before its first call; the kit registers satellite repositories from host configuration
 - v0.66.0: a talky turn leaves with a route stamp, and the curator hands a talk or simple turn to a quick model cell
   behind it, gives a complex one a bridge sentence and names the wait of a research one while the talk goes on; an
   `llm` cell speaks the native Anthropic Messages wire (images, effort and thinking, cache breakpoints) and the

@@ -8157,9 +8157,29 @@ pub(crate) async fn handle_mutation(
         // at its new address from the configuration it already carries — so a file
         // that cannot be read, substituted, parsed or compiled has to stop the
         // mutation here, not half-way through a rename sequence.
+        //
+        // GH #1268: and validate it the way the boot would, on the resolved
+        // params: a parked node at rest skips the factory checks at boot, so
+        // the move that unparks it is the place they run (boot parity, #404).
         relocated_nodes.reserve(planned_moves.len());
         for mv in &planned_moves {
-            match crate::mutation::relocate::read_relocated_node(&mv.from_dir, &env) {
+            let read = crate::mutation::relocate::read_relocated_node(&mv.from_dir, &env).and_then(
+                |node| {
+                    if let Some(factory) = factories.get(&node.cell_type) {
+                        factory
+                            .validate_params(&node.params)
+                            .and_then(|()| factory.validate_cell_dir(&node.params, &mv.from_dir))
+                            .map_err(|reason| {
+                                crate::mutation::MutationError::InvalidParams(format!(
+                                    "move_nodes: {}: {reason}",
+                                    mv.from.as_str()
+                                ))
+                            })?;
+                    }
+                    Ok(node)
+                },
+            );
+            match read {
                 Ok(node) => relocated_nodes.push(node),
                 Err(err) => {
                     send_eda_reject(

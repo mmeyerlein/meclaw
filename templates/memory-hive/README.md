@@ -1,4 +1,4 @@
-# `memory-hive@3.16.0`
+# `memory-hive@3.16.1`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -580,7 +580,8 @@ store (the turns, the records those turns left standing, the topics still open a
 hive's `MODEL_CLOSER` slot — answers each with a verdict. A round is the set of turns with one
 audience (GH #933): its prompt holds only those turns and only the open records and topics of that
 same audience, every fact it writes carries that audience, and a turn without an audience is in
-no prompt. The verdict costs one extra store round trip on
+no prompt. The closer writes every record in the language its turns are written in, and the
+dreamer every belief in the language of its facts -- never in a default English. The verdict costs one extra store round trip on
 purpose: a `code` cell is stateless, and every one of the four points needs something only the
 READ phases saw, so the verdict parks itself next to those four sets and is read back with them.
 
@@ -1311,7 +1312,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.16.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.16.1` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1717,7 +1718,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.6.0",
+{"add_nodes": [{"name": "alex", "template": "member@2.6.1",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1923,12 +1924,13 @@ its own `consolidation_log` row.
 hive is sealed and its clock sits behind the rim, so a POST at `<hive>/clock` ends as
 `hive_boundary`. The lane `clock_op` at the hive path is the way in, and since #1229 it ends at
 `./writer`, not at the clock: `{"messages": [], "op": "trigger", "schedule_name": "nightly-dream"}`
-(the name may be left out) makes the writer order the night two seconds ahead under the night's
-own id. That replaces a night armed for `night_at_utc`, the run is the one a nightly strike would
-start, and the next written episode arms the next night. A replay fires one night per recorded day
-this way and reads the receipt in `consolidation_log` -- and waits for it before it writes the
-next day, because an episode written in those two seconds orders the night for `night_at_utc`
-again. The lane carries the trigger and nothing else: `add`, `modify`, `remove`, a `params` slot,
+(the name may be left out) makes the writer order the night two seconds ahead under an id of its
+own, beside the night armed for `night_at_utc`: an episode written in those two seconds re-arms
+that night and leaves this one standing ([#1266](https://github.com/mmeyerlein/meclaw/issues/1266)). The run is the one a nightly strike
+would start. A replay fires one night per recorded day this way and reads the receipt in
+`consolidation_log` before it triggers the next night: a night triggered while one runs covers
+the same window again. The night at `night_at_utc` its episodes arm runs later as one more delta,
+`skipped: unchanged` when nothing was written since. The lane carries the trigger and nothing else: `add`, `modify`, `remove`, a `params` slot,
 a `schedule_id` or another name are refused by the writer on the hive's `reject` lane
 (`reject_reason: op_not_accepted`) and never reach the clock. An `add` would otherwise plant a
 strike the clock emits from inside the hive, at any inner cell past the rim, and a `modify` or

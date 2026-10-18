@@ -100,6 +100,22 @@ station would grade it anyway:
                     batch merge 17.10.). A placeholder (`<wave>`, `<S>`) or a
                     file no commit after the gate changes names none. Added
                     lines only.
+    wall-clock      an ADDED line of product code (`crates/*/src/**` without
+                    meclaw-testing and test items, `templates/**` scripts and
+                    every `script_inline`) that reads the wall clock directly
+                    -- Rust: the path form `Type::method` of the `wall:`
+                    rows of `.github/gates/clock-bans/clippy.toml`
+                    (`SystemTime::now`, `SystemTime::elapsed(&t)`, chrono
+                    `Utc::now`/`Local::now`; `.elapsed()` on a value is the
+                    typed unwrap ratchet's, not this rule's); Python
+                    `time.time`, `datetime.now`/`utcnow`; JS `Date.now`,
+                    `new Date()` -- without a marker `wall-clock: <param|env>`
+                    naming a test override the tree carries (a param or an
+                    env, never a word of the read line; `scripts/wall_clock.py`). The
+                    session keeper's night window read the clock, and ~24
+                    tests were red only between 22:00 and 04:00 UTC
+                    (K-UHREN); the testing bans see test code only. Stock
+                    lines are not graded. NOTE `no merge base` without one.
 
 NOTE -- read, do not stop. These are the review findings that repeat, and a
 note before the review is a fix round saved:
@@ -836,6 +852,13 @@ def _blank_comments(text):
         lambda m: " " * len(m.group()) if m.group().startswith("//") else m.group(), text)
 
 
+def check_wall_clock(files, repo):
+    """A new wall-clock read in product code without its test override
+    (`scripts/wall_clock.py`, K-UHREN)."""
+    import wall_clock
+    yield from wall_clock.scan(files, repo, base=_base(repo))
+
+
 def check_kdf_off_worker(files, repo):
     """A vault key derivation put back onto a runtime worker (GH #1216)."""
     for path in files:
@@ -1035,7 +1058,7 @@ NATIVE_CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_fil
                  check_testing_rules, check_changelog_mark,
                  check_since_sentence, check_since_doc, check_run_artefact,
                  check_plan_cap, check_name_pattern, check_kdf_off_worker,
-                 check_recheck_mode, check_wave_name)
+                 check_recheck_mode, check_wave_name, check_wall_clock)
 
 
 def _lock_check(name, fn):

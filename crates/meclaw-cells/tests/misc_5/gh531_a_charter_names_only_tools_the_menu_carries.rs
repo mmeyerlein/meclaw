@@ -93,6 +93,13 @@ const CURATOR_SCHEMAS_CELL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../templates/curator/schemas/config.json"
 );
+// GH #552 -- the memory hive answers `memory_recall`. A composite that holds its
+// own memory hive (`npc`) asks it the menu question inside, the way a member's
+// collector reaches the member's memory.
+const MEMORY_SCHEMAS_CELL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/memory-hive/schemas/config.json"
+);
 
 /// Every name the shipped tool hive has a declaration for, asked the way its own
 /// hive asks — `["*"]` is the wildcard the door already understands, so this is
@@ -108,6 +115,15 @@ fn what_the_curator_answers() -> BTreeSet<String> {
         return BTreeSet::new();
     }
     what_a_schemas_cell_answers(CURATOR_SCHEMAS_CELL, "/main/talky/curator/schemas")
+}
+
+/// Every tool name a memory hive answers the menu question with (GH #552),
+/// read off its `schemas` cell the same way.
+fn what_the_memory_hive_answers() -> BTreeSet<String> {
+    if !std::path::Path::new(MEMORY_SCHEMAS_CELL).is_file() {
+        return BTreeSet::new();
+    }
+    what_a_schemas_cell_answers(MEMORY_SCHEMAS_CELL, "/main/npc/memory-hive/schemas")
 }
 
 /// Every `file_*` tool the member's file space answers the menu question with
@@ -185,6 +201,11 @@ const COMPOSITES: &[Composite] = &[
         name: "cogny",
         graph: "cogny/config.json",
         layers: &[("cogny/collector/config.json", "assemble")],
+    },
+    Composite {
+        name: "npc",
+        graph: "npc/config.json",
+        layers: &[("npc/collector/config.json", "assemble")],
     },
     Composite {
         name: "assistant",
@@ -306,6 +327,45 @@ fn asks_its_curator(c: &Composite) -> bool {
     })
 }
 
+/// Whether this composite asks a memory hive of its OWN the menu question and
+/// takes the answer onto its menu: `./collector -> ./memory-hive` on `schemas`, and
+/// `./memory-hive -> ./collector` on `tool_schemas` into `in_menu`, a
+/// ref of `memory-hive@`. Both halves, because a question whose answer never
+/// reaches the collector puts nothing on the menu.
+fn asks_its_memory(c: &Composite) -> bool {
+    let Some((dir, _)) = c.graph.split_once('/') else {
+        return false;
+    };
+    let is_memory_hive = read(&format!("{dir}/memory-hive/config.json")).is_some_and(|m| {
+        m["cell"]["type"] == "ref"
+            && m["cell"]["template"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("memory-hive@"))
+    });
+    let Some(cfg) = read(c.graph) else {
+        return false;
+    };
+    let edges = cfg["params"]["graph"]["edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let on = |e: &Value, from: &str, to: &str, lane: &str| {
+        e["from"] == from
+            && e["to"] == to
+            && e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains(&format!("hop.route == '{lane}'")))
+    };
+    let asks = edges
+        .iter()
+        .any(|e| on(e, "./collector", "./memory-hive", "schemas"));
+    let answer_lands = edges.iter().any(|e| {
+        on(e, "./memory-hive", "./collector", "tool_schemas")
+            && e["modifier"]["set_hop"]["route"] == "'in_menu'"
+    });
+    is_memory_hive && asks && answer_lands
+}
+
 /// Every name some answerer of this composite delivers: the tool hive, the
 /// composite's own routing, and its curator when it asks it.
 fn answered(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
@@ -327,6 +387,9 @@ fn answered(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
     }
     if asks_its_curator(c) {
         out.extend(what_the_curator_answers());
+    }
+    if asks_its_memory(c) {
+        out.extend(what_the_memory_hive_answers());
     }
     out
 }
@@ -386,6 +449,9 @@ fn menu(c: &Composite, hive: &BTreeSet<String>) -> BTreeSet<String> {
         all.extend(routed(c).intersection(&own).cloned());
         if asks_its_curator(c) {
             all.extend(what_the_curator_answers());
+        }
+        if asks_its_memory(c) {
+            all.extend(what_the_memory_hive_answers());
         }
         return all;
     }
@@ -629,5 +695,34 @@ fn a_fabricated_declaration_without_an_answerer_is_reported() {
         routed.contains("consult_cogny"),
         "and the shipped level DOES route its errand, which is why declaring it is right: \
          {routed:?}"
+    );
+}
+
+/// The inner memory hive counts as an answerer only where the composite holds
+/// one AND wires both halves of the menu question; the memory hive's own cell
+/// answers `memory_recall`, read off the cell rather than typed here.
+#[test]
+fn only_a_composite_with_its_own_memory_hive_is_answered_by_it() {
+    assert!(
+        what_the_memory_hive_answers().contains("memory_recall"),
+        "the memory hive's schemas cell must answer memory_recall (GH #552)"
+    );
+    for c in COMPOSITES {
+        let expect = c.name == "npc";
+        assert_eq!(
+            asks_its_memory(c),
+            expect,
+            "{}: asks_its_memory must be {expect}",
+            c.name
+        );
+    }
+    let fake = Composite {
+        name: "nowhere",
+        graph: "__no_such_dir__/config.json",
+        layers: &[],
+    };
+    assert!(
+        !asks_its_memory(&fake),
+        "a composite without a graph asks no memory"
     );
 }

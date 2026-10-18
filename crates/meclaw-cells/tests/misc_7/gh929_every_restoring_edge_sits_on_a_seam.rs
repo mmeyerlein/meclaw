@@ -76,6 +76,7 @@ const fn row(
 const ASSISTANT: &str = "assistant/config.json";
 const TALKY: &str = "talky/config.json";
 const COGNY: &str = "cogny/config.json";
+const NPC: &str = "npc/config.json";
 const BUILDER: &str = "builder/config.json";
 const FILE_SPACE: &str = "file-space/config.json";
 const MEMBER: &str = "member/config.json";
@@ -196,6 +197,22 @@ const SEAMS: &[Row] = &[
         Seam::CuratorEntry,
     ),
     row(COGNY, "./curator", "./brain", "brain", None, Seam::Round),
+    // The npc (GH #1267): the cogny round behind a world adapter. A move, the
+    // night's close and an interview each enter from the adapter as a door;
+    // the close pass enters the memory the npc owns, as at the member.
+    row(NPC, "./world", "./collector", "in_turn", None, Seam::Door),
+    row(NPC, "./world", "./curator", "in_close", None, Seam::Door),
+    row(NPC, "./world", "./brain", "brain", None, Seam::Door),
+    row(
+        NPC,
+        "./collector",
+        "./curator",
+        "curate",
+        None,
+        Seam::CuratorEntry,
+    ),
+    row(NPC, "./curator", "./brain", "brain", None, Seam::Round),
+    row(NPC, "./curator", "./memory-hive", "write", None, Seam::Door),
     // The builder's round: a new composition, and its repair.
     row(BUILDER, "./weave", "./compose", "fire", None, Seam::Round),
     row(BUILDER, "./weave", "./compose", "repair", None, Seam::Round),

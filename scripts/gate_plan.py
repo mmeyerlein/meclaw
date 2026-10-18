@@ -80,14 +80,30 @@ CLASSES (a path can carry several)
                   and versions a persona is made of, plus the engine seam it is measured with
     evals_persona workshop/evals/persona/** -- its committed report included; it is NOT in IGNORED
     gate_infra    scripts/gate.sh, scripts/gate_legacy.sh, scripts/gate_plan.py,
-                  scripts/precheck.py, scripts/pipeline/pre.py, scripts/pipeline/locks.py,
+                  scripts/precheck.py with the rules it imports (scripts/testing_bans.py,
+                  scripts/wall_clock.py), scripts/pipeline/pre.py, scripts/pipeline/locks.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
                   scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py,
                   scripts/stop_watch.py, scripts/check_required_pins.py,
                   .config/required-pins.toml (the strand kit, the receipt builder, the stop
                   watch of long runs and the required-pin check carry their tests in
-                  `gate-selftest`), scripts/pipeline.py,
+                  `gate-selftest`), scripts/cargo-target.sh, scripts/lane_sync.sh,
+                  scripts/strand-gate.sh, scripts/harness_fold.py,
+                  scripts/check_roadmap_anchors.py, scripts/git_merge_display_sync.py,
+                  scripts/display_sheet_strip.py (rule: a script a test under
+                  scripts/tests/ imports, runs or copies into a fixture tree and
+                  runs is gate_infra -- its solo diff plans that test, GH #1199;
+                  a script a test only names in a list is not, each such name
+                  with its reason in `test_gate_plan.Classify.NAMED_ONLY`; a
+                  test that reads every script by glob as a form rule
+                  (test_lane_engstelle) is no reader: its rule is the text,
+                  not the behaviour, GH #1168),
+                  .github/gates/clock-bans/clippy.toml (also unwrap_infra:
+                  precheck's wall-clock rule reads its Rust forms there),
+                  .github/gates/unwrap_budget.py (also unwrap_infra: the rule
+                  reads that list through the ratchet's own read_bans),
+                  scripts/pipeline.py,
                   scripts/pipeline/** and workshop/grafana/** (the pipeline core and
                   its dashboard), .config/nextest.toml
                   (the profile that decides what may be retried is gate
@@ -374,9 +390,38 @@ STATIONS (S strand, I integration, R release, C ci)
                     in tests, tests reaching into a never-exported root,
                     name/domain patterns, relative links -- in the
                     integration pass instead of an hour later in the release.
+                    R8 dry (GH #1199, v2-r3-rest): every dry shape runs
+                    german_scan with the reach of the full run -- the
+                    exported files under `make_export.R8_ROOTS` (TREE_DIRS,
+                    templates/, .gitignore), both modes (`--strict`,
+                    `--strings --strict`), the same declarations -- over
+                    blobs of the export tree, without extracting one;
+                    I over the whole subset (about 5 s over 2,639 files,
+                    measured at v2-r3-rest), S over `--r8-paths` (its
+                    diff's files under R8_ROOTS; `make_export.py` or
+                    `german_scan.py` among them = the whole subset; an
+                    empty list judges no file).
+                    R runs R8 in the extracted tree. 0.65.0: 20 German
+                    strings in templates/memory-hive passed strand and merge
+                    gates, the release pre-run was red.
                     S (V2-A18, GH #1199) on a diff at an exported test source
                     (`make_export._is_exported_test`: `crates/*/tests/**`,
-                    `*_test.rs`), at `templates/**` or at `make_export.py`:
+                    `*_test.rs`), at `templates/**`, at `make_export.py`, at
+                    `german_scan.py` (R8's declarations) or at a file R8
+                    scans (`make_export.r8_scans`; v2-r3-rest), or at the
+                    resolver hull (`resolver_hull()`, v2-r3-r15plan): R15
+                    runs `scripts.tests.test_gate_plan` in the export tree,
+                    which has no `.git`, and with it every `scripts.tests`
+                    module it imports, transitively -- read from the tree,
+                    never a list. R15's
+                    resolver module rides only on a diff that holds what it
+                    judges (an exported test, a template, make_export.py) and
+                    no kit station that runs it, or on a diff at the hull,
+                    kit station or not: `export-tree-tests --kit` runs it in
+                    `kit_repo`, a one-commit repository WITH `.git`, blind to
+                    a test that needs git (v2-r3-rest 704540706 reached
+                    master green and was red in R15); a diff only R8 reads drops
+                    it (`--no-public-resolver`) -- it never ran there:
                     the dry audit over the gated tree (`--worktree`, HEAD plus
                     the overlay) with `--no-gate-receipt` -- a strand gate has
                     no I/R receipt, so R11/R12/R14/R17 are dropped (reported
@@ -432,7 +477,7 @@ TSV:   EXACTLY FIVE tab-separated columns on every row, in this order:
        entries -- the label is a class of the path (`rust_src`, `docs`, ...)
        or one of `diff` (any path), `template:<name>`, `example:<name>`,
        `recall_src`, `make_export` (`plans/export-fixtures/make_export.py`),
-       `read` (rule 8 of
+       `r15_hull` (a file of `resolver_hull()`), `read` (rule 8 of
        `test_filter`); a station the MODE
        plans says `mode: <mode>`, one every mode plans says `always`,
        `slow-tests` says `station: tests`, the empty-diff floor `floor: empty
@@ -447,6 +492,7 @@ TSV:   EXACTLY FIVE tab-separated columns on every row, in this order:
 """
 
 import argparse
+import ast
 import collections
 import fnmatch
 import glob as globmod
@@ -977,6 +1023,7 @@ def _crate_of(path):
 
 
 GERMAN_SCAN = "plans/p5.5-fixtures/german_scan.py"
+CLOCK_BANS = ".github/gates/clock-bans/clippy.toml"
 MAKE_EXPORT = "plans/export-fixtures/make_export.py"
 _EXPORT_RULES = []
 _EXPORT_MODULE = []
@@ -1032,11 +1079,87 @@ def _is_exported_test(path):
     return mx is not None and mx._is_exported_test(path)
 
 
+def _feeds_r8(path):
+    """GH #1199 (v2-r3-rest): a file R8 scans in the export --
+    `make_export.r8_scans` of this tree (german_scan's files under
+    `R8_ROOTS`, one list, loaded); False where the tree has no plans/."""
+    mx = _export_module()
+    return mx is not None and mx.r8_scans(path)
+
+
+def _feeds_the_resolver(path):
+    """What R15's resolver module judges in the export tree: an exported test
+    source, a template, `make_export.py` (the V2-A18 set)."""
+    return path == MAKE_EXPORT or path.startswith("templates/") or _is_exported_test(path)
+
+
+# GH #1199 (v2-r3-r15plan): the module R15 runs in the export tree.
+RESOLVER_MODULE = "scripts/tests/test_gate_plan.py"
+_RESOLVER_HULL = []
+
+
+def _scripts_tests_imports(path, source=None):
+    """The `scripts.tests` modules the file `path` of this tree imports
+    (`from scripts.tests import a`, `from scripts.tests.a import x`, `import
+    scripts.tests.a`; inside `scripts/tests/` also `from . import a`, `from .a
+    import x` and the top-level fallback `import a`), as tree paths of files
+    this tree has -- read by `ast`. `source`: that text instead of the file."""
+    try:
+        if source is None:
+            with open(os.path.join(REPO_ROOT, path), encoding="utf-8") as fh:
+                source = fh.read()
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, ValueError):
+        return []
+    sibling = posixpath.dirname(path) == "scripts/tests"
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module == "scripts.tests":
+                names += [a.name for a in node.names]
+            elif node.module.startswith("scripts.tests."):
+                names.append(node.module.split(".")[2])
+        elif isinstance(node, ast.ImportFrom) and node.level == 1 and sibling:
+            names += [node.module.split(".")[0]] if node.module else [a.name for a in node.names]
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.startswith("scripts.tests."):
+                    names.append(a.name.split(".")[2])
+                elif sibling:
+                    names.append(a.name.split(".")[0])
+    out = []
+    for name in names:
+        rel = "scripts/tests/%s.py" % name
+        if rel not in out and os.path.isfile(os.path.join(REPO_ROOT, rel)):
+            out.append(rel)
+    return out
+
+
+def resolver_hull():
+    """`RESOLVER_MODULE` and every `scripts.tests` module it imports,
+    transitively: the tests R15 runs in the export tree, which has no `.git`
+    (`export-tree-tests --kit` runs them in `kit_repo`, which has one). Read
+    from this tree once per process, never a list (v2-r3-r15plan)."""
+    if not _RESOLVER_HULL:
+        hull, todo = set(), [RESOLVER_MODULE]
+        while todo:
+            rel = todo.pop()
+            if rel in hull or not os.path.isfile(os.path.join(REPO_ROOT, rel)):
+                continue
+            hull.add(rel)
+            todo += _scripts_tests_imports(rel)
+        _RESOLVER_HULL.append(frozenset(hull))
+    return _RESOLVER_HULL[0]
+
+
 def _feeds_the_strand_audit(path):
     """V2-A18: what the cheap export rules judge -- an exported test source,
-    anything under `templates/` -- or the rules themselves (`make_export.py`).
-    S runs the dry `export-audit` on it."""
-    return path == MAKE_EXPORT or path.startswith("templates/") or _is_exported_test(path)
+    anything under `templates/` -- or the rules themselves (`make_export.py`,
+    and `german_scan.py` for R8), or any file R8 scans (GH #1199 v2-r3-rest),
+    or a file of the resolver hull, which R15 runs without a repository
+    (v2-r3-r15plan). S runs the dry `export-audit` on it."""
+    return (path == GERMAN_SCAN or _feeds_the_resolver(path) or _feeds_r8(path)
+            or path in resolver_hull())
 
 
 def _feeds_the_kit_stations(path):
@@ -1062,12 +1185,29 @@ def strand_audit_cmd(files, kit):
     The module holds real-tree tests over the crates' test units and the
     templates as well, so a test or template diff without a kit station keeps
     it (GH #1199, re-check I1): a switch rides on the station that carries what
-    it drops, in the same plan, or not at all."""
-    cmd = list(STRAND_AUDIT) + (["--no-public-resolver"] if kit else [])
+    it drops, in the same plan, or not at all. A diff only R8 reads
+    (v2-r3-rest: a crate source, root tests/, examples/, .gitignore,
+    german_scan.py) holds nothing the module judges and never ran it: dropped.
+    A diff at the resolver hull keeps it, kit station or not: the kit half runs
+    the module in `kit_repo`, which has `.git`, and R15 runs it in a tree
+    without one (v2-r3-r15plan)."""
+    hull = files is not None and any(p in resolver_hull() for p in files)
+    drop = not hull and (kit or (files is not None
+                                 and not any(_feeds_the_resolver(p) for p in files)))
+    cmd = list(STRAND_AUDIT) + (["--no-public-resolver"] if drop else [])
     if files is None:
         return cmd
-    return cmd + ["--diff-paths"] + [p for p in files
-                                     if p == MAKE_EXPORT or _is_exported_test(p)]
+    return cmd + _r8_paths(files) + ["--diff-paths"] + [
+        p for p in files if p == MAKE_EXPORT or _is_exported_test(p)]
+
+
+def _r8_paths(files):
+    """GH #1199 (v2-r3-rest): R8 in the dry audit judges the diff's files
+    under `make_export.R8_ROOTS`; `make_export.py` or `german_scan.py` among
+    them judge the whole subset (`make_export.r8_scope`). An empty list judges
+    none. Before `--diff-paths`, which stays last."""
+    return ["--r8-paths"] + [p for p in files if p in (MAKE_EXPORT, GERMAN_SCAN)
+                             or _feeds_r8(p)]
 
 
 def _classes_of_path(path):
@@ -1111,11 +1251,18 @@ def _classes_of_path(path):
     # checker must re-run it, and neither is a Rust source. The `scripts/
     # check_*.py` anchors need no such class -- their stations run in every
     # mode anyway.
-    # The clock bans (tv-p1b) are read by the ratchet alone: a change there
-    # moves its count, so it plans the station and moves its cache key.
+    # The clock bans (tv-p1b): a change there moves the ratchet's count, so
+    # it plans the station and moves its cache key. Precheck's `wall-clock`
+    # rule (`wall_clock.py`, its Rust forms are the `wall:` rows) and
+    # `test_clock_bans` read the file as well: it is gate_infra too, its solo
+    # diff plans their self-tests (v2-r3-rest). The rule reads it through the
+    # ratchet's own `read_bans`, and `test_clock_bans` loads the ratchet: the
+    # checker is gate_infra as well (re-check 9f61a3224 M1).
     if path in (".github/gates/unwrap_budget.py", ".github/gates/unwrap_budget.txt",
-                ".github/gates/clock-bans/clippy.toml"):
+                CLOCK_BANS):
         cls.add("unwrap_infra")
+    if path in (CLOCK_BANS, ".github/gates/unwrap_budget.py"):
+        cls.add("gate_infra")
 
     if path == "templates/README.md":
         cls.add("catalogue")
@@ -1222,7 +1369,18 @@ def _classes_of_path(path):
     # Since W3 (#1117) `gate.sh` is a shell: the runner body is
     # `gate_legacy.sh` and the new path is `pipeline.py` + `scripts/pipeline/`,
     # whose tests run in `gate-selftest` as well.
+    # And every script a kit test imports, runs or copies into a fixture tree
+    # and runs (#1199, the class of #1180): cargo-target.sh, lane_sync.sh and
+    # strand-gate.sh are run by the strand and gate tests, harness_fold.py is
+    # imported, check_roadmap_anchors.py run by its test, and the display
+    # merge driver with its strip rule runs in a fixture repository. A diff only
+    # at one of them planned no test that reads it. The scripts a test names
+    # without reading them stand in `test_gate_plan.Classify.NAMED_ONLY`.
     if (path in ("scripts/gate.sh", "scripts/gate_legacy.sh",
+                 "scripts/cargo-target.sh", "scripts/lane_sync.sh",
+                 "scripts/strand-gate.sh", "scripts/harness_fold.py",
+                 "scripts/check_roadmap_anchors.py", "scripts/git_merge_display_sync.py",
+                 "scripts/display_sheet_strip.py",
                  "scripts/gate_plan.py", "scripts/precheck.py",
                  "scripts/pipeline.py",
                  "scripts/pipeline/pre.py", "scripts/pipeline/locks.py",
@@ -1230,6 +1388,7 @@ def _classes_of_path(path):
                  "scripts/display_sync.py", "scripts/strand.sh",
                  "scripts/wave_receipt.py", "scripts/slow_tests.py",
                  "scripts/flake_triage.py", "scripts/testing_bans.py",
+                 "scripts/wall_clock.py",
                  "scripts/stop_watch.py",
                  "scripts/check_required_pins.py", REQUIRED_PINS,
                  ".config/nextest.toml", ".config/slow-debt.toml",
@@ -4360,6 +4519,7 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_git_merge_display_sync",
               "scripts.tests.test_precheck",
               "scripts.tests.test_precheck_testing_bans",
+              "scripts.tests.test_precheck_wall_clock",
               "scripts.tests.test_pipeline_locks",
               "scripts.tests.test_harness_fold",
               "scripts.tests.test_pipeline_pre",
@@ -4755,11 +4915,12 @@ def plan(paths, mode, repo=None):
         # That is a cold build, and it belongs under the same
         # nice/ionice/flock/build-width hygiene as any other cargo station.
         #
-        # Integration runs the SAME audit with `--skip-cargo`: R8/R9/R12-class
+        # Integration runs the SAME audit with `--skip-cargo`: R9/R12-class
         # work drops out, nothing is built (cargo:0), and what remains are the
         # cheap rules -- R2b dead template references in tests, R2c tests
-        # reaching into a never-exported root, R5 name/domain patterns, R10
-        # relative links. Those used to surface only in the
+        # reaching into a never-exported root, R5 name/domain patterns, R8
+        # German prose (german_scan over the export tree's blobs, GH #1199),
+        # R10 relative links. Those used to surface only in the
         # release pass, an hour after the integration pass had declared the
         # wave done (v0.30.0).
         #
@@ -4954,8 +5115,8 @@ STATION_TRIGGERS = {
     "persona-receipt": (("persona_source", "evals_persona"), IR_MODES),
     "export-selftest": (("export_infra",), IR_MODES),
     "export-tree-tests": (("gate_infra", "make_export"), ("release",)),
-    "export-audit": (("export_test", "template", "template_root", "catalogue", "make_export"),
-                     IR_MODES),
+    "export-audit": (("export_test", "template", "template_root", "catalogue", "make_export",
+                      "r8", "r15_hull"), IR_MODES),
 }
 
 # How many `<label>: <path>` entries one station lists before `+<n> more`: a ci
@@ -4981,6 +5142,12 @@ def _trigger_labels(path):
         labels.add("make_export")
     if _is_exported_test(path):
         labels.add("export_test")
+    if path == GERMAN_SCAN or (_feeds_r8(path) and not _feeds_the_resolver(path)):
+        # GH #1199 (v2-r3-rest): R8 alone plans the strand audit on it
+        labels.add("r8")
+    if path in resolver_hull():
+        # GH #1199 (v2-r3-r15plan): R15 runs it without a repository
+        labels.add("r15_hull")
     return labels
 
 

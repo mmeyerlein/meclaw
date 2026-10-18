@@ -2877,6 +2877,28 @@ class TestBrowserBooking(BrowserLane):
         self.assertEqual("GREEN", self.ended(evs)["browser:display"]["verdict"], self.err_text)
         self.assertEqual(["b=1", "p="], sorted(seen.read_text().split()))
 
+    def test_a_tree_without_workshop_tools_runs_on_the_lanes_core_tools(self):
+        """GH #1263 (18.10.): a satellite pass booked both engines, its tree has no
+        `workshop/tools`, and the station was RED "no playwright" beside a core tree
+        whose engines start. The admission names the lane (`+lane_root`); the probe
+        takes the core tree there. Without it the tree has no tools, as before."""
+        env = self.browser_lane(ldd="#!/bin/sh\nprintf '\\tlibc.so.6 => /lib/libc.so.6\\n'\n")
+        sat = self.root / "wt" / "sat-a"
+        (sat / "docs").mkdir(parents=True)
+        marker = self.root / "ran"
+        for lane_root, verdict in ((None, "RED"), (str(self.root), "GREEN")):
+            with self.subTest(lane_root=lane_root):
+                d = self.dispatch(self.booked("touch %s" % marker), tree=str(sat))
+                if lane_root:
+                    d["+lane_root"] = lane_root
+                d["+env"].update(env, PATH="%s:%s" % (self.bin, os.environ.get("PATH", "")))
+                rc, evs = self.run_exec(d)
+                row = self.ended(evs)["browser:display"]
+                self.assertEqual(verdict, row["verdict"], row)
+                self.assertEqual(verdict == "GREEN", marker.exists())
+                if verdict == "RED":
+                    self.assertIn("no playwright in workshop/tools/node_modules", row["reason"])
+
     def test_a_run_that_books_no_engine_never_probes_the_browsers(self):
         """#1199 K14 (16.10.: all four lanes, five hand fixes): a docs-only run, a
         satellite or a plan without a browser station probed the browsers of ITS tree
@@ -2885,7 +2907,7 @@ class TestBrowserBooking(BrowserLane):
         browsers measures them; the fingerprint of any other run says nothing."""
         calls = []
 
-        def probe(tree, env):
+        def probe(tree, env, lane_root=None):
             calls.append(tree)
             return {"chromium": "ok", "webkit": "ok"}
 

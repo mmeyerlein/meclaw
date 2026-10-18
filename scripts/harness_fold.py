@@ -153,11 +153,17 @@ def _doc_linked_stems(repo, crate):
     templates/ stays untouched by the fold (OR-DT.W5.doc), so a folded target
     leaves a dead relative link in the exported README and the export audit's R10
     goes red (W5 delta B-C1: 17 links in 10 READMEs). Such a file stays flat.
-    Without the export script nothing is public and nothing is kept.
+    Without the export script the tree is the export tree: it ships no
+    `plans/` and exactly the public templates, so every template README there
+    is public. Reading none folded 13 linked files into `misc` of the export
+    tree, its parts went from eight to ten and the nextest overrides naming
+    `misc_<n>` took no test in the public CI (GH #1267).
     """
     path = os.path.join(repo, "plans", "export-fixtures", "make_export.py")
+    tpl_dir = os.path.join(repo, "templates")
     if not os.path.isfile(path):
-        return set()
+        public = sorted(os.listdir(tpl_dir)) if os.path.isdir(tpl_dir) else []
+        return _readme_links(repo, crate, public)
     import ast
     public = []
     for node in ast.parse(_read(path)).body:
@@ -165,8 +171,13 @@ def _doc_linked_stems(repo, crate):
                 and any(isinstance(t, ast.Name) and t.id == "PUBLIC_TEMPLATES" for t in node.targets)):
             public = [e.value for e in node.value.elts
                       if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return _readme_links(repo, crate, public)
+
+
+def _readme_links(repo, crate, names):
+    """Stems the READMEs of the templates `names` link in `crate`."""
     out = set()
-    for name in public:
+    for name in names:
         readme = os.path.join(repo, "templates", name, "README.md")
         if os.path.isfile(readme):
             out |= {m["stem"] for m in _DOC_LINK_RE.finditer(_read(readme)) if m["crate"] == crate}

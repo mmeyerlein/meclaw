@@ -470,10 +470,17 @@ class TestLaneTreeOrigin(LaneTestCase):
         orga = self.make_repo(self.tmp / "orga" / "pass2")
         coding = self.make_repo(self.tmp / "coding" / "pass2")
         # one history each: the commits of one are unknown to the other (the fixture's
-        # first commits are byte-equal); the overlay README stays each one's
+        # first commits are byte-equal); the overlay README stays each one's. Each is
+        # a satellite by the gate's rule (`register.is_satellite`): its station
+        # register names its id, no core kit beside it (N1: the id a lane tree's
+        # commit carries)
         for repo in (orga, coding):
             (repo / "own.txt").write_text(repo.parent.name + "\n")
-            git(repo, "add", "own.txt")
+            (repo / "pipeline").mkdir()
+            (repo / "pipeline" / "stations.json").write_text(json.dumps(
+                {"schema": lane._register.SCHEMA, "repo": repo.parent.name, "stations": []}) + "\n")
+            git(repo, "rm", "-q", "scripts/gate_plan.py")
+            git(repo, "add", "own.txt", "pipeline/stations.json")
             git(repo, "commit", "-q", "-m", repo.parent.name)
         return orga, coding
 
@@ -516,11 +523,14 @@ class TestLaneTreeOrigin(LaneTestCase):
                 self.assertEqual(5, cm.exception.code)
                 self.assertIn("orga" if case == "origin file" else orga_rev[:12], str(cm.exception))
                 if case == "no origin file":
-                    # re-check M4: the way out of a tree whose commit this repository
-                    # dropped -- its origin once by hand, never a deletion
-                    self.assertIn('echo coding >"$(git -C %s rev-parse --absolute-git-dir)/%s"'
-                                  % (tree, lane.ORIGIN_FILE), str(cm.exception))
-                    self.assertIn("hand step", str(cm.exception))
+                    # N1 (re-check v2-r3-lanetree): a FOREIGN tree from before the file
+                    # gets no way out -- its commit names its repository (orga's
+                    # register), the refusal names it and no step that writes an origin
+                    # (the way out of an own tree: test_an_own_tree_whose_commit_...)
+                    self.assertIn("of the repository 'orga'", str(cm.exception))
+                    self.assertNotIn("echo", str(cm.exception))
+                    self.assertNotIn(lane.ORIGIN_FILE, str(cm.exception))
+                    self.assertNotIn("hand step", str(cm.exception))
                 self.assertEqual(orga_rev, git(tree, "rev-parse", "HEAD").strip())
                 self.assertEqual(orga_rev, git(bare, "rev-parse", "refs/heads/lane/pass2").strip())
                 self.assertEqual("orga run data\n", (tree / "ignored.txt").read_text())
@@ -529,6 +539,75 @@ class TestLaneTreeOrigin(LaneTestCase):
         # a tree from before the file whose commit this repository knows: its own
         lane.push(self.a, str(orga), "pass2", False, origin="orga")
         self.assertEqual("orga\n", origin_file.read_text())
+
+    def test_an_own_tree_whose_commit_was_dropped_names_the_way_out(self):
+        """Re-check M4 and N1: a tree from before the origin file whose commit this
+        repository does not know (a rebased or discarded strand) is refused, and the
+        refusal names the way out ONLY because the kit found the tree is this
+        repository's: the id its commit carries by the gate's rule (the core's kit,
+        a satellite's register) is the push's. The hand step it names works, and
+        nothing was deleted."""
+        orga, _ = self.two_repositories()
+        for case, repo, origin in (("core", self.repo, lane._schedule.CORE_REPO),
+                                   ("satellite", orga, "orga")):
+            with self.subTest(case=case):
+                name = "own-" + case
+                tree = pathlib.Path(lane.push(self.a, str(repo), name, False, origin=origin)["tree"])
+                (tree / "ignored.txt").write_text("run data\n")
+                # the strand was rebased here: the lane tree's commit is gone from this
+                # repository, and the tree is from before the origin file
+                git(tree, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                    "commit", "-q", "--allow-empty", "-m", "dropped")
+                dropped = git(tree, "rev-parse", "HEAD").strip()
+                origin_file = pathlib.Path(git(tree, "rev-parse", "--absolute-git-dir").strip()) / lane.ORIGIN_FILE
+                origin_file.unlink()
+                self.ssh_log.write_text("")
+                with self.assertRaisesRegex(lane.LaneError, "never overwritten by another repository") as cm:
+                    lane.push(self.a, str(repo), name, False, origin=origin)
+                self.assertEqual(5, cm.exception.code)
+                said = str(cm.exception)
+                self.assertIn(dropped[:12], said)
+                self.assertIn("of this repository %r" % origin, said)
+                self.assertIn("git -C %s log -1" % tree, said)
+                self.assertIn('echo %s >"$(git -C %s rev-parse --absolute-git-dir)/%s"'
+                              % (origin, tree, lane.ORIGIN_FILE), said)
+                self.assertIn("hand step", said)
+                self.assertEqual(dropped, git(tree, "rev-parse", "HEAD").strip())
+                self.assertEqual("run data\n", (tree / "ignored.txt").read_text())
+                self.assertNotIn("git-receive-pack", self.ssh_log.read_text())
+                # the hand step as the refusal names it: the next push is the tree's own
+                origin_file.write_text(origin + "\n")
+                lane.push(self.a, str(repo), name, False, origin=origin)
+                self.assertEqual(git(repo, "rev-parse", "HEAD").strip(), git(tree, "rev-parse", "HEAD").strip())
+                self.assertEqual("run data\n", (tree / "ignored.txt").read_text())
+
+    def test_the_id_a_tree_commit_carries_is_read_closed(self):
+        """N1: `tree_owner` reads the id of the lane tree's commit by the gate's rule
+        (`register.is_satellite`: the core's kit -> the core; a register without it ->
+        its `repo`) and names none for every other answer -- no answer, a banner, a
+        register that does not parse, another schema, an id outside the register's,
+        a failed probe. None names no way out."""
+        def probe(answer, rc=0):
+            def remote(lane_, script, input=b"", fail=None):
+                return subprocess.CompletedProcess([], rc, stdout=answer, stderr=b"")
+            return mock.patch.object(lane, "_remote", remote)
+
+        def register(**over):
+            doc = dict({"schema": lane._register.SCHEMA, "repo": "orga", "stations": []}, **over)
+            return b"register\n" + json.dumps(doc).encode() + b"\n"
+
+        for answer, want in ((b"core\n", lane._schedule.CORE_REPO), (register(), "orga"),
+                             (register(repo="coding"), "coding")):
+            with self.subTest(answer=answer), probe(answer):
+                self.assertEqual(want, lane.tree_owner(self.a, "/r/wt/t"))
+        for answer in (b"", b"\n", b"none\n", b"Welcome to build01\ncore\n", b"core\nextra\n",
+                       b"register\n", b"register\n{\n", register(schema="x"),
+                       register(repo=lane._schedule.CORE_REPO), register(repo="other"),
+                       b'register\n["orga"]\n'):
+            with self.subTest(answer=answer), probe(answer):
+                self.assertIsNone(lane.tree_owner(self.a, "/r/wt/t"))
+        with probe(b"core\n", rc=1):
+            self.assertIsNone(lane.tree_owner(self.a, "/r/wt/t"))
 
 
     def test_a_directory_git_cannot_read_is_refused_and_kept(self):

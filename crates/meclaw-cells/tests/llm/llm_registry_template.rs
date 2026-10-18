@@ -2088,6 +2088,196 @@ async fn a_generation_announces_its_brains_and_becomes_a_subscriber() {
     h.shutdown().await;
 }
 
+/// GH #1261 -- a brain born on a model the catalogue carries gets that model's
+/// package with its subscription, so the FIRST call of a fresh colony carries
+/// the cache stamp like every later one. Seen in a rollout: the brain was born
+/// on its start value, its requirement was not translated yet (rank `start`,
+/// the same rank this brain has without one), and a start value was never
+/// pushed -- so the cell had no `cache_mode`/`cache_ttl_s` and its first call,
+/// 44 s after the birth, went out without `hop.cache_expires_at`.
+///
+/// The subscription is the operator's `subscribe`, the same `subscribe_rows`
+/// and `settle` an announcement of the tree runs; its ack is the marker, since
+/// the hand sends it after the pushes it counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1261_a_brain_born_on_a_catalogue_model_gets_its_package_before_its_first_call() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let mock = MockOpenAI::start(vec![canned_chat_completion("first", "stop")]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root, &format!("{}/v1", mock.base_url));
+    let (h, mut rx) = boot(&td).await;
+    // `/sub_a`'s start value is a catalogue row with a cache package and no
+    // endpoint of its own (the cell keeps its endpoint on the mock).
+    admin(
+        &h,
+        &mut rx,
+        json!({"operation": "insert", "table": "models",
+               "row": {"model_id": BIRTH_A, "provider": "gateway", "base_url": "",
+                       "wire_dialect": "", "context_window": 32000, "cache_mode": "implicit",
+                       "cache_ttl_s": 300, "cost_in": 1, "cost_out": 1,
+                       "caps": {"tools": true}, "traits": {}, "status": "active",
+                       "note": "TEST ROW", "package": {}, "prompt": ""}}),
+    )
+    .await;
+
+    let (pushes, ack) = tokio::time::timeout(
+        meclaw_testing::deadline::HANG,
+        command(
+            &h,
+            &mut rx,
+            json!({"op": "subscribe", "cell_path": "/sub_a", "start_model": BIRTH_A}),
+        ),
+    )
+    .await
+    .expect("hang mark: the subscription was never acknowledged");
+    assert_eq!(
+        pushed_to(&pushes),
+        vec![(
+            "/sub_a".to_string(),
+            "start".to_string(),
+            BIRTH_A.to_string()
+        )],
+        "the brain born on a catalogue model gets that model's package with its \
+         subscription: {ack}"
+    );
+    let params = &body_of(&pushes[0])["params"];
+    assert_eq!(params["cache_mode"], "implicit", "{params}");
+    assert_eq!(params["cache_ttl_s"], 300, "{params}");
+    assert_eq!(params["context_window"], 32000, "{params}");
+
+    // The first call: sent after the ack, so it runs on the package.
+    h.send(to("/sub_a", "ping")).await;
+    let answer = tokio::time::timeout(
+        meclaw_testing::deadline::HANG,
+        recv_matching(&mut rx, "the first answer", |m| {
+            !hop_of(m, "finish_reason").is_empty()
+        }),
+    )
+    .await
+    .expect("hang mark: the first call was never answered");
+    assert!(
+        !hop_of(&answer, "cache_expires_at").is_empty(),
+        "the first call carries the cache stamp: {:?}",
+        answer.headers.hop
+    );
+    let snaps = mock.recorded_requests().await;
+    assert_eq!(snaps.len(), 1, "a push is no provider call");
+    assert_eq!(snaps[0].model().unwrap_or_default(), BIRTH_A);
+
+    h.shutdown().await;
+}
+
+/// GH #1261 in the rollout's own form (re-check M-3): the TREE announces a
+/// brain that states a `requirement`, so the translator is asked, and the
+/// brain's start value is a catalogue row. The package of that start value
+/// goes out with the subscription at rank `start` -- before the translator
+/// has answered, which needs another pass of the hand -- and the brain's first
+/// call carries the cache stamp. Before the fix the first push was the
+/// translation's (`prose`), and a call before it ran without the package.
+///
+/// An announcement is answered by nobody, so the marker is the push itself.
+/// The translator and the brain share the mock; both canned answers are the
+/// same, so whichever call reaches it first is answered alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1261_an_announced_brain_with_an_open_translation_gets_its_package_first() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let answer = json!({"model_id": BIRTH_A, "reason": "the value it was born on"}).to_string();
+    let mock = MockOpenAI::start(vec![
+        canned_chat_completion(&answer, "stop"),
+        canned_chat_completion(&answer, "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    let base_url = format!("{}/v1", mock.base_url);
+    build_tree(&td, &root, &base_url);
+    // An announcement speaks only for brains UNDER its generation, so the
+    // brain is a real llm cell one level down, with its own push edge (one per
+    // subscriber, as for `/sub_a`) and its answers into the sink.
+    let mut main = main_config();
+    main["params"]["graph"]["edges"]
+        .as_array_mut()
+        .expect("the edges")
+        .extend([
+            json!({"from": "./llm_registry/hand", "to": "./gen/brain",
+                   "condition": "has(hop.route) && hop.route == 'update' \
+                                 && hop.subscriber == '/gen/brain'"}),
+            json!({"from": "./gen/brain", "to": "/sink",
+                   "condition": "has(hop.finish_reason)"}),
+        ]);
+    write(td.path(), "main/config.json", &main);
+    write(
+        td.path(),
+        "main/gen/config.json",
+        &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": []}}}),
+    );
+    write(
+        td.path(),
+        "main/gen/brain/config.json",
+        &llm_cell(&base_url, BIRTH_A),
+    );
+    let (h, mut rx) = boot(&td).await;
+    admin(
+        &h,
+        &mut rx,
+        json!({"operation": "insert", "table": "models",
+               "row": {"model_id": BIRTH_A, "provider": "gateway", "base_url": "",
+                       "wire_dialect": "", "context_window": 32000, "cache_mode": "implicit",
+                       "cache_ttl_s": 300, "cost_in": 1, "cost_out": 1,
+                       "caps": {"tools": true}, "traits": {}, "status": "active",
+                       "note": "TEST ROW", "package": {}, "prompt": ""}}),
+    )
+    .await;
+
+    let announcement = json!({"generation": "/gen", "brains": [
+        {"cell_path": "/gen/brain", "start_model": BIRTH_A,
+         "requirement": "Answers a caller warmly and without delay."}
+    ]});
+    h.send(to("/tree", &announcement.to_string())).await;
+    let pushed = tokio::time::timeout(
+        meclaw_testing::deadline::HANG,
+        recv_route(&mut rx, "update"),
+    )
+    .await
+    .expect("hang mark: the announced brain was never pushed");
+    assert_eq!(
+        (hop_of(&pushed, "subscriber"), hop_of(&pushed, "rank")),
+        ("/gen/brain".to_string(), "start".to_string()),
+        "the first push is the start value's package, not the translation's"
+    );
+    let params = &body_of(&pushed)["params"];
+    assert_eq!(params["model"], BIRTH_A, "{params}");
+    assert_eq!(params["cache_mode"], "implicit", "{params}");
+    assert_eq!(params["cache_ttl_s"], 300, "{params}");
+
+    h.send(to("/gen/brain", "ping")).await;
+    let first = tokio::time::timeout(
+        meclaw_testing::deadline::HANG,
+        recv_matching(&mut rx, "the first answer", |m| {
+            !hop_of(m, "finish_reason").is_empty()
+        }),
+    )
+    .await
+    .expect("hang mark: the first call was never answered");
+    assert!(
+        !hop_of(&first, "cache_expires_at").is_empty(),
+        "the first call carries the cache stamp: {:?}",
+        first.headers.hop
+    );
+    let on_brain = mock
+        .recorded_requests()
+        .await
+        .iter()
+        .filter(|r| r.model() == Some(BIRTH_A))
+        .count();
+    assert_eq!(on_brain, 1, "one call of the brain, and a push is none");
+
+    h.shutdown().await;
+}
+
 /// Every subscriber row, as its path -- duplicates included, which is the point.
 async fn subscriber_paths(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>) -> Vec<String> {
     let rows = admin(
@@ -2850,8 +3040,11 @@ mod gh863 {
             .expect("the carry")
     }
 
-    fn row(model: &str, rank: &str) -> Value {
-        json!({"cell_path": P, "model_id": model, "rank": rank})
+    /// A subscriber row as the read returns it. `package_hash` is what the
+    /// last push carried: empty only after a pure `$reset` (or none at all).
+    fn row(model: &str, rank: &str, package_hash: &str) -> Value {
+        json!({"cell_path": P, "model_id": model, "rank": rank,
+               "package_hash": package_hash})
     }
 
     const MODELS: &str = r#"[{"model_id": "m2", "status": "active",
@@ -2884,7 +3077,7 @@ mod gh863 {
             &s,
             "refusal_read",
             &carry,
-            vec![json!([row("m2", "target")])],
+            vec![json!([row("m2", "target", "h2")])],
         );
         let u = updates(&out);
         assert_eq!(u.len(), 1, "{out:?}");
@@ -2914,7 +3107,7 @@ mod gh863 {
             &s,
             "refusal_read",
             &carry,
-            vec![json!([row("m3", "target")])],
+            vec![json!([row("m3", "target", "h3")])],
         );
         assert!(updates(&out).is_empty(), "{out:?}");
         assert_eq!(journal(&out), vec!["hand_refusal_stale"], "{out:?}");
@@ -2925,7 +3118,7 @@ mod gh863 {
             &s,
             "refusal_read",
             &reset,
-            vec![json!([row("m2", "target")])],
+            vec![json!([row("m2", "target", "h2")])],
         );
         assert!(updates(&out).is_empty(), "{out:?}");
         assert_eq!(journal(&out), vec!["hand_refusal_stale"], "{out:?}");
@@ -2934,10 +3127,77 @@ mod gh863 {
             &s,
             "refusal_read",
             &reset,
-            vec![json!([row("m0", "start")])],
+            vec![json!([row("m0", "start", "")])],
         );
         assert_eq!(updates(&out).len(), 1, "{out:?}");
         assert_eq!(journal(&out), vec!["hand_refused_by_cell"], "{out:?}");
+        // GH #1261 (re-check I-1): a start value the catalogue carries is
+        // pushed as its package, so a start row may hold one -- and a `$reset`
+        // refusal on it is the refusal of an older push.
+        let out = echo(
+            &s,
+            "refusal_read",
+            &reset,
+            vec![json!([row("m3", "start", "h3")])],
+        );
+        assert!(updates(&out).is_empty(), "{out:?}");
+        assert_eq!(journal(&out), vec!["hand_refusal_stale"], "{out:?}");
+    }
+
+    /// GH #1261 (re-check I-1): the package of a start value is a push like any
+    /// other, so its refusal marks the row -- `refused_model` names the start
+    /// model, which is the model the row holds -- and `reset` sends it again.
+    /// Before, a refusal naming a model on a start row was always stale: the
+    /// row never said refused, `show` named no refusal, and `reset` (which
+    /// re-sends only a refused row) sent nothing.
+    #[test]
+    fn gh1261_a_refused_start_package_marks_the_row_and_reset_sends_it_again() {
+        let Some(s) = hand() else { return };
+        let carry = refusal_read(&s, "m3");
+        let out = echo(
+            &s,
+            "refusal_read",
+            &carry,
+            vec![json!([row("m3", "start", "h3")])],
+        );
+        let u = updates(&out);
+        assert_eq!(
+            u.len(),
+            1,
+            "the refused start package marks the row: {out:?}"
+        );
+        assert_eq!(u[0]["where"], json!({"cell_path": P}));
+        assert_eq!(journal(&out), vec!["hand_refused_by_cell"], "{out:?}");
+
+        // The row as the registry holds it after that start package: its hash
+        // is the one the push recorded.
+        let reset = json!({"op": "reset", "cell_path": P, "actor": "operator", "call_id": "c"});
+        let mut sub = refused_row();
+        sub["start_model"] = json!("m3");
+        sub["model_id"] = json!("m3");
+        sub["refused"] = json!("");
+        let out = world(&s, reset.clone(), json!([sub.clone()]), json!([]));
+        assert_eq!(pushes(&out).len(), 1, "the start package goes out: {out:?}");
+        let hash = updates(&out)
+            .iter()
+            .find_map(|x| x["set"]["package_hash"].as_str().map(str::to_string))
+            .expect("the push records its hash");
+        assert!(!hash.is_empty(), "{out:?}");
+        sub["package_hash"] = json!(hash);
+        // Not refused, same hash: nothing to send.
+        let out = world(&s, reset.clone(), json!([sub.clone()]), json!([]));
+        assert!(pushes(&out).is_empty(), "{out:?}");
+        // Refused: `reset` tries the same package once more.
+        sub["refused"] = json!(DETAIL);
+        let out = world(&s, reset, json!([sub]), json!([]));
+        let p = pushes(&out);
+        assert_eq!(
+            p.len(),
+            1,
+            "a reset tries a refused start package again: {out:?}"
+        );
+        assert_eq!(p[0]["header"]["rank"], "start", "{out:?}");
+        assert_eq!(p[0]["params"]["model"], "m3", "{out:?}");
     }
 
     #[test]
@@ -3322,9 +3582,28 @@ fn the_registry_serves_messages_rows_only_to_anthropic_cells() {
         results.extend(extras);
         hand_echo(&hand, "world", json!({"cmd": cmd}), results)
     };
+    // GH #1261: a cell born on a catalogue row gets that row's package at rank
+    // `start` (these rows were never pushed). That keeps the cell on its own
+    // start model and is no move, so it is left out here -- and it never
+    // names a row of the other protocol.
     let pushes = |out: &[Value]| -> Vec<(String, Value)> {
         out.iter()
             .filter(|m| m["header"]["route"] == "update")
+            .filter(|m| {
+                if m["header"]["rank"] != "start" {
+                    return true;
+                }
+                let chat = m["header"]["subscriber"] == CHAT_CELL;
+                let own = if chat { CHAT } else { NATIVE_A };
+                assert_eq!(m["params"]["model"], own, "{m}");
+                // No dialect for the anthropic cell on the start push either
+                // (re-check M-4).
+                assert!(
+                    chat || m["params"].get("wire_dialect").is_none(),
+                    "the anthropic cell got a dialect with its start package: {m}"
+                );
+                false
+            })
             .map(|m| {
                 (
                     m["header"]["subscriber"]

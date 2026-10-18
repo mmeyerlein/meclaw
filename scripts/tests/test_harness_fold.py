@@ -367,6 +367,19 @@ class TestHarnessFold(Fixture):
         self.assertEqual(plan["alpha_two"], ("keep", "doc_linked"))
         self.assertEqual(plan["alpha_one"], ("alpha", None))
 
+    def test_fold_keeps_readme_linked_files_in_the_export_tree(self):
+        """The export tree ships no `plans/` and exactly the public templates
+        (GH #1267: 13 linked files folded into `misc` there, its parts went
+        from eight to ten and the nextest overrides of `misc_<n>` named no test
+        in the public CI). Without the export script every template README is
+        public -- the plan of the export tree is the plan of the source tree."""
+        os.makedirs(os.path.join(self.repo, "templates", "any-tpl"))
+        with open(os.path.join(self.repo, "templates", "any-tpl", "README.md"), "w") as fh:
+            fh.write("See [the lock](../../crates/fx/tests/alpha_two.rs).\n")
+        plan = self.plan()
+        self.assertEqual(plan["alpha_two"], ("keep", "doc_linked"))
+        self.assertEqual(plan["alpha_one"], ("alpha", None))
+
     def test_fold_harness_name_must_not_match_a_nextest_override(self):
         """A harness named into a `binary_id(/re/)` override would inherit its
         timeouts and retries (W5 delta M5)."""

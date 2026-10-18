@@ -103,6 +103,7 @@ import uuid
 
 from . import events, gitenv, lifted, schedule, store, turnaround, versions
 from .lane import GOLDEN_SWITCHES, python_argv
+from .register import main_branch
 
 TTL_S = 7200
 # An offer is short: a queued caller that does not come back within it (a
@@ -552,10 +553,18 @@ def preconditions(s, tip, no_pre=None):
 def lifted_problem(s, tip):
     """V2-A6 (GH #1199): why the strand's lifted or FLAKY-fixed files fail the
     testing bans over the whole file (`lifted.check`), or None. Fail-closed: a
-    git error or a malformed declaration is a refusal, never a pass."""
-    mb = out(s.root, "merge-base", "master", tip)
+    git error or a malformed declaration is a refusal, never a pass.
+
+    The base is the merge base with the tree's main branch, resolved as the
+    register does (`register.main_branch`: `main` or `master`, whichever
+    exists): a fixed `master` refused every strand of a tree whose main branch
+    is `main` with "cannot find the merge base" (GH #1265)."""
+    ref = main_branch(s.root)
+    if not ref:
+        return "cannot find the merge base of %s: no main or master branch" % tip[:9]
+    mb = out(s.root, "merge-base", ref, tip)
     if not mb:
-        return "cannot find the merge base of master and %s" % tip[:9]
+        return "cannot find the merge base of %s and %s" % (ref, tip[:9])
     try:
         found, paths, notes = lifted.check(s.root, mb, tip, s.doc, s.head)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:

@@ -1,0 +1,189 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "resident",
+    "external_timeout_ms": 10000,
+    "npc_id": "npc",
+    "phone": "1",
+    "world_start": "",
+    "identity": {
+      "name": "",
+      "core": "",
+      "origin": "",
+      "life_goal": "",
+      "facts": [],
+      "voice": "",
+      "start_memories": []
+    },
+    "script_inline": "\"\"\"The world adapter of an npc hive: the one cell that speaks the world's lanes.\n\nstdin is {envelope, body, params}; stdout a JSON array of content documents (multi-send). A cell writes no\ncontext: every key a later message needs rides on the hop, and the edge that carries it lifts it into the\ncontext. RAM holds only what a new child can do without (`resident`): which day was opened, which move was\nanswered, what the handset brought in since the last move. A lost child re-sends the identity pack (the\nsame bytes over the same leaves) and loses the handset lines of one move.\n\"\"\"\nimport datetime\nimport json\nimport sys\nimport zlib\n\n# The frame of every character this template grows (R-GD-2): an AI that lives this person in a shared world,\n# truthful about being one when asked directly, free to decline. It never claims to be a human being.\nFRAME = (\"You are an AI playing a character in a shared world: you live the life of the person described below, \"\n         \"in the first person, as that person would. You are not that person and you never claim to be human. \"\n         \"If someone asks you directly whether you are an AI, you say truthfully that you are. You may decline \"\n         \"anything you would not do, in your own words.\")\nSHEETS = {\n    \"plan\": \"A new day begins. Plan it with the tool the world offers for a plan, then take your first step.\",\n    \"contact\": \"Someone is in front of you. Answer them by calling the tool that says it, in your own voice.\",\n    \"event\": \"Something happened. Decide what you do now and call the one tool that does it.\",\n}\nSHEET_DEFAULT = \"Decide what you do now and call the tool that does it.\"\nHP_SHEET = (\"A message arrived on your phone. Answer it as your text answer; call `phone_call` only to reach \"\n            \"someone else.\")\nINTERVIEW = (\"This is an interview, not a move: the world stands still. Answer the question as yourself, from \"\n             \"what you remember, in the first person, as your text answer. Call no tool.\")\nPHONE_TOOL = {\"name\": \"phone_call\", \"description\": \"Send a message from your phone. Costs no time; an answer, if \"\n              \"any, comes later.\", \"parameters\": {\"type\": \"object\", \"properties\": {\n                  \"to\": {\"type\": \"string\", \"description\": \"who you write to\"},\n                  \"text\": {\"type\": \"string\", \"description\": \"what you write\"}}, \"required\": [\"to\", \"text\"]}}\n# Tools the round answers itself: everything else on a move's menu is the world's and ends the move.\nROUND_TOOLS = (\"memory_recall\",)\nROUND_PREFIX = \"history_\"\n# How long ago a start memory happened, against a fixed instant of the world's own clock.\nDAY_S = 86400\n\n\ndef _obj(v):\n    return v if isinstance(v, dict) else {}\n\n\ndef _text(t):\n    return t if isinstance(t, str) else json.dumps(t, ensure_ascii=False)\n\n\ndef _turn(text):\n    return [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": text}]\n\n\ndef rim(route, slot):\n    \"\"\"One message on a lane of the hive's rim: the body slot of the lane's name and one plain turn.\n    `npc_rim` tells the hive's door that this message leaves, so the door edge of the same lane never\n    takes it back in.\"\"\"\n    return {\"header\": {\"route\": route, \"npc_rim\": \"out\"}, route: slot, \"messages\": _turn(route)}\n\n\ndef audience(params):\n    return json.dumps([\"member:%s\" % (params.get(\"npc_id\") or \"npc\")])\n\n\ndef session(day):\n    return \"day-%s\" % (day if day is not None else 0)\n\n\ndef identity_pack(params):\n    ident = _obj(params.get(\"identity\"))\n    lines = [\"Name: %s\" % ident.get(\"name\", \"\")]\n    for key, label in ((\"core\", \"Who you are\"), (\"origin\", \"Where you come from\"), (\"life_goal\", \"What you want \"\n                                                                                      \"from life\")):\n        if ident.get(key):\n            lines.append(\"%s: %s\" % (label, _text(ident[key])))\n    facts = ident.get(\"facts\") or []\n    if facts:\n        lines.append(\"Facts about you: \" + \"; \".join(_text(f) for f in facts))\n    # The frame is the first leaf of `identity` (leaves join in alphabetical order: `frame` before `npc`), so the\n    # brain reads it before the person it frames.\n    system = {\"identity\": {\"frame\": {\"text\": FRAME}, \"npc\": {\"text\": \"\\n\".join(lines)}}}\n    if ident.get(\"voice\"):\n        system[\"persona\"] = {\"voice\": {\"text\": \"How you speak: \" + _text(ident[\"voice\"])}}\n    return {\"header\": {\"route\": \"in_pack\"}, \"system\": system, \"messages\": []}\n\n\ndef episode(params, day, turn_id, text, happened_at=\"\"):\n    head = {\"route\": \"in_episode\", \"session_id\": session(day), \"turn_id\": turn_id, \"channel\": \"world\",\n            \"audience_set\": audience(params)}\n    if happened_at:\n        head[\"happened_at\"] = happened_at\n    return {\"header\": head, \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": text}]}\n\n\ndef start_memories(params, day):\n    \"\"\"The identity's start memories, once, as historical episodes. `params.world_start` is the instant of\n    day 1 in the world's clock; without it the memories carry no `happened_at` and are filed as of now.\"\"\"\n    out = []\n    base = None\n    if params.get(\"world_start\"):\n        try:\n            base = datetime.datetime.fromisoformat(str(params[\"world_start\"]).replace(\"Z\", \"+00:00\"))\n        except ValueError:\n            base = None\n    for i, m in enumerate(_obj(params.get(\"identity\")).get(\"start_memories\") or []):\n        m = _obj(m)\n        text = _text(m.get(\"what\", \"\"))\n        if m.get(\"with\"):\n            text += \" (with %s)\" % _text(m[\"with\"])\n        at = \"\"\n        if base is not None:\n            at = (base - datetime.timedelta(seconds=DAY_S * int(m.get(\"days_ago\") or 0))).isoformat()\n        out.append(episode(params, day, \"start-%d\" % i, \"A memory of yours: \" + text, at))\n    return out\n\n\ndef open_day(st, params, day):\n    \"\"\"Identity pack after boot and at the start of every day; start memories once, on the first day this\n    child opens -- a character born on day 37 gets them as well as one born on day 1.\"\"\"\n    out = []\n    if st.get(\"day\") != day or not st.get(\"packed\"):\n        out.append(identity_pack(params))\n        st[\"packed\"] = True\n    if not st.get(\"seeded\"):\n        out += start_memories(params, day)\n        st[\"seeded\"] = True\n    st[\"day\"] = day\n    return out\n\n\ndef keep_id(st, value):\n    \"\"\"Remember the world's own id under its string form (hop values are strings) and return that form.\"\"\"\n    key = str(value)\n    ids = st.setdefault(\"tid\", {})\n    ids.pop(key, None)\n    ids[key] = value\n    while len(ids) > 64:\n        ids.pop(next(iter(ids)))\n    return key\n\n\ndef world_id(st, key):\n    \"\"\"The id as the world sent it: `turn_id` comes back unchanged, an int as an int.\"\"\"\n    return (st.get(\"tid\") or {}).get(str(key), key) if key is not None else None\n\n\ndef turn(params, kind, turn_id, day, channel, text, extra=None):\n    head = {\"route\": \"in_turn\", \"turn_id\": turn_id, \"npc_kind\": kind, \"npc_day\": str(day), \"channel\": channel,\n            \"session_id\": session(day), \"audience_set\": audience(params)}\n    head.update(extra or {})\n    return {\"header\": head, \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": text}]}\n\n\ndef on_obs(st, params, body):\n    o = _obj(body.get(\"obs\"))\n    tid = keep_id(st, o.get(\"turn_id\"))\n    day = o.get(\"day\")\n    if not isinstance(day, int) or isinstance(day, bool):\n        # Without its day a move would run in a session no night ever closes: refused, never a silent `day-0`.\n        return [rim(\"error\", {\"error_code\": \"obs_without_day\", \"turn_id\": o.get(\"turn_id\"),\n                              \"kind\": str(o.get(\"kind\") or \"event\")}),\n                rim(\"intent\", {\"turn_id\": o.get(\"turn_id\"), \"never\": True})]\n    # One turn runs once. A copy of a turn already taken parked the collector's window leg a second time and the\n    # character hung (a world's boot sent turn 1 three times): it is refused on the error lane, the first runs on.\n    seen = st.setdefault(\"seen\", [])\n    if tid in seen:\n        return [rim(\"error\", {\"error_code\": \"duplicate_turn\", \"turn_id\": o.get(\"turn_id\"),\n                              \"kind\": str(o.get(\"kind\") or \"event\")})]\n    st[\"seen\"] = (seen + [tid])[-64:]\n    out = open_day(st, params, day)\n    tools = [t for t in o.get(\"tools\") or [] if isinstance(t, dict) and t.get(\"name\")]\n    if params.get(\"phone\", \"1\") not in (\"\", \"0\") and not any(t[\"name\"] == \"phone_call\" for t in tools):\n        tools.append(PHONE_TOOL)\n    # The move's menu replaces the world's row of the collector's menu (answerer `world`, set on the edge).\n    out.append({\"header\": {\"route\": \"in_menu\"}, \"schemas\": tools, \"unknown\": [], \"sidecar\": [], \"messages\": []})\n    parts = [SHEETS.get(o.get(\"kind\"), SHEET_DEFAULT)]\n    if o.get(\"must_say_first\"):\n        parts.append('Whatever you say begins with exactly: \"%s\"' % _text(o[\"must_say_first\"]))\n    if o.get(\"deadline_ms\"):\n        parts.append(\"You have %s ms to decide.\" % o[\"deadline_ms\"])\n    for line in st.pop(\"phone_in\", []):\n        parts.append(\"On your phone: \" + line)\n    if st.get(\"did\"):\n        parts.append(st.pop(\"did\"))\n    parts.append(_text(o.get(\"text\", \"\")))\n    out.append(turn(params, str(o.get(\"kind\") or \"event\"), tid, day, \"world\",\n                    \"\\n\\n\".join(parts)))\n    return out\n\n\ndef calls_of(turns):\n    \"\"\"The tool_call turns of an assistant turn, with the id the dispatcher gave each one.\"\"\"\n    out = []\n    for i, t in enumerate(t for t in turns if t.get(\"type\") == \"tool_call\"):\n        try:\n            fn = json.loads(t.get(\"text\") or \"\")\n        except ValueError:\n            fn = {}\n        fn = _obj(fn)\n        args = fn.get(\"arguments\")\n        if isinstance(args, str):\n            try:\n                args = json.loads(args)\n            except ValueError:\n                pass\n        out.append({\"id\": str(t.get(\"id\") or \"call-%d\" % i), \"name\": fn.get(\"name\"), \"args\": args})\n    return out\n\n\ndef _ids(value):\n    return [x for x in str(value or \"\").split(\",\") if x]\n\n\ndef did_line(intents):\n    \"\"\"The move as the character made it, for the head of its next turn. A world call is a handoff: the\n    curator's window keeps a tool call only beside its result, and a handoff's result is the collector's\n    own, so without this line the brain's next window holds the situation but not what it did about it.\"\"\"\n    return \"What you did last: \" + \"; \".join(\n        \"%s %s\" % (i[\"tool\"], json.dumps(i.get(\"args\"), ensure_ascii=False)) for i in intents)\n\n\ndef phone_out(params, args, at):\n    a = _obj(args)\n    return rim(\"hp\", {\"text\": _text(a.get(\"text\", \"\")), \"to\": a.get(\"to\"), \"at\": at,\n                      \"from\": params.get(\"npc_id\") or \"npc\"})\n\n\ndef on_calls(st, params, hop, ctx, body):\n    \"\"\"The dispatcher's expectation set. Every call that is not the round's own is the world's (or the\n    phone's): it is declared a handoff here, so the collector answers it with a plain result and closes the\n    round without a second model call -- and the move leaves once, as one intent.\"\"\"\n    turns = body.get(\"messages\") or []\n    calls = calls_of(turns)\n    mine = [c for c in calls if c[\"name\"] not in ROUND_TOOLS and not str(c[\"name\"] or \"\").startswith(ROUND_PREFIX)]\n    out = []\n    head = {k: hop[k] for k in (\"call_count\", \"finish_reason\", \"interim\", \"input_soft\") if k in hop}\n    asy, hand = _ids(hop.get(\"async_calls\")), _ids(hop.get(\"handoff_calls\"))\n    for c in mine:\n        if c[\"id\"] not in asy:\n            asy.append(c[\"id\"])\n        if c[\"id\"] not in hand:\n            hand.append(c[\"id\"])\n    head.update({\"route\": \"in_calls\", \"async_calls\": \",\".join(asy), \"handoff_calls\": \",\".join(hand)})\n    fwd = dict(body)\n    fwd[\"header\"] = head\n    out.append(fwd)\n    world = [c for c in mine if c[\"name\"] != \"phone_call\"]\n    out += [phone_out(params, c[\"args\"], ctx.get(\"npc_at\") or \"\") for c in mine if c[\"name\"] == \"phone_call\"]\n    tid = ctx.get(\"turn_id\")\n    says = \"\\n\".join(t.get(\"text\") or \"\" for t in turns if t.get(\"type\") == \"text\").strip()\n    if ctx.get(\"npc_kind\") == \"hp\":\n        # Every call in `mine` is a handoff and ends the round without an `answer`, so the text beside it is final:\n        # it is the reply. Text beside the round's own tools alone (`memory_recall`, `history_*`: `mine` empty) is\n        # an interim and leaves nothing -- sent as the reply it was the \"one moment\" sentence, and the answer after\n        # the recall was dropped. A round never ends silent: a tool the handset does not offer, without text, is an\n        # error; a `phone_call` without text has its own message on `hp`.\n        if mine and tid not in st.setdefault(\"answered\", []):\n            st[\"answered\"] = (st[\"answered\"] + [tid])[-64:]\n            if says:\n                out.append(hp_reply(params, ctx, says))\n            elif not any(c[\"name\"] == \"phone_call\" for c in mine):\n                out.append(rim(\"error\", {\"error_code\": \"tool_not_offered\", \"turn_id\": tid, \"kind\": \"hp\"}))\n        return out\n    if mine and tid not in st.setdefault(\"answered\", []):\n        st[\"answered\"] = (st[\"answered\"] + [tid])[-64:]\n        if not world:\n            # A move whose only call is `phone_call`: the handoff ends it without an `answer`, so the world gets its\n            # intent here -- the text beside the call as speech, else `never` -- instead of waiting for it in vain.\n            slot = {\"turn_id\": world_id(st, tid), \"intents\": [{\"says\": says}]} if says else \\\n                {\"turn_id\": world_id(st, tid), \"never\": True}\n            out.append(rim(\"intent\", slot))\n            return out\n        intents = [{\"tool\": c[\"name\"], \"args\": c[\"args\"]} for c in world]\n        if says:\n            intents[0][\"says\"] = says\n        out.append(rim(\"intent\", {\"turn_id\": world_id(st, tid), \"intents\": intents}))\n        st[\"did\"] = did_line(intents)\n    return out\n\n\ndef hp_reply(params, ctx, text):\n    return rim(\"hp_reply\", {\"text\": text, \"to\": ctx.get(\"npc_from\"), \"at\": ctx.get(\"npc_at\") or \"\",\n                            \"from\": params.get(\"npc_id\") or \"npc\"})\n\n\ndef on_answer(st, params, hop, ctx, body):\n    \"\"\"The round's final answer (no world call in it): speech, a move that did nothing, or the handset's reply.\"\"\"\n    text = \"\\n\".join(t.get(\"text\") or \"\" for t in body.get(\"messages\") or [] if t.get(\"type\") == \"text\").strip()\n    tid = ctx.get(\"turn_id\")\n    if tid in st.setdefault(\"answered\", []):\n        return []\n    st[\"answered\"] = (st[\"answered\"] + [tid])[-64:]\n    if ctx.get(\"npc_kind\") == \"hp\":\n        return [hp_reply(params, ctx, text)]\n    if hop.get(\"error_code\") or hop.get(\"degraded\") == \"1\" or not text:\n        return [rim(\"intent\", {\"turn_id\": world_id(st, tid), \"never\": True})]\n    # Text without a tool is speech: one intent without a tool (`intents: []` lost what the character said).\n    return [rim(\"intent\", {\"turn_id\": world_id(st, tid), \"intents\": [{\"says\": text}]})]\n\n\ndef on_error(st, params, hop, ctx):\n    \"\"\"A failed model call: the round's error on the rim, and a move that is answered `never`.\"\"\"\n    out = [rim(\"error\", {\"error_code\": hop.get(\"error_code\") or \"model_error\",\n                         \"turn_id\": world_id(st, ctx.get(\"turn_id\")), \"kind\": ctx.get(\"npc_kind\")})]\n    kind = ctx.get(\"npc_kind\")\n    if kind == \"interview\":\n        out.append(rim(\"interview\", {\"question_id\": world_id(st, ctx.get(\"turn_id\")), \"answer\": None,\n                                     \"error\": hop.get(\"error_code\")}))\n    elif kind != \"hp\" and ctx.get(\"turn_id\") not in st.setdefault(\"answered\", []):\n        out.append(rim(\"intent\", {\"turn_id\": world_id(st, ctx.get(\"turn_id\")), \"never\": True}))\n    return out\n\n\ndef on_night(st, params, body):\n    n = _obj(body.get(\"night\"))\n    day = n.get(\"day\")\n    return [{\"header\": {\"route\": \"in_close\", \"session_id\": session(day), \"channel\": \"world\",\n                        \"audience_set\": audience(params), \"npc_kind\": \"night\", \"npc_day\": str(day)},\n             \"messages\": []}]\n\n\ndef on_close_report(hop, ctx):\n    if hop.get(\"phase\") != \"close\" or ctx.get(\"npc_kind\") != \"night\":\n        return []\n    day = ctx.get(\"npc_day\")\n    day = int(day) if str(day or \"\").isdigit() else day\n    # The night's dream: the hive's own trigger of its nightly run (memory-hive README, the nightly tick).\n    dream = {\"header\": {\"route\": \"clock_op\"}, \"op\": \"trigger\", \"schedule_name\": \"nightly-dream\", \"messages\": []}\n    return [dream, rim(\"night\", {\"day\": day, \"ok\": True, \"added\": hop.get(\"added\"), \"closed\": hop.get(\"closed\")})]\n\n\ndef on_interview(st, params, body):\n    q = _obj(body.get(\"interview\"))\n    qid = keep_id(st, q.get(\"question_id\"))\n    st.setdefault(\"pending\", {})[qid] = q\n    return [{\"header\": {\"route\": \"in_query\", \"recall_caller\": \"interview:\" + qid, \"recall_query\":\n                        _text(q.get(\"question\", \"\")), \"memory_tier\": \"1\", \"session_id\": session(st.get(\"day\")),\n                        \"audience_set\": audience(params), \"channel\": \"world\"}, \"messages\": []}]\n\n\ndef interview_call(st, caller, recall):\n    qid = caller.split(\":\", 1)[1] if caller and \":\" in caller else None\n    q = (st.get(\"pending\") or {}).pop(qid, None) if qid else None\n    if q is None:\n        return []\n    user = {\"question\": q.get(\"question\"), \"instruction\": INTERVIEW}\n    if recall:\n        user[\"what_you_remember\"] = recall\n    return [{\"header\": {\"route\": \"brain\", \"turn_id\": qid, \"npc_kind\": \"interview\"}, \"tool_scope\": {\"allow\": []},\n             \"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": json.dumps(user, ensure_ascii=False)}]}]\n\n\ndef on_interview_answer(st, params, hop, ctx, body):\n    if hop.get(\"finish_reason\") == \"error\" or hop.get(\"error_code\"):\n        # The interview's edge sets no `round_error`: a failed call is answered here, never silent.\n        return on_error(st, params, hop, ctx)\n    text = \"\\n\".join(t.get(\"text\") or \"\" for t in body.get(\"messages\") or [] if t.get(\"type\") == \"text\")\n    return [rim(\"interview\", {\"question_id\": world_id(st, ctx.get(\"turn_id\")),\n                              \"answer\": text.split(\"```sidecar\")[0].strip()})]\n\n\ndef on_hp(st, params, body):\n    m = _obj(body.get(\"hp\"))\n    day = st.get(\"day\")\n    text = \"%s\\n\\nFrom %s at %s: %s\" % (HP_SHEET, m.get(\"from\", \"someone\"), m.get(\"at\", \"\"), _text(m.get(\"text\", \"\")))\n    if st.get(\"did\"):\n        text = st[\"did\"] + \"\\n\\n\" + text\n    tid = \"hp-%s-%s\" % (m.get(\"at\", \"\"), zlib.crc32(_text(m.get(\"text\", \"\")).encode()) % 100000)\n    # One handset message runs once, like a turn of the world: a second delivery carries the same id and ran a\n    # second round under it, whose reply the `answered` latch swallowed. Refused on the error lane.\n    seen = st.setdefault(\"seen\", [])\n    if tid in seen:\n        return [rim(\"error\", {\"error_code\": \"duplicate_turn\", \"turn_id\": tid, \"kind\": \"hp\"})]\n    st[\"seen\"] = (seen + [tid])[-64:]\n    # The handset's menu replaces the world's row of the collector's menu: the phone, not the last move's tools\n    # (a world tool called on the phone would close as a handoff and leave no intent). The next obs sets it back.\n    phone = [PHONE_TOOL] if params.get(\"phone\", \"1\") not in (\"\", \"0\") else []\n    menu = {\"header\": {\"route\": \"in_menu\"}, \"schemas\": phone, \"unknown\": [], \"sidecar\": [], \"messages\": []}\n    return open_day(st, params, day) + [menu, turn(params, \"hp\", tid, day, \"hp\", text,\n                                             {\"npc_from\": str(m.get(\"from\", \"\")), \"npc_at\": str(m.get(\"at\", \"\"))})]\n\n\ndef on_hp_reply(st, params, body):\n    m = _obj(body.get(\"hp_reply\"))\n    line = \"%s (%s): %s\" % (m.get(\"from\", \"someone\"), m.get(\"at\", \"\"), _text(m.get(\"text\", \"\")))\n    st.setdefault(\"phone_in\", []).append(line)\n    return [episode(params, st.get(\"day\"), \"hp-reply-%s\" % m.get(\"at\", \"\"), \"On your phone: \" + line)]\n\n\ndef on_identity(st, params, body):\n    i = _obj(body.get(\"identity\"))\n    facts = \"; \".join(_text(f) for f in i.get(\"facts\") or [])\n    text = \"Since %s: %s\" % (i.get(\"since\", \"now\"), facts)\n    return [{\"header\": {\"route\": \"in_pack\"}, \"system\": {\"persona\": {\"current\": {\"text\": text}}}, \"messages\": []},\n            episode(params, st.get(\"day\"), \"identity-%s\" % i.get(\"since\", \"\"), \"About yourself. \" + text)]\n\n\ndef on_mandate(body):\n    m = _obj(body.get(\"mandate\"))\n    if m.get(\"action\") == \"stop\":\n        text = \"You have no standing order.\"\n    else:\n        text = \"Your owner gave you a standing order: %s\" % _text(m.get(\"note\") or \"\")\n        if m.get(\"frame\"):\n            text += \" Within: %s.\" % _text(m[\"frame\"])\n        if m.get(\"until\"):\n            text += \" It stands until %s.\" % _text(m[\"until\"])\n    return [{\"header\": {\"route\": \"in_pack\"}, \"system\": {\"instructions\": {\"mandate\": {\"text\": text}}},\n             \"messages\": []}]\n\n\ndef on_digest(st, params, body):\n    d = _obj(body.get(\"digest\"))\n    return [episode(params, d.get(\"day\"), \"digest-%s\" % d.get(\"day\"), \"Your day: \" + _text(d.get(\"text\", \"\")))]\n\n\ndef on_message(doc, st):\n    header = _obj(_obj(doc.get(\"envelope\")).get(\"header\"))\n    hop, ctx, body = _obj(header.get(\"hop\")), _obj(header.get(\"context\")), _obj(doc.get(\"body\"))\n    params = _obj(doc.get(\"params\"))\n    route = hop.get(\"route\")\n    if ctx.get(\"npc_kind\") == \"interview\" and \"finish_reason\" in hop:\n        return on_interview_answer(st, params, hop, ctx, body)\n    handlers = {\n        \"obs\": lambda: on_obs(st, params, body),\n        \"night\": lambda: on_night(st, params, body),\n        \"digest\": lambda: on_digest(st, params, body),\n        \"hp\": lambda: on_hp(st, params, body),\n        \"hp_reply\": lambda: on_hp_reply(st, params, body),\n        \"identity\": lambda: on_identity(st, params, body),\n        \"mandate\": lambda: on_mandate(body),\n        \"interview\": lambda: on_interview(st, params, body),\n        \"calls\": lambda: on_calls(st, params, hop, ctx, body),\n        \"answer\": lambda: on_answer(st, params, hop, ctx, body),\n        \"round_error\": lambda: on_error(st, params, hop, ctx),\n        \"close_report\": lambda: on_close_report(hop, ctx),\n    }\n    if route in handlers:\n        return handlers[route]()\n    if route == \"bundle\" and str(hop.get(\"recall_caller\") or \"\").startswith(\"interview:\"):\n        recall = \"\\n\".join(t.get(\"text\") or \"\" for t in body.get(\"messages\") or [] if t.get(\"type\") == \"tool_result\")\n        return interview_call(st, hop.get(\"recall_caller\"), recall)\n    if route == \"reject\":\n        sys.stderr.write(\"npc: memory reject %s\\n\" % hop.get(\"reject_reason\"))\n        if str(hop.get(\"recall_caller\") or \"\").startswith(\"interview:\"):\n            return interview_call(st, hop.get(\"recall_caller\"), None)\n        if ctx.get(\"npc_kind\") == \"night\":\n            day = ctx.get(\"npc_day\")\n            return [rim(\"night\", {\"day\": int(day) if str(day or \"\").isdigit() else day, \"ok\": False,\n                                  \"added\": 0, \"closed\": 0})]\n        return []\n    if route == \"pack_ack\" and hop.get(\"error_code\"):\n        return [rim(\"error\", {\"error_code\": hop.get(\"error_code\"), \"kind\": \"pack\"})]\n    # Everything else that reaches this cell is drained on purpose: a world tool's own `tool` message (its\n    # call left as the intent already), sidecar sections nobody else reads, acknowledgements.\n    return []\n\n\nif __name__ == \"__main__\":\n    if \"STATE\" not in globals():\n        STATE = {}\n    sys.stdout.write(json.dumps(on_message(json.load(sys.stdin), STATE)))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "npc_id": {
+        "type": "string",
+        "secret": false,
+        "default": "npc",
+        "description": "the character's id: every round runs in the audience `member:<npc_id>`"
+      },
+      "identity": {
+        "type": "object",
+        "secret": false,
+        "default": {
+          "name": "",
+          "core": "",
+          "origin": "",
+          "life_goal": "",
+          "facts": [],
+          "voice": "",
+          "start_memories": []
+        },
+        "description": "the seed: `name`, `core`, `origin`, `life_goal`, `facts[]`, `voice`, `start_memories[{what, with, days_ago}]`"
+      },
+      "phone": {
+        "type": "string",
+        "secret": false,
+        "default": "1",
+        "description": "\"1\" offers the `phone_call` tool on every move; \"\" or \"0\" leaves the handset receive-only"
+      },
+      "world_start": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "RFC 3339 instant of day 1 in the world's clock; the start memories are dated `days_ago` before it"
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "npc_kind": {
+          "type": "string",
+          "required": false
+        },
+        "npc_day": {
+          "type": "string",
+          "required": false
+        },
+        "npc_rim": {
+          "type": "string",
+          "required": false
+        },
+        "npc_from": {
+          "type": "string",
+          "required": false
+        },
+        "npc_at": {
+          "type": "string",
+          "required": false
+        },
+        "channel": {
+          "type": "string",
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "audience_set": {
+          "type": "string",
+          "required": false
+        },
+        "happened_at": {
+          "type": "string",
+          "required": false
+        },
+        "recall_caller": {
+          "type": "string",
+          "required": false
+        },
+        "recall_query": {
+          "type": "string",
+          "required": false
+        },
+        "memory_tier": {
+          "type": "string",
+          "required": false
+        },
+        "call_count": {
+          "type": "string",
+          "required": false
+        },
+        "async_calls": {
+          "type": "string",
+          "required": false
+        },
+        "handoff_calls": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        },
+        "interim": {
+          "type": "string",
+          "required": false
+        },
+        "input_soft": {
+          "type": "string",
+          "required": false
+        },
+        "route": {
+          "type": "string",
+          "required": true,
+          "values": [
+            "intent",
+            "night",
+            "hp",
+            "hp_reply",
+            "interview",
+            "error",
+            "in_turn",
+            "in_menu",
+            "in_calls",
+            "in_pack",
+            "in_close",
+            "in_episode",
+            "in_query",
+            "clock_op",
+            "brain"
+          ]
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "Adapts the world's lanes to the tool round: a move becomes a turn and its menu, the world's calls become one intent, a night becomes the close of the day and the dream.",
+    "use_when": "Inside the npc template.",
+    "not_in_scope": "No model call, no memory of its own, no world knowledge.",
+    "emits_meaning": "rim lanes with `hop.npc_rim` = out; the round's lanes inward.",
+    "consumes_meaning": "the world's lanes, the dispatcher's expectation set, the round's answer, the memory's close report and interview bundles.",
+    "examples": [
+      "obs -> in_menu + in_turn; calls -> in_calls (handoffs) + intent"
+    ]
+  }
+}

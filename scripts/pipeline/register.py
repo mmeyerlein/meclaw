@@ -12,7 +12,7 @@ executor cannot tell a satellite plan from a meclaw plan.
 
 THE REGISTER (`pipeline/stations.json`)
 =======================================
-    {"schema": "meclaw.pipeline.stations/1", "repo": "coding|soul2me|orga",
+    {"schema": "meclaw.pipeline.stations/1", "repo": "<word, see below>",
      "stations": [{"name", "scope", "stage": ["strand", "integration", "release"],
                    "cargo": 0, "cmds": [{"argv": [...], "cwd": "."}],
                    "needs": {"cpu": n, "colony": n}, "inputs": ["scripts/**", ...],
@@ -55,6 +55,33 @@ reaches a lane.
 `always` and `parallel.slot_env` are additive to V0 (OR-DT.W10.1), and so is
 `lib: build|read|none` (GH #1142): the station's role towards the set's
 build/lib, which orders the stations that touch it.
+
+THE REPOSITORIES (host file, GH #1262)
+======================================
+The register's `repo` must be a word the kit knows. Three are built in
+(`REPOS`: coding, soul2me, orga); every other repository is named by the host
+file `${MECLAW_PIPELINE_REPOS:-~/.config/meclaw/pipeline-repos.json}` beside
+the lanes file `~/.config/meclaw/lanes`. Like that file it is this machine's
+own and never travels with the export:
+
+    {"schema": "meclaw.pipeline.repos/1",
+     "repos": [{"repo": "<word>", "path": "~/<checkout>",
+                "asset_cache": "<dir>", "release_key": "<key>"}]}
+
+    repo         the register word a `pipeline/stations.json` names (lower
+                 case; never a built-in word, nor `meclaw`, the core's own id)
+    path         the repository's checkout on this machine, absolute or below
+                 `~/`; descriptive only -- the kit never reads it, it takes the
+                 tree from `--repo`
+    asset_cache  the directory below `~/.cache/` whose `meclaw/<v>/` holds the
+                 release assets the repository's sets pin (`set_pins`)
+    release_key  the key a set of the repository pins its meclaw release with
+
+Every entry needs exactly these four fields. An entry only adds a repository:
+a built-in word is refused, since its sets pin with both `RELEASE_KEYS` and an
+entry carries one key. Without the file exactly the built-in entries hold; a
+file that cannot be read or does not have this form is a RegisterError -- fail
+closed, a typo there never drops a repository silently.
 
 THE RESOLVER
 ============
@@ -129,6 +156,7 @@ from . import plan as _plan
 
 SCHEMA = "meclaw.pipeline.stations/1"
 REGISTER_PATH = "pipeline/stations.json"
+# the built-in repository words; the host file names more (`repo_entries`)
 REPOS = ("coding", "soul2me", "orga")
 STAGES = ("strand", "integration", "release")
 PARALLEL_BY = ("file", "dir", "module", "case", "cmd")
@@ -193,6 +221,83 @@ _KIT_NAMES = ("PATH", "HOME", "USER", "SHELL", "TMPDIR", "IFS", "ENV", "BASH_ENV
 
 class RegisterError(ValueError):
     """The register is missing or does not have the V0 section 4 form."""
+
+
+# --- the repositories (host file, GH #1262) ---------------------------------
+
+REPOS_ENV = "MECLAW_PIPELINE_REPOS"
+REPOS_FILE = "~/.config/meclaw/pipeline-repos.json"
+REPOS_SCHEMA = "meclaw.pipeline.repos/1"
+REPO_FIELDS = ("repo", "path", "asset_cache", "release_key")
+# matched with fullmatch: `$` would let a trailing newline through
+_REPO_WORD = re.compile(r"[a-z][a-z0-9_-]*")
+_CACHE_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_SET_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# schedule.CORE_REPO: a satellite word equal to it would claim the core's lane trees
+_CORE_WORD = "meclaw"
+
+
+def repos_path(environ=None):
+    """The host file of the kit's repositories: `MECLAW_PIPELINE_REPOS`, else
+    `~/.config/meclaw/pipeline-repos.json`."""
+    env = os.environ if environ is None else environ
+    return env.get(REPOS_ENV) or os.path.expanduser(REPOS_FILE)
+
+
+def _repo_entry(e, where, seen):
+    if not isinstance(e, dict) or set(e) != set(REPO_FIELDS):
+        raise RegisterError("%s must have exactly the fields %s" % (where, ", ".join(REPO_FIELDS)))
+    word, path, cache, key = (e[f] for f in REPO_FIELDS)
+    if not isinstance(word, str) or not _REPO_WORD.fullmatch(word):
+        raise RegisterError("%s: repo must be a lower-case word" % where)
+    if word == _CORE_WORD or word in REPOS:
+        # a replaced built-in entry would read one release key only, and a set
+        # pinning the other would drop out of the pin transport silently
+        raise RegisterError("%s: repo %s is built in (%s); the host file only adds repositories"
+                            % (where, word, "|".join((_CORE_WORD,) + REPOS)))
+    if word in seen:
+        raise RegisterError("%s: repo %s is named twice" % (where, word))
+    if not isinstance(path, str) or not (os.path.isabs(path) or path.startswith("~/")):
+        raise RegisterError("%s: path must be absolute or below ~/" % where)
+    if not isinstance(cache, str) or not _CACHE_DIR.fullmatch(cache):
+        raise RegisterError("%s: asset_cache must be one directory name below ~/.cache" % where)
+    if not isinstance(key, str) or not _SET_KEY.fullmatch(key):
+        raise RegisterError("%s: release_key must be a set key" % where)
+    return {"repo": word, "path": path, "asset_cache": cache, "release_keys": (key,)}
+
+
+def repo_entries(path=None):
+    """`{word: {repo, path, asset_cache, release_keys}}` -- the built-in
+    entries, joined by the entries of the host file `path` (default
+    `repos_path()`), built-in words first. No file: exactly the
+    built-in entries (`path` None). RegisterError on a file that cannot be
+    read or does not have the form of the module docstring."""
+    entries = {w: {"repo": w, "path": None, "asset_cache": ASSET_CACHES[w],
+                   "release_keys": RELEASE_KEYS} for w in REPOS}
+    path = path or repos_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except FileNotFoundError:
+        return entries
+    except OSError as e:
+        raise RegisterError("%s: %s" % (path, e.strerror or e)) from None
+    except ValueError as e:
+        raise RegisterError("%s: not JSON (%s)" % (path, e)) from None
+    if not isinstance(doc, dict) or doc.get("schema") != REPOS_SCHEMA \
+            or not isinstance(doc.get("repos"), list):
+        raise RegisterError('%s: must be {"schema": "%s", "repos": [...]}' % (path, REPOS_SCHEMA))
+    seen = set()
+    for i, e in enumerate(doc["repos"]):
+        entry = _repo_entry(e, "%s: repos[%d]" % (path, i), seen)
+        seen.add(entry["repo"])
+        entries[entry["repo"]] = entry
+    return entries
+
+
+def repo_words():
+    """The register words the kit accepts (`repo_entries`, in its order)."""
+    return tuple(repo_entries())
 
 
 # --- the register ---------------------------------------------------------------
@@ -294,8 +399,9 @@ def load_register(repo_root):
         raise RegisterError("%s: not JSON (%s)" % (REGISTER_PATH, e)) from None
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
         _fail("schema must be %s" % SCHEMA)
-    if doc.get("repo") not in REPOS:
-        _fail("repo must be one of %s" % "|".join(REPOS))
+    words = repo_words()
+    if doc.get("repo") not in words:
+        _fail("repo must be one of %s" % "|".join(words))
     stations = doc.get("stations")
     if not isinstance(stations, list):
         _fail("stations must be a list")
@@ -998,9 +1104,11 @@ def assets_spec(cache_root, dest_root=ASSETS_ROOT, target=None, versions=None):
 
 # The release-asset cache below `~/.cache/` per register `repo`: each
 # satellite's `build_set.fetch_assets` reads `~/.cache/<name>/meclaw/<v>/`,
-# and orga-hive's directory is not named after its register word.
+# and orga-hive's directory is not named after its register word. The
+# built-in entries' values; a host-file entry names its own (`repo_entries`).
 ASSET_CACHES = {"coding": "coding", "soul2me": "soul2me", "orga": "orga-hive"}
-# The release a set pins: `meclaw` (coding, orga-hive) or `meclaw_release` (soul2me).
+# The release a set pins: `meclaw` (coding, orga-hive) or `meclaw_release` (soul2me);
+# a built-in entry reads both, a host-file entry its `release_key` alone.
 RELEASE_KEYS = ("meclaw", "meclaw_release")
 _SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
@@ -1039,7 +1147,7 @@ def _asset_there(folder):
 
 def set_pins(repo_root, core_root, home=None):
     """The `PinTransport` of the satellite at `repo_root` from its
-    `sets/*.json`: every pinned release (`meclaw` / `meclaw_release`) must be
+    `sets/*.json`: every pinned release (the entry's release keys) must be
     in this machine's cache, every `meclaw_core` commit in the repository of
     `core_root`, every `sources.<n>` tag or commit in its repository below
     `home`. Fail-closed: anything that cannot travel is a RegisterError that
@@ -1048,7 +1156,9 @@ def set_pins(repo_root, core_root, home=None):
     home = os.path.abspath(os.path.expanduser(home or "~"))
     root = os.path.abspath(repo_root)
     name = load_register(root)["repo"]
-    cache = os.path.join(home, ".cache", ASSET_CACHES[name], "meclaw")
+    entry = repo_entries()[name]
+    keys = entry["release_keys"]
+    cache = os.path.join(home, ".cache", entry["asset_cache"], "meclaw")
     versions, mirrors, bad = set(), {}, []
 
     def mirror(repo, revs, why):
@@ -1099,11 +1209,11 @@ def set_pins(repo_root, core_root, home=None):
         # keyed by their JSON form: a list or object as value is a finding
         # below, not a TypeError that hides every other finding
         named = {}
-        for k in RELEASE_KEYS:
+        for k in keys:
             if k in doc:
                 named.setdefault(json.dumps(doc[k], sort_keys=True), doc[k])
         if len(named) > 1:
-            bad.append("%s: %s disagree (%s)" % (rel, " and ".join(RELEASE_KEYS),
+            bad.append("%s: %s disagree (%s)" % (rel, " and ".join(keys),
                                                  ", ".join(sorted(map(str, named.values())))))
         for v in named.values():
             if not (isinstance(v, str) and _SEMVER.match(v)):

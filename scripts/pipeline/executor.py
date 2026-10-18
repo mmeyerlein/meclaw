@@ -985,8 +985,8 @@ def stations_build(ln, plus_env, repo, host_tree=None):
         "sh -s -- --build-env %s; exit $?\n" % shlex.quote(host_tree)))[0])
 
 
-def lane_fingerprint(tree, target, env, browsers=True):
-    """V0 section 2.3: `lane_fingerprint.sh --tree <tree> <target>`,
+def lane_fingerprint(tree, target, env, browsers=True, lane_root=None):
+    """V0 section 2.3: `lane_fingerprint.sh --tree <tree> <target> [<lane root>]`,
     the one producer of a fingerprint (re-check tv-bn M7q M1, OR-T11-22).
 
     `lanes fingerprint` writes the same script's answer into the register; the
@@ -1006,14 +1006,20 @@ def lane_fingerprint(tree, target, env, browsers=True):
     `browsers=False` (a run that books no engine, #1199 K14): no probe and no
     `browsers` field -- the register keeps the last answer of a run that checked
     them (`schedule.merge_register`). On 16.10. docs-only, satellite and
-    browser-less runs wrote the refusal of their own tree over all four lanes."""
-    said, why = _run_fingerprint_sh(["--tree", tree, target], env, cwd=tree)
+    browser-less runs wrote the refusal of their own tree over all four lanes.
+
+    `lane_root`: the root of the lane the run is on (the dispatch's `+lane_root`). A
+    tree without `workshop/tools` -- a satellite's, whose drivers run on the core's
+    tools -- takes playwright and wkenv.sh from the lane's core tree there (GH #1263);
+    without it such a tree has none."""
+    on_lane = [lane_root] if lane_root else []
+    said, why = _run_fingerprint_sh(["--tree", tree, target] + on_lane, env, cwd=tree)
     missing = [k for k in FINGERPRINT_FIELDS if k != "browsers" and k not in (said or {})]
     if why is None and missing:
         why = "no field %s" % ",".join(missing)
     fp = {k: (None if why else said.get(k)) for k in FINGERPRINT_FIELDS}
     if browsers:
-        fp["browsers"] = browser_probe(tree, env)
+        fp["browsers"] = browser_probe(tree, env, lane_root)
     else:
         fp.pop("browsers", None)
     if why:
@@ -1045,8 +1051,9 @@ LANE_FINGERPRINT_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "lane_fingerprint.sh")
 
 
-def browser_probe(tree, env):
+def browser_probe(tree, env, lane_root=None):
     """Per engine whether it can start on this lane: "ok", or why not in plain words.
+    `lane_root` as for `lane_fingerprint`: the core tools of a tree that has none.
 
     GH #1161, OR-TB.S3.17: build02's WebKit bundle could not load libGL.so.1, every
     WebKit proof SKIPped and `browser:display` read GREEN; then (10.10.) stale
@@ -1065,7 +1072,8 @@ def browser_probe(tree, env):
         secs = 30
     sh = shutil.which("sh") or "/bin/sh"
     try:
-        r = subprocess.run([sh, LANE_FINGERPRINT_SH, "--browsers", tree], capture_output=True,
+        r = subprocess.run([sh, LANE_FINGERPRINT_SH, "--browsers", tree]
+                           + ([lane_root] if lane_root else []), capture_output=True,
                            text=True, timeout=len(BROWSER_BUNDLES) * (secs + 10) + 30,
                            env=run_env, stdin=subprocess.DEVNULL)
         said = json.loads(r.stdout)
@@ -2672,7 +2680,9 @@ class _Run:
         # the browsers only for a run that checks them (#1199 K14): any other run's
         # tree says nothing about the lane's engines
         booked = {e for st in self.by_name.values() for e in _booked_engines(st)}
-        fp = lane_fingerprint(self.tree, self.target, self.base_env, bool(booked))
+        # the root of the lane (the admission's): the core tools of a tree without its own (GH #1263)
+        fp = lane_fingerprint(self.tree, self.target, self.base_env, bool(booked),
+                              self.d.get("+lane_root") or None)
         self.head["fingerprint"] = fp
         self.emit("lane_fingerprint", fp)
         if fp.get("unanswered"):   # M7r A-M1: said in the run, not only in the event

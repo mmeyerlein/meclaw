@@ -1,4 +1,4 @@
-# `llm-registry@2.10.0`
+# `llm-registry@2.10.1`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -93,7 +93,8 @@ This is the division of labour, and everything else in this template follows fro
 So the start value is the **birth certificate** and the registry is the **living record**. They
 do not compete: a cell is born on its start value, and from then on the registry is the only
 thing that moves it without a restart -- and when nothing in the registry applies any more, it
-puts the cell back on exactly that start value with a `$reset`. A cell cannot ask what it should
+puts the cell back on exactly that start value with a `$reset`, or with that model's package where
+the catalogue carries it (*The push*, below). A cell cannot ask what it should
 run, because **a cell cannot read the colony**; the registry pushes. Without `meclaw-os` there is
 no registry, and a cell keeps its start value and the substrate's params road
 (`docs/cell-types.md` § `llm`).
@@ -169,7 +170,8 @@ in 2.2.0.
 
 A candidate whose model has no ACTIVE catalogue row is skipped and the next rank decides: a name
 without a package would move a cell onto something nobody described. Only the start value needs
-no row -- the cell already holds it. A `global` replacement replaces the base model and never
+no row -- the cell already holds it; where it has one, its package is pushed (*The push*, below).
+A `global` replacement replaces the base model and never
 the result of another replacement, so `X -> Y` beside `Y -> Z` is two statements, not a chain.
 
 **`pinned: 1` means "the start value, unless addressed".** A pinned subscriber resolves to its
@@ -199,14 +201,22 @@ A push is a **params-only** message -- an empty `system` slot and no `messages` 
 ```
 
 It carries the WHOLE package and `$reset` for every package key the package does not set, so no
-key of an earlier package survives a model change. Falling back to the start value is the reset
-alone: `{"system": {}, "params": {"$reset": [<every package key>]}}`. The `llm` cell merges the overlay into
+key of an earlier package survives a model change. Falling back to a start value the catalogue
+does not carry, or to a pinned subscriber's, is the reset
+alone: `{"system": {}, "params": {"$reset": [<every package key>]}}`. A start value that is an
+active row of the subscriber's protocol is pushed as that row's package, like any other rank, and
+the push goes out with the subscription
+([#1261](https://github.com/mmeyerlein/meclaw/issues/1261)): a brain born on a catalogue model
+runs on that model's package from its first call -- `cache_mode` and `cache_ttl_s` included,
+without which it stamps no `hop.cache_expires_at` -- and not only once its requirement is
+translated. A pinned subscriber gets no such push: the pin keeps it on exactly what it was born
+with, its own endpoint included. The `llm` cell merges the overlay into
 its live params, persists it in its own `cell.db` and emits **nothing** -- no inference, no
 provider call, no tokens -- and it survives wake and respawn, because the overlay is replayed
 over the birth params.
 
 **Only when the package changed.** Each subscriber row keeps `package_hash`, the hash of what
-was last pushed (empty for *nothing pushed, the start value*). An op that resolves a subscriber
+was last pushed (empty for *nothing pushed, a start value without a package*). An op that resolves a subscriber
 to the same bytes sends nothing, so repeating a replacement, re-announcing a known brain or
 remapping a tier onto the model it carries already costs no message at all. The empty `system`
 slot is what makes the body a valid message at all (`ubf-body.json` wants `system`,
@@ -235,9 +245,13 @@ a refusal is never read as a command -- a tool call on this lane is not looked a
 acknowledged. The hand reads the subscriber row of `refused_subscriber` once and decides against
 the row as it stands:
 
-- **the model the row holds** (`refused_model` equal to its `model_id`, or empty while the row is on
-  its start value -- the refusal of a `$reset`): the row gets `refused`, the error's own detail on
-  one line, at most 400 characters, and `refused_at`; journal `hand_refused_by_cell`;
+- **the push the row last recorded** (`refused_model` equal to its `model_id` while its last push
+  carried a package, `package_hash` not empty; or empty while its last push was a pure `$reset`,
+  `package_hash` empty): the row gets `refused`, the error's own detail on one line, at most 400
+  characters, and `refused_at`; journal `hand_refused_by_cell`. The rank decides nothing here: a
+  start value the catalogue carries is pushed as its package
+  ([#1261](https://github.com/mmeyerlein/meclaw/issues/1261)), so the refusal of a start row's
+  package names its start model and marks it, and `reset` sends it again;
 - **an older push** (the registry has sent another package since): nothing is marked, journal
   `hand_refusal_stale`;
 - **no row for that path**: `hand_refusal_unknown`; **no path at all**: `hand_refusal_unaddressed`.

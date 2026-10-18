@@ -192,6 +192,50 @@ class Resolve(Satellite):
         self.assertFalse(register.is_satellite(self._tmp.name))
 
 
+def repos_config(dirname, entries):
+    """A host file of the kit's repositories in `dirname` (never the machine's)."""
+    write(dirname, "pipeline-repos.json",
+          json.dumps({"schema": "meclaw.pipeline.repos/1", "repos": entries}))
+    return os.path.join(dirname, "pipeline-repos.json")
+
+
+class HostRepos(Satellite):
+    """GH #1262: a register word beyond the kit's three built-in ones comes from
+    a host file outside the export, beside the lanes file; without the file
+    exactly the built-in words hold, with the same refusal as before."""
+
+    def test_register_unknown_repo_from_config(self):
+        self.assertEqual(os.path.expanduser("~/.config/meclaw/pipeline-repos.json"),
+                         register.repos_path({}))
+        write(self.root, "pipeline/stations.json", json.dumps(registry([UNIT], repo="example")))
+        absent = os.path.join(self._tmp.name, "absent.json")
+        with mock.patch.dict(os.environ, {register.REPOS_ENV: absent}):
+            with self.assertRaisesRegex(register.RegisterError,
+                                        r"^pipeline/stations\.json: repo must be one of "
+                                        r"coding\|soul2me\|orga$"):
+                register.load_register(self.root)
+        conf = repos_config(self._tmp.name, [{"repo": "example", "path": self.root,
+                                             "asset_cache": "example",
+                                             "release_key": "meclaw"}])
+        with mock.patch.dict(os.environ, {register.REPOS_ENV: conf}):
+            self.assertEqual("example", register.load_register(self.root)["repo"])
+            self.assertEqual(("coding", "soul2me", "orga", "example"), register.repo_words())
+        # a host file that does not have the form refuses, it never falls back
+        bad = repos_config(self._tmp.name, [{"repo": "example"}])
+        with mock.patch.dict(os.environ, {register.REPOS_ENV: bad}):
+            with self.assertRaisesRegex(register.RegisterError,
+                                        r"repos\[0\] must have exactly the fields"):
+                register.load_register(self.root)
+        # a built-in word is never replaced: its sets pin with both release keys
+        builtin = repos_config(self._tmp.name, [{"repo": "soul2me", "path": self.root,
+                                                "asset_cache": "example",
+                                                "release_key": "meclaw"}])
+        with mock.patch.dict(os.environ, {register.REPOS_ENV: builtin}):
+            with self.assertRaisesRegex(register.RegisterError,
+                                        r"repos\[0\]: repo soul2me is built in"):
+                register.load_register(self.root)
+
+
 class AMissingMainBaseRunsEveryStation(Satellite):
     """GH #1199 (vor-batch, the I3 class in the register): a strand without a
     merge base with the main branch has no diff to narrow from. The register
@@ -1563,6 +1607,25 @@ class SetPins(PinFixture):
         os.remove(os.path.join(self.sat, "pipeline", "stations.json"))
         with self.assertRaises(register.RegisterError):
             self.pins()
+
+
+class HostRepoPins(PinFixture):
+    """GH #1262: the asset cache and the release key of a repository the host
+    file names come from its entry there, like the built-in three's."""
+
+    def test_asset_cache_mapping_from_config(self):
+        root = os.path.join(self.home, "projeks", "sat-example")
+        write(root, "pipeline/stations.json", json.dumps(registry([], repo="example")))
+        write(self.home, ".cache/example-assets/meclaw/0.62.1/meclaw", "b\n")
+        # the entry's key alone pins the release: `meclaw` is no pin of this repository
+        self.set("0.2", {"example_release": "0.62.1", "meclaw": "0.99.0"}, root=root)
+        conf = repos_config(self._tmp.name, [{"repo": "example", "path": root,
+                                             "asset_cache": "example-assets",
+                                             "release_key": "example_release"}])
+        with mock.patch.dict(os.environ, {register.REPOS_ENV: conf}):
+            got = self.pins(root)
+        self.assertEqual(os.path.join(self.home, ".cache", "example-assets", "meclaw"), got.cache)
+        self.assertEqual((["0.62.1"], []), (got.versions, got.mirrors))
 
 
 @unittest.skipUnless(shutil.which("rsync"), "rsync not installed")

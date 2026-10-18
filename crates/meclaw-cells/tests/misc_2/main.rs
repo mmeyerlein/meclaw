@@ -14,6 +14,7 @@ pub mod gh1229_the_keeper_night_is_armed_by_an_open_generation;
 pub mod gh1253_a_strike_in_the_drain_fires_after_the_restart;
 pub mod gh1253_an_update_in_the_drain_is_fetched_again_after_the_restart;
 pub mod gh1255_the_sent_answer_reaches_its_declared_checker;
+pub mod gh1266_the_night_keeps_its_contract_and_its_moment;
 pub mod gh135_happened_at_over_ubf;
 pub mod gh138_affinity_firewall_params;
 pub mod gh138_keeper_summarizer_dispatcher_params;
@@ -59,7 +60,6 @@ pub mod gh292_every_ctx_key_is_declared;
 pub mod gh296_the_bundle_is_payload_not_plumbing;
 pub mod gh297_a_leg_may_come_back_short;
 pub mod gh298_nothing_is_a_value;
-pub mod gh298_per_turn_annotation;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

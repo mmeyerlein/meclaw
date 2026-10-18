@@ -369,7 +369,8 @@ def runner_capacity(lane, fingerprint):
 # The fields of a fingerprint the TREE of a run decides, not the lane (#1199 K13):
 # the toolchain and configuration of the tree (`executor.BUILD_PART`), its
 # station environment's increment policy, the playwright of its
-# `workshop/tools/node_modules` and the engines that playwright starts. On
+# `workshop/tools/node_modules` (or the lane core tree's for a tree without
+# one, #1263) and the engines that playwright starts. On
 # 16.10. an orga-hive pass (no `workshop/tools`) wrote "no playwright ... (npm ci
 # there)" over build04's register and the admission refused every meclaw
 # browser pass there. The register's top level holds the core repo's tree; a
@@ -1455,6 +1456,8 @@ def _dispatch(db, plan, runner, run, stations, names, demand, cargo, tree, now, 
                 "fingerprint_expected": fp, "budget": budget, "quarantine": [], "decide": [],
                 "deadline_at": deadline_at, "+env": env, "+nice": egon,
                 "+cpu_overbook": CPU_OVERBOOK, "+export_root": "%s/export" % root,
+                # the lane's core tools for a tree without its own (GH #1263)
+                "+lane_root": root,
                 "+fail_fast": False, "+no_precheck_stop": False, "+only": None,
                 "+dispatched_at": at}  # the round's start in the journal (#1152)
     return Admission(lane=lane, run=run, deadline_at=deadline_at, ttl_s=ttl_s, capacity=capacity,

@@ -2,16 +2,16 @@
 # meclaw -- the fingerprint of a lane (V0 section 2.3), one JSON object.
 #
 #     sh scripts/pipeline/lane_fingerprint.sh [<lane root>]
-#     sh scripts/pipeline/lane_fingerprint.sh --tree <tree> <target>
-#     sh scripts/pipeline/lane_fingerprint.sh --browsers <tree>
+#     sh scripts/pipeline/lane_fingerprint.sh --tree <tree> <target> [<lane root>]
+#     sh scripts/pipeline/lane_fingerprint.sh --browsers <tree> [<lane root>]
 #     sh scripts/pipeline/lane_fingerprint.sh --build-env <tree>
 #
 # THE one producer of a fingerprint (re-check tv-bn M7q M1, OR-T11-22 "one fact,
 # one source"): `lanes fingerprint` writes its answer into the register, and the
 # executor's `lane_fingerprint` -- the run's own, which the register keeps after
 # the run and the cache keys and the drift NOTE compare -- is this script too,
-# with `--tree`: the playwright of the tree the gate runs in, the file system of
-# its target; the browsers it asks with `--browsers` (`executor.browser_probe`). Two producers gave two forms (`Python 3.12.3`
+# with `--tree`: the playwright of the tree the gate runs in (or the lane core
+# tree's for a tree without `workshop/tools`, #1263), the file system of its target; the browsers it asks with `--browsers` (`executor.browser_probe`). Two producers gave two forms (`Python 3.12.3`
 # here, `3.12.3` there; `ext4` here, `ext2/ext3` there): after every
 # `lanes fingerprint` a cache miss, a cache doubt and a `lane-drift`.
 # `--browsers` prints only the `browsers` field, for the tree the executor runs a
@@ -47,9 +47,10 @@
 only_browsers=""
 tree_dir=""
 only_build=""
-if [ "${1:-}" = "--browsers" ]; then only_browsers=1; shift; fi
+lane_core=""
+if [ "${1:-}" = "--browsers" ]; then only_browsers=1; shift; lane_core="${2:-}"; fi
 if [ "${1:-}" = "--build-env" ]; then only_build=1; tree_dir="${2:-}"; shift; [ $# -eq 0 ] || shift; fi
-if [ "${1:-}" = "--tree" ]; then tree_dir="${2:-}"; shift 2; fi
+if [ "${1:-}" = "--tree" ]; then tree_dir="${2:-}"; shift 2; lane_core="${2:-}"; fi
 root="${1:-/srv/target}"
 # Whether the stations build incrementally: CARGO_INCREMENTAL of the environment
 # the script runs in, `default` when it is unset (cargo's profile default) --
@@ -400,15 +401,31 @@ nextest_v=$(first cargo nextest --version)
 node_v=$(first node --version)
 pw=""
 pwdir=""
-# the wkenv.sh the gate sources before every browser driver (the tree's own)
-bp_wkenv="$root/tree/workshop/tools/wkenv.sh"
-pw_dirs="$root/cache/workshop-tools/node_modules/playwright $root/tree/workshop/tools/node_modules/playwright"
-if [ -n "$only_browsers" ]; then
-    bp_wkenv="$root/workshop/tools/wkenv.sh"
-    pw_dirs="$root/workshop/tools/node_modules/playwright"
-elif [ -n "$tree_dir" ]; then
-    bp_wkenv="$tree_dir/workshop/tools/wkenv.sh"
-    pw_dirs="$tree_dir/workshop/tools/node_modules/playwright"
+pw_where="workshop/tools/node_modules"
+# <lane root>: the tools of the lane's core tree -- the wkenv.sh the gate sources before
+# every browser driver, the playwright of the lane's cache or of the tree (lane.py THE LAYOUT)
+core_tools() {
+    bp_wkenv="$1/tree/workshop/tools/wkenv.sh"
+    pw_dirs="$1/cache/workshop-tools/node_modules/playwright $1/tree/workshop/tools/node_modules/playwright"
+}
+core_tools "$root"
+# a run's tree (`--browsers`, `--tree`): its own tools. A tree WITHOUT `workshop/tools`
+# -- a satellite's, whose drivers import the core's -- takes the core tree of the lane
+# it runs on when the caller names that lane (GH #1263, measured 18.10.: a satellite
+# pass booked both engines and was RED "no playwright in workshop/tools/node_modules"
+# beside a core tree with Playwright 1.63.0 whose engines started). A tree with its
+# own directory keeps it, installed or not: its package.json pins the version. No
+# lane named: no core guessed (a tree on this machine is no lane's).
+own="$tree_dir"
+[ -z "$only_browsers" ] || own="$root"
+if [ -n "$own" ]; then
+    if [ -d "$own/workshop/tools" ] || [ -z "$lane_core" ]; then
+        bp_wkenv="$own/workshop/tools/wkenv.sh"
+        pw_dirs="$own/workshop/tools/node_modules/playwright"
+    else
+        core_tools "$lane_core"
+        pw_where="the lane's core tree ($lane_core/tree/workshop/tools/node_modules, $lane_core/cache/workshop-tools/node_modules)"
+    fi
 fi
 for d in $pw_dirs; do
     if [ -f "$d/package.json" ]; then
@@ -665,7 +682,7 @@ bp_probe() {
     engine="$1"; name="$2"; prefix="$3"; libs="$4"; shift 4
     if ! command -v node >/dev/null 2>&1; then echo "no node on the lane"; return; fi
     if [ -z "$bp_pins" ] || [ ! -r "$bp_pins" ]; then
-        echo "no playwright in workshop/tools/node_modules (npm ci there)"; return
+        echo "no playwright in $pw_where (npm ci there)"; return
     fi
     rev=$(bp_rev "$name")
     if [ -z "$rev" ]; then echo "the pinned playwright names no $name revision"; return; fi

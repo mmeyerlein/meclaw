@@ -3,6 +3,7 @@
 
 pub mod code_failure_modes;
 pub mod gh1197_the_warm_code_cells_answer_like_cold;
+pub mod gh1268_a_parked_sandbox_path_does_not_block_the_boot;
 pub mod gh144_embed_sandbox_egress;
 pub mod gh309_coder_pipeline_verdict_parse;
 pub mod gh343_the_small_cells_read_the_error_code_too;

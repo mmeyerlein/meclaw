@@ -420,6 +420,7 @@ const BROKERED: &[(&str, usize)] = &[
     ("egon", 2),
     ("freeswitch", 2),
     ("meclaw-os", 2),
+    ("npc", 1),
     ("research-assistant", 2),
     ("slack-agent", 3),
     ("steward", 1),

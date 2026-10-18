@@ -279,6 +279,7 @@ FAKE_NODE = r"""#!/bin/sh
 [ "$1" = "--version" ] && { echo v24.19.0; exit 0; }
 [ "$1" = "-e" ] || exit 2
 echo "$4 req=${MECLAW_REQUIRE_BROWSERS:-} wk=${FAKE_WKENV:-}" >> "$FAKE_NODE_LOG"
+[ -z "${FAKE_NODE_PW_LOG:-}" ] || echo "$4 $3" >> "$FAKE_NODE_PW_LOG"
 [ -n "${FAKE_NODE_HANG:-}" ] && exec sleep 30
 case "$4" in
     webkit) if [ -f "$PLAYWRIGHT_BROWSERS_PATH/webkit-2359/minibrowser-wpe/sys/lib/libEGL_mesa.so.0" ]; then
@@ -477,6 +478,105 @@ class TestBrowserStart(BrowserLaneCase):
         (self.tree / "workshop" / "tools" / "wkenv.sh").unlink()
         got = self.lane()
         self.assertIn("wkenv.sh", got["webkit"])
+        self.assertEqual([], self.starts())
+
+
+@unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh")
+class TestTreeWithoutTools(BrowserLaneCase):
+    """GH #1263 (measured 18.10. on a lane): a satellite pass booked both engines, its
+    tree has no `workshop/tools` -- its drivers run on the core's tools -- and the probe
+    looked only there: RED "no playwright in workshop/tools/node_modules (npm ci
+    there)" while the lane's core tree held Playwright 1.63.0 and both engines started.
+    A tree without that directory takes the core tree of the lane it runs on; a tree
+    with its own keeps it, installed or not."""
+
+    def setUp(self):
+        super().setUp()
+        (self.fakes / "ldd").write_text(FAKE_LDD_ALL_RESOLVE)
+        # as npm writes it: the field reads the version line of package.json
+        self.package_json(self.tree / "workshop" / "tools", "1.63.0")
+        self.sat = self.root / "wt" / "sat-a"
+        (self.sat / "docs").mkdir(parents=True)
+        self.target = self.root / "target"
+        self.target.mkdir()
+        self.pw_log = self.base / "pw.log"
+        self.env["FAKE_NODE_PW_LOG"] = str(self.pw_log)
+        # the whole fingerprint asks rustc and cargo: answers of their own, never this host's
+        cargo_bin = self.base / ".cargo" / "bin"
+        cargo_bin.mkdir(parents=True)
+        for name, body in (("cargo", FAKE_CARGO), ("rustc", FAKE_RUSTC)):
+            (cargo_bin / name).write_text(body)
+            (cargo_bin / name).chmod(0o755)
+
+    def starts(self):
+        return self.node_log.read_text().splitlines() if self.node_log.exists() else []
+
+    def playwrights(self):
+        """The playwright directory each start was handed, per engine."""
+        if not self.pw_log.exists():
+            return {}
+        return dict(ln.split(" ", 1) for ln in self.pw_log.read_text().splitlines())
+
+    @staticmethod
+    def package_json(tools, version):
+        (tools / "node_modules" / "playwright" / "package.json").write_text(
+            '{\n  "name": "playwright",\n  "version": "%s"\n}\n' % version)
+
+    def own_tools(self, version):
+        tools = self.sat / "workshop" / "tools"
+        shutil.copytree(self.tree / "workshop" / "tools" / "node_modules", tools / "node_modules")
+        self.package_json(tools, version)
+        (tools / "wkenv.sh").write_text("FAKE_WKENV=own\nexport FAKE_WKENV\n")
+        return tools
+
+    def test_a_tree_without_workshop_tools_takes_the_lanes_core_tree(self):
+        core = self.tree / "workshop" / "tools" / "node_modules" / "playwright"
+        got = self.executor.browser_probe(str(self.sat), self.env, str(self.root))
+        self.assertEqual({"chromium": "ok", "webkit": "ok"}, got)
+        # under the core tree's wkenv.sh, with the core tree's playwright
+        self.assertEqual(["chromium req=1 wk=sourced", "webkit req=1 wk=sourced"], self.starts())
+        self.assertEqual({"chromium": str(core), "webkit": str(core)}, self.playwrights())
+        fp = self.executor.lane_fingerprint(str(self.sat), str(self.target), self.env,
+                                            lane_root=str(self.root))
+        self.assertNotIn("unanswered", fp)
+        self.assertEqual("1.63.0", fp["playwright"])
+        self.assertEqual({"chromium": "ok", "webkit": "ok"}, fp["browsers"])
+
+    def test_a_tree_with_its_own_workshop_tools_keeps_them(self):
+        tools = self.own_tools("1.64.0")
+        got = self.executor.browser_probe(str(self.sat), self.env, str(self.root))
+        self.assertEqual({"chromium": "ok", "webkit": "ok"}, got)
+        self.assertEqual(["chromium req=1 wk=own", "webkit req=1 wk=own"], self.starts())
+        own = str(tools / "node_modules" / "playwright")
+        self.assertEqual({"chromium": own, "webkit": own}, self.playwrights())
+        fp = self.executor.lane_fingerprint(str(self.sat), str(self.target), self.env,
+                                            lane_root=str(self.root))
+        self.assertEqual("1.64.0", fp["playwright"])
+        # its own directory without an install: its own refusal, never the core's playwright
+        shutil.rmtree(tools / "node_modules")
+        got = self.executor.browser_probe(str(self.sat), self.env, str(self.root))
+        for engine in ("chromium", "webkit"):
+            self.assertIn("no playwright in workshop/tools/node_modules", got[engine])
+        self.assertEqual(2, len(self.starts()), "no start without the tree's own playwright")
+        fp = self.executor.lane_fingerprint(str(self.sat), str(self.target), self.env,
+                                            lane_root=str(self.root))
+        self.assertIsNone(fp["playwright"])
+
+    def test_without_the_lane_a_bare_tree_finds_no_playwright(self):
+        """No lane named, no core tree guessed: a tree on this machine (the schedule
+        test's foreign tree of 16.10.) is refused as before."""
+        got = self.executor.browser_probe(str(self.sat), self.env)
+        for engine in ("chromium", "webkit"):
+            self.assertIn("no playwright in workshop/tools/node_modules", got[engine])
+        self.assertEqual([], self.starts())
+
+    def test_a_lane_without_the_core_tools_names_where_it_looked(self):
+        shutil.rmtree(self.tree / "workshop")
+        got = self.executor.browser_probe(str(self.sat), self.env, str(self.root))
+        for engine in ("chromium", "webkit"):
+            self.assertIn("the lane's core tree", got[engine])
+            self.assertIn(str(self.root / "tree" / "workshop" / "tools" / "node_modules"),
+                          got[engine])
         self.assertEqual([], self.starts())
 
 

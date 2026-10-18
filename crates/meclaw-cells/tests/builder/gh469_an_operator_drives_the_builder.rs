@@ -388,7 +388,7 @@ fn emission(
 fn a_manifest() -> Value {
     json!([
         {"scope": "/os/orgs/acme",
-         "diff": {"add_nodes": [{"name": "scribe", "template": "member@2.6.0"}]}}
+         "diff": {"add_nodes": [{"name": "scribe", "template": "member@2.6.1"}]}}
     ])
 }
 

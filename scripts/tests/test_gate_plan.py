@@ -7,6 +7,7 @@ reading the real tree, so the expectations stay stable.
 """
 
 import collections
+import inspect
 import json
 import os
 import pathlib
@@ -25,6 +26,7 @@ REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
 import gate_plan as gp  # noqa: E402
+from pipeline import graph as pipeline_graph  # noqa: E402
 from scripts.tests.test_pipeline_executor import ExecutorCase  # noqa: E402
 from scripts.tests.test_pipeline_executor import station as ex_station  # noqa: E402
 
@@ -2114,6 +2116,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_git_merge_display_sync",
             "scripts.tests.test_precheck",
             "scripts.tests.test_precheck_testing_bans",
+            "scripts.tests.test_precheck_wall_clock",
             "scripts.tests.test_pipeline_locks",
             "scripts.tests.test_harness_fold",
             "scripts.tests.test_pipeline_pre",
@@ -2249,6 +2252,130 @@ class Classify(unittest.TestCase):
         self.assertIn("gate_infra", gp.classify(["scripts/flake_triage.py"]))
         st = by_name(gp.plan(["scripts/flake_triage.py"], "strand", repo=None))
         self.assertIn("scripts.tests.test_flake_triage", st["gate-selftest"].cmds[0])
+
+    def test_the_wall_clock_rule_is_gate_infrastructure(self):
+        """`wall_clock.py` is precheck's rule `wall-clock` (K-UHREN, #1199):
+        a diff only at it plans its self-test and the pre run that imports
+        it (`classify` read `export_infra` alone before)."""
+        self.assertIn("gate_infra", gp.classify(["scripts/wall_clock.py"]))
+        st = by_name(gp.plan(["scripts/wall_clock.py"], "strand", repo=None))
+        self.assertIn("scripts.tests.test_precheck_wall_clock", st["gate-selftest"].cmds[0])
+        self.assertIn("scripts.tests.test_pipeline_pre", st["gate-selftest"].cmds[0])
+
+    def test_the_clock_bans_plan_the_tests_that_read_them(self):
+        """`.github/gates/clock-bans/clippy.toml` is read by the ratchet and,
+        since v2-r3-rest, by `wall_clock.py` (its Rust forms are the `wall:`
+        rows) and by `test_clock_bans`: a diff only at it plans the ratchet
+        and the self-tests that read it (it planned `unwrap-budget` alone)."""
+        path = ".github/gates/clock-bans/clippy.toml"
+        self.assertLessEqual({"gate_infra", "unwrap_infra"}, gp.classify([path]))
+        st = by_name(gp.plan([path], "strand", repo=None))
+        self.assertIn("unwrap-budget", st)
+        self.assertIn("scripts.tests.test_precheck_wall_clock", st["gate-selftest"].cmds[0])
+        self.assertIn("scripts.tests.test_clock_bans", st["gate-selftest"].cmds[0])
+
+    def test_the_ratchet_plans_the_tests_of_the_rule_that_reads_through_it(self):
+        """`wall_clock.py` reads the clock bans through the ratchet's own
+        `read_bans` (re-check 9f61a3224 M1, one reading of one list), and
+        `test_clock_bans` loads the ratchet: a diff only at
+        `.github/gates/unwrap_budget.py` plans the ratchet and both self-tests
+        (it planned `unwrap-budget` alone)."""
+        path = ".github/gates/unwrap_budget.py"
+        self.assertLessEqual({"gate_infra", "unwrap_infra"}, gp.classify([path]))
+        st = by_name(gp.plan([path], "strand", repo=None))
+        self.assertIn("unwrap-budget", st)
+        self.assertIn("scripts.tests.test_precheck_wall_clock", st["gate-selftest"].cmds[0])
+        self.assertIn("scripts.tests.test_clock_bans", st["gate-selftest"].cmds[0])
+
+    # The scripts a test under scripts/tests/ names without reading them: the
+    # name is a string in a list -- an expected path, a station argv, a stub
+    # written at the path, a reason in an exclusion table. Each entry says
+    # where it is named and why that reads nothing of the file; an entry the
+    # plan covers anyway, or a name no test carries any more, is stale.
+    NAMED_ONLY = {
+        "scripts/check_adr_anchors.py":
+            "test_export_audit_scope writes a stub at its path, test_gate_plan lists it as a diff "
+            "without a kit input, test_lane_engstelle appends a probe to its text to test the "
+            "scan; the script itself runs in `adr-anchors` in every mode",
+        "scripts/check_catalogue.py":
+            "test_pipeline_merge_gate_parity carries its argv in a station fixture of the cache "
+            "key; the script itself runs in `catalogue`",
+        "scripts/check_claims.py":
+            "test_export_audit_scope writes a stub at its path; the script itself runs in "
+            "`claims` in every mode",
+        "scripts/install.sh":
+            "test_gate_plan lists it as a recipe of the binary owner lock, which reads it as text "
+            "in `precheck`, and pins that it plans no selftest (GH #1168)",
+        "scripts/start.sh":
+            "test_lane_engstelle names it in NOT_KIT_PY and as a witness that its scan is not "
+            "empty; the colony starter, on no gate or lane path",
+    }
+    # not exported (R5: it carries the site's names) -- where it is absent, the
+    # scan does not see it and the entry has nothing to hold
+    if (REPO / "scripts/publish_docs.sh").is_file():
+        NAMED_ONLY["scripts/publish_docs.sh"] = (
+            "test_lane_engstelle names it in NOT_KIT_PY and as a witness that its scan is not "
+            "empty; it publishes the docs site, on no gate or lane path")
+
+    def test_every_script_a_test_reads_plans_that_test(self):
+        """The class of #1180 (`flake_triage.py`) and of `wall_clock.py`
+        (#1199): a script under scripts/ that a test under scripts/tests/
+        imports, runs, or copies into a fixture tree and runs plans that test
+        when a diff touches only the script -- an under-selection is
+        fail-open (development-rules section 7). A test names a script by
+        `import <stem>`, `from <stem> import` or `<name>` in quotes or after
+        a slash; the plan reads `scripts.tests.<module>` in the station
+        commands. NAMED_ONLY holds the names that read nothing. A test that
+        reads every script by glob as a form rule (test_lane_engstelle) is no
+        reader: its rule is the text, not the behaviour (GH #1168, ruling)."""
+        # The same scripts in both trees: git's tracked files in a checkout,
+        # the walk of the published tree, which R15 runs this module in
+        # without a repository (git exit 128). The pipeline's one answer.
+        tracked = [rel for rel in pipeline_graph.tree_files(REPO, untracked=False)
+                   if rel.startswith("scripts/")]
+        # each test text read once: the modules it imports, the names it quotes
+        import_re = re.compile(r"\bimport (\w+)")
+        from_re = re.compile(r"\bfrom (\w+) import\b")
+        quoted_re = re.compile(r"(?<=[\"'/])([^\"'/\s]+)(?=[\"'])")
+        names = {}
+        for path in sorted((SCRIPTS / "tests").glob("test_*.py")):
+            text = path.read_text(encoding="utf-8")
+            if path.name == pathlib.Path(__file__).name:
+                # this pin's own table and body name scripts and read none
+                body = inspect.getsource(type(self).test_every_script_a_test_reads_plans_that_test)
+                start = text.index("    NAMED_ONLY = {")
+                text = text[:start] + text[text.index(body, start) + len(body):]
+            names[path.stem] = (set(import_re.findall(text)) | set(from_re.findall(text)),
+                                set(quoted_re.findall(text)))
+        planned_re = re.compile(r"scripts[./]tests[./](test_\w+)")
+        checked, named_only = set(), set()
+        for rel in tracked:
+            if (not rel.endswith((".py", ".sh")) or rel.startswith("scripts/tests/")
+                    or not (REPO / rel).is_file()):
+                continue
+            name = rel.rsplit("/", 1)[1]
+            stem = name.rsplit(".", 1)[0]
+            readers = sorted(t for t, (imported, quoted) in names.items()
+                             if stem in imported or name in quoted)
+            if not readers:
+                continue
+            planned = {m for st in gp.plan([rel], "strand", repo=None)
+                       for cmd in st.cmds for word in cmd for m in planned_re.findall(str(word))}
+            missing = [t for t in readers if t not in planned]
+            if rel in self.NAMED_ONLY:
+                named_only.add(rel)
+                with self.subTest(script=rel, check="stale"):
+                    self.assertTrue(missing, "%s: its tests are planned, the entry is stale" % rel)
+                continue
+            checked.add(rel)
+            with self.subTest(script=rel):
+                self.assertEqual([], missing, "a diff only at %s does not plan the tests that "
+                                              "read it" % rel)
+        # not vacuous: the readers of #1180, K-UHREN and this class are in the scan
+        self.assertLessEqual({"scripts/flake_triage.py", "scripts/wall_clock.py",
+                              "scripts/lane_sync.sh", "scripts/harness_fold.py"}, checked)
+        # no stale entry: each is still a script a test names
+        self.assertEqual(set(self.NAMED_ONLY), named_only)
 
     def test_the_quarantine_config_is_gate_infrastructure(self):
         """`.config/nextest.toml` decides which test may be retried, and
@@ -5704,9 +5831,10 @@ class StrandExportAuditSelection(unittest.TestCase):
                 "templates/operator/template.json",
                 "templates/README.md",
                 gp.MAKE_EXPORT)
+    # GH #1199 (v2-r3-rest): a crate source left this list -- R8 reads it, so
+    # it plans the audit (test_export_audit_scope.TheStrandPlanHandsR8ItsFiles).
     QUIET = ("scripts/gate_plan.py", "scripts/tests/test_zz_probe.py", "docs/x.md",
-             "docs/x.en.md", "README.md", "crates/meclaw-cells/src/lib.rs",
-             "plans/export-fixtures/test_drift_gate.py")
+             "docs/x.en.md", "README.md", "plans/export-fixtures/test_drift_gate.py")
 
     def test_a_test_or_template_diff_plans_the_dry_audit_in_strand(self):
         for path in self.TRIGGERS:
@@ -5719,8 +5847,13 @@ class StrandExportAuditSelection(unittest.TestCase):
             # station that runs it (make_export.py plans it, a test does not)
             kit = ["--no-public-resolver"] if "export-tree-tests" in st else []
             self.assertEqual(path == gp.MAKE_EXPORT, bool(kit), path)
+            # GH #1199 (v2-r3-rest): R8 dry over the diff's files under
+            # R8_ROOTS (every trigger here is one); make_export.py hands itself
+            # over (= the whole subset).
+            r8 = [path]
             self.assertEqual(st["export-audit"].cmds,
-                             [self.AUDIT + kit + ["--diff-paths"] + judged],
+                             [self.AUDIT + kit + ["--r8-paths"] + r8
+                              + ["--diff-paths"] + judged],
                              path)
             self.assertFalse(st["export-audit"].cargo, path)
 
@@ -5756,11 +5889,14 @@ class StrandExportAuditSelection(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--parent") + 1], "HEAD")
 
     def test_the_trigger_is_the_scope_of_the_export_rules(self):
-        """One list, loaded: R2b/R2c judge `make_export._is_exported_test`."""
+        """One list, loaded: R2b/R2c judge `make_export._is_exported_test`,
+        R8 `make_export.r8_scans` (GH #1199, v2-r3-rest)."""
         mx = gp._export_module()
         for path in self.TRIGGERS[:3] + ("crates/meclaw-cells/src/lib.rs",
+                                         "crates/meclaw-cells/src/x.sql",
                                          "scripts/tests/test_zz_probe.py"):
-            self.assertEqual(gp._feeds_the_strand_audit(path), mx._is_exported_test(path), path)
+            self.assertEqual(gp._feeds_the_strand_audit(path),
+                             mx._is_exported_test(path) or mx.r8_scans(path), path)
 
     def test_integration_and_release_keep_their_shapes(self):
         for mode, scope in (("integration", "R1-R17 dry"), ("release", "R1-R17")):
@@ -5791,6 +5927,88 @@ class StrandExportAuditSelection(unittest.TestCase):
         out = gp.to_json([path], "strand", None, explain=True)
         rows = {r["name"]: r for r in out["stations"]}
         self.assertEqual(rows["export-audit"]["reason"], ["template_root: " + path])
+
+
+
+@private_tree.private(gp.MAKE_EXPORT)
+class StrandAuditOnTheResolverHull(unittest.TestCase):
+    """GH #1199 (v2-r3-r15plan): R15 runs `scripts.tests.test_gate_plan` in the
+    export tree, which has no `.git`, and with it every `scripts.tests` module it
+    imports -- the only tests that ever run without a repository. A diff to one
+    of them planned no strand audit at all (not an exported test, not a
+    template), and where it planned the kit half the audit dropped the resolver
+    because `export-tree-tests --kit` runs it -- in `kit_repo`, a one-commit
+    repository WITH `.git`. So a test that needs git (v2-r3-rest 704540706)
+    reached master green and was red in the export tree. A diff to the hull now
+    plans the dry strand audit with the public resolver, beside the kit half."""
+
+    def test_the_hull_is_the_resolver_module_and_its_scripts_tests_imports(self):
+        hull = gp.resolver_hull()
+        for member in ("scripts/tests/test_gate_plan.py", "scripts/tests/private_tree.py",
+                       "scripts/tests/store_isolation.py",
+                       "scripts/tests/test_pipeline_executor.py",
+                       # reached by a relative import (`from . import side_effect_guard`
+                       # in store_isolation, `from . import fake_ssh` in the guard)
+                       "scripts/tests/side_effect_guard.py", "scripts/tests/fake_ssh.py"):
+            self.assertIn(member, hull, member)
+        for outside in ("scripts/tests/test_zz_probe.py", "scripts/tests/test_lane_engstelle.py",
+                        "scripts/gate_plan.py"):
+            self.assertNotIn(outside, hull, outside)
+
+    def test_the_hull_follows_the_imports_transitively(self):
+        """Read from the tree, never a list: a module test_gate_plan reaches
+        only through another `scripts.tests` module is in it as well."""
+        hull = gp.resolver_hull()
+        direct = gp._scripts_tests_imports(gp.RESOLVER_MODULE)
+        self.assertTrue(direct, "test_gate_plan imports scripts.tests modules")
+        for member in direct:
+            self.assertIn(member, hull, member)
+            for deeper in gp._scripts_tests_imports(member):
+                self.assertIn(deeper, hull, (member, deeper))
+
+    def test_every_import_form_reaches_the_module(self):
+        """Each form on its own: today every relative import has a top-level
+        fallback beside it, so the whole hull alone would not see one form go."""
+        here = "scripts/tests/x.py"
+        for source, want in (
+                ("from scripts.tests import kit_time", ["scripts/tests/kit_time.py"]),
+                ("from scripts.tests.kit_tree import x", ["scripts/tests/kit_tree.py"]),
+                ("import scripts.tests.fake_ssh", ["scripts/tests/fake_ssh.py"]),
+                ("from . import private_tree", ["scripts/tests/private_tree.py"]),
+                ("from .store_isolation import isolate", ["scripts/tests/store_isolation.py"]),
+                ("import side_effect_guard", ["scripts/tests/side_effect_guard.py"]),
+                ("import json\nfrom scripts.tests import no_such_module", [])):
+            self.assertEqual(gp._scripts_tests_imports(here, source), want, source)
+        # outside scripts/tests/ a bare or relative name is no sibling
+        self.assertEqual(gp._scripts_tests_imports("scripts/x.py", "import kit_time"), [])
+        self.assertEqual(gp._scripts_tests_imports("scripts/x.py", "from . import kit_time"), [])
+
+    def test_a_hull_diff_plans_the_strand_audit_with_the_public_resolver(self):
+        for path in sorted(gp.resolver_hull()):
+            st = by_name(gp.plan([path], "strand", repo=None))
+            self.assertIn("export-audit", st, path)
+            cmd = st["export-audit"].cmds[0]
+            self.assertNotIn("--no-public-resolver", cmd, path)
+            self.assertFalse(st["export-audit"].cargo, path)
+
+    def test_the_kit_half_beside_it_does_not_drop_the_resolver(self):
+        """The kit half runs in `kit_repo` with `.git` -- blind to this class."""
+        path = "scripts/tests/test_gate_plan.py"
+        st = by_name(gp.plan([path], "strand", repo=None))
+        self.assertIn("export-tree-tests", st)
+        self.assertNotIn("--no-public-resolver", st["export-audit"].cmds[0])
+        # a kit test outside the hull still plans no audit (StrandExportAuditSelection)
+        self.assertNotIn("export-audit",
+                         by_name(gp.plan(["scripts/tests/test_zz_probe.py"], "strand", repo=None)))
+        # and a test diff beside a hull file keeps it too: one hull file is enough
+        both = by_name(gp.plan([gp.MAKE_EXPORT, path], "strand", repo=None))
+        self.assertNotIn("--no-public-resolver", both["export-audit"].cmds[0])
+
+    def test_the_reason_names_the_hull_file(self):
+        path = "scripts/tests/private_tree.py"
+        out = gp.to_json([path], "strand", None, explain=True)
+        rows = {r["name"]: r for r in out["stations"]}
+        self.assertEqual(rows["export-audit"]["reason"], ["r15_hull: " + path])
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ The pins: a finding in a touched file stays red, an untouched file is not
 read again, and the resolver module does not run under the switch.
 """
 
+import inspect
 import io
 import os
 import pathlib
@@ -518,6 +519,492 @@ class AnUnclearBaseRunsTheWholeStage(unittest.TestCase):
                 mock.patch.object(narrow_mod, "apply", side_effect=AssertionError("narrowed")):
             st, notes = self.plan(narrow=True)
         self.assertIn(self.PART, st["tests"]["parts"])
+
+
+# GH #1199 (v2-r3-rest, release 0.65.0): R8 -- german_scan over the exported
+# templates -- ran only in the FULL audit (`gate release`, the extracted tree).
+# KM/KP brought 20 German strings into templates/memory-hive through strand and
+# merge gates; the release pre-run was the first red. The dry audit now runs
+# R8 with the reach of the full run: every root of `make_export.R8_ROOTS`,
+# `--strict` and `--strings --strict`, the declarations of the full run.
+GERMAN_SCAN = "plans/p5.5-fixtures/german_scan.py"
+R8_TOUCHED = "templates/zz-r8/touched/config.json"
+R8_UNTOUCHED = "templates/zz-r8/untouched/script.py"
+R8_CLEAN = "templates/zz-r8/clean/config.json"
+# One German line per further root of the full run, (path, line).
+R8_ROOTS_RED = {
+    "crates": ("crates/zz-r8/src/lib.rs", 2),
+    "tests": ("tests/zz-r8/README.md", 3),
+    "examples": ("examples/zz-r8/main.rs", 2),
+    ".gitignore": (".gitignore", 1),
+}
+R8_STRINGS = "crates/zz-r8/tests/strings.rs"
+R8_RUNTIME = "crates/zz-r8/src/ui.rs"
+R8_FILES = {
+    R8_TOUCHED: ('{\n  "type": "code",\n  "describe": "The cell answers once per turn.",\n'
+                 '  "note": "Hier wird die Uhr nicht gelesen"\n}\n'),
+    R8_UNTOUCHED: "# Das ist ein deutscher Kommentar\nprint(1)\n",
+    R8_CLEAN: '{\n  "describe": "English only."\n}\n',
+    "crates/zz-r8/src/lib.rs": "pub fn f() {}\n// Hier wird die Uhr nicht gelesen\n",
+    "tests/zz-r8/README.md": "# Fixture\n\nDas ist ein deutscher Kommentar\n",
+    "examples/zz-r8/main.rs": "fn main() {\n    // Das ist ein deutscher Kommentar\n}\n",
+    ".gitignore": "# Das ist ein deutscher Kommentar\ntarget/\n",
+    # a German literal in test context (red) and one in runtime code (counted
+    # in the full run's class 1, not red): `--strings --strict`
+    R8_STRINGS: '#[test]\nfn t() {\n    assert!(true, "Die Uhr wird nicht gelesen");\n}\n',
+    R8_RUNTIME: 'pub const T: &str = "Die Uhr wird nicht gelesen";\n',
+}
+
+
+def _r8_rows(reds, head):
+    """(path, line) of the findings in the red whose head starts with `head`."""
+    rows = set()
+    for r in reds:
+        if not r.startswith(head):
+            continue
+        for ln in r.splitlines()[1:]:
+            path, line, _ = ln.strip().split(":", 2)
+            rows.add((path, int(line)))
+    return rows
+
+
+def _r8_declarations(mx):
+    """Two declared templates/ paths of the REAL table: one whose blocks the
+    fixture carries (exempt), one whose file stands without them (dead)."""
+    paths = sorted({p for p, _ in mx._german_scan_module().DECLARED_DATA_BLOCKS
+                    if p.startswith("templates/") and p.endswith(".json")})
+    return paths[0], paths[1]
+
+
+@private_tree.private(MAKE_EXPORT, GERMAN_SCAN)
+class R8RunsDryOverTheTemplates(unittest.TestCase):
+    """`receipt_r8_dry` over a fixture tree: German template files,
+    a clean one, a declared one and a dead declaration."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mx = _load_make_export()
+        cls.declared, cls.dead = _r8_declarations(cls.mx)
+        blocks = [b for p, b in cls.mx._german_scan_module().DECLARED_DATA_BLOCKS
+                  if p == cls.declared]
+        files = dict(R8_FILES)
+        files[cls.declared] = "".join(b + "\n" for b in blocks)
+        files[cls.dead] = '{\n  "describe": "English only."\n}\n'
+        cls.tmp = tempfile.TemporaryDirectory(prefix="export-audit-r8-")
+        root = cls.tmp.name
+        _git(root, "init", "-q")
+        for rel, text in files.items():
+            path = pathlib.Path(root, rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        _git(root, "add", "-A")
+        cls.tree = _git(root, "write-tree")
+        cls.paths = sorted(files)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def judge(self, scope):
+        """R8 dry over the fixture tree: (reds, report, paths read)."""
+        mx = self.mx
+        read = []
+        real_texts = mx.r8_texts
+
+        def spy(tree, judged):
+            read.extend(judged)
+            return real_texts(tree, judged)
+
+        with mock.patch.object(mx, "REPO", pathlib.Path(self.tmp.name)), \
+                mock.patch.object(mx, "KEEP_GOING", True), \
+                mock.patch.object(mx, "REDS", []), \
+                mock.patch.object(mx, "R8_SCOPE", scope), \
+                mock.patch.object(mx, "r8_texts", spy):
+            report = []
+            mx.receipt_r8_dry(self.tree, self.paths, report)
+            return list(mx.REDS), report, read
+
+    def test_a_german_line_in_a_touched_template_is_red_with_file_and_line(self):
+        reds, _, _ = self.judge({R8_TOUCHED})
+        rows = [r for r in reds if r.startswith("R8")]
+        self.assertEqual(len(rows), 1, reds)
+        self.assertIn(R8_TOUCHED + ":4:", rows[0])
+        self.assertIn("Hier wird die Uhr nicht gelesen", rows[0])
+
+    def test_the_whole_subset_finds_every_german_template(self):
+        reds, _, _ = self.judge(None)
+        hits = "\n".join(r for r in reds if r.startswith("R8"))
+        self.assertIn(R8_TOUCHED + ":4:", hits)
+        self.assertIn(R8_UNTOUCHED + ":1:", hits)
+        self.assertNotIn(R8_CLEAN, hits)
+
+    def test_an_untouched_template_is_neither_read_nor_judged(self):
+        reds, _, read = self.judge({R8_TOUCHED})
+        self.assertNotIn(R8_UNTOUCHED, read)
+        self.assertIn(R8_TOUCHED, read)
+        self.assertFalse([r for r in reds if R8_UNTOUCHED in r], reds)
+
+    def test_a_diff_without_templates_judges_no_file(self):
+        reds, report, read = self.judge(set())
+        self.assertEqual(reds, [])
+        self.assertEqual(read, [])
+        self.assertTrue([r for r in report if r.lstrip().startswith("R8") and "0 " in r], report)
+
+    def test_the_declarations_of_the_full_run_exempt_their_blocks(self):
+        reds, report, _ = self.judge({self.declared})
+        self.assertEqual(reds, [])
+        self.assertTrue([r for r in report if "R8" in r and self.declared in r], report)
+
+    def test_a_dead_declaration_in_a_judged_file_is_red(self):
+        reds, _, _ = self.judge({self.dead})
+        rows = [r for r in reds if r.startswith("R8")]
+        self.assertEqual(len(rows), 1, reds)
+        self.assertIn(self.dead, rows[0])
+        self.assertIn("DECLARED_DATA_BLOCKS", rows[0])
+
+    def test_a_german_line_under_every_root_of_the_full_run_is_red_with_file_and_line(self):
+        for root, (path, line) in R8_ROOTS_RED.items():
+            with self.subTest(root=root):
+                reds, _, read = self.judge({path})
+                self.assertEqual(_r8_rows(reds, "R8 (dry) german_scan --strict"),
+                                 {(path, line)}, reds)
+                self.assertEqual(read, [path])
+
+    def test_a_german_literal_in_test_context_is_red_with_file_and_line(self):
+        reds, _, _ = self.judge({R8_STRINGS})
+        self.assertEqual(_r8_rows(reds, "R8 (dry) german_scan --strings"),
+                         {(R8_STRINGS, 3)}, reds)
+        self.assertEqual(_r8_rows(reds, "R8 (dry) german_scan --strict"), set(), reds)
+
+    def test_a_german_runtime_literal_is_counted_not_red_like_the_full_run(self):
+        reds, report, _ = self.judge({R8_RUNTIME})
+        self.assertEqual(reds, [])
+        self.assertTrue([r for r in report if "1 Laufzeit-Literal" in r], report)
+
+    def test_the_dry_findings_are_the_findings_of_the_full_run(self):
+        """Differential pin: german_scan.py itself, run like the full audit
+        (`--strict` and `--strings --strict` over `GERMAN_SCAN_ROOTS` =
+        `R8_ROOTS` in a checkout), names the same file:line as the dry stage
+        over the whole subset -- the same reach, both modes."""
+        env = dict(os.environ, GERMAN_SCAN_ROOTS=":".join(self.mx.R8_ROOTS))
+        scan = str(pathlib.Path(REPO, GERMAN_SCAN))
+
+        def run(*mode):
+            return subprocess.run([sys.executable, scan, "-C", self.tmp.name, *mode],
+                                  capture_output=True, text=True, env=env)
+
+        comments = run("--strict", "--lines")
+        full_hits, path = set(), None
+        for ln in comments.stdout.splitlines():
+            if ln.startswith("=== "):
+                path = ln[4:]
+            elif path and ln[:5].strip().isdigit() and ln[5:7] == ": ":
+                full_hits.add((path, int(ln[:5])))
+        strings = run("--strings", "--strict")
+        part = strings.stdout.split("--- Klasse 2 (Test-Kontext) ---", 1)[1]
+        full_strings = {(r.strip().split(":", 2)[0], int(r.strip().split(":", 2)[1]))
+                        for r in part.split("\n\n", 1)[0].splitlines() if r.strip()}
+        reds, _, _ = self.judge(None)
+        self.assertEqual(_r8_rows(reds, "R8 (dry) german_scan --strict"), full_hits)
+        self.assertEqual(_r8_rows(reds, "R8 (dry) german_scan --strings"), full_strings)
+        self.assertEqual(comments.returncode, 1, comments.stdout)
+        self.assertEqual(strings.returncode, 1, strings.stdout)
+        self.assertIn((R8_STRINGS, 3), full_strings)
+        self.assertTrue({p for p, _ in R8_ROOTS_RED.values()} <= {p for p, _ in full_hits})
+
+    def test_a_frozen_corridor_is_found_in_the_judged_text_not_the_cwd(self):
+        """`corridor_ranges` read the corridor file relative to the cwd; the
+        dry stage judges a blob from any cwd. The corridor lines of the text
+        handed in stay the declared rest, whatever lies on disk."""
+        gs = self.mx._german_scan_module()
+        path, marker = gs.FROZEN_CORRIDORS[0]
+        text = f"// head\n{marker}x: u8) {{\n    // Hier wird die Uhr nicht gelesen\n}}\n"
+        r = gs.classify_file(path, text)
+        self.assertEqual(r["hits"], [])
+        self.assertEqual([n for n, _ in r["corridor"]], [3])
+
+
+@private_tree.private(MAKE_EXPORT, GERMAN_SCAN)
+class TheFastWordCheckIsTheRegex(unittest.TestCase):
+    """`german_scan.has_german_word` answers `GERMAN_RE.search` (v2-r3-rest):
+    on ASCII text by a word set -- the alternation cost 15 of the 17 s of R8
+    over the export subset --, on other text by the regex itself."""
+
+    LINES = ("Der Wert", "DER", "xder", "der_x", "der1", "1der", "_der", "der.", "(der)",
+             "der-x", "Der_Wert", "Fehler!", "is it", "English only.", "", "  // nicht",
+             "naechste Zeile", "für", "Straße der", "\u017fein", "caf\u00e9 der", "\tden\n",
+             "a|b", "KÖNNEN", "\u212aann")
+
+    def test_it_answers_the_regex_on_every_line(self):
+        gs = _load_make_export()._german_scan_module()
+        lines = list(self.LINES)
+        for w in sorted(gs.GERMAN_WORD_SET):
+            lines += [w, w.upper(), w.title(), "x" + w, w + "_", w + "9", "(" + w + ")",
+                      "a " + w + " b"]
+        for line in lines:
+            self.assertEqual(gs.has_german_word(line), gs.GERMAN_RE.search(line) is not None,
+                             repr(line))
+
+
+@private_tree.private(MAKE_EXPORT, GERMAN_SCAN)
+class TheScopeOfR8(unittest.TestCase):
+    """`r8_scope`: the diff's files under R8_ROOTS, or the whole subset."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mx = _load_make_export()
+
+    def test_no_template_paths_judges_the_whole_subset(self):
+        self.assertIsNone(self.mx.r8_scope(None))
+
+    def test_the_template_paths_are_the_scope(self):
+        self.assertEqual(self.mx.r8_scope([R8_TOUCHED]), {R8_TOUCHED})
+        self.assertEqual(self.mx.r8_scope([]), set())
+
+    def test_every_root_of_the_full_run_is_in_scope_and_nothing_else(self):
+        paths = [p for p, _ in R8_ROOTS_RED.values()] + [R8_STRINGS, "docs/x.md",
+                                                         "scripts/x.py", "crates/x/src/a.sql"]
+        self.assertEqual(self.mx.r8_scope(paths),
+                         {p for p, _ in R8_ROOTS_RED.values()} | {R8_STRINGS})
+
+    def test_the_roots_are_the_ones_the_full_run_scans(self):
+        """One list: the full run hands `R8_ROOTS` to german_scan, derived from
+        what travels (TREE_DIRS), not typed twice."""
+        mx = self.mx
+        self.assertEqual(mx.R8_ROOTS[:len(mx.TREE_DIRS)], tuple(mx.TREE_DIRS))
+        self.assertEqual(set(mx.R8_ROOTS) - set(mx.TREE_DIRS), {"templates", ".gitignore"})
+        self.assertIn('GERMAN_SCAN_ROOTS=":".join(R8_ROOTS)',
+                      inspect.getsource(mx.receipt_on_worktree))
+
+    def test_a_diff_at_what_decides_r8_judges_the_whole_subset(self):
+        """make_export.py decides which templates travel (PUBLIC_TEMPLATES),
+        german_scan.py carries the declarations: a change at either can turn
+        any untouched template red."""
+        for rules in (MAKE_EXPORT, GERMAN_SCAN):
+            self.assertIsNone(self.mx.r8_scope([R8_TOUCHED, rules]), rules)
+
+    def test_the_build_path_refuses_the_narrowing(self):
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", ["make_export.py", "--r8-paths", R8_TOUCHED]), \
+                mock.patch("sys.stderr", new=err), \
+                self.assertRaisesRegex(SystemExit, r"^2$"):
+            self.mx.main()
+        self.assertIn("nur mit --keep-going", err.getvalue())
+
+
+@private_tree.private(MAKE_EXPORT, GERMAN_SCAN)
+class TheDryAuditRunsR8(unittest.TestCase):
+    """`main()` in the dry shape over a fixture repo: the stages that need the
+    real tree are stubbed, the R8 stage is not. The strand's audit is red with
+    file and line; the full run leaves R8 to the extracted tree."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mx = _load_make_export()
+        cls.tmp = tempfile.TemporaryDirectory(prefix="export-audit-r8-main-")
+        root = cls.tmp.name
+        _git(root, "init", "-q")
+        for rel, text in R8_FILES.items():
+            path = pathlib.Path(root, rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "fixture")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def run_main(self, argv):
+        mx = self.mx
+
+        def index_of(rev, index, _report):
+            mx.git("read-tree", rev, index=index)
+            return mx.git("ls-files", index=index).split()
+
+        def nothing(*_args, **_kwargs):
+            return None
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(mx, "REPO", pathlib.Path(self.tmp.name)), \
+                mock.patch.object(mx, "build_index", index_of), \
+                mock.patch.object(mx, "receipt", nothing), \
+                mock.patch.object(mx, "receipt_every_template_has_a_verdict", nothing), \
+                mock.patch.object(mx, "receipt_on_worktree", nothing), \
+                mock.patch.object(sys, "argv", ["make_export.py"] + argv), \
+                mock.patch("sys.stdout", new=out), mock.patch("sys.stderr", new=err):
+            rc = mx.main()
+        return rc, out.getvalue(), err.getvalue()
+
+    DRY = ["--keep-going", "--skip-cargo", "--rev", "HEAD", "--parent", "HEAD",
+           "--no-gate-receipt", "--no-public-gates"]
+
+    def test_the_strand_audit_over_a_german_template_is_red_with_file_and_line(self):
+        rc, _, err = self.run_main(self.DRY + ["--r8-paths", R8_TOUCHED])
+        self.assertEqual(rc, 1, err)
+        self.assertIn(R8_TOUCHED + ":4:", err)
+        self.assertNotIn(R8_UNTOUCHED, err)
+
+    def test_the_integration_shape_judges_every_exported_template(self):
+        rc, _, err = self.run_main(self.DRY)
+        self.assertEqual(rc, 1, err)
+        self.assertIn(R8_TOUCHED + ":4:", err)
+        self.assertIn(R8_UNTOUCHED + ":1:", err)
+
+    def test_the_strand_audit_over_a_german_line_under_any_root_is_red_with_file_and_line(self):
+        for root, (path, line) in R8_ROOTS_RED.items():
+            with self.subTest(root=root):
+                rc, _, err = self.run_main(self.DRY + ["--r8-paths", path])
+                self.assertEqual(rc, 1, err)
+                self.assertIn(f"{path}:{line}:", err)
+                self.assertNotIn(R8_UNTOUCHED, err)
+
+    def test_the_strand_audit_over_a_german_test_literal_is_red_with_file_and_line(self):
+        rc, _, err = self.run_main(self.DRY + ["--r8-paths", R8_STRINGS])
+        self.assertEqual(rc, 1, err)
+        self.assertIn(f"{R8_STRINGS}:3:", err)
+        self.assertIn("--strings", err)
+
+    def test_a_diff_without_templates_stays_green(self):
+        rc, out, err = self.run_main(self.DRY + ["--r8-paths"])
+        self.assertEqual(rc, 0, err)
+        self.assertTrue([r for r in out.splitlines() if r.lstrip().startswith("R8")], out)
+
+    def test_a_read_failure_aborts_the_stage_red(self):
+        """fail-closed (GH #1199): a dry R8 that cannot read the judged blobs
+        is red with its stage named, never green over files it did not see
+        (the gap of 0.65.0). The clean template alone is green."""
+        mx = self.mx
+
+        def boom(*_args, **_kwargs):
+            raise mx.Failure("injected: git cat-file --batch -> 128")
+
+        with mock.patch.object(mx, "r8_texts", boom):
+            rc, _, err = self.run_main(self.DRY + ["--r8-paths", R8_CLEAN])
+        self.assertEqual(rc, 1, err)
+        self.assertIn("[Stufe receipt_r8_dry abgebrochen] injected: git cat-file", err)
+
+    def test_a_load_failure_of_german_scan_aborts_the_stage_red(self):
+        """fail-closed (GH #1199): without german_scan's rules there is no R8
+        verdict -- the stage is red, never skipped. `r8_scans` keeps
+        german_scan's `SCAN_EXT` in `_R8_EXT`: with it held, the load fails
+        inside the stage; with it empty, `r8_scope` fails first and the
+        failure leaves `main` (exit 1) -- both pinned, neither depends on what
+        an earlier test left in the cache."""
+        mx = self.mx
+        scan_ext = mx._german_scan_module().SCAN_EXT
+
+        def boom():
+            raise mx.Failure(f"injected: german_scan.py does not load: {GERMAN_SCAN}")
+
+        with mock.patch.object(mx, "_R8_EXT", [scan_ext]), \
+                mock.patch.object(mx, "_german_scan_module", boom):
+            rc, _, err = self.run_main(self.DRY + ["--r8-paths", R8_CLEAN])
+        self.assertEqual(rc, 1, err)
+        self.assertIn("[Stufe receipt_r8_dry abgebrochen] injected: german_scan.py", err)
+        with mock.patch.object(mx, "_R8_EXT", []), \
+                mock.patch.object(mx, "_german_scan_module", boom), \
+                self.assertRaisesRegex(mx.Failure, "injected: german_scan.py"):
+            self.run_main(self.DRY + ["--r8-paths", R8_CLEAN])
+
+    def test_the_full_audit_leaves_r8_to_the_extracted_tree(self):
+        """Without --skip-cargo R8 runs in `receipt_on_worktree` over the
+        export tree (stubbed here); the dry stage does not run twice."""
+        full = [a for a in self.DRY if a != "--skip-cargo"]
+        rc, out, err = self.run_main(full)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("R8 (dry)", out)
+
+
+@private_tree.private(MAKE_EXPORT, GERMAN_SCAN)
+class TheStrandPlanHandsR8ItsFiles(unittest.TestCase):
+    """gate_plan: the strand audit names its diff's files under R8_ROOTS
+    (`--r8-paths`, before `--diff-paths`); integration runs R8 dry over
+    the whole subset, release in the extracted tree."""
+
+    TEST = TheStrandPlanNarrowsTheAudit.TEST
+    TPL = "templates/operator/template.json"
+
+    def audit(self, paths, mode):
+        st = {s.name: s for s in gp.plan(paths, mode, repo=None)}
+        return st["export-audit"].cmds[0]
+
+    def r8_paths(self, cmd):
+        start = cmd.index("--r8-paths") + 1
+        end = cmd.index("--diff-paths") if "--diff-paths" in cmd else len(cmd)
+        return cmd[start:end]
+
+    def test_a_template_diff_hands_its_templates_to_r8(self):
+        # v2-r3-rest: the exported test is an R8 file as well (crates/)
+        cmd = self.audit([self.TEST, self.TPL, "docs/x.md"], "strand")
+        self.assertEqual(self.r8_paths(cmd), [self.TEST, self.TPL])
+        self.assertEqual(cmd[cmd.index("--diff-paths") + 1:], [self.TEST])
+
+    def test_a_diff_without_r8_files_plans_no_r8_file(self):
+        cmd = self.audit([self.TPL.replace(".json", ".png"), self.TEST.replace(".rs", ".sql")],
+                         "strand")
+        self.assertEqual(self.r8_paths(cmd), [])
+
+    def test_a_diff_under_any_root_hands_its_files_to_r8_alone(self):
+        """A crate source, root tests/, examples/, .gitignore: R8 reads them,
+        nothing else in the strand audit does -- the station is planned for
+        R8, judges no test file and drops the resolver module, which never
+        ran on such a diff (it judges exported tests, templates, make_export)."""
+        for root, (path, _) in R8_ROOTS_RED.items():
+            with self.subTest(root=root):
+                cmd = self.audit([path, "docs/x.md"], "strand")
+                self.assertEqual(self.r8_paths(cmd), [path])
+                self.assertEqual(cmd[cmd.index("--diff-paths") + 1:], [])
+                self.assertIn("--no-public-resolver", cmd)
+
+    def test_a_scripts_or_docs_diff_still_plans_no_audit(self):
+        st = {s.name for s in gp.plan(["docs/x.md", "scripts/x.py", "README.md"],
+                                      "strand", repo=None)}
+        self.assertNotIn("export-audit", st)
+
+    def test_the_reason_of_an_r8_only_diff_names_r8(self):
+        path = R8_ROOTS_RED["crates"][0]
+        rows = {r["name"]: r for r in gp.to_json([path], "strand", None,
+                                                  explain=True)["stations"]}
+        self.assertEqual(rows["export-audit"]["reason"], ["r8: " + path])
+
+    def test_a_diff_at_the_declarations_plans_the_audit_over_every_template(self):
+        cmd = self.audit([GERMAN_SCAN], "strand")
+        self.assertIn(GERMAN_SCAN, self.r8_paths(cmd))
+        self.assertIsNone(_load_make_export().r8_scope(self.r8_paths(cmd)))
+
+    def test_a_failing_r8_rule_fails_the_plan(self):
+        """fail-closed (GH #1199): when make_export's R8 rule cannot answer,
+        the plan fails -- it never drops the R8 file (and with it the
+        audit) silently."""
+        def boom(_path):
+            raise RuntimeError("injected: r8_scans")
+
+        path = R8_ROOTS_RED["crates"][0]
+        with mock.patch.object(gp._export_module(), "r8_scans", boom), \
+                self.assertRaisesRegex(RuntimeError, "injected: r8_scans"):
+            gp.plan([path, "docs/x.md"], "strand", repo=None)
+
+    def test_a_make_export_that_does_not_load_fails_the_plan(self):
+        """fail-closed (GH #1199): a make_export.py that does not load is no
+        `None` (that means: no plans/ in this tree) -- the plan fails."""
+        def boom():
+            raise SyntaxError("injected: make_export.py")
+
+        path = R8_ROOTS_RED["crates"][0]
+        with mock.patch.object(gp, "_export_module", boom), \
+                self.assertRaisesRegex(SyntaxError, "injected: make_export.py"):
+            gp.plan([path, "docs/x.md"], "strand", repo=None)
+
+    def test_integration_runs_r8_dry_over_the_whole_subset(self):
+        cmd = self.audit([self.TPL], "integration")
+        self.assertIn("--skip-cargo", cmd)
+        self.assertNotIn("--r8-paths", cmd)
+
+    def test_release_runs_r8_in_the_extracted_tree(self):
+        cmd = self.audit([self.TPL], "release")
+        self.assertNotIn("--skip-cargo", cmd)
+        self.assertNotIn("--r8-paths", cmd)
 
 
 def setUpModule():

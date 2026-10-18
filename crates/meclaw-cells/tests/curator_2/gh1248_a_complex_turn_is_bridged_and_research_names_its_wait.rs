@@ -9,6 +9,13 @@
 //! the waiting time (`research_wait_ms`, 2 min) and the conversation goes on;
 //! the result comes in a later turn through the curator. The bridge call calls
 //! no tool and carries no consult id.
+//!
+//! GH #1258: on both ways the leaf tells the voice that the request is being
+//! handled for the person right now, by itself, in its own voice, and that it
+//! never refuses the request nor denies an ability. Before it said only "the
+//! backend is working on this request", the voice heard a foreign party and
+//! said in its own name it could not plan a trip while the backend did exactly
+//! that (T7 on a lab colony, consult after 3.4 s).
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -62,6 +69,27 @@ fn bridge_of(h: &Hive, way: &str) -> Msg {
     b
 }
 
+/// GH #1258: one class for both ways -- the bridge speaks for the request it
+/// is handling for the person, in its own voice and own words, never refuses
+/// it, never denies an ability, calls no tool, and names no foreign backend.
+fn assert_speaks_for_the_person(text: &str, way: &str) {
+    let t = text.to_lowercase();
+    for (needle, what) in [
+        ("for the person", "the request is handled for the person"),
+        ("your own voice", "the companion's own voice"),
+        ("own words", "no fixed sentence"),
+        ("never refuse", "the voice never refuses the request"),
+        ("never say you cannot", "the voice never denies an ability"),
+        ("call no tool", "the bridge calls no tool"),
+    ] {
+        assert!(t.contains(needle), "{way}: {what} ({needle:?}): {text}");
+    }
+    assert!(
+        !t.contains("backend"),
+        "{way}: the voice hears no foreign party it could speak against: {text}"
+    );
+}
+
 #[test]
 fn a_complex_turn_is_bridged_and_research_names_its_wait() {
     if !shipped() {
@@ -86,6 +114,7 @@ fn a_complex_turn_is_bridged_and_research_names_its_wait() {
         text.contains("10 seconds") && text.contains("this turn"),
         "the bridge names the wait of the same turn: {text}"
     );
+    assert_speaks_for_the_person(&text, "consult");
 
     curate_on(&mut h, "t2", "research", "find everything on the topic");
     let research = h.routed("research");
@@ -100,4 +129,5 @@ fn a_complex_turn_is_bridged_and_research_names_its_wait() {
         text.contains("2 minutes") && text.contains("later turn"),
         "the research move names its waiting time and the later turn: {text}"
     );
+    assert_speaks_for_the_person(&text, "research");
 }

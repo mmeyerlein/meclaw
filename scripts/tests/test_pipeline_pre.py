@@ -1378,6 +1378,41 @@ class LiftedBans(Fixture):
         self.assertEqual(1, rc)
         self.assertTrue(out.getvalue().rstrip("\n").endswith(" RED " + why), out.getvalue())
 
+    def rename_master(self, name):
+        """The tree's main branch under another name; the strand branch stays checked out."""
+        git(self.root, "branch", "-m", "master", name)
+
+    def lifted_problem(self):
+        from pipeline import merge
+        return merge.lifted_problem(merge.Strand(self.root, "S1", self.WAVE),
+                                    git(self.root, "rev-parse", "HEAD"))
+
+    def test_a_tree_with_only_main_grades_the_lift_against_main(self):
+        # GH #1265: the merge base was `git merge-base master <tip>`; a tree
+        # whose main branch is `main` got "cannot find the merge base of master
+        # and ..." instead of the hits. The register's rule picks `main` here.
+        self.rename_master("main")
+        self.strand_file({"lifted": [LIFT]})
+        _doc, lines = self.run_pre(strand="S1")
+        why = self.lifted_problem()
+        self.assertIn("%s:7 rs-short-deadline" % LIFT, why)
+        self.assertTrue(self.lifted_line(lines).endswith(" RED " + why), lines)
+
+    def test_a_tree_with_only_main_and_no_lift_is_green(self):
+        self.rename_master("main")
+        self.strand_file({})
+        _doc, lines = self.run_pre(strand="S1")
+        self.assertRegex(self.lifted_line(lines), r"^PRE lifted-bans \d+s GREEN$")
+        self.assertIsNone(self.lifted_problem())
+
+    def test_a_tree_without_main_or_master_is_refused_with_the_reason(self):
+        # fail-closed as before: no main branch, no merge base, no pass
+        self.rename_master("trunk")
+        self.strand_file({})
+        why = self.lifted_problem()
+        self.assertIsNotNone(why)
+        self.assertIn("no main or master branch", why)
+
 
 CLEAN_RS = ("#[tokio::test]\nasync fn nothing_arrives() {\n"
             "    let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);\n"
@@ -1588,6 +1623,11 @@ class Gate(unittest.TestCase):
         for rel in ("strand.sh", "precheck.py", "gate_plan.py", "harness_fold.py",
                     # precheck imports the testing bans (tv-p0, #1207)
                     "testing_bans.py",
+                    # ... and the wall-clock rule (K-UHREN, #1199) with the one
+                    # list of its Rust reads, the clock bans beside the scripts,
+                    # read by the ratchet's own read_bans (re-check M1)
+                    "wall_clock.py", "../.github/gates/clock-bans/clippy.toml",
+                    "../.github/gates/unwrap_budget.py",
                     "pipeline/__init__.py", "pipeline/pre.py", "pipeline/locks.py", "pipeline/gitenv.py",
                     # pre runs the dry cascade (GH #1173)
                     "pipeline/cascade_dry.py", "pipeline/versions.py",
