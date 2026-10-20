@@ -602,20 +602,33 @@ fn push_refusals(rows: &[Value]) -> Vec<String> {
     // own protocol, so each protocol has its own endpoints and timeouts. A row
     // with an empty `base_url` sends none (`package_of` drops empty values): the
     // cell keeps its start endpoint, which is no refusal.
-    let of_protocol = |decisions: bool| -> Vec<&Value> {
-        rows.iter()
-            .filter(|row| (row["wire_dialect"] == "decisions") == decisions)
-            .collect()
+    // GH #1273: chat and native `messages` rows are one pool, but a push onto
+    // the OTHER wire is a provider switch, which a cell takes only where its
+    // `base_url_allow` admits the host (talky's brain and quick, cogny's brain)
+    // and otherwise refuses on its error lane, told to the registry (GH #863).
+    // This lock holds the push on the cell's OWN wire: `wire` is the row kind a
+    // cell born with that provider runs on. A cell that opts in (a non-empty
+    // `base_url_allow`) must also list the host of every row on the OTHER wire
+    // (review L-1), so the switch it opted into cannot drift out of reach.
+    let wire_of_row = |row: &Value| -> &'static str {
+        match row["wire_dialect"].as_str() {
+            Some("decisions") => "decisions",
+            Some("messages") => "messages",
+            _ => "chat",
+        }
     };
-    let endpoints_of = |decisions: bool| -> BTreeSet<String> {
-        of_protocol(decisions)
+    let of_protocol = |wire: &str| -> Vec<&Value> {
+        rows.iter().filter(|row| wire_of_row(row) == wire).collect()
+    };
+    let endpoints_of = |wire: &str| -> BTreeSet<String> {
+        of_protocol(wire)
             .iter()
             .filter_map(|row| row["base_url"].as_str().map(str::to_string))
             .filter(|u| !u.is_empty())
             .collect()
     };
-    let timeouts_of = |decisions: bool| -> BTreeSet<u64> {
-        of_protocol(decisions)
+    let timeouts_of = |wire: &str| -> BTreeSet<u64> {
+        of_protocol(wire)
             .iter()
             .filter_map(|row| row["package"]["external_timeout_ms"].as_u64())
             .collect()
@@ -643,9 +656,13 @@ fn push_refusals(rows: &[Value]) -> Vec<String> {
         let backstop = born["cell"]["message_timeout"]
             .as_u64()
             .unwrap_or(default_backstop);
-        let decisions = born["params"]["provider"] == "decisions";
-        let endpoints = endpoints_of(decisions);
-        let timeouts = timeouts_of(decisions);
+        let wire = match born["params"]["provider"].as_str() {
+            Some("decisions") => "decisions",
+            Some("anthropic") => "messages",
+            _ => "chat",
+        };
+        let endpoints = endpoints_of(wire);
+        let timeouts = timeouts_of(wire);
         let (template, inner) = cell.split_once('/').expect("<template>/<cell>");
         // The template cell as it is born, and every instance of its template
         // with the overrides it gives this cell (a shallow merge, as the colony
@@ -682,6 +699,22 @@ fn push_refusals(rows: &[Value]) -> Vec<String> {
                          allow list {allow:?} in the default environment, so the cell refuses the \
                          package while the registry books it as delivered"
                     ));
+                }
+            }
+            let other = match wire {
+                "chat" => Some("messages"),
+                "messages" => Some("chat"),
+                _ => None,
+            };
+            if let Some(other) = other.filter(|_| !allow.is_empty()) {
+                for endpoint in &endpoints_of(other) {
+                    if !allow.contains(&origin(endpoint)) {
+                        refused.push(format!(
+                            "{who} opts into a provider switch, but `{at}` does not list the \
+                             host of the {other} row `{endpoint}` in its allow list {allow:?} \
+                             -- the cell refuses that push"
+                        ));
+                    }
                 }
             }
         }

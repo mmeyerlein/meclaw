@@ -873,6 +873,9 @@ const PACKAGE_KEYS: &[&str] = &[
     "chars_per_token",
     "tokens_per_image",
     "tool_choice_required",
+    // GH #1273: the provider and the credential name travel with the model.
+    "provider",
+    "credential_ref",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins
@@ -1219,7 +1222,16 @@ async fn a_remap_command_pushes_params_to_exactly_the_unpinned_subscribers() {
     );
     let mut rest: Vec<String> = PACKAGE_KEYS
         .iter()
-        .filter(|k| !["model", "context_window", "max_output", "cost_in"].contains(k))
+        .filter(|k| {
+            ![
+                "model",
+                "context_window",
+                "max_output",
+                "cost_in",
+                "provider",
+            ]
+            .contains(k)
+        })
         .map(|k| k.to_string())
         .collect();
     rest.sort();
@@ -1236,10 +1248,12 @@ async fn a_remap_command_pushes_params_to_exactly_the_unpinned_subscribers() {
         body.get("messages").is_none(),
         "no messages slot -- a turn here would cost a provider call: {body}"
     );
+    // GH #1273: `provider` is a package key now (the row's wire); the key and
+    // the grant stay immutable and are never pushed.
     assert!(
-        !body["params"]
-            .as_object()
-            .is_some_and(|o| o.contains_key("provider") || o.contains_key("api_key")),
+        !body["params"].as_object().is_some_and(|o| {
+            o.contains_key("api_key") || o.contains_key("credential_grant_id")
+        }),
         "and the overlay never touches the immutable auth dimension: {body}"
     );
 
@@ -1788,6 +1802,7 @@ async fn the_precedence_is_targeted_then_global_then_tier_then_start() {
                 "context_window",
                 "max_output",
                 "cost_in",
+                "provider",
             ]
             .contains(k)
         })
@@ -3537,132 +3552,147 @@ fn the_catalogue_carries_a_measured_response_time_per_model() {
     );
 }
 
-/// GH #1242 (T10-11, R-T10-1): the registry keeps a third protocol apart. A
-/// row whose `wire_dialect` is `messages` is a model on the provider's native
-/// Messages wire, served only to a cell that subscribed with
-/// `"protocol": "anthropic"` -- the `decisions` form of GH #957. Its push
-/// never carries `wire_dialect` (such a cell takes none), a chat cell is never
-/// moved onto it, `subscribe` takes the protocol, and `select` ranks the row
-/// only for an anthropic request.
+/// GH #1273 (R-AW-1/2): chat and native Messages rows are ONE pool, `llm`; only
+/// `decisions` stays apart (it was GH #957/#1242's three protocols). A
+/// targeted replacement moves a chat cell onto a native `messages` row, and
+/// the push names the provider (derived from the row's wire, never the
+/// catalogue's vendor column), the row's host, its credential name and a
+/// `wire_dialect` of null -- the `$reset` alone would bring back the dialect
+/// the cell was born with, which an anthropic cell refuses. A replacement
+/// back onto the chat row pushes `provider: openai`, the gateway host, and the
+/// credential name in the `$reset` (the grant's own). A decisions cell is
+/// never moved onto an llm row and is never told a provider or a credential.
+/// `subscribe` still takes the protocol `anthropic`, and `select` ranks the
+/// llm pool for a chat and an anthropic asker alike.
 #[test]
-fn the_registry_serves_messages_rows_only_to_anthropic_cells() {
+fn gh1273_an_override_moves_a_subscriber_onto_a_native_row_and_back() {
     let (Some(hand), Some(select)) = (registry_script("hand"), registry_script("select")) else {
         return;
     };
     const CHAT: &str = "vendor/chat-a";
-    const NATIVE_A: &str = "vendor/native-a";
-    const NATIVE_B: &str = "vendor/native-b";
+    const NATIVE: &str = "native-a";
+    const NATIVE_RANKED: &str = "native-b";
+    const DEC: &str = "vendor/decide-a";
     const CHAT_CELL: &str = "/g/assistant/brain";
-    const NATIVE_CELL: &str = "/g/lab/brain";
+    const DEC_CELL: &str = "/g/assistant/decide";
+    const GATEWAY: &str = "https://openrouter.ai/api/v1";
+    const NATIVE_HOST: &str = "https://api.anthropic.com/v1";
     let models = json!([
-        {"model_id": CHAT, "status": "active", "wire_dialect": "chat_completions",
-         "base_url": "", "cost_in": 10, "cost_out": 50, "context_window": 100000},
-        {"model_id": NATIVE_A, "status": "active", "wire_dialect": "messages",
-         "base_url": "https://native.example", "cost_in": 4, "cost_out": 20,
-         "context_window": 200000},
-        {"model_id": NATIVE_B, "status": "active", "wire_dialect": "messages",
-         "base_url": "https://native.example", "cost_in": 5, "cost_out": 25,
-         "context_window": 200000}
+        {"model_id": CHAT, "status": "active", "provider": "openrouter",
+         "wire_dialect": "chat_completions", "base_url": GATEWAY, "cred_ref": "",
+         "cost_in": 10, "cost_out": 50, "context_window": 100000},
+        {"model_id": NATIVE, "status": "explicit", "provider": "anthropic",
+         "wire_dialect": "messages", "base_url": NATIVE_HOST, "cred_ref": "cred:anthropic",
+         "cost_in": 10, "cost_out": 50, "context_window": 200000},
+        {"model_id": NATIVE_RANKED, "status": "active", "provider": "anthropic",
+         "wire_dialect": "messages", "base_url": NATIVE_HOST, "cred_ref": "cred:anthropic",
+         "cost_in": 4, "cost_out": 20, "context_window": 200000},
+        {"model_id": DEC, "status": "active", "provider": "openrouter",
+         "wire_dialect": "decisions", "base_url": "", "cost_in": 1, "cost_out": 2,
+         "context_window": 100000}
     ]);
     let subscribers = json!([
         {"cell_path": CHAT_CELL, "tier": "", "pinned": 0, "start_model": CHAT,
          "package_hash": "", "model_id": CHAT, "rank": "start", "reason": "start_value",
          "since": "t", "protocol": ""},
-        {"cell_path": NATIVE_CELL, "tier": "", "pinned": 0, "start_model": NATIVE_A,
-         "package_hash": "", "model_id": NATIVE_A, "rank": "start", "reason": "start_value",
-         "since": "t", "protocol": "anthropic"}
+        {"cell_path": DEC_CELL, "tier": "", "pinned": 0, "start_model": DEC,
+         "package_hash": "", "model_id": DEC, "rank": "start", "reason": "start_value",
+         "since": "t", "protocol": "decisions"}
     ]);
-    let override_cmd = |scope: &str, matching: &str, model: &str| {
+    let override_cmd = |model: &str| {
         json!({"op": "override_set", "tier": "", "model_id": model, "reason": "",
-               "scope": scope, "match": matching, "id": "", "cell_path": "",
+               "scope": "target", "match": "/g", "id": "", "cell_path": "",
                "start_model": "", "pinned": null, "announce": false, "entries": [],
                "actor": "operator", "call_id": "c1"})
     };
-    let world = |cmd: Value, extras: Vec<Value>| {
-        let mut results = vec![models.clone(), json!([]), json!([]), subscribers.clone()];
-        results.extend(extras);
-        hand_echo(&hand, "world", json!({"cmd": cmd}), results)
-    };
-    // GH #1261: a cell born on a catalogue row gets that row's package at rank
-    // `start` (these rows were never pushed). That keeps the cell on its own
-    // start model and is no move, so it is left out here -- and it never
-    // names a row of the other protocol.
-    let pushes = |out: &[Value]| -> Vec<(String, Value)> {
-        out.iter()
-            .filter(|m| m["header"]["route"] == "update")
-            .filter(|m| {
-                if m["header"]["rank"] != "start" {
-                    return true;
-                }
-                let chat = m["header"]["subscriber"] == CHAT_CELL;
-                let own = if chat { CHAT } else { NATIVE_A };
-                assert_eq!(m["params"]["model"], own, "{m}");
-                // No dialect for the anthropic cell on the start push either
-                // (re-check M-4).
-                assert!(
-                    chat || m["params"].get("wire_dialect").is_none(),
-                    "the anthropic cell got a dialect with its start package: {m}"
-                );
-                false
-            })
-            .map(|m| {
-                (
-                    m["header"]["subscriber"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    m["params"].clone(),
-                )
-            })
+    let pushes_to = |model: &str, cell: &str| -> Vec<Value> {
+        let results = vec![
+            models.clone(),
+            json!([]),
+            json!([]),
+            subscribers.clone(),
+            json!([]),
+            json!([{"cell_path": CHAT_CELL}, {"cell_path": DEC_CELL}]),
+        ];
+        hand_echo(&hand, "world", json!({"cmd": override_cmd(model)}), results)
+            .into_iter()
+            .filter(|m| m["header"]["route"] == "update" && m["header"]["subscriber"] == cell)
+            .map(|m| m["params"].clone())
             .collect()
     };
+    let reset = |p: &Value| -> Vec<String> {
+        p["$reset"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
-    // A targeted replacement onto a messages row below /g reaches the
-    // anthropic cell alone, and its push names no dialect.
-    let out = world(
-        override_cmd("target", "/g", NATIVE_B),
-        vec![json!([]), json!([{"cell_path": NATIVE_CELL}])],
-    );
-    let p = pushes(&out);
-    assert_eq!(p.len(), 1, "one push, to the anthropic cell only: {out:?}");
-    assert_eq!(p[0].0, NATIVE_CELL);
-    assert_eq!(p[0].1["model"], NATIVE_B);
+    // Onto the native row: model, provider, host, credential, no dialect.
+    let p = pushes_to(NATIVE, CHAT_CELL);
+    let there = p
+        .iter()
+        .find(|p| p["model"] == NATIVE)
+        .unwrap_or_else(|| panic!("the chat cell is moved onto the native row: {p:?}"));
+    assert_eq!(there["provider"], "anthropic", "{there}");
+    assert_eq!(there["base_url"], NATIVE_HOST, "{there}");
+    assert_eq!(there["credential_ref"], "cred:anthropic", "{there}");
     assert!(
-        p[0].1.get("wire_dialect").is_none(),
-        "an anthropic cell is never sent a dialect: {}",
-        p[0].1
+        there.get("wire_dialect").is_some_and(Value::is_null),
+        "a messages row pushes wire_dialect null: {there}"
+    );
+    for k in ["provider", "credential_ref", "wire_dialect", "base_url"] {
+        assert!(
+            !reset(there).contains(&k.to_string()),
+            "{k} set, not reset: {there}"
+        );
+    }
+
+    // And back: the gateway row, provider openai, the grant's own credential.
+    let p = pushes_to(CHAT, CHAT_CELL);
+    let back = p
+        .iter()
+        .find(|p| p["model"] == CHAT)
+        .unwrap_or_else(|| panic!("the chat cell is moved back: {p:?}"));
+    assert_eq!(back["provider"], "openai", "{back}");
+    assert_eq!(back["base_url"], GATEWAY, "{back}");
+    assert_eq!(back["wire_dialect"], "chat_completions", "{back}");
+    assert!(back.get("credential_ref").is_none(), "{back}");
+    assert!(
+        reset(back).contains(&"credential_ref".to_string()),
+        "{back}"
     );
 
-    // A global swap of the chat model onto a messages row moves no chat cell.
-    let out = world(override_cmd("global", CHAT, NATIVE_B), vec![]);
-    assert!(pushes(&out).is_empty(), "no chat cell moves: {out:?}");
+    // A decisions cell is never moved onto an llm row, and never told a
+    // provider or a credential.
+    for model in [NATIVE, CHAT] {
+        for p in pushes_to(model, DEC_CELL) {
+            assert_eq!(p["model"], DEC, "{p}");
+            assert!(
+                p.get("provider").is_none() && p.get("credential_ref").is_none(),
+                "{p}"
+            );
+            assert!(
+                reset(&p).contains(&"provider".to_string())
+                    && reset(&p).contains(&"credential_ref".to_string()),
+                "{p}"
+            );
+        }
+    }
 
-    // `subscribe` takes the protocol.
+    // `subscribe` still takes the protocol `anthropic` (a cell born native).
     let out = hand_command(
         &hand,
-        json!({"op": "subscribe", "cell_path": NATIVE_CELL, "start_model": NATIVE_A,
+        json!({"op": "subscribe", "cell_path": CHAT_CELL, "start_model": NATIVE,
                "protocol": "anthropic"}),
     );
     assert_eq!(rejection(&out), None, "{out:?}");
-    assert_eq!(
-        first_carry(&out)["cmd"]["entries"],
-        json!([{"cell_path": NATIVE_CELL, "start_model": NATIVE_A, "protocol": "anthropic"}]),
-        "{out:?}"
-    );
 
-    // `select` takes the protocol of the asker and ranks a messages row only
-    // for it: the cheaper native rows are never a chat answer.
-    let asked = run_registry_script(
-        &select,
-        json!({"header": {"hop": {"route": "in_select"}, "context": {"asker": "/a"}}}),
-        json!({"messages": [{"origin": "assistant", "type": "tool_call", "id": "c",
-                             "text": json!({"protocol": "anthropic"}).to_string()}]}),
-    );
-    assert_eq!(
-        first_carry(&asked)["req"]["protocol"],
-        "anthropic",
-        "{asked:?}"
-    );
+    // `select` ranks one llm pool for a chat and an anthropic asker alike;
+    // decisions stays apart.
     let ranked = |protocol: &str| -> Value {
         let req = json!({"tier": "", "caps": [], "max_cost": null, "min_context": null,
                          "asker": "/a", "call_id": "c", "protocol": protocol});
@@ -3679,8 +3709,9 @@ fn the_registry_serves_messages_rows_only_to_anthropic_cells() {
         .find(|m| m["header"]["route"] == "answer")
         .expect("an answer")
     };
-    assert_eq!(ranked("")["header"]["model_id"], CHAT);
-    assert_eq!(ranked("anthropic")["header"]["model_id"], NATIVE_A);
+    assert_eq!(ranked("")["header"]["model_id"], NATIVE_RANKED);
+    assert_eq!(ranked("anthropic")["header"]["model_id"], NATIVE_RANKED);
+    assert_eq!(ranked("decisions")["header"]["model_id"], DEC);
 }
 
 /// GH #1242 (T4-04, R-WP-2): speed is a measurement, not prose. The

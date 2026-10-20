@@ -15,7 +15,8 @@
 //!   message — a turn carrying `params.model` changes nothing;
 //! - `base_url` moves only inside `params.base_url_allow`, never to `null`;
 //! - `external_timeout_ms` may not outgrow the cell's backstop;
-//! - `wire_dialect` changes at run time, `provider` and the credential do not;
+//! - `wire_dialect` changes at run time, the credential channel does not
+//!   (GH #1273: `provider` is a package key; `decisions` is no switch target);
 //! - `model_prompt` is the FIRST block of the system part.
 
 // harness_fold: #[path = "mock_openai.rs"]
@@ -287,7 +288,10 @@ async fn the_guards_refuse_with_invalid_input() {
             "no base_url_allow: base_url is fixed at run time",
         ),
         (json!({"base_url": null}), "base_url null at run time"),
-        (json!({"provider": "openai"}), "provider is immutable"),
+        (
+            json!({"provider": "decisions"}),
+            "GH #1273: decisions is no switch target",
+        ),
         (json!({"api_key": "other"}), "the credential is immutable"),
         (
             json!({"external_timeout_ms": 175_000}),
@@ -452,6 +456,10 @@ fn the_package_keys_are_the_contract() {
             // GH #1260 (OR-WG-9): whether the host takes a forced tool call --
             // a contract change, made on purpose.
             "tool_choice_required",
+            // GH #1273: the protocol and the credential of the row -- a
+            // contract change, made on purpose.
+            "provider",
+            "credential_ref",
         ]
     );
     // Every package key is a known, run-time-mutable param.

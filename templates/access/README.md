@@ -1,4 +1,4 @@
-# `access@2.5.3`
+# `access@2.6.0`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -96,10 +96,20 @@ with one additional body slot beside it, which is where the credential actually 
 {"sealed": {"epk": "…", "nonce": "…", "ciphertext": "…"}}
 ```
 
-**Which** credential is delivered stands in `grants.cred_ref` and **never** in the payload.
-That is R-AC-2 applied to the vault: an address comes from the grant, and a secret's name is
-an address. A payload that could name a secret would let one legitimate grant drain the whole
-vault; the payload carries `recipient_key` and nothing else.
+**Which** credential is delivered is decided by the grant and the catalogue together, and
+**never** by the payload alone. That is R-AC-2 applied to the vault: an address comes from
+the grant, and a secret's name is an address. A payload that could name any secret would let
+one legitimate grant drain the whole vault.
+
+The payload is `{recipient_key, cred_ref?}`. Without `cred_ref`, or naming the grant's own,
+the vault delivers `grants.cred_ref`. Any other name is delivered only when the grant's
+scope names a credential class (`scope.cred_class`, written by the rule's `scope_match`) and
+`cred_refs` holds an **active** row with that `ref` and that `class`; everything else is
+refused with `reason_code: "cred_ref_not_granted"`, and the audit row names the `cred_ref`
+asked for, on success and on refusal. This is how one `llm` cell switches provider at run
+time: its grant is the channel to the vault, the registry row names the credential, and the
+catalogue row is the agreement between the two (GH #1273). **A new provider is a vault
+deposit plus a `cred_refs` row of class `llm`** -- no new grant, no new cell.
 
 The crypto is short. The requester mints a fresh X25519 pair **per request** and sends the
 public half as 64 hex characters. The vault mints its own ephemeral half **per answer**,
@@ -145,6 +155,11 @@ could write to any chat it can name.
 The scope itself is frozen at grant time: a rule's `scope_match` decides which coordinates
 exist at all, a literal comes from the rule and a `*` from the request. A coordinate the
 rule never mentioned is not part of the grant, and therefore not part of any address.
+
+A `vault.deliver` grant reads one scope coordinate the other way round: `cred_class` is not
+an address but the class of credentials the grant may name in a payload. It widens nothing
+on its own -- a name outside the catalogue, of another class or retired is
+`cred_ref_not_granted` (see the vault section above).
 
 ## Cells and lanes
 
@@ -220,7 +235,7 @@ lane is stated once, on this hive's own door edge, and nowhere else.
 | `in_request` | in | `access.request` as a `tool_call` turn; the edge **MUST** promote the caller to `context.requester` |
 | `in_invoke` | in | `access.invoke` as a `tool_call` turn; the edge **MUST** promote the caller to `context.requester` |
 | `grant` | out | the verdict, with `hop.verdict` and `hop.grant_id` beside it. `hop.verdict` is one of `granted`, `allowed` (a `check_only` request — a yes with no grant behind it, so `hop.grant_id` is empty), `pending` or `denied` |
-| `ack` | out | `ok` or `denied` plus a `reason_code`; a sealed credential leaves here too, recognisable by `hop.operation == "vault.deliver"` and the extra `sealed` body slot |
+| `ack` | out | `ok` or `denied` plus a `reason_code`; a sealed credential leaves here too, recognisable by `hop.operation == "vault.deliver"` and the extra `sealed` body slot. A credential spend adds the codes `grant_names_no_credential`, `recipient_key_missing`, `cred_ref_not_granted` and the vault's own `vault_*` |
 | `connect` | out | `hop.address` is the grant's scope as canonical JSON, `hop.channel` and `hop.operation` beside it, the body carries the payload minus every address key |
 | `error` | out | a lane failed -- the parent **MUST** wire it |
 
@@ -263,7 +278,10 @@ exactly once, on a fresh `cell.db`. The example therefore checks THIS hive's
 cell that already lies on disk is left untouched, and the other five come from here.
 So the ergonomic gesture that would write policy row, `cred_ref`, grant and event in
 one go does not exist yet, and the honest substitute is a seed file plus a
-derivation rule for the handle.
+derivation rule for the handle. The immutable grant does not pin the credential for
+good, though: a grant whose scope names `cred_class` reaches every active catalogue row
+of that class, so a provider switch needs a deposit and a `cred_refs` row, never a new
+grant (GH #1273).
 
 **`params.unlock_env` had to become a declared key.** It ships `null` — the default
 truth stays *a woken vault is locked* — but a key that is not declared names no
@@ -651,9 +669,13 @@ it reaches no other config, no message, no `message_log` and no error text.
 So `cred_refs` records **where** a secret lives and under which environment variable
 **name**, never what it is:
 
-| `ref` | `connector` | `env_var` | `owner` | `status` |
-|---|---|---|---|---|
-| `cred:example-chat:primary` | `./connector/proxy` | `EXAMPLE_CHAT_TOKEN` | `member:example` | `active` |
+| `ref` | `connector` | `env_var` | `owner` | `status` | `class` |
+|---|---|---|---|---|---|
+| `cred:example-chat:primary` | `./connector/proxy` | `EXAMPLE_CHAT_TOKEN` | `member:example` | `active` | |
+| `cred:example-llm` | `./llm` | `EXAMPLE_LLM_KEY` | `org:example` | `active` | `llm` |
+
+`class` groups credentials a grant with `scope.cred_class` may name (GH #1273); a store
+born before the column gains it on its next start, empty.
 
 The names in this table are written as bare identifiers on purpose. A literal
 `${EXAMPLE_CHAT_TOKEN}` in a seed row would be **resolved at bootstrap** and would write the
@@ -798,7 +820,7 @@ path:
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "access", "template": "access@2.5.3",
+ "nodes": [{"name": "access", "template": "access@2.6.0",
             "override_params": {
               "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
               "sweep":  {"sweep_rows": 500},

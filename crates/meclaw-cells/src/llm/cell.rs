@@ -18,6 +18,16 @@ use meclaw_core::{Body, Message, OutputSink, Path};
 // since GH #1058 shared by every cell type that spends a grant.
 use crate::credential::{CREDENTIAL_PENDING_DETAIL, CredentialSlots, ExpiryCause, ParkOutcome};
 
+/// GH #1273: the `&'static` name of a provider in [`crate::llm::params::PROVIDERS`]
+/// (a parsed cell's provider is always one of them).
+fn provider_name(provider: &str) -> &'static str {
+    crate::llm::params::PROVIDERS
+        .iter()
+        .copied()
+        .find(|n| *n == provider)
+        .unwrap_or("openai")
+}
+
 /// GH #457: one turn held back while the sealed credential is in flight.
 ///
 /// It carries its own `OutputSink`, not the cell's: a sink is per-message (it
@@ -584,9 +594,8 @@ impl LlmCell {
     /// rev-F2, m5; locked in `gh853_the_params_line_is_written_at_the_seam.rs`).
     #[doc(hidden)]
     pub fn restore_check(&self) -> Result<(), String> {
-        let start_base_url = self.start.get("base_url").and_then(Value::as_str);
         self.params.check_run_time_update(
-            start_base_url,
+            self.birth_host(),
             &self.overlay,
             &self.params,
             self.message_timeout_ms,
@@ -623,21 +632,61 @@ impl LlmCell {
                 if crate::llm::params::CREDENTIAL_KEYS.contains(&key.as_str()) =>
             {
                 format!(
-                    "{} — provider and credential are fixed at birth; a model package that \
-                     needs another one needs a mutation",
+                    "{} — the credential channel is fixed at birth; a package names its \
+                     credential by 'credential_ref', another channel needs a mutation",
                     e.detail()
                 )
             }
             _ => e.detail(),
         })?;
-        let start_base_url = self.start.get("base_url").and_then(Value::as_str);
+        let start_base_url = self.birth_host();
         self.params.check_run_time_update(
             start_base_url,
             update,
             &change.merged,
             self.message_timeout_ms,
         )?;
+        crate::llm::params::check_provider_switch(
+            &self.params.provider,
+            &change.merged,
+            self.start.get("provider").and_then(Value::as_str),
+            start_base_url,
+            update,
+        )?;
         Ok(change)
+    }
+
+    /// GH #1273 (review L-4): the effective host the cell was born on -- its
+    /// start `base_url`, or without one the default host of its start
+    /// provider's lane. A push that names this host changes nothing, so a
+    /// cell born without `base_url` takes the package of its own start row.
+    fn birth_host(&self) -> Option<&str> {
+        let start = self.start.get("base_url").and_then(Value::as_str);
+        if start.is_some_and(|s| !s.is_empty()) {
+            return start;
+        }
+        match self.start.get("provider").and_then(Value::as_str) {
+            Some("anthropic") => Some(wire::ANTHROPIC_DEFAULT_BASE_URL),
+            Some("openai") => Some(match self.params.auth {
+                AuthMode::OauthSubscription => auth::DEFAULT_SUBSCRIPTION_BASE_URL,
+                AuthMode::ApiKey => wire::OPENAI_DEFAULT_BASE_URL,
+            }),
+            _ => start,
+        }
+    }
+
+    /// GH #1273: the grant this cell spends and the slot of the credential
+    /// its package names ([`crate::credential::slot_key`]); `None` without a
+    /// grant. An empty `credential_ref` is the grant's own credential, the
+    /// slot every cell had before.
+    fn credential_slot(&self) -> Option<(String, String)> {
+        let grant = self
+            .params
+            .credential_grant_id
+            .as_deref()
+            .filter(|g| !g.is_empty())?;
+        let key = crate::credential::slot_key(grant, self.params.credential_ref.as_deref());
+        Some((grant.to_string(), key))
     }
 
     /// Ask the access hive for this cell's bearer credential.
@@ -656,10 +705,16 @@ impl LlmCell {
         sink: &OutputSink,
         target: &meclaw_core::Path,
         grant_id: &str,
+        slot: &str,
     ) {
         // GH #1058: the key pair and the request's form come from the shared
         // module (`credential::request_content`, the GH #421 form unchanged).
-        let content = match self.credentials.request(grant_id) {
+        // GH #1273: the package's `credential_ref` rides in the payload.
+        let cred_ref = self.params.credential_ref.clone();
+        let content = match self
+            .credentials
+            .request_for(slot, grant_id, cred_ref.as_deref())
+        {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, "llm: no random source for a credential request");
@@ -719,21 +774,13 @@ impl LlmCell {
         if self.bearer().is_some() {
             return Some((msg, reply_target));
         }
-        let Some(grant) = self
-            .params
-            .credential_grant_id
-            .clone()
-            .filter(|g| !g.is_empty())
-        else {
+        let Some((grant, slot)) = self.credential_slot() else {
             return Some((msg, reply_target));
         };
         let ask_target = reply_target.clone();
         let turn = ParkedTurn {
-            provider: if self.params.is_decisions() {
-                crate::llm::params::PROVIDER_DECISIONS
-            } else {
-                "openai"
-            },
+            // GH #1273: the provider in force, not the one at birth.
+            provider: provider_name(&self.params.provider),
             msg,
             sink: sink.clone(),
             reply_target,
@@ -746,9 +793,10 @@ impl LlmCell {
             self.params.credential_wait_max,
         );
         self.credential_turns_since_box = self.credential_turns_since_box.saturating_add(1);
-        match self.credentials.park(&grant, turn) {
+        match self.credentials.park(&slot, turn) {
             ParkOutcome::Asked => {
-                self.ask_for_credential(sink, &ask_target, &grant).await;
+                self.ask_for_credential(sink, &ask_target, &grant, &slot)
+                    .await;
             }
             ParkOutcome::Parked => {}
             ParkOutcome::Refused(turn) => {
@@ -1401,20 +1449,18 @@ impl LlmCell {
     /// key. An empty string is not a credential on either track (GH #271).
     fn bearer(&self) -> Option<&str> {
         let grant = self.params.credential_grant_id.as_deref();
-        crate::credential::bearer(
-            grant,
-            grant.and_then(|g| self.credentials.secret(g)),
-            self.params.api_key.as_deref(),
-        )
+        // GH #1273: the slot of the credential the package names.
+        let secret = self
+            .credential_slot()
+            .and_then(|(_, slot)| self.credentials.secret(&slot));
+        crate::credential::bearer(grant, secret, self.params.api_key.as_deref())
     }
 
     /// The public half of the recipient key of the request in flight.
     #[cfg(test)]
     fn pending_recipient_hex(&self) -> Option<String> {
-        self.params
-            .credential_grant_id
-            .as_deref()
-            .and_then(|g| self.credentials.recipient_hex(g))
+        self.credential_slot()
+            .and_then(|(_, slot)| self.credentials.recipient_hex(&slot))
     }
 
     /// GH #87: install the declared-consumer blob reader.
@@ -2058,6 +2104,24 @@ impl LlmCell {
                             if package_changed(&self.overlay, &change.overlay) {
                                 self.require_degraded_said = false;
                             }
+                            // GH #1273: a switch of model or provider is said
+                            // once, by name -- never a key.
+                            if change.merged.model != self.params.model
+                                || change.merged.provider != self.params.provider
+                            {
+                                tracing::info!(
+                                    from_model = %self.params.model,
+                                    to_model = %change.merged.model,
+                                    from_provider = %self.params.provider,
+                                    to_provider = %change.merged.provider,
+                                    credential_ref = %change
+                                        .merged
+                                        .credential_ref
+                                        .as_deref()
+                                        .unwrap_or(""),
+                                    "llm_switch"
+                                );
+                            }
                             self.params = change.merged;
                             self.overlay = change.overlay;
                             // GH #853: the sight. Every update, `{"params": {}}`
@@ -2124,7 +2188,9 @@ impl LlmCell {
                                 &self.params.provider,
                                 sink,
                                 reply_target,
-                                &accepted.grant,
+                                // GH #1273: the slot may be `<grant>#<ref>`;
+                                // the notice names the grant.
+                                accepted.grant.split('#').next().unwrap_or_default(),
                             )
                             .await;
                         }
@@ -2622,6 +2688,16 @@ impl LlmCell {
                     .map(|mut r| {
                         if let Some(blocks) = thinking {
                             translate_anthropic::replay_thinking(&mut r, blocks);
+                        } else if !open_round.is_empty()
+                            && r.get("thinking").is_some_and(|t| t["type"] != "disabled")
+                            && let Some(obj) = r.as_object_mut()
+                        {
+                            obj.remove("thinking");
+                            // GH #1273 (R-AW-3): an open tool round without
+                            // its signed thinking came from another model
+                            // (a provider switch); the Messages wire refuses
+                            // thinking beside it, so this call goes without.
+                            tracing::info!("llm: thinking_skipped_after_switch");
                         }
                         // Fix round 1 (review M-3): not beside thinking.
                         if require_call && !translate_anthropic::require_tool_call(&mut r) {

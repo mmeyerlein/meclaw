@@ -12,6 +12,25 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.69.0] — 2026-10-20
+
+### Added
+
+- access: a grant may name a credential class (`scope.cred_class`); a `vault.deliver` payload may then name a `cred_ref`, and the access hive delivers any active credential of that class the caller names (catalogue column `cred_refs.class`) and refuses the rest with `cred_ref_not_granted`, audited with the name asked for ([#1273](https://github.com/mmeyerlein/meclaw/issues/1273)). A payload without `cred_ref`, or naming the grant's own, keeps `grants.cred_ref`; a new provider is a vault deposit plus a `cred_refs` row of class `llm`.
+
+### Changed
+
+- llm: an llm cell switches model and provider on a registry push; the credential follows the row through the vault ([#1273](https://github.com/mmeyerlein/meclaw/issues/1273)). `provider` and the new `credential_ref` are model package keys: a push moves the cell between `openai` and `anthropic` (never into or out of `decisions`, detail `provider_switch_refused`), with a `base_url` of its own that passes `base_url_allow` or the start value by `$reset` (else `provider_switch_needs_base_url`). `credential_grant_id` stays immutable and is the channel: the request carries `payload.cred_ref` on the bare grant, the cell keeps one credential slot per ref in RAM and matches box and denial by the call id, so the way back needs no new vault round. A switch writes one `llm_switch` line; an open tool round without its signed thinking goes to the Messages wire without `thinking` for that call. ADR 0052. A switch away from the provider the cell was born on needs a grant and a non-empty `credential_ref` (else `provider_switch_needs_credential`), so a key never travels to another provider's host; a cell born without a `base_url` takes its lane's default host as start value.
+- llm-registry: the registry pushes provider, host and credential name with the model -- `provider` (derived from the row's wire: `anthropic` on a `messages` row, `openai` otherwise), the row's `base_url`, `credential_ref` from the new catalogue column `cred_ref`, and `wire_dialect: null` on a `messages` row; chat and native rows form one pool, decisions stays apart, so a cell without `base_url_allow` now refuses a push onto a row of the other wire (`in_refused`) instead of falling back to the next rank. The native row `claude-haiku-5-5` names `https://api.anthropic.com/v1` and `cred:anthropic` ([#1273](https://github.com/mmeyerlein/meclaw/issues/1273)).
+- builder: a provider grant of a level carries `scope.cred_class: "llm"`, and the level seeds the access catalogue rows of that class -- the wish's `cred_ref` and the new optional `credential.llm_cred_refs` ([#1273](https://github.com/mmeyerlein/meclaw/issues/1273)).
+- talky, cogny: `brain` (and talky's `quick`) are born with `base_url_allow` listing the gateway and the native Anthropic host, so a registry push may switch them between the two ([#1273](https://github.com/mmeyerlein/meclaw/issues/1273)).
+
+### Fixed
+
+- curator: while a consult is pending for a session -- one the curator sent, or one the brain started itself with `consult_cogny` -- every `brain` and `quick` call of that session denies the consult tool `consult_cogny` in its `tool_scope`, beside the `system.consult.pending` note -- since `talk:brain` the conversation model of the next turn ignored the note and started a second consult, answering with a tool call and no text ([#1280](https://github.com/mmeyerlein/meclaw/issues/1280)). The mark still ends with the consult's advice; `consult_pending_ms`, its backstop, defaults to 120000 instead of 30000, three times the measured consult of 38-42 s. A `consult_cogny` call in the brain's own output now sets the same mark under its consult id -- a follow-up's `consult_id` argument, else the call's id -- only while none stands; with the `consult` family folded the menu entry `consult` is denied as well; an ask back of the backend (`consult_class` `ask`) no longer ends the mark.
+- **Template versions (#1280):** third digit, `curator@1.14.1`; third digit for the pins that follow, `assistant@3.8.3`, `builder@1.27.4`, `builder-librarian@2.2.79`, `cogny@5.11.3`, `meclaw-os@2.2.66`, `member@2.6.3`, `memory-hive@3.16.3`, `npc@1.0.2`, `org@2.1.40`, `talky@6.9.3`.
+- **Template versions (#1273):** second digit, `access@2.6.0`, `builder@1.28.0`, `cogny@5.12.0`, `llm-registry@2.12.0`, `talky@6.10.0`; third digit for the pins that follow, `coder-pipeline@3.0.1`, `daily-digest@2.2.6`, `egon@2.2.1`, `freeswitch@2.4.5`, `research-assistant@2.3.1`, `slack-agent@2.2.1`, `steward@2.2.1`, `summarizer@2.3.1`, `telegram-connector@2.2.2`, `voice@2.6.3`.
+
 ## [0.68.0] — 2026-10-20
 
 ### Added

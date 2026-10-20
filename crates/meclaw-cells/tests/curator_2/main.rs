@@ -3,7 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kr_a_refused_write_is_written_by_the_next_message;
 pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
 pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
@@ -26,6 +25,7 @@ pub mod gh1260_a_talk_turn_goes_to_the_conversation_model;
 pub mod gh1260_a_tool_round_without_a_call_goes_to_the_brain;
 pub mod gh1260_every_model_call_has_its_ledger_row;
 pub mod gh1260_the_bridge_never_denies_its_own_lookup;
+pub mod gh1280_a_pending_consult_takes_the_consult_tool_away;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;

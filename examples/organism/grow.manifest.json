@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.2.65"
+            "template": "meclaw-os@2.2.66"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.1.39"
+            "template": "org@2.1.40"
           }
         ],
         "add_edges": [
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.6.2",
+            "template": "member@2.6.3",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -255,7 +255,7 @@
         "add_nodes": [
           {
             "name": "assistants/scribe",
-            "template": "assistant@3.8.2",
+            "template": "assistant@3.8.3",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2,
@@ -803,7 +803,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky/brain against the provider",
@@ -822,7 +823,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky/curator/summarizer against the provider",
@@ -841,7 +843,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky/decide against the provider",
@@ -860,7 +863,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky/quick against the provider",
@@ -879,7 +883,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky-chat/brain against the provider",
@@ -898,7 +903,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky-chat/curator/summarizer against the provider",
@@ -917,7 +923,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky-chat/decide against the provider",
@@ -936,7 +943,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky-chat/quick against the provider",
@@ -955,7 +963,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's cogny/brain against the provider",
@@ -974,7 +983,8 @@
                 "scope": {
                   "actions": [
                     "vault.deliver"
-                  ]
+                  ],
+                  "cred_class": "llm"
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's cogny/curator/summarizer against the provider",
@@ -1102,6 +1112,21 @@
                 }
               }
             ]
+          },
+          {
+            "target": "./access/store",
+            "table": "cred_refs",
+            "rows": [
+              {
+                "ref": "cred:openrouter",
+                "class": "llm",
+                "connector": "",
+                "env_var": "",
+                "owner": "member:alex",
+                "rotated_at": "2026-01-01T00:00:00.000000Z",
+                "status": "active"
+              }
+            ]
           }
         ]
       }
@@ -1115,7 +1140,7 @@
         "add_nodes": [
           {
             "name": "telegram",
-            "template": "telegram-connector@2.2.1",
+            "template": "telegram-connector@2.2.2",
             "birth": "inactive"
           }
         ],

@@ -141,6 +141,13 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             }
             // GH #1260: shown only when the host cannot force a call.
             "tool_choice_required" => (!params.tool_choice_required).then(|| "false".to_string()),
+            // GH #1273: shown once a push moved them, so the line of a cell on
+            // its birth provider stays the line it always was. A ref is a
+            // vault NAME, never a secret.
+            "provider" => overlay
+                .contains_key("provider")
+                .then(|| params.provider.clone()),
+            "credential_ref" => params.credential_ref.clone().filter(|r| !r.is_empty()),
             _ => None,
         };
         if let Some(v) = value {

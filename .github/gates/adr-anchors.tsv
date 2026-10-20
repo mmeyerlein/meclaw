@@ -202,3 +202,6 @@ adr	status	anchor_home	target
 0051-the-message-log-writer-runs-as-an-async-front.md	accepted	self	test:a_run_refuses_a_zero_linger
 0051-the-message-log-writer-runs-as-an-async-front.md	accepted	self	code:run_writer_on_thread
 0051-the-message-log-writer-runs-as-an-async-front.md	accepted	self	code:WRITER_LINGER
+0052-the-llm-cell-follows-its-row-across-providers.md	accepted	self	test:gh1273_a_push_moves_the_cell_onto_another_provider_and_back
+0052-the-llm-cell-follows-its-row-across-providers.md	accepted	self	code:check_provider_switch
+0052-the-llm-cell-follows-its-row-across-providers.md	accepted	self	code:slot_key

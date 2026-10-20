@@ -8,6 +8,7 @@ pub mod gh1060_code_on_a_grant;
 pub mod gh1061_a_granted_embedder_keeps_its_budget_under_load;
 pub mod gh1063_a_vault_grown_but_never_woken;
 pub mod gh1094_every_granted_cell_may_ask_for_its_credential;
+pub mod gh1273_a_grant_of_a_class_delivers_the_row_s_credential;
 pub mod gh132_store_internal_write_surface;
 pub mod gh138_argus_access_receptionist_params;
 pub mod gh151_the_vault_has_no_way_out;

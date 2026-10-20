@@ -9,6 +9,10 @@
         "provider": "text",
         "base_url": "text",
         "wire_dialect": "text",
+        "cred_ref": {
+          "type": "text",
+          "default": ""
+        },
         "context_window": "int",
         "max_output": {
           "type": "int",

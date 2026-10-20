@@ -79,7 +79,7 @@ fn payload(out: &Value) -> Value {
 fn channel_wish(assistant: &str, person: &str) -> Value {
     json!({"recipe": "grow_level", "request": "…", "params": {
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.2.1", "assistant": assistant,
+        "template": "telegram-connector@2.2.2", "assistant": assistant,
         "bind_chat": "4711", "ctx": {"member_person": person}}})
 }
 

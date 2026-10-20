@@ -11,6 +11,10 @@
     "credential_grant_id": "",
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
+    "base_url_allow": [
+      "https://openrouter.ai",
+      "https://api.anthropic.com"
+    ],
     "temperature": 0.3,
     "reasoning_effort": null,
     "external_timeout_ms": 1241000,

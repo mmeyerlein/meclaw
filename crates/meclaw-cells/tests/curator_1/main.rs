@@ -44,6 +44,7 @@ pub mod gh1225_kp_fix1_names_and_the_ledgers_word;
 pub mod gh1225_kp_the_push_holds_what_the_ledger_holds;
 pub mod gh1225_kr_a_failed_read_is_never_an_answer;
 pub mod gh1225_kr_a_refused_read_of_intake_writes_nothing_blind;
+pub mod gh1225_kr_a_refused_write_is_written_by_the_next_message;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

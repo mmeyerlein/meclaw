@@ -159,6 +159,8 @@ pub struct LlmParams {
     /// (GH #957) the typed question/answer wire; the vendor is chosen through
     /// `base_url` (OpenAI itself, OpenRouter, vLLM, …). The list is closed
     /// ([`PROVIDERS`]): a protocol is added when a real consumer needs one.
+    /// GH #1273: a package key -- a registry push moves the cell between
+    /// `openai` and `anthropic` (never into or out of `decisions`).
     pub provider: String,
     /// Model id (e.g. `"gpt-4o"`).
     pub model: String,
@@ -169,11 +171,18 @@ pub struct LlmParams {
     /// R3 / GH #421: the grant this cell spends to be handed its bearer
     /// credential, sealed, by the access hive. `None` (the default) is the
     /// pre-Lane-3 behaviour byte for byte: the cell uses `api_key` and emits
-    /// nothing. WHICH credential arrives is not named here — it is read from
-    /// the grant's `cred_ref`, so a cell cannot ask for a secret it was not
-    /// granted (R-AC-2 applied to the vault).
+    /// nothing. The grant is the CHANNEL to the vault (GH #1273): which
+    /// credential arrives is the grant's `cred_ref`, unless the model package
+    /// names another in [`Self::credential_ref`] -- and then the access hive
+    /// decides whether the grant may spend it.
     #[serde(default)]
     pub credential_grant_id: Option<String>,
+    /// GH #1273: the vault name of the credential the model package needs
+    /// (e.g. `cred:anthropic`), a package key. `None` = the grant's own
+    /// `cred_ref`. Asked for through `credential_grant_id`; a cell without a
+    /// grant takes it and ignores it.
+    #[serde(default)]
+    pub credential_ref: Option<String>,
     /// GH #457: how many turns this cell parks while its sealed credential is
     /// in flight, before the next one is refused with `credential_pending`.
     ///
@@ -621,6 +630,10 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "chars_per_token",
     "tokens_per_image",
     "tool_choice_required",
+    // GH #1273: the protocol and the credential the model's row needs -- a
+    // registry push moves the cell onto another provider.
+    "provider",
+    "credential_ref",
 ];
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
@@ -1075,9 +1088,12 @@ impl LlmParams {
     /// neither on `Err` — all-or-nothing, no partial apply.
     ///
     /// Reject rules (loud, no partial apply):
-    /// - an `IMMUTABLE_PARAM_KEYS` key is present (`provider`, `api_key`) →
-    ///   `Immutable` (credential / identity; mirrors the A4 `Authorization`
-    ///   secret-hygiene ruling, cell-types.md § llm),
+    /// - an `IMMUTABLE_PARAM_KEYS` key is present (`api_key`,
+    ///   `credential_grant_id`, …) → `Immutable` (the credential channel;
+    ///   mirrors the A4 `Authorization` secret-hygiene ruling, cell-types.md
+    ///   § llm). GH #1273: `provider` and `credential_ref` are package keys --
+    ///   the grant is the channel, the package says which credential, the
+    ///   access hive decides,
     /// - a key outside `KNOWN_PARAM_KEYS` is present → `Unknown` (a typo'd key
     ///   would otherwise silently no-op),
     /// - the merged result fails `LlmParams::parse` (wrong value type, etc.) →
@@ -1113,6 +1129,9 @@ impl LlmParams {
     /// - `external_timeout_ms` x (1 + `length_continuations`) must stay
     ///   cleared by the backstop ([`effective_backstop_ms`], the rule of the
     ///   spawn raise and the shipped-template gate).
+    /// - GH #1273: the provider switch is [`check_provider_switch`], which the
+    ///   update path runs beside this one (a restored overlay was checked when
+    ///   it was written).
     pub(crate) fn check_run_time_update(
         &self,
         start_base_url: Option<&str>,
@@ -1178,6 +1197,73 @@ impl LlmParams {
     }
 }
 
+/// GH #1273: the run-time guard of a provider switch, on the MERGED params
+/// (every push names `provider` in a value or in `$reset`, so the update keys
+/// say nothing). An unchanged provider passes. A change is `openai` ↔
+/// `anthropic` only (`provider_switch_refused`; the registry never pushes a
+/// decisions row onto a chat cell, this is the second wall), and it needs a
+/// concrete host: the effective `base_url` comes from this update (where
+/// [`LlmParams::check_run_time_update`] holds it to `base_url_allow`) or is
+/// the start value under the start provider (a pure `$reset`), else
+/// `provider_switch_needs_base_url` -- without it the new lane would fall
+/// back to its default host (`wire.rs`) and take the credential with it.
+/// Off the start provider the merge also needs a grant AND a non-empty
+/// `credential_ref` (`provider_switch_needs_credential`): without them the
+/// start credential (the env `api_key` or the grant's own secret) would go to
+/// the other provider's host. The way back to the start provider stays free.
+pub(crate) fn check_provider_switch(
+    from: &str,
+    merged: &LlmParams,
+    start_provider: Option<&str>,
+    start_base_url: Option<&str>,
+    update: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    if merged.provider != from {
+        check_switch_target(from, merged, start_provider, start_base_url, update)?;
+    }
+    let off_start = start_provider.is_some_and(|s| s != merged.provider);
+    let named = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.is_empty());
+    if off_start && !(named(&merged.credential_grant_id) && named(&merged.credential_ref)) {
+        return Err(
+            "params update rejected: provider_switch_needs_credential: a cell off its start \
+             provider spends a grant and names its own 'credential_ref'"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// GH #1273: the transition and the host of a provider change
+/// ([`check_provider_switch`]).
+fn check_switch_target(
+    from: &str,
+    merged: &LlmParams,
+    start_provider: Option<&str>,
+    start_base_url: Option<&str>,
+    update: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    if from == PROVIDER_DECISIONS || merged.provider == PROVIDER_DECISIONS {
+        return Err(format!(
+            "params update rejected: provider_switch_refused: '{from}' -> '{}' -- a run-time \
+             switch moves between 'openai' and 'anthropic' only",
+            merged.provider
+        ));
+    }
+    let base = merged.base_url.as_deref().filter(|u| !u.is_empty());
+    let from_update = matches!(update.get("base_url"), Some(Value::String(_)));
+    let birth = start_provider == Some(merged.provider.as_str())
+        && base.is_some_and(|b| start_base_url.is_some_and(|s| same_endpoint(b, s)));
+    if base.is_none() || !(from_update || birth) {
+        return Err(
+            "params update rejected: provider_switch_needs_base_url: a provider switch \
+             names its own 'base_url' (in params.base_url_allow) or returns to the start \
+             value by '$reset'"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 impl crate::params_overlay::OverlayParams for LlmParams {
     const KNOWN_KEYS: &'static [&'static str] = KNOWN_PARAM_KEYS;
     const IMMUTABLE_KEYS: &'static [&'static str] = IMMUTABLE_PARAM_KEYS;
@@ -1194,6 +1280,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "api_key",
     // R3 / GH #421: the sealed credential delivery.
     "credential_grant_id",
+    // GH #1273: the credential the model package names.
+    "credential_ref",
     // GH #457: the parking bound + deadline of that same delivery.
     "credential_wait_max",
     "credential_wait_ms",
@@ -1273,8 +1361,9 @@ pub const PROVIDERS: &[&str] = &["openai", PROVIDER_DECISIONS, PROVIDER_ANTHROPI
 
 /// Param keys that may NOT be changed at runtime via a params-update message.
 ///
-/// `provider` (the wire protocol this cell was built around) and `api_key`
-/// (credential, secret-hygiene);
+/// `api_key` (credential, secret-hygiene); GH #1273 took `provider` out --
+/// the wire protocol is part of the model package now, guarded on the merge
+/// ([`LlmParams::check_run_time_update`]);
 /// P10 adds the credential half of the auth dimension — `auth`/`auth_ref` are
 /// credential identity, and `oauth_*` decide which endpoint a credential is
 /// presented to. Letting a message repoint any of them would let a params
@@ -1282,12 +1371,11 @@ pub const PROVIDERS: &[&str] = &["openai", PROVIDER_DECISIONS, PROVIDER_ANTHROPI
 /// with GH #853: a model package names its dialect, the credential stays the
 /// same, and `parse` re-checks the `auth` pairing on every update.
 pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
-    "provider",
     "api_key",
-    // R3 / GH #421: same class as `api_key`. A message that could repoint the
-    // grant could make this cell ask the vault for a DIFFERENT credential and
-    // then present it — the grant is what names the secret, so the grant is
-    // credential identity and belongs in this list, not in the mutable half.
+    // R3 / GH #421: same class as `api_key`. GH #1273: the grant is the
+    // CHANNEL to the vault -- which credential travels on it the package says
+    // (`credential_ref`) and the access hive decides; repointing the channel
+    // itself stays a mutation.
     "credential_grant_id",
     "auth",
     "auth_ref",
@@ -1324,7 +1412,6 @@ pub(crate) const IMMUTABLE_PARAM_KEYS: &[&str] = &[
 /// GH #853: the immutable keys that are credential identity. An update naming
 /// one is told that a package needing another one needs a mutation.
 pub(crate) const CREDENTIAL_KEYS: &[&str] = &[
-    "provider",
     "api_key",
     "credential_grant_id",
     "auth",
@@ -1586,14 +1673,19 @@ mod tests {
     }
 
     #[test]
-    fn apply_update_rejects_immutable_provider() {
+    fn apply_update_takes_provider_as_a_package_key() {
+        // GH #1273: `provider` left the immutable list; the switch rule lives
+        // on the run-time path (`check_run_time_update`).
         let base = LlmParams::parse(&json!({
             "provider": "openai", "model": "gpt-4o", "api_key": "x"
         }))
         .unwrap();
-        let update = json!({"provider": "openai"}).as_object().unwrap().clone();
-        let err = base.apply_update(&update).unwrap_err();
-        assert!(matches!(err, super::ParamUpdateError::Immutable(ref k) if k == "provider"));
+        let update = json!({"provider": "anthropic"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, _) = base.apply_update(&update).unwrap();
+        assert!(merged.is_anthropic());
     }
 
     #[test]
@@ -2300,12 +2392,18 @@ mod tests {
 
     #[test]
     fn the_provider_stays_frozen_for_a_decisions_cell() {
+        // GH #1273: `provider` is a package key now; the switch out of
+        // decisions is refused by the run-time guard on the merge.
         let p = LlmParams::parse(&decisions_raw()).unwrap();
-        let update = json!({"provider": "openai"}).as_object().unwrap().clone();
-        assert!(matches!(
-            p.apply_update(&update),
-            Err(super::ParamUpdateError::Immutable(_))
-        ));
+        let update = json!({"provider": "openai", "model": "m"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let (merged, _) = p.apply_update(&update).expect("the merge parses");
+        let err =
+            super::check_provider_switch(&p.provider, &merged, Some("decisions"), None, &update)
+                .expect_err("decisions is no switch source");
+        assert!(err.contains("provider_switch_refused"), "{err}");
         let update = json!({"model": "vendor/decider-2"})
             .as_object()
             .unwrap()

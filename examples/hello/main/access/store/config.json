@@ -46,7 +46,11 @@
         "env_var": "text",
         "owner": "text",
         "rotated_at": "text",
-        "status": "text"
+        "status": "text",
+        "class": {
+          "type": "text",
+          "default": ""
+        }
       },
       "usage": {
         "id": "text",

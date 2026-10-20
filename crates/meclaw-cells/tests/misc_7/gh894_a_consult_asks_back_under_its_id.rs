@@ -1912,9 +1912,23 @@ async fn a_consult_asks_back_under_its_id(surface: Surface) {
     assert_offers(
         &voice_reqs,
         surface.node(),
-        &["consult_cogny", "reply_to_consult"],
+        &["reply_to_consult"],
         &["ask_requester"],
     );
+    // GH #1280: while the consult the voice started runs -- the question back
+    // (1) and the reply's turn (2) -- the curator takes `consult_cogny` off the
+    // menu; the core's answers (3, 5) end the mark, and the follow-up (4)
+    // consults again under the same id.
+    for (i, r) in voice_reqs.iter().enumerate() {
+        let offered = tools_offered(r).iter().any(|o| o == "consult_cogny");
+        assert_eq!(
+            offered,
+            !matches!(i, 1 | 2),
+            "{} request {i}: consult_cogny offered = {offered}: {:?}",
+            surface.node(),
+            tools_offered(r)
+        );
+    }
     assert_offers(
         &core_reqs,
         "cogny",

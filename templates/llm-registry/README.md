@@ -1,4 +1,4 @@
-# `llm-registry@2.11.0`
+# `llm-registry@2.12.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -108,7 +108,9 @@ it is born with.
 |---|---|
 | `model` | `model_id` |
 | `base_url` | `base_url` (empty = the cell keeps its own endpoint) |
-| `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own; `decisions` and `messages` mark the row's protocol and are never sent, see below) |
+| `wire_dialect` | `wire_dialect` (`chat_completions` or `responses`; empty = the cell's own; `decisions` marks the row's protocol and is never sent; a `messages` row sends `wire_dialect: null`, see below) |
+| `provider` | derived from `wire_dialect`, never the `provider` column: `anthropic` on a `messages` row, `openai` on every other llm row; a `decisions` row sends none (GH #1273) |
+| `credential_ref` | `cred_ref` -- the vault name of the credential the cell asks the access hive for; empty = not sent, so the cell keeps the credential of its own grant (GH #1273) |
 | `model_prompt` | `prompt` -- the lines this model needs in every system prompt and no other model does; the brain puts them FIRST in its system part |
 | `cache_mode`, `cache_ttl_s`, `context_window` | the columns of the same names -- how the model's provider caches a prompt prefix and for how many seconds, and its window in tokens; empty or 0 = the cell keeps its own (GH #890) |
 | `max_output` | the column of the same name -- the most tokens the model generates in one answer, as its provider lists it (the note names the source); 0 = not stated. A brain that names no cap of its own asks for exactly this, and one that names a cap never asks for more (GH #1037) |
@@ -121,32 +123,42 @@ it is born with.
 | `reasoning_effort`, `reasoning_wire`, `reasoning`, `thinking_budget`, `max_tokens`, `temperature`, `external_timeout_ms`, `provider_extra` | `package`, a json object; any other key in it is dropped and never reaches a cell |
 
 The key list is the llm cell's own (`MODEL_PACKAGE_KEYS`, GH #853), and a template test holds
-the hand's copy against it. What a package can **not** carry is the credential: `provider`,
-`api_key` and the whole auth dimension stay immutable per cell, so a model behind a different
-credential is a rebirth, not a message. A package that names a `base_url` is taken only by a
+the hand's copy against it. The registry names model **and** provider (GH #1273): the package
+carries the wire the cell speaks (`provider`) and the NAME of the credential (`credential_ref`),
+never a key. The cell's grant (`credential_grant_id`, immutable) is only its channel to the
+member's vault; the access hive delivers the named credential when its catalogue lists it in the
+grant's class (`cred_refs`, class `llm`) and refuses it otherwise. A new provider is therefore a
+vault deposit, a `cred_refs` row and a registry row -- no rebirth. `api_key` and the rest of the
+auth dimension stay immutable per cell. A package that names a `base_url` is taken only by a
 brain whose `base_url_allow` lists that origin (GH #853); a brain without the list refuses the
 whole push, loudly, on its error lane. A row with an empty `base_url` is how a catalogue says
 *this model lives where the cell already points*.
 
-**Protocols, kept apart (GH #957).** A row whose `wire_dialect` is `decisions` is a typed
-decisions model (typed questions about one state in, typed answers out), served only to a cell
-born with `provider: "decisions"`; a `messages` row is a native Messages model (below); every
-other row is a chat model. A subscriber states its protocol with `"protocol": "decisions"` (or
-`"anthropic"`) on `subscribe` or in its announcement entry (absent = chat), and every resolution -- targeted, global, prose, tier -- skips a row of the other
-protocol, so an override can never hand a decisions cell a chat model or the reverse; `select`
-takes the same `protocol` key. A decisions subscriber may state no start model at all: it is
-born on an empty one and waits for the registry. Its `base_url` is the service root without
-`/v1` (example `https://openrouter.ai/api`; the cell appends `/alpha/decisions`), and its push
-never carries `wire_dialect`. The translator is shown chat rows only.
+**Two pools: llm and decisions (GH #957, GH #1273).** A row whose `wire_dialect` is
+`decisions` is a typed decisions model (typed questions about one state in, typed answers out),
+served only to a cell born with `provider: "decisions"`. Every other row -- chat
+(`chat_completions`, `responses`) and native Messages (`messages`, GH #1242) -- is in ONE pool,
+`llm`: an llm cell switches between the chat wire and the native wire on a push, so a chat cell
+can be moved onto a `messages` row and back. A subscriber states its protocol with
+`"protocol": "decisions"` on `subscribe` or in its announcement entry (absent = chat;
+`"anthropic"`, the form of GH #1242, stays valid and lands in the llm pool), and every
+resolution -- targeted, global, prose, tier -- skips a row of the other pool, so an override can
+never hand a decisions cell an llm model or the reverse; `select` takes the same `protocol` key.
+A decisions subscriber may state no start model at all: it is born on an empty one and waits for
+the registry. Its `base_url` is the service root without `/v1` (example
+`https://openrouter.ai/api`; the cell appends `/alpha/decisions`), and its push never carries
+`wire_dialect`, `provider` or `credential_ref` (they land in the `$reset`, so the cell keeps
+what it was born with). The translator is shown every non-`explicit` llm row.
 
-**The native Messages wire is a third protocol (GH #1242).** A row whose `wire_dialect` is
-`messages` is a model on its provider's native Messages API, served only to a cell born with
-`provider: "anthropic"`, which subscribes with `"protocol": "anthropic"`. It is kept apart
-exactly like a decisions row: no override, tier or translation moves a chat cell onto it or an
-anthropic cell onto a chat row, `select` ranks it only for `"protocol": "anthropic"`, the
-translator is not shown it, and its push never carries `wire_dialect` -- `messages` names the
-protocol, not a dialect the cell takes. A test colony swaps one Claude model for another with an
-override.
+**A switch of provider is one push (GH #1273).** The push of a `messages` row carries
+`provider: "anthropic"`, the row's `base_url`, its `credential_ref` and `wire_dialect: null`
+-- `null`, because the `$reset` alone would bring back the dialect the cell was born with, and a
+cell on the native wire takes none. The push of a chat row carries `provider: "openai"` and its
+gateway `base_url`; with no `cred_ref` on the row, `credential_ref` is in the `$reset` and the
+cell asks with its grant's own credential again. The cell takes the switch only onto an origin
+in its `base_url_allow` (talky's `brain` and `quick` and cogny's `brain` list the gateway and
+the native host); any other cell refuses it on its error lane. The switch applies from the next
+call; the cell is not reborn.
 
 ## The precedence
 
@@ -194,11 +206,11 @@ A push is a **params-only** message -- an empty `system` slot and no `messages` 
  "params": {"model": "provider-b/model-large", "base_url": "https://gateway.example/api/v1",
             "wire_dialect": "responses", "reasoning_effort": "medium", "max_output": 128000,
             "input_soft": 250000, "input_hard": 1000000, "cost_in": 10, "cost_cached_in": 1,
-            "model_prompt": "…",
+            "model_prompt": "…", "provider": "openai",
             "$reset": ["reasoning_wire", "reasoning", "thinking_budget", "max_tokens",
                        "temperature", "external_timeout_ms", "provider_extra",
                        "cache_mode", "cache_ttl_s", "context_window",
-                       "supported_params"]}}
+                       "supported_params", "credential_ref"]}}
 ```
 
 It carries the WHOLE package and `$reset` for every package key the package does not set, so no
@@ -599,12 +611,13 @@ None of these is a bug, and none of them is fixable inside this template.
    `meclaw-os` the builder draws both halves with the generation; anywhere else, and for a
    brain grown before 2.2.0, somebody draws them, and a push for a path with no edge
    dead-letters where the road ends.
-3. **The package is the boundary, and the credential is outside it.** Everything in the package
-   is run-time mutable; `provider`, `api_key` and the auth dimension (`auth`, `auth_ref`,
-   `oauth_*`) are not, and a `base_url` moves only inside the cell's own `base_url_allow`. A
-   model behind another credential is a rebirth, not a message. In practice the wall rarely comes
-   up: as long as everything hosted goes through one gateway and everything local through one
-   OpenAI-compatible endpoint, the credential is a constant and a package is a string swap.
+3. **The package is the boundary, and the key is outside it.** Everything in the package is
+   run-time mutable, `provider` and the credential's NAME (`credential_ref`) included since
+   GH #1273; `api_key`, the grant (`credential_grant_id`) and the auth dimension (`auth`,
+   `auth_ref`, `oauth_*`) are not, and a `base_url` moves only inside the cell's own
+   `base_url_allow`. The registry names a credential, the vault holds it, and the access hive
+   decides: registry and vault agree through the access catalogue (`cred_refs`, class `llm`) --
+   a row naming a credential the catalogue does not list is refused there, not here.
 4. **Costs are cent integers, not prices.** A store column is `text`, `int` or `json` -- there is
    no float. `cost_in` and `cost_out` are **cents per million tokens**, kept that way on purpose:
    a price stored as text would sort lexicographically, which is the wrong answer wearing the
@@ -620,7 +633,7 @@ pins this: an incident row changes no other table and emits nothing.
 
 | table | what it is | who writes it |
 |---|---|---|
-| `models` | the catalogue: id, provider, base_url, wire dialect, context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s`, with GH #1097 `output_tps` (the measured slow floor of the output rate in tokens a second, 0 = not measured; never pushed -- the timeout chain of `docs/cell-types.md` derives a born cell's `external_timeout_ms` from it and `max_output`), with GH #1242 `response_ms` (the measured median time of one answer in milliseconds -- a request to its complete tool call at a small window, not streamed -- 0 = not measured; never pushed, shown to the translator, and the number a cell that must answer first is chosen by) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
+| `models` | the catalogue: id, provider (the vendor, never pushed), base_url, wire dialect, `cred_ref` (GH #1273, the credential's vault name, pushed as `credential_ref`), context window, `cost_in`/`cost_out` in cents per million, `caps`, curated `traits`, status, note -- since 2.2.0 `package` and `prompt`, since 2.3.0 `strengths` (prose the translator reads), with GH #890 `cache_mode` and `cache_ttl_s`, with GH #1097 `output_tps` (the measured slow floor of the output rate in tokens a second, 0 = not measured; never pushed -- the timeout chain of `docs/cell-types.md` derives a born cell's `external_timeout_ms` from it and `max_output`), with GH #1242 `response_ms` (the measured median time of one answer in milliseconds -- a request to its complete tool call at a small window, not streamed -- 0 = not measured; never pushed, shown to the translator, and the number a cell that must answer first is chosen by) | `seed/models.jsonl` at instantiation, then `hand` (`model_upsert`, `model_retire`) or the **boot-graph edge** |
 | `tiers` | the index: `tier -> model_id`, with `since`, `decided_by`, `active` | `seed/tiers.jsonl` at instantiation, then `hand` (`remap`) |
 | `overrides` | the replacements: `id`, `scope` (`global` \| `target`), `match`, `model_id`, `since`, `decided_by`, `active`. Since 2.2.0 | `hand` (`override_set`, `override_clear`, `reset`) |
 | `subscribers` | which cell is served, its `tier`, `pinned`, `start_model`, since 2.3.0 its `requirement` and `requirement_hash` -- and what it resolved to: `model_id`, `rank`, `reason`, `since`, `package_hash`, the prose base it holds (`base_model`, `base_rank`, `base_source`, `because`), and since 2.3.1 `refused` and `refused_at`, emptied by the next push; `protocol` (`""` = chat, `decisions`, GH #957, `anthropic`, GH #1242) | `hand` (`subscribe`, the announcement, every resolution), or the boot-graph edge |
@@ -697,40 +710,29 @@ How a cell gets onto it is *A native Claude row and its key* below.
 
 ## A native Claude row and its key
 
-The catalogue row carries no credential: `provider`, `api_key` and the grant stay per cell, so a
-cell is born on the native wire with its key, and the registry only moves it between Claude
-rows. The recipe, for an operator account `<account>` (one console organisation, one key):
+The catalogue row names the credential, never the key: the native row `claude-haiku-5-5` carries
+`base_url` `https://api.anthropic.com/v1` (the cell appends `/messages`) and `cred_ref`
+`cred:anthropic`. A push moves an llm cell onto it and back (GH #1273); the cell asks its
+member's vault for `cred:anthropic` over the grant it was born with. The recipe, once per
+member:
 
-1. Seal the key: `meclaw --vault-add cred:anthropic-<account>` (the key on stdin, never as an
-   argument); the vault has to be unlockable, as for the translator's key.
-2. Grant it to the cell: a grant row like the translator's seeded
-   `grant:openrouter@colony-os/llm-registry-translate` -- `capability` `credential.read`,
-   `cred_ref` `cred:anthropic-<account>`, `requester` the cell, `scope.actions` `vault.deliver` --
-   with the id `grant:anthropic-<account>@<subject>/<cell>`, issued before the cell first asks
-   (`credential_grant_id` is immutable).
-3. Bear the cell on the wire and the row, with the app id every llm cell sends:
+1. Seal the key: `meclaw --vault-add cred:anthropic` (the key on stdin, never as an argument);
+   the vault has to be unlockable, as for the translator's key.
+2. List it in the access catalogue: a `cred_refs` row `{ref: "cred:anthropic", class: "llm",
+   status: "active"}`. The builder writes it with a member's or an assistant's grants when the
+   wish names it (`credential.llm_cred_refs: ["cred:anthropic"]`), and every provider grant it
+   seeds carries `scope.cred_class: "llm"` -- the channel, not one key.
+3. Bear the cell with both origins in `base_url_allow` (immutable, so at birth):
+   `["https://openrouter.ai", "https://api.anthropic.com"]` -- talky's `brain` and `quick` and
+   cogny's `brain` ship it.
 
-```json
-{
-  "type": "llm",
-  "params": {
-    "provider": "anthropic",
-    "base_url": "https://api.anthropic.com/v1",
-    "model": "claude-haiku-5-5",
-    "api_key": "",
-    "credential_grant_id": "grant:anthropic-<account>@<subject>/<cell>",
-    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
-    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"
-  }
-}
-```
-
-The cell subscribes with `"protocol": "anthropic"`; the push of the row then brings the package
-(window, cache, prices, `supported_params`). The row names no endpoint, so a push leaves the
-cell on its own `base_url`. A test colony moves a cell born on another Claude row onto this one
-with a targeted override; no tier and no default points here (the shipped brains stay on their
-chat rows). A cell on this row keeps `length_continuations` at 0: a continuation sends the cut
-text back as the assistant's turn, which the model refuses.
+Then `override_set` onto `claude-haiku-5-5` moves the cell to the native wire on its next call,
+and `override_set` (or `override_clear`) back moves it to its chat row: one message each way.
+No tier and no default points here (the shipped brains stay on their chat rows). A cell on this
+row keeps `length_continuations` at 0: a continuation sends the cut text back as the assistant's
+turn, which the model refuses. The OpenRouter rows carry no `cred_ref` on purpose: a colony's
+grant may name its gateway key `cred:openrouter-<account>`, and a row naming one spelling would
+break every other.
 
 `tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`),
 `strong` (`anthropic/claude-opus-5.5`) and `quick` (`openai/gpt-oss-120b`, see *Tier names are data*). Prices and listings move; every row says in its

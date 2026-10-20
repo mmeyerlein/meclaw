@@ -77,7 +77,7 @@ const ACCESS_SEEDS: &[&str] = &["store/seed/policy.jsonl", "store/seed/cred_refs
 
 /// The template root, or `None` where it does not ship (the documented R2b
 /// exception form, GH #49).
-fn shipped_access() -> Option<std::path::PathBuf> {
+pub(crate) fn shipped_access() -> Option<std::path::PathBuf> {
     let root = templates_root().join("access");
     for rel in ACCESS_FILES.iter().chain(ACCESS_SEEDS) {
         if !root.join(rel).exists() {
@@ -296,7 +296,7 @@ fn main_config() -> Value {
 /// The vault passphrase these tests arm on disk (GH #421).
 const VAULT_PASSPHRASE: &str = "a passphrase nobody guesses";
 
-fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
+pub(crate) fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     let root = td.path();
     write(root, "main/config.json", &main_config());
     write(
@@ -338,7 +338,7 @@ fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     copy_cells(root_template, &root.join("main/access"));
 }
 
-async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
+pub(crate) async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
         vec![
             (
@@ -380,7 +380,7 @@ fn to(cell: &str, text: &str) -> Message {
         .build()
 }
 
-fn send_json(cell: &str, v: &Value) -> Message {
+pub(crate) fn send_json(cell: &str, v: &Value) -> Message {
     to(cell, &meclaw_core::serde_json::to_string(v).unwrap())
 }
 
@@ -408,7 +408,7 @@ fn turn_text(m: &Message) -> String {
 }
 
 /// The JSON payload of the one turn a store or a port answer carries.
-fn turn_json(m: &Message) -> Value {
+pub(crate) fn turn_json(m: &Message) -> Value {
     meclaw_core::serde_json::from_str(&turn_text(m)).unwrap_or(Value::Null)
 }
 
@@ -425,7 +425,7 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
 }
 
 /// The next message on `route`, skipping whatever else the sink collects.
-async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
+pub(crate) async fn recv_route(rx: &mut mpsc::Receiver<Message>, route: &str) -> Message {
     let mut seen: Vec<String> = Vec::new();
     for _ in 0..16 {
         let m = recv_bounded(rx).await.unwrap_or_else(|| {
@@ -470,7 +470,7 @@ async fn recv_routes(rx: &mut mpsc::Receiver<Message>, routes: &[&str]) -> Vec<M
 }
 
 /// A store op through the probe, returned as its rows.
-async fn probe(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, op: Value) -> Value {
+pub(crate) async fn probe(h: &ColonyHandle, rx: &mut mpsc::Receiver<Message>, op: Value) -> Value {
     h.send(send_json("/probe", &op)).await;
     let m = recv_route(rx, "").await;
     turn_json(&m)
@@ -517,7 +517,7 @@ fn credential_rule(rule_id: &str, requester: &str, cred_ref: &str) -> Value {
 }
 
 /// Ask once for a credential grant and return its handle.
-async fn credential_grant_for(
+pub(crate) async fn credential_grant_for(
     h: &ColonyHandle,
     rx: &mut mpsc::Receiver<Message>,
     who: &str,
@@ -573,7 +573,7 @@ const VAULT: &str = "/access/vault";
 
 /// The vault's broker: its `params.broker` is `./invoke`, so the one sender it
 /// files as `broker` is this path -- the cell that validated the grant.
-const BROKER: &str = "/access/invoke";
+pub(crate) const BROKER: &str = "/access/invoke";
 
 /// The turns of a row's inline body (`messages[]`), empty for anything else.
 fn turns_of(r: &MessageLogDto) -> Vec<Value> {
@@ -593,7 +593,7 @@ fn turns_of(r: &MessageLogDto) -> Vec<Value> {
 /// carried, which is the half these template tests are about. Read through the
 /// colony (`ColonyMsg::ReadMessages`), never off the vault's `cell.db`
 /// (GH #160).
-async fn vault_calls(h: &ColonyHandle) -> Vec<(String, Value)> {
+pub(crate) async fn vault_calls(h: &ColonyHandle) -> Vec<(String, Value)> {
     let mut rows = h
         .read_log(MessageLogFilter {
             to_path_prefix: Some(VAULT.to_string()),

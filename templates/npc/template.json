@@ -1,8 +1,8 @@
 {
   "name": "npc",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": {
-    "purpose": "A non-player character for a shared world: one identity seeded at instantiation, ONE llm brain behind a curator, a memory hive, the world's tools as the menu of each move, a handset. A slimmed-down agent in hive form: sealed, its own `./access` with vault grants, the `in_model` door; the tool round inside is cogny's. Since 1.0.1 (#1260) the template pins `curator@1.14.0` and `memory-hive@3.16.2`; it is the third digit.",
+    "purpose": "A non-player character for a shared world: one identity seeded at instantiation, ONE llm brain behind a curator, a memory hive, the world's tools as the menu of each move, a handset. A slimmed-down agent in hive form: sealed, its own `./access` with vault grants, the `in_model` door; the tool round inside is cogny's. Since 1.0.1 (#1260) the template pins `curator@1.14.0` and `memory-hive@3.16.2`; it is the third digit. Since 1.0.2 (#1280) the template pins `curator@1.14.1` and `memory-hive@3.16.3`; it is the third digit.",
     "use_when": "One instance per character, in a world colony or a player's own colony alike.",
     "not_in_scope": "No companion, no counselor, no member, no apps, no session keeper: the night closes the day.",
     "examples": [

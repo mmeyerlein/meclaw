@@ -244,10 +244,29 @@ pub fn literal_is_ignored(grant: Option<&str>, literal: Option<&str>) -> bool {
 /// that matches `hop.route == "credential_request"` decides where it goes.
 #[must_use]
 pub fn request_content(grant_id: &str, recipient_public_hex: &str, call_id: &str) -> Value {
+    request_content_for(grant_id, None, recipient_public_hex, call_id)
+}
+
+/// GH #1273: [`request_content`] naming the credential the caller wants on
+/// its grant -- `payload.cred_ref`, only when set. `header.grant_id` and
+/// `args.grant_id` stay the bare grant: the edges that carry the request and
+/// its answer filter on it, and the access hive decides whether the grant may
+/// spend that ref.
+#[must_use]
+pub fn request_content_for(
+    grant_id: &str,
+    cred_ref: Option<&str>,
+    recipient_public_hex: &str,
+    call_id: &str,
+) -> Value {
+    let mut payload = json!({"recipient_key": recipient_public_hex});
+    if let Some(r) = cred_ref.filter(|r| !r.is_empty()) {
+        payload["cred_ref"] = json!(r);
+    }
     let args = json!({
         "grant_id": grant_id,
         "operation": "vault.deliver",
-        "payload": {"recipient_key": recipient_public_hex},
+        "payload": payload,
     });
     json!({
     "header": {"route": "credential_request", "grant_id": grant_id},
@@ -255,6 +274,18 @@ pub fn request_content(grant_id: &str, recipient_public_hex: &str, call_id: &str
                   "id": call_id,
                   "text": args.to_string()}],
     })
+}
+
+/// GH #1273: the slot of `grant` for the credential `cred_ref` -- the bare
+/// grant when no ref is named (the slot every cell had before), else
+/// `<grant>#<ref>`, so one grant holds one secret per ref and a switch back
+/// finds its secret still in RAM.
+#[must_use]
+pub fn slot_key(grant: &str, cred_ref: Option<&str>) -> String {
+    match cred_ref.filter(|r| !r.is_empty()) {
+        Some(r) => format!("{grant}#{r}"),
+        None => grant.to_string(),
+    }
 }
 
 /// What [`CredentialSlots::park`] did with an item that found no credential.
@@ -607,13 +638,24 @@ impl<T: Send + 'static> CredentialSlots<T> {
     /// No random source for the key pair; the caller logs it, and a parked
     /// round then ends at its deadline with receipts.
     pub fn request(&mut self, grant: &str) -> Result<Value, SealError> {
+        self.request_for(grant, grant, None)
+    }
+
+    /// GH #1273: [`Self::request`] for the slot `slot` ([`slot_key`]) of
+    /// `grant`, asking for `cred_ref` ([`request_content_for`]).
+    ///
+    /// # Errors
+    /// As [`Self::request`].
+    pub fn request_for(
+        &mut self,
+        slot: &str,
+        grant: &str,
+        cred_ref: Option<&str>,
+    ) -> Result<Value, SealError> {
         let pair = RecipientKeypair::generate()?;
         let call_id = meclaw_core::Uuid::now_v7().simple().to_string();
-        let content = request_content(grant, &pair.public_hex(), &call_id);
-        let slot = self
-            .slots
-            .entry(grant.to_string())
-            .or_insert_with(Slot::new);
+        let content = request_content_for(grant, cred_ref, &pair.public_hex(), &call_id);
+        let slot = self.slots.entry(slot.to_string()).or_insert_with(Slot::new);
         // GH #1059: asked with no live round (on_start, or a long-running
         // cell's re-ask) — the next park joins this question.
         slot.start_ask = slot.round.as_ref().is_none_or(|r| r.items.is_closed());
@@ -745,6 +787,15 @@ impl<T: Send + 'static> CredentialSlots<T> {
     /// nothing: the round in flight still has its own answer coming.
     pub async fn accept_denial(&mut self, content: &Value) -> Option<Denied<T>> {
         let (grant, reason_code, call_id) = denial_of(content)?;
+        // GH #1273: the denial names the bare grant; with one slot per ref the
+        // call id says which slot asked. The grant is the fallback.
+        // Only a slot of the grant the denial names: another grant's denial
+        // is not this cell's, whatever its call id.
+        let grant = call_id
+            .as_deref()
+            .and_then(|id| self.slot_of_call(id))
+            .filter(|key| key.split('#').next() == Some(grant.as_str()))
+            .unwrap_or(grant);
         let slot = self.slots.get_mut(&grant)?;
         let current = slot
             .recipient
@@ -775,19 +826,18 @@ impl<T: Send + 'static> CredentialSlots<T> {
     }
 
     /// Which slot a delivery addresses (see [`Self::accept_sealed`]).
+    ///
+    /// GH #1273: the call id first. The broker's ack names the bare grant, and
+    /// one grant may hold one slot per ref -- by the grant alone the box of the
+    /// ref slot would land in the bare slot and read as unsolicited.
     fn slot_for(&self, grant_hint: Option<&str>, call_id: Option<&str>) -> Option<String> {
+        if let Some(g) = call_id.and_then(|id| self.slot_of_call(id)) {
+            return Some(g);
+        }
         if let Some(g) = grant_hint
             && self.slots.contains_key(g)
         {
             return Some(g.to_string());
-        }
-        if let Some(id) = call_id
-            && let Some((g, _)) = self.slots.iter().find(|(_, s)| {
-                s.recipient.as_ref().is_some_and(|(_, c)| c == id)
-                    || s.stale.iter().any(|c| c == id)
-            })
-        {
-            return Some(g.clone());
         }
         let mut asking = self.slots.iter().filter(|(_, s)| s.recipient.is_some());
         match (asking.next(), asking.next()) {
@@ -795,6 +845,17 @@ impl<T: Send + 'static> CredentialSlots<T> {
             _ if self.slots.len() == 1 => self.slots.keys().next().cloned(),
             _ => None,
         }
+    }
+
+    /// The slot whose request in flight, or a superseded one, has `call_id`.
+    fn slot_of_call(&self, call_id: &str) -> Option<String> {
+        self.slots
+            .iter()
+            .find(|(_, s)| {
+                s.recipient.as_ref().is_some_and(|(_, c)| c == call_id)
+                    || s.stale.iter().any(|c| c == call_id)
+            })
+            .map(|(g, _)| g.clone())
     }
 
     /// GH #457: take the round's items back from its warden. `None` when there

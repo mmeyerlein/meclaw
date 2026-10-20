@@ -185,7 +185,8 @@ fn render(recipe: &str, params: Value) -> Vec<Value> {
 
 fn credential() -> Value {
     json!({"cred_ref": "cred:openrouter", "subject": "member:alex",
-           "expires_at": "2099-01-01T00:00:00.000000Z"})
+           "expires_at": "2099-01-01T00:00:00.000000Z",
+           "llm_cred_refs": ["cred:anthropic"]})
 }
 
 #[test]
@@ -213,6 +214,7 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
 
     // Every grant row, every v-lane pair, every override, across the manifests.
     let mut grants: Vec<Value> = Vec::new();
+    let mut catalogue: Vec<Value> = Vec::new(); // GH #1273: `cred_refs` rows
     let mut asks: BTreeMap<String, String> = BTreeMap::new(); // consumer -> requester
     let mut answers: BTreeMap<String, String> = BTreeMap::new(); // consumer -> guard
     let mut named: BTreeSet<String> = BTreeSet::new(); // handles set as overrides
@@ -226,6 +228,9 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         for row in d["diff"]["seed_rows"].as_array().into_iter().flatten() {
             if row["table"] == "grants" {
                 grants.extend(row["rows"].as_array().expect("rows").iter().cloned());
+            }
+            if row["table"] == "cred_refs" {
+                catalogue.extend(row["rows"].as_array().expect("rows").iter().cloned());
             }
         }
         for e in d["diff"]["add_edges"].as_array().into_iter().flatten() {
@@ -319,7 +324,31 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
             "no ask edge stamps requester {req}"
         );
         assert_eq!(g["cred_ref"], json!("cred:openrouter"), "{g}");
+        // GH #1273 (R-AW-1/2): a provider grant of a level is the channel to
+        // the vault for the class `llm`; an embedder's (and an app's) keeps
+        // its one key.
+        let llm = req.starts_with("agent:") && !req.ends_with("-embed");
+        assert_eq!(
+            g["scope"].get("cred_class"),
+            llm.then(|| json!("llm")).as_ref(),
+            "{g}"
+        );
     }
+    // GH #1273 (R-AW-2): the access catalogue lists the class -- the wish's
+    // `cred_ref` and every `llm_cred_refs` entry, active.
+    let refs: BTreeSet<&str> = catalogue
+        .iter()
+        .inspect(|r| {
+            assert_eq!(r["class"], json!("llm"), "{r}");
+            assert_eq!(r["status"], json!("active"), "{r}");
+        })
+        .filter_map(|r| r["ref"].as_str())
+        .collect();
+    assert_eq!(
+        refs,
+        BTreeSet::from(["cred:openrouter", "cred:anthropic"]),
+        "{catalogue:?}"
+    );
 }
 
 #[test]

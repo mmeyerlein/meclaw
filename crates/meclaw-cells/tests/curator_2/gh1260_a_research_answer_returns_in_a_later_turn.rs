@@ -84,7 +84,7 @@ fn a_research_answer_returns_in_a_later_turn() {
     assert_eq!(mark["consult_id"], json!(cid), "{mark}");
     assert_eq!(
         span_ms(&mark),
-        120_000 + 30_000,
+        120_000 + 120_000,
         "a research mark stands for research_wait_ms plus the margin: {mark}"
     );
     assert!(
@@ -138,7 +138,7 @@ fn a_research_answer_returns_in_a_later_turn() {
     assert_eq!(h.routed("consult").len(), 1, "{:?}", h.out);
     assert_eq!(
         span_ms(&pending(&h)),
-        30_000,
+        120_000,
         "a consult mark stands for consult_pending_ms"
     );
 }
