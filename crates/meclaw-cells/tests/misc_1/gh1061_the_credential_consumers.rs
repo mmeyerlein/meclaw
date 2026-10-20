@@ -776,3 +776,115 @@ fn gh1061_a_recipe_grown_voice_channel_is_granted() {
         &[(handle.as_str(), "cred:telegram-bot")],
     );
 }
+
+/// GH #1273 (MD): a member grown from a derived class -- an instance
+/// derivation of `member` such as `member-alex@1.0.0` -- has the cells of
+/// `member`, so a `credential` on its wish takes the grants of `member`'s
+/// consumers instead of `app_declaration_invalid`.
+#[test]
+fn gh1273_a_member_grown_from_a_derived_class_is_granted() {
+    if !shipped() {
+        return; // GH #49
+    }
+    let wish = |template: &str| {
+        json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
+               "template": template, "credential": credential()})
+    };
+    let grants = |decls: Vec<Value>| -> BTreeSet<String> {
+        decls
+            .iter()
+            .flat_map(|d| {
+                d["diff"]["seed_rows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter(|row| row["table"] == "grants")
+            .flat_map(|row| row["rows"].as_array().cloned().unwrap_or_default())
+            .map(|g| g["requester"].as_str().expect("requester").to_string())
+            .collect()
+    };
+    let base = grants(render("grow_level", wish("member")));
+    let derived = grants(render("grow_level", wish("member-alex@1.0.0")));
+    assert!(!base.is_empty(), "member grants nothing");
+    assert_eq!(
+        derived, base,
+        "a derived member class is granted like member"
+    );
+
+    // MD2: the member's SCREEN may be a derived class too
+    // (`member_screen_template` = `display-<x>@…`, an instance derivation of
+    // `display`). Its judge is granted like `display`'s, and the recipe
+    // answers -- `emit_all` fails on a traceback or a non-zero exit.
+    let with_screen = |screen: &str, params: Value| -> Vec<Value> {
+        emit_all(
+            &shipped_script(RECIPES),
+            &json!({
+                "target": "/os/builder/recipes",
+                "header": {"hop": {"route": "recipe"}, "context": {}},
+                "ttl": 64,
+                "params": {"member_screen_template": screen},
+                "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                              "text": json!({"recipe": "grow_level", "request": "…",
+                                             "params": params}).to_string()}],
+            }),
+        )
+        .into_iter()
+        .filter(|m| m["header"]["operation"] == "recipe")
+        .collect()
+    };
+    let screen = with_screen("display-alex@1.0.0", wish("member"));
+    assert!(
+        screen[0]["header"]["error_code"].is_null(),
+        "a derived screen class is refused: {}",
+        screen[0]
+    );
+    let screen = grants(
+        screen[0]["manifest"]
+            .as_array()
+            .expect("a manifest")
+            .clone(),
+    );
+    assert!(
+        screen
+            .iter()
+            .any(|r| r.ends_with("/judge") && !r.contains("memory-hive")),
+        "the screen's judge is granted: {screen:?}"
+    );
+    assert_eq!(
+        screen, base,
+        "a derived screen class is granted like display"
+    );
+
+    // A derived channel class (`voice-<x>`) takes its base's grants.
+    let voice = |template: &str| {
+        grants(grow_channel(
+            "phone",
+            template,
+            json!({"bind_chat": "12345",
+                   "credential": {"cred_ref": "cred:openrouter", "subject": "member:alex",
+                                  "expires_at": "2099-01-01T00:00:00.000000Z",
+                                  "stt_cred_ref": "cred:deepgram",
+                                  "tts_cred_ref": "cred:cartesia"}}),
+        ))
+    };
+    assert!(!voice("voice").is_empty(), "voice grants nothing");
+    assert_eq!(
+        voice("voice-alex@1.0.0"),
+        voice("voice"),
+        "a derived channel class is granted like its base"
+    );
+
+    // Whatever else a renderer raises on the grow path is a refusal with an
+    // error_code, never a traceback without an answer.
+    let broken = with_screen(
+        "display@2.11.0",
+        json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
+               "template": "member", "credential": "not-an-object"}),
+    );
+    assert_eq!(
+        broken[0]["header"]["error_code"], "recipe_failed",
+        "{}",
+        broken[0]
+    );
+}

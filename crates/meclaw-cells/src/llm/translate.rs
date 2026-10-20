@@ -169,6 +169,10 @@ pub(crate) fn build_openai_request(
         prev_was_tool_call = is_tool_call;
     }
 
+    if is_anthropic_model(&params.model) {
+        fold_trailing_assistant_chat(&mut messages);
+    }
+
     // GH #993: only the sampling fields the model takes; the field order of
     // the request before stays (temperature first, the reasoning after tools).
     let mut sampling: Vec<(&'static str, Value)> = chat_sampling_fields(params)
@@ -194,6 +198,81 @@ pub(crate) fn build_openai_request(
         body.insert(k.clone(), v.clone());
     }
     Ok(Value::Object(body))
+}
+
+/// GH #1282: the label in front of a trailing assistant text that travels as
+/// context instead of as a prefill. Current Claude models answer 400 to a
+/// request ending on an assistant message ("This model does not support
+/// assistant message prefill", R025: 2 of 2 such calls, 20 of 20 ending on
+/// a tool result answered 200). The text is kept verbatim and named as the
+/// model's own words, already said, so neither its content nor its speaker
+/// is lost; it is no new request from the person.
+pub(crate) const TRAILING_ASSISTANT_NOTE: &str = "[Context, not a new request -- your last message in this conversation, already delivered to the person:]";
+
+/// The note for the assistant texts `said`, joined like turns.
+pub(crate) fn trailing_assistant_note(said: &[&str]) -> String {
+    format!("{TRAILING_ASSISTANT_NOTE}\n{}", said.join("\n\n"))
+}
+
+/// GH #1282: whether a chat-wire model id names an Anthropic model behind a
+/// gateway (`anthropic/claude-sonnet-5` on OpenRouter): those refuse a
+/// prefill as the Messages wire does. Every other model keeps the request
+/// of before, a trailing assistant turn included.
+fn is_anthropic_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.starts_with("anthropic/") || lower.contains("claude")
+}
+
+/// GH #1282 on the chat wire: a request whose last non-system message is an
+/// assistant text (no tool calls) sends that text as a closing note instead.
+/// System messages do not count for the end: a gateway lifts them to the
+/// top-level system of a Claude model, and the window would end on the
+/// assistant text after all (review PF M-1). Several trailing assistant texts
+/// join into one note, as on the Messages wire; a blank one is dropped and
+/// never becomes an empty note (M-2). The note is a user message of its own
+/// where the texts stood: the order before it stays byte-identical and keeps
+/// the history cache mark ([`apply_cache_wire`] marks the message before the
+/// youngest user one), like the order text block on the Messages wire (M-3);
+/// a Claude model reads consecutive user messages as one turn.
+fn fold_trailing_assistant_chat(messages: &mut Vec<Value>) {
+    let is_system = |m: &Value| m["role"] == "system";
+    let is_assistant_text = |m: &Value| {
+        m["role"] == "assistant"
+            && !m.get("tool_calls").is_some_and(|c| !c.is_null())
+            && m.get("content").is_some_and(Value::is_string)
+    };
+    let mut trailing: Vec<usize> = Vec::new();
+    for (i, m) in messages.iter().enumerate().rev() {
+        if is_system(m) {
+            continue;
+        }
+        if !is_assistant_text(m) {
+            break;
+        }
+        trailing.push(i);
+    }
+    let Some(&first) = trailing.last() else {
+        return;
+    };
+    trailing.reverse();
+    let said: Vec<String> = trailing
+        .iter()
+        .filter_map(|&i| messages[i]["content"].as_str())
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    for &i in trailing.iter().rev() {
+        messages.remove(i);
+    }
+    if said.is_empty() {
+        return;
+    }
+    let said: Vec<&str> = said.iter().map(String::as_str).collect();
+    let note = trailing_assistant_note(&said);
+    messages.insert(
+        first,
+        meclaw_core::serde_json::json!({"role": "user", "content": note}),
+    );
 }
 
 /// GH #1260 (OR-WG-6): a `tool_scope` with `require` asks the provider for a
@@ -2498,5 +2577,200 @@ mod gh993_tests {
         assert!(!takes_param(&p, "temperature"));
         assert!(takes_param(&p, "max_tokens"), "outside SAMPLING_PARAMS");
         assert!(takes_param(&params(json!({})), "temperature"), "no list");
+    }
+}
+
+/// GH #1282: the chat wire to an Anthropic model behind a gateway refuses a
+/// prefill like the Messages wire does (R025 finding 2, OpenRouter answered
+/// 400 with the provider's "does not support assistant message prefill").
+#[cfg(test)]
+mod gh1282_tests {
+    use super::build_openai_request;
+    use crate::llm::params::LlmParams;
+    use meclaw_core::serde_json::{Value, json};
+
+    const NOTE: &str = "[Context, not a new request -- your last message in this conversation, already delivered to the person:]";
+
+    fn params(model: &str) -> LlmParams {
+        LlmParams::parse(&json!({"provider": "openai", "model": model, "api_key": "k"})).unwrap()
+    }
+
+    fn u(t: &str) -> Value {
+        json!({"origin": "user", "type": "text", "text": t})
+    }
+
+    fn a(t: &str) -> Value {
+        json!({"origin": "assistant", "type": "text", "text": t})
+    }
+
+    fn result() -> Value {
+        json!({"origin": "tool", "type": "tool_result", "id": "c1", "text": "r"})
+    }
+
+    fn call() -> Value {
+        let text = json!({"name": "get", "arguments": "{}"}).to_string();
+        json!({"origin": "assistant", "type": "tool_call", "id": "c1", "text": text})
+    }
+
+    #[test]
+    fn an_anthropic_model_on_the_chat_wire_never_gets_a_prefill() {
+        let body = build_openai_request(
+            &params("anthropic/claude-sonnet-5"),
+            "S",
+            &[u("Plan me a trip."), a("Season 2 arrives in April.")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": "S"},
+                {"role": "user", "content": "Plan me a trip."},
+                {"role": "user", "content": format!("{NOTE}\nSeason 2 arrives in April.")}
+            ])
+        );
+        // Behind a tool result the note is a user message of its own.
+        let body = build_openai_request(
+            &params("anthropic/claude-sonnet-5"),
+            "",
+            &[u("q"), call(), result(), a("Found it.")],
+            &[],
+        )
+        .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4, "{body}");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(
+            messages[3],
+            json!({"role": "user", "content": format!("{NOTE}\nFound it.")})
+        );
+    }
+
+    fn sys(t: &str) -> Value {
+        json!({"origin": "system", "type": "text", "text": t})
+    }
+
+    fn claude(turns: &[Value]) -> Value {
+        build_openai_request(&params("anthropic/claude-sonnet-5"), "", turns, &[]).unwrap()
+    }
+
+    /// Review PF M-1: a system turn behind the answer does not hide it -- a
+    /// gateway lifts system messages to the top-level system of a Claude
+    /// model, and the window would end on the assistant text after all. The
+    /// last non-system message decides; several trailing texts join into one
+    /// note, as on the Messages wire.
+    #[test]
+    fn a_system_turn_behind_the_answer_does_not_hide_the_prefill() {
+        let body = claude(&[
+            u("Plan me a trip."),
+            a("Season 2 arrives in April."),
+            sys("brief"),
+        ]);
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": "Plan me a trip."},
+                {"role": "user", "content": format!("{NOTE}\nSeason 2 arrives in April.")},
+                {"role": "system", "content": "brief"}
+            ])
+        );
+        let body = claude(&[u("q"), a("one"), sys("s"), a("two")]);
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": "q"},
+                {"role": "user", "content": format!("{NOTE}\none\n\ntwo")},
+                {"role": "system", "content": "s"}
+            ])
+        );
+        for w in [
+            vec![u("q"), a("one"), a("two")],
+            vec![u("q"), a("x"), sys("s"), sys("t")],
+            vec![a("only"), sys("s")],
+        ] {
+            let body = claude(&w);
+            let last = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|m| m["role"] != "system")
+                .cloned();
+            assert_eq!(
+                last.map(|m| m["role"].clone()),
+                Some(json!("user")),
+                "{body}"
+            );
+        }
+    }
+
+    /// Review PF M-2: a blank trailing assistant text is dropped, never an
+    /// empty note -- the Messages wire drops blank texts before it folds.
+    #[test]
+    fn a_blank_trailing_answer_never_becomes_an_empty_note() {
+        assert_eq!(
+            claude(&[u("q"), a("  ")])["messages"],
+            json!([{"role": "user", "content": "q"}])
+        );
+        assert_eq!(
+            claude(&[u("q"), a("x"), a("")])["messages"],
+            json!([
+                {"role": "user", "content": "q"},
+                {"role": "user", "content": format!("{NOTE}\nx")}
+            ])
+        );
+    }
+
+    /// Review PF M-3: in the folded form the history cache mark stays on the
+    /// order before the note -- the stable prefix of the next turn -- and the
+    /// note itself carries none.
+    #[test]
+    fn the_cache_mark_stays_on_the_order_before_the_note() {
+        let p = LlmParams::parse(&json!({
+            "provider": "openai", "model": "anthropic/claude-sonnet-5", "api_key": "k",
+            "cache_mode": "breakpoints", "cache_ttl_s": 300
+        }))
+        .unwrap();
+        let w = [
+            u("hello"),
+            a("Hi there."),
+            u("Weather in Athens?"),
+            a("One moment."),
+        ];
+        let mut body = build_openai_request(&p, "S", &w, &[]).unwrap();
+        super::apply_cache_wire(&mut body, &p, "/a/brain");
+        let mark = json!({"type": "ephemeral"});
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": [{"type": "text", "text": "S", "cache_control": mark}]},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "Hi there."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Weather in Athens?", "cache_control": mark}]},
+                {"role": "user", "content": format!("{NOTE}\nOne moment.")}
+            ])
+        );
+    }
+
+    /// Every other model keeps the request of before, and a window ending on
+    /// a user turn or a tool result is unchanged for an Anthropic model too.
+    #[test]
+    fn other_models_and_closed_windows_stay_byte_identical() {
+        let w = [u("q"), a("old")];
+        let body = build_openai_request(&params("openai/gpt-6-sol"), "", &w, &[]).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": "q"}, {"role": "assistant", "content": "old"}])
+        );
+        for w in [
+            vec![u("q"), a("old"), u("new")],
+            vec![u("q"), call(), result()],
+        ] {
+            let claude =
+                build_openai_request(&params("anthropic/claude-sonnet-5"), "", &w, &[]).unwrap();
+            let plain = build_openai_request(&params("m"), "", &w, &[]).unwrap();
+            assert_eq!(claude["messages"], plain["messages"], "{claude}");
+        }
     }
 }

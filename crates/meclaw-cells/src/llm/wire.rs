@@ -640,17 +640,12 @@ pub async fn call_openai_timed(
             // place that tells a refused PARAM from a missing model or a bad
             // request. Without a needle the variant is the one of before.
             404 | 400 | 422 => {
-                let inner = if status == 404 {
-                    WireError::ModelNotFound
-                } else {
-                    WireError::HttpStatus(status)
-                };
                 // The read runs inside `request_fut`, i.e. under the A-timeout
                 // below: a 404 whose body hangs is a `timeout` now, no longer
                 // an instant `model_not_found` -- an accepted edge, the size is
                 // as unbounded as `resp.json()` on the 2xx path.
-                let message = resp.text().await.ok().and_then(|t| error_body_message(&t));
-                Err(with_param_refusal(inner, Some(status), message))
+                let text = resp.text().await.unwrap_or_default();
+                Err(classify_rejection(status, &text))
             }
             429 => Err(WireError::RateLimited),
             _ => Err(WireError::HttpStatus(status)),
@@ -804,17 +799,41 @@ pub(crate) fn classify_messages_status(status: u16, text: &str) -> WireError {
         },
         429 => WireError::RateLimited,
         500..=599 => WireError::Transient(format!("http {status}")),
-        404 => with_param_refusal(
-            WireError::ModelNotFound,
-            Some(status),
-            error_body_message(text),
-        ),
-        _ => with_param_refusal(
-            WireError::HttpStatus(status),
-            Some(status),
-            error_body_message(text),
-        ),
+        _ => classify_rejection(status, text),
     }
+}
+
+/// GH #999 (F5) and GH #1282: a 400/404/422 from its raw body, on both wires.
+/// A param refusal is `ParamRefused`; a 404 is `ModelNotFound`; a 400/422
+/// keeps the provider's sentence as `HttpStatusWithDetail` -- R025 logged a
+/// prefill refusal as a bare `HttpStatus(400)`, and the cause took a local
+/// reproduction. A gateway's upstream text (`error.metadata.raw`, OpenRouter)
+/// joins the detail, because its own message only says "Provider returned
+/// error". Without any text the variant is the one of before.
+fn classify_rejection(status: u16, text: &str) -> WireError {
+    let message = error_body_message(text);
+    let inner = match (status, &message) {
+        (404, _) => WireError::ModelNotFound,
+        (400 | 422, Some(m)) => WireError::HttpStatusWithDetail {
+            status,
+            detail: match upstream_raw(text) {
+                Some(raw) if !m.contains(&raw) => format!("{m} (upstream: {raw})"),
+                _ => m.clone(),
+            },
+        },
+        _ => WireError::HttpStatus(status),
+    };
+    with_param_refusal(inner, Some(status), message)
+}
+
+/// GH #1282: the upstream provider's text a gateway wraps in
+/// `error.metadata.raw`, bounded like an in-body message.
+fn upstream_raw(text: &str) -> Option<String> {
+    let body: Value = serde_json::from_str(text.trim()).ok()?;
+    let raw = body
+        .pointer("/error/metadata/raw")
+        .and_then(Value::as_str)?;
+    (!raw.trim().is_empty()).then(|| in_body_message(&Value::String(raw.to_string())))
 }
 
 /// GH #1239: execute a Messages POST and return the parsed JSON body.
@@ -1340,6 +1359,69 @@ mod tests {
         assert!(matches!(
             classify_messages_status(401, ""),
             WireError::Unauthorized
+        ));
+    }
+}
+
+/// GH #1282: a 400/422 keeps the provider's sentence even when it names no
+/// param. R025 logged only `wire: HttpStatus(400)` for a prefill refusal,
+/// and the cause took a local reproduction to find.
+#[cfg(test)]
+mod gh1282_tests {
+    use super::{WireError, classify_messages_status, classify_rejection, wire_error_to_code};
+
+    const PREFILL: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"This model does not support assistant message prefill. The conversation must end with a user message."}}"#;
+
+    #[test]
+    fn a_400_without_a_param_match_keeps_the_provider_sentence() {
+        for status in [400, 422] {
+            let e = classify_messages_status(status, PREFILL);
+            match &e {
+                WireError::HttpStatusWithDetail { status: s, detail } => {
+                    assert_eq!(*s, status);
+                    assert!(
+                        detail.contains("does not support assistant message prefill"),
+                        "{detail}"
+                    );
+                }
+                other => panic!("the provider sentence was dropped: {other:?}"),
+            }
+            assert_eq!(wire_error_to_code(&e), "provider_error");
+        }
+        assert!(matches!(
+            classify_messages_status(400, ""),
+            WireError::HttpStatus(400)
+        ));
+        let refused = classify_messages_status(
+            400,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Unsupported parameter: top_p"}}"#,
+        );
+        assert!(
+            matches!(refused, WireError::ParamRefused { .. }),
+            "{refused:?}"
+        );
+    }
+
+    /// The chat wire reads the same body through the same helper; a
+    /// gateway's upstream text joins the detail.
+    #[test]
+    fn the_chat_wire_keeps_the_gateway_s_upstream_sentence() {
+        let body = r#"{"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"This model does not support assistant message prefill."}}}"#;
+        match classify_rejection(400, body) {
+            WireError::HttpStatusWithDetail { status, detail } => {
+                assert_eq!(status, 400);
+                assert!(detail.starts_with("Provider returned error"), "{detail}");
+                assert!(detail.contains("assistant message prefill"), "{detail}");
+            }
+            other => panic!("the upstream sentence was dropped: {other:?}"),
+        }
+        assert!(matches!(
+            classify_rejection(404, body),
+            WireError::ModelNotFound
+        ));
+        assert!(matches!(
+            classify_rejection(422, ""),
+            WireError::HttpStatus(422)
         ));
     }
 }

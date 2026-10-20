@@ -145,6 +145,8 @@ async fn the_cell_drives_the_messages_lane_and_names_the_app() {
     let content = &ems[0].content;
     assert_eq!(content["header"]["finish_reason"], "stop", "{content}");
     assert_eq!(content["messages"][0]["text"], "Hello.", "{content}");
+    // GH #1282: the meta names the provider the call went to, not `openai`.
+    assert_eq!(content["meta"]["provider"], "anthropic", "{content}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -355,4 +357,38 @@ async fn a_registry_push_resetting_wire_dialect_changes_the_model() {
     assert_eq!(reqs.len(), 1, "{:?}", drain(&mut rx));
     assert_eq!(reqs[0].path, "/messages");
     assert_eq!(reqs[0].body["model"], "claude-test-b");
+}
+
+/// GH #1282 (R025): an escalated tool round reaches the cell with the quick
+/// voice's bridge sentence as the last turn; the request that leaves the
+/// cell still ends on a user message, so no model is sent a prefill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_window_ending_on_a_bridge_sentence_is_sent_without_a_prefill() {
+    let mock = MockOpenAI::start(vec![answer(
+        json!([{"type": "text", "text": "Sunny."}]),
+        "end_turn",
+    )])
+    .await;
+    let mut cell = LlmCell::new(params(&mock, json!({})), reqwest::Client::new());
+    let td = TempDir::new().unwrap();
+    let mut db = cell_db(&td);
+    let (out, mut rx) = sink();
+    let bridge =
+        json!({"origin": "assistant", "type": "text", "text": "One moment, I am looking that up."});
+    cell.handle(
+        message(json!({"messages": [user("weather?"), bridge]})),
+        &out,
+        &mut db,
+    )
+    .await;
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 1, "{:?}", drain(&mut rx));
+    let messages = reqs[0].body["messages"].as_array().unwrap().clone();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0]["role"], "user");
+    let said = messages[0]["content"][1]["text"].as_str().unwrap_or("");
+    assert!(
+        said.ends_with("One moment, I am looking that up."),
+        "{said}"
+    );
 }

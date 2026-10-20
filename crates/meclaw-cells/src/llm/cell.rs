@@ -2799,6 +2799,7 @@ impl LlmCell {
                     Ok(t) => {
                         let usage = output::HopUsage::of(&t);
                         output::emit_assistant_turn(
+                            &self.params.provider,
                             sink,
                             reply_target,
                             t.assistant_turn,
@@ -3041,6 +3042,7 @@ impl LlmCell {
             let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
             let usage = output::HopUsage::of(&translated);
             output::emit_assistant_turn(
+                &self.params.provider,
                 sink,
                 reply_target,
                 translated.assistant_turn,

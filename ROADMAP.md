@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.69.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.69.1, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.69.1: a model without prefill support no longer answers 400 -- a request never ends on an assistant
+  message, a consult's window ends on its request, and a provider's refusal keeps its own sentence; a member
+  grown from a derived class takes its credential like `member` itself
 - v0.69.0: an llm cell switches model and provider at run time on a registry message -- the registry names
   model, provider, host and credential, the cell asks the vault for that credential over its one grant, and
   the access hive delivers only credentials of the class the grant names; a switch away from the birth provider

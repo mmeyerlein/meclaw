@@ -10,7 +10,7 @@
 use crate::llm::params::{CacheMode, LlmParams};
 use crate::llm::translate::{
     TranslateError, TranslatedResponse, cache_control, encode_base64, peer_content, takes_param,
-    usage_cost, usage_tokens_cache_write, usage_tokens_cached,
+    trailing_assistant_note, usage_cost, usage_tokens_cache_write, usage_tokens_cached,
 };
 use meclaw_core::serde_json::{Map, Value, json};
 
@@ -71,6 +71,7 @@ pub(crate) fn build_messages_request(
     for block in images.take().into_iter().flatten() {
         push_block(&mut messages, "user", block);
     }
+    fold_trailing_assistant(&mut messages);
     let mut body = Map::new();
     body.insert("model".into(), json!(params.model));
     body.insert("max_tokens".into(), json!(params.effective_max_tokens()));
@@ -112,6 +113,32 @@ pub(crate) fn require_tool_call(request: &mut Value) -> bool {
     }
     body.insert("tool_choice".into(), json!({"type": "any"}));
     true
+}
+
+/// GH #1282: the request never ends on an assistant message -- that is a
+/// prefill, and current Claude models refuse it with 400 (R025: an escalated
+/// tool round ending on the quick voice's bridge sentence, a consult window
+/// ending on the previous answer). A trailing assistant message of text
+/// blocks leaves the wire as a closing note in the user message before it
+/// ([`trailing_assistant_note`]), or as the only user message of an empty
+/// rest. Folded into the user turn rather than sent as a mid-conversation
+/// `system` message: that one is model-gated (not on Haiku 5.5 or Sonnet 5)
+/// and must follow a user message, which a trailing assistant turn is not.
+/// A trailing message with a `tool_use` block is an open round and stays.
+fn fold_trailing_assistant(messages: &mut Vec<Value>) {
+    let Some(last) = messages.last().filter(|m| m["role"] == "assistant") else {
+        return;
+    };
+    let Some(blocks) = last.get("content").and_then(Value::as_array) else {
+        return;
+    };
+    if blocks.is_empty() || blocks.iter().any(|b| b["type"] != "text") {
+        return;
+    }
+    let said: Vec<&str> = blocks.iter().filter_map(|b| b["text"].as_str()).collect();
+    let note = trailing_assistant_note(&said);
+    messages.pop();
+    push_block(messages, "user", json!({"type": "text", "text": note}));
 }
 
 /// Append a content block under `role`: to the last message when it has the
@@ -843,5 +870,191 @@ mod tests {
             parse_messages_response(&a),
             Err(TranslateError::UnknownFinishReason(_))
         ));
+    }
+
+    /// The closing context note a trailing assistant text travels in (GH #1282).
+    const NOTE: &str = "[Context, not a new request -- your last message in this conversation, already delivered to the person:]";
+
+    fn ends_on_user(body: &Value) -> bool {
+        body["messages"]
+            .as_array()
+            .and_then(|m| m.last())
+            .is_some_and(|m| m["role"] == "user")
+    }
+
+    /// GH #1282 (R025 finding 1): an escalated tool round reaches the brain
+    /// with the quick voice's bridge sentence as the LAST turn. Sent as is it
+    /// is a prefill, and current Claude models answer 400 ("This model does
+    /// not support assistant message prefill"). The sentence travels as a
+    /// closing note in the last user message instead -- its text verbatim,
+    /// labelled as the assistant's own, already said.
+    #[test]
+    fn an_escalated_round_never_ends_on_the_bridge_sentence() {
+        let history = [
+            json!({"origin": "user", "type": "text", "text": "hello"}),
+            json!({"origin": "assistant", "type": "text", "text": "Hi there."}),
+            json!({"origin": "user", "type": "text", "text": "Quick question: weather in Athens?"}),
+            json!({"origin": "assistant", "type": "text", "text": "One moment, I am looking that up."}),
+        ];
+        let tools = [json!({"type": "function", "function": {
+            "name": "web", "description": "d", "parameters": {"type": "object"}}})];
+        let body = build_messages_request(&anthropic(json!({})), "S", &history, &tools, Vec::new())
+            .expect("request");
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "Hi there."}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Quick question: weather in Athens?"},
+                    {"type": "text", "text": format!("{NOTE}\nOne moment, I am looking that up.")}
+                ]}
+            ])
+        );
+    }
+
+    /// GH #1282 (R025 finding 2): the consult window of the reasoning core
+    /// ends on the conversation model's previous answer behind the order.
+    /// Same rule: never a prefill, the answer reaches the model as context.
+    #[test]
+    fn a_consult_window_never_ends_on_the_old_answer() {
+        let history = [
+            json!({"origin": "system", "type": "text", "text": "consult brief"}),
+            json!({"origin": "user", "type": "text", "text": "Plan me a thorough 3-day trip to Athens."}),
+            json!({"origin": "assistant", "type": "text", "text": "Season 2 arrives in April."}),
+        ];
+        let body = build_messages_request(&anthropic(json!({})), "S", &history, &[], Vec::new())
+            .expect("request");
+        assert_eq!(body["system"], "S\n\nconsult brief");
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": [
+                {"type": "text", "text": "Plan me a thorough 3-day trip to Athens."},
+                {"type": "text", "text": format!("{NOTE}\nSeason 2 arrives in April.")}
+            ]}])
+        );
+    }
+
+    /// GH #1282 lock: whatever the window ends with, the request ends on a
+    /// user message -- several trailing texts join into one note, and a
+    /// window of nothing but an assistant text becomes one user message.
+    #[test]
+    fn a_messages_request_never_ends_on_assistant() {
+        let a = |t: &str| json!({"origin": "assistant", "type": "text", "text": t});
+        let u = |t: &str| json!({"origin": "user", "type": "text", "text": t});
+        let windows: Vec<Vec<Value>> = vec![
+            vec![u("q"), a("one"), a("two")],
+            vec![a("only")],
+            vec![
+                u("q"),
+                tool_call("c1", "get", ""),
+                json!({"origin": "tool", "type": "tool_result", "id": "c1", "text": "r"}),
+                a("Found it."),
+            ],
+            vec![u("q"), a("x"), a("  ")],
+        ];
+        for w in &windows {
+            let body = build_messages_request(&anthropic(json!({})), "", w, &[], Vec::new())
+                .expect("request");
+            assert!(ends_on_user(&body), "ends on assistant: {body}");
+        }
+        let body = build_messages_request(&anthropic(json!({})), "", &windows[0], &[], Vec::new())
+            .expect("request");
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": [
+                {"type": "text", "text": "q"},
+                {"type": "text", "text": format!("{NOTE}\none\n\ntwo")}
+            ]}])
+        );
+        let body = build_messages_request(&anthropic(json!({})), "", &windows[1], &[], Vec::new())
+            .expect("request");
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": [
+                {"type": "text", "text": format!("{NOTE}\nonly")}
+            ]}])
+        );
+    }
+
+    /// Review PF M-3: in the folded form the history cache mark stays on the
+    /// order text before the note -- the stable prefix of the next turn --
+    /// and the note itself carries none.
+    #[test]
+    fn the_cache_mark_stays_on_the_order_before_the_note() {
+        let params = anthropic(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}));
+        let mark = json!({"type": "ephemeral"});
+        let history = [
+            json!({"origin": "user", "type": "text", "text": "hello"}),
+            json!({"origin": "assistant", "type": "text", "text": "Hi there."}),
+            json!({"origin": "user", "type": "text", "text": "Weather in Athens?"}),
+            json!({"origin": "assistant", "type": "text", "text": "One moment."}),
+        ];
+        let body =
+            build_messages_request(&params, "S", &history, &[], Vec::new()).expect("request");
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "Hi there."}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Weather in Athens?", "cache_control": mark},
+                    {"type": "text", "text": format!("{NOTE}\nOne moment.")}
+                ]}
+            ])
+        );
+    }
+
+    /// GH #1282: a window that ends on a user turn or a tool result is the
+    /// request of before, byte for byte, cache marks included.
+    #[test]
+    fn a_window_ending_on_user_or_tool_result_stays_byte_identical() {
+        let params = anthropic(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}));
+        let mark = json!({"type": "ephemeral"});
+        let on_result = [
+            json!({"origin": "user", "type": "text", "text": "q"}),
+            tool_call("c1", "get", ""),
+            json!({"origin": "tool", "type": "tool_result", "id": "c1", "text": "r1"}),
+        ];
+        let body =
+            build_messages_request(&params, "S", &on_result, &[], Vec::new()).expect("request");
+        assert_eq!(
+            body.to_string(),
+            json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 512,
+                "system": [{"type": "text", "text": "S", "cache_control": mark}],
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "q"}]},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "c1", "name": "get", "input": {}}]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "c1", "content": "r1"}]}
+                ]
+            })
+            .to_string()
+        );
+        let on_user = [
+            json!({"origin": "user", "type": "text", "text": "a"}),
+            json!({"origin": "assistant", "type": "text", "text": "b"}),
+            json!({"origin": "user", "type": "text", "text": "c"}),
+        ];
+        let body =
+            build_messages_request(&params, "S", &on_user, &[], Vec::new()).expect("request");
+        assert_eq!(
+            body.to_string(),
+            json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 512,
+                "system": [{"type": "text", "text": "S", "cache_control": mark}],
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "a"}]},
+                    {"role": "assistant", "content": [
+                        {"type": "text", "text": "b", "cache_control": mark}]},
+                    {"role": "user", "content": [{"type": "text", "text": "c"}]}
+                ]
+            })
+            .to_string()
+        );
     }
 }

@@ -12,6 +12,17 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.69.1] — 2026-10-20
+
+### Fixed
+
+- llm: a request never ends on an assistant message, so a model without prefill no longer answers 400. On the Messages wire (and on the chat wire when an Anthropic model is addressed) trailing assistant texts (system messages behind them do not count, blank ones are dropped) travel as one closing context note in the last user turn, verbatim and labelled as the model's own words already said; a window ending on a user turn or a tool result is sent byte for byte as before ([#1282](https://github.com/mmeyerlein/meclaw/issues/1282)).
+- llm: a 400/422 without a param match keeps the provider's sentence (`HttpStatusWithDetail`, with a gateway's upstream text), and `meta.provider` of an answer names the provider the call went to instead of always `openai` ([#1282](https://github.com/mmeyerlein/meclaw/issues/1282)).
+- collector: a consult's window ends on its request. A curator's consult hands the reasoning core the speaking surface's whole window, and the collector filed the last assistant text in it -- the answer to the turn before the request -- as the answer half of the core's turn, behind the request: the core's window ended on an old answer (a request a model without prefill support rejects), and the session's later consults kept it as history. The answer half of a turn is now only agent text after the person's last turn of the arrival, and an arrival with a `consult_class` on its hop files none; the last spoken texts in front of the request ride in the request row, framed as context (sidecar blocks, pins, block ids and whatever the core's ledger already holds from an earlier consult stay out) ([#1282](https://github.com/mmeyerlein/meclaw/issues/1282)).
+- builder: a member grown from a derived class (an instance derivation of `member`) takes `credential` like `member` itself, and so do a member's screen grown from a derived `display` class and a channel grown from a derived channel class; a renderer failure on the grow path, the member's devices included, is a refusal (`recipe_failed`) instead of a traceback with no answer ([#1273](https://github.com/mmeyerlein/meclaw/issues/1273)).
+- **Template versions (#1273):** third digit, `builder@1.28.1`; third digit for the pins that follow, `builder-librarian@2.2.80`, `meclaw-os@2.2.67`.
+- **Template versions (#1282):** third digit, `collector@5.2.2`; third digit for the pins that follow, `assistant@3.8.4`, `cogny@5.12.1`, `member@2.6.4`, `memory-hive@3.16.4`, `npc@1.0.3`, `org@2.1.41`, `talky@6.10.1`.
+
 ## [0.69.0] — 2026-10-20
 
 ### Added

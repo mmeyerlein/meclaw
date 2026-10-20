@@ -242,6 +242,7 @@ impl HopCache {
 /// `tool_call` turn).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_assistant_turn(
+    provider: &str,
     sink: &OutputSink,
     target: Path,
     assistant_turns: Vec<Value>,
@@ -271,7 +272,10 @@ pub(crate) async fn emit_assistant_turn(
     header.insert("model".into(), Value::String(model.to_string()));
 
     let mut meta = Map::new();
-    meta.insert("provider".into(), Value::String("openai".into()));
+    // GH #1282: the provider the call went to (`params.provider`), as the
+    // error path writes it -- a fixed "openai" made the native Anthropic
+    // answers of R025 read as a second route.
+    meta.insert("provider".into(), Value::String(provider.to_string()));
     meta.insert("model".into(), Value::String(model.to_string()));
     meta.insert("response_id".into(), Value::String(response_id.to_string()));
     meta.insert("latency_ms".into(), Value::from(latency_ms));
@@ -580,6 +584,7 @@ mod tests {
         let (sink, mut rx) = mk_sink();
         let turns = vec![json!({"origin":"assistant","type":"text","text":"hi"})];
         emit_assistant_turn(
+            "openai",
             &sink,
             Path::new("/sink"),
             turns.clone(),
@@ -625,6 +630,7 @@ mod tests {
     async fn a_usage_figure_the_provider_never_reported_is_absent_not_zero() {
         let (sink, mut rx) = mk_sink();
         emit_assistant_turn(
+            "openai",
             &sink,
             Path::new("/sink"),
             vec![json!({"origin":"assistant","type":"text","text":"hi"})],
@@ -663,6 +669,7 @@ mod tests {
     async fn a_non_finite_cost_never_reaches_the_header() {
         let (sink, mut rx) = mk_sink();
         emit_assistant_turn(
+            "openai",
             &sink,
             Path::new("/sink"),
             vec![],
@@ -702,6 +709,7 @@ mod tests {
     async fn header_of(usage: HopUsage, cache: HopCache, started: i64, latency: u64) -> Value {
         let (sink, mut rx) = mk_sink();
         emit_assistant_turn(
+            "openai",
             &sink,
             Path::new("/sink"),
             vec![],

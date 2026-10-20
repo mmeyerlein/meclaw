@@ -11,6 +11,7 @@ pub mod gh1247_a_curator_consult_finds_its_turn_on_the_way_back;
 pub mod gh1247_every_turn_leaves_with_one_route_stamp;
 pub mod gh1248_talky_speaks_quick_turns_through_its_own_model_cell;
 pub mod gh1260_the_seam_carries_the_stamps_needs;
+pub mod gh1282_a_consult_window_ends_on_its_request;
 pub mod gh532_two_askers_one_hive;
 pub mod gh533_the_outside_asker_gets_an_answer;
 pub mod gh562_recall_rides_a_v_lane_and_the_member_stamps;
