@@ -1,4 +1,4 @@
-# `tools@1.5.0`
+# `tools@1.6.0`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -68,6 +68,7 @@ because the contract does not change.
 | `web_search/` | `web_search` | `hop.tool_name == 'web_search'` | none |
 | `file/` | `file` | `hop.tool_name == 'file'` | none |
 | `edit/` | `edit` | `hop.tool_name == 'edit'` | none |
+| `weather/` | `code` | `hop.tool_name == 'weather'` | `{"trust": "restricted", "network": "allow", "filesystem": {"runtime": true}}` |
 | `build-draft/` | `code` | `hop.tool_name == 'build_topology'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
 | `build-apply/` | `code` | `hop.tool_name == 'apply_manifest'` | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
 | `schemas/` | `code` | the `in_schemas` lane | `{"trust": "restricted", "network": "deny", "filesystem": {"runtime": true}}` |
@@ -93,7 +94,8 @@ hops away.
 
 Every occupant is a copy of a shape the library already carries -- `bash` after the coder
 pipeline's runner, `web_fetch` after the daily digest's fetcher, `web_search`, `file` and
-`edit` after the cell types of the same names -- so no cell type is invented here. The
+`edit` after the cell types of the same names, `weather` after the memory hive's embedder (HTTP
+out of a `code` cell) -- so no cell type is invented here. The
 converse does not hold, and 1.3.0 is where that is written down: a cell type existing is
 not a reason for a directory here. `unknown` is not a tool at all; it is the subject of the dispatch section
 below, and `schemas` is not a tool either: it answers a lane of its own and no `tool_call`
@@ -108,6 +110,30 @@ their own I/O rather than starting a runner, so the fence is somewhere else:
 are written down as they are so that the blast radius of this hive is a thing one can read
 instead of a thing one discovers. `bash` carries the block GH #286 measured on the shipped instance,
 verbatim.
+
+### `weather/` -- the quick path's weather tool ([#1260](https://github.com/mmeyerlein/meclaw/issues/1260))
+
+`weather {place, days?, language?}` answers with the forecast of one named place from
+Open-Meteo, a free service without a key: no grant, no credential lane. Two GETs -- the
+geocoder (`params.geocode_endpoint`) resolves the place, the forecast
+(`params.forecast_endpoint`) answers for its coordinates -- inside one deadline drawn from the
+cell's own `external_timeout_ms`. The result text is one JSON object: `summary`, one sentence a
+voice can say as it is (the place with its country, so a wrong town is audible), and the fields
+it was made from (`place`, `timezone`, `current`, `days[]` with low, high, precipitation and the
+condition in words, `fetched_at`). The words are language data in `params.condition_lang`, one
+table per language (`en`, `de`); `params.default_language` (`de`) is the language of a call
+that names none.
+
+A refusal is an ordinary result as everywhere in this hive: its text is `{error, error_code}`
+and `hop.error_code` names it.
+
+| `error_code` | when |
+|---|---|
+| `invalid_input` | no `place`, or `days` outside 0..7 (`days` counts today, 0 is read as 1) |
+| `place_not_found` | the geocoder knows no such place |
+| `timeout` | the service did not answer within the cell's `external_timeout_ms` |
+| `io_error` | no connection to the service |
+| `upstream_error` | the service answered, but not with a 2xx JSON document |
 
 ### RETRACTED in 1.3.0: ~~`mcp/` and `vault/` stand here and are not wired~~ ([#547](https://github.com/mmeyerlein/meclaw/issues/547))
 
@@ -190,7 +216,8 @@ writing down. `template.json` writes it down, in two machine-readable blocks.
 | `filesystem` | `unrestricted` | the same four |
 
 A union is not an average. `bash`, `unknown`, `build-draft`, `build-apply` and `schemas` are as
-restricted as the library gets, and they tighten **nothing** about the hive as a whole: what
+restricted as the library gets, `weather` is the same with the network it exists for, and they
+tighten **nothing** about the hive as a whole: what
 they bound is what happens once dispatch has already chosen them. Any single unsandboxed
 occupant alone puts every axis at its widest, and that is the honest reading of what handing
 this hive a `tool_call` can set in motion.
@@ -216,12 +243,13 @@ cell that needs exactly this is not a widening; one that needs more is.**
 | `web_search` | yes | stateless request/response, no cursor, no pagination state |
 | `file` | yes | one op per call, no handle and no cursor between calls |
 | `edit` | **no** | a read-modify-write with no lock; two edits of one file race in the filesystem, and the caller cannot see that |
+| `weather` | yes | stateless request/response, two GETs per call, nothing carried between calls |
 | `unknown` | yes | it formats a string; there is no state to reach |
 | `schemas` | yes | it reads names and writes declarations out of a table compiled into its own script |
 | `build-draft` | yes | it reads a hop and a turn and writes a turn; the correlation runs over the round's own context |
 | `build-apply` | yes | the same, and the ORDER of two submissions is the colony's to decide at the door, never this cell's to assume |
 
-**The time chain (GH #1097).** Three occupants carry numbers that belong to the rounds
+**The time chain (GH #1097).** Four occupants carry numbers that belong to the rounds
 they serve, and each is derived rather than chosen (`docs/cell-types.md`, the timeout chain):
 
 | occupant | `max_concurrency` | `external_timeout_ms` | `cell.message_timeout` |
@@ -229,6 +257,7 @@ they serve, and each is derived rather than chosen (`docs/cell-types.md`, the ti
 | `bash` | 16 | 600000 | 660000 |
 | `web_fetch` | 16 | 30000 | 40000 |
 | `web_search` | 16 | 15000 | 40000 |
+| `weather` | 16 | 15000 | 40000 |
 
 `max_concurrency` is the dispatcher's `max_calls` (16): a round fans out at most that many
 calls, so a full fan-out runs in one wave and not in four, and the round's idle window
@@ -236,7 +265,8 @@ calls, so a full fan-out runs in one wave and not in four, and the round's idle 
 program in the workspace like a projection does, so its operation timeout is the
 projection's `exec_timeout_ms` (600000); before it was 60 s beside the projection's 600 s,
 with no reason given. `web_fetch` and `web_search` keep their operation timeouts (one HTTP
-request each, no catalogue number to derive from). Every backstop is the chain's: the
+request each, no catalogue number to derive from); `weather` takes `web_search`'s, and its two
+requests share it as one deadline. Every backstop is the chain's: the
 longest legitimate handling -- the operation timeout, for a granted cell (`web_search`) the
 worst sealed-ticket wait plus its call (GH #1061: `ceil((credential_wait_max + 1) / max_concurrency) ×
 T + T`, 30000) -- plus 10 s, at least 10 % -- before, none was declared and the colony
@@ -536,11 +566,13 @@ gone ([#553](https://github.com/mmeyerlein/meclaw/issues/553)) -- see
 
 ## The environment surface
 
-`template.json`'s `requires.env` declares the token the `web_search` occupant binds:
+`template.json`'s `requires.env` declares the tokens the `web_search` and `weather` occupants bind:
 
 | key | binds | required |
 |---|---|---|
 | `SEARCH_ENDPOINT` | `web_search`'s `params.endpoint`, written `${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}` | no |
+| `WEATHER_GEOCODE_ENDPOINT` | `weather`'s `params.geocode_endpoint`, written `${WEATHER_GEOCODE_ENDPOINT:-https://geocoding-api.open-meteo.com/v1/search}` | no |
+| `WEATHER_FORECAST_ENDPOINT` | `weather`'s `params.forecast_endpoint`, written `${WEATHER_FORECAST_ENDPOINT:-https://api.open-meteo.com/v1/forecast}` | no |
 
 It is not required: an assistant that wants the shell and the fetcher must not be refused
 over a search endpoint it will never call.

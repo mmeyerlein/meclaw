@@ -3091,7 +3091,7 @@ fn a_quick_turn_of_another_round_never_sees_the_gated_leaves_of_the_last() {
     };
     let ea = round_of(&["member:e", "member:a"]);
     let eb = round_of(&["member:e", "member:b"]);
-    let (a, _) = win_step(&ea, "sa", &ledger("talk"));
+    let (a, _) = win_step(&ea, "sa", &ledger("simple"));
     let mut only_a = Map::new();
     only_a.insert(short_id(&pin_a), json!({"text": "for e and a"}));
     assert_eq!(
@@ -3102,7 +3102,7 @@ fn a_quick_turn_of_another_round_never_sees_the_gated_leaves_of_the_last() {
         a["system"]["pinned"],
         json!({"$replace": true, "orga": only_a})
     );
-    let (b, _) = win_step(&eb, "sb", &ledger("talk"));
+    let (b, _) = win_step(&eb, "sb", &ledger("simple"));
     let (bridge, _) = win_step(&eb, "sb", &ledger("complex"));
     assert_eq!(bridge["header"]["bridge"], json!("consult"), "{bridge}");
     for (what, call) in [("quick call", &b), ("bridge", &bridge)] {

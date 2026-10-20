@@ -685,3 +685,129 @@ async fn a_swept_close_reaches_the_write_port_with_the_round_it_belonged_to() {
 
     h.shutdown().await;
 }
+
+/// The next message on this drain whose text is `want`, and the texts that
+/// passed before it (a bridge's interim sentence may come first).
+async fn recv_text(rx: &mut mpsc::Receiver<Message>, want: &str) -> (Option<Message>, Vec<String>) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut seen = Vec::new();
+    while let Ok(Some(m)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        if answer_text(&m) == want {
+            return (Some(m), seen);
+        }
+        seen.push(answer_text(&m));
+    }
+    (None, seen)
+}
+
+/// The route cell's stand-in: every turn is stamped `simple` with a `tool`
+/// need and the `web` family, the stamp a route cell gives a lookup.
+const ROUTE_SIMPLE_TOOL: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+header = (doc.get("envelope") or {}).get("header") or {}
+hop = header.get("hop") or {}
+ctx = header.get("context") or {}
+if str(hop.get("route") or "") != "in_turn":
+    sys.stdout.write("[]")
+else:
+    turn_id = str(ctx.get("turn_id") or hop.get("turn_id") or "")
+    sys.stdout.write(json.dumps({
+        "header": {"route": "stamp", "turn_id": turn_id, "path": "simple"},
+        "messages": [],
+        "stamp": {"turn_id": turn_id, "path": "simple", "p": 0.9, "intent": "question",
+                  "needs": ["tool"], "families": ["web"], "duration": 0}}))
+"#;
+
+/// GH #1260 (review M-4): the whole road of a tool round whose required call
+/// came back without its call. The stamp says `simple` + `tool`, the curator
+/// sends the bridge and the required call to `./quick`, the quick model
+/// answers the required call with prose instead of the call (the fast host of
+/// the lab), the curator gives the round to the brain under the call
+/// `<call>-esc`, and the brain's answer is the turn's answer at the reply
+/// exit. The pieces have their own pins (curator, dispatcher, the talky
+/// edge); this one asks whether they are wired to each other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tool_round_without_its_call_is_answered_by_the_brain() {
+    // The two quick answers differ, so the reply exit tells the bridge from
+    // the prose of the required call (delta review G m-2). Which request the
+    // one quick cell answers first is not fixed, so the test asks for exactly
+    // one of the two sentences, said exactly once.
+    const QUICK: [&str; 2] = ["One moment, I am looking.", "It rains in Hamburg, I guess."];
+    let quick = MockOpenAI::start(vec![
+        canned_chat_completion(QUICK[0], "stop"),
+        canned_chat_completion(QUICK[1], "stop"),
+    ])
+    .await;
+    let brain = MockOpenAI::start(vec![canned_chat_completion(
+        "The brain looked: rain in Hamburg tomorrow.",
+        "stop",
+    )])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &brain.base_url);
+    let root = td.path();
+    patch(root, "main/talky/quick/config.json", |v| {
+        v["params"]["base_url"] = json!(quick.base_url);
+    });
+    patch(root, "main/talky/route/config.json", |v| {
+        v["params"]["script_inline"] = json!(ROUTE_SIMPLE_TOOL);
+    });
+    // The turn waits for its stamp (the shipped 0 takes no stamp at all).
+    patch(root, "main/talky/collector/assemble/config.json", |v| {
+        v["params"]["route_wait_ms"] = json!(600_000);
+    });
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(turn("will it rain in hamburg tomorrow?")).await;
+    let (answer, seen) =
+        recv_text(&mut sink_rx, "The brain looked: rain in Hamburg tomorrow.").await;
+    let answer = answer.unwrap_or_else(|| panic!("no brain answer at the reply exit: {seen:?}"));
+    assert_eq!(hop_of(&answer, "route"), "answer");
+    let said: Vec<&String> = seen
+        .iter()
+        .filter(|t| QUICK.contains(&t.as_str()))
+        .collect();
+    assert_eq!(
+        said.len(),
+        1,
+        "the bridge is said once and the required call's prose never: {seen:?}"
+    );
+
+    let quick_reqs = quick.recorded_requests().await;
+    // The copied quick cell carries no tool menu, so its `llm` cell drops the
+    // requirement on the wire (its own pin); the curator's road is the same.
+    assert_eq!(quick_reqs.len(), 2, "the bridge and the required call");
+    // WHICH of the two was said (GH #1260): the stub answers in arrival
+    // order, so `QUICK[i]` answers `quick_reqs[i]`, and the bridge's request is
+    // the one that tells the model to say only that it is looking it up. The
+    // sentence at the reply exit is that request's answer -- a swallowed bridge
+    // beside the required call's prose said would also count one sentence.
+    let wire = |i: usize| {
+        meclaw_core::serde_json::to_string(quick_reqs[i].messages().expect("messages"))
+            .unwrap_or_default()
+    };
+    let bridges: Vec<usize> = (0..2)
+        .filter(|&i| wire(i).contains("looking it up"))
+        .collect();
+    assert_eq!(
+        bridges.len(),
+        1,
+        "exactly one quick request is the bridge: {:?}",
+        [wire(0), wire(1)]
+    );
+    assert_eq!(
+        said,
+        vec![QUICK[bridges[0]]],
+        "the sentence said is the bridge's answer, not the required call's prose"
+    );
+    let brain_reqs = brain.recorded_requests().await;
+    assert_eq!(brain_reqs.len(), 1, "the round went to the brain once");
+    let shown = meclaw_core::serde_json::to_string(brain_reqs[0].messages().expect("messages"))
+        .unwrap_or_default();
+    assert!(
+        shown.contains("hamburg tomorrow"),
+        "the person's turn reached the brain: {shown}"
+    );
+    h.shutdown().await;
+}

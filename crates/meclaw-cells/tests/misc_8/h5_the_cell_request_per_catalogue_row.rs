@@ -218,3 +218,190 @@ async fn h5_the_cell_request_per_catalogue_row() {
         drift.join("\n")
     );
 }
+
+/// Every template `llm` cell born with reasoning switched OFF
+/// (`params.reasoning.enabled == false`), as `(template path, birth params)`.
+fn cells_born_without_reasoning() -> Vec<(String, Value)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<(String, Value)>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.file_name().is_some_and(|n| n == "config.json")
+                && let Ok(text) = std::fs::read_to_string(&p)
+                && let Ok(cfg) = serde_json::from_str::<Value>(&text)
+                && cfg["cell"]["type"] == "llm"
+                && cfg["params"]["reasoning"]["enabled"] == json!(false)
+            {
+                out.push((p.display().to_string(), cfg["params"].clone()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&crate_dir().join("../../templates"), &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// A `${VAR:-default}` param as the substrate resolves it without the
+/// variable: its default.
+fn env_default(v: &Value) -> Value {
+    match v.as_str() {
+        Some(s) if s.starts_with("${") && s.ends_with('}') => match s.find(":-") {
+            Some(i) => json!(&s[i + 2..s.len() - 1]),
+            None => json!(""),
+        },
+        _ => v.clone(),
+    }
+}
+
+/// `reasoning` of the measurement record of a row (`latency.json`, K-KATALOG).
+fn measured_reasoning(row: &Map<String, Value>) -> Option<String> {
+    let file = crate_dir()
+        .join("tests/fixtures/conformance")
+        .join(record_slug(row))
+        .join("latency.json");
+    let lat: Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    lat["reasoning"].as_str().map(str::to_string)
+}
+
+/// GH #1260 (review C-1): a row the measurement found reasoning MANDATORY on
+/// (`latency.json` `reasoning: mandatory_*` -- the endpoint answers the switch
+/// with HTTP 400 "Reasoning is mandatory") lands on a cell born with
+/// reasoning off as the measured wire, never as the switch.
+///
+/// A push sets the row's package and `$reset`s every other package key, and a
+/// reset restores the BIRTH value: a package that names only
+/// `reasoning_effort` leaves the birth `reasoning: {"enabled": false}` in
+/// place, and the verbatim object outranks the shorthand (`reasoning_block`).
+/// Measured on `templates/talky/quick` with tier `quick` on
+/// openai/gpt-oss-120b: every quick turn a 400. The nude cell of
+/// `h5_the_cell_request_per_catalogue_row` has no birth `reasoning` and could
+/// not see it, so this test boots each such template cell on its own birth
+/// params, sends the registry's push of the row, then the probe turn, and
+/// holds `reasoning` and `provider` of the body to the measured request
+/// (`requests/<slug>.json`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h5_a_mandatory_reasoning_row_reaches_a_cell_born_without_reasoning_as_measured() {
+    use meclaw_cells::llm::LlmCell;
+    use meclaw_cells::llm::params::{LlmParams, MODEL_PACKAGE_KEYS};
+    use meclaw_colony::DbConn;
+    use meclaw_colony::stateful_cell::StatefulCell;
+    use meclaw_core::{Body, MessageBuilder, OutputSink, Path, Uuid};
+
+    let Some(path) = catalogue() else {
+        eprintln!("llm-registry did not travel into this tree -- skipped (GH #49)");
+        return;
+    };
+    let cells = cells_born_without_reasoning();
+    let Some(quick) = cells
+        .iter()
+        .find(|(p, _)| p.ends_with("talky/quick/config.json"))
+    else {
+        eprintln!("talky did not travel into this tree -- skipped (GH #49)");
+        return;
+    };
+    let rows: Vec<_> = chat_rows(&path)
+        .into_iter()
+        .filter(|r| measured_reasoning(r).is_some_and(|m| m.starts_with("mandatory")))
+        .collect();
+    // Not vacuous: the catalogue holds a row measured with mandatory
+    // reasoning, and the cell born without reasoning is there. Bound to the
+    // rows, not to the seed tier `quick` (GH #1260, delta review P): a remap of the tier
+    // to a row without the duty is no defect, the lock still holds every row.
+    assert!(
+        !rows.is_empty(),
+        "no chat row of the catalogue is measured with mandatory reasoning"
+    );
+    assert!(quick.1["reasoning"]["enabled"] == json!(false));
+
+    let mut wrong = Vec::new();
+    for (template, birth) in &cells {
+        for row in &rows {
+            let model_id = row["model_id"].as_str().unwrap_or_default();
+            let held: Value = serde_json::from_str(
+                &std::fs::read_to_string(requests_dir().join(format!("{}.json", record_slug(row))))
+                    .expect("the measured request of the row"),
+            )
+            .expect("a json fixture");
+            let mock =
+                mock_openai::MockOpenAI::start(vec![canned_chat_completion("OK", "stop")]).await;
+            let base_url = format!("{}/v1", mock.base_url);
+            let mut raw = Map::new();
+            for (k, v) in birth.as_object().cloned().unwrap_or_default() {
+                raw.insert(k, env_default(&v));
+            }
+            raw.insert("model".into(), json!("openai/gpt-6-luna"));
+            raw.insert("api_key".into(), json!("test-key"));
+            raw.insert("base_url".into(), json!(base_url));
+            let params = LlmParams::parse(&Value::Object(raw)).expect("birth params parse");
+            let mut cell = LlmCell::new(params, reqwest::Client::new());
+            let td = tempfile::TempDir::new().unwrap();
+            let conn =
+                meclaw_colony::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+            let mut db = DbConn::wrap(conn, None);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            let out = OutputSink::new(
+                tx,
+                Path::new("/llm"),
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                32,
+                meclaw_core::Headers::new(),
+                None,
+            );
+            let message = |body: Value| {
+                MessageBuilder::new(Path::new("/llm"))
+                    .reply_to(Path::new("/observer"))
+                    .body(Body::Inline(body))
+                    .build()
+            };
+            // The registry's push (`push_params`): the package, the endpoint
+            // the mock, every other package key reset to its birth value.
+            let mut push = package_of(row);
+            push.insert("base_url".into(), json!(base_url));
+            let reset: Vec<&str> = MODEL_PACKAGE_KEYS
+                .iter()
+                .copied()
+                .filter(|k| !push.contains_key(*k))
+                .collect();
+            push.insert("$reset".into(), json!(reset));
+            cell.handle(
+                message(json!({"system": {}, "params": push})),
+                &out,
+                &mut db,
+            )
+            .await;
+            cell.handle(
+                message(json!({
+                    "system": {"identity": {"text": PROBE_SYSTEM}},
+                    "messages": [{"origin": "user", "type": "text", "text": PROBE_USER}]
+                })),
+                &out,
+                &mut db,
+            )
+            .await;
+            while rx.try_recv().is_ok() {}
+            let reqs = mock.recorded_requests().await;
+            assert_eq!(reqs.len(), 1, "{template} on {model_id}: one provider call");
+            let body = &reqs[0].body;
+            if body.get("reasoning") != held["body"].get("reasoning")
+                || body.get("provider") != held["body"].get("provider")
+                || body["reasoning"]["enabled"] == json!(false)
+            {
+                wrong.push(format!(
+                    "{template} on {model_id}: reasoning {} provider {} -- measured reasoning {} provider {}",
+                    body.get("reasoning").unwrap_or(&Value::Null),
+                    body.get("provider").unwrap_or(&Value::Null),
+                    held["body"].get("reasoning").unwrap_or(&Value::Null),
+                    held["body"].get("provider").unwrap_or(&Value::Null),
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a row with mandatory reasoning reaches a cell born without it unlike its measurement:\n{}",
+        wrong.join("\n")
+    );
+}

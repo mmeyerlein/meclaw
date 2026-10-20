@@ -97,6 +97,11 @@
         },
         {
           "from": ".",
+          "to": "./weather",
+          "condition": "has(hop.route) && hop.route == 'tool_call' && has(hop.tool_name) && hop.tool_name == 'weather'"
+        },
+        {
+          "from": ".",
           "to": "./unknown",
           "default": true,
           "condition": "has(hop.route) && hop.route == 'tool_call'"
@@ -131,6 +136,17 @@
             "set_hop": {
               "route": "'tool_result'",
               "tool_name": "'web_search'"
+            }
+          }
+        },
+        {
+          "from": "./weather",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'weather'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_result'",
+              "tool_name": "'weather'"
             }
           }
         },

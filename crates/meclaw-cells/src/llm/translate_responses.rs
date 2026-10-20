@@ -90,6 +90,16 @@ pub(crate) fn build_responses_request(
     Ok(Value::Object(body))
 }
 
+/// GH #1260 (OR-WG-6): a `tool_scope` with `require` asks the provider for a
+/// tool call at all on this one request (`tool_choice: "required"` in place of the shipped `"auto"`). Written AFTER the
+/// build, so it wins over a static `provider_extra.tool_choice` for this
+/// call only; the cell calls it only while tools stay (`Scoped::require`).
+pub(crate) fn require_tool_call(request: &mut Value) {
+    if let Some(body) = request.as_object_mut() {
+        body.insert("tool_choice".into(), Value::String("required".into()));
+    }
+}
+
 /// GH #993: the sampling fields of a Responses request, before the model's
 /// `supported_params` is laid over them: `temperature`, except on the
 /// subscription lane, which never carries it (P14 above).
@@ -576,6 +586,16 @@ mod tests {
     }
 
     // ───── C1: body shape ─────
+
+    /// GH #1260 (OR-WG-6): `require` on the Responses wire replaces `auto`.
+    #[test]
+    fn a_required_call_says_required() {
+        let tools = [json!({"type": "function", "function": {"name": "web"}})];
+        let mut b = build_responses_request(&params(false), "", &[], &tools).unwrap();
+        assert_eq!(b["tool_choice"], "auto");
+        require_tool_call(&mut b);
+        assert_eq!(b["tool_choice"], "required");
+    }
 
     #[test]
     fn responses_request_matches_pinned_shape() {

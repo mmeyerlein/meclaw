@@ -6,7 +6,7 @@ use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::window;
 use crate::llm::wire::WireError;
 use crate::llm::{
-    auth, continuation, latency, output, package, params::LlmParams, state, system_gate,
+    auth, continuation, latency, output, package, params::LlmParams, sanitize, state, system_gate,
     tool_scope, translate, translate_anthropic, translate_decisions, translate_responses, wire,
 };
 use meclaw_colony::stateful_cell::StatefulCell;
@@ -247,7 +247,10 @@ async fn run_responses_lane(
             ))),
         }
     };
-    translated.map_err(|e| LaneFailure::from_translate(&e, "parse"))
+    // GH #1260: a call leaked as harmony tokens in the text is a call.
+    translated
+        .and_then(|t| sanitize::recover_harmony_tool_calls(t, request_json))
+        .map_err(|e| LaneFailure::from_translate(&e, "parse"))
 }
 
 /// GH #1241 (T10-09): one call on the native Anthropic Messages lane.
@@ -493,6 +496,12 @@ pub struct LlmCell {
     /// so a run-time `external_timeout_ms` is held to the rule the shipped
     /// templates are gated on. `None` = no backstop (or not told).
     message_timeout_ms: Option<u64>,
+    /// GH #1260: the `require_degraded` line was said for the package in
+    /// force. Reset when an update changes a package key, so the line comes
+    /// once per package, not once per call. Held in RAM only, like the
+    /// credential: a woken cell says it once more (no row in `cell.db` for a
+    /// log line).
+    require_degraded_said: bool,
 }
 
 impl LlmCell {
@@ -524,6 +533,7 @@ impl LlmCell {
             ),
             released: std::collections::VecDeque::new(),
             credential_turns_since_box: 0,
+            require_degraded_said: false,
             handover: (params.handover_wait_ms > 0).then(Handover::default),
             // A cell built from parsed params alone treats them as its start
             // value; the factory uses [`Self::restored`] with the real birth.
@@ -887,6 +897,9 @@ impl LlmCell {
                     .await;
                 match written {
                     Ok(()) => {
+                        if package_changed(&self.overlay, &change.overlay) {
+                            self.require_degraded_said = false;
+                        }
                         self.params = change.merged;
                         self.overlay = change.overlay;
                         tracing::info!(
@@ -1278,6 +1291,7 @@ impl LlmCell {
         timeout: std::time::Duration,
         started_at_unix_ms: i64,
         mut answer: translate::TranslatedResponse,
+        mut cut: Option<String>,
     ) -> translate::TranslatedResponse {
         let budget = self.params.effective_max_tokens();
         let max = self.params.length_continuations;
@@ -1338,11 +1352,28 @@ impl LlmCell {
                 call_timeout,
             )
             .await;
-            match res
-                .map_err(|e| format!("{e:?}"))
-                .and_then(|j| translate::parse_openai_response(&j).map_err(|e| format!("{e:?}")))
-            {
-                Ok(next) => answer = continuation::joined(&so_far, &answer, next),
+            // GH #1260 (review M-1): a continuation is read like the first
+            // answer -- a leaked call or analysis trace never joins the text.
+            // GH #1260 (delta review H): a frame the cut left open (an `analysis` body)
+            // is reopened on a continuation that opens with its rest (review
+            // I-1: a clean continuation stays text); that rest carries no
+            // frame and would become text.
+            let mut next_cut = None;
+            match res.map_err(|e| format!("{e:?}")).and_then(|j| {
+                translate::parse_openai_response(&j)
+                    .and_then(|mut t| {
+                        if let Some(head) = cut.as_deref() {
+                            sanitize::reopen(&mut t, head);
+                        }
+                        next_cut = sanitize::cut_frame(&t);
+                        sanitize::recover_harmony_tool_calls(t, &req)
+                    })
+                    .map_err(|e| format!("{e:?}"))
+            }) {
+                Ok(next) => {
+                    answer = continuation::joined(&so_far, &answer, next);
+                    cut = next_cut;
+                }
                 Err(e) => {
                     tracing::warn!(
                         target: continuation::LENGTH_LOG_TARGET,
@@ -1753,6 +1784,19 @@ fn push_for(hop: &meclaw_core::serde_json::Map<String, Value>, own: &Path) -> Pu
     }
 }
 
+/// GH #1260: whether an update changes the package in force -- a package key
+/// set to another value, set anew or reset. The start value is fixed, so the
+/// package keys of the overlay decide; a push of other keys, or of the same
+/// package again, is no package change.
+fn package_changed(
+    before: &meclaw_core::serde_json::Map<String, Value>,
+    after: &meclaw_core::serde_json::Map<String, Value>,
+) -> bool {
+    crate::llm::params::MODEL_PACKAGE_KEYS
+        .iter()
+        .any(|k| before.get(*k) != after.get(*k))
+}
+
 /// `v` as one line of at most `max` characters: a string as it is, anything
 /// else as its JSON text; a line break or any other control character becomes a
 /// space, so a forged address cannot start a second log line.
@@ -2011,6 +2055,9 @@ impl LlmCell {
                                 return;
                             }
                             // Live apply — this call's inference (if any) uses it.
+                            if package_changed(&self.overlay, &change.overlay) {
+                                self.require_degraded_said = false;
+                            }
                             self.params = change.merged;
                             self.overlay = change.overlay;
                             // GH #853: the sight. Every update, `{"params": {}}`
@@ -2439,10 +2486,11 @@ impl LlmCell {
 
             // 5b: extract OpenAI tool objects from system.tools.*, narrowed by
             // this request's `tool_scope` (GH #845). The stored menu is never
-            // written: the scope lives exactly as long as this call.
-            let tools = match extract_tools(&system_tree) {
+            // written: the scope lives exactly as long as this call. GH #1260:
+            // `require` rides along while a tool stays (`require_call`).
+            let (tools, require_call) = match extract_tools(&system_tree) {
                 Ok(menu) => match &tool_scope {
-                    None => menu.into_iter().map(|(_, t)| t).collect(),
+                    None => (menu.into_iter().map(|(_, t)| t).collect(), false),
                     Some(scope) => {
                         let scoped = scope.apply(menu);
                         if !scoped.unknown.is_empty() {
@@ -2451,7 +2499,13 @@ impl LlmCell {
                                 "llm: tool_scope names tools the menu does not carry; ignored"
                             );
                         }
-                        scoped.tools
+                        if scoped.require_dropped {
+                            tracing::warn!(
+                                "llm: tool_scope requires a tool call but leaves no tool; \
+                                 sent without the requirement"
+                            );
+                        }
+                        (scoped.tools, scoped.require)
                     }
                 },
                 Err(e) => {
@@ -2472,6 +2526,24 @@ impl LlmCell {
                     .await;
                     return;
                 }
+            };
+            // GH #1260 (OR-WG-9, B-L2): a host that refuses a forced call
+            // (its package says `tool_choice_required: false`) gets none --
+            // a pinned gpt-oss host answered `required` with HTTP 404 and the
+            // turn went silent; on `auto` it called the right tool 20 of 20.
+            let require_call = if require_call && !self.params.tool_choice_required {
+                if !self.require_degraded_said {
+                    self.require_degraded_said = true;
+                    tracing::warn!(
+                        model = %self.params.model,
+                        "llm: require_degraded -- tool_scope requires a tool call, but the \
+                         package says its host takes no forced call \
+                         (tool_choice_required: false); sent without tool_choice"
+                    );
+                }
+                false
+            } else {
+                require_call
             };
 
             // 5c: concat system-prompt (skips tools-subtree at top-level).
@@ -2551,6 +2623,14 @@ impl LlmCell {
                         if let Some(blocks) = thinking {
                             translate_anthropic::replay_thinking(&mut r, blocks);
                         }
+                        // Fix round 1 (review M-3): not beside thinking.
+                        if require_call && !translate_anthropic::require_tool_call(&mut r) {
+                            tracing::warn!(
+                                "llm: tool_scope requires a tool call, but thinking is on \
+                                 for this request (the provider refuses both together); \
+                                 sent without the requirement"
+                            );
+                        }
                         r
                     })
                 } else {
@@ -2575,6 +2655,9 @@ impl LlmCell {
                             &input_messages,
                             image_parts,
                         );
+                        if require_call {
+                            translate_responses::require_tool_call(&mut r);
+                        }
                         r
                     })
                 };
@@ -2701,6 +2784,10 @@ impl LlmCell {
                     // the last user turn (GH #847: never a peer turn). No-op
                     // for an empty vector.
                     translate::attach_image_parts(&mut r, &input_messages, image_parts);
+                    // GH #1260 (OR-WG-6): after the overlay, so it wins here.
+                    if require_call {
+                        translate::require_tool_call(&mut r);
+                    }
                     r
                 }
                 Err(e) => {
@@ -2825,33 +2912,39 @@ impl LlmCell {
             // Step 7: parse-translate the response (sync, pure). On parse fail
             // we still defensively try to surface model/response_id from the
             // raw response so the error-meta carries them when available.
-            let translated = match translate::parse_openai_response(&response_json) {
-                Ok(t) => t,
-                Err(e) => {
-                    let resp_model = response_json.get("model").and_then(|v| v.as_str());
-                    let resp_id = response_json.get("id").and_then(|v| v.as_str());
-                    output::emit_error_with_hop_for(
-                        &self.params.provider,
-                        sink,
-                        reply_target,
-                        translate::translate_error_to_code(&e),
-                        &format!("translate response parse: {e:?}"),
-                        "parse",
-                        input_messages,
-                        started_at_unix_ms,
-                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
-                        resp_model,
-                        resp_id,
-                        // GH #999: the answer checks (F1/F2) name their kind;
-                        // `None` for every older parse failure.
-                        translate::translate_error_meta(&e),
-                        output::HopCache::request_hop(&self.params),
-                    )
-                    .await;
-                    self.log_phases(&clock, translate::translate_error_to_code(&e));
-                    return;
-                }
-            };
+            // GH #1260: a call leaked as harmony tokens in the text is a call.
+            // GH #1260 (delta review H): the frame a length cut leaves open is read off
+            // the raw text before the recovery drops it, for the continuation.
+            let parsed = translate::parse_openai_response(&response_json);
+            let cut = parsed.as_ref().ok().and_then(sanitize::cut_frame);
+            let translated =
+                match parsed.and_then(|t| sanitize::recover_harmony_tool_calls(t, &request_json)) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let resp_model = response_json.get("model").and_then(|v| v.as_str());
+                        let resp_id = response_json.get("id").and_then(|v| v.as_str());
+                        output::emit_error_with_hop_for(
+                            &self.params.provider,
+                            sink,
+                            reply_target,
+                            translate::translate_error_to_code(&e),
+                            &format!("translate response parse: {e:?}"),
+                            "parse",
+                            input_messages,
+                            started_at_unix_ms,
+                            (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+                            resp_model,
+                            resp_id,
+                            // GH #999: the answer checks (F1/F2) name their kind;
+                            // `None` for every older parse failure.
+                            translate::translate_error_meta(&e),
+                            output::HopCache::request_hop(&self.params),
+                        )
+                        .await;
+                        self.log_phases(&clock, translate::translate_error_to_code(&e));
+                        return;
+                    }
+                };
 
             // Step 7b (GH #1037): a `length` finish is continued, never cut
             // in silence -- see `continuation.rs` for why the cell owns it.
@@ -2864,6 +2957,7 @@ impl LlmCell {
                     timeout,
                     started_at_unix_ms,
                     translated,
+                    cut,
                 )
                 .await;
 

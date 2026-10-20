@@ -494,6 +494,19 @@ pub trait CellFactory: Send + Sync {
         false
     }
 
+    /// This cell type's own idle default in ms (GH #1260), or `None` to use
+    /// the colony default `colony.json` `idle_timeout_default_ms`.
+    ///
+    /// Only consulted for `cell.timeout: 0` and only when the cell declares no
+    /// `cell.idle_timeout_ms`, which always wins. Resolution:
+    /// [`resolve_idle_timeout`]. A type overrides it when every wake costs
+    /// something a sleep throws away -- the `llm` cell holds its credential
+    /// only in RAM and pays a vault round of about 195 ms on the first call
+    /// after each wake (measured 250 ms cold vs. 52/56 ms warm).
+    fn default_idle_timeout_ms(&self) -> Option<u64> {
+        None
+    }
+
     /// Spawn the cell task. Re-parses params defensively (shares parse path
     /// with `validate_params`). Returns `SpawnedCellKind` with a `RespawnFn`
     /// that has already captured the *parsed* params — restart is unfallible.
@@ -605,6 +618,29 @@ pub trait CellFactory: Send + Sync {
     }
 }
 
+/// The idle timer a spawn hands a cell (GH #1260): `cell.timeout: 0` gets
+/// `cell.idle_timeout_ms`, else the type's own default
+/// ([`CellFactory::default_idle_timeout_ms`]) or the colony default
+/// (`colony.json` `idle_timeout_default_ms`), whichever is longer; any other
+/// `cell.timeout` (`-1` persistent, `> 0` one-shot) gets no idle timer. Every
+/// spawn path (boot, boot-inactive, mutation, subtree) resolves through here.
+///
+/// A type default only lengthens: it exists because a wake is expensive
+/// (`llm`: a vault round of about 195 ms), so a colony that keeps every cell
+/// awake longer must not put its `llm` cells to sleep earlier (review I M2).
+pub fn resolve_idle_timeout(
+    cell_timeout: i64,
+    cell_idle_timeout_ms: Option<u64>,
+    type_default_ms: Option<u64>,
+    colony_default_ms: u64,
+) -> Option<std::time::Duration> {
+    (cell_timeout == 0).then(|| {
+        std::time::Duration::from_millis(cell_idle_timeout_ms.unwrap_or_else(|| {
+            type_default_ms.map_or(colony_default_ms, |t| t.max(colony_default_ms))
+        }))
+    })
+}
+
 /// Registry mapping `cell.type` strings to factory implementations.
 pub type CellFactoryRegistry = HashMap<String, Arc<dyn CellFactory>>;
 
@@ -634,6 +670,35 @@ mod tests {
         ) -> Result<SpawnedCellKind, String> {
             unimplemented!("smoke test only checks trait object compiles")
         }
+    }
+
+    /// GH #1260: cell value > type default > colony default; only `timeout: 0`.
+    #[test]
+    fn the_idle_timer_resolves_cell_then_type_then_colony() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        assert_eq!(
+            resolve_idle_timeout(0, None, None, 60_000),
+            Some(ms(60_000))
+        );
+        assert_eq!(
+            resolve_idle_timeout(0, None, Some(1_800_000), 60_000),
+            Some(ms(1_800_000))
+        );
+        assert_eq!(
+            resolve_idle_timeout(0, Some(250), Some(1_800_000), 60_000),
+            Some(ms(250))
+        );
+        assert_eq!(
+            resolve_idle_timeout(-1, None, Some(1_800_000), 60_000),
+            None
+        );
+        assert_eq!(resolve_idle_timeout(5, Some(250), None, 60_000), None);
+        assert_eq!(
+            resolve_idle_timeout(0, None, Some(1_800_000), 3_600_000),
+            Some(ms(3_600_000))
+        );
+        assert_eq!(StubFactory.default_idle_timeout_ms(), None);
     }
 
     #[test]

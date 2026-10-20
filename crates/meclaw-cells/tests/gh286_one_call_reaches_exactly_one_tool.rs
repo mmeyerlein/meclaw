@@ -333,12 +333,16 @@ fn received_nothing(rx: &mut mpsc::Receiver<Message>, who: &str) {
 /// second because its refusal is the subject, in the first because its silence
 /// is). `mcp` and `vault` were the other two exceptions until `tools@1.3.0`,
 /// when the two occupants no edge reached left the hive (GH #547).
-const TOOLS: [(&str, &str); 5] = [
+/// `weather` (GH #1260) is a `code` cell, but one that reaches a network
+/// service, so it is doubled like the other tools rather than kept like
+/// `unknown` and `schemas`.
+const TOOLS: [(&str, &str); 6] = [
     ("bash", "bash"),
     ("web_fetch", "web_fetch"),
     ("web_search", "web_search"),
     ("file", "read"),
     ("edit", "find_replace"),
+    ("weather", "weather"),
 ];
 
 /// Every occupant of this hive answers, so `hop.operation` on the way out names
@@ -666,8 +670,8 @@ fn no_occupant_answers_with_the_key_the_doors_dispatch_on() {
         .collect();
     assert_eq!(
         dispatched.len(),
-        7,
-        "seven tool doors — five tools plus the two halves of a build round: {dispatched:?}"
+        8,
+        "eight tool doors — six tools plus the two halves of a build round: {dispatched:?}"
     );
 
     for name in &dispatched {
@@ -721,8 +725,8 @@ fn the_shipped_dispatch_is_narrowing_doors_and_one_guarded_default_per_lane() {
     let doors: Vec<&EdgeSpec> = hp.graph.edges.iter().filter(|e| e.from == ".").collect();
     assert_eq!(
         doors.len(),
-        12,
-        "seven tool doors, two build-result doors, one guarded default for each of those \
+        13,
+        "eight tool doors, two build-result doors, one guarded default for each of those \
          two lanes, and the single `in_schemas` door — which has no default beside it, \
          because that lane has exactly one consumer and a default there would be a second \
          answer to the same question: {doors:#?}"
@@ -815,8 +819,8 @@ fn the_shipped_dispatch_is_narrowing_doors_and_one_guarded_default_per_lane() {
         .collect();
     assert_eq!(
         exits.len(),
-        8,
-        "one `tool_result` exit per occupant that serves a CALL — the five tools, the two \
+        9,
+        "one `tool_result` exit per occupant that serves a CALL — the six tools, the two \
          build halves and the refusal cell. `schemas` is not among them: it answers the \
          `in_schemas` lane on `tool_schemas`, which is a declaration and not a result: \
          {exits:#?}"

@@ -1,0 +1,279 @@
+{
+  "cell": {
+    "type": "code",
+    "message_timeout": 40000
+  },
+  "params": {
+    "runner": "python3",
+    "external_timeout_ms": 15000,
+    "max_concurrency": 16,
+    "geocode_endpoint": "${WEATHER_GEOCODE_ENDPOINT:-https://geocoding-api.open-meteo.com/v1/search}",
+    "forecast_endpoint": "${WEATHER_FORECAST_ENDPOINT:-https://api.open-meteo.com/v1/forecast}",
+    "user_agent": "meclaw weather",
+    "default_language": "de",
+    "now_utc": "",
+    "condition_lang": {
+      "en": {
+        "phrases": {
+          "now": "now %s, %s",
+          "day": "%s %s to %s, %s, %s mm precipitation",
+          "today": "today",
+          "tomorrow": "tomorrow",
+          "unknown": "weather code %s"
+        },
+        "codes": {
+          "0": "clear sky",
+          "1": "mainly clear",
+          "2": "partly cloudy",
+          "3": "overcast",
+          "45": "fog",
+          "48": "freezing fog",
+          "51": "light drizzle",
+          "53": "drizzle",
+          "55": "dense drizzle",
+          "56": "freezing drizzle",
+          "57": "dense freezing drizzle",
+          "61": "light rain",
+          "63": "rain",
+          "65": "heavy rain",
+          "66": "freezing rain",
+          "67": "heavy freezing rain",
+          "71": "light snow",
+          "73": "snow",
+          "75": "heavy snow",
+          "77": "snow grains",
+          "80": "light showers",
+          "81": "showers",
+          "82": "violent showers",
+          "85": "snow showers",
+          "86": "heavy snow showers",
+          "95": "thunderstorm",
+          "96": "thunderstorm with hail",
+          "99": "thunderstorm with heavy hail"
+        }
+      },
+      "de": {
+        "phrases": {
+          "now": "jetzt %s, %s",
+          "day": "%s %s bis %s, %s, %s mm Niederschlag",
+          "today": "heute",
+          "tomorrow": "morgen",
+          "unknown": "Wettercode %s"
+        },
+        "codes": {
+          "0": "klar",
+          "1": "überwiegend klar",
+          "2": "teils bewölkt",
+          "3": "bedeckt",
+          "45": "Nebel",
+          "48": "gefrierender Nebel",
+          "51": "leichter Nieselregen",
+          "53": "Nieselregen",
+          "55": "starker Nieselregen",
+          "56": "gefrierender Nieselregen",
+          "57": "starker gefrierender Nieselregen",
+          "61": "leichter Regen",
+          "63": "Regen",
+          "65": "starker Regen",
+          "66": "gefrierender Regen",
+          "67": "starker gefrierender Regen",
+          "71": "leichter Schneefall",
+          "73": "Schneefall",
+          "75": "starker Schneefall",
+          "77": "Schneegriesel",
+          "80": "leichte Schauer",
+          "81": "Schauer",
+          "82": "heftige Schauer",
+          "85": "Schneeschauer",
+          "86": "starke Schneeschauer",
+          "95": "Gewitter",
+          "96": "Gewitter mit Hagel",
+          "99": "Gewitter mit starkem Hagel"
+        }
+      }
+    },
+    "sandbox": {
+      "trust": "restricted",
+      "network": "allow",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "script_inline": "\nimport sys, json, time, urllib.request, urllib.error, urllib.parse, socket\n\n# The `weather` tool of this hive (GH #1260): one place in, the forecast of that\n# place out, from Open-Meteo -- free and without a key, so the tool needs no\n# grant and no credential lane. Two GETs: the geocoder names the place, the\n# forecast answers for its coordinates. Both endpoints are params, so a test\n# points them at a local stub and an operator at a mirror; nothing here knows a\n# host.\n#\n# WHY A CODE CELL. Two calls and a table of weather codes are not a new cell\n# type; the memory hive's embedder is the precedent for HTTP out of a `code`\n# cell (`sandbox.network: allow`, urllib, its own operation timeout).\n\nSTARTED = time.monotonic()\n\ndoc = json.load(sys.stdin)\nP = doc.get(\"params\") or {}\nhop = ((doc.get(\"envelope\") or {}).get(\"header\") or {}).get(\"hop\") or {}\nturns = (doc.get(\"body\") or {}).get(\"messages\") or []\ncall = next((m for m in turns if isinstance(m, dict) and m.get(\"type\") == \"tool_call\"), {})\nCALL_ID = str(call.get(\"id\") or hop.get(\"tool_call_id\") or \"\")\n\n\ndef knob(key, default):\n    \"\"\"A param left null or blank is 'not configured', not a crash.\"\"\"\n    v = P.get(key)\n    if v is None or (isinstance(v, str) and not v.strip()):\n        return default\n    return v\n\n\ndef knob_int(key, default):\n    try:\n        return int(knob(key, default))\n    except (TypeError, ValueError):\n        return default\n\n\nGEOCODE = str(knob(\"geocode_endpoint\", \"https://geocoding-api.open-meteo.com/v1/search\"))\nFORECAST = str(knob(\"forecast_endpoint\", \"https://api.open-meteo.com/v1/forecast\"))\nUSER_AGENT = str(knob(\"user_agent\", \"meclaw weather\"))\nLANGUAGE = str(knob(\"default_language\", \"de\"))\nMAX_DAYS = 7\n\n# AGENTS rule 12: the I/O bounds itself against the cell's OWN operation\n# timeout. Both requests share one deadline, and a reserve stays for the spawn\n# and the final write: a process the substrate kills answers nothing, and a\n# tool round waiting on that answer stalls until its backstop.\nEXTERNAL_TIMEOUT_S = knob_int(\"external_timeout_ms\", 15000) / 1000.0\nDEADLINE_RESERVE_S = 1.0\nMIN_ATTEMPT_S = 0.5\nDEADLINE = STARTED + max(MIN_ATTEMPT_S, EXTERNAL_TIMEOUT_S - DEADLINE_RESERVE_S)\n\n\ndef emit(text, error_code=None):\n    \"\"\"ONE tool_result turn on the hive's one lane. A refusal is an ordinary\n    result with `hop.error_code` and an error object as its text -- never an\n    empty answer: an empty result is exactly what the curator's speaker rule\n    reads as unspeakable, and silence would stall the round.\"\"\"\n    header = {\"operation\": \"weather\", \"tool_call_id\": CALL_ID}\n    if error_code:\n        header[\"error_code\"] = error_code\n    sys.stdout.write(json.dumps({\n        \"header\": header,\n        \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": CALL_ID,\n                      \"text\": text}]}, ensure_ascii=False))\n    sys.exit(0)\n\n\ndef refuse(code, message):\n    emit(json.dumps({\"error\": message, \"error_code\": code}, ensure_ascii=False), code)\n\n\nclass Upstream(Exception):\n    def __init__(self, code, message):\n        super().__init__(message)\n        self.code = code\n\n\ndef get_json(endpoint, query):\n    \"\"\"GET `endpoint?query` within what is left of the deadline. Every failure\n    is one of three named codes: `timeout` (the bound elapsed), `io_error` (no\n    connection at all) and `upstream_error` (an answer that is not a 2xx JSON\n    document).\"\"\"\n    remaining = DEADLINE - time.monotonic()\n    if remaining < MIN_ATTEMPT_S:\n        raise Upstream(\"timeout\", \"no time left for %s\" % endpoint)\n    url = endpoint + (\"&\" if \"?\" in endpoint else \"?\") + urllib.parse.urlencode(query)\n    req = urllib.request.Request(url, headers={\"User-Agent\": USER_AGENT,\n                                               \"Accept\": \"application/json\"})\n    try:\n        with urllib.request.urlopen(req, timeout=remaining) as resp:\n            raw = resp.read()\n    except urllib.error.HTTPError as e:\n        raise Upstream(\"upstream_error\", \"the weather service answered HTTP %s\" % e.code)\n    except (socket.timeout, TimeoutError) as e:\n        raise Upstream(\"timeout\", \"the weather service did not answer in time\")\n    except urllib.error.URLError as e:\n        if isinstance(e.reason, (socket.timeout, TimeoutError)):\n            raise Upstream(\"timeout\", \"the weather service did not answer in time\")\n        raise Upstream(\"io_error\", \"the weather service is unreachable (%s)\"\n                       % type(e.reason).__name__)\n    except OSError as e:\n        raise Upstream(\"io_error\", \"the weather service is unreachable (%s)\" % type(e).__name__)\n    try:\n        return json.loads(raw.decode(\"utf-8\"))\n    except Exception:\n        raise Upstream(\"upstream_error\", \"the weather service answered no JSON\")\n\n\n# The words a voice says -- WMO weather codes (the `weather_code` Open-Meteo\n# returns) and the few phrases of the summary -- are language data and live in\n# `params.condition_lang`, one table per language. A language the table does\n# not carry reads English; a code no table names is said as its number.\nLANG_DATA = P.get(\"condition_lang\") if isinstance(P.get(\"condition_lang\"), dict) else {}\nFALLBACK = {\"now\": \"now %s, %s\", \"day\": \"%s %s to %s, %s, %s mm precipitation\",\n            \"today\": \"today\", \"tomorrow\": \"tomorrow\", \"unknown\": \"weather code %s\"}\n\n\ndef table_of(lang):\n    t = LANG_DATA.get(lang) or LANG_DATA.get(\"en\") or {}\n    return t if isinstance(t, dict) else {}\n\n\ndef phrase(lang, key):\n    v = (table_of(lang).get(\"phrases\") or {}).get(key)\n    return v if isinstance(v, str) and v else FALLBACK[key]\n\n\ndef word(lang, code):\n    words = table_of(lang).get(\"codes\") or {}\n    w = words.get(str(code)) if isinstance(words, dict) else None\n    if isinstance(w, str) and w:\n        return w\n    unknown = phrase(lang, \"unknown\")\n    return unknown % code if \"%s\" in unknown else unknown\n\n\ndef deg(v):\n    return \"%s °C\" % (round(v) if isinstance(v, (int, float)) else \"?\")\n\n\ndef at(series, i):\n    return series[i] if isinstance(series, list) and i < len(series) else None\n\n\n# Review M1 (fix round 1): one net under the whole call. A refusal and an\n# answer leave through `emit` (SystemExit, not an Exception, so it passes);\n# anything else -- a `NaN` in the forecast (`round` refuses it, and\n# `allow_nan=False` keeps one out of the answer), a phrase in\n# `condition_lang` with the wrong number of `%s` -- would end the script as\n# `script_failed`, which carries no `hop.operation`: the exit edge\n# (`hop.operation == 'weather'`) misses it, it dead-letters, and the tool\n# round waits out its window. Here it is an ordinary `upstream_error`.\ntry:\n    try:\n        args = json.loads(call.get(\"text\") or \"{}\")\n    except Exception:\n        args = None\n    if not isinstance(args, dict):\n        refuse(\"invalid_input\", \"the call's arguments are not a JSON object\")\n    place = str(args.get(\"place\") or \"\").strip()\n    if not place:\n        refuse(\"invalid_input\", \"`place` is required: the name of a city or town\")\n    days = args.get(\"days\", 1)\n    # GH #1260: a whole number written as a float (`1.0`, `0.0`) is that\n    # number -- JSON from a model carries no reliable int/float line, and\n    # `0.0` was taken while `1.0` was refused.\n    if isinstance(days, float) and days.is_integer():\n        days = int(days)\n    # GH #1260 (lab B-L4): a model read \"days from today\" as an offset and sent\n    # 0 for today; the refusal sent the round to the brain. Zero is today.\n    if days == 0 and not isinstance(days, bool):\n        days = 1\n    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= MAX_DAYS:\n        refuse(\"invalid_input\", \"`days` is a whole number from 1 to %d\" % MAX_DAYS)\n    lang = str(args.get(\"language\") or LANGUAGE).strip().lower() or \"de\"\n\n    try:\n        geo = get_json(GEOCODE, {\"name\": place, \"count\": 1, \"language\": lang, \"format\": \"json\"})\n        hits = geo.get(\"results\") if isinstance(geo, dict) else None\n        if not isinstance(hits, list) or not hits or not isinstance(hits[0], dict):\n            refuse(\"place_not_found\", \"no place named %s was found\" % place)\n        hit = hits[0]\n        lat, lon = hit.get(\"latitude\"), hit.get(\"longitude\")\n        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):\n            refuse(\"place_not_found\", \"the place %s came back without coordinates\" % place)\n        fc = get_json(FORECAST, {\n            \"latitude\": lat, \"longitude\": lon, \"timezone\": \"auto\", \"forecast_days\": days,\n            \"current\": \"temperature_2m,weather_code\",\n            \"daily\": \"weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum\"})\n    except Upstream as e:\n        refuse(e.code, str(e))\n\n    if not isinstance(fc, dict) or not isinstance(fc.get(\"daily\"), dict):\n        refuse(\"upstream_error\", \"the forecast came back without its daily series\")\n\n    name = str(hit.get(\"name\") or place)\n    country = str(hit.get(\"country\") or \"\")\n    where = \"%s, %s\" % (name, country) if country else name\n    daily = fc[\"daily\"]\n    out_days = []\n    for i, date in enumerate(daily.get(\"time\") or []):\n        code = at(daily.get(\"weather_code\"), i)\n        out_days.append({\"date\": date,\n                         \"temp_min\": at(daily.get(\"temperature_2m_min\"), i),\n                         \"temp_max\": at(daily.get(\"temperature_2m_max\"), i),\n                         \"precipitation_mm\": at(daily.get(\"precipitation_sum\"), i),\n                         \"weather_code\": code, \"condition\": word(lang, code)})\n    current = fc.get(\"current\") if isinstance(fc.get(\"current\"), dict) else {}\n    now = None\n    if current:\n        now = {\"time\": current.get(\"time\"), \"temp\": current.get(\"temperature_2m\"),\n               \"weather_code\": current.get(\"weather_code\"),\n               \"condition\": word(lang, current.get(\"weather_code\"))}\n\n    parts = []\n    if now:\n        parts.append(phrase(lang, \"now\") % (deg(now[\"temp\"]), now[\"condition\"]))\n    for i, d in enumerate(out_days):\n        label = (phrase(lang, \"today\") if i == 0 else phrase(lang, \"tomorrow\") if i == 1\n                 else str(d[\"date\"]))\n        mm = d[\"precipitation_mm\"] if d[\"precipitation_mm\"] is not None else \"?\"\n        parts.append(phrase(lang, \"day\") % (label, deg(d[\"temp_min\"]), deg(d[\"temp_max\"]),\n                                  d[\"condition\"], mm))\n\n    # The time of the call, so a speaker can say how fresh the numbers are.\n    # wall-clock: now_utc\n    fetched_at = str(knob(\"now_utc\", \"\")) or time.strftime(\"%Y-%m-%dT%H:%M:%SZ\", time.gmtime(time.time()))\n\n    emit(json.dumps({\n        \"summary\": \"%s: %s.\" % (where, \"; \".join(parts)),\n        \"place\": {\"name\": name, \"country\": country, \"admin1\": hit.get(\"admin1\"),\n                  \"latitude\": lat, \"longitude\": lon},\n        \"timezone\": fc.get(\"timezone\") or hit.get(\"timezone\"),\n        \"current\": now,\n        \"days\": out_days,\n        \"fetched_at\": fetched_at,\n        \"source\": \"open-meteo\",\n    }, ensure_ascii=False, allow_nan=False))\nexcept Exception as e:\n    refuse(\"upstream_error\", \"the weather answer could not be read (%s)\" % type(e).__name__)\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "geocode_endpoint": {
+        "type": "string",
+        "secret": false,
+        "default": "https://geocoding-api.open-meteo.com/v1/search",
+        "description": "Open-Meteo geocoding endpoint, queried as GET <endpoint>?name=<place>&count=1&language=<lang> (WEATHER_GEOCODE_ENDPOINT)"
+      },
+      "forecast_endpoint": {
+        "type": "string",
+        "secret": false,
+        "default": "https://api.open-meteo.com/v1/forecast",
+        "description": "Open-Meteo forecast endpoint, queried as GET <endpoint>?latitude=..&longitude=..&daily=..&current=.. (WEATHER_FORECAST_ENDPOINT)"
+      },
+      "user_agent": {
+        "type": "string",
+        "secret": false,
+        "default": "meclaw weather",
+        "description": "The User-Agent both requests carry: a free service is told who calls it"
+      },
+      "default_language": {
+        "type": "string",
+        "secret": false,
+        "default": "de",
+        "description": "The language of place names and condition words when the call names none (`en` and `de` have condition words; any other language reads English words)"
+      },
+      "now_utc": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "Test override of the `fetched_at` stamp (ISO 8601, UTC). Empty = the wall clock of the call"
+      },
+      "condition_lang": {
+        "type": "object",
+        "secret": false,
+        "default": {
+          "en": {
+            "phrases": {
+              "now": "now %s, %s",
+              "day": "%s %s to %s, %s, %s mm precipitation",
+              "today": "today",
+              "tomorrow": "tomorrow",
+              "unknown": "weather code %s"
+            },
+            "codes": {
+              "0": "clear sky",
+              "1": "mainly clear",
+              "2": "partly cloudy",
+              "3": "overcast",
+              "45": "fog",
+              "48": "freezing fog",
+              "51": "light drizzle",
+              "53": "drizzle",
+              "55": "dense drizzle",
+              "56": "freezing drizzle",
+              "57": "dense freezing drizzle",
+              "61": "light rain",
+              "63": "rain",
+              "65": "heavy rain",
+              "66": "freezing rain",
+              "67": "heavy freezing rain",
+              "71": "light snow",
+              "73": "snow",
+              "75": "heavy snow",
+              "77": "snow grains",
+              "80": "light showers",
+              "81": "showers",
+              "82": "violent showers",
+              "85": "snow showers",
+              "86": "heavy snow showers",
+              "95": "thunderstorm",
+              "96": "thunderstorm with hail",
+              "99": "thunderstorm with heavy hail"
+            }
+          },
+          "de": {
+            "phrases": {
+              "now": "jetzt %s, %s",
+              "day": "%s %s bis %s, %s, %s mm Niederschlag",
+              "today": "heute",
+              "tomorrow": "morgen",
+              "unknown": "Wettercode %s"
+            },
+            "codes": {
+              "0": "klar",
+              "1": "überwiegend klar",
+              "2": "teils bewölkt",
+              "3": "bedeckt",
+              "45": "Nebel",
+              "48": "gefrierender Nebel",
+              "51": "leichter Nieselregen",
+              "53": "Nieselregen",
+              "55": "starker Nieselregen",
+              "56": "gefrierender Nieselregen",
+              "57": "starker gefrierender Nieselregen",
+              "61": "leichter Regen",
+              "63": "Regen",
+              "65": "starker Regen",
+              "66": "gefrierender Regen",
+              "67": "starker gefrierender Regen",
+              "71": "leichter Schneefall",
+              "73": "Schneefall",
+              "75": "starker Schneefall",
+              "77": "Schneegriesel",
+              "80": "leichte Schauer",
+              "81": "Schauer",
+              "82": "heftige Schauer",
+              "85": "Schneeschauer",
+              "86": "starke Schneeschauer",
+              "95": "Gewitter",
+              "96": "Gewitter mit Hagel",
+              "99": "Gewitter mit starkem Hagel"
+            }
+          }
+        },
+        "description": "Language data: per language the WMO weather-code words (`codes`) and the phrases of the spoken summary (`phrases`: now, day, today, tomorrow, unknown). A language without a table reads English"
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "values": [
+            "weather"
+          ],
+          "required": true
+        },
+        "error_code": {
+          "type": "string",
+          "values": [
+            "invalid_input",
+            "place_not_found",
+            "timeout",
+            "io_error",
+            "upstream_error"
+          ],
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec",
+      "network:http"
+    ]
+  },
+  "description": {
+    "purpose": "The `weather` occupant of the tools hive (GH #1260): the forecast of one named place from Open-Meteo, a free service without a key -- so no grant, no credential lane and nothing in `.env` beyond two optional endpoints. Two GETs: the geocoder resolves the place, the forecast answers for its coordinates.",
+    "use_when": "Reached on hop.tool_name == 'weather' inside a tools hive. It is the quick path's tool for a weather question: the answer is meant to be spoken as it comes.",
+    "not_in_scope": "No history, no alerts, no hourly series and no unit choice (Celsius, millimetres). No ranking of places either: the geocoder's first hit is the place, and its country is named in the answer so a wrong town is audible.",
+    "emits_meaning": "messages[]: ONE tool_result turn whose text is a JSON object -- `summary` (one sentence that can be spoken as it is), `place` {name, country, admin1, latitude, longitude}, `timezone`, `current` {time, temp, weather_code, condition}, `days` [{date, temp_min, temp_max, precipitation_mm, weather_code, condition}], `fetched_at` (UTC) and `source`. hop.operation is always `weather`. A refusal is an ordinary result too: its text is {error, error_code} and hop.error_code names it -- `invalid_input` (no `place`, or `days` outside 1..7), `place_not_found` (the geocoder knows no such place), `timeout` (the service did not answer within external_timeout_ms), `io_error` (no connection) or `upstream_error` (a non-2xx answer or no JSON).",
+    "consumes_meaning": "messages[]: the tool_call turn; its text is the arguments {place, days?, language?}.",
+    "examples": [
+      "{place: 'Berlin', language: 'en'} -> tool_result {summary: 'Berlin, Germany: now 13 °C, overcast; today 9 °C to 15 °C, light rain, 2.1 mm precipitation.', days: [...]}",
+      "{place: 'Atlantis'} -> tool_result {error: 'no place named Atlantis was found', error_code: 'place_not_found'}, hop {error_code: 'place_not_found'}"
+    ]
+  }
+}

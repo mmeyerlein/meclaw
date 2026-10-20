@@ -572,12 +572,13 @@ sys.stdout.write(json.dumps({{
 /// One occupant per name edge, with the label its real cell answers with.
 /// `unknown` and `schemas` are never doubled: they are `code` cells already and
 /// this file wants the shipped ones.
-const DOUBLED: [(&str, &str, &str); 7] = [
+const DOUBLED: [(&str, &str, &str); 8] = [
     ("bash", "bash", "bash"),
     ("web_fetch", "web_fetch", "web_fetch"),
     ("web_search", "web_search", "web_search"),
     ("file", "file", "read"),
     ("edit", "edit", "find_replace"),
+    ("weather", "weather", "weather"),
     ("build-draft", "build_topology", "build"),
     ("build-apply", "apply_manifest", "apply"),
 ];

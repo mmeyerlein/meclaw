@@ -329,7 +329,8 @@
             },
             "restore_ttl": true,
             "set_context": {
-              "path": "has(hop.path) ? hop.path : ''"
+              "path": "has(hop.path) ? hop.path : ''",
+              "tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"
             }
           }
         },
@@ -344,7 +345,8 @@
               "session_id": "hop.session_id",
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
-              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "''"
             },
             "restore_ttl": true
           }
@@ -360,7 +362,8 @@
               "session_id": "hop.session_id",
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
-              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "has(hop.interim) ? hop.interim : ''"
             },
             "restore_ttl": true
           }
@@ -377,9 +380,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -470,9 +475,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -485,9 +492,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -524,7 +533,7 @@
         {
           "from": "./quick",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool')"
         },
         {
           "from": "./brain",
@@ -538,9 +547,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -556,9 +567,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -601,9 +614,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -616,9 +631,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -631,9 +648,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -667,9 +686,11 @@
               "curator_call",
               "gap_ask",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -688,9 +709,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -703,9 +726,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -718,9 +743,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -734,9 +761,11 @@
               "curator_call",
               "gap_ask",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -752,9 +781,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -767,9 +798,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -789,8 +822,10 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -803,9 +838,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -828,9 +865,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -843,9 +882,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -898,9 +939,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -913,9 +956,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -928,9 +973,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "path",
-              "route_asked_at"
+              "route_asked_at",
+              "tools_folded"
             ]
           }
         },
@@ -993,9 +1040,11 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
+              "interim",
               "input_soft",
               "route_asked_at",
-              "path"
+              "path",
+              "tools_folded"
             ]
           }
         },

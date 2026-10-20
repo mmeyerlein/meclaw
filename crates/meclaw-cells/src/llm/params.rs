@@ -471,6 +471,21 @@ pub struct LlmParams {
     /// stated: `llm::window::IMAGE_TOKENS` (1024). A package key.
     #[serde(default)]
     pub tokens_per_image: u64,
+    /// GH #1260 (OR-WG-9): whether the model's host takes a forced tool call
+    /// (`tool_choice: "required"`). `true` (the default) = it does. `false` =
+    /// a `tool_scope` with `require` goes out without `tool_choice` -- the
+    /// provider's `auto` -- and the cell says so once per package
+    /// (`require_degraded`). Measured: gpt-oss-120b pinned to one host
+    /// answered `required` with HTTP 404 (the router's tool compatibility
+    /// filter dropped the only endpoint) and called the right tool 20 of 20
+    /// times on `auto`. A package key.
+    #[serde(default = "tool_choice_required_default")]
+    pub tool_choice_required: bool,
+}
+
+/// GH #1260: a host takes a forced tool call unless its package says not.
+fn tool_choice_required_default() -> bool {
+    true
 }
 
 /// GH #890: the values `cache_mode` takes, as the refusal names them.
@@ -605,6 +620,7 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "cost_cached_in",
     "chars_per_token",
     "tokens_per_image",
+    "tool_choice_required",
 ];
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
@@ -1229,6 +1245,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     // GH #1085: the rates the window estimate counts with, package keys.
     "chars_per_token",
     "tokens_per_image",
+    // GH #1260: whether the host takes a forced tool call, a package key.
+    "tool_choice_required",
     // P10 auth dimension.
     "auth",
     "auth_ref",

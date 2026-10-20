@@ -107,6 +107,10 @@ impl crate::CellFactory for DrainAwareFactory {
         self.inner.owns_schema()
     }
 
+    fn default_idle_timeout_ms(&self) -> Option<u64> {
+        self.inner.default_idle_timeout_ms()
+    }
+
     fn spawn_cell(
         self: std::sync::Arc<Self>,
         path: meclaw_core::Path,

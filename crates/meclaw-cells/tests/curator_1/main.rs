@@ -40,6 +40,10 @@ pub mod gh1225_kh_the_note_of_the_last_session_is_found_behind_other_handovers;
 pub mod gh1225_kh_writer_a_late_wall_row_waits_for_the_next_close;
 pub mod gh1225_kh_writer_a_refused_close_read_is_no_empty_session;
 pub mod gh1225_kh_writer_a_written_store_error_mark_is_not_said_refused;
+pub mod gh1225_kp_fix1_names_and_the_ledgers_word;
+pub mod gh1225_kp_the_push_holds_what_the_ledger_holds;
+pub mod gh1225_kr_a_failed_read_is_never_an_answer;
+pub mod gh1225_kr_a_refused_read_of_intake_writes_nothing_blind;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

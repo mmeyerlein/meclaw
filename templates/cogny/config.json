@@ -201,7 +201,10 @@
             "set_hop": {
               "route": "'in_curate'"
             },
-            "restore_ttl": true
+            "restore_ttl": true,
+            "set_context": {
+              "tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"
+            }
           }
         },
         {
@@ -282,7 +285,8 @@
               "tool_answerer",
               "curator_call",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -346,7 +350,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -366,7 +371,8 @@
               "col_phase",
               "curator_call",
               "tool_answerer",
-              "recall_input_soft"
+              "recall_input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -391,7 +397,8 @@
               "tool_answerer",
               "gap_ask",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -411,7 +418,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -425,7 +433,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -442,7 +451,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -456,7 +466,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -472,7 +483,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -489,7 +501,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -506,7 +519,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -574,7 +588,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -593,7 +608,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -607,7 +623,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         },
@@ -621,7 +638,8 @@
               "curator_call",
               "tool_answerer",
               "recall_input_soft",
-              "input_soft"
+              "input_soft",
+              "tools_folded"
             ]
           }
         }

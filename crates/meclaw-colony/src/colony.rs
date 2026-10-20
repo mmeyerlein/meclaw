@@ -9736,12 +9736,13 @@ pub(crate) async fn handle_mutation(
         // Inputs come from `StagedDir.cell_timeout` / `StagedDir.idle_timeout_ms`
         // (substituted `config.json`), replacing the former hardcode (13-L-1).
         let mut_cell_timeout: i64 = sd.cell_timeout;
-        let mut_idle_timeout = match sd.cell_timeout {
-            0 => Some(std::time::Duration::from_millis(
-                sd.idle_timeout_ms.unwrap_or(idle_default_ms),
-            )),
-            _ => None,
-        };
+        // GH #1260: the type may name its own idle default (`llm`: 30 min).
+        let mut_idle_timeout = crate::factory::resolve_idle_timeout(
+            sd.cell_timeout,
+            sd.idle_timeout_ms,
+            factory.default_idle_timeout_ms(),
+            idle_default_ms,
+        );
 
         // Paket-3 P3-C1 (P8 fix): activity gate before the EAGER spawn.
         // If this cell would be INACTIVE in the POST-STATE edge view (e.g. its
@@ -10167,12 +10168,13 @@ pub(crate) async fn handle_mutation(
             // Idle-timeout mapping mirrors `register_inactive_non_spawned` and the
             // single-cell spawn loop: `cell.timeout == 0` → idle-default (or the
             // per-cell `idle_timeout_ms` override); other values get NO idle timer.
-            let idle_timeout = match cell.cell_timeout {
-                0 => Some(std::time::Duration::from_millis(
-                    cell.idle_timeout_ms.unwrap_or(idle_default_ms),
-                )),
-                _ => None,
-            };
+            // GH #1260: the type may name its own idle default (`llm`: 30 min).
+            let idle_timeout = crate::factory::resolve_idle_timeout(
+                cell.cell_timeout,
+                cell.idle_timeout_ms,
+                factory.as_ref().and_then(|f| f.default_idle_timeout_ms()),
+                idle_default_ms,
+            );
             // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
             // BEFORE the subtree reconnect-hook captures this `ContractView`, so a
             // reconnect-respawned subtree cell carries the resolved flag.

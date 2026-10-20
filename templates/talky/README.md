@@ -1,4 +1,4 @@
-# `talky@6.9.1`
+# `talky@6.9.2`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -68,13 +68,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.2.0"}}
+{"cell": {"type": "ref", "template": "collector@5.2.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.9.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.9.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -497,12 +497,12 @@ giving `./route` its own `classes`, `intents`, `needs` and `families`
 (`override_params`).
 
 
-**The curator decides the way (GH #1247).** `./collector -> ./curator` lifts the seam's `hop.path` into `context.path`, and the curator's `path_routes` picks the way: `quick` (`talk`, `simple`: the short window, only the stamp's tool families) reaches `./quick` (below); `consult` and `research` (`complex`, `research`) leave the composite as `consult` with `hop.consult_id` and the whole window, without a call of `./brain` -- the parent routes it to its backend like a `consult_cogny` call, and the answer comes back on `in_advice`. The collector ships `route_wait_ms` `0`, so no turn has a path and every call takes `brain` until an instance switches the wait on.
+**The curator decides the way (GH #1247).** `./collector -> ./curator` lifts the seam's `hop.path` into `context.path`, and beside it `hop.tools_folded` into `context.tools_folded` -- the families of the folded menu, the only names `./dispatcher` unfolds (GH #1260; every edge out to `.` deletes both). The curator's `path_routes` picks the way: `brain` (`talk`, the conversation model with its whole sidecar, GH #1260); `quick` (`simple`: the short window with the sidecar contract, the class's tools `quick_tools` callable and the stamp's other families as hints) reaches `./quick` (below); `consult` and `research` (`complex`, `research`) leave the composite as `consult` with `hop.consult_id` and the whole window, without a call of `./brain` -- the parent routes it to its backend like a `consult_cogny` call, and the answer comes back on `in_advice`. The collector ships `route_wait_ms` `0`, so no turn has a path and every call takes `brain` until an instance switches the wait on.
 
 ### The quick voice (`./quick`, GH #1248)
 
 **A second model cell behind the curator.** `./quick` is an `llm` cell beside `./brain`: the
-curator sends it every call it routes `quick` -- a turn its stamp calls `talk` or `simple`, the
+curator sends it every call it routes `quick` -- a turn its stamp calls `simple`, the
 speaker after a speakable tool result, and the bridge of a `complex` or `research` turn (see
 `templates/curator/README.md` § *The curator decides the way*) -- and everything else to
 `./brain`. Its edges are the brain's, once more: `./curator -> ./quick` on `quick`
@@ -778,7 +778,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.9.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.9.2",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

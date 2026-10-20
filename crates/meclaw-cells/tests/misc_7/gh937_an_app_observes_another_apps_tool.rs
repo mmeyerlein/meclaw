@@ -1344,8 +1344,8 @@ fn every_tool_result_leaving_a_producer_names_its_tool() {
         exits += 1;
     }
     assert_eq!(
-        exits, 7,
-        "bash, web_fetch, web_search, file, edit and the build pair: {name_of:?}"
+        exits, 8,
+        "bash, web_fetch, web_search, file, edit, weather (GH #1260) and the build pair: {name_of:?}"
     );
 
     let memory = read_json(&memory_at);

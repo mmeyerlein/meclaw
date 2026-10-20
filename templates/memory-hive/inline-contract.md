@@ -291,7 +291,7 @@ decides what a statement *means* -- that is the close pass's work and the night'
   [`predicate-core.json`](predicate-core.json), and stay under its length bound. It replaces
   `f9_inline_contract.rs`, whose two-phrasing premise died with the batch prompt.
 - `crates/meclaw-cells/tests/misc_1/f8_inline_coverage.rs` and
-  `crates/meclaw-cells/tests/misc_2/gh298_nothing_is_a_value.rs` -- the coverage half: a turn this
+  `crates/meclaw-cells/tests/misc_3/gh298_nothing_is_a_value.rs` -- the coverage half: a turn this
   block spoke for is never extracted a second time, and a well-formed "nothing" covers its turn
   while a malformed block does not.
 - `crates/meclaw-cells/tests/misc_3/gh298_per_turn_annotation.rs` -- the second part of the

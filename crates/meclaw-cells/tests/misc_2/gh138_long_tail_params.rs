@@ -88,6 +88,10 @@ const ENV_LANE: &[&str] = &[
     "SEARCH_API_KEY",
     "SEARCH_ENDPOINT",
     "TELEGRAM_BOT_TOKEN",
+    // GH #1260: the two Open-Meteo endpoints of `tools/weather` -- endpoints,
+    // the class this lane is for; the defaults are the public service.
+    "WEATHER_FORECAST_ENDPOINT",
+    "WEATHER_GEOCODE_ENDPOINT",
 ];
 
 /// Params the substrate itself reads off a scripted cell, so they are never a

@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.67.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.68.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,12 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.68.0: every turn takes its agreed way -- talk goes to the conversation model, simple to the fast path with
+  its web and weather tools, complex straight to cogny with a bridge sentence, and research comes back later
+  through the curator; the quick tier runs on `gpt-oss-120b` pinned to its fastest measured host; a sixth tool
+  gives the weather without a key; `llm` cells stay awake 30 minutes, so a pause costs no credential round;
+  a folded tool family is called by its ops on every path; a tool call leaked as raw harmony tokens becomes
+  the call it is
 - v0.67.0: a new `npc` template for a non-player character in a shared world, with one identity, one brain behind
   a curator, a memory hive, the world's tools as its moves, a handset and a night that closes the day; the memory
   hive's night runs its entity and recurrence passes again and writes in the language it read; a parked node no

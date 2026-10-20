@@ -747,6 +747,29 @@ fn a_family_declares_an_op_enum_one_signature_line_per_op_and_free_args() {
     );
 }
 
+/// OR-WG-4 (GH #1260): the hint level keeps the FIRST sentence of a
+/// description and nothing else (`tool_scope::first_sentence`). For a family
+/// that sentence was "2 operations on `web`." -- a count and no names, so a
+/// model at hint level could not know what to ask `help` about. The head's
+/// first sentence names the ops now.
+#[test]
+fn the_first_sentence_of_a_family_names_its_ops() {
+    let msg = folded();
+    for (family, ops) in [("file", "read, write"), ("web", "fetch, search")] {
+        let text = leaf(&msg, family)["function"]["description"]
+            .as_str()
+            .expect("description")
+            .to_string();
+        let first = text.lines().next().unwrap_or_default();
+        let end = first.find(". ").map_or(first.len(), |i| i + 1);
+        let sentence = &first[..end];
+        assert!(
+            sentence.contains(&format!("`{family}`: {ops}")) && sentence.contains("`help`"),
+            "the first sentence names the ops and the way to their arguments: {sentence:?}"
+        );
+    }
+}
+
 #[test]
 fn the_fold_ships_off_and_is_one_switch() {
     let flat = merge_with(&fold_rows(), json!({"tools": ["*"]}));
@@ -891,6 +914,11 @@ fn help_answers_from_the_menu_store_the_list_one_schema_or_a_search() {
             && list.contains("- write(file, text): Write a file."),
         "without `op` the op list: {list}"
     );
+    assert!(
+        list.starts_with("Operations on `file`: read, write;"),
+        "the head of the op list names the ops, the same head the family carries \
+         (GH #1260): {list}"
+    );
     let one = help(json!({"op": "read"}));
     assert!(
         one.contains("More sentences follow.") && one.contains("\"offset\""),
@@ -932,6 +960,32 @@ fn the_error_of_a_folded_call_carries_the_schema_of_its_op() {
         "too slow",
     );
     assert_eq!(parked(&plain), ("call-t".into(), "too slow".into()));
+}
+
+/// GH #1260: a folded call whose op the family does not have unfolds to a name
+/// no answerer carries (`web_lookup`) and comes back `unknown_tool`. The model
+/// asked for an op of `web`, so the error names the ops `web` has -- the
+/// regular error, looked up from the same menu store as help.
+#[test]
+fn an_unknown_op_of_a_folded_call_names_the_ops_of_its_family() {
+    let assistant = json!({"turn_id": "t1", "iter": 0, "role": "assistant",
+        "turn": json!([{"origin": "assistant", "type": "tool_call", "id": "call-u",
+            "text": json!({"name": "web",
+                           "arguments": json!({"op": "lookup", "args": {}}).to_string()})
+                .to_string()}])
+        .to_string()});
+    let (id, text) = looked_up(
+        json!({"error_code": "unknown_tool", "tool_call_id": "call-u"}),
+        "call-u",
+        "no tool named web_lookup is wired into this hive",
+        &[assistant],
+    );
+    assert_eq!(id, "call-u");
+    assert!(
+        text.starts_with("no tool named web_lookup is wired into this hive")
+            && text.contains("`web` has no op `lookup`; its ops: fetch, search."),
+        "the error, then the ops of the family: {text}"
+    );
 }
 
 /// T5-08, review I-1: an error text that is a JSON object (the file tools'

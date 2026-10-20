@@ -1,13 +1,14 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@5.2.0"
+    "template": "collector@5.2.1"
   },
   "override_params": {
     "assemble": {
       "tools": [
         "web_search",
         "web_fetch",
+        "weather",
         "history_search",
         "history_read",
         "history_outline"

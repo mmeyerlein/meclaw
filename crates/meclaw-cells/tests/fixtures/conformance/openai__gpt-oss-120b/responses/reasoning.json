@@ -1,0 +1,54 @@
+{
+  "id": "gen-1792406354-bXNzwAw59KTYhwHXNCyH",
+  "object": "chat.completion",
+  "created": 1792406354,
+  "model": "openai/gpt-oss-120b",
+  "provider": "Crusoe",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "OK",
+        "refusal": null,
+        "reasoning": "We must follow developer: answer with single word OK.",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "We must follow developer: answer with single word OK.",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 83,
+    "completion_tokens": 22,
+    "total_tokens": 105,
+    "cost": 9.5535e-06,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 48,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 9.65e-06,
+      "upstream_inference_prompt_cost": 4.15e-06,
+      "upstream_inference_completions_cost": 5.5e-06
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 11,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

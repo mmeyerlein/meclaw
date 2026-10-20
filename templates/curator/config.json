@@ -85,7 +85,7 @@
         },
         {
           "route": "quick",
-          "because": "the call of a turn stamped `talk` or `simple` (GH #1247): the short window of the role `quick` -- the last four elements, no memory rows, no sidecar contract, every system family whole -- and `tool_scope` allowing only the stamp's `families`. The hop as on `brain`, plus `curator_call`; one `route` mark beside the call record"
+          "because": "the call of a turn stamped `simple` (GH #1247; `talk` goes to `brain` since GH #1260): the short window of the role `quick` -- the last four elements, no memory rows, the sidecar contract, every system family whole -- and `tool_scope` with the class's tools `quick_tools` at the ops stage and the stamp's other `families` at the hint stage. In the tool round of a turn whose stamp needs a `tool` (GH #1260): `tool_scope.require`, no contract, and the bridge beside it with `hop.bridge` `tool` and `hop.interim` `1`. The hop as on `brain`, plus `curator_call`; one `route` mark beside the call record"
         },
         {
           "route": "consult",

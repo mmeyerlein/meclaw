@@ -196,6 +196,16 @@ pub(crate) fn build_openai_request(
     Ok(Value::Object(body))
 }
 
+/// GH #1260 (OR-WG-6): a `tool_scope` with `require` asks the provider for a
+/// tool call at all on this one request (`tool_choice: "required"`). Written AFTER the
+/// build, so it wins over a static `provider_extra.tool_choice` for this
+/// call only; the cell calls it only while tools stay (`Scoped::require`).
+pub(crate) fn require_tool_call(request: &mut Value) {
+    if let Some(body) = request.as_object_mut() {
+        body.insert("tool_choice".into(), Value::String("required".into()));
+    }
+}
+
 /// GH #993: the request-body fields a model's `supported_params` governs --
 /// every field the cell writes from a sampling param, plus `top_p`, which no
 /// param writes (it reaches a request only through `provider_extra`, and that
@@ -1501,7 +1511,7 @@ mod tests {
     use super::{
         TranslateError, attach_image_parts, build_openai_request, concat_system_prompt,
         encode_base64, image_anchor, image_content_part, parse_openai_response, peer_frame,
-        translate_error_to_code,
+        require_tool_call, translate_error_to_code,
     };
     use crate::llm::params::LlmParams;
     use meclaw_core::serde_json::{Value, json};
@@ -1774,6 +1784,20 @@ mod tests {
         let body = build_openai_request(&params, "", &messages, &tools).unwrap();
         let t = body.get("tools").expect("tools key must be present");
         assert_eq!(t, &Value::Array(tools.to_vec()));
+    }
+
+    /// GH #1260 (OR-WG-6): `require` on the chat wire, over a static overlay.
+    #[test]
+    fn a_required_call_says_required_and_beats_provider_extra() {
+        let mut params = p();
+        params
+            .provider_extra
+            .insert("tool_choice".to_string(), json!("auto"));
+        let tools = [json!({"type": "function", "function": {"name": "web"}})];
+        let mut body = build_openai_request(&params, "", &[], &tools).unwrap();
+        assert_eq!(body["tool_choice"], "auto", "the static overlay first");
+        require_tool_call(&mut body);
+        assert_eq!(body["tool_choice"], "required");
     }
 
     #[test]

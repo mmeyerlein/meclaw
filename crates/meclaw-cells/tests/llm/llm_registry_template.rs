@@ -872,6 +872,7 @@ const PACKAGE_KEYS: &[&str] = &[
     "cost_cached_in",
     "chars_per_token",
     "tokens_per_image",
+    "tool_choice_required",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins

@@ -159,6 +159,7 @@ fn the_shipped_composites_declare_what_they_use() {
         json!([
             "web_search",
             "web_fetch",
+            "weather",
             "history_search",
             "history_read",
             "history_outline"

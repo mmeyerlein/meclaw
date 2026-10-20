@@ -1,4 +1,4 @@
-# `collector@5.2.0`
+# `collector@5.2.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -244,7 +244,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.2.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.2.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -480,7 +480,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.2.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.2.1`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -526,7 +526,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.2.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.2.1` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -542,17 +542,25 @@ A family is one declaration:
 
 ```json
 {"name": "file",
- "description": "2 operations on `file`. Name one in `op` and pass its parameters in `args`, ...\n- read(file, offset?): Describe a file -- path, kind, size.\n- write(file, text): Write a file.\n- help(op?, query?): the full schema of one op, or the op list.",
+ "description": "Operations on `file`: read, write; `help` gives their arguments. Name one in `op` and pass its parameters in `args`, ...\n- read(file, offset?): Describe a file -- path, kind, size.\n- write(file, text): Write a file.\n- help(op?, query?): the full schema of one op, or the op list.",
  "parameters": {"type": "object",
                 "properties": {"op": {"type": "string", "enum": ["read", "write", "help"]},
                                "args": {"type": "object"}},
                 "required": ["op", "args"]}}
 ```
 
+The first sentence names the ops ([#1260](https://github.com/mmeyerlein/meclaw/issues/1260)): it is all a family
+keeps at the hint level (`context.tools_hint`, below), so it says what there is to call and where the arguments are.
 Each op gets one signature line: its parameters in declared order, `?` for an optional one, then the first
 sentence of its description without the address phrase. `args` is free but required (`{}` for an op
-without parameters, `help` among them) -- a call without it would not unfold and dead-letters; the full schema of an op comes with
-`help`. The dispatcher unfolds `file{op: "read", args}` back into `file_read`, so the answerers stay flat.
+without parameters, `help` among them); the full schema of an op comes with
+`help`. The dispatcher unfolds `file{op: "read", args}` back into `file_read`, so the answerers stay flat, and since
+#1260 it unfolds `{op}` alone as `{op, args: {}}` -- the shape a hinted family is called in. It unfolds only a
+family this cell folded: the seam names them in `hop.tools_folded` (comma list, sorted; empty with the fold off),
+and the composite's `curate` edge lifts that key into `context.tools_folded`, the one way it reaches the dispatcher
+behind the brain. A composite that turns the fold on draws that lift
+(`"tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"`) and deletes the key on every edge out to `.`,
+as talky and cogny do; without it every folded call comes back `unknown_tool`.
 
 The fold runs where the menu is written, once per menu tick and never per turn, and sorts families, ops and
 the menu by name: the menu is the prefix every request starts with. `hop.menu_folded` names the families
@@ -572,7 +580,9 @@ same menu store the fold is derived from, with the same family rule:
   read off the round's assistant row (a result names its call by id only), and the op's full schema is appended to
   the error text, so the retry needs no help round. An error text that is a JSON object (the file tools' refusal)
   stays one and takes the schema as the field `op_schema`, so the curator still reads the failure and its code
-  (`tool_error`, GH #925). Any other error is parked as it came.
+  (`tool_error`, GH #925). A result with `unknown_tool` for a folded call whose op the family does not have
+  (`web_lookup`) takes the way too and gets the line `` `web` has no op `lookup`; its ops: fetch, search. ``
+  appended. Any other error is parked as it came.
 - With the fold on, the channel's `tool_scope` (stated in op names) is translated to families before it leaves on
   `curate`: a family stays when one of its ops is allowed and falls only when every op is denied (the op-exact cut
   stays with the answerer). `context.tools_hint` names the families the `llm` cell sends at hint level, as
@@ -593,8 +603,9 @@ the stamp is a leg of the turn, parked beside the window, memory and brief legs,
   stamp is the occasion that ends a longer wait.
 
 The path rides on every seam of the round (`curate`, `answer`) as `hop.path`, the stamp's families beside it
-as `hop.families` (a comma list in stamp order), both empty without a stamp, for the curator to branch on and
-to scope the quick path's tools. `0` (shipped) is off: no route leg, a stamp on `in_route` is ignored, and the fan-in
+as `hop.families` and its needs as `hop.needs` (GH #1260; comma lists in stamp order), all empty without a
+stamp, and the folded families as `hop.tools_folded` (see the fold above), for the curator to branch on, to scope the quick path's tools and to require the call of a turn that
+needs a `tool`. `0` (shipped) is off: no route leg, a stamp on `in_route` is ignored, and the fan-in
 is the one of before.
 
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)

@@ -349,7 +349,8 @@ fn a_tool_round_runs_a_full_fan_out_in_one_wave() {
         "cogny's round window is a program run plus {ROUND_MARGIN_MS}"
     );
     let default_wait_max = meclaw_cells::credential::default_credential_wait_max() as u64;
-    for tool in ["bash", "web_fetch", "web_search"] {
+    // GH #1260: `weather` is a tool of the same rounds and follows the same chain.
+    for tool in ["bash", "web_fetch", "web_search", "weather"] {
         let c = config(&format!("tools/{tool}"));
         let p = &c["params"];
         let mc = p["max_concurrency"].as_u64().unwrap_or(0);

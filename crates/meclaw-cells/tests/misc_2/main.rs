@@ -14,6 +14,8 @@ pub mod gh1229_the_keeper_night_is_armed_by_an_open_generation;
 pub mod gh1253_a_strike_in_the_drain_fires_after_the_restart;
 pub mod gh1253_an_update_in_the_drain_is_fetched_again_after_the_restart;
 pub mod gh1255_the_sent_answer_reaches_its_declared_checker;
+pub mod gh1260_a_required_scope_asks_for_the_call;
+pub mod gh1260_the_weather_tool_answers_from_its_endpoints;
 pub mod gh1266_the_night_keeps_its_contract_and_its_moment;
 pub mod gh135_happened_at_over_ubf;
 pub mod gh138_affinity_firewall_params;
@@ -58,8 +60,6 @@ pub mod gh282_only_what_somebody_said_is_drained;
 pub mod gh291_the_shipped_memory_hive_instantiates;
 pub mod gh292_every_ctx_key_is_declared;
 pub mod gh296_the_bundle_is_payload_not_plumbing;
-pub mod gh297_a_leg_may_come_back_short;
-pub mod gh298_nothing_is_a_value;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

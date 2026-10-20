@@ -112,6 +112,28 @@ fn emit(doc: Value) -> Vec<Value> {
     emit_with(json!({}), doc)
 }
 
+/// Like [`emit_with`], with the script's stderr beside the messages.
+fn emit_and_stderr(params: Value, mut doc: Value) -> (Vec<Value>, String) {
+    doc["params"] = params;
+    let out = run_script_on_stdin(
+        &split_script(),
+        &meclaw_testing::code_stdin(&doc).to_string(),
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "split exited non-zero: {err}");
+    let msgs = meclaw_core::serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("output is not a message array ({e}): {err}"));
+    (msgs, err)
+}
+
+/// A brain answer under a collector that folds its menu: `context.tools_folded`
+/// names the families the model was shown (the collector stamps it on `curate`,
+/// the talky's curate edge lifts it into the context the brain's answer carries).
+fn folded(families: &str, mut doc: Value) -> Value {
+    doc["header"]["context"]["tools_folded"] = json!(families);
+    doc
+}
+
 /// One OpenAI-form tool call as the `llm` cell emits it: the turn `text` is the
 /// stringified `function` object (`{name, arguments}`).
 fn call_turn(id: &str, name: &str, args: &str) -> Value {
@@ -382,6 +404,70 @@ fn a_stop_turn_passes_through_on_the_answer_lane() {
     assert_eq!(turns_of(&out[0])[0], turn, "the answer is passed through");
 }
 
+/// GH #1260 (OR-WG-6): a sentence its caller marked interim (the bridge
+/// beside a required tool call, `context.interim`) leaves as an interim
+/// answer -- a final one would end the round before the tool result came.
+/// Without the mark a stop stays final.
+#[test]
+fn a_stop_turn_its_caller_marked_interim_leaves_interim() {
+    let turn = json!({"origin": "assistant", "type": "text", "text": "One moment."});
+    let mut doc = brain_doc("stop", vec![turn.clone()]);
+    doc["header"]["context"]["interim"] = json!("1");
+    let out = emit(doc);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(route_of(&out[0]), "answer");
+    assert_eq!(hop_str(&out[0], "interim"), "1", "{out:?}");
+    assert_eq!(turns_of(&out[0])[0], turn);
+    let mut doc = brain_doc("stop", vec![turn]);
+    doc["header"]["context"]["interim"] = json!("");
+    let out = emit(doc);
+    assert!(out[0]["header"].get("interim").is_none(), "{out:?}");
+}
+
+/// Fix round 1 (review M-2): the knob holds for a sentence its caller marked
+/// interim too. `interim: "0"` says the brain behind this cell has no channel
+/// (GH #539), and a promise nobody can read is not one: the marked sentence
+/// does not leave -- neither as interim nor, worse, as the round's final
+/// answer, which would end the round before its tool result came back.
+#[test]
+fn a_marked_interim_sentence_stays_when_the_knob_is_off() {
+    let turn = json!({"origin": "assistant", "type": "text", "text": "One moment."});
+    let mut doc = brain_doc("stop", vec![turn]);
+    doc["header"]["context"]["interim"] = json!("1");
+    let out = emit_with(json!({"interim": "0"}), doc);
+    assert_eq!(out, Vec::<Value>::new(), "{out:?}");
+}
+
+/// GH #1260 (OR-WG-9): the required call of a tool round (`context.interim`
+/// `tool`) answered with prose instead of its call is not said -- in the
+/// wave's lab the fast model made the weather up there -- and the curator
+/// gives the round to the brain. With its call it is a bundle like any other.
+#[test]
+fn a_tool_round_answered_without_its_call_is_not_said() {
+    let turn = json!({"origin": "assistant", "type": "text",
+                      "text": "Tomorrow it will be cloudy, 30 % rain."});
+    let mut doc = brain_doc("stop", vec![turn]);
+    doc["header"]["context"]["interim"] = json!("tool");
+    assert_eq!(emit(doc), Vec::<Value>::new(), "not said");
+
+    let mut doc = brain_doc("tool_calls", vec![call_turn("c1", "weather", "{}")]);
+    doc["header"]["context"]["interim"] = json!("tool");
+    let out = emit(doc);
+    assert_eq!(route_of(&out[0]), "calls", "{out:?}");
+}
+
+/// Fix round 1 (review M-1): the cell declares the context key it reads.
+#[test]
+fn the_dispatcher_declares_the_interim_context_it_reads() {
+    let raw = std::fs::read_to_string(SPLIT_CONFIG).expect("dispatcher config");
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
+    let ctx = &cfg["contract"]["consumes"]["context"];
+    assert_eq!(ctx["interim"]["type"], json!("string"), "{ctx}");
+    assert_eq!(ctx["interim"]["required"], json!(false), "{ctx}");
+    assert_eq!(ctx["tools_folded"]["type"], json!("string"), "{ctx}");
+    assert_eq!(ctx["tools_folded"]["required"], json!(false), "{ctx}");
+}
+
 #[test]
 fn a_bundle_over_the_call_budget_answers_every_call_with_a_synthetic_error() {
     let calls: Vec<Value> = (0..17)
@@ -470,13 +556,16 @@ fn a_family_call_unfolds_to_its_op_and_only_the_exact_shape_does() {
     // family call and leaves as it came.
     let out = emit_with(
         json!({"async_tools": ["web_research"]}),
-        brain_doc(
-            "tool_calls",
-            vec![
-                call_turn("c1", "file", r#"{"op":"read","args":{"path":"a.md"}}"#),
-                call_turn("c2", "file", r#"{"op":"read","path":"a.md"}"#),
-                call_turn("c3", "web", r#"{"op":"research","args":{"q":"x"}}"#),
-            ],
+        folded(
+            "file,web",
+            brain_doc(
+                "tool_calls",
+                vec![
+                    call_turn("c1", "file", r#"{"op":"read","args":{"path":"a.md"}}"#),
+                    call_turn("c2", "file", r#"{"op":"read","path":"a.md"}"#),
+                    call_turn("c3", "web", r#"{"op":"research","args":{"q":"x"}}"#),
+                ],
+            ),
         ),
     );
 
@@ -506,17 +595,339 @@ fn a_family_call_unfolds_to_its_op_and_only_the_exact_shape_does() {
 }
 
 #[test]
+fn a_family_call_without_args_unfolds_as_an_op_with_empty_args() {
+    // OR-WG-4 (GH #1260): the hint level of a family (`tool_scope.hint`) shows
+    // the model `{op}` alone -- no `args`, because the hint has no parameters
+    // to show. Until #1260 only EXACTLY `{op, args}` unfolded, so every call a
+    // model made under hint left as tool `F` and dead-lettered, `help` among
+    // them: the hint level was a menu nobody could order from. `{op}` alone
+    // now unfolds as `{op, args: {}}`; `{op}` beside other keys is still a
+    // tool with its own `op` and leaves as it came.
+    let out = emit(folded(
+        "file,web",
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn("c1", "web", r#"{"op":"help"}"#),
+                call_turn("c2", "web", r#"{"op":"search"}"#),
+                call_turn("c3", "file", r#"{"op":"list","path":"."}"#),
+            ],
+        ),
+    ));
+
+    assert_eq!(out.len(), 4, "{out:?}");
+    assert_eq!(route_of(&out[1]), "result", "help is answered in place");
+    assert_eq!(hop_str(&out[1], "help_for"), "web");
+    assert_eq!(hop_str(&out[1], "tool_call_id"), "c1");
+    let asked: Value =
+        meclaw_core::serde_json::from_str(turns_of(&out[1])[0]["text"].as_str().unwrap())
+            .expect("the help request is json");
+    assert_eq!(asked, json!({}), "help without args asks for the op list");
+
+    assert_eq!(hop_str(&out[2], "tool_name"), "web_search");
+    let args: Value =
+        meclaw_core::serde_json::from_str(turns_of(&out[2])[0]["text"].as_str().unwrap())
+            .expect("unfolded args are json");
+    assert_eq!(
+        args,
+        json!({}),
+        "the op travels with empty args; the answerer names what is missing"
+    );
+
+    assert_eq!(
+        hop_str(&out[3], "tool_name"),
+        "file",
+        "own op: not unfolded"
+    );
+}
+
+#[test]
+fn a_family_call_with_a_key_beside_op_and_args_still_unfolds() {
+    // GH #1260: a lab run logged a model calling the folded family as
+    // `web {op: "search", args: {query}, id: "1"}` -- the family's own shape
+    // plus a key the schema never offered. Only EXACTLY `{op, args}` unfolded,
+    // so the call left as tool `web` and the tools hive answered
+    // `unknown_tool`. `args` is the family's own key: no single tool declares
+    // it beside `op` (a tool with an `op` of its own carries its parameters
+    // flat), so `op` + an `args` object is a family call whatever else rides
+    // along, and only `args` travels.
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            "file,web",
+            brain_doc(
+                "tool_calls",
+                vec![
+                    call_turn(
+                        "c1",
+                        "web",
+                        r#"{"op":"search","args":{"query":"first train"},"id":"1"}"#,
+                    ),
+                    call_turn("c2", "file", r#"{"op":"read","path":"a.md","id":"1"}"#),
+                ],
+            ),
+        ),
+    );
+
+    assert_eq!(out.len(), 3, "{out:?}");
+    // GH #1260: what stays behind is said, not lost in silence --
+    // one stderr line names the call, the family and every dropped key.
+    assert!(
+        stderr.contains("dispatcher: family call c1 (`web`) dropped key(s) beside op and args: id"),
+        "the dropped key is named on stderr: {stderr}"
+    );
+    assert_eq!(hop_str(&out[1], "tool_name"), "web_search");
+    let args: Value =
+        meclaw_core::serde_json::from_str(turns_of(&out[1])[0]["text"].as_str().unwrap())
+            .expect("unfolded args are json");
+    assert_eq!(
+        args,
+        json!({"query": "first train"}),
+        "only the inner args travel, the stray key stays behind"
+    );
+    assert_eq!(
+        hop_str(&out[2], "tool_name"),
+        "file",
+        "own op without `args`: not unfolded"
+    );
+}
+
+#[test]
+fn only_a_family_the_collector_folded_unfolds() {
+    // GH #1260: the shape `{op, args}` alone does not make a
+    // family call. A tool outside the fold may well take an `op` and an `args`
+    // object of its own (an orga `propose {item, op, args, why}` has exactly
+    // that form); unfolding it would rename it `<name>_<op>` and send it to
+    // nobody. The families the model was shown come in `context.tools_folded`,
+    // and only a call of one of them unfolds.
+    let calls = vec![
+        call_turn(
+            "c1",
+            "orga_propose",
+            r#"{"item":"7","op":"close","args":{"why":"done"}}"#,
+        ),
+        call_turn("c2", "web", r#"{"op":"search","args":{"query":"x"}}"#),
+        call_turn("c3", "file", r#"{"op":"help"}"#),
+    ];
+    let out = emit(folded("web", brain_doc("tool_calls", calls.clone())));
+    assert_eq!(out.len(), 4, "{out:?}");
+    assert_eq!(
+        hop_str(&out[1], "tool_name"),
+        "orga_propose",
+        "a tool outside the fold keeps its name"
+    );
+    assert_eq!(
+        turns_of(&out[1])[0]["text"],
+        r#"{"item":"7","op":"close","args":{"why":"done"}}"#,
+        "and its arguments, whole"
+    );
+    assert_eq!(hop_str(&out[2], "tool_name"), "web_search");
+    assert_eq!(
+        hop_str(&out[3], "tool_name"),
+        "file",
+        "`{{op}}` alone of a name the fold did not write leaves as it came"
+    );
+    assert_eq!(route_of(&out[3]), "tool", "and is not answered as help");
+
+    // No fold at all (`context.tools_folded` absent): nothing unfolds.
+    let out = emit(brain_doc("tool_calls", calls));
+    assert_eq!(out.len(), 4, "{out:?}");
+    assert_eq!(hop_str(&out[2], "tool_name"), "web", "{out:?}");
+    assert_eq!(
+        turns_of(&out[2])[0]["text"],
+        r#"{"op":"search","args":{"query":"x"}}"#
+    );
+}
+
+/// The shipped composites that fold their menu, read from the template tree
+/// so a third folding composite is checked without anyone adding it to a list.
+fn folding_composites() -> Vec<String> {
+    folding_composites_in(std::path::Path::new("../../templates"))
+}
+
+/// The templates under `root` that fold their menu: any `config.json` in a
+/// template's tree carrying a `fold_tools` knob (in `params` or in an
+/// `override_params` entry) whose value reads the way the collector's
+/// `assemble` reads it -- the knob as text, trimmed, equal to `"1"`; a missing
+/// knob is the shipped default `"0"`. Not only `<t>/collector/config.json`
+/// with the literal string `"1"` (review S M1): a fold set in another config of
+/// the tree, or as the number 1, folds just the same. An environment default
+/// `"${VAR:-1}"` reads as the value the colony binds it to before the
+/// collector sees it -- its default, the variable being unset in a shipped
+/// tree (review U2 M2); the raw token trimmed is never `"1"`.
+fn folding_composites_in(root: &std::path::Path) -> Vec<String> {
+    fn configs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.expect("templates entry").path();
+            if path.is_dir() {
+                configs(&path, out);
+            } else if path.file_name().is_some_and(|n| n == "config.json") {
+                out.push(path);
+            }
+        }
+    }
+    fn folds(v: &Value) -> bool {
+        match v {
+            Value::Object(map) => map.iter().any(|(k, inner)| {
+                if k == "fold_tools" {
+                    let text = match inner {
+                        Value::String(s) => meclaw_testing::code_wire::resolve_script_vars(s),
+                        Value::Null => String::new(),
+                        other => other.to_string(),
+                    };
+                    text.trim() == "1"
+                } else {
+                    folds(inner)
+                }
+            }),
+            Value::Array(items) => items.iter().any(folds),
+            _ => false,
+        }
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root).expect("templates dir") {
+        let dir = entry.expect("templates entry").path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut found = Vec::new();
+        configs(&dir, &mut found);
+        let any = found.iter().any(|p| {
+            let raw = std::fs::read_to_string(p).expect("config");
+            let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
+            folds(&cfg["params"]) || folds(&cfg["override_params"])
+        });
+        if any {
+            out.push(
+                dir.file_name()
+                    .expect("dir name")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn the_folding_discovery_reads_the_knob_the_way_the_collector_does() {
+    // Review S M1: the discovery read only `<t>/collector/config.json` and
+    // only the string "1". A tree that folds elsewhere or with the number 1
+    // folds all the same; "0", a blank and the shipped default do not.
+    let td = tempfile::TempDir::new().unwrap();
+    let write = |rel: &str, doc: Value| {
+        let p = td.path().join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, doc.to_string()).unwrap();
+    };
+    write(
+        "a/collector/config.json",
+        json!({"override_params": {"assemble": {"fold_tools": "1"}}}),
+    );
+    write(
+        "b/inner/config.json",
+        json!({"override_params": {"assemble": {"fold_tools": 1}}}),
+    );
+    write(
+        "c/collector/assemble/config.json",
+        json!({"params": {"fold_tools": " 1 "}}),
+    );
+    write(
+        "d/collector/config.json",
+        json!({"override_params": {"assemble": {"fold_tools": "0"}}}),
+    );
+    write(
+        "e/collector/config.json",
+        json!({"params": {"fold_tools": null}}),
+    );
+    write("f/config.json", json!({"params": {}}));
+    // Review U2 M2: an environment default folds as its default does -- the
+    // colony binds `${VAR:-1}` to "1" when the variable is unset or empty, the
+    // collector reads that value, not the token.
+    write(
+        "g/collector/config.json",
+        json!({"override_params": {"assemble": {"fold_tools": "${FOLD_TOOLS:-1}"}}}),
+    );
+    write(
+        "h/collector/config.json",
+        json!({"params": {"fold_tools": "${FOLD_TOOLS:-0}"}}),
+    );
+    assert_eq!(folding_composites_in(td.path()), ["a", "b", "c", "g"]);
+}
+
+/// GH #1260: every composite that folds its menu lifts the
+/// families from the collector's `curate` seam into the context, the one way a
+/// hop key of the collector reaches the dispatcher behind the brain -- the hop
+/// lives for one emission, the context rides the brain's answer. And every
+/// edge that leaves the composite (`to: "."`) deletes the key again, so the
+/// families of one composite never reach the caller's context; no inner edge
+/// deletes it, or the dispatcher would unfold nothing.
+#[test]
+fn every_folding_composite_lifts_the_folded_families_into_the_context() {
+    let composites = folding_composites();
+    // The discovery itself is pinned: today talky and cogny fold, and a
+    // broken read of the tree must not pass as "no composite folds".
+    for known in ["cogny", "talky"] {
+        assert!(
+            composites.iter().any(|c| c == known),
+            "{known} folds its menu: {composites:?}"
+        );
+    }
+    for t in &composites {
+        let path = format!("../../templates/{t}/config.json");
+        let raw = std::fs::read_to_string(&path).expect("composite config");
+        let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
+        let edges = cfg["params"]["graph"]["edges"].as_array().expect("edges");
+        let edge = edges
+            .iter()
+            .find(|e| {
+                e["from"] == "./collector"
+                    && e["to"] == "./curator"
+                    && e["condition"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("'curate'"))
+            })
+            .unwrap_or_else(|| panic!("{t}: no curate edge"));
+        assert_eq!(
+            edge["modifier"]["set_context"]["tools_folded"],
+            "has(hop.tools_folded) ? hop.tools_folded : ''",
+            "{t}: {edge}"
+        );
+        let deletes = |e: &Value| {
+            e["modifier"]["delete_context"]
+                .as_array()
+                .is_some_and(|d| d.iter().any(|k| k == "tools_folded"))
+        };
+        let exits: Vec<&Value> = edges.iter().filter(|e| e["to"] == ".").collect();
+        assert!(!exits.is_empty(), "{t}: no edge leaves the composite");
+        for e in &exits {
+            assert!(deletes(e), "{t}: an exit keeps tools_folded: {e}");
+        }
+        for e in edges.iter().filter(|e| e["to"] != ".") {
+            assert!(!deletes(e), "{t}: an inner edge deletes tools_folded: {e}");
+        }
+    }
+}
+
+#[test]
 fn a_help_call_comes_back_as_a_result_naming_its_family() {
     // R-WM-4: `op: "help"` of a folded family goes to no answerer. It comes
     // back at once on the result lane, like a refused call, carrying the
     // family in `help_for` and the request in its text; the collector fills
     // the answer from its menu store.
-    let out = emit(brain_doc(
-        "tool_calls",
-        vec![
-            call_turn("c1", "file", r#"{"op":"help","args":{"op":"read"}}"#),
-            call_turn("c2", "web_search", "{}"),
-        ],
+    let out = emit(folded(
+        "file,web",
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn("c1", "file", r#"{"op":"help","args":{"op":"read"}}"#),
+                call_turn("c2", "web_search", "{}"),
+            ],
+        ),
     ));
 
     assert_eq!(out.len(), 3, "{out:?}");

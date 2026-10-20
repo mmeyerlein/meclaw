@@ -1,4 +1,4 @@
-# `npc@1.0.0`
+# `npc@1.0.1`
 
 A non-player character for a shared world: one identity seeded at instantiation, ONE `llm`
 brain behind a [`curator`](../curator/), a [`memory-hive`](../memory-hive/), the world's tools

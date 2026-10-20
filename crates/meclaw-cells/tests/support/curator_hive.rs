@@ -227,6 +227,14 @@ pub struct Hive {
     /// write of a bundle failing. An entry is taken in the message it struck;
     /// set `ledger_may_refuse` with it.
     pub refuse_legs: Vec<(String, String)>,
+    /// GH #1260 (fix round 1): every emission of a hive cell is checked
+    /// against that cell's own `contract.emits`, the way the colony's
+    /// `validate_emits` checks it before routing -- a violation is
+    /// dead-lettered there, so it is recorded here in `emit_violations`
+    /// (`<cell>: <reason>`). Opt-in: the bridge of the tool round carried
+    /// `hop.bridge = "tool"` outside the declared values, and no test saw it.
+    pub check_emits: bool,
+    pub emit_violations: Vec<String>,
 }
 
 /// GH #1225: the cells the hive runs `resident`, the way they ship.
@@ -322,6 +330,8 @@ impl Hive {
             ledger_may_refuse: false,
             refuse_phase: None,
             sql_at_phase: None,
+            check_emits: false,
+            emit_violations: Vec::new(),
         }
     }
 
@@ -394,6 +404,9 @@ impl Hive {
             Value::Array(a) => a,
             other => vec![other],
         };
+        if self.check_emits {
+            self.check_emits_of(name, &list);
+        }
         list.into_iter()
             .map(|m| {
                 let mut body = obj(m);
@@ -409,6 +422,23 @@ impl Hive {
                 }
             })
             .collect()
+    }
+
+    /// The colony's emission check on one cell's output (`check_emits`).
+    fn check_emits_of(&mut self, name: &str, list: &[Value]) {
+        let emits = &self.cells[name]["contract"]["emits"];
+        if emits.is_null() {
+            return;
+        }
+        let block: meclaw_core::EmitsBlock = sj::from_value(emits.clone())
+            .unwrap_or_else(|e| panic!("{name}: contract.emits does not parse: {e}"));
+        let compiled = meclaw_core::CompiledEmits::compile(&block)
+            .unwrap_or_else(|e| panic!("{name}: contract.emits does not compile: {e}"));
+        for m in list {
+            if let Err(e) = meclaw_core::validate_emits(m, &compiled) {
+                self.emit_violations.push(format!("{name}: {e}"));
+            }
+        }
     }
 
     /// One store message answered the way the store cell answers it.
@@ -878,6 +908,11 @@ impl Hive {
         let mut ctx = call.context.clone();
         for k in ["curator_call", "turn_id", "session_id", "iter"] {
             ctx.insert(k.into(), call.hop[k].clone());
+        }
+        // talky's `./curator -> ./quick` edge lifts `hop.interim` too
+        // (GH #1260); a call without it carries none.
+        if let Some(interim) = call.hop.get("interim") {
+            ctx.insert("interim".into(), interim.clone());
         }
         let mut hop = obj(json!({"finish_reason": finish, "model": "test-model"}));
         for (k, v) in obj(extra) {

@@ -305,6 +305,8 @@ fn the_tool_occupants_are_the_shipped_cell_types() {
         ("build-draft", "code"),
         ("build-apply", "code"),
         ("schemas", "code"),
+        // GH #1260: HTTP out of a `code` cell, after the memory hive's embedder.
+        ("weather", "code"),
     ] {
         let val = config_at(&format!("{dir}/config.json"));
         assert_eq!(

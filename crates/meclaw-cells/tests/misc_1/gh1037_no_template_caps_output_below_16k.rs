@@ -264,9 +264,20 @@ fn gh1037_every_reachable_row_states_its_input_bounds_and_cache_price() {
         }
         let cached = row["cost_cached_in"].as_f64().unwrap_or(0.0);
         let cost_in = row["cost_in"].as_f64().unwrap_or(0.0);
+        // GH #1260 (Lab P1): a row pinned to one host bills that host's prices,
+        // and crusoe/bf16 lists `input_cache_read` equal to its prompt price --
+        // a cache read without a discount. Equal is allowed only on a row that
+        // pins its host (`package.provider_extra.provider.order`, the field the
+        // prices belong to -- review M-1: a structured field, not prose of the
+        // note); anything above `cost_in` stays a wrong row, and an unpinned
+        // row bills the gateway's routing, whose cache read is a discount.
+        let pins_a_host = row["package"]["provider_extra"]["provider"]["order"]
+            .as_array()
+            .is_some_and(|order| !order.is_empty());
         assert!(
-            cached > 0.0 && cached < cost_in,
-            "{id}: cost_cached_in {cached} is a price below cost_in {cost_in}"
+            cached > 0.0 && (cached < cost_in || (cached == cost_in && pins_a_host)),
+            "{id}: cost_cached_in {cached} is a price below cost_in {cost_in} \
+             (equal only on a row that pins its host)"
         );
         assert!(
             note.contains("input_cache_read"),

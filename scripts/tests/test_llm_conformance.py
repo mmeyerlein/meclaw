@@ -651,6 +651,67 @@ class TestMessagesWire(ConformanceCase):
                 self.assertNotIn(field, b)
 
 
+class TestProviderOrder(ConformanceCase):
+    """`--provider-order`: one model measured on a pinned OpenRouter provider.
+
+    Lab Q1 of wave wege (GH #1260) measured gpt-oss-120b only on OpenRouter's
+    default routing (p50 1 624 ms) -- the tool could not pin a provider, so a
+    fast provider never got a fair run. The option puts OpenRouter's
+    `provider.order` with `allow_fallbacks: false` on every request, keeps the
+    strict field beside it, and records under a slug of its own.
+    """
+
+    def test_every_request_pins_the_provider_without_fallbacks(self):
+        requests = pathlib.Path(self.tmp.name) / "requests"
+        requests.mkdir()
+        (requests / "fake__strict-all.json").write_text(json.dumps({
+            "model_id": "fake/strict-all", "endpoint_class": "openrouter",
+            "wire_dialect": "chat", "expected_dropped": [],
+            "body": {"model": "fake/strict-all", "max_tokens": 512,
+                     "messages": [{"role": "user", "content": "Ping."}]},
+        }))
+        code, report, out = self.run_tool(
+            "fake/strict-all", "--provider-order", "cerebras/fp16,groq",
+            "--requests-dir", str(requests))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(report["checks"]["K8"]["status"], "green", out)
+        posts = [json.loads(b) for b in self.fake.bodies]
+        self.assertGreater(len(posts), 3)
+        for body in posts:
+            self.assertEqual(body["provider"], {
+                "require_parameters": True, "order": ["cerebras/fp16", "groq"],
+                "allow_fallbacks": False}, body)
+        self.assertIn("provider cerebras/fp16,groq", out)
+
+    def test_without_strict_the_order_still_goes_out(self):
+        self.run_tool("fake/strict-all", "--provider-order", "groq",
+                      "--no-strict", "--only", "K1")
+        body = json.loads(self.fake.bodies[-1])
+        self.assertEqual(body["provider"], {"order": ["groq"], "allow_fallbacks": False})
+
+    def test_record_goes_to_a_slug_per_provider(self):
+        record = pathlib.Path(self.tmp.name) / "rec"
+        self.run_tool("fake/strict-no-temperature", "--provider-order",
+                      "cerebras/fp16", "--record", str(record))
+        slug = record / "fake__strict-no-temperature@cerebras_fp16"
+        measured = json.loads((slug / "measured.json").read_text())
+        self.assertEqual(measured["provider_order"], ["cerebras/fp16"])
+        self.assertFalse((record / "fake__strict-no-temperature").exists())
+
+    def test_refused_off_openrouter_before_any_call(self):
+        code, _, out = self.run_tool(
+            "fake/local-lenient", "--provider-order", "groq", endpoint_class="local")
+        self.assertEqual(code, 2)
+        self.assertIn("--provider-order", out)
+        self.assertEqual(self.fake.bodies, [])
+        self.assertEqual(self.fake.gets, 0)
+
+    def test_an_empty_order_is_refused(self):
+        code, _, out = self.run_tool("fake/strict-all", "--provider-order", " , ")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.fake.bodies, [])
+
+
 def tearDownModule():
     store_isolation.restore()
 

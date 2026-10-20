@@ -1,0 +1,65 @@
+{
+  "id": "gen-1792406354-94wPscYi8TcCz9PmSxky",
+  "object": "chat.completion",
+  "created": 1792406354,
+  "model": "openai/gpt-oss-120b",
+  "provider": "Crusoe",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "tool_calls",
+      "native_finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": "We need to call echo.",
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "chatcmpl-tool-881fd71dc263adba",
+            "function": {
+              "name": "echo",
+              "arguments": "{\n  \"text\": \"ping\"\n}"
+            }
+          }
+        ],
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "We need to call echo.",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 143,
+    "completion_tokens": 33,
+    "total_tokens": 176,
+    "cost": 1.5246e-05,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 64,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 1.54e-05,
+      "upstream_inference_prompt_cost": 7.15e-06,
+      "upstream_inference_completions_cost": 8.25e-06
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 15,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

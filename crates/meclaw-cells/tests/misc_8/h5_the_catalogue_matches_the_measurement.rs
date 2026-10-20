@@ -18,7 +18,10 @@
 //! 4. every held measurement passed the checks a catalogue list rests on
 //!    (K1 shape, K2 usage, K3 params, K7 no stream);
 //! 5. the tool's field list is the cell's (`SAMPLING_PARAMS`);
-//! 6. the native `claude-haiku-5-5` row (GH #1243) is one of those rows.
+//! 6. the native `claude-haiku-5-5` row (GH #1243) is one of those rows;
+//! 7. a row measured on a pinned provider (`provider_order` in its record)
+//!    pins exactly that provider without fallbacks, and a row that pins one
+//!    was measured on it (GH #1260).
 //!
 //! Guarded like every other template-reading test (GH #49); the tool lies
 //! under `workshop/`, which never travels, so 5 skips without it.
@@ -316,5 +319,61 @@ fn h5_the_native_haiku_row_rests_on_its_measurement() {
         (field("provider"), field("wire_dialect"), field("status")),
         ("anthropic", "messages", "explicit"),
         "{HAIKU}: the native Messages row, reached by name only"
+    );
+}
+
+/// The provider order a row's package pins: `provider_extra.provider.order`,
+/// or `None` for a row on the gateway's default routing.
+fn pinned_order(row: &Map<String, Value>) -> Option<Value> {
+    row.get("package")
+        .and_then(|p| p.get("provider_extra"))
+        .and_then(|e| e.get("provider"))
+        .and_then(|p| p.get("order"))
+        .cloned()
+}
+
+/// GH #1260 (Lab P1): the same open-weight model answered a tool call in a
+/// p50 of 1624 ms on the gateway's default routing and of 231 ms pinned to
+/// one fast host. So a row's `response_ms` is a claim about a provider: a
+/// row measured pinned (`provider_order` in `measured.json`, written by the
+/// tool's `--provider-order`) carries that order in `provider_extra` with
+/// `allow_fallbacks: false` -- a silent fallback would serve the slow host
+/// under the fast time -- and a row that pins a provider rests on a
+/// measurement on exactly that provider.
+#[test]
+fn h5_a_pinned_measurement_is_a_pinned_row() {
+    let Some(path) = catalogue() else {
+        eprintln!("llm-registry did not travel into this tree -- skipped (GH #49)");
+        return;
+    };
+    let mut wrong = Vec::new();
+    for row in chat_rows(&path) {
+        let id = model_id(&row);
+        let file = measured_path(&row);
+        if !file.is_file() {
+            continue; // h5_every_active_chat_row_was_measured names it
+        }
+        let measured = read_json(&file).get("provider_order").cloned();
+        let pinned = pinned_order(&row);
+        if measured != pinned {
+            wrong.push(format!(
+                "{id}: measured on {measured:?}, the row pins {pinned:?} ({})",
+                file.display()
+            ));
+            continue;
+        }
+        if pinned.is_some() {
+            let fallbacks = row["package"]["provider_extra"]["provider"].get("allow_fallbacks");
+            if fallbacks != Some(&Value::Bool(false)) {
+                wrong.push(format!(
+                    "{id}: pins {pinned:?} but allow_fallbacks is {fallbacks:?}, not false"
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "provider order of catalogue and measurement differ:\n{}",
+        wrong.join("\n")
     );
 }

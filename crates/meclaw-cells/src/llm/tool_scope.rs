@@ -12,6 +12,13 @@
 //! The model fetches the rest of a hinted family through `help`; the hint
 //! level keeps the prompt small for families the turn will rarely call.
 //!
+//! **`require`** (GH #1260, OR-WG-6): `true` asks the provider to answer with
+//! a tool call at all (`tool_choice` required / `any`), for this request
+//! only. A fast model given a turn that needs a lookup wrote "let me check"
+//! and stopped, or made the answer up -- 7 of 10 calls with the tool, 10 of 10
+//! with the call required (lab probe for GH #1260). A scope that leaves no
+//! tool drops it (a provider refuses a required call without tools).
+//!
 //! **Order is kept, never re-sorted** (OR-SN-31): the filter walks the menu in
 //! its own order and drops entries, so the same scope yields byte-identical
 //! `tools` on every call — the precondition for a provider's prefix cache to
@@ -31,6 +38,8 @@ pub(crate) struct ToolScope {
     /// These tools stay at the hint level (name, first sentence, `{op}`).
     /// Never narrows and never widens: only an entry that `allow`/`deny` keep.
     hint: Vec<String>,
+    /// GH #1260: the answer must be a tool call (absent = `false`).
+    require: bool,
 }
 
 /// What the filter produced for one request.
@@ -40,6 +49,12 @@ pub(crate) struct Scoped {
     pub(crate) tools: Vec<Value>,
     /// Names the scope mentions that match no menu entry (ignored, reported).
     pub(crate) unknown: Vec<String>,
+    /// GH #1260: the request asks for a tool call -- `require` was set and at
+    /// least one tool stayed.
+    pub(crate) require: bool,
+    /// GH #1260: `require` was set but no tool stayed, so it was dropped
+    /// (reported, never sent: a required call without tools is a 400).
+    pub(crate) require_dropped: bool,
 }
 
 impl ToolScope {
@@ -47,7 +62,7 @@ impl ToolScope {
     /// `Ok(None)` — OR-SN-69: a writer that fills the slot from an optional
     /// value (the collector, T2) must not have to drop the key to mean "no
     /// scope" (rev-L1 M-3). Anything else that is not
-    /// `{"allow"?: [string], "deny"?: [string], "hint"?: [string]}` is an
+    /// `{"allow"?: [string], "deny"?: [string], "hint"?: [string], "require"?: bool}` is an
     /// error: a scope that cannot be read must not silently widen the menu to
     /// all of it.
     pub(crate) fn parse(slot: Option<&Value>) -> Result<Option<Self>, String> {
@@ -59,12 +74,19 @@ impl ToolScope {
         };
         if let Some(key) = obj
             .keys()
-            .find(|k| !matches!(k.as_str(), "allow" | "deny" | "hint"))
+            .find(|k| !matches!(k.as_str(), "allow" | "deny" | "hint" | "require"))
         {
             return Err(format!(
-                "invalid tool_scope slot: unknown key {key:?} (allowed: allow, deny, hint)"
+                "invalid tool_scope slot: unknown key {key:?} (allowed: allow, deny, hint, require)"
             ));
         }
+        let require = match obj.get("require") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err("invalid tool_scope slot: require is not a boolean".to_string());
+            }
+        };
         let allow = obj.get("allow").map(|v| names(v, "allow")).transpose()?;
         let half = |h: &str| -> Result<Vec<String>, String> {
             Ok(obj
@@ -77,6 +99,7 @@ impl ToolScope {
             allow,
             deny: half("deny")?,
             hint: half("hint")?,
+            require,
         }))
     }
 
@@ -115,8 +138,14 @@ impl ToolScope {
                     t
                 }
             })
-            .collect();
-        Scoped { tools, unknown }
+            .collect::<Vec<Value>>();
+        let require = self.require && !tools.is_empty();
+        Scoped {
+            require,
+            require_dropped: self.require && !require,
+            tools,
+            unknown,
+        }
     }
 }
 
@@ -249,6 +278,64 @@ mod tests {
         let s = scope(json!({"allow": ["calc"]})).apply(m);
         assert_eq!(names_of(&s), vec!["calc"]);
         assert!(s.unknown.is_empty());
+    }
+
+    /// GH #1260: the quick way's class tools come as `{allow: [web], hint:
+    /// []}` -- the folded `web` keeps its whole schema with `args`, so the
+    /// fast model can call it; only a hinted family shrinks to `{op}`.
+    #[test]
+    fn an_allowed_tool_outside_the_hint_keeps_its_whole_schema() {
+        let params = json!({"type": "object", "properties": {
+            "op": {"type": "string", "enum": ["search", "fetch", "help"]},
+            "args": {"type": "object"}}, "required": ["op", "args"]});
+        let m = vec![
+            (
+                "web".to_string(),
+                json!({"function": {"name": "web", "description": "Search. Fetch.",
+                                    "parameters": params.clone()}}),
+            ),
+            (
+                "history".to_string(),
+                json!({"function": {"name": "history", "description": "Recall. More.",
+                                    "parameters": params.clone()}}),
+            ),
+        ];
+        let s = scope(json!({"allow": ["web", "history"], "hint": ["history"]})).apply(m);
+        assert_eq!(s.tools[0]["function"]["parameters"], params, "ops stage");
+        assert_eq!(s.tools[0]["function"]["description"], "Search. Fetch.");
+        assert_eq!(
+            s.tools[1]["function"]["parameters"]["properties"]
+                .as_object()
+                .map(|p| p.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["op".to_string()]),
+            "hint stage"
+        );
+        let s = scope(json!({"allow": ["web"], "hint": []})).apply(vec![(
+            "web".to_string(),
+            json!({"function": {"name": "web", "parameters": params.clone()}}),
+        )]);
+        assert_eq!(s.tools[0]["function"]["parameters"], params);
+    }
+
+    /// GH #1260 (OR-WG-6): `require` reaches the request only while a tool
+    /// stays; with none left it is dropped and said, never sent (a provider
+    /// refuses a required call without tools).
+    #[test]
+    fn require_holds_only_while_a_tool_stays() {
+        let m = menu(&[("web", "web"), ("weather", "weather")]);
+        let s = scope(json!({"allow": ["web"], "require": true})).apply(m.clone());
+        assert!(s.require && !s.require_dropped, "{s:?}");
+        let s = scope(json!({"allow": [], "require": true})).apply(m.clone());
+        assert!(s.tools.is_empty());
+        assert!(
+            !s.require && s.require_dropped,
+            "no tool, no require: {s:?}"
+        );
+        let s = scope(json!({"allow": ["web"], "require": false})).apply(m.clone());
+        assert!(!s.require && !s.require_dropped);
+        let s = scope(json!({"allow": ["web"]})).apply(m);
+        assert!(!s.require && !s.require_dropped, "absent = false");
+        assert!(ToolScope::parse(Some(&json!({"require": "yes"}))).is_err());
     }
 
     #[test]

@@ -3,12 +3,14 @@
 //! WHY this file exists: the route cell of talky stamps every turn with a
 //! path (`talk`, `simple`, `complex`, `research`), and the collector carries it
 //! on the seam as `hop.path` (GH #1244); the parent edge lifts it into
-//! `context.path`. The curator is the one who decides (R-WP-1): a `talk` or
-//! `simple` turn leaves on `quick` with the short window of the role `quick`
-//! (the last `keep_recent` 4 elements, no recall, no sidecar contract, the
-//! tool scope allowing only the families of the stamp), `complex` leaves on
-//! `consult`, `research` on `research`, and a turn without a path keeps the
-//! road of before, `brain`. Each call that had a path leaves one `route` mark.
+//! `context.path`. The curator is the one who decides (R-WP-1): a `simple`
+//! turn leaves on `quick` with the short window of the role `quick` (the last
+//! `keep_recent` 4 elements, no recall, the sidecar contract since GH #1260,
+//! the tool scope allowing the class's tools at the ops stage and the stamp's
+//! other families at the hint stage), a `talk` turn on `brain` (GH #1260),
+//! `complex` leaves on `consult`, `research` on `research`, and a turn without
+//! a path keeps the road of before, `brain`. Each call that had a path leaves
+//! one `route` mark.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -89,13 +91,13 @@ fn the_curator_branches_the_seam_by_the_path() {
     );
     assert_eq!(
         q.body["tool_scope"],
-        json!({"allow": ["web"], "hint": ["web"]}),
-        "the quick scope allows the stamp's families and nothing else, in the hint \
-         form (GH #1248, T4-12)"
+        json!({"allow": ["web", "weather"], "hint": []}),
+        "the quick scope allows the class's tools at the ops stage (GH #1260: the \
+         hint form left the fast model unable to call the search)"
     );
     assert!(
-        q.body["system"]["instructions"].get("sidecar").is_none(),
-        "the quick window carries no sidecar contract: {:?}",
+        q.body["system"]["instructions"].get("sidecar").is_some(),
+        "the quick window carries the sidecar contract (GH #1260): {:?}",
         q.body["system"]
     );
     let marks = h.rows("SELECT value FROM marks WHERE kind = 'route'");

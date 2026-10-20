@@ -95,7 +95,7 @@ pub use drain_view::{DrainView, with_drain_view};
 pub use edge_table::{Edge, EdgeDecision, EdgeTable, apply_edges, evaluate_edge};
 pub use factory::{
     CELL_ROOT_MARKER, CellFactory, CellFactoryRegistry, ContractView, SpawnedCellKind, WakeFn,
-    anchor_cell_root, check_cell_root, create_cell_root,
+    anchor_cell_root, check_cell_root, create_cell_root, resolve_idle_timeout,
 };
 pub use hive_boundary::{
     HiveBoundary, HiveBoundaryTable, boundary_refusal, rebuild_hive_boundaries,

@@ -449,6 +449,9 @@ fn the_package_keys_are_the_contract() {
             // a contract change, made on purpose.
             "chars_per_token",
             "tokens_per_image",
+            // GH #1260 (OR-WG-9): whether the host takes a forced tool call --
+            // a contract change, made on purpose.
+            "tool_choice_required",
         ]
     );
     // Every package key is a known, run-time-mutable param.

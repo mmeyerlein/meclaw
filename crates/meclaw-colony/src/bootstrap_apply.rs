@@ -104,13 +104,13 @@ pub async fn apply_bootstrap_plan(
         // Phase-13-K-2: idle_timeout-Mapping aktiv. `cell.timeout == 0` →
         // Default-Idle (oder per-cell-Override via `idle_timeout_ms`). Andere
         // values (-1 persistent, >0 one-shot) get no idle timer.
-        let idle_timeout = match c.cell_timeout {
-            0 => Some(std::time::Duration::from_millis(
-                c.idle_timeout_ms
-                    .unwrap_or(runtime.colony_config.idle_timeout_default_ms),
-            )),
-            _ => None,
-        };
+        // GH #1260: the type may name its own idle default (`llm`: 30 min).
+        let idle_timeout = crate::factory::resolve_idle_timeout(
+            c.cell_timeout,
+            c.idle_timeout_ms,
+            factory.default_idle_timeout_ms(),
+            runtime.colony_config.idle_timeout_default_ms,
+        );
         // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
         // BEFORE `spawn_cell` builds the RespawnFn closure that clones this
         // `ContractView`, so a crash-restarted cell carries the resolved flag.
@@ -375,13 +375,15 @@ async fn register_inactive_non_spawned(
     // Try the factory's boot-inactive respawn hook (T7). `Some` → a real respawn
     // for an eager kind (eager re-spawn on reconnect); `None` → lazy / opted-out
     // → real wake-on-message wiring via `spawn_cell` (F1-KH2 inventory #3).
-    let idle_timeout = match c.cell_timeout {
-        0 => Some(std::time::Duration::from_millis(
-            c.idle_timeout_ms
-                .unwrap_or(runtime.colony_config.idle_timeout_default_ms),
-        )),
-        _ => None,
-    };
+    // GH #1260: the type may name its own idle default (`llm`: 30 min).
+    let idle_timeout = crate::factory::resolve_idle_timeout(
+        c.cell_timeout,
+        c.idle_timeout_ms,
+        factories
+            .get(&c.cell_type)
+            .and_then(|f| f.default_idle_timeout_ms()),
+        runtime.colony_config.idle_timeout_default_ms,
+    );
     // paket-7 B5 (Auflage A3): resolve the effective emits-validation flag
     // BEFORE the boot-inactive reconnect hook captures this `ContractView`, so a
     // reconnect-respawned eager cell carries the resolved flag.

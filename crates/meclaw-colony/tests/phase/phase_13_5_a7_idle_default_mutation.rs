@@ -120,11 +120,17 @@ async fn rescan_templates(h: &ColonyHandle, templates_root: std::path::PathBuf) 
 /// Records the `idle_timeout` (ms, -1 = None) the spawn path handed the factory.
 struct IdleRecorderFactory {
     last_idle_ms: Arc<AtomicI64>,
+    /// GH #1260: the type's own idle default, `None` = the colony default.
+    type_default: Option<u64>,
 }
 
 impl CellFactory for IdleRecorderFactory {
     fn validate_params(&self, _params: &JsonValue) -> Result<(), String> {
         Ok(())
+    }
+
+    fn default_idle_timeout_ms(&self) -> Option<u64> {
+        self.type_default
     }
 
     fn spawn_cell(
@@ -216,6 +222,7 @@ async fn mutation_spawn_inherits_colony_json_idle_default() {
     let last_idle_ms = Arc::new(AtomicI64::new(-2));
     let factory: Arc<dyn CellFactory> = Arc::new(IdleRecorderFactory {
         last_idle_ms: last_idle_ms.clone(),
+        type_default: None,
     });
     let h = ColonyHandle::new_with_factories_at(&td, vec![("recorder".to_string(), factory)]);
     rescan_templates(&h, td.path().join("templates")).await;
@@ -249,6 +256,7 @@ async fn mutation_spawn_inherits_colony_json_idle_default() {
 // colony.db between two boots), which is where `build_boot_inactive_respawn` is
 // reached at boot. A fresh nested-hive cell would boot ACTIVE and route through
 // the already-wired eager `spawn_cell` path instead, so it cannot prove site 1.
+// The type default on that path: `a_boot_inactive_cell_gets_its_type_default`.
 
 /// (b) Subtree-instantiation path (the `colony.rs` subtree-spawn loop): an
 /// `add_nodes` of a SUBTREE template registers each inner cell inactive via
@@ -293,6 +301,7 @@ async fn subtree_spawn_inherits_colony_json_idle_default() {
     let last_idle_ms = Arc::new(AtomicI64::new(-2));
     let factory: Arc<dyn CellFactory> = Arc::new(IdleRecorderFactory {
         last_idle_ms: last_idle_ms.clone(),
+        type_default: None,
     });
     let h = ColonyHandle::new_with_factories_at(&td, vec![("recorder".to_string(), factory)]);
     rescan_templates(&h, td.path().join("templates")).await;
@@ -318,4 +327,220 @@ async fn subtree_spawn_inherits_colony_json_idle_default() {
     );
 
     h.shutdown().await;
+}
+
+/// GH #1260: the `llm` type keeps its cells awake 30 minutes, because a wake
+/// costs a vault round of about 195 ms. Measured on a lab run: the first
+/// call after a wake waited 250 ms, the warm calls 52/56 ms.
+const TYPE_DEFAULT_MS: u64 = 1_800_000;
+
+async fn add_recorder(type_default: Option<u64>, cell_json: &str, colony_json: &str) -> i64 {
+    let td = tempfile::TempDir::new().unwrap();
+    write(td.path(), "colony.json", colony_json);
+    write(
+        td.path(),
+        "main/config.json",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    );
+    let tpl_dir = td.path().join("templates").join("recorder");
+    write(&tpl_dir, "template.json", r#"{"name":"recorder"}"#);
+    write(&tpl_dir, "config.json", cell_json);
+    let last_idle_ms = Arc::new(AtomicI64::new(-2));
+    let factory: Arc<dyn CellFactory> = Arc::new(IdleRecorderFactory {
+        last_idle_ms: last_idle_ms.clone(),
+        type_default,
+    });
+    let h = ColonyHandle::new_with_factories_at(&td, vec![("recorder".to_string(), factory)]);
+    rescan_templates(&h, td.path().join("templates")).await;
+    let outcome = send_mutation(
+        &h,
+        meclaw_core::serde_json::json!({
+            "scope": "/",
+            "diff": {"add_nodes": [{"name":"rec","template":"recorder"}]}
+        }),
+    )
+    .await;
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "add_nodes(recorder) must commit; got {outcome:?}"
+    );
+    let seen = last_idle_ms.load(Ordering::SeqCst);
+    h.shutdown().await;
+    seen
+}
+
+const NO_OVERRIDE: &str = r#"{"cell":{"type":"recorder","timeout":0},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#;
+
+/// GH #1260: a type that names its own idle default gets it, not the colony
+/// default -- `colony.json` says 150 here and the cell still gets 30 minutes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_type_default_beats_the_colony_default() {
+    let seen = add_recorder(
+        Some(TYPE_DEFAULT_MS),
+        NO_OVERRIDE,
+        r#"{"idle_timeout_default_ms": 150}"#,
+    )
+    .await;
+    assert_eq!(
+        seen, TYPE_DEFAULT_MS as i64,
+        "the type default, not the colony 150"
+    );
+}
+
+/// GH #1260: a type without its own default keeps the colony default.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_type_without_a_default_keeps_the_colony_default() {
+    let seen = add_recorder(None, NO_OVERRIDE, r#"{"idle_timeout_default_ms": 150}"#).await;
+    assert_eq!(seen, 150);
+}
+
+/// GH #1260: an explicit `cell.idle_timeout_ms` still wins over the type default.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_explicit_cell_value_beats_the_type_default() {
+    let seen = add_recorder(
+        Some(TYPE_DEFAULT_MS),
+        r#"{"cell":{"type":"recorder","timeout":0,"idle_timeout_ms":250},"params":{},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+        r#"{"idle_timeout_default_ms": 150}"#,
+    )
+    .await;
+    assert_eq!(seen, 250);
+}
+
+/// GH #1260: the subtree path asks the type as well.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subtree_cell_gets_its_type_default() {
+    let td = tempfile::TempDir::new().unwrap();
+    write(
+        td.path(),
+        "colony.json",
+        r#"{"idle_timeout_default_ms": 7000}"#,
+    );
+    write(
+        td.path(),
+        "main/config.json",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    );
+    let tpl = td.path().join("templates").join("sub");
+    write(&tpl, "template.json", r#"{"name":"sub"}"#);
+    write(
+        &tpl,
+        "config.json",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    );
+    write(
+        &tpl,
+        "inner/config.json",
+        r#"{"cell":{"type":"recorder"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+    );
+    let last_idle_ms = Arc::new(AtomicI64::new(-2));
+    let factory: Arc<dyn CellFactory> = Arc::new(IdleRecorderFactory {
+        last_idle_ms: last_idle_ms.clone(),
+        type_default: Some(TYPE_DEFAULT_MS),
+    });
+    let h = ColonyHandle::new_with_factories_at(&td, vec![("recorder".to_string(), factory)]);
+    rescan_templates(&h, td.path().join("templates")).await;
+    let outcome = send_mutation(
+        &h,
+        meclaw_core::serde_json::json!({
+            "scope": "/",
+            "diff": {"add_nodes": [{"name":"m1","template":"sub"}]}
+        }),
+    )
+    .await;
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "add_nodes(subtree) must commit; got {outcome:?}"
+    );
+    assert_eq!(last_idle_ms.load(Ordering::SeqCst), TYPE_DEFAULT_MS as i64);
+    h.shutdown().await;
+}
+
+/// GH #1260: the boot path (`bootstrap_from_filesystem`) asks the type too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_booted_cell_gets_its_type_default() {
+    let td = tempfile::TempDir::new().unwrap();
+    write(
+        td.path(),
+        "colony.json",
+        r#"{"idle_timeout_default_ms": 150}"#,
+    );
+    write(
+        td.path(),
+        "main/config.json",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    );
+    write(td.path(), "main/rec/config.json", NO_OVERRIDE);
+    let last_idle_ms = Arc::new(AtomicI64::new(-2));
+    let factory: Arc<dyn CellFactory> = Arc::new(IdleRecorderFactory {
+        last_idle_ms: last_idle_ms.clone(),
+        type_default: Some(TYPE_DEFAULT_MS),
+    });
+    let h =
+        ColonyHandle::new_with_factories_at(&td, vec![("recorder".to_string(), factory.clone())]);
+    let mut registry = meclaw_colony::CellFactoryRegistry::new();
+    registry.insert("recorder".to_string(), factory);
+    meclaw_testing::bootstrap_apply::bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
+        .await
+        .expect("bootstrap_from_filesystem must succeed");
+    assert_eq!(last_idle_ms.load(Ordering::SeqCst), TYPE_DEFAULT_MS as i64);
+    h.shutdown().await;
+}
+
+/// GH #1260 (review I M1): a cell that boots INACTIVE
+/// (`register_inactive_non_spawned`) asks the type as well. An island -- a
+/// sub-hive whose own edge never reaches the root -- derives inactive at the
+/// first boot, so its cells reach `build_boot_inactive_respawn`, where the
+/// recorder holds the idle the path resolved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_boot_inactive_cell_gets_its_type_default() {
+    let td = tempfile::TempDir::new().unwrap();
+    write(
+        td.path(),
+        "colony.json",
+        r#"{"idle_timeout_default_ms": 150}"#,
+    );
+    write(
+        td.path(),
+        "main/config.json",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    );
+    write(
+        td.path(),
+        "main/island/config.json",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":"a","to":"b"}]}}}"#,
+    );
+    write(td.path(), "main/island/a/config.json", NO_OVERRIDE);
+    write(td.path(), "main/island/b/config.json", NO_OVERRIDE);
+    let last_idle_ms = Arc::new(AtomicI64::new(-2));
+    let factory: Arc<dyn CellFactory> = Arc::new(IdleRecorderFactory {
+        last_idle_ms: last_idle_ms.clone(),
+        type_default: Some(TYPE_DEFAULT_MS),
+    });
+    let h =
+        ColonyHandle::new_with_factories_at(&td, vec![("recorder".to_string(), factory.clone())]);
+    let mut registry = meclaw_colony::CellFactoryRegistry::new();
+    registry.insert("recorder".to_string(), factory);
+    meclaw_testing::bootstrap_apply::bootstrap_from_filesystem(td.path(), &registry, &h.runtime())
+        .await
+        .expect("bootstrap_from_filesystem must succeed");
+    assert_eq!(
+        last_idle_ms.load(Ordering::SeqCst),
+        TYPE_DEFAULT_MS as i64,
+        "the boot-inactive path hands the type default, not the colony 150"
+    );
+    h.shutdown().await;
+}
+
+/// GH #1260 (review I M2): a type default only ever lengthens the colony
+/// default -- a colony that keeps every cell awake an hour keeps its `llm`
+/// cells awake an hour too, not the type's 30 minutes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_longer_colony_default_beats_the_type_default() {
+    let seen = add_recorder(
+        Some(TYPE_DEFAULT_MS),
+        NO_OVERRIDE,
+        r#"{"idle_timeout_default_ms": 3600000}"#,
+    )
+    .await;
+    assert_eq!(seen, 3_600_000, "the longer colony default, not the type's");
 }

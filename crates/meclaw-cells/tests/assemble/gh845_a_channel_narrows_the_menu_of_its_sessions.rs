@@ -404,6 +404,8 @@ fn a_session_without_a_scope_carries_no_tool_scope() {
     let b = curate(&c);
     assert!(b.get("tool_scope").is_none(), "{b}");
     assert_eq!(hop_str(b, "scope_changed"), "0");
+    // GH #1260: no fold, no family -- present and empty.
+    assert_eq!(hop_str(b, "tools_folded"), "", "{b}");
 }
 
 // ══════════════════════════════════════════ 6. the shipped wiring
@@ -706,5 +708,13 @@ fn a_scope_in_op_names_reaches_the_brain_in_families_with_its_hint() {
         json!({"allow": ["file", "bash", "orga"], "deny": ["web"], "hint": ["orga"]}),
         "one allowed op keeps its family, a partly denied family stays, a wholly denied \
          one falls, the hint is a family: {c:?}"
+    );
+    // GH #1260: the families the fold writes ride on the seam,
+    // so the dispatcher behind the brain unfolds those and no other name. The
+    // scope does not narrow them: a call of a denied family still unfolds.
+    assert_eq!(
+        hop_str(curate(&c), "tools_folded"),
+        "file,orga,web",
+        "{c:?}"
     );
 }

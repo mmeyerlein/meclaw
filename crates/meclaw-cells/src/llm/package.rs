@@ -139,6 +139,8 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             "tokens_per_image" => {
                 (params.tokens_per_image > 0).then(|| params.tokens_per_image.to_string())
             }
+            // GH #1260: shown only when the host cannot force a call.
+            "tool_choice_required" => (!params.tool_choice_required).then(|| "false".to_string()),
             _ => None,
         };
         if let Some(v) = value {

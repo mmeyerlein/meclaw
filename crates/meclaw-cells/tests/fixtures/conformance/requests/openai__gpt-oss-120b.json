@@ -1,0 +1,31 @@
+{
+  "body": {
+    "max_tokens": 65536,
+    "messages": [
+      {
+        "content": "Answer with the single word OK.",
+        "role": "system"
+      },
+      {
+        "content": "Ping.",
+        "role": "user"
+      }
+    ],
+    "model": "openai/gpt-oss-120b",
+    "prompt_cache_key": "meclaw-430ae444967bf0680407d82932f98d8c",
+    "provider": {
+      "allow_fallbacks": false,
+      "order": [
+        "crusoe/bf16"
+      ]
+    },
+    "reasoning": {
+      "effort": "low"
+    },
+    "temperature": 0.7
+  },
+  "endpoint_class": "openrouter",
+  "expected_dropped": [],
+  "model_id": "openai/gpt-oss-120b",
+  "wire_dialect": "chat_completions"
+}

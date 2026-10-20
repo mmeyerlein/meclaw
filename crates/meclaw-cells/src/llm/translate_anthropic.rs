@@ -90,6 +90,30 @@ pub(crate) fn build_messages_request(
     Ok(Value::Object(body))
 }
 
+/// GH #1260 (OR-WG-6): a `tool_scope` with `require` asks the provider for a
+/// tool call at all on this one request (`tool_choice: {type: "any"}`). Written AFTER the
+/// build, so it wins over a static `provider_extra.tool_choice` for this
+/// call only; the cell calls it only while tools stay (`Scoped::require`).
+///
+/// Not beside thinking (fix round 1, review M-3): the Messages wire refuses a
+/// forced tool call next to extended thinking with a 400, so a request whose
+/// `thinking` is on keeps its tool choice as built and the call answers
+/// `false` -- the cell says so in a `WARN` line. `thinking: {type:
+/// "disabled"}` is off.
+pub(crate) fn require_tool_call(request: &mut Value) -> bool {
+    let Some(body) = request.as_object_mut() else {
+        return false;
+    };
+    let thinking = body
+        .get("thinking")
+        .is_some_and(|t| t.get("type").and_then(Value::as_str) != Some("disabled"));
+    if thinking {
+        return false;
+    }
+    body.insert("tool_choice".into(), json!({"type": "any"}));
+    true
+}
+
 /// Append a content block under `role`: to the last message when it has the
 /// same role (the wire wants the roles to alternate), else as a new one.
 fn push_block(messages: &mut Vec<Value>, role: &str, block: Value) {
@@ -484,7 +508,7 @@ fn tool_call_turn(i: usize, block: &Value) -> Result<Value, TranslateError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_messages_request, parse_messages_response};
+    use super::{build_messages_request, parse_messages_response, require_tool_call};
     use crate::llm::params::LlmParams;
     use crate::llm::translate::{TranslateError, parse_openai_response};
     use meclaw_core::serde_json::{Value, json};
@@ -492,6 +516,41 @@ mod tests {
     fn tool_call(id: &str, name: &str, arguments: &str) -> Value {
         let text = json!({"name": name, "arguments": arguments}).to_string();
         json!({"origin": "assistant", "type": "tool_call", "id": id, "text": text})
+    }
+
+    /// GH #1260 (OR-WG-6): `require` on the Messages wire is `{type: any}`,
+    /// over a static overlay.
+    #[test]
+    fn a_required_call_says_any_and_beats_provider_extra() {
+        let params = LlmParams::parse(&json!({
+            "provider": "anthropic", "model": "claude-haiku-5-5", "api_key": "k",
+            "provider_extra": {"tool_choice": {"type": "auto"}}
+        }))
+        .expect("params");
+        let tools = [json!({"type": "function", "function": {
+            "name": "web", "description": "d", "parameters": {"type": "object"}}})];
+        let history = [json!({"origin": "user", "type": "text", "text": "hi"})];
+        let mut body =
+            build_messages_request(&params, "", &history, &tools, Vec::new()).expect("request");
+        assert_eq!(body["tool_choice"], json!({"type": "auto"}));
+        assert!(require_tool_call(&mut body));
+        assert_eq!(body["tool_choice"], json!({"type": "any"}));
+    }
+
+    /// Fix round 1 (review M-3): beside thinking the requirement is not
+    /// written -- the provider refuses both together -- and the call says so.
+    #[test]
+    fn require_stays_off_beside_thinking() {
+        let mut body = json!({"thinking": {"type": "enabled", "budget_tokens": 1024},
+                              "tool_choice": {"type": "auto"}});
+        assert!(!require_tool_call(&mut body));
+        assert_eq!(body["tool_choice"], json!({"type": "auto"}));
+        let mut body = json!({"thinking": {"type": "adaptive"}});
+        assert!(!require_tool_call(&mut body));
+        assert!(body.get("tool_choice").is_none());
+        let mut body = json!({"thinking": {"type": "disabled"}});
+        assert!(require_tool_call(&mut body));
+        assert_eq!(body["tool_choice"], json!({"type": "any"}));
     }
 
     #[test]

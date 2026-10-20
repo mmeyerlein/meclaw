@@ -1,4 +1,4 @@
-# `dispatcher@1.3.0`
+# `dispatcher@1.3.1`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -31,7 +31,22 @@ messages a graph can route.
   checks per op and every edge keyed on `hop.tool_name` see what they saw before. A tool
   with an `op` of its own beside other keys (`file{op, path}`) is not a family call and
   leaves as it came. Unfolding runs before the async and handoff classes are read, so both
-  are declared for the single op (`web_research`, not `web`).
+  are declared for the single op (`web_research`, not `web`). Since
+  [#1260](https://github.com/mmeyerlein/meclaw/issues/1260) `{op}` **alone** unfolds as
+  `{op, args: {}}`: the hint level of a family shows the model the schema `{op}` and nothing
+  else, and until then every call made under it, `help` included, left as tool `F` and
+  dead-lettered. Since the same issue `op` beside an `args` object unfolds whatever else
+  rides along: the other keys stay behind, named on one stderr line
+  (`dispatcher: family call <id> … dropped key(s) beside op and args: <keys>`), and only
+  `args` travels. A model logged `web {op, args, id}`, and the stray `id` had kept the call
+  folded -- the tools hive answered `unknown_tool`.
+- **Only a folded family unfolds.** The shape alone proves nothing: a tool outside the fold
+  may take an `op` and an `args` object of its own. The collector names the families of its
+  folded menu on every `curate` seam (`hop.tools_folded`), the composite's curate edge lifts
+  them into the context (`context.tools_folded`), and a call unfolds only under one of
+  those names. Without the key -- a composite that does not fold -- nothing unfolds. A
+  composite that turns `fold_tools` on draws the lift on its curate edge
+  (`"tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"`), as talky and cogny do.
 - **help, answered in place.** `F{op: "help", args}` goes to no answerer: it comes back at
   once on the `result` lane, `hop.help_for` naming the family and the request (`args`, e.g.
   `{"op": "read"}`) as the `tool_result` text. It is not an error and carries no
@@ -120,7 +135,7 @@ Entry is the brain's output; there is one lane in and four out, all on `hop.rout
 | `calls` | the collector's `in_calls` port | the assistant turn **verbatim** (all of it, a text turn next to the calls included) -- the expectation set of the round. `hop.call_count` sizes it (the number of `tool_call` turns in the bundle, as a string), `hop.async_calls` names the ids the fan-in must not wait for |
 | `tool` | one tool cell per name | one `tool_call` turn with the **raw arguments** (a family call: `F_op` and its inner `args`); `hop.tool_name` selects the cell, `hop.tool_call_id` correlates the result, `hop.input_soft` (since `1.2.3`, when the brain stamped one) is the window the result is read in |
 | `result` | the collector's `in_tool` port | a synthetic error `tool_result` for a call that will never run; `hop.error_code` says which kind -- or a family's `help` call, `hop.help_for` naming the family and the request as its text |
-| `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle. Since `1.2.2` the body slot `sidecar_raw` travels with a final answer when the answer arrived with one: the block a sidecar splitter cut out of it, passed through untouched so the collector can keep it for the window ([#871](https://github.com/mmeyerlein/meclaw/issues/871)) -- and with the sentence next to a bundle, when the round carried one. This cell reads none of it |
+| `answer` | the collector's `in_answer` port, or the reply sink | the brain's final turn, `hop.finish_reason` carried along -- **or**, with `hop.interim = "1"`, the sentence that stood next to a bundle, or a sentence without a bundle whose caller marked it `context.interim = "1"` (GH #1260: the bridge beside a required tool call, whose round goes on with the result; with `interim` off it does not leave, like any interim). A sentence without a bundle whose caller marked it `context.interim = "tool"` -- the required call itself, answered without its call -- does not leave at all: on the fast way such prose made the answer up, and the caller (the curator) gives the round to the conversation model. Since `1.2.2` the body slot `sidecar_raw` travels with a final answer when the answer arrived with one: the block a sidecar splitter cut out of it, passed through untouched so the collector can keep it for the window ([#871](https://github.com/mmeyerlein/meclaw/issues/871)) -- and with the sentence next to a bundle, when the round carried one. This cell reads none of it |
 
 The tool lanes guard the key they discriminate on:
 
@@ -297,7 +312,7 @@ same `tool_call_id`, keyed on the names you did **not** wire.
 | `tool_call` turns present, count ≤ budget | `calls` (the assistant turn), then the interim `answer` if a text turn stood next to them, then one `tool` per call, in bundle order (with `interim` off, the interim `answer` is not emitted; a *final* sentence still is) |
 | `tool_call` turns present, count > budget | `calls`, then the interim `answer` if a text turn stood next to them (the sentence is appended **before** the budget branch runs, so an over-budget bundle still says it), then one `result` per call: `call budget exceeded`, no tool message at all |
 | a call whose `text` is not `{name, arguments}` | `result` with `error_code: malformed_tool_call` in place of that one call; the sound calls still run |
-| a call `F` whose arguments are exactly `{op, args}` | one `tool` named `F_op` with `args` as its arguments; `op: "help"` instead: `result` with `hop.help_for = F`, no tool message |
+| a call `F` whose arguments hold `op` and an `args` object (other keys dropped), or `{op}` alone | one `tool` named `F_op` with `args` (`{}` for `{op}` alone) as its arguments; `op: "help"` instead: `result` with `hop.help_for = F`, no tool message |
 | no calls, `finish_reason == 'stop'` or `'length'` | one `answer`, `hop.finish_reason` kept |
 | anything else | nothing (empty multi-send, terminal) and one stderr line: `dispatcher: finish '<reason>' without a tool call -- nothing dispatched` |
 

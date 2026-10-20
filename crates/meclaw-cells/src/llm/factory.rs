@@ -92,11 +92,24 @@ fn restore_cell(
 /// `WebFetchCellFactory`, `BashCellFactory` etc.).
 pub struct LlmCellFactory;
 
+/// Idle default of an `llm` cell in ms (GH #1260): 30 minutes. See
+/// [`LlmCellFactory`]'s `default_idle_timeout_ms` for the reason.
+pub const LLM_IDLE_TIMEOUT_DEFAULT_MS: u64 = 1_800_000;
+
 impl CellFactory for LlmCellFactory {
     /// Lazy stateful kind (Dormant) — F1-KH2 kind discriminator: registration
     /// paths may call `spawn_cell` task-free and must install the real WakeFn.
     fn is_lazy(&self) -> bool {
         true
+    }
+
+    /// GH #1260: 30 minutes instead of the colony default (60 s). The sealed
+    /// credential lives only in RAM (GH #421/#457), so each wake pays a vault
+    /// round of about 195 ms before the first call (measured on a lab
+    /// run: 250 ms cold vs. 52/56 ms warm). `cell.idle_timeout_ms`
+    /// still wins.
+    fn default_idle_timeout_ms(&self) -> Option<u64> {
+        Some(LLM_IDLE_TIMEOUT_DEFAULT_MS)
     }
 
     /// Pre-spawn validation. Routes through the SAME parse path as
@@ -384,6 +397,13 @@ impl CellFactory for LlmCellFactory {
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;
+
+    /// GH #1260: an `llm` cell without `cell.idle_timeout_ms` stays awake 30
+    /// minutes, so a conversation with pauses pays its credential round once.
+    #[test]
+    fn an_llm_cell_sleeps_after_thirty_minutes_by_default() {
+        assert_eq!(LlmCellFactory.default_idle_timeout_ms(), Some(1_800_000));
+    }
 
     #[test]
     fn restore_params_replays_overlay_over_birth() {

@@ -271,6 +271,11 @@ async fn a_system_or_tool_scope_slot_is_refused_out_loud() {
             json!({"tools": {"web_search": {"type": "function"}}}),
         ),
         ("tool_scope", json!({"allow": ["web_search"]})),
+        // GH #1260 (OR-WG-6): a required tool call has no decision wire.
+        (
+            "tool_scope",
+            json!({"allow": ["web_search"], "require": true}),
+        ),
     ] {
         let mut body = decide_body();
         body[slot] = value.clone();

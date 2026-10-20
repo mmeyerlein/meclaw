@@ -1,4 +1,4 @@
-# `cogny@5.11.1`
+# `cogny@5.11.2`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.2.0"},
+{"cell": {"type": "ref", "template": "collector@5.2.1"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.13.1"},
+{"cell": {"type": "ref", "template": "curator@1.14.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.11.1` above it in its provenance chain.
+`cogny@5.11.2` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -641,6 +641,10 @@ usable window, empty without a package) into the call's context, and a `memory_r
 model leaves on the tool exit with it on the hop (empty on every other tool); every exit of the
 composite clears the key.
 
+The `curate` edge lifts `hop.tools_folded` (the families of the folded menu, `fold_tools` `"1"` below) into
+`context.tools_folded` ([#1260](https://github.com/mmeyerlein/meclaw/issues/1260)); `./dispatcher` behind the brain
+unfolds a call of one of those families and of no other name, and every exit of the composite clears the key.
+
 Since `5.8.7` ([#1036](https://github.com/mmeyerlein/meclaw/issues/1036)) the splitter is again the talky
 splitter byte for byte (contract 1.0.4): the sentence the model writes beside a tool call loses its
 block as well, and a readable block rides beside the round as `sidecar_raw`. The calls and the order
@@ -700,7 +704,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.11.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.11.2", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

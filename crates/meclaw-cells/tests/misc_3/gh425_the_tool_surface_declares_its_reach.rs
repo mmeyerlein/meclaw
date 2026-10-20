@@ -115,6 +115,7 @@ fn every_new_occupant_is_declared_in_the_reentrancy_block() {
         "unknown",
         "build-draft",
         "build-apply",
+        "weather",
     ] {
         let entry = reentrancy
             .get(occupant)

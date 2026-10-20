@@ -1,7 +1,8 @@
 //! GH #1248 (T4-09) -- talky speaks its quick turns through a model cell of its own.
 //!
-//! WHY this file exists: the curator routes a turn its stamp calls `talk` or
-//! `simple` onto the way `quick` (GH #1247), and until this bundle that way
+//! WHY this file exists: the curator routes a turn its stamp calls `simple`
+//! onto the way `quick` (GH #1247; `talk` goes to the brain since GH #1260),
+//! and until this bundle that way
 //! reached `./brain` on the seam's own edge. The owner's line (R-WP-1, R-WP-9):
 //! a second model cell `./quick` behind the curator, reasoning off, born on
 //! the brain's start value -- it takes the tier `quick` of the model registry
@@ -92,9 +93,25 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
         .clone();
     let to_quick = edge(&edges, "./curator", "./quick", "'quick'");
     assert_eq!(to_quick["modifier"]["restore_ttl"], true, "{to_quick}");
+    // GH #1260 (OR-WG-6): plus `interim`, the mark of the tool round's bridge.
+    let mut quick_ctx = to_quick["modifier"]["set_context"].clone();
     assert_eq!(
-        to_quick["modifier"]["set_context"],
-        edge(&edges, "./curator", "./brain", "'brain'")["modifier"]["set_context"],
+        quick_ctx.as_object_mut().and_then(|c| c.remove("interim")),
+        Some(json!("has(hop.interim) ? hop.interim : ''")),
+        "{to_quick}"
+    );
+    // GH #1260 (OR-WG-9): the brain sets `interim` empty -- an escalated tool
+    // round grows out of the quick answer's chain (`interim` `tool`), and its
+    // answer is the turn's final one.
+    let mut brain_ctx =
+        edge(&edges, "./curator", "./brain", "'brain'")["modifier"]["set_context"].clone();
+    assert_eq!(
+        brain_ctx.as_object_mut().and_then(|c| c.remove("interim")),
+        Some(json!("''")),
+        "the brain clears the mark"
+    );
+    assert_eq!(
+        quick_ctx, brain_ctx,
         "the quick call carries the context of a brain call"
     );
     let to_brain = edge(&edges, "./curator", "./brain", "'brain'");
@@ -105,7 +122,16 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
             .contains("'quick'"),
         "the brain no longer takes the quick way: {to_brain}"
     );
-    edge(&edges, "./quick", "./splitter", "'stop'");
+    let q_split = edge(&edges, "./quick", "./splitter", "'stop'");
+    // GH #1260 (OR-WG-2): the quick answer carries the sidecar block, and the
+    // splitter sees it as it sees the brain's -- same condition, and its
+    // sections leave on talky's own `sidecar` port.
+    assert_eq!(
+        q_split["condition"],
+        edge(&edges, "./brain", "./splitter", "'stop'")["condition"],
+        "the quick answer reaches the splitter like the brain's"
+    );
+    edge(&edges, "./splitter", ".", "hop.route == 'sidecar'");
     let tap = edge(&edges, "./quick", "./curator", "finish_reason");
     assert_eq!(tap["modifier"]["set_hop"]["route"], "'in_llm'", "{tap}");
     edge(&edges, "./quick", "./errors", "'error'");

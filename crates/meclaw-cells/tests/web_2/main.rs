@@ -5,8 +5,11 @@
 pub mod gh1059_grants;
 pub mod gh1060_web_search_on_a_grant;
 pub mod gh1106_a_webhook_takes_its_secret_from_a_grant;
+pub mod gh1260_a_folded_web_call_reaches_its_runner;
 pub mod gh163_web_cell_into_a_running_colony;
 pub mod gh660_two_web_cells_one_mount_the_second_is_refused;
+#[path = "../mock_openai.rs"]
+pub mod mock_openai;
 #[path = "../support/gh1060.rs"]
 pub mod support;
 pub mod web_cell_assets;

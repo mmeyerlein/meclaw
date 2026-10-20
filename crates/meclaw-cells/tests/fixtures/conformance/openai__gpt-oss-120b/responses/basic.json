@@ -1,0 +1,54 @@
+{
+  "id": "gen-1792406352-yjiULhb9oV2aKnyxAVGm",
+  "object": "chat.completion",
+  "created": 1792406352,
+  "model": "openai/gpt-oss-120b",
+  "provider": "Crusoe",
+  "system_fingerprint": null,
+  "service_tier": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "length",
+      "native_finish_reason": "length",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": "We have system: usual. system message: \"You are ChatGPT...\"\n\nDeveloper says: \"Answer with the single word OK.\"\n\nUser says \"",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "We have system: usual. system message: \"You are ChatGPT...\"\n\nDeveloper says: \"Answer with the single word OK.\"\n\nUser says \"",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 83,
+    "completion_tokens": 32,
+    "total_tokens": 115,
+    "cost": 1.20285e-05,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 48,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 1.215e-05,
+      "upstream_inference_prompt_cost": 4.15e-06,
+      "upstream_inference_completions_cost": 8e-06
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 29,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}
