@@ -1,0 +1,60 @@
+{
+ "source": "hand: the template's script (the judge rules a change inside the radius, the meter orders a revert from the stored plan, the judge rules no action)",
+ "probes": [
+  {
+   "hop": {
+    "route": "decide"
+   },
+   "context": {
+    "st_cycle": "cycle-1",
+    "st_goal": "goal-1",
+    "st_require_plan": "1",
+    "st_measured": "{\"cost_eur\": 0.5}"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "assistant",
+      "type": "tool_call",
+      "id": "call-1",
+      "text": "{\"cycle_id\": \"cycle-1\", \"action\": \"change\", \"reasoning\": \"hello\", \"change\": {\"target\": \"/hive-1/llm-1\", \"kind\": \"numeric_param\", \"key\": \"max_tokens\", \"from\": 1000, \"to\": 800}, \"revert_plan\": {\"target\": \"/hive-1/llm-1\", \"kind\": \"numeric_param\", \"key\": \"max_tokens\", \"to\": 1000}, \"simulated\": {\"cost_eur\": 0.4}}"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "route": "revert"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "assistant",
+      "type": "tool_call",
+      "id": "call-2",
+      "text": "{\"op\": \"revert\", \"cycle_id\": \"cycle-2\", \"plan\": {\"target\": \"/hive-1/llm-1\", \"kind\": \"model\", \"to\": \"model-1\"}}"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "route": "decide"
+   },
+   "context": {
+    "st_cycle": "cycle-3",
+    "st_goal": "goal-1"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "assistant",
+      "type": "tool_call",
+      "id": "call-3",
+      "text": "{\"action\": \"none\", \"reasoning\": \"hello\"}"
+     }
+    ]
+   }
+  }
+ ]
+}

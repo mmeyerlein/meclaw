@@ -1,0 +1,11 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "tools@1.6.1"
+  },
+  "override_params": {
+    "schemas": {
+      "runner_mode": "cold"
+    }
+  }
+}

@@ -691,6 +691,20 @@ class TheDeadPathLock(Tree):
             shutil.rmtree(os.path.join(self.root, top), ignore_errors=True)
         self.assertEqual(locks.check_dead_path_lock([], self.root), [])
 
+    def test_a_consumer_tree_without_crates_resolves_against_the_kits_core(self):
+        """GH #1291: a consumer repository's frozen derived templates name the
+        core's pin tests; without crates/ of its own they resolve against the
+        meclaw-core tree the kit comes from, and only a path dead there too is RED."""
+        kit = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(locks.__file__))))
+        live = next(p for p in sorted(pathlib.Path(kit, "crates").glob("*/tests/*/*.rs")))
+        live = live.relative_to(kit).as_posix()
+        shutil.rmtree(os.path.join(self.root, "crates"), ignore_errors=True)
+        write(self.root, "templates/local/t/README.md",
+              "Pinned by `%s` and `crates/fx/tests/gone.rs`.\n" % live)
+        red = locks.check_dead_path_lock([], self.root)
+        self.assertEqual([("RED", "templates/local/t/README.md")], [(f.verdict, f.path) for f in red])
+        self.assertIn("crates/fx/tests/gone.rs", locks.render(red[0]))
+
     def test_dead_path_lock_is_red_on_an_unreadable_directory(self):
         """W5 re-check 4 M2: rglob skipped a chmod-000 directory silently."""
         if os.geteuid() == 0:

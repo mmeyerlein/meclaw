@@ -1,0 +1,14 @@
+{
+  "source": "capture: a lab colony with simulated turns (scripts/capture_code_inputs.py), ids and text replaced by placeholders",
+  "probes": [
+    {"hop": {"route": "schemas", "asked_count": "2", "iter": "0", "session_id": "default"},
+     "context": {"assistant": "assistant-1", "tool_caller": "talky"},
+     "body": {"messages": [], "tools": ["web_search", "web_fetch"]}},
+    {"hop": {"route": "tool_call", "tool_call_id": "call-1", "tool_name": "call"},
+     "context": {"assistant": "assistant-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call-1",
+                            "text": "{\"number\": \"+490000000\", \"purpose\": \"hello\"}"}]}},
+    {"hop": {"route": "tool_call", "tool_call_id": "call-2", "tool_name": "hangup"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call-2", "text": "{}"}]}}
+  ]
+}

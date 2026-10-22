@@ -12,6 +12,42 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.70.1] — 2026-10-22
+
+First published cut of the 0.70 line; it ships everything under 0.70.0 below plus these fixes found in the 0.70.0 milestone runs.
+
+### Fixed
+
+- figure: an answer on the handset over `phone_replies_max` now reaches the rim as `phone_capped`; the world cell's contract did not list the route, so the runtime dropped the message without a trace ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- `simple-agent` (and every `figure` around it) runs the thirteen `code` cells it calls rarely `cold` through its ref markers: the identity boot of `affinity`, the three schema answers, the night's close, dream, entity and recurrence passes, and the `access`/`curator` operator cells. Their warm children used to stand 30 minutes after the last job, about 35 Python processes per figure; the turn road keeps its shipped modes ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+
+## [0.70.0] — 2026-10-22
+
+### Breaking
+
+- `npc` becomes `figure` ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)). The `npc` template is gone; `figure@1.0.0` is a world adapter (`world`) and a handset (`phone`) around a referenced, unchanged `simple-agent`, with no model, memory or grant of its own. The world's tools reach each turn as client tools, so a figure calls them until the model stops instead of one model call per move, and `world.role` (required) gives the agent its frame: `human-sim` or `npc`; any other value refuses every turn with `role_unknown`. Migration: grow a `figure` instead of an `npc`, set `world.role`, and speak the lanes in `templates/figure/README.md` (`obs`, `call`, `call_result`, `intent`, `night`, `interview`, `mandate`).
+
+### Added
+
+- collector: `hint_own_op` keeps a tool with its own `op` at hint level and names it on the seam (`tools_hinted`); the dispatcher answers its `help` in place and the collector answers it from the menu store. talky turns it on (#1272).
+- simple-agent `1.0.0`: a plain agent in one sealed hive -- system prompt and messages, native tool calling, results as `tool_result`, a loop until the model stops (`max_iter` 16). It speaks a turn door (`turn`, `tool_result`, `close` in; `answer`, `calls`, `close_report` out): its own tools come from a tools hive without the build pair, client tools a caller adds per turn leave as `calls` and their results continue the same turn, a missing result ends the turn named after `round_idle_ms`. Identity is an AIeOS document seeded once into its own affinity and reaching the brain as a pack; relationships go through the `affinity_propose` tool. A curator, a memory hive and the sidecar work as in `talky` and `cogny` ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- collector: `turn_answerers` names the answerers whose menu holds for one turn; their tools never fold and their empty answer empties their row ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- templates: `RUNNER-MODES.md`, one row per shipped `code` cell with its runner mode, where it sits on a turn and, for `cold` and `resident`, the written reason; `warm` is the default for every template cell. A lock test holds the table against the configs (a new code cell without its row is red), and two road tests hold every code cell a member's turn passes -- through the firewall, the session keeper, the dispatcher and a tool round -- to `warm`, `resident` or a reason ([#1276](https://github.com/mmeyerlein/meclaw/issues/1276)).
+
+### Changed
+
+- code: 95 shipped `code` cells that ran cold now run `warm` (one interpreter per cell that compiles its script once and gives every message a fresh namespace); `scriptlet` stays cold. Four cells that ran `resident` without a cache of their own state -- `collector/assemble`, `curator/reader`, `curator/stats` and `curator/writer` -- run `warm` with one slot (`max_concurrency: 1`), as serial as before. Each mode and the reason for every cold cell stand in `templates/RUNNER-MODES.md`, and every switched cell has a fixture that shows two messages in a row answer warm as they do cold ([#1276](https://github.com/mmeyerlein/meclaw/issues/1276)).
+
+### Fixed
+
+- memory-hive: an episode written while the embedder's credential is still on its way gets its vector once the credential arrives -- the `credential_pending` receipt goes back to `writer`, which sends the item once more instead of dying as `no_route` ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- curator: a role's window target and the day boundary now order a rebuild, so the day policy applies below the model's soft limit (#1272).
+- code: warm and resident runner children never stopped on their own and stayed until the colony restarted. A child now ends after the cell's idle timeout without a job (`cell.idle_timeout_ms`, 30 minutes by default for `code`), and the next message boots a fresh one ([#1276](https://github.com/mmeyerlein/meclaw/issues/1276)).
+- Kit: `pre`'s `dead-path-lock` in a consumer repository without `crates/` resolves the core test paths its templates name against the meclaw-core tree the kit comes from, so a frozen derived template no longer turns `pre` red over a test that lives in the core; a path that exists nowhere stays red, and a tree with `crates/` resolves against itself as before ([#1291](https://github.com/mmeyerlein/meclaw/issues/1291)).
+- **Template versions (#1272):** second digit, `collector@5.3.0`, `curator@1.15.0`, `dispatcher@1.4.0`; third digit, `builder-librarian@2.2.81`, `talky@6.10.2`; third digit for the pins that follow, `assistant@3.8.5`, `builder@1.28.2`, `cogny@5.12.2`, `meclaw-os@2.2.68`, `member@2.6.5`, `memory-hive@3.16.5`, `org@2.1.42`.
+- **Template versions (#1292):** new, `simple-agent@1.0.0`, `figure@1.0.0` (replaces `npc`).
+- **Template versions (#1276):** third digit, `access@2.6.1`, `affinity@3.11.1`, `archive-bridge@1.1.1`, `argus@1.4.1`, `canvy@2.4.3`, `chat-channel@1.0.2`, `coder-pipeline@3.0.2`, `daily-digest@2.2.7`, `door@1.0.3`, `egon@2.2.2`, `file-space@1.5.1`, `firewall@2.5.1`, `freeswitch@2.4.6`, `librarian@1.0.3`, `llm-registry@2.12.1`, `memory-drain@2.1.2`, `objects@1.0.3`, `operator@1.2.8`, `projection@1.1.2`, `receptionist@2.1.1`, `research-assistant@2.3.2`, `retry@1.0.1`, `session-keeper@2.6.1`, `slack-agent@2.2.2`, `steward@2.2.2`, `submit@2.4.3`, `summarizer@2.3.2`, `tools@1.6.1`; third digit for the pins that follow, `telegram-connector@2.2.3`, `voice@2.6.4`.
+
 ## [0.69.1] — 2026-10-20
 
 ### Fixed

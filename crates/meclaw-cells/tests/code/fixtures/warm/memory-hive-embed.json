@@ -1,0 +1,14 @@
+{
+  "source": "hand: the template's script (the read lane's empty-query answer, the one path that answers without a network call)",
+  "overlay": {"credential_grant_id": null},
+  "probes": [
+    {
+      "hop": {"route": "equery"},
+      "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "e-query", "text": "{\"query\": {\"text\": \"\", \"recall_id\": \"recall-1\"}}"}]}
+    },
+    {
+      "hop": {"route": "equery"},
+      "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "e-query", "text": "{\"query\": {\"recall_id\": \"recall-2\"}, \"items\": [{\"embedding_id\": \"emb-1\", \"text\": \"hello\"}]}"}]}
+    }
+  ]
+}

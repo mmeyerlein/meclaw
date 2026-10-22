@@ -1,4 +1,4 @@
-# `archive-bridge@1.1.0`
+# `archive-bridge@1.1.1`
 
 A generic "archive to store" bridge, as one `code` cell -- no new cell type, no Rust.
 

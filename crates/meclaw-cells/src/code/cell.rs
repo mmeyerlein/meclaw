@@ -217,10 +217,21 @@ impl CodeCell {
     /// called inside a tokio runtime (it spawns the broker); the production
     /// caller is `CodeCellFactory`, and a cell built by `new()` alone stays
     /// cold no matter what its params say.
+    ///
+    /// `idle` is the cell's resolved idle timeout (GH #1276): each child stops
+    /// after that long without a job, `None` keeps it; `cell` names the cell in
+    /// the stop's log line.
     #[doc(hidden)]
     #[must_use]
-    pub(crate) fn with_runner_pool(mut self, params: &CodeParams, size: usize) -> Self {
+    pub(crate) fn with_runner_pool(
+        mut self,
+        params: &CodeParams,
+        size: usize,
+        idle: Option<std::time::Duration>,
+        cell: &str,
+    ) -> Self {
         if let Some(cfg) = crate::code::child::config_for(params) {
+            let cfg = cfg.with_idle_stop(idle, cell);
             self.runner = RunnerHandle::Pooled(crate::code::pool::spawn_pool(cfg, size));
         }
         self
@@ -1009,7 +1020,8 @@ mod tests {
             runner_mode: mode,
         };
         let size = params.effective_max_concurrency();
-        CodeCell::new(params.clone(), multi, None, false).with_runner_pool(&params, size)
+        CodeCell::new(params.clone(), multi, None, false)
+            .with_runner_pool(&params, size, None, "/test")
     }
 
     /// THE claim of this lane: a warm runner changes latency, never semantics.
@@ -1068,7 +1080,8 @@ mod tests {
         };
         let mut broken = params.clone();
         broken.runner = "definitely-not-a-runner-xyz".into();
-        let cell = CodeCell::new(params, false, None, false).with_runner_pool(&broken, 1);
+        let cell =
+            CodeCell::new(params, false, None, false).with_runner_pool(&broken, 1, None, "/test");
         let out = run_handle(&cell).await;
         assert_eq!(out.header_error_code(), Some("io_error"));
     }

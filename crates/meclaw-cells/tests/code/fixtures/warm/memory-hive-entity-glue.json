@@ -1,0 +1,29 @@
+{
+  "source": "hand: producer tick for new facts (read bundle), then the night start (read bundle)",
+  "probes": [
+    {
+      "context": {
+        "mem_phase": "entity-new",
+        "ent_clock": "2026-01-02T00:00:00Z"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "{\"fact_ids\": [\"fact-2\", \"fact-1\"]}"
+          }
+        ]
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "entity-night",
+        "ent_clock": "2026-01-03T00:00:00Z"
+      },
+      "body": {
+        "messages": []
+      }
+    }
+  ]
+}

@@ -282,7 +282,13 @@ fn the_template_declares_one_code_cell_and_the_four_lanes_it_really_has() {
     );
     let meta = read_json(&root.join("template.json"));
     assert_eq!(meta["name"], "chat-channel");
-    assert_eq!(meta["version"], "1.0.1");
+    // The number itself is the merge point's (it moves with every change of
+    // the template); what this pin holds is that the template carries one.
+    let version = meta["version"].as_str().unwrap_or("");
+    assert!(
+        version.split('.').count() == 3 && version.split('.').all(|p| p.parse::<u32>().is_ok()),
+        "the template carries an x.y.z version, got {version:?}"
+    );
 }
 
 #[test]
@@ -307,8 +313,14 @@ fn the_script_a_person_reads_is_the_script_that_runs() {
 fn the_catalogue_names_it() {
     let Some(_) = shipped() else { return };
     let table = std::fs::read_to_string(repo("templates/README.md")).expect("the catalogue");
+    // The version comes from the template, not a literal: the merge point bumps it on
+    // every change to the cell (GH #1276 moved it to `warm`), and the catalogue follows.
+    let meta = read_json(&repo("templates/chat-channel/template.json"));
+    let version = meta["version"]
+        .as_str()
+        .expect("template.json names its version");
     assert!(
-        table.contains("[`chat-channel`](chat-channel/) | 1.0.1 |"),
+        table.contains(&format!("[`chat-channel`](chat-channel/) | {version} |")),
         "every template the export ships has a row on the door sign (GH #235)"
     );
 }

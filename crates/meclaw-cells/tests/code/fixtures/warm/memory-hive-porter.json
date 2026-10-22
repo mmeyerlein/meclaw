@@ -1,0 +1,20 @@
+{
+  "source": "hand: the template's script (export phase asks the store for a transfer slot, then the store's export receipt and an import receipt come back)",
+  "probes": [
+    {
+      "hop": {"export_to": "run-1"},
+      "context": {"mem_phase": "export", "port_run": "run-1"},
+      "body": {"messages": []}
+    },
+    {
+      "hop": {"operation": "export"},
+      "context": {"port_run": "run-1"},
+      "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "p-export-file", "text": "{\"seed_dir\": \"run-1/memory-hive\", \"tables\": [\"facts\", \"entities\"], \"rows\": {\"facts\": 3, \"entities\": 2}}"}]}
+    },
+    {
+      "hop": {"operation": "import"},
+      "context": {"port_run": "run-2"},
+      "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "p-import-file", "text": "{\"tables\": [\"facts\"], \"rows_written\": 3}"}]}
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "source": "hand: the template's script (a find to the catalogue, a tree pull to the file space, the catalogue's answer to a find)",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_lib",
+        "op": "find",
+        "op_id": "q-1",
+        "caller": "tools"
+      },
+      "body": {
+        "op": "find",
+        "args": {
+          "q": "config loader",
+          "fmt": "python"
+        },
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_lib",
+        "op": "tree",
+        "op_id": "q-2",
+        "caller": "tools"
+      },
+      "body": {
+        "op": "tree",
+        "args": {
+          "under": "/src",
+          "depth": 2
+        },
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "operation": "search"
+      },
+      "context": {
+        "cur_phase": "find",
+        "cur_call": "{\"R\": {\"args\": {\"q\": \"config load\"}, \"caller\": \"tools\", \"limit\": 20, \"op\": \"find\", \"op_id\": \"q-3\"}}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "hits",
+            "text": "[{\"source\": \"fh-0123456789ab\", \"path\": \"/src/configLoader.py\", \"kind\": \"code\", \"fmt\": \"python\", \"oneline\": \"hello\", \"tags\": \"[\\\"config\\\"]\", \"names\": \"[\\\"load_config\\\"]\", \"pterms\": \"src configloader config loader py\", \"nterms\": \"load_config load config\", \"rank\": -1.5}, {\"source\": \"fh-ba9876543210\", \"path\": \"/docs/load.md\", \"kind\": \"doc\", \"fmt\": \"markdown\", \"oneline\": \"config notes\", \"tags\": \"[]\", \"names\": \"[]\", \"pterms\": \"docs load md\", \"nterms\": \"\", \"rank\": -0.5}]"
+          }
+        ]
+      }
+    }
+  ]
+}

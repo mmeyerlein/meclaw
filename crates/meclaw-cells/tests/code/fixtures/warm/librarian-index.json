@@ -1,0 +1,58 @@
+{
+  "source": "hand: the template's script (an announcement with its two pulls, a description, an outline answer)",
+  "probes": [
+    {
+      "hop": {
+        "route": "source_changed"
+      },
+      "body": {
+        "source": "fh-0123456789ab",
+        "version": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "path": "/src/configLoader.py",
+        "fmt": "python",
+        "nodes": 3,
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "source_described"
+      },
+      "body": {
+        "source": "fh-0123456789ab",
+        "version": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "path": "/src/configLoader.py",
+        "oneline": "hello",
+        "tags": [
+          "config",
+          "loader"
+        ],
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_pulled",
+        "op_id": "lib:f:i:outline:fh-0123456789ab:0123456789ab"
+      },
+      "body": {
+        "ok": true,
+        "nodes": [
+          {
+            "anchor": "def:load_config",
+            "parent": ""
+          },
+          {
+            "anchor": "class:HTTPServer",
+            "parent": ""
+          },
+          {
+            "anchor": "def:inner",
+            "parent": "class:HTTPServer"
+          }
+        ],
+        "messages": []
+      }
+    }
+  ]
+}

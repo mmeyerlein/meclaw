@@ -296,7 +296,7 @@ fn flaky_config() -> Value {
         "cell": {"type": "code"},
         "params": {"runner": "python3", "script_inline": FLAKY_TOOL, "external_timeout_ms": 10000},
         "contract": {
-            "version": "1.0.0",
+            "version": "0.1.0",
             "settings": {},
             "multi_send_capable": false,
             "emits": {

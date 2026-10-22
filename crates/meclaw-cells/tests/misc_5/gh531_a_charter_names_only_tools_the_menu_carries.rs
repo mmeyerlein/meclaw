@@ -94,7 +94,7 @@ const CURATOR_SCHEMAS_CELL: &str = concat!(
     "/../../templates/curator/schemas/config.json"
 );
 // GH #552 -- the memory hive answers `memory_recall`. A composite that holds its
-// own memory hive (`npc`) asks it the menu question inside, the way a member's
+// own memory hive (`simple-agent`) asks it the menu question inside, the way a member's
 // collector reaches the member's memory.
 const MEMORY_SCHEMAS_CELL: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -123,7 +123,10 @@ fn what_the_memory_hive_answers() -> BTreeSet<String> {
     if !std::path::Path::new(MEMORY_SCHEMAS_CELL).is_file() {
         return BTreeSet::new();
     }
-    what_a_schemas_cell_answers(MEMORY_SCHEMAS_CELL, "/main/npc/memory-hive/schemas")
+    what_a_schemas_cell_answers(
+        MEMORY_SCHEMAS_CELL,
+        "/main/simple-agent/memory-hive/schemas",
+    )
 }
 
 /// Every `file_*` tool the member's file space answers the menu question with
@@ -203,9 +206,9 @@ const COMPOSITES: &[Composite] = &[
         layers: &[("cogny/collector/config.json", "assemble")],
     },
     Composite {
-        name: "npc",
-        graph: "npc/config.json",
-        layers: &[("npc/collector/config.json", "assemble")],
+        name: "simple-agent",
+        graph: "simple-agent/config.json",
+        layers: &[("simple-agent/collector/config.json", "assemble")],
     },
     Composite {
         name: "assistant",
@@ -708,7 +711,7 @@ fn only_a_composite_with_its_own_memory_hive_is_answered_by_it() {
         "the memory hive's schemas cell must answer memory_recall (GH #552)"
     );
     for c in COMPOSITES {
-        let expect = c.name == "npc";
+        let expect = c.name == "simple-agent";
         assert_eq!(
             asks_its_memory(c),
             expect,

@@ -1,0 +1,35 @@
+{
+  "source": "hand: the call pass (one call parked on the hop), then the reply pass (a tool result -> ok)",
+  "probes": [
+    {
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "call-1",
+            "text": "{\"query\": \"hello\"}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "result"
+      },
+      "context": {
+        "call": "{\"origin\": \"assistant\", \"type\": \"tool_call\", \"id\": \"call-1\", \"text\": \"{}\"}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "call-1",
+            "text": "hello"
+          }
+        ]
+      }
+    }
+  ]
+}

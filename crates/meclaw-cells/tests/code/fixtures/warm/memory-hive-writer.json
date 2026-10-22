@@ -1,0 +1,71 @@
+{
+  "source": "hand: the template's script (a user turn becomes an episode with its embedding and the night order; a peer turn also files its speaker name; an affect mark asks the store for its episode; the clock lane runs the night now)",
+  "probes": [
+    {
+      "context": {
+        "audience_set": "[\"member-1\"]",
+        "channel": "chat",
+        "session_id": "chat-1",
+        "turn_id": "turn-1",
+        "speaker": "member-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "hello"
+          }
+        ]
+      }
+    },
+    {
+      "context": {
+        "audience_set": "[\"member-1\", \"peer-1\"]",
+        "channel": "room",
+        "session_id": "room-1",
+        "happened_at": "2026-01-01T10:00:00Z"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "peer",
+            "type": "text",
+            "text": "good morning",
+            "speaker": "Peer One",
+            "speaker_ref": "abcd1234"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "affect_tag": "tag-1"
+      },
+      "context": {
+        "mem_phase": "affect",
+        "audience_now": "[\"member-1\"]"
+      },
+      "body": {
+        "messages": [],
+        "affect": {
+          "session_id": "chat-1",
+          "turn_id": "turn-1",
+          "valence": 0.5,
+          "arousal": 0.25,
+          "confidence": 0.8,
+          "source": "recognizer-1"
+        }
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "clock_op"
+      },
+      "body": {
+        "op": "trigger",
+        "messages": []
+      }
+    }
+  ]
+}

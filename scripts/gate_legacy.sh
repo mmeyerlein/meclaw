@@ -479,8 +479,26 @@ link_main_env() {
 
 # Everything this run writes is namespaced by the tree it runs in -- see
 # ARTEFACTS. Worktrees have distinct directory names (the main tree is
-# `meclaw-core`), which is all the identity a receipt needs.
-gate_dir="$target_dir/gate/$(basename -- "$root")"
+# `meclaw-core`), which is all the identity a receipt needs -- except under
+# `$MECLAW_WORKTREE_ROOT/<repo>/<wave>/<name>` (GH #1290), where the name
+# repeats across waves and the key is `<wave>--<name>`. The shell mirror of
+# `schedule.tree_key` (pinned by test_gate_sh.TreeKeyMirror).
+tree_key() {
+    local p="${1%/}" r="${MECLAW_WORKTREE_ROOT:-}" rel
+    r="${r%/}"
+    case "$p" in
+        /*) ;;
+        *) basename -- "$p"; return 0 ;;
+    esac
+    if [ -n "$r" ]; then
+        case "$p" in
+            "$r"/*/*/*) rel="${p#"$r"/}"; rel="${rel#*/}"
+                        printf '%s\n' "${rel//\//--}"; return 0 ;;
+        esac
+    fi
+    basename -- "$p"
+}
+gate_dir="$target_dir/gate/$(tree_key "$root")"
 logs_dir="$gate_dir/logs"
 echo "gate: receipts = $gate_dir"
 

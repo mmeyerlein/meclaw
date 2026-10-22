@@ -1,0 +1,19 @@
+{
+  "source": "hand: the template's script (in_turn -> rules lookup; rules with an allowlist, a hold pattern and an unreadable row -> notice + rate lookup; a blocked pattern -> reject; rate under budget -> mark + hold, then mark + pass)",
+  "probes": [
+    {"hop": {"route": "in_turn"}, "context": {"channel": "chat-1", "user_id": "member-1", "turn_id": "turn-1"},
+     "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}},
+    {"hop": {"operation": "select"}, "context": {"fw_phase": "rules", "channel": "chat-1", "user_id": "member-1", "turn_id": "turn-2", "fw_now": "2026-01-01T12:00:00.000000Z",
+       "fw_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"Please  CALL me back\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "fw-rules", "text": "[{\"rule_id\": \"allow-chat\", \"kind\": \"sender\", \"field\": \"match\", \"value\": \"{\\\"channel\\\": \\\"chat-1\\\", \\\"user_id\\\": \\\"member-1\\\"}\", \"action\": \"allow\"}, {\"rule_id\": \"hold-call\", \"kind\": \"glob\", \"field\": \"text\", \"value\": \"*call me*\", \"action\": \"hold\"}, {\"rule_id\": \"broken\", \"kind\": \"regex\", \"field\": \"text\", \"value\": \"x\", \"action\": \"reject\"}]"}]}},
+    {"hop": {"operation": "select"}, "context": {"fw_phase": "rules", "channel": "chat-2", "user_id": "member-2", "turn_id": "turn-3", "fw_now": "2026-01-01T12:00:01.000000Z",
+       "fw_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"a blocked phrase here\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "fw-rules", "text": "[{\"rule_id\": \"block-phrase\", \"kind\": \"substring\", \"field\": \"text\", \"value\": \"Blocked Phrase\", \"action\": \"reject\"}]"}]}},
+    {"hop": {"operation": "select"}, "context": {"fw_phase": "rate", "channel": "chat-1", "user_id": "member-1", "turn_id": "turn-2", "fw_now": "2026-01-01T12:00:00.000000Z", "fw_hold": "hold-call",
+       "fw_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"Please  CALL me back\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "fw-rate", "text": "[{\"recorded_at\": \"2026-01-01T11:59:30.000000Z\"}]"}]}},
+    {"hop": {"operation": "select"}, "context": {"fw_phase": "rate", "channel": "chat-3", "user_id": "member-3", "turn_id": "turn-4", "fw_now": "2026-01-01T12:00:02.000000Z",
+       "fw_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"and again\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "fw-rate", "text": "[]"}]}}
+  ]
+}

@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "recent_turns": 12,
     "round_lines": 40,
     "input_soft_fallback": 250000,

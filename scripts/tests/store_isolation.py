@@ -42,7 +42,9 @@ DB_ENV = "MECLAW_PIPELINE_DB"
 NIGHT_ENV = "MECLAW_PIPELINE_NIGHT"
 OUTBOUND_ENVS = ("MECLAW_PIPELINE_METRICS_URL", "MECLAW_GRAFANA_URL", "GRAFANA_ADMIN_PASS")
 LOCK_ENV = "MECLAW_GATE_LOCK"
-OUTER_RUN_ENVS = ("MECLAW_CARGO_LOCK_HELD", "MECLAW_STAGE_LOCK")
+# MECLAW_WORKTREE_ROOT (GH #1290): a host-wide setting that changes where `new` puts a
+# worktree and how a tree is keyed; a case sets it itself where it tests it.
+OUTER_RUN_ENVS = ("MECLAW_CARGO_LOCK_HELD", "MECLAW_STAGE_LOCK", "MECLAW_WORKTREE_ROOT")
 DEFAULT_STORE = pathlib.Path.home() / ".local/state/meclaw/pipeline/pipeline.db"
 # The system directories a test's minimal PATH keeps (`trapped_path()`).
 MINIMAL_PATH = os.pathsep.join(("/usr/bin", "/bin"))

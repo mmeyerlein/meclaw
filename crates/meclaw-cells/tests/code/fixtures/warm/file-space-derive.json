@@ -1,0 +1,63 @@
+{
+  "source": "hand: the template's script (in_derive opens a job, in_read search parks a read, in_dirs spawns a sync, embedded parks the vectors)",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_derive",
+        "caller": "write",
+        "notify": "1"
+      },
+      "body": {
+        "file": "fh-0123456789ab",
+        "version": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_read",
+        "op": "search",
+        "op_id": "s-1",
+        "caller": "tools"
+      },
+      "body": {
+        "op": "search",
+        "file": "/docs/readme.md",
+        "args": {
+          "pattern": "hello",
+          "limit": 5
+        },
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_dirs",
+        "caller": "write"
+      },
+      "body": {
+        "file": "fh-0123456789ab",
+        "version": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "embedded"
+      },
+      "context": {
+        "cur_job": "d-0123456789abcdef"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "embedded",
+            "text": "{\"vectors\": [\"AAAA\"], \"model\": \"embed-1\", \"dim\": 24}"
+          }
+        ]
+      }
+    }
+  ]
+}

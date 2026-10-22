@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@5.2.2"
+    "template": "collector@5.3.0"
   },
   "override_params": {
     "assemble": {
@@ -14,7 +14,8 @@
         "history_outline"
       ],
       "sidecar": "1",
-      "fold_tools": "1"
+      "fold_tools": "1",
+      "hint_own_op": "1"
     }
   }
 }

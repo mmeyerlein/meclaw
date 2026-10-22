@@ -1,0 +1,12 @@
+{
+  "source": "hand: the template's script (phase A: a fresh build tool_call, phase B: the draft back on in_build_result)",
+  "probes": [
+    {"hop": {"tool_call_id": "call-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call-1",
+                            "text": "{\"request\": \"a door cell\"}"}]}},
+    {"hop": {"route": "in_build_result", "manifest_sha256": "abc", "manifest_class": "small"},
+     "context": {"build_call_id": "call-2"},
+     "body": {"manifest": [{"scope": "/hive-1", "diff": {"add_nodes": [{"name": "cell-1", "template": "door"}]}}],
+              "messages": []}}
+  ]
+}

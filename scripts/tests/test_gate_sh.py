@@ -3614,5 +3614,39 @@ class TestEntryParsedWhole(unittest.TestCase):
         self.assertNotEqual((0, "old-ran\n", ""), (rc, out, err))
 
 
+class TreeKeyMirror(unittest.TestCase):
+    """GH #1290: `gate_legacy.sh` keys its gate folder with `tree_key`, the shell mirror of
+    `schedule.tree_key`; the rows are those of test_pipeline_schedule.TreeKey."""
+
+    ROOT = "/srv/wt-root"
+    ROWS = [
+        ("/x/meclaw-core-wt-s/", ROOT, "meclaw-core-wt-s"),
+        ("/x/meclaw-core-wt-s", None, "meclaw-core-wt-s"),
+        ("/x/meclaw-core", ROOT, "meclaw-core"),
+        (ROOT + "/meclaw-core/wave-a/fix", ROOT, "wave-a--fix"),
+        (ROOT + "/meclaw-core/wave-a/fix/", ROOT + "/", "wave-a--fix"),
+        (ROOT + "/meclaw-core/wave-b/fix", ROOT, "wave-b--fix"),
+        (ROOT + "/meclaw-core/wave-a/fix", None, "fix"),
+        (ROOT + "/meclaw-core/wave-a/fix", "", "fix"),
+        (ROOT + "/meclaw-core/loose", ROOT, "loose"),
+        (ROOT + "-other/meclaw-core/wave-a/fix", ROOT, "fix"),
+        ("fix", ROOT, "fix"),
+    ]
+
+    def test_every_row_of_the_table(self):
+        prog = 'eval "$(sed -n \'/^tree_key() {/,/^}/p\' "$1")"; tree_key "$2"'
+        for path, root, want in self.ROWS:
+            env = dict(os.environ)
+            env.pop("MECLAW_WORKTREE_ROOT", None)
+            if root is not None:
+                env["MECLAW_WORKTREE_ROOT"] = root
+            with self.subTest(path=path, root=root):
+                res = subprocess.run(["bash", "-c", prog, "probe", str(GATE_SH), path],
+                                     env=env, capture_output=True, text=True,
+                                     timeout=kit_time.HANG)
+                self.assertEqual(0, res.returncode, res.stderr)
+                self.assertEqual(want, res.stdout.strip())
+
+
 if __name__ == "__main__":
     unittest.main()

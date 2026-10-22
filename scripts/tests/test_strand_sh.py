@@ -219,7 +219,7 @@ def kit_env(repo, extra_env=None):
     env.pop("CARGO_TARGET_DIR", None)
     for var in ("MECLAW_STRAND_TOKEN_SKIP", "CI", "MECLAW_CARGO_LOCK_HELD",
                 "MECLAW_STRAND_NOW", "MECLAW_TIER_DRY", "MECLAW_GATE_LANE_RECEIPT",
-                "MECLAW_LANES_CALLER"):
+                "MECLAW_LANES_CALLER", "MECLAW_WORKTREE_ROOT"):
         env.pop(var, None)
     env["MECLAW_STRAND_TOKENS"] = str(repo.parent / "tokens")
     # The store of the pipeline core: SET like the token file, never the
@@ -336,6 +336,20 @@ class TestNew(StrandShTestCase):
         self.assertRegex(text, r"(?m)^Outsourced findings: none$")
         from scripts.pipeline import merge
         self.assertTrue(merge.outsourced_findings_ok(text))
+
+    def test_new_puts_the_worktree_under_the_worktree_root(self):
+        # GH #1290: with MECLAW_WORKTREE_ROOT the tree is <root>/<repo>/<wave>/<name>;
+        # without it (every other case of this module) it stays <repo>-wt-<name>.
+        wroot = pathlib.Path(self._tmp.name) / "wellen"
+        res = run_strand(self.repo, "new", "kit", "--issue", "756",
+                         extra_env={"MECLAW_WORKTREE_ROOT": str(wroot)})
+        self.assertEqual(0, res.returncode, res.stderr)
+        tree = wroot / self.repo.name / WAVE / "kit"
+        self.assertTrue(tree.is_dir(), "worktree missing: %s" % res.stderr)
+        self.assertFalse(self.worktree("kit").exists())
+        self.assertIn(str(tree), _git(self.repo, "worktree", "list").stdout)
+        self.assertEqual("kit", header_block(
+            tree / "plans" / WAVE_DIR / "berichte" / "kit.md")["strang"])
 
     def test_new_prompt_points_at_the_rules_and_repeats_none_of_them(self):
         res = run_strand(self.repo, "new", "kit", "--issue", "756")

@@ -12,7 +12,7 @@ name = "meclaw"
 path = "src/main.rs"
 
 [dependencies]
-meclaw-cli = { path = "../meclaw-cli", version = "0.69.0" }
+meclaw-cli = { path = "../meclaw-cli", version = "0.70.1" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

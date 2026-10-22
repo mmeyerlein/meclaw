@@ -1,0 +1,68 @@
+{
+  "source": "tests: the message shapes of the template's own tests (the lanes of the writer's contract, GH #925), ids and text as placeholders",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_close"
+      },
+      "context": {
+        "session_id": "s1",
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "episode"
+      },
+      "context": {
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "episodes": [
+          {
+            "role": "user",
+            "session_id": "s1",
+            "index": 1,
+            "text": "a question",
+            "at": "2026-01-01T00:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "operation": "select"
+      },
+      "context": {
+        "session_id": "s1",
+        "audience_set": "[\"member-1\"]",
+        "cur_phase": "close-wall",
+        "cur_call": "s1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "c-wall",
+            "text": "[]"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_close"
+      },
+      "context": {
+        "session_id": "s2"
+      },
+      "body": {
+        "messages": []
+      }
+    }
+  ]
+}

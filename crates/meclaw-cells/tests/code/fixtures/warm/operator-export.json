@@ -1,0 +1,10 @@
+{
+  "source": "hand: the template's script (the trigger from a tool_call, then the export_done receipt from below)",
+  "probes": [
+    {"hop": {"tool_call_id": "call-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call-1",
+                            "text": "{\"target\": \"/member-1/memory\", \"export_to\": \"run-1\"}"}]}},
+    {"hop": {"route": "export_done", "tool_call_id": "call-2", "target": "/member-1/memory", "parts": 3},
+     "body": {"messages": [{"origin": "tool", "type": "text", "text": "exported 3 parts"}]}}
+  ]
+}

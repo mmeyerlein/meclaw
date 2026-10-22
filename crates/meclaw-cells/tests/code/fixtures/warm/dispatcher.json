@@ -1,0 +1,14 @@
+{
+  "source": "hand: the template's script (a plain stop answer, then a bundle of tool calls with a folded family, an async tool and a sentence beside them)",
+  "overlay": {"async_tools": "consult"},
+  "probes": [
+    {"hop": {"finish_reason": "stop"}, "context": {"interim": "1"}, "body": {"messages": [{"origin": "assistant", "type": "text", "text": "hello"}]}},
+    {"hop": {"finish_reason": "tool_calls", "input_soft": 120000}, "context": {"tools_folded": "files"},
+     "body": {"messages": [
+       {"origin": "assistant", "type": "text", "text": "one moment"},
+       {"origin": "assistant", "type": "tool_call", "id": "call-1", "text": "{\"name\": \"files\", \"arguments\": \"{\\\"op\\\": \\\"read\\\", \\\"args\\\": {\\\"path\\\": \\\"notes.txt\\\"}}\"}"},
+       {"origin": "assistant", "type": "tool_call", "id": "call-2", "text": "{\"name\": \"files\", \"arguments\": {\"op\": \"help\"}}"},
+       {"origin": "assistant", "type": "tool_call", "id": "call-3", "text": "{\"name\": \"consult\", \"arguments\": \"{\\\"eta\\\": \\\"short\\\"}\"}"}
+     ]}}
+  ]
+}

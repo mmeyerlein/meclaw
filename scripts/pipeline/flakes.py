@@ -1906,7 +1906,8 @@ def default_drafts():
     if env:
         return pathlib.Path(env)
     from . import gate as _gate  # gate imports this module: late, not at the top
-    return pathlib.Path(_gate.target_dir(str(REPO))) / "gate" / REPO.name / "flakes"
+    from . import schedule as _schedule  # GH #1290: the tree's key, not its bare name
+    return pathlib.Path(_schedule.tree_gate_dir(_gate.target_dir(str(REPO)), str(REPO))) / "flakes"
 
 
 def _draft(drafts, test, title, body, reason):

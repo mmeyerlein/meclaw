@@ -14,7 +14,23 @@ use tokio::task::JoinHandle;
 /// (`raw_params["multi_send_capable"]`) has been removed.
 pub struct CodeCellFactory;
 
+/// Idle default of a `code` cell's runner children in ms (GH #1276, R-WK-4):
+/// 30 minutes, the same as [`crate::llm::factory::LLM_IDLE_TIMEOUT_DEFAULT_MS`]. See
+/// [`CodeCellFactory`]'s `default_idle_timeout_ms` for the reason.
+pub const CODE_IDLE_TIMEOUT_DEFAULT_MS: u64 = 1_800_000;
+
 impl CellFactory for CodeCellFactory {
+    /// GH #1276 (R-WK-4): 30 minutes instead of the colony default (60 s).
+    /// `code` is stateless, so the timeout does not put the CELL to sleep; it
+    /// bounds the life of its warm/resident runner children, which before this
+    /// lived until the colony restarted (23-34 children per POC colony,
+    /// 0.69-0.86 GB, measured 20.10.). 30 minutes keeps a conversation with
+    /// pauses on one interpreter, like the `llm` default.
+    /// `cell.idle_timeout_ms` still wins.
+    fn default_idle_timeout_ms(&self) -> Option<u64> {
+        Some(CODE_IDLE_TIMEOUT_DEFAULT_MS)
+    }
+
     /// Pre-spawn validation. Same parse path as `spawn_cell`.
     fn validate_params(&self, raw: &JsonValue) -> Result<(), String> {
         CodeParams::parse(raw).map(|_| ())
@@ -33,7 +49,7 @@ impl CellFactory for CodeCellFactory {
         _cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
         colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
-        _idle_timeout: Option<std::time::Duration>,
+        idle_timeout: Option<std::time::Duration>,
         _cell_timeout: i64,
         message_timeout: Option<std::time::Duration>,
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
@@ -89,7 +105,8 @@ impl CellFactory for CodeCellFactory {
                 // resident start their pool HERE, once per cell value, so a
                 // crash-respawn keeps the warm children (it is the dispatcher
                 // that died, not the script).
-                .with_runner_pool(&params, max_concurrency)
+                // GH #1276: the resolved idle timeout stops idle children.
+                .with_runner_pool(&params, max_concurrency, idle_timeout, path.as_str())
                 .with_grant(&grant, credential_env, max_concurrency),
         );
         let (tx, rx) = mpsc::channel::<Message>(mailbox_capacity);
@@ -183,7 +200,7 @@ impl CellFactory for CodeCellFactory {
         _cell_dir: std::path::PathBuf,
         contract: meclaw_colony::ContractView,
         colony_inbox_tx: mpsc::Sender<meclaw_colony::ColonyMsg>,
-        _idle_timeout: Option<std::time::Duration>,
+        idle_timeout: Option<std::time::Duration>,
         _cell_timeout: i64,
         message_timeout: Option<std::time::Duration>,
         blob_store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
@@ -214,7 +231,8 @@ impl CellFactory for CodeCellFactory {
             )
             // A boot-inactive warm cell costs nothing: the child task spawns its
             // process on the FIRST job, so only the broker exists here.
-            .with_runner_pool(&params, max_concurrency)
+            // GH #1276: the same idle stop as on the regular spawn path.
+            .with_runner_pool(&params, max_concurrency, idle_timeout, path.as_str())
             .with_grant(&grant, credential_env, max_concurrency),
         );
         Some(meclaw_colony::build_stateless_boot_inactive_respawn(
@@ -239,6 +257,13 @@ mod tests {
     use meclaw_core::{Body, MessageBuilder, Path};
     use meclaw_testing::EmissionsExt;
     use std::sync::Arc;
+
+    /// GH #1276: a `code` cell without `cell.idle_timeout_ms` stops its idle
+    /// runner children after 30 minutes, like the `llm` default.
+    #[test]
+    fn a_code_cell_stops_its_idle_children_after_thirty_minutes_by_default() {
+        assert_eq!(CodeCellFactory.default_idle_timeout_ms(), Some(1_800_000));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn factory_reads_multi_send_capable_from_contract() {

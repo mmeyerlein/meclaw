@@ -1,0 +1,9 @@
+{
+  "source": "hand: the template's script (`phone_out` with text -> one rim `turn` with chat id, speaker and world time; `answer` from the rim -> `phone_in` with its channel)",
+  "probes": [
+    {"hop": {"route": "phone_out", "phone_chat_id": "phone:w-1:f-1", "phone_speaker": "member", "phone_at": "day 2 08:15"},
+     "body": {"phone_out": {"text": "Are you coming to the market today?"}}},
+    {"hop": {"route": "answer", "chat_id": "phone:w-1:f-1"}, "context": {"channel": "phone:w-1:f-1"},
+     "body": {"answer": {"text": "Yes, around noon."}}}
+  ]
+}

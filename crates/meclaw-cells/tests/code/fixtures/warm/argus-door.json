@@ -1,0 +1,23 @@
+{
+  "source": "hand: the template's script (a cycles read on in_read, a hint on in_hint, the charter store's goals answer that pages on to the rules; answers and acks always carry an error_code key, so only the store-bound legs are probed)",
+  "probes": [
+    {
+      "hop": {"route": "in_read", "read_what": "cycles", "read_since": "2026-01-01T00:00:00+01:00", "read_limit": "5", "read_tag": "tag-1"},
+      "body": {"messages": []}
+    },
+    {
+      "hop": {"route": "in_hint"},
+      "body": {"messages": [], "hint": {"origin": "agent-1", "confidence": 70, "line": "  hello  "}}
+    },
+    {
+      "hop": {"route": "in_read", "read_what": "charter", "read_tag": "tag-2"},
+      "body": {"messages": []}
+    },
+    {
+      "hop": {"operation": "select", "duration_ms": 0, "rows_affected": 1},
+      "context": {"ar_phase": "goals", "ar_carry": "{\"what\": \"charter\", \"since\": null, \"limit\": 20, \"tag\": \"tag-2\"}"},
+      "body": {"messages": [{"id": "m-4", "origin": "tool", "type": "tool_result",
+        "text": "[{\"id\":\"goal-1\",\"metric\":\"latency_ms\",\"direction\":\"down\",\"window_minutes\":60,\"min_samples\":10,\"min_delta_pct\":5,\"quality_gate\":\"\",\"enabled\":1,\"note\":\"hello\",\"source\":\"seed\"}]"}]}
+    }
+  ]
+}

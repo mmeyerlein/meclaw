@@ -32,6 +32,28 @@ pub(crate) struct ChildConfig {
     pub(crate) spec: ChildSpec,
     /// The first line the child reads (script + namespace mode).
     pub(crate) boot: JsonValue,
+    /// How long a live child may sit without a job before it is stopped
+    /// (GH #1276, R-WK-4); `None` keeps it until the pool ends.
+    pub(crate) idle: Option<Duration>,
+    /// The cell's address, for the stop's log line only.
+    pub(crate) cell: String,
+}
+
+impl ChildConfig {
+    /// Arm the idle stop: every slot of the pool gets the same duration, each
+    /// with its own clock (the config is cloned per slot).
+    pub(crate) fn with_idle_stop(mut self, idle: Option<Duration>, cell: &str) -> Self {
+        self.idle = idle;
+        self.cell = cell.to_string();
+        self
+    }
+}
+
+/// How long the child task may wait for the next job before it stops its child
+/// (GH #1276): only a LIVE child is stopped -- an empty slot has nothing to
+/// free and must not spin -- and `None` (`cell.timeout` -1 or > 0) never stops.
+pub(crate) fn idle_arm(child_alive: bool, idle: Option<Duration>) -> Option<Duration> {
+    idle.filter(|_| child_alive)
 }
 
 /// The child configuration a `warm`/`resident` cell needs; `None` for `cold`.
@@ -68,6 +90,8 @@ pub(crate) fn config_for(p: &CodeParams) -> Option<ChildConfig> {
             sandbox: p.sandbox.clone().map(Box::new),
         },
         boot: harness::boot_frame(&p.script, persistent),
+        idle: None,
+        cell: String::new(),
     })
 }
 
@@ -81,12 +105,43 @@ pub(crate) async fn child_task(
     // The child is spawned on the FIRST job, not here: a colony full of warm
     // cells that nobody talks to must not hold a python process each.
     let mut child: Option<StdioChild> = None;
-    while let Some(Job {
-        document,
-        timeout,
-        reply,
-    }) = jobs.recv().await
-    {
+    loop {
+        // GH #1276 (R-WK-4): before this, a warm or resident child lived until
+        // the colony restarted (0.69-0.86 GB per POC colony, measured 20.10.).
+        // The sleep is created anew on every round, so the clock starts after the
+        // previous reply was sent and never runs while a job is in flight (`serve`
+        // is outside the select). `biased`: a job already in the channel wins over
+        // an expiring clock, so it is served by the live child, never dropped.
+        // A job that arrives DURING `retire` (at most `KILL_GRACE_MS`; the harness
+        // ends on stdin EOF) waits in the slot channel and boots a fresh child; its
+        // A-deadline starts in `serve`, the caller's guard (`PoolHandle::run`) on
+        // send, so it pays at most the grace. That window is not producible as an
+        // event, hence no test of its own.
+        let next = match idle_arm(child.is_some(), cfg.idle) {
+            Some(after) => tokio::select! {
+                biased;
+                job = jobs.recv() => job,
+                () = tokio::time::sleep(after) => {
+                    tracing::info!(
+                        cell = %cfg.cell,
+                        slot,
+                        idle_ms = u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+                        "code_child_idle_stop"
+                    );
+                    retire(&mut child, &cfg).await;
+                    continue;
+                }
+            },
+            None => jobs.recv().await,
+        };
+        let Some(Job {
+            document,
+            timeout,
+            reply,
+        }) = next
+        else {
+            break;
+        };
         let outcome = serve(&cfg, &mut child, &document, timeout).await;
         // GH #429, ordering half: the slot is reported free BEFORE the answer
         // travels. The other order looks harmless and is not — it hands the
@@ -348,6 +403,17 @@ mod tests {
         assert!(matches!(outs[0], JobOutcome::Ran(_)));
         // The dedicated kill path is pinned end-to-end in Task 10; here the
         // point is only that a first job on a cold slot boots a child.
+    }
+
+    /// GH #1276: the arm decision -- no child, nothing to stop; `None`, never;
+    /// otherwise the configured duration.
+    #[test]
+    fn the_idle_clock_runs_only_for_a_live_child_with_a_timeout() {
+        let d = Duration::from_millis(1_800_000);
+        assert_eq!(idle_arm(false, Some(d)), None, "an empty slot is not armed");
+        assert_eq!(idle_arm(true, None), None, "no idle timeout, no stop");
+        assert_eq!(idle_arm(false, None), None);
+        assert_eq!(idle_arm(true, Some(d)), Some(d));
     }
 
     #[tokio::test]

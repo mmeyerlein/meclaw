@@ -1092,6 +1092,37 @@ def with_measured(stations, measured):
 CORE_REPO = "meclaw"
 
 
+WORKTREE_ROOT_ENV = "MECLAW_WORKTREE_ROOT"
+
+
+def tree_key(worktree, env=None):
+    """The name that keys `worktree` in the shared `target/` (`tree_gate_dir`) and on a
+    lane (`lane_tree_name`): its directory name -- unless it lies under
+    `$MECLAW_WORKTREE_ROOT/<repo>/`, where `strand.sh new` puts a strand as
+    `<wave>/<name>` (GH #1290). There the directory name is only the strand's and repeats
+    across waves, so the key is the path below `<root>/<repo>/` with `/` as `--`
+    (`wave-a/fix` -> `wave-a--fix`). A bare name stays a name (`measure` passes one).
+    `gate_legacy.sh` carries the shell mirror (`tree_key` there, pinned by
+    `test_gate_sh.TreeKeyMirror`)."""
+    env = os.environ if env is None else env
+    text = str(worktree)
+    base = os.path.basename(text.rstrip("/"))
+    root = (env.get(WORKTREE_ROOT_ENV) or "").rstrip("/")
+    if not root or not os.path.isabs(text):
+        return base
+    rel = os.path.relpath(os.path.normpath(text), os.path.normpath(root))
+    parts = rel.split(os.sep)
+    if rel == os.curdir or parts[0] == os.pardir or len(parts) < 3:
+        return base
+    return "--".join(parts[1:])
+
+
+def tree_gate_dir(target, worktree, env=None):
+    """`<target>/gate/<tree_key>`: the folder a run of `worktree` writes its receipt and
+    logs to -- every worktree of a repository shares one `target/`."""
+    return os.path.join(target, "gate", tree_key(worktree, env=env))
+
+
 def lane_tree_name(repo_id, worktree):
     """The name of `worktree`'s tree on a lane (`wt/<name>`, `refs/heads/lane/<name>`,
     `<name>.lock`), unique per repository (GH #1199, OR-TM-14): the core's
@@ -1099,7 +1130,7 @@ def lane_tree_name(repo_id, worktree):
     with the same worktree basename shared one lane tree -- coding's `pass2` overwrote
     orga's `pass2` on build04. The one rule of the gate's admission, guard and push
     (`gate`), of `--plan-only`'s measure and of `measure minimum`'s default tree."""
-    base = os.path.basename(str(worktree).rstrip("/"))
+    base = tree_key(worktree)  # GH #1290: a strand under the worktree root by wave and name
     repo_id = (repo_id or CORE_REPO).strip()
     return base if repo_id == CORE_REPO else "%s@%s" % (repo_id, base)
 

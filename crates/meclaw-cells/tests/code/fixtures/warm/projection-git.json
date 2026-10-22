@@ -1,0 +1,76 @@
+{
+  "source": "hand: the template's script (an unknown op refused; an import that runs git -- the bare repository is initialised, the fetch from a path that holds no repository fails, the job refuses with git's own words --; an export parked with its git environment set, an answer parked for its job)",
+  "overlay": {
+    "base_path": "<base>/ws",
+    "git_dir": "<base>/git",
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true,
+        "write": [
+          "<base>"
+        ]
+      }
+    }
+  },
+  "probes": [
+    {
+      "hop": {
+        "route": "in_proj",
+        "op": "ws_bogus",
+        "op_id": "g-1",
+        "caller": "tools",
+        "ws": "w1"
+      },
+      "body": {
+        "op": "ws_bogus",
+        "args": {},
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_proj",
+        "op": "ws_import_git",
+        "op_id": "g-0",
+        "caller": "tools",
+        "ws": "w0"
+      },
+      "body": {
+        "op": "ws_import_git",
+        "args": {
+          "source": "<base>/no-repo"
+        },
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_proj",
+        "op": "ws_export_git",
+        "op_id": "g-2",
+        "caller": "tools",
+        "ws": "w2"
+      },
+      "body": {
+        "op": "ws_export_git",
+        "args": {
+          "message": "hello"
+        },
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_answer",
+        "op_id": "git:gj-0123456789abcdef.1"
+      },
+      "body": {
+        "ok": true,
+        "op": "ws_materialize",
+        "messages": []
+      }
+    }
+  ]
+}

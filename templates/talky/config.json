@@ -330,7 +330,8 @@
             "restore_ttl": true,
             "set_context": {
               "path": "has(hop.path) ? hop.path : ''",
-              "tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"
+              "tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''",
+              "tools_hinted": "has(hop.tools_hinted) ? hop.tools_hinted : ''"
             }
           }
         },
@@ -384,7 +385,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -479,7 +481,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -496,7 +499,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -551,7 +555,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -571,7 +576,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -618,7 +624,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -635,7 +642,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -652,7 +660,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -690,7 +699,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -713,7 +723,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -730,7 +741,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -747,7 +759,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -765,7 +778,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -785,7 +799,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -802,7 +817,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -825,7 +841,8 @@
               "interim",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -842,7 +859,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -869,7 +887,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -886,7 +905,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -943,7 +963,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -960,7 +981,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -977,7 +999,8 @@
               "input_soft",
               "path",
               "route_asked_at",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },
@@ -1044,7 +1067,8 @@
               "input_soft",
               "route_asked_at",
               "path",
-              "tools_folded"
+              "tools_folded",
+              "tools_hinted"
             ]
           }
         },

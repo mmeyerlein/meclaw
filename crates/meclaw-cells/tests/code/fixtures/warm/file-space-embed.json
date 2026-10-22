@@ -1,0 +1,37 @@
+{
+  "source": "hand: the template's script (a request without texts answers vectors null at once, no network)",
+  "overlay": {
+    "credential_grant_id": null,
+    "endpoint": "http://127.0.0.1:9/none"
+  },
+  "probes": [
+    {
+      "hop": {
+        "route": "in_embed"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "{\"note\": \"hello\"}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_embed"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "{\"texts\": []}"
+          }
+        ]
+      }
+    }
+  ]
+}

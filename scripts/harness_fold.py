@@ -351,7 +351,7 @@ def stale_frozen(repo, frozen=None):
             for (doc, path), n in sorted(frozen.items()) if dead.get((doc, path), 0) < n]
 
 
-def dead_path_mentions(repo, frozen=None, unread=None):
+def dead_path_mentions(repo, frozen=None, unread=None, core=None):
     """`[(doc, path)]`: test paths named in code spans under `templates/**/*.md`
     and `docs/**/*.md`, or anywhere in another UTF-8 file under those two
     roots, that the tree does not hold (relative ones resolved against the
@@ -359,9 +359,15 @@ def dead_path_mentions(repo, frozen=None, unread=None):
     `frozen` (default `FROZEN_HISTORICAL`), never beyond. A file that is not
     UTF-8 cannot be read; its path goes to the list `unread`, when given, so
     the caller can say so (review Z-D M1). `__pycache__` holds byte code, not
-    text, and is not counted."""
+    text, and is not counted. A tree without `crates/` (a consumer repository
+    running the kit) resolves a repository-relative path against `core`, the
+    meclaw-core tree the kit comes from, when given (GH #1291: a consumer's
+    frozen derived templates named 25 core pin tests, all live in the core)."""
     frozen = FROZEN_HISTORICAL if frozen is None else frozen
     out, seen = [], {}
+    root = repo
+    if core is not None and not os.path.isdir(os.path.join(repo, "crates")):
+        root = core
     for top in ("templates", "docs"):
         for doc in _tree_files(pathlib.Path(repo, top)):
             rel = doc.relative_to(repo).as_posix()
@@ -379,7 +385,7 @@ def dead_path_mentions(repo, frozen=None, unread=None):
             for span in spans:
                 for m in _DOC_MENTION_RE.finditer(span):
                     path = m.group(1)
-                    base = doc.parent if path.startswith("../") else pathlib.Path(repo)
+                    base = doc.parent if path.startswith("../") else pathlib.Path(root)
                     if os.path.isfile(os.path.normpath(base / path)):
                         continue
                     seen[(rel, path)] = seen.get((rel, path), 0) + 1

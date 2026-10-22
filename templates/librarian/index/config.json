@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "runner_mode": "cold",
+    "runner_mode": "warm",
     "max_concurrency": 1,
     "external_timeout_ms": 10000,
     "names_max": 64,

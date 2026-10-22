@@ -1,0 +1,347 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "required_drains": [
+      {
+        "accepts": "obs",
+        "emits": "intent",
+        "because": "a turn nobody takes back leaves the world waiting for a decision that was made"
+      },
+      {
+        "accepts": "call_result",
+        "emits": "intent",
+        "because": "a world result goes back into the open turn, which ends as an intent"
+      },
+      {
+        "accepts": "night",
+        "emits": "night",
+        "because": "the receipt says every session of the day was closed"
+      },
+      {
+        "accepts": "interview",
+        "emits": "interview",
+        "because": "the asker waits for exactly this answer"
+      },
+      {
+        "accepts": "answer",
+        "emits": "turn",
+        "because": "an answer on the figure's own human channel becomes a phone turn whose reply leaves as a turn"
+      },
+      {
+        "accepts": "in_model",
+        "emits": "model_refused",
+        "because": "a refused push is otherwise silent"
+      }
+    ],
+    "contract": {
+      "accepts": [
+        {
+          "route": "obs",
+          "because": "a turn of the world: `{turn_id, kind, text, tools[], deadline_ms?, day, at?}`. `tools[]` (provider schemas) are client tools of exactly this turn; a call of one does not end the turn, the model's final answer does"
+        },
+        {
+          "route": "call_result",
+          "because": "the world's answer to one `call`: `{turn_id, call_id, result}`; `result.accepted == false` reaches the model as an error result"
+        },
+        {
+          "route": "night",
+          "because": "the end of a game day: `{day}`. Every session the figure used that day is closed; `night` answers after the last close report"
+        },
+        {
+          "route": "interview",
+          "because": "a question from outside the play: `{question_id, question}`, one turn on channel `interview:<world_id>` without tools"
+        },
+        {
+          "route": "mandate",
+          "because": "a standing order: `{action: start|stop, until?, frame?, note?}`, the agent's pack leaf `instructions.mandate` until a `stop`"
+        },
+        {
+          "route": "answer",
+          "because": "the colony's answer on the figure's human channel (`context.channel` = `<prefix>:<world_id>:<figure_id>`): a phone turn"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package of the llm-registry for a model cell of the agent (GH #858), handed on unchanged"
+        },
+        {
+          "route": "mutation_committed",
+          "because": "the graph moved: handed on to the agent, which asks for its tools again"
+        }
+      ],
+      "emits": [
+        {
+          "route": "call",
+          "because": "a world tool the model called: `{turn_id, call_id, tool, args}`"
+        },
+        {
+          "route": "intent",
+          "because": "the end of a turn: `{turn_id, done: true, text}`, or `{turn_id, never: true}` for a failed one"
+        },
+        {
+          "route": "night",
+          "because": "the receipt of a night: `{day, ok, added, closed}` over all its sessions"
+        },
+        {
+          "route": "phone_capped",
+          "because": "an answer on the handset over `phone_replies_max` of the world day: `{day, channel, text, replies, max}`; it opened no turn"
+        },
+        {
+          "route": "interview",
+          "because": "the answer to an `interview`: `{question_id, answer}`, or `{question_id, answer: null, error, error_code}`"
+        },
+        {
+          "route": "turn",
+          "because": "a message of the figure's handset in the form of a door: `hop.chat_id` `<prefix>:<world_id>:<figure_id>`, one user turn (prefix `hp`, or `game` with hop `speaker`)"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package a model cell of the agent refused (GH #863)"
+        },
+        {
+          "route": "error",
+          "because": "`{error_code, turn_id?, kind}`; `error_code` is never null"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'obs' && !has(hop.figure_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'call_result' && !has(hop.figure_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'night' && !has(hop.figure_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'interview' && !has(hop.figure_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'mandate' && !has(hop.figure_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./phone",
+          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.figure_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'in_model'"
+        },
+        {
+          "from": ".",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'call' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'call'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'intent' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'intent'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'night' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'night'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'phone_capped' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'phone_capped'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'interview' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'interview'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./phone",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'turn' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'turn'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'turn' && !has(hop.figure_rim)",
+          "modifier": {
+            "set_context": {
+              "figure_turn": "hop.turn_id",
+              "figure_kind": "hop.figure_kind",
+              "figure_day": "hop.figure_day"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./world",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'close' && !has(hop.figure_rim)",
+          "modifier": {
+            "set_context": {
+              "figure_kind": "hop.figure_kind",
+              "figure_day": "hop.figure_day"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./world",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'tool_result' && !has(hop.figure_rim)"
+        },
+        {
+          "from": "./world",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'in_pack' && !has(hop.figure_rim)"
+        },
+        {
+          "from": "./simple-agent",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.refused_subscriber)"
+        },
+        {
+          "from": "./simple-agent",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'calls' && !has(hop.refused_subscriber)"
+        },
+        {
+          "from": "./simple-agent",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'close_report' && !has(hop.refused_subscriber)"
+        },
+        {
+          "from": "./simple-agent",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'error' && !has(hop.refused_subscriber)"
+        },
+        {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./world",
+          "to": "./phone",
+          "condition": "has(hop.route) && hop.route == 'phone_out'"
+        },
+        {
+          "from": "./phone",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'phone_in'"
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "A character in a shared world: a world adapter and a handset around a referenced simple agent; the world's tools are client tools of each turn.",
+    "use_when": "Instantiate once per character with `override_params` {\"world\": {\"figure_id\", \"world_id\", \"role\", \"phone\"}, \"agent/door\": {\"agent_id\", \"aieos\"}, …} and draw the world's lanes to its path.",
+    "not_in_scope": "No world knowledge, no deadline of its own, no copy of the agent.",
+    "examples": [
+      "obs {turn_id: 't1', kind: 'contact', text, tools: [look, say]} -> call look -> call_result -> intent {turn_id: 't1', done: true, text}"
+    ]
+  }
+}

@@ -1,0 +1,117 @@
+{
+ "source": "hand: the template's script (export walk: export -> transfer slot -> export_done; import walk: part -> park + probe -> known -> merge -> apply with one known row skipped)",
+ "probes": [
+  {
+   "hop": {
+    "export_to": "exports/run-1"
+   },
+   "context": {
+    "port_phase": "export",
+    "port_run": "run-1"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "user",
+      "type": "text",
+      "text": "export"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "operation": "export"
+   },
+   "context": {
+    "port_phase": "export-file",
+    "port_run": "run-1"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "tool",
+      "type": "tool_result",
+      "id": "p-export-file",
+      "text": "{\"seed_dir\": \"exports/run-1/files\", \"tables\": [\"rules\"], \"rows\": {\"rules\": 2}}"
+     }
+    ]
+   }
+  },
+  {
+   "context": {
+    "port_phase": "import"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "user",
+      "type": "text",
+      "text": "{\"format\": \"meclaw-firewall-export/1\", \"table\": \"rules\", \"export_id\": \"export-1\", \"part\": 1, \"of\": 1, \"final\": true, \"schema\": {\"rule_id\": \"text\", \"kind\": \"text\", \"field\": \"text\", \"value\": \"text\", \"action\": \"text\", \"enabled\": \"int\", \"note\": \"text\"}, \"rows\": [{\"rule_id\": \"rule-1\", \"kind\": \"substring\", \"field\": \"text\", \"value\": \"blocked phrase\", \"action\": \"reject\", \"enabled\": 1, \"note\": \"example\"}, {\"rule_id\": \"rule-2\", \"kind\": \"exact\", \"field\": \"channel\", \"value\": \"chat-1\", \"action\": \"allow\", \"enabled\": 1, \"note\": \"\"}]}"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "operation": "select"
+   },
+   "context": {
+    "port_phase": "import-known",
+    "port_run": "import:00000000-0000-4000-8000-000000000001",
+    "port_table": "rules"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "tool",
+      "type": "tool_result",
+      "id": "p-import-known",
+      "text": "[{\"rule_id\": \"rule-2\"}]"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "operation": "insert",
+    "rows_affected": 1
+   },
+   "context": {
+    "port_phase": "import-merge",
+    "port_run": "import:00000000-0000-4000-8000-000000000001",
+    "port_table": "rules"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "tool",
+      "type": "tool_result",
+      "id": "p-import-merge",
+      "text": "[]"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "operation": "select"
+   },
+   "context": {
+    "port_phase": "import-apply",
+    "port_run": "import:00000000-0000-4000-8000-000000000001",
+    "port_table": "rules"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "tool",
+      "type": "tool_result",
+      "id": "p-import-apply",
+      "text": "[{\"key\": \"import:00000000-0000-4000-8000-000000000001\", \"kind\": \"part\", \"payload\": \"{\\\"format\\\": \\\"meclaw-firewall-export/1\\\", \\\"table\\\": \\\"rules\\\", \\\"export_id\\\": \\\"export-1\\\", \\\"part\\\": 1, \\\"of\\\": 1, \\\"final\\\": true, \\\"schema\\\": {\\\"rule_id\\\": \\\"text\\\", \\\"kind\\\": \\\"text\\\", \\\"field\\\": \\\"text\\\", \\\"value\\\": \\\"text\\\", \\\"action\\\": \\\"text\\\", \\\"enabled\\\": \\\"int\\\", \\\"note\\\": \\\"text\\\"}, \\\"rows\\\": [{\\\"rule_id\\\": \\\"rule-1\\\", \\\"kind\\\": \\\"substring\\\", \\\"field\\\": \\\"text\\\", \\\"value\\\": \\\"blocked phrase\\\", \\\"action\\\": \\\"reject\\\", \\\"enabled\\\": 1, \\\"note\\\": \\\"example\\\"}, {\\\"rule_id\\\": \\\"rule-2\\\", \\\"kind\\\": \\\"exact\\\", \\\"field\\\": \\\"channel\\\", \\\"value\\\": \\\"chat-1\\\", \\\"action\\\": \\\"allow\\\", \\\"enabled\\\": 1, \\\"note\\\": \\\"\\\"}]}\"}, {\"key\": \"import:00000000-0000-4000-8000-000000000001\", \"kind\": \"known\", \"payload\": \"[{\\\"rule_id\\\": \\\"rule-2\\\"}]\"}]"
+     }
+    ]
+   }
+  }
+ ]
+}

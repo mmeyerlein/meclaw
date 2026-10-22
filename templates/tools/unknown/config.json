@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "script_inline": "\nimport sys, json\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nname = str(hop.get(\"tool_name\") or \"\")\nasked = name if name else \"(none)\"\ntext = \"no tool named %s is wired into this hive\" % asked\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"tool_result\", \"operation\": \"unknown\",\n               \"error_code\": \"unknown_tool\", \"tool_name\": name,\n               \"tool_call_id\": str(hop.get(\"tool_call_id\") or \"\")},\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                  \"id\": str(hop.get(\"tool_call_id\") or \"\"), \"text\": text}]}))\n",
     "external_timeout_ms": 10000,
     "sandbox": {

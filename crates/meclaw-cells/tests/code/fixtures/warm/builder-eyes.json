@@ -1,0 +1,90 @@
+{
+  "source": "test: crates/meclaw-cells/tests/builder/builder_eyes_read_the_colony.rs",
+  "probes": [
+    {
+      "hop": {
+        "tool_name": "graph_read",
+        "tool_call_id": "c-3"
+      },
+      "context": {
+        "build_id": "b7",
+        "iter": "0",
+        "repairs": "0"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "c-3",
+            "text": "{\"scope\": \"/os/orgs/org-1\"}"
+          }
+        ]
+      }
+    },
+    {
+      "body": {
+        "graph": {
+          "scope": "/",
+          "graph_version": 0,
+          "tag": "b7.0.0#c-3",
+          "nodes": [
+            {
+              "path": "/request",
+              "cell_type": "code"
+            },
+            {
+              "path": "/reply",
+              "cell_type": "code"
+            },
+            {
+              "path": "/island",
+              "cell_type": "code"
+            }
+          ],
+          "edges": [
+            {
+              "from": "/request",
+              "to": "/reply"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "hop": {
+        "tool_name": "registry_read",
+        "tool_call_id": "c-4"
+      },
+      "context": {
+        "build_id": "b7",
+        "iter": "1",
+        "repairs": "0"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "c-4",
+            "text": "{\"path_prefix\": \"/os/orgs\", \"active\": true}"
+          }
+        ]
+      }
+    },
+    {
+      "body": {
+        "tag": "b7.1.0#c-4",
+        "registry": [
+          {
+            "path": "/os/orgs/org-1/store",
+            "cell_id": "u-1",
+            "cell_type": "store",
+            "active": false,
+            "lifecycle_status": "idle"
+          }
+        ]
+      }
+    }
+  ]
+}

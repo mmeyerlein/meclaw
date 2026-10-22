@@ -1,0 +1,44 @@
+{
+  "source": "hand: the template's script (a lib_find call becomes a question, the answer becomes a tool_result)",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_tool",
+        "tool_name": "lib_find",
+        "tool_call_id": "call-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "call-1",
+            "text": "{\"q\": \"hello\", \"limit\": 5}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "answer",
+        "caller": "tools",
+        "op_id": "tools:call-2"
+      },
+      "body": {
+        "ok": true,
+        "op": "tree",
+        "op_id": "tools:call-2",
+        "under": "/",
+        "depth": 1,
+        "entries": [
+          {
+            "path": "/src",
+            "kind": "dir"
+          }
+        ],
+        "next": "",
+        "messages": []
+      }
+    }
+  ]
+}

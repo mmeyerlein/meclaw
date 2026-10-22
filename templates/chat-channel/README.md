@@ -1,4 +1,4 @@
-# `chat-channel@1.0.1`
+# `chat-channel@1.0.2`
 
 The channel `chat`, as one `code` cell. A sentence a person types on their own screen is
 a turn of its own channel -- not a voice turn in disguise.

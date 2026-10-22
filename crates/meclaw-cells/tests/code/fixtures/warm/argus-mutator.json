@@ -1,0 +1,24 @@
+{
+  "source": "hand: the template's script (a judge decision that changes a numeric param, a judge decision with no action, a revert order, an evaluation answer on in_eval)",
+  "probes": [
+    {
+      "context": {"ar_cycle": "cycle-1", "ar_goal": "goal-1", "ar_measured": "{\"latency_ms\": 900}", "ar_rules": "[]", "ar_goal_spec": "{\"source\": \"colony\"}", "ar_hints": "[]"},
+      "body": {"messages": [{"id": "call-1", "origin": "assistant", "type": "tool_call",
+        "text": "{\"cycle_id\":\"cycle-1\",\"action\":\"change\",\"reasoning\":\"hello\",\"change\":{\"target\":\"/os/agents/agent-1/brain\",\"kind\":\"numeric_param\",\"key\":\"temperature\",\"from\":0.8,\"to\":0.6},\"revert_plan\":{\"target\":\"/os/agents/agent-1/brain\",\"kind\":\"numeric_param\",\"key\":\"temperature\",\"to\":0.8},\"simulated\":{\"latency_ms\":800}}"}]}
+    },
+    {
+      "context": {"ar_cycle": "cycle-2", "ar_goal": "goal-2", "ar_measured": "{}", "ar_rules": "[]", "ar_goal_spec": "{\"source\": \"role-1\"}", "ar_hints": "[\"hint one\"]"},
+      "body": {"messages": [{"id": "call-2", "origin": "assistant", "type": "tool_call",
+        "text": "{\"name\":\"decide\",\"arguments\":\"{\\\"cycle_id\\\":\\\"cycle-2\\\",\\\"action\\\":\\\"none\\\",\\\"reasoning\\\":\\\"and again\\\"}\"}"}]}
+    },
+    {
+      "hop": {"route": "revert"},
+      "body": {"messages": [{"id": "call-3", "origin": "assistant", "type": "tool_call",
+        "text": "{\"op\":\"revert\",\"cycle_id\":\"cycle-1\",\"plan\":{\"target\":\"/os/agents/agent-1/brain\",\"kind\":\"model\",\"to\":\"provider-1/model-a\"}}"}]}
+    },
+    {
+      "hop": {"route": "in_eval", "eval_tag": "wait-1"},
+      "body": {"messages": [], "eval": {"verdict": "better", "batch_id": "batch-1", "n": 30, "baseline": 0.5, "candidate": 0.6, "delta_pct": 20}}
+    }
+  ]
+}

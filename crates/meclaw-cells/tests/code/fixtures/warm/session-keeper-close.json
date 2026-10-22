@@ -1,0 +1,20 @@
+{
+  "source": "hand: the template's script (a timer firing -> four selects; sweep -> seal; seal -> close; owed -> release; heal-page -> peers + marks; heal-peers -> marks; next -> arm the night watchdog)",
+  "probes": [
+    {"hop": {"route": "in_sweep", "schedule_name": "night-close"}, "body": {"messages": [{"origin": "user", "type": "text", "text": "night-close"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "sweep"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-sweep", "text": "[{\"channel\": \"chat-1\", \"session_id\": \"chat-1-a\", \"audience_set\": \"[\\\"member-1\\\"]\"}, {\"channel\": \"chat-2\", \"session_id\": \"chat-2-a\", \"audience_set\": \"\"}]"}]}},
+    {"hop": {"operation": "update", "rows_affected": 1}, "context": {"ses_phase": "seal", "channel": "chat-1", "keeper_session": "chat-1-a", "keeper_audience": "[\"member-1\"]"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-seal", "text": "[]"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "owed"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-owed", "text": "[{\"channel\": \"chat-3\", \"session_id\": \"chat-3-a\", \"audience_set\": \"\", \"owed_turn\": \"turn-7\"}]"}]}},
+    {"hop": {"operation": "update", "rows_affected": 1}, "context": {"ses_phase": "release", "channel": "chat-3", "keeper_session": "chat-3-a", "keeper_audience": ""},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-release", "text": "[]"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "heal-page"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-heal-page", "text": "[{\"session_id\": \"s-2\", \"channel\": \"chat-4\", \"audience_set\": \"\", \"closed_at\": \"2026-01-01T00:00:00.000000Z\", \"owed_turn\": null}, {\"session_id\": \"s-3\", \"channel\": \"chat-4\", \"audience_set\": \"\", \"closed_at\": null, \"owed_turn\": null}]"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "heal-peers"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-heal-peers", "text": "[{\"session_id\": \"s-2\", \"channel\": \"chat-4\", \"audience_set\": \"\", \"closed_at\": \"2026-01-01T00:00:00.000000Z\", \"owed_turn\": null}, {\"session_id\": \"s-1\", \"channel\": \"chat-4\", \"audience_set\": \"\", \"closed_at\": \"2026-01-01T00:00:00.000000Z\", \"owed_turn\": \"\"}]"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "next"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-next", "text": "[{\"last_seen\": \"2099-01-01T23:00:00.000000Z\"}]"}]}}
+  ]
+}

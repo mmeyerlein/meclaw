@@ -1,0 +1,35 @@
+{
+  "source": "hand: delta window read, then the window evaluation that claims the run (consolidation_log insert)",
+  "probes": [
+    {
+      "context": {
+        "mem_phase": "window",
+        "dream_run": "run-1",
+        "dream_to": "2026-01-02T00:00:00Z"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "window-eval",
+        "dream_run": "run-2",
+        "dream_to": "2026-01-03T00:00:00Z"
+      },
+      "hop": {
+        "operation": "select"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "r-1",
+            "text": "[{\"run_id\": \"run-0\", \"delta_from\": \"\", \"delta_to\": \"2026-01-01T00:00:00Z\", \"status\": \"done\", \"verdicts\": null}]"
+          }
+        ]
+      }
+    }
+  ]
+}

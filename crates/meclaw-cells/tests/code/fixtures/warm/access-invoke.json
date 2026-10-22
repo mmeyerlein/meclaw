@@ -1,0 +1,53 @@
+{
+  "source": "capture: a lab colony with simulated turns (scripts/capture_code_inputs.py), ids and text replaced by placeholders",
+  "probes": [
+    {
+      "hop": {"grant_id": "grant-1", "route": "in_invoke"},
+      "context": {"requester": "agent:agent-1"},
+      "body": {"messages": [{"id": "000000000000000000000000000000a4", "origin": "assistant", "type": "tool_call",
+        "text": "{\"grant_id\":\"grant-1\",\"operation\":\"vault.deliver\",\"payload\":{\"recipient_key\":\"00000000000000000000000000000000000000000000000000000000000000a5\"}}"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 1},
+      "context": {
+        "ac_phase": "grant", "access_origin": "invoke", "requester": "agent:agent-1",
+        "ac_carry": "{\"call_id\": \"000000000000000000000000000000a4\", \"requester\": \"agent:agent-1\", \"grant_id\": \"grant-1\", \"operation\": \"vault.deliver\", \"payload\": {\"recipient_key\": \"00000000000000000000000000000000000000000000000000000000000000a5\"}}"
+      },
+      "body": {"messages": [{"id": "0000000000a6", "origin": "tool", "type": "tool_result",
+        "text": "[{\"capability\":\"credential.read\",\"constraints\":\"{\\\"rate_per_min\\\":60}\",\"cred_ref\":\"cred:provider-1\",\"expires_at\":\"2099-01-01T00:00:00.000000Z\",\"grant_id\":\"grant-1\",\"requester\":\"agent:agent-1\",\"scope\":\"{\\\"actions\\\":[\\\"vault.deliver\\\"]}\",\"subject\":\"colony:colony-1\"}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 1},
+      "context": {
+        "ac_phase": "event", "requester": "agent:agent-1",
+        "ac_carry": "{\"call_id\": \"call-1\", \"requester\": \"agent:agent-1\", \"grant_id\": \"grant-1\", \"operation\": \"vault.deliver\", \"payload\": {\"recipient_key\": \"key-1\"}, \"capability\": \"credential.read\", \"scope\": {\"actions\": [\"vault.deliver\"]}, \"cred_ref\": \"cred:provider-1\", \"constraints\": {\"rate_per_min\": 60}}"
+      },
+      "body": {"messages": [{"id": "m-3", "origin": "tool", "type": "tool_result",
+        "text": "[{\"event\":\"granted\",\"at\":\"2026-01-01T00:00:00.000000Z\"}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 0},
+      "context": {
+        "ac_phase": "usage", "requester": "agent:agent-1",
+        "ac_carry": "{\"call_id\": \"call-1\", \"requester\": \"agent:agent-1\", \"grant_id\": \"grant-1\", \"operation\": \"vault.deliver\", \"payload\": {\"recipient_key\": \"key-1\"}, \"capability\": \"credential.read\", \"scope\": {\"actions\": [\"vault.deliver\"]}, \"cred_ref\": \"cred:provider-1\", \"constraints\": {\"rate_per_min\": 60}}"
+      },
+      "body": {"messages": [{"id": "m-4", "origin": "tool", "type": "tool_result", "text": "[]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 0},
+      "context": {
+        "ac_phase": "usage", "requester": "agent:agent-2",
+        "ac_carry": "{\"call_id\": \"call-2\", \"requester\": \"agent:agent-2\", \"grant_id\": \"grant-2\", \"operation\": \"message.send\", \"payload\": {\"text\": \"hello\", \"channel\": \"chat-9\"}, \"capability\": \"channel.send\", \"scope\": {\"actions\": [\"message.send\"], \"channel\": \"chat-1\"}, \"cred_ref\": \"\", \"constraints\": {\"max_invocations\": 10}}"
+      },
+      "body": {"messages": [{"id": "m-5", "origin": "tool", "type": "tool_result", "text": "[]"}]}
+    },
+    {
+      "context": {
+        "access_lane": "vault", "ac_phase": "sealed", "requester": "agent:agent-1",
+        "ac_carry": "{\"call_id\": \"call-1\", \"requester\": \"agent:agent-1\", \"grant_id\": \"grant-1\", \"operation\": \"vault.deliver\", \"capability\": \"credential.read\", \"cred_ref\": \"cred:provider-1\"}"
+      },
+      "body": {"messages": [{"id": "m-6", "origin": "tool", "type": "tool_result",
+        "text": "{\"sealed\": {\"alg\": \"box-1\", \"ciphertext\": \"aGVsbG8=\"}}"}]}
+    }
+  ]
+}

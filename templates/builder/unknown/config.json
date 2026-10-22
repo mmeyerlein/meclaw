@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "script_inline": "import sys, json\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nname = str(hop.get(\"tool_name\") or \"\")\nasked = name if name else \"(none)\"\n# The four tools this hive wires, named in the refusal. A model that asked for\n# something else gets the LIST rather than a shrug: the vocabulary is closed,\n# so naming it is the whole of the correction.\ntext = (\"no tool named %s is wired into this builder. The tools are: \"\n        \"librarian_search, catalogue_lookup, graph_read, registry_read.\" % asked)\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"unknown\", \"operation\": \"unknown\",\n               \"error_code\": \"unknown_tool\", \"tool_name\": name,\n               \"tool_call_id\": str(hop.get(\"tool_call_id\") or \"\")},\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\",\n                  \"id\": str(hop.get(\"tool_call_id\") or \"\"), \"text\": text}]}))\n",
     "external_timeout_ms": 5000,
     "sandbox": {

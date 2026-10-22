@@ -5,6 +5,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "external_timeout_ms": 42000,
     "endpoint": "${MEMORY_EMBED_ENDPOINT:-https://openrouter.ai/api/v1/embeddings}",
     "model": "${MEMORY_EMBED_MODEL:-google/gemini-embedding-2}",

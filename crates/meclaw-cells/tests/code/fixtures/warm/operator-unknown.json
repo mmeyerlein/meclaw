@@ -1,0 +1,7 @@
+{
+  "source": "hand: the template's script (its only path: a receipt naming the unwired lane; it always carries error_code unknown_route)",
+  "probes": [
+    {"hop": {"route": "lane-1", "tool_call_id": "call-1"}, "body": {"messages": []}},
+    {"hop": {}, "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}}
+  ]
+}

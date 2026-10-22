@@ -1,0 +1,54 @@
+{
+  "source": "hand: read of the shelf (in_read -> store select), then the store's rows -> the answer",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_read",
+        "op": "last"
+      },
+      "context": {
+        "shelf_origin": "read",
+        "shelf_op_id": "op-1",
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "shelf_store",
+        "operation": "select"
+      },
+      "context": {
+        "shelf_origin": "read",
+        "shelf_op_id": "op-1",
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "shelf-read",
+            "text": "[{\"id\": \"row-1\", \"at\": 1760000000000, \"audience_set\": \"[\\\"member-1\\\"]\", \"title\": \"Daily digest\", \"items\": \"[\\\"hello.\\\", \\\"world.\\\"]\"}, {\"id\": \"row-2\", \"at\": 1759990000000, \"audience_set\": \"holder\", \"title\": \"Daily digest\", \"items\": \"[\\\"scheduled.\\\"]\"}, {\"id\": \"row-3\", \"at\": 1759980000000, \"audience_set\": \"[\\\"member-2\\\"]\", \"title\": \"Daily digest\", \"items\": \"[]\"}]"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_read",
+        "op": "first"
+      },
+      "context": {
+        "shelf_origin": "read",
+        "shelf_op_id": "op-2",
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "messages": []
+      }
+    }
+  ]
+}

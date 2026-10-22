@@ -1,0 +1,11 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "dispatcher@1.4.0"
+  },
+  "override_params": {
+    "": {
+      "interim": ""
+    }
+  }
+}

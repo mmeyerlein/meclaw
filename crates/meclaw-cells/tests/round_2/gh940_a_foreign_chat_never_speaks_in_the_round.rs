@@ -58,13 +58,13 @@ const ROUND: &str = r#"["agent:scribe","member:alex"]"#;
 /// The channel templates whose ingress is bound before the turn is raised
 /// (`SELF_BOUND_CHANNELS` in `recipes`), at the versions the tree ships.
 const SELF_BOUND: [&str; 4] = [
-    "chat-channel@1.0.1",
-    "voice@2.6.3",
+    "chat-channel@1.0.2",
+    "voice@2.6.4",
     "web@2.3.1",
     "terminal@1.0.2",
 ];
-const TELEGRAM: &str = "telegram-connector@2.2.2";
-const SLACK: &str = "slack-agent@2.2.1";
+const TELEGRAM: &str = "telegram-connector@2.2.3";
+const SLACK: &str = "slack-agent@2.2.2";
 
 // ══════════════════════════════════════════════════════════════ the renderer
 

@@ -74,6 +74,9 @@ THE LOCKS
                        re-check R3-C1, OR-DT.W5.tpl). A doc goes dead when
                        the test moves, in a diff that never touches the doc,
                        so no diff gates it; it reads the docs only (~0.39 s).
+                       A consumer tree without `crates/` resolves the paths
+                       against the meclaw-core tree the kit comes from
+                       (GH #1291).
     pin-drift-lock     `sets/<v>.json` `sources.<n>` = {repo, tag|commit,
                        templates} against the source repository (W10): the
                        `source_commits.<n>` a set records must be the commit
@@ -851,7 +854,9 @@ def check_dead_path_lock(diff_paths, tree, ctx=None):
     import harness_fold
     unread = []
     try:
-        dead = harness_fold.dead_path_mentions(tree, unread=unread)
+        # GH #1291: a consumer tree without crates/ names the core's tests;
+        # they live in the meclaw-core tree this kit comes from.
+        dead = harness_fold.dead_path_mentions(tree, unread=unread, core=os.path.dirname(scripts))
     except OSError as exc:
         where = getattr(exc, "filename", None) or tree
         if os.path.islink(where) and not os.path.exists(where):

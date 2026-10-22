@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "window_days": 14,
     "min_days": 4,
     "cosine_min": 0.82,

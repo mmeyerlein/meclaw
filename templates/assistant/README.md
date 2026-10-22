@@ -1,4 +1,4 @@
-# `assistant@3.8.4`
+# `assistant@3.8.5`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and one hundred and one edges.
@@ -246,7 +246,7 @@ door `. -> <generation>` every growth recipe draws.
 | `answer` | **what this generation said**, on its way back to the channel that asked. New in 2.0.0. The assistant does not know which channel it came from and must not: `context.channel_node` rode in on the turn and rides back out on the answer, and the member's own edge into `./channels` is what turns that name into an address (`context.channel`, the chat, rides along beside it — GH #522) |
 | `write` | a closed session as one write batch |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.10.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.10.2` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `answer_check` | the **sent answer** for the checker the member binds, since [#1255](https://github.com/mmeyerlein/meclaw/issues/1255): one message per section the splitter inside `./talky` or `./talky-chat` names in its knob `answer_check`, after the answer -- hop `{route, section, turn_id, section_written}`, body `{"messages": [], "section", "verify_answer"}`. Carried out of both surfaces unchanged, on the same terms as `sidecar` and never sorted with it: it holds the answer text, and a section on `sidecar` reaches every app of the member. Without the knob nothing travels; `./cogny` raises none |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out -- three since [#895](https://github.com/mmeyerlein/meclaw/issues/895), when the recipe drew the typed surface's road too |
 | `brief` | the brief of a turn about its counterpart, for the member's `affinity`: raised by a surface's collector when its `brief_slots` is set and the turn carries `context.counterpart`, leaving on a v-lane with `context.brief_surface` stamped. The member stamps the asker. Since 2.9.0 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
@@ -793,7 +793,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.8.4",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.8.5",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

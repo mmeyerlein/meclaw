@@ -1,0 +1,74 @@
+{
+  "source": "hand: the template's script (a request without argv and a run directory outside base_path: both refused in the body; then two real programs below base_path, one that prints and one that exits 3)",
+  "overlay": {
+    "base_path": "<base>/..",
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true,
+        "write": [
+          "<base>"
+        ]
+      }
+    }
+  },
+  "probes": [
+    {
+      "hop": {
+        "route": "in_run",
+        "op_id": "r-1"
+      },
+      "body": {
+        "cwd": "/nowhere/w1",
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_run",
+        "op_id": "r-2"
+      },
+      "body": {
+        "argv": [
+          "true"
+        ],
+        "cwd": "/nowhere/w2",
+        "timeout_ms": 1000,
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_run",
+        "op_id": "r-3"
+      },
+      "body": {
+        "argv": [
+          "sh",
+          "-c",
+          "echo one"
+        ],
+        "cwd": "<base>",
+        "timeout_ms": 30000,
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "in_run",
+        "op_id": "r-4"
+      },
+      "body": {
+        "argv": [
+          "sh",
+          "-c",
+          "exit 3"
+        ],
+        "cwd": "<base>",
+        "timeout_ms": 30000,
+        "messages": []
+      }
+    }
+  ]
+}

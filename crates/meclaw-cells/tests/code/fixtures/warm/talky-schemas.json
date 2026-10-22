@@ -1,0 +1,245 @@
+{
+  "source": "capture: a lab colony with simulated turns (scripts/capture_code_inputs.py), ids and text replaced by placeholders",
+  "probes": [
+    {
+      "hop": {
+        "error_code": "tool_unknown",
+        "exit_code": 0,
+        "had_stderr": false,
+        "operation": "schemas",
+        "route": "in_menu",
+        "schema_count": 2,
+        "unknown_count": 15
+      },
+      "context": {
+        "tool_answerer": "tools",
+        "tool_caller": "talky"
+      },
+      "body": {
+        "messages": [],
+        "schemas": [
+          {
+            "description": "hello",
+            "name": "web_search",
+            "parameters": {
+              "properties": {
+                "max_results": {
+                  "description": "hello",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "query": {
+                  "description": "what to search for",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "query"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "hello",
+            "name": "web_fetch",
+            "parameters": {
+              "properties": {
+                "url": {
+                  "description": "hello",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            }
+          }
+        ],
+        "unknown": [
+          "consult_cogny",
+          "memory_recall",
+          "peer_seek",
+          "peer_ping",
+          "peer_consent",
+          "peer_say",
+          "room_open",
+          "room_join",
+          "room_leave",
+          "room_say",
+          "room_list",
+          "peer_nameplate",
+          "peer_block",
+          "peer_unblock",
+          "peer_rule"
+        ]
+      }
+    },
+    {
+      "hop": {
+        "error_code": "tool_unknown",
+        "exit_code": 0,
+        "had_stderr": false,
+        "operation": "schemas",
+        "route": "in_menu",
+        "schema_count": 1,
+        "unknown_count": 16
+      },
+      "context": {
+        "assistant": "assistant-1",
+        "tool_answerer": "memory",
+        "tool_caller": "talky"
+      },
+      "body": {
+        "messages": [],
+        "schemas": [
+          {
+            "description": "hello",
+            "name": "memory_recall",
+            "parameters": {
+              "properties": {
+                "query": {
+                  "description": "what to look for",
+                  "type": "string"
+                },
+                "window_from": {
+                  "description": "hello",
+                  "type": "string"
+                },
+                "window_to": {
+                  "description": "hello",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "query"
+              ],
+              "type": "object"
+            }
+          }
+        ],
+        "sidecar": [
+          {
+            "instruction": "hello",
+            "required": true,
+            "schema": {
+              "properties": {
+                "facts": {
+                  "items": {
+                    "properties": {
+                      "claim": {
+                        "type": "string"
+                      },
+                      "fact_kind": {
+                        "enum": [
+                          "world",
+                          "experience",
+                          "foresight"
+                        ],
+                        "type": "string"
+                      },
+                      "predicate": {
+                        "type": "string"
+                      },
+                      "quote": {
+                        "description": "hello",
+                        "type": "string"
+                      },
+                      "source": {
+                        "description": "hello",
+                        "type": "string"
+                      },
+                      "subject": {
+                        "type": "string"
+                      },
+                      "valid_from": {
+                        "description": "<RFC3339|null>",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "subject",
+                      "predicate",
+                      "claim",
+                      "quote",
+                      "fact_kind",
+                      "valid_from",
+                      "source"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "nothing_new": {
+                  "description": "hello",
+                  "type": "boolean"
+                },
+                "topic": {
+                  "properties": {
+                    "movement": {
+                      "enum": [
+                        "start",
+                        "continue",
+                        "end"
+                      ],
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "description": "hello",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "movement",
+                    "name",
+                    "source"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "facts",
+                "topic"
+              ],
+              "type": "object"
+            },
+            "section": "memory"
+          }
+        ],
+        "unknown": [
+          "web_search",
+          "web_fetch",
+          "consult_cogny",
+          "peer_seek",
+          "peer_ping",
+          "peer_consent",
+          "peer_say",
+          "room_open",
+          "room_join",
+          "room_leave",
+          "room_say",
+          "room_list",
+          "peer_nameplate",
+          "peer_block",
+          "peer_unblock",
+          "peer_rule"
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_menu"
+      },
+      "body": {
+        "tools": [
+          "*",
+          "*"
+        ],
+        "messages": []
+      }
+    }
+  ]
+}

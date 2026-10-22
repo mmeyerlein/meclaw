@@ -2852,5 +2852,50 @@ def tearDownModule():
     store_isolation.restore()
 
 
+class TreeKey(unittest.TestCase):
+    """GH #1290: `strand.sh new` puts a strand at `$MECLAW_WORKTREE_ROOT/<repo>/<wave>/<name>`
+    when the variable is set; there the directory name repeats across waves, while the kit
+    keyed a tree by it (`<target>/gate/<tree>` in the one shared `target/`, the lane tree
+    `wt/<tree>` with its lock and ref). `schedule.tree_key` is the one rule; the shell mirror
+    in gate_legacy.sh is pinned on the same rows (test_gate_sh.TreeKeyMirror)."""
+
+    ROOT = "/srv/wt-root"
+    ROWS = [
+        ("/x/meclaw-core-wt-s/", ROOT, "meclaw-core-wt-s"),
+        ("/x/meclaw-core-wt-s", None, "meclaw-core-wt-s"),
+        ("/x/meclaw-core", ROOT, "meclaw-core"),
+        (ROOT + "/meclaw-core/wave-a/fix", ROOT, "wave-a--fix"),
+        (ROOT + "/meclaw-core/wave-a/fix/", ROOT + "/", "wave-a--fix"),
+        (ROOT + "/meclaw-core/wave-b/fix", ROOT, "wave-b--fix"),
+        (ROOT + "/meclaw-core/wave-a/fix", None, "fix"),
+        (ROOT + "/meclaw-core/wave-a/fix", "", "fix"),
+        (ROOT + "/meclaw-core/loose", ROOT, "loose"),
+        (ROOT + "-other/meclaw-core/wave-a/fix", ROOT, "fix"),
+        ("fix", ROOT, "fix"),
+    ]
+
+    def test_every_row_of_the_table(self):
+        for path, root, want in self.ROWS:
+            env = {} if root is None else {schedule.WORKTREE_ROOT_ENV: root}
+            with self.subTest(path=path, root=root):
+                self.assertEqual(want, schedule.tree_key(path, env=env))
+
+    def test_the_lane_tree_name_takes_the_key(self):
+        tree = self.ROOT + "/meclaw-core/wave-a/pass2"
+        with unittest.mock.patch.dict(os.environ, {schedule.WORKTREE_ROOT_ENV: self.ROOT}):
+            self.assertEqual("wave-a--pass2", schedule.lane_tree_name("meclaw", tree))
+            self.assertEqual("orga@wave-a--pass2",
+                             schedule.lane_tree_name("orga", self.ROOT + "/orga/wave-a/pass2"))
+        with unittest.mock.patch.dict(os.environ, {}):
+            os.environ.pop(schedule.WORKTREE_ROOT_ENV, None)
+            self.assertEqual("pass2", schedule.lane_tree_name("meclaw", tree))
+
+    def test_the_gate_folder_of_a_tree_is_keyed(self):
+        env = {schedule.WORKTREE_ROOT_ENV: self.ROOT}
+        self.assertEqual("/t/gate/wave-a--fix",
+                         schedule.tree_gate_dir("/t", self.ROOT + "/meclaw-core/wave-a/fix", env=env))
+        self.assertEqual("/t/gate/meclaw-core", schedule.tree_gate_dir("/t", "/x/meclaw-core/", env=env))
+
+
 if __name__ == "__main__":
     unittest.main()

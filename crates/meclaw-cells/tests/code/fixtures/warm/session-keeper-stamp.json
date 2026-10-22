@@ -1,0 +1,25 @@
+{
+  "source": "hand: the template's script (in_turn -> look; look with a matching and a foreign round -> seal + touch + turn; empty look -> open; open ack -> held turn; seal bundle -> close; in_answered -> ack bundle; ack bundle -> close)",
+  "probes": [
+    {"hop": {"route": "in_turn"}, "context": {"channel": "chat-1", "audience_set": "[\"member-1\"]", "turn_id": "turn-1"},
+     "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "look", "channel": "chat-1", "audience_set": "[\"member-1\", \"member-2\"]", "turn_id": "turn-2",
+       "keeper_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"and again\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-look", "text": "[{\"channel\": \"chat-1\", \"session_id\": \"chat-1-a\", \"audience_set\": \"[\\\"member-2\\\",\\\"member-1\\\"]\", \"closed\": 0}, {\"channel\": \"chat-1\", \"session_id\": \"chat-1-b\", \"audience_set\": \"[\\\"member-3\\\"]\", \"closed\": 0}]"}]}},
+    {"hop": {"operation": "select"}, "context": {"ses_phase": "look", "channel": "chat-2", "audience_set": "", "turn_id": "turn-3",
+       "keeper_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"first time\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-look", "text": "[]"}]}},
+    {"hop": {"operation": "insert", "rows_affected": 1}, "context": {"ses_phase": "open", "channel": "chat-2", "turn_id": "turn-3", "keeper_session": "chat-2-x",
+       "keeper_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"first time\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "k-open", "text": "[]"}]}},
+    {"hop": {"operation": "bundle"}, "context": {"ses_phase": "seal", "channel": "chat-1", "keeper_session": "chat-1-b", "keeper_audience": "[\"member-3\"]"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "seal-done", "text": "[]"}, {"origin": "tool", "type": "tool_result", "id": "seal-owed", "text": "[]"}],
+              "results": [{"tool_call_id": "seal-done", "operation": "update", "rows_affected": 1}, {"tool_call_id": "seal-owed", "operation": "update", "rows_affected": 0}]}},
+    {"hop": {"route": "in_answered", "session_id": "chat-1-a"}, "context": {"channel": "chat-1", "turn_id": "turn-2"},
+     "body": {"messages": [{"origin": "assistant", "type": "text", "text": "noted"}]}},
+    {"hop": {"operation": "bundle"}, "context": {"ses_phase": "ack", "channel": "chat-1", "keeper_session": "chat-1-a"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "ack-sealed", "text": "[]"}, {"origin": "tool", "type": "tool_result", "id": "ack-open", "text": "[]"},
+                           {"origin": "tool", "type": "tool_result", "id": "ack-row", "text": "[{\"channel\": \"chat-1\", \"audience_set\": \"[\\\"member-1\\\"]\"}]"}],
+              "results": [{"tool_call_id": "ack-sealed", "operation": "update", "rows_affected": 1}, {"tool_call_id": "ack-open", "operation": "update", "rows_affected": 0}, {"tool_call_id": "ack-row", "operation": "select", "rows_affected": 1}]}}
+  ]
+}

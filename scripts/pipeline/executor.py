@@ -1217,7 +1217,8 @@ class _Run:
         for name, ck in self.cached_whole.items():
             for part in (self.by_name.get(name) or {}).get("parts") or []:
                 self.cached_any.add(part)
-        gate_dir = os.path.join(self.target, "gate", os.path.basename(self.tree.rstrip("/")))
+        from . import schedule  # lazy like lane; GH #1290: the key of the tree, not its bare name
+        gate_dir = schedule.tree_gate_dir(self.target, self.tree)
         self.legacy_path = os.path.join(gate_dir, "%s-%s.json" % (self.mode, d.get("rev") or "unknown"))
         self.legacy_last = os.path.join(gate_dir, "last-%s.json" % self.mode)
         self.head = {

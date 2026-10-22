@@ -1,0 +1,23 @@
+{
+  "source": "hand: the template's script (a memory_recall tool_call becomes an ask, then the recall bundle comes back as the tool_result)",
+  "overlay": {"form": "both"},
+  "probes": [
+    {
+      "hop": {"route": "tool_call", "tool_call_id": "call-1"},
+      "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call-1", "text": "{\"query\": \"what did we plan for the weekend\", \"window_from\": \"2026-01-01\", \"window_to\": \"2026-01-31\"}"}]}
+    },
+    {
+      "hop": {"route": "answer"},
+      "context": {"memory_call_id": "call-1", "input_soft": "100"},
+      "body": {
+        "messages": [{"origin": "assistant", "type": "text", "text": "first block"}, {"origin": "assistant", "type": "text", "text": "member-1 planned a walk in the park on saturday and a visit to a friend on sunday afternoon"}],
+        "system": {"memory": {"facts": [{"text": "likes walks", "source": "person"}]}}
+      }
+    },
+    {
+      "hop": {"route": "answer"},
+      "context": {"memory_call_id": "call-2"},
+      "body": {"messages": []}
+    }
+  ]
+}

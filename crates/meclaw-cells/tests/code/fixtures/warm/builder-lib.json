@@ -1,0 +1,84 @@
+{
+  "source": "test: crates/meclaw-cells/tests/builder/builder_lib_adapts_both_ways.rs",
+  "probes": [
+    {
+      "hop": {
+        "tool_name": "librarian_search",
+        "tool_call_id": "c-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "c-1",
+            "text": "{\"query\": \"a store that keeps notes\"}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "brief",
+        "stage": "briefed",
+        "hits": 1
+      },
+      "context": {
+        "lib_call_id": "c-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "id": "",
+            "text": "hello"
+          },
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "",
+            "text": "### seed -- store (template) [doc-1]\nhello"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "tool_name": "catalogue_lookup",
+        "tool_call_id": "c-2"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "c-2",
+            "text": "{\"query\": \"display\"}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "brief",
+        "stage": "briefed",
+        "hits": 0,
+        "degraded": true
+      },
+      "context": {
+        "lib_call_id": "c-2"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "",
+            "text": ""
+          }
+        ]
+      }
+    }
+  ]
+}

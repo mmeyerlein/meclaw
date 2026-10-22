@@ -1,0 +1,78 @@
+{
+ "source": "hand: the template's script (an outbound call request, an incoming call stamped by the switch, the book's arrival answer with no running call, a cut-short sentence, a call that ended)",
+ "overlay": {
+  "fs_api_base_url": "http://switch.invalid",
+  "callers": {
+   "+490000000": "user-1"
+  }
+ },
+ "probes": [
+  {
+   "hop": {
+    "route": "request",
+    "operation": "call",
+    "call_uuid": "call-1",
+    "number": "+490000000",
+    "purpose": "hello",
+    "tool_call_id": "tool-1"
+   },
+   "body": {
+    "messages": []
+   }
+  },
+  {
+   "hop": {
+    "route": "call_incoming",
+    "call_uuid": "call-2",
+    "number": "+490000001",
+    "user_id": "user-2"
+   },
+   "body": {
+    "messages": []
+   }
+  },
+  {
+   "hop": {
+    "route": "book_result"
+   },
+   "context": {
+    "phone_origin": "book",
+    "phone_phase": "arrival",
+    "phone_call": "call-2",
+    "phone_number": "+490000001",
+    "phone_user": "user-2",
+    "phone_verified": "user-2"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "tool",
+      "type": "tool_result",
+      "id": "b-active",
+      "text": "[]"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "route": "speak_end",
+    "session_id": "call-2",
+    "reason": "cancelled"
+   },
+   "body": {
+    "messages": []
+   }
+  },
+  {
+   "hop": {
+    "route": "call_ended",
+    "call_uuid": "call-2",
+    "cause": "NORMAL_CLEARING"
+   },
+   "body": {
+    "messages": []
+   }
+  }
+ ]
+}

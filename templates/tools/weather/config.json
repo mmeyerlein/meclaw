@@ -5,6 +5,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "external_timeout_ms": 15000,
     "max_concurrency": 16,
     "geocode_endpoint": "${WEATHER_GEOCODE_ENDPOINT:-https://geocoding-api.open-meteo.com/v1/search}",

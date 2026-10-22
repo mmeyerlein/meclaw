@@ -1,0 +1,37 @@
+{
+  "source": "hand: the template's script (a request, the store's tier rows, then model rows answered by tier and by ranking)",
+  "probes": [
+    {
+      "context": {"asker": "/os/agents/agent-1/brain"},
+      "body": {"messages": [{"id": "call-1", "origin": "assistant", "type": "tool_call",
+        "text": "{\"tier\":\"fast\",\"capability\":[\"tools\"],\"min_context\":8000}"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 2},
+      "context": {
+        "lr_phase": "tiers",
+        "lr_carry": "{\"req\": {\"tier\": \"fast\", \"caps\": [\"tools\"], \"max_cost\": null, \"min_context\": 8000, \"protocol\": \"\", \"asker\": \"/os/agents/agent-1/brain\", \"call_id\": \"call-1\"}}"
+      },
+      "body": {"messages": [{"id": "m-2", "origin": "tool", "type": "tool_result",
+        "text": "[{\"tier\":\"fast\",\"model_id\":\"provider-1/model-a\",\"since\":\"2026-01-01T00:00:00Z\",\"active\":1},{\"tier\":\"deep\",\"model_id\":\"provider-1/model-b\",\"since\":\"2026-01-01T00:00:00Z\",\"active\":1}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 2},
+      "context": {
+        "lr_phase": "models",
+        "lr_carry": "{\"req\": {\"tier\": \"fast\", \"caps\": [\"tools\"], \"max_cost\": null, \"min_context\": 8000, \"protocol\": \"\", \"asker\": \"/os/agents/agent-1/brain\", \"call_id\": \"call-1\"}, \"tiers\": {\"fast\": \"provider-1/model-a\", \"deep\": \"provider-1/model-b\"}}"
+      },
+      "body": {"messages": [{"id": "m-3", "origin": "tool", "type": "tool_result",
+        "text": "[{\"model_id\":\"provider-1/model-a\",\"provider\":\"provider-1\",\"base_url\":\"https://provider.invalid/v1\",\"wire_dialect\":\"openai\",\"context_window\":128000,\"cost_in\":1,\"cost_out\":2,\"caps\":\"{\\\"tools\\\": true}\",\"traits\":\"{}\",\"status\":\"active\",\"note\":\"\"},{\"model_id\":\"provider-1/model-b\",\"provider\":\"provider-1\",\"base_url\":\"https://provider.invalid/v1\",\"wire_dialect\":\"openai\",\"context_window\":200000,\"cost_in\":5,\"cost_out\":10,\"caps\":\"{\\\"tools\\\": true}\",\"traits\":\"{}\",\"status\":\"active\",\"note\":\"\"}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 2},
+      "context": {
+        "lr_phase": "models",
+        "lr_carry": "{\"req\": {\"tier\": \"\", \"caps\": [], \"max_cost\": 5, \"min_context\": null, \"protocol\": \"\", \"asker\": \"/os/agents/agent-2/brain\", \"call_id\": \"call-2\"}, \"tiers\": {}}"
+      },
+      "body": {"messages": [{"id": "m-4", "origin": "tool", "type": "tool_result",
+        "text": "[{\"model_id\":\"provider-2/model-c\",\"provider\":\"provider-2\",\"base_url\":\"https://provider.invalid/v1\",\"wire_dialect\":\"openai\",\"context_window\":32000,\"cost_in\":1,\"cost_out\":3,\"caps\":\"{}\",\"traits\":\"{}\",\"status\":\"active\",\"note\":\"\"},{\"model_id\":\"provider-2/model-d\",\"provider\":\"provider-2\",\"base_url\":\"https://provider.invalid/v1\",\"wire_dialect\":\"openai\",\"context_window\":64000,\"cost_in\":1,\"cost_out\":3,\"caps\":\"{}\",\"traits\":\"{}\",\"status\":\"active\",\"note\":\"\"}]"}]}
+    }
+  ]
+}

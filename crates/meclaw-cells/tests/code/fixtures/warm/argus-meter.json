@@ -1,0 +1,33 @@
+{
+  "source": "hand: the template's script (cycle tick, the store's stale waits and goals answers, a ledger answer and a stats answer matched to their waits, open hints turned into the judge order)",
+  "probes": [
+    {
+      "body": {"messages": [{"origin": "user", "type": "text", "text": "argus-cycle"}]}
+    },
+    {
+      "hop": {"operation": "select", "duration_ms": 0, "rows_affected": 1},
+      "context": {"ar_phase": "stale", "ar_carry": "{}"},
+      "body": {"messages": [{"id": "m-2", "origin": "tool", "type": "tool_result",
+        "text": "[{\"id\":\"wait-1\",\"at\":\"2026-01-01T00:00:00.000000Z\",\"kind\":\"eval\",\"carry\":\"{\\\"cycle_id\\\": \\\"cycle-1\\\"}\",\"status\":\"open\"}]"}]}
+    },
+    {
+      "hop": {"operation": "select", "duration_ms": 0, "rows_affected": 1},
+      "context": {"ar_phase": "goals", "ar_carry": "{}"},
+      "body": {"messages": [{"id": "m-3", "origin": "tool", "type": "tool_result",
+        "text": "[{\"id\":\"goal-1\",\"metric\":\"latency_ms\",\"source\":\"colony\",\"direction\":\"down\",\"window_minutes\":60,\"min_samples\":10,\"min_delta_pct\":5,\"quality_gate\":\"\",\"enabled\":1}]"}]}
+    },
+    {
+      "body": {"messages": [], "ledger": {"query": {"tag": "wait-2", "path_prefix": "/os"}, "messages": {"total": 12, "errors": 0}}}
+    },
+    {
+      "hop": {"route": "in_stats", "stats_tag": "wait-3"},
+      "body": {"messages": [], "stats": {"gap_rate": 0.1, "samples": 20}}
+    },
+    {
+      "hop": {"operation": "select", "duration_ms": 0, "rows_affected": 1},
+      "context": {"ar_phase": "hints", "ar_carry": "{\"cycle_id\": \"cycle-4\", \"goal\": {\"id\": \"goal-1\", \"metric\": \"latency_ms\", \"direction\": \"down\"}, \"rules\": [], \"measured\": {\"latency_ms\": 900, \"samples\": 20}}"},
+      "body": {"messages": [{"id": "m-6", "origin": "tool", "type": "tool_result",
+        "text": "[{\"id\":\"hint-1\",\"at\":\"2026-01-01T00:00:00.000000Z\",\"origin\":\"agent-1\",\"confidence\":60,\"line\":\"hello\"}]"}]}
+    }
+  ]
+}

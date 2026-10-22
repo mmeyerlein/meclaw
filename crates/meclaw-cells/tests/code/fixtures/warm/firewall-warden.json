@@ -1,0 +1,29 @@
+{
+  "source": "hand: the template's script (hold -> pile read; pile with one due row -> expire + park; expire -> hold_expired receipt; park -> hold; in_release -> find; find -> decide; decide -> pass; in_sweep -> pile read)",
+  "probes": [
+    {"hop": {"route": "hold", "turn_id": "turn-1", "rule_id": "hold-call", "reject_reason": "held", "channel": "chat-1", "user_id": "member-1", "fw_now": "2026-01-01T12:00:00.000000Z"},
+     "context": {"channel": "chat-1", "turn_id": "turn-1"},
+     "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}},
+    {"hop": {"operation": "select"}, "context": {"wd_phase": "pile", "wd_now": "2026-01-01T12:00:00.000000Z",
+       "wd_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"hello\"}]}",
+       "wd_meta": "{\"hold_id\": \"hold-2\", \"turn_id\": \"turn-1\", \"rule_id\": \"hold-call\", \"reason\": \"held\", \"channel\": \"chat-1\", \"user_id\": \"member-1\", \"held_at\": \"2026-01-01T12:00:00.000000Z\", \"expires_at\": \"2026-01-01T13:00:00.000000Z\", \"context\": {\"channel\": \"chat-1\", \"turn_id\": \"turn-1\"}}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "wd-pile", "text": "[{\"hold_id\": \"hold-0\", \"expires_at\": \"2026-01-01T11:00:00.000000Z\", \"channel\": \"chat-9\", \"user_id\": \"member-9\", \"rule_id\": \"hold-call\"}, {\"hold_id\": \"hold-1\", \"expires_at\": \"2026-01-01T12:30:00.000000Z\", \"channel\": \"chat-8\", \"user_id\": \"member-8\", \"rule_id\": \"hold-call\"}]"}]}},
+    {"hop": {"operation": "update", "rows_affected": 1}, "context": {"wd_phase": "expire", "wd_now": "2026-01-01T12:00:00.000000Z",
+       "wd_meta": "{\"due\": [{\"hold_id\": \"hold-0\", \"expires_at\": \"2026-01-01T11:00:00.000000Z\", \"channel\": \"chat-9\", \"user_id\": \"member-9\", \"rule_id\": \"hold-call\"}]}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "wd-expire", "text": "[]"}]}},
+    {"hop": {"operation": "insert", "rows_affected": 1}, "context": {"wd_phase": "park", "wd_now": "2026-01-01T12:00:00.000000Z",
+       "wd_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"hello\"}]}",
+       "wd_meta": "{\"hold_id\": \"hold-2\", \"turn_id\": \"turn-1\", \"rule_id\": \"hold-call\", \"reason\": \"held\", \"channel\": \"chat-1\", \"user_id\": \"member-1\", \"held_at\": \"2026-01-01T12:00:00.000000Z\", \"expires_at\": \"2026-01-01T13:00:00.000000Z\"}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "wd-park", "text": "[]"}]}},
+    {"hop": {"route": "in_release", "hold_id": "hold-2", "decision": "release", "decided_by": "member-1"},
+     "body": {"messages": [{"origin": "user", "type": "text", "text": "release"}]}},
+    {"hop": {"operation": "select"}, "context": {"wd_phase": "find", "wd_now": "2026-01-01T12:10:00.000000Z",
+       "wd_meta": "{\"hold_id\": \"hold-2\", \"decision\": \"release\", \"decided_by\": \"member-1\"}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "wd-find", "text": "[{\"hold_id\": \"hold-2\", \"status\": \"held\", \"expires_at\": \"2026-01-01T13:00:00.000000Z\", \"channel\": \"chat-1\", \"user_id\": \"member-1\", \"rule_id\": \"hold-call\", \"reason\": \"held\", \"context\": {\"channel\": \"chat-1\", \"turn_id\": \"turn-1\"}, \"body\": {\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"hello\"}]}, \"held_at\": \"2026-01-01T12:00:00.000000Z\"}]"}]}},
+    {"hop": {"operation": "update", "rows_affected": 1}, "context": {"wd_phase": "decide", "wd_now": "2026-01-01T12:10:00.000000Z",
+       "wd_body": "{\"messages\": [{\"origin\": \"user\", \"type\": \"text\", \"text\": \"hello\"}]}",
+       "wd_meta": "{\"hold_id\": \"hold-2\", \"state\": \"released\", \"turn_id\": \"turn-1\", \"rule_id\": \"hold-call\", \"reason\": \"held\", \"channel\": \"chat-1\", \"user_id\": \"member-1\", \"expires_at\": \"2026-01-01T13:00:00.000000Z\", \"context\": {\"channel\": \"chat-1\", \"turn_id\": \"turn-1\", \"fw_now\": \"2026-01-01T12:00:00.000000Z\"}}"},
+     "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "wd-decide", "text": "[]"}]}},
+    {"hop": {"route": "in_sweep"}, "body": {"messages": [{"origin": "user", "type": "text", "text": "sweep"}]}}
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "source": "capture: a lab colony with simulated turns (scripts/capture_code_inputs.py), ids and text replaced by placeholders",
+  "probes": [
+    {
+      "hop": {
+        "changes": [],
+        "form": "manifest",
+        "mutation_ids": [
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000002",
+          "00000000-0000-4000-8000-000000000003"
+        ],
+        "outcome": "committed",
+        "route": "in_hand",
+        "scope": "/"
+      },
+      "context": {
+        "model_announced": "[{\"cell_path\":\"/os/argus/judge\",\"start_model\":\"\",\"requirement\":\"requirement 1: a model that answers within seconds\"}]",
+        "model_announcer": "meclaw-os",
+        "model_generation": "/os"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "changes": [],
+        "form": "manifest",
+        "mutation_ids": [
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000002",
+          "00000000-0000-4000-8000-000000000003"
+        ],
+        "outcome": "committed",
+        "route": "in_hand",
+        "scope": "/"
+      },
+      "context": {
+        "model_announced": "[{\"cell_path\":\"/os/orgs/org-1/members/member-1/assistants/assistant-1/talky/brain\",\"start_model\":\"provider-1/model-a\",\"requirement\":\"requirement 2: a model that answers within seconds\"},{\"cell_path\":\"/os/orgs/org-1/members/member-1/assistants/assistant-1/talky-chat/brain\",\"start_model\":\"provider-1/model-a\",\"requirement\":\"requirement 2: a model that answers within seconds\"},{\"cell_path\":\"/os/orgs/org-1/members/member-1/assistants/assistant-1/cogny/brain\",\"start_model\":\"provider-1/model-a\",\"requirement\":\"requirement 3: a model that answers within seconds\"},{\"cell_path\":\"/os/orgs/org-1/members/member-1/assistants/assistant-1/talky/curator/summarizer\",\"start_model\":\"provider-1/model-a\",\"requirement\":\"requirement 4: a model that answers within seconds\"},{\"cell_path\":\"/os/orgs/org-1/members/member-1/assistants/assistant-1/talky-chat/curator/summarizer\",\"start_model\":\"provider-1/model-a\",\"requirement\":\"requirement 4: a model that answers within seconds\"},{\"cell_path\":\"/os/orgs/org-1/members/member-1/assistants/assistant-1/cogny/curator/summarizer\",\"start_model\":\"provider-1/model-a\",\"requirement\":\"requirement 4: a model that answers within seconds\"}]",
+        "model_announcer": "meclaw-os",
+        "model_generation": "/os/orgs/org-1/members/member-1/assistants/assistant-1"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "context": {
+        "actor": "operator-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "id": "call-1",
+            "origin": "assistant",
+            "type": "tool_call",
+            "text": "{\"op\":\"remap\",\"tier\":\"fast\",\"model_id\":\"provider-1/model-b\",\"reason\":\"hello\"}"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "min_facts": 2,
     "min_episodes": 2,
     "hub_degree": 12,

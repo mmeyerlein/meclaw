@@ -483,6 +483,34 @@ class DocPathMentions(unittest.TestCase):
             ("docs/superpowers/specs/old.md", "crates/fx/tests/gone.rs"),
         ])
 
+    def test_a_tree_without_crates_resolves_test_paths_against_the_core(self):
+        # GH #1291: a consumer repository runs the kit but has no crates/ of
+        # its own; its frozen derived templates name the core's pin tests (25
+        # mentions in one consumer's templates/local). Such a path resolves
+        # against the core tree the kit comes from; a path that exists nowhere
+        # stays a finding.
+        core = pathlib.Path(tempfile.mkdtemp(prefix="hf-core-"))
+        self.addCleanup(shutil.rmtree, core, ignore_errors=True)
+        (core / "crates" / "fx" / "tests" / "misc").mkdir(parents=True)
+        (core / "crates" / "fx" / "tests" / "misc" / "gh5_a.rs").write_text("")
+        consumer = pathlib.Path(tempfile.mkdtemp(prefix="hf-consumer-"))
+        self.addCleanup(shutil.rmtree, consumer, ignore_errors=True)
+        (consumer / "templates" / "local" / "t").mkdir(parents=True)
+        (consumer / "templates" / "local" / "t" / "README.md").write_text(
+            "Pinned by `crates/fx/tests/misc/gh5_a.rs` and `crates/fx/tests/gone.rs`.\n")
+        (consumer / "templates" / "local" / "t" / "config.json").write_text(
+            '{"note": "pinned by crates/fx/tests/misc/gh5_a.rs"}\n')
+        self.assertEqual(hf.dead_path_mentions(str(consumer), frozen={}, core=str(core)), [
+            ("templates/local/t/README.md", "crates/fx/tests/gone.rs"),
+        ])
+        # A tree WITH crates/ (the core itself) keeps resolving against itself.
+        (consumer / "crates").mkdir()
+        self.assertEqual(hf.dead_path_mentions(str(consumer), frozen={}, core=str(core)), [
+            ("templates/local/t/README.md", "crates/fx/tests/misc/gh5_a.rs"),
+            ("templates/local/t/README.md", "crates/fx/tests/gone.rs"),
+            ("templates/local/t/config.json", "crates/fx/tests/misc/gh5_a.rs"),
+        ])
+
     def test_non_md_text_files_are_read_whole_and_binary_ones_are_skipped(self):
         # W5 OR-DT.W5.tpl rest: 29 dead mentions sat in config.json, template.json,
         # docs.jsonl and canvy .js/.py, where no code span marks a path.

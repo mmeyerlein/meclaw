@@ -1,0 +1,7 @@
+{
+  "source": "hand: the template's script (its only path: a tool_result naming the unwired tool; it always carries error_code unknown_tool)",
+  "probes": [
+    {"hop": {"tool_name": "tool-1", "tool_call_id": "call-1"}, "body": {"messages": []}},
+    {"hop": {}, "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}}
+  ]
+}

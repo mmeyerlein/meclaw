@@ -1,0 +1,137 @@
+{
+  "source": "hand: the close batch (in_batch -> writer prompt), then the writer's answer (in_answer -> handover)",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_batch",
+        "session_id": "session-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 0 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 1 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 2 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 3 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 4 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 5 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 6 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 7 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 8 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 9 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 10 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 11 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 12 hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "turn 13 hello"
+          },
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "turn 14 hello"
+          }
+        ],
+        "rounds": [
+          {
+            "role": "assistant",
+            "iter": 0,
+            "turn": [
+              {
+                "origin": "assistant",
+                "type": "tool_call",
+                "id": "call-1",
+                "text": "{\"query\": \"hello\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "iter": 0,
+            "turn": {
+              "origin": "tool",
+              "type": "tool_result",
+              "id": "call-1",
+              "text": "result"
+            }
+          },
+          {
+            "role": "leg-assembly",
+            "iter": 0,
+            "turn": {}
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_answer"
+      },
+      "context": {
+        "session_id": "session-2",
+        "window_refit": "1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "The session was short."
+          }
+        ]
+      }
+    }
+  ]
+}

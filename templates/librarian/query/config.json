@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "runner_mode": "cold",
+    "runner_mode": "warm",
     "external_timeout_ms": 10000,
     "scan_max": 2000,
     "sandbox": {

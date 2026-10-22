@@ -1,0 +1,7 @@
+{
+  "source": "hand: the template's script (the channel from context, else hop.chat_id, else default)",
+  "probes": [
+    {"context": {"channel": "chat-1"}, "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}},
+    {"hop": {"chat_id": "chat-2"}, "body": {"messages": [{"origin": "user", "type": "text", "text": "and again"}]}}
+  ]
+}

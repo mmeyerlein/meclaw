@@ -1,0 +1,20 @@
+{
+  "source": "capture: a lab colony with simulated turns (scripts/capture_code_inputs.py), ids and text replaced by placeholders",
+  "probes": [
+    {
+      "hop": {"asked_count": "1", "iter": "0", "phase": "", "route": "in_schemas", "session_id": "default", "turn_id": ""},
+      "context": {"assistant": "assistant-1", "tool_caller": "talky-chat"},
+      "body": {"messages": [], "tools": ["memory_recall", "memory_recall"]}
+    },
+    {
+      "hop": {"asked_count": "1", "iter": "0", "phase": "", "route": "in_schemas", "session_id": "default", "turn_id": ""},
+      "context": {"assistant": "assistant-1", "tool_caller": "cogny"},
+      "body": {"messages": [], "tools": ["*"]}
+    },
+    {
+      "hop": {"asked_count": "0", "iter": "0", "phase": "", "route": "in_schemas", "session_id": "default", "turn_id": ""},
+      "context": {"assistant": "assistant-1", "tool_caller": "talky"},
+      "body": {"messages": [], "tools": []}
+    }
+  ]
+}

@@ -53,6 +53,9 @@ struct Row {
     route: &'static str,
     tool: Option<&'static str>,
     seam: Seam,
+    /// A fragment the condition must also carry: two edges of one lane that
+    /// split the lane by another hop key (GH #1292) are two rows.
+    needs: Option<&'static str>,
 }
 
 const fn row(
@@ -70,13 +73,23 @@ const fn row(
         route,
         tool,
         seam,
+        needs: None,
+    }
+}
+
+/// `r` for the one edge of its lane whose condition carries `needs`.
+const fn split(r: Row, needs: &'static str) -> Row {
+    Row {
+        needs: Some(needs),
+        ..r
     }
 }
 
 const ASSISTANT: &str = "assistant/config.json";
 const TALKY: &str = "talky/config.json";
 const COGNY: &str = "cogny/config.json";
-const NPC: &str = "npc/config.json";
+const FIGURE: &str = "figure/config.json";
+const SIMPLE_AGENT: &str = "simple-agent/config.json";
 const BUILDER: &str = "builder/config.json";
 const FILE_SPACE: &str = "file-space/config.json";
 const MEMBER: &str = "member/config.json";
@@ -197,22 +210,91 @@ const SEAMS: &[Row] = &[
         Seam::CuratorEntry,
     ),
     row(COGNY, "./curator", "./brain", "brain", None, Seam::Round),
-    // The npc (GH #1267): the cogny round behind a world adapter. A move, the
-    // night's close and an interview each enter from the adapter as a door;
-    // the close pass enters the memory the npc owns, as at the member.
-    row(NPC, "./world", "./collector", "in_turn", None, Seam::Door),
-    row(NPC, "./world", "./curator", "in_close", None, Seam::Door),
-    row(NPC, "./world", "./brain", "brain", None, Seam::Door),
+    // The simple agent itself (GH #1292): its door hands a turn, a client
+    // tool's result and a close to the round's owners; the round is the
+    // curator's, the close pass enters the memory hive. A turn enters on one
+    // of two edges, with and without a tool scope.
+    split(
+        row(
+            SIMPLE_AGENT,
+            "./door",
+            "./collector",
+            "in_turn",
+            None,
+            Seam::Door,
+        ),
+        "&& has(hop.sa_scope)",
+    ),
+    split(
+        row(
+            SIMPLE_AGENT,
+            "./door",
+            "./collector",
+            "in_turn",
+            None,
+            Seam::Door,
+        ),
+        "!has(hop.sa_scope)",
+    ),
     row(
-        NPC,
+        SIMPLE_AGENT,
+        "./door",
+        "./collector",
+        "in_tool",
+        None,
+        Seam::Door,
+    ),
+    row(
+        SIMPLE_AGENT,
+        "./door",
+        "./curator",
+        "in_close",
+        None,
+        Seam::Door,
+    ),
+    row(
+        SIMPLE_AGENT,
         "./collector",
         "./curator",
         "curate",
         None,
         Seam::CuratorEntry,
     ),
-    row(NPC, "./curator", "./brain", "brain", None, Seam::Round),
-    row(NPC, "./curator", "./memory-hive", "write", None, Seam::Door),
+    row(
+        SIMPLE_AGENT,
+        "./curator",
+        "./brain",
+        "brain",
+        None,
+        Seam::Round,
+    ),
+    row(
+        SIMPLE_AGENT,
+        "./curator",
+        "./memory-hive",
+        "write",
+        None,
+        Seam::Door,
+    ),
+    // The figure (GH #1292): a world adapter around a referenced simple
+    // agent. A turn and a session's close each enter the agent from the
+    // adapter as a door; the round itself is the agent's own.
+    row(
+        FIGURE,
+        "./world",
+        "./simple-agent",
+        "turn",
+        None,
+        Seam::Door,
+    ),
+    row(
+        FIGURE,
+        "./world",
+        "./simple-agent",
+        "close",
+        None,
+        Seam::Door,
+    ),
     // The builder's round: a new composition, and its repair.
     row(BUILDER, "./weave", "./compose", "fire", None, Seam::Round),
     row(BUILDER, "./weave", "./compose", "repair", None, Seam::Round),
@@ -517,6 +599,7 @@ fn fits(r: &Row, f: &Found) -> bool {
             .all(|v| f.condition.contains(&format!("hop.route == '{v}'")))
         && r.tool
             .is_none_or(|t| f.condition.contains(&format!("hop.tool_name == '{t}'")))
+        && r.needs.is_none_or(|n| f.condition.contains(n))
 }
 
 /// Split `s` at every `op` (`&&` or `||`) outside parentheses, brackets and

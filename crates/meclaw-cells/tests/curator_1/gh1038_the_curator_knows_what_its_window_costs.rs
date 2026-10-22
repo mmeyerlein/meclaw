@@ -233,11 +233,14 @@ fn a_package_replaces_the_roles_own_numbers() {
     if !shipped() {
         return;
     }
+    // GH #1272: talky's window target (40 000) orders its own rebuild, pinned in
+    // `gh1272_a_role_rebuilds_at_its_window_target`; this test pins the rule
+    // below it, so the target is off here.
     // 70 000 measured was over talky's `compress_at` of the role's own
     // window of before (0.5 * `quality_cap` 120 000, gone since GH #1085),
     // which ordered a rebuild. The model's soft limit is 250 000: nothing to
     // do.
-    let mut h = talky(&[]);
+    let mut h = talky(&[("policy", "window_target", json!(0))]);
     turn_of(
         &mut h,
         240_000,
@@ -309,7 +312,8 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
     assert_eq!(stamp(&h)["curate_mark"], "none");
 }
 
-/// KF2 review B2 (OR-HK-25): with the roles AS THEY SHIP and a cached price
+/// KF2 review B2 (OR-HK-25): with the roles as they ship -- talky's window
+/// target off, GH #1272 -- and a cached price
 /// of 10 %, `cost` fires under soft -- above `2 * rebuild_to` of `input_soft`
 /// at ten turns (talky and consult 0.7, coding and research 0.5) -- and a
 /// `soft` rebuild still aims at `rebuild_to` / `compress_at` of it. Before,
@@ -317,10 +321,13 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
 /// cached rest had to cost more than 23 % of the input price, and the rule
 /// never fired.
 #[test]
-fn the_shipped_roles_compress_for_cost_under_soft() {
+fn the_roles_compress_for_cost_under_soft_below_their_window_target() {
     if !shipped() {
         return;
     }
+    // GH #1272: talky's window target (40 000) orders its own rebuild, pinned in
+    // `gh1272_a_role_rebuilds_at_its_window_target`; this test pins the rule
+    // below it, so the target is off here.
     let pkg = "{'input_soft': 100000, 'input_hard': 1000000, 'cost_in': 10, \
                'cost_cached_in': 1}";
     for (role, aim, soft_aim, above, below) in [
@@ -330,7 +337,7 @@ fn the_shipped_roles_compress_for_cost_under_soft() {
         ("research", 25_000, 62_500, 55_000, 45_000),
     ] {
         let (got, err) = policy_scope(
-            json!({"role": role}),
+            json!({"role": role, "window_target": 0}),
             &format!(
                 "[curate_mark({above}, {pkg}), curate_mark({below}, {pkg}), \
                  curate_mark(100000, {pkg})]"
@@ -559,7 +566,10 @@ fn without_the_packages_values_nothing_changes() {
     if !shipped() {
         return;
     }
-    let mut h = talky(&[]);
+    // GH #1272: talky's window target (40 000) orders its own rebuild, pinned in
+    // `gh1272_a_role_rebuilds_at_its_window_target`; this test pins the rule
+    // below it, so the target is off here.
+    let mut h = talky(&[("policy", "window_target", json!(0))]);
     turn(
         &mut h,
         "s",

@@ -1,4 +1,4 @@
-# `collector@5.2.2`
+# `collector@5.3.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -211,6 +211,8 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
 | `partial_head` | `200` | the characters of the last tool result the named partial answer of a capped round quotes; a longer result is cut with the mark `…` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) |
 | `fold_tools` | `"0"` | `"1"` folds the merged menu into one tool per name-prefix family before it is written ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)); `"0"` writes the flat menu and is the way back. See "Folded menu and route stamp". |
+| `hint_own_op` | `"0"` | `"1"` keeps every tool that stays single for its own `op` (the tools hive's `file`, `edit`) at hint level and names them on every seam as `hop.tools_hinted` ([#1272](https://github.com/mmeyerlein/meclaw/issues/1272)); only with `fold_tools` `"1"`. talky sets it. See "Folded menu and route stamp". |
+| `turn_answerers` | `[]` | the answerers whose menu row holds for one turn ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)): their tools never fold and an empty answer of theirs is written, so a turn without them empties their row. The simple agent sets `["client"]`. See "Folded menu and route stamp". |
 | `fold_families` | `["file_ws"]` | family names longer than the first name segment; every other tool folds by its first segment, so a new hive folds without an entry. |
 | `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. |
 | `route_no_recall` | `["simple"]` | the stamped paths whose turn does not wait for the memory leg; read only while `route_wait_ms` is above 0. |
@@ -244,7 +246,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.2.2",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.3.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -480,7 +482,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.2.2`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.3.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -526,7 +528,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.2.2` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.3.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -561,6 +563,20 @@ and the composite's `curate` edge lifts that key into `context.tools_folded`, th
 behind the brain. A composite that turns the fold on draws that lift
 (`"tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"`) and deletes the key on every edge out to `.`,
 as talky and cogny do; without it every folded call comes back `unknown_tool`.
+
+A tool with its own `op` stays single and goes whole -- unless `hint_own_op` is `"1"` (#1272): then it goes at
+hint level like a hinted family (name, first sentence, `{op}`; the `tool_scope` `hint` list names it after the
+stated hints), and the seam names these tools in `hop.tools_hinted` (comma list, sorted; empty without). The
+composite lifts that key beside `tools_folded` and deletes it on the same edges; the dispatcher then answers
+`{op: "help"}` of such a tool in place, and this cell answers it from the menu store with the tool's whole
+schema (`Schema of `<name>`:` and its description and parameters). talky turns it on.
+
+An answerer named in `turn_answerers` (#1292) delivers tools that hold for one turn -- the simple agent's
+caller, `client`. Its row stands outside the fold: its tools go single beside the families (one named like a
+family loses to it and is named in `hop.menu_shadowed`), they never make a family of their own, the seam's
+`tools_folded` never names one, and `help` never reads them. Its empty answer is recorded and written instead of
+parked, so the next turn without client tools takes the last ones away -- even when that row was all the menu
+held. Every other answerer is merged as before.
 
 The fold runs where the menu is written, once per menu tick and never per turn, and sorts families, ops and
 the menu by name: the menu is the prefix every request starts with. `hop.menu_folded` names the families

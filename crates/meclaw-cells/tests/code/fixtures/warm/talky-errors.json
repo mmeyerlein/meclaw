@@ -1,0 +1,36 @@
+{
+  "source": "hand: the drain's two lanes (a sidecar check reject, then a brain failure)",
+  "probes": [
+    {
+      "hop": {
+        "route": "reject",
+        "reject_reason": "quote_missing",
+        "section": "memory",
+        "field": "quote",
+        "session_id": "session-1",
+        "turn_id": "turn-1"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "finish_reason": "length"
+      },
+      "context": {
+        "session_id": "session-2",
+        "turn_id": "turn-2"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "hello"
+          }
+        ]
+      }
+    }
+  ]
+}

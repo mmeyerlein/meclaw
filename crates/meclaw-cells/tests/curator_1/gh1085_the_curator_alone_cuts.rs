@@ -131,11 +131,17 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     if !shipped() {
         return;
     }
+    // GH #1272: talky's window target (40 000) orders its own rebuild, pinned in
+    // `gh1272_a_role_rebuilds_at_its_window_target`; this test pins the rule
+    // below it, so the target is off here.
     let luna = catalog_row("openai/gpt-6-luna");
     assert_eq!(luna["input_soft"], json!(250000), "the row this lock names");
     // An answer with the model's window alone: 70 000 tokens are far under
     // half of it, nothing is ordered.
-    let mut h = talky();
+    let mut h = Hive::with(&[
+        ("policy", "role", json!("talky")),
+        ("policy", "window_target", json!(0)),
+    ]);
     turn(
         &mut h,
         "s1",
@@ -148,7 +154,10 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     // With the row on the answer: a measured window of 120 000 tokens -- the
     // role's whole window of before -- orders nothing, and the window kept
     // for every producer is the row's `input_soft`.
-    let mut h = talky();
+    let mut h = Hive::with(&[
+        ("policy", "role", json!("talky")),
+        ("policy", "window_target", json!(0)),
+    ]);
     let mut usage = luna.clone();
     usage["tokens_prompt"] = json!(120000);
     turn(&mut h, "s1", "t1", &"x".repeat(360_003), "a", usage);
@@ -156,7 +165,7 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     assert_eq!(h.state("input_soft"), "250000", "{:?}", h.stderr);
     // The lines themselves, out of the row alone.
     let (marks, err) = policy_scope(
-        json!({"role": "talky"}),
+        json!({"role": "talky", "window_target": 0}),
         "[curate_mark(w, ARGS)['mark'] for w in (120000, 175000, 175001, 249999, 250000)]",
         luna,
     );

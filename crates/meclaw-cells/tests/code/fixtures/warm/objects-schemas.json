@@ -1,0 +1,38 @@
+{
+  "source": "capture: a lab colony with simulated turns (scripts/capture_code_inputs.py), ids and text replaced by placeholders",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_schemas",
+        "session_id": "default"
+      },
+      "context": {
+        "assistant": "companion",
+        "tool_caller": "talky-chat"
+      },
+      "body": {
+        "messages": [],
+        "tools": [
+          "object_find",
+          "object_set"
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_schemas",
+        "session_id": "default"
+      },
+      "context": {
+        "assistant": "companion",
+        "tool_caller": "cogny"
+      },
+      "body": {
+        "messages": [],
+        "tools": [
+          "*"
+        ]
+      }
+    }
+  ]
+}

@@ -81,6 +81,11 @@ const KNOBS: &[(&str, &str)] = &[
     // the family names longer than a first name segment.
     ("fold_tools", "_str"),
     ("fold_families", "_list"),
+    // GH #1272 -- the op tools at hint level (`"0"` shipped; talky sets "1").
+    ("hint_own_op", "_str"),
+    // GH #1292 -- the answerers whose menu row holds for one turn (`[]` shipped;
+    // the simple agent sets `["client"]`).
+    ("turn_answerers", "_list"),
     // GH #1244 -- the route stamp: how long a turn waits for it (0 = off) and
     // the stamped paths that do not wait for the memory leg.
     ("route_wait_ms", "_int"),

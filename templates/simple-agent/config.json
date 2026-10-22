@@ -1,0 +1,1130 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "required_drains": [
+      {
+        "accepts": "turn",
+        "emits": "answer",
+        "because": "a turn nobody takes back leaves the caller waiting"
+      },
+      {
+        "accepts": "tool_result",
+        "emits": "answer",
+        "because": "a client result continues the turn it belongs to"
+      },
+      {
+        "accepts": "close",
+        "emits": "close_report",
+        "because": "the receipt says the close pass ran and the dream was triggered"
+      },
+      {
+        "accepts": "in_model",
+        "emits": "model_refused",
+        "because": "a refused push is otherwise silent"
+      }
+    ],
+    "contract": {
+      "accepts": [
+        {
+          "route": "turn",
+          "because": "one turn of the caller: hop `turn_id`, `session_id`, `channel`, `audience_set`; body `messages` (meclaw turns, or `{role, content}`) and optional `tools[]` (provider schemas, `{name, description, parameters}` or the OpenAI `function` form). `tools[]` is the client's menu for THIS turn only; a turn without it empties that menu. A client tool named like one of the agent's own is dropped (hop `client_tools_dropped`)"
+        },
+        {
+          "route": "tool_result",
+          "because": "the result of one client call: `{id, content, is_error?}`; the hop brings back `turn_id`, `session_id`, `iter`, `channel`, `audience_set` exactly as the `calls` message carried them, or the result is refused as `tool_result_unkeyed`"
+        },
+        {
+          "route": "close",
+          "because": "the end of a session: `{session_id}`. The curator closes it, the memory reads it whole once (one model call) and the dream is triggered; `close_report` answers after the close pass"
+        },
+        {
+          "route": "in_pack",
+          "because": "instructions of the instance for the brain's system slots (`identity`, `persona`, `handover`, `instructions`), as the curator's pack lane takes them"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for one model cell of this hive, pushed by the colony's llm-registry (GH #858). `hop.subscriber` names the cell; without one it goes to `./brain`"
+        },
+        {
+          "route": "mutation_committed",
+          "because": "the graph moved: the collector asks for its tools again"
+        }
+      ],
+      "emits": [
+        {
+          "route": "answer",
+          "because": "the turn's final answer: `{turn_id, text, partial?, stale?}` -- `partial` when the loop hit `max_iter`, `stale` when a client result never came and the turn went on without it"
+        },
+        {
+          "route": "calls",
+          "because": "one client call the brain made: body `calls {id, name, arguments}`; hop `turn_id`, `session_id`, `iter`, `channel`, `audience_set`, `tool_name`, `tool_call_id`. The caller answers it on `tool_result` with the same hop keys"
+        },
+        {
+          "route": "close_report",
+          "because": "the receipt of a `close`: `{session_id, ok, added, closed}` after the memory's close report (`ok` false when the close pass was refused)"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that a model cell refused (GH #863)"
+        },
+        {
+          "route": "error",
+          "because": "a failed turn (`{error_code, turn_id}`), a refused rim message (`turn_without_id`, `tool_result_unkeyed`, `close_without_session`), a refused identity boot (`identity_refused`) or a failure of `./access` or `./affinity`; never silent"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'turn' && !has(hop.sa_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'tool_result' && !has(hop.sa_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'close' && !has(hop.sa_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_pack' && !has(hop.sa_rim)"
+        },
+        {
+          "from": ".",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": ".",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.contains('/memory-hive/')))"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer')"
+        },
+        {
+          "from": ".",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.contains('/memory-hive/')"
+        },
+        {
+          "from": "./door",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'answer'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./door",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'calls' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'calls'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./door",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'close_report' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'close_report'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./door",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'in_turn' && !has(hop.sa_scope)",
+          "modifier": {
+            "set_context": {
+              "session_id": "hop.session_id",
+              "turn_id": "hop.turn_id",
+              "iter": "'0'",
+              "channel": "hop.channel",
+              "audience_set": "hop.audience_set",
+              "agent_id": "hop.agent_id"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'in_turn' && has(hop.sa_scope)",
+          "modifier": {
+            "set_context": {
+              "session_id": "hop.session_id",
+              "turn_id": "hop.turn_id",
+              "iter": "'0'",
+              "channel": "hop.channel",
+              "audience_set": "hop.audience_set",
+              "agent_id": "hop.agent_id",
+              "tools_allow": "hop.tools_allow",
+              "tools_deny": "hop.tools_deny"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'in_menu'",
+          "modifier": {
+            "set_context": {
+              "tool_answerer": "hop.tool_answerer"
+            }
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'in_tool'",
+          "modifier": {
+            "set_context": {
+              "session_id": "hop.session_id",
+              "turn_id": "hop.turn_id",
+              "iter": "hop.iter",
+              "channel": "hop.channel",
+              "audience_set": "hop.audience_set"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_pack'"
+        },
+        {
+          "from": "./door",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": "./door",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_close'",
+          "modifier": {
+            "set_context": {
+              "session_id": "hop.session_id",
+              "channel": "hop.channel",
+              "audience_set": "hop.audience_set",
+              "sa_kind": "hop.sa_kind"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'in_episode'",
+          "modifier": {
+            "set_context": {
+              "session_id": "hop.session_id",
+              "turn_id": "hop.turn_id",
+              "channel": "hop.channel",
+              "audience_set": "hop.audience_set",
+              "happened_at": "has(hop.happened_at) ? hop.happened_at : ''"
+            }
+          }
+        },
+        {
+          "from": "./door",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'clock_op'"
+        },
+        {
+          "from": "./door",
+          "to": "./watch",
+          "condition": "has(hop.route) && hop.route == 'watch_op'"
+        },
+        {
+          "from": "./watch",
+          "to": "./collector",
+          "condition": "has(hop.schedule_name) && hop.schedule_name.startsWith('round-')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_round_sweep'"
+            }
+          }
+        },
+        {
+          "from": "./watch",
+          "to": "./door",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'"
+        },
+        {
+          "from": "./door",
+          "to": "./affinity",
+          "condition": "has(hop.route) && hop.route == 'in_propose'",
+          "modifier": {
+            "set_context": {
+              "actor": "'agent:' + hop.agent_id",
+              "subscriber": "hop.sa_subscriber",
+              "sa_boot": "hop.sa_boot"
+            }
+          }
+        },
+        {
+          "from": "./affinity",
+          "to": "./door",
+          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error')"
+        },
+        {
+          "from": "./affinity",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && hop.subscriber == 'self-brain'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_pack'"
+            },
+            "set_context": {
+              "pack_sub": "hop.pack_sub",
+              "pack_hash": "hop.pack_hash"
+            }
+          }
+        },
+        {
+          "from": "./affinity",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'answer' && !(has(hop.subscriber) && hop.subscriber == 'self-brain')"
+        },
+        {
+          "from": "./affinity",
+          "to": "./door",
+          "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' || hop.route == 'reject')"
+        },
+        {
+          "from": "./curator",
+          "to": "./affinity",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'pack_ack' && has(context.pack_sub) && context.pack_sub != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_pack_ack'"
+            },
+            "set_context": {
+              "pack_sub": "context.pack_sub",
+              "pack_hash": "context.pack_hash"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 20",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_curate'"
+            },
+            "restore_ttl": true,
+            "set_context": {
+              "tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'menu'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_slots'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_schemas'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'curator'"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'memory'"
+            }
+          }
+        },
+        {
+          "from": "./tools",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'tool_schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_menu'"
+            },
+            "set_context": {
+              "tool_answerer": "'tools'"
+            }
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./splitter",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+        },
+        {
+          "from": "./brain",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_llm'"
+            }
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./door",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'round_error'"
+            }
+          }
+        },
+        {
+          "from": "./brain",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./splitter",
+          "to": "./dispatcher",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        },
+        {
+          "from": "./splitter",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && ((has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) || (has(hop.sidecar_verify) && hop.sidecar_verify != ''))",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_section'"
+            }
+          }
+        },
+        {
+          "from": "./splitter",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && !((has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) || (has(hop.sidecar_verify) && hop.sidecar_verify != ''))"
+        },
+        {
+          "from": "./splitter",
+          "to": "./collector",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'calls'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_calls'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./tools",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'bash' || hop.tool_name == 'file' || hop.tool_name == 'edit' || hop.tool_name == 'web_fetch' || hop.tool_name == 'web_search' || hop.tool_name == 'weather')",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_call'"
+            }
+          }
+        },
+        {
+          "from": "./tools",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name.startsWith('history_')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_history_call'"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && hop.tool_name == 'memory_recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_call'"
+            },
+            "set_context": {
+              "audience_now": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''",
+              "session_id": "has(context.session_id) ? context.session_id : ''",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : (has(context.turn_id) ? context.turn_id : '')",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+            }
+          }
+        },
+        {
+          "from": "./dispatcher",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'tool'",
+          "default": true
+        },
+        {
+          "from": "./curator",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'tool_result'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_tool'"
+            }
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'answer'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft"
+            ]
+          }
+        },
+        {
+          "from": "./collector",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'recall'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_recall_ask'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./memory-hive",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recall' && !has(hop.gap_ask)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_query'"
+            },
+            "set_context": {
+              "recall_query": "has(hop.recall_query) ? hop.recall_query : ''",
+              "memory_tier": "has(hop.memory_tier) ? hop.memory_tier : ''",
+              "recall_as_of": "''",
+              "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
+              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "audience_now": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
+              "recall_caller": "'round'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./memory-hive",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recall' && has(hop.gap_ask)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_query'"
+            },
+            "set_context": {
+              "recall_query": "has(hop.recall_query) ? hop.recall_query : ''",
+              "memory_tier": "has(hop.memory_tier) ? hop.memory_tier : ''",
+              "recall_as_of": "''",
+              "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
+              "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "audience_now": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
+              "recall_caller": "'round'",
+              "gap_ask": "hop.gap_ask"
+            },
+            "delete_hop": [
+              "gap_ask"
+            ]
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'bundle' && has(hop.recall_caller) && hop.recall_caller == 'round' && !(has(context.gap_ask) && context.gap_ask != '')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_bundle'"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./curator",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'bundle' && has(hop.recall_caller) && hop.recall_caller == 'round' && has(context.gap_ask) && context.gap_ask != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_gap_bundle'"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./collector",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'reject' && has(hop.recall_caller) && hop.recall_caller == 'round' && !(has(context.gap_ask) && context.gap_ask != '')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_bundle'"
+            }
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./curator",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'reject' && has(hop.recall_caller) && hop.recall_caller == 'round' && has(context.gap_ask) && context.gap_ask != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_gap_bundle'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./memory-hive",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turn_write'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_episode'"
+            },
+            "set_context": {
+              "session_id": "has(hop.session_id) ? hop.session_id : ''",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
+              "happened_at": "has(hop.happened_at) ? hop.happened_at : ''",
+              "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./memory-hive",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'memory'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_remember'"
+            },
+            "set_context": {
+              "session_id": "has(context.session_id) ? context.session_id : ''",
+              "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./memory-hive",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'write'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_close_pass'"
+            },
+            "set_context": {
+              "session_id": "has(context.session_id) ? context.session_id : ''",
+              "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+              "channel": "has(context.channel) ? context.channel : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./door",
+          "condition": "!has(hop.refused_subscriber) && (has(hop.route) && hop.route == 'bundle' || has(hop.route) && hop.route == 'reject') && !(has(hop.recall_caller) && hop.recall_caller == 'round')"
+        },
+        {
+          "from": "./curator",
+          "to": "./door",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && hop.section == 'memory')"
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./door",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'close_report'"
+        },
+        {
+          "from": "./memory-hive",
+          "to": "./door",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'recurring'"
+        },
+        {
+          "from": "./memory-hive",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./door",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'pack_ack' || hop.route == 'thing_seen' || hop.route == 'candidate_ack' || hop.route == 'reject' || hop.route == 'stats' || hop.route == 'read')"
+        },
+        {
+          "from": "./brain",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/brain'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./brain",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/brain'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          }
+        },
+        {
+          "from": "./curator/summarizer",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/curator/summarizer'"
+            }
+          },
+          "lane": "credential_request"
+        },
+        {
+          "from": "./access",
+          "to": "./curator/summarizer",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/curator-summarizer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          },
+          "lane": "in_sealed"
+        },
+        {
+          "from": "./memory-hive/closer",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/memory-hive/closer'"
+            }
+          },
+          "lane": "credential_request"
+        },
+        {
+          "from": "./access",
+          "to": "./memory-hive/closer",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-closer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          },
+          "lane": "in_sealed"
+        },
+        {
+          "from": "./memory-hive/dialectic",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/memory-hive/dialectic'"
+            }
+          },
+          "lane": "credential_request"
+        },
+        {
+          "from": "./access",
+          "to": "./memory-hive/dialectic",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-dialectic'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          },
+          "lane": "in_sealed"
+        },
+        {
+          "from": "./memory-hive/dreamer",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/memory-hive/dreamer'"
+            }
+          },
+          "lane": "credential_request"
+        },
+        {
+          "from": "./access",
+          "to": "./memory-hive/dreamer",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-dreamer'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          },
+          "lane": "in_sealed"
+        },
+        {
+          "from": "./memory-hive/judge",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/memory-hive/judge'"
+            }
+          },
+          "lane": "credential_request"
+        },
+        {
+          "from": "./access",
+          "to": "./memory-hive/judge",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-judge'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          },
+          "lane": "in_sealed"
+        },
+        {
+          "from": "./memory-hive/embed",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_invoke'"
+            },
+            "set_context": {
+              "requester": "'agent:simple-agent/memory-hive/embed'"
+            }
+          },
+          "lane": "credential_request"
+        },
+        {
+          "from": "./access",
+          "to": "./memory-hive/embed",
+          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-embed'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_sealed'"
+            }
+          },
+          "lane": "in_sealed"
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_boot",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

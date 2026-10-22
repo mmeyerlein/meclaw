@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "door",
-        "template": "door@1.0.2"
+        "template": "door@1.0.3"
       },
       {
         "name": "sink",

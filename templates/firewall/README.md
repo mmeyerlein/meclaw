@@ -1,4 +1,4 @@
-# `firewall@2.5.0`
+# `firewall@2.5.1`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every

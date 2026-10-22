@@ -1,0 +1,47 @@
+{
+  "source": "hand: the template's script (the ledger's park insert answers with the probe select; a batch without a channel is refused; the parking and mark rows carry an 8-hex random id suffix the mask does not cover, so they are not probed)",
+  "probes": [
+    {
+      "hop": {
+        "operation": "insert"
+      },
+      "context": {
+        "drain_phase": "park",
+        "session_id": "chat-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "d-park",
+            "text": "{\"ok\": true}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_batch"
+      },
+      "context": {
+        "session_id": "chat-2",
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "hello"
+          },
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "hi there"
+          }
+        ]
+      }
+    }
+  ]
+}

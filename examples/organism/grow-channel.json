@@ -7,7 +7,7 @@
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.2.2",
+        "template": "telegram-connector@2.2.3",
         "birth": "inactive"
       }
     ],

@@ -537,7 +537,31 @@
           "condition": "has(hop.route) && hop.route == 'embed'",
           "modifier": {
             "set_context": {
-              "mem_phase": "'embed'"
+              "mem_phase": "'embed'",
+              "embed_item": "hop.embed_item",
+              "embed_episode": "hop.episode_id",
+              "embed_retry": "''"
+            }
+          }
+        },
+        {
+          "from": "./embed",
+          "to": "./writer",
+          "condition": "has(hop.error_code) && hop.error_code == 'credential_pending' && context.mem_phase == 'embed'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed_pending'"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./embed",
+          "condition": "has(hop.route) && hop.route == 'embed_again'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'embed'",
+              "embed_retry": "'1'"
             }
           }
         },
@@ -688,7 +712,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -722,7 +749,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -753,7 +783,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -784,7 +817,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -815,7 +851,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -879,7 +918,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -910,7 +952,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -941,7 +986,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -972,7 +1020,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1026,7 +1077,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1057,7 +1111,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1088,7 +1145,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1127,7 +1187,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1191,7 +1254,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1225,7 +1291,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1259,7 +1328,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1293,7 +1365,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1351,7 +1426,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         },
@@ -1485,7 +1563,10 @@
               "recall_window_from",
               "recall_window_to",
               "recall_input_soft",
-              "store_origin"
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry"
             ]
           }
         }

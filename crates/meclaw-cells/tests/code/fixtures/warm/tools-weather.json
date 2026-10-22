@@ -1,0 +1,40 @@
+{
+ "source": "hand: the template's script (the full forecast path with both endpoints pointed at local data: URL stubs, no network, now_utc pinned)",
+ "overlay": {
+  "geocode_endpoint": "data:application/json;base64,eyJyZXN1bHRzIjpbeyJuYW1lIjoidG93bi0xIiwiY291bnRyeSI6ImNvdW50cnktMSIsImFkbWluMSI6InJlZ2lvbi0xIiwibGF0aXR1ZGUiOjUyLjUsImxvbmdpdHVkZSI6MTMuNCwidGltZXpvbmUiOiJFdXJvcGUvQmVybGluIn1dfQ==",
+  "forecast_endpoint": "data:application/json;base64,eyJ0aW1lem9uZSI6IkV1cm9wZS9CZXJsaW4iLCJjdXJyZW50Ijp7InRpbWUiOiIyMDI2LTAxLTAxVDEyOjAwIiwidGVtcGVyYXR1cmVfMm0iOjMuNCwid2VhdGhlcl9jb2RlIjozfSwiZGFpbHkiOnsidGltZSI6WyIyMDI2LTAxLTAxIiwiMjAyNi0wMS0wMiJdLCJ3ZWF0aGVyX2NvZGUiOlszLDYxXSwidGVtcGVyYXR1cmVfMm1fbWF4IjpbNS4xLDYuMl0sInRlbXBlcmF0dXJlXzJtX21pbiI6Wy0xLjAsMC40XSwicHJlY2lwaXRhdGlvbl9zdW0iOlswLjAsMi41XX19IA==",
+  "now_utc": "2026-01-01T12:00:00Z"
+ },
+ "probes": [
+  {
+   "hop": {
+    "tool_call_id": "call-1"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "assistant",
+      "type": "tool_call",
+      "id": "call-1",
+      "text": "{\"place\": \"town-1\"}"
+     }
+    ]
+   }
+  },
+  {
+   "hop": {
+    "tool_call_id": "call-2"
+   },
+   "body": {
+    "messages": [
+     {
+      "origin": "assistant",
+      "type": "tool_call",
+      "id": "call-2",
+      "text": "{\"place\": \"town-2\", \"days\": 2, \"language\": \"en\"}"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -582,11 +582,14 @@ fn the_models_window_bounds_the_compress_line() {
     if !shipped() {
         return;
     }
+    // GH #1272: talky's window target (40 000) orders its own rebuild, pinned in
+    // `gh1272_a_role_rebuilds_at_its_window_target`; this test pins the rule
+    // below it, so the target is off here.
     // GH #1085 (R-IG-1): without the package's limits on an answer, the line
     // is `compress_at` of the model's own window -- no role cuts it (before:
     // talky's `quality_cap` 120 000, so 70 000 of a million ordered a
     // rebuild at 60 000).
-    let mut h = hive_of("talky", &[]);
+    let mut h = hive_of("talky", &[("policy", "window_target", json!(0))]);
     turn(
         &mut h,
         "s",
@@ -596,7 +599,7 @@ fn the_models_window_bounds_the_compress_line() {
         json!({"tokens_prompt": 70000, "context_window": 1000000}),
     );
     assert!(h.clock.is_empty(), "70 000 of a million: nothing ordered");
-    let mut h = hive_of("talky", &[]);
+    let mut h = hive_of("talky", &[("policy", "window_target", json!(0))]);
     turn(
         &mut h,
         "s",
@@ -607,7 +610,7 @@ fn the_models_window_bounds_the_compress_line() {
     );
     assert_eq!(last_add(&h).body["emit_body"]["reason"], "compress");
     // A small model window is the model's own, and it counts.
-    let mut h = hive_of("talky", &[]);
+    let mut h = hive_of("talky", &[("policy", "window_target", json!(0))]);
     turn(
         &mut h,
         "s",

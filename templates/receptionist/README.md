@@ -1,4 +1,4 @@
-# `receptionist@2.1.0`
+# `receptionist@2.1.1`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -183,14 +183,14 @@ Two lanes, and the line between them is the ruling of
 knob is a **param** of the cell that reads it; only the provider lane stays in
 `.env`, because a secret in a `config.json` is a secret in the repository.
 
-Since `receptionist@2.1.0` the seven knobs below are params of `./greet`. Two
+Since `receptionist@2.1.1` the seven knobs below are params of `./greet`. Two
 receptions in one colony can therefore build different composites onto different
 lanes -- which an environment they share could not say -- and the manifest that
 grows one sets them with `override_params`, keyed by cell path:
 
 ```json
 {"op": "add_nodes", "scope": "/",
- "nodes": [{"name": "reception", "template": "receptionist@2.1.0",
+ "nodes": [{"name": "reception", "template": "receptionist@2.1.1",
             "override_params": {
               "greet": {"template": "cogny",
                         "reply_to": "./sink",

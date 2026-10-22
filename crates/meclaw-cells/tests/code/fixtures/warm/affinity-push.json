@@ -1,0 +1,37 @@
+{
+  "source": "hand: the template's script (watchdog tick, the store's subscriber/trust answers, an entities answer whose pack waits for its retry gap so only the watchdog is armed, a pack receipt on in_pack_ack)",
+  "probes": [
+    {
+      "body": {"messages": [{"origin": "user", "type": "text", "text": "affinity-push"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 1},
+      "context": {"aff_phase": "subs"},
+      "body": {"messages": [{"id": "m-2", "origin": "tool", "type": "tool_result",
+        "text": "[{\"id\":\"sub-1\",\"cell_path\":\"/os/agents/agent-1/brief-in\",\"subject\":\"entity-1\",\"audience\":\"member-1\",\"channel\":\"chat\",\"slots\":\"[\\\"name\\\"]\",\"pack_hash\":\"\",\"retry\":null}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 1},
+      "context": {
+        "aff_phase": "trust",
+        "aff_carry": "{\"subs\": [{\"id\": \"sub-1\", \"cell_path\": \"/os/agents/agent-1/brief-in\", \"subject\": \"entity-1\", \"audience\": \"member-1\", \"channel\": \"chat\", \"slots\": \"[\\\"name\\\"]\", \"pack_hash\": \"\", \"retry\": null}]}"
+      },
+      "body": {"messages": [{"id": "m-3", "origin": "tool", "type": "tool_result",
+        "text": "[{\"entity_id\":\"entity-1\",\"audience\":\"member-1\",\"decided_at\":\"2026-01-01T00:00:00Z\"}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 1},
+      "context": {
+        "aff_phase": "entities",
+        "aff_carry": "{\"subs\": [{\"id\": \"sub-1\", \"cell_path\": \"/os/agents/agent-1/brief-in\", \"subject\": \"entity-1\", \"audience\": \"member-1\", \"channel\": \"chat\", \"slots\": \"[\\\"name\\\"]\", \"pack_hash\": \"\", \"retry\": \"{\\\"hash\\\": \\\"d27bcfdaceb62a116d4c556fa42b90a3a180d01b5d7dd049c8b58cbecff7602a\\\", \\\"tries\\\": 1, \\\"at\\\": 4000000000, \\\"gap\\\": 300}\"}], \"fp\": {\"trust\": {\"entity-1|member-1\": \"2026-01-01T00:00:00Z\"}, \"disclosure\": {}}}"
+      },
+      "body": {"messages": [{"id": "m-4", "origin": "tool", "type": "tool_result",
+        "text": "[{\"entity_id\":\"entity-1\",\"aieos\":\"{\\\"name\\\": \\\"user-1\\\"}\",\"mx\":\"{}\",\"recorded_at\":\"2026-01-01T00:00:00Z\"}]"}]}
+    },
+    {
+      "hop": {"route": "in_pack_ack"},
+      "context": {"pack_sub": "sub-1", "pack_hash": "d27bcfdaceb62a116d4c556fa42b90a3a180d01b5d7dd049c8b58cbecff7602a"},
+      "body": {"messages": [{"origin": "tool", "type": "tool_result", "text": "ok"}]}
+    }
+  ]
+}

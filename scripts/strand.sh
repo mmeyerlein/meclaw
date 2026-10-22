@@ -600,7 +600,15 @@ cmd_new() {
     fi
     wave=$(wave_name "$wdir")
     branch="$wave/$name"
-    tree="$(dirname -- "$root")/$(basename -- "$root")-wt-$name"
+    # GH #1290: a host may keep every strand worktree of every repository under
+    # one root (`$MECLAW_WORKTREE_ROOT/<repo>/<wave>/<name>`); unset, the tree
+    # stays beside the main tree. The kit keys such a tree by its path below
+    # `<root>/<repo>/`, not by its bare name (`schedule.tree_key`).
+    if [ -n "${MECLAW_WORKTREE_ROOT:-}" ]; then
+        tree="${MECLAW_WORKTREE_ROOT%/}/$(basename -- "$root")/$wave/$name"
+    else
+        tree="$(dirname -- "$root")/$(basename -- "$root")-wt-$name"
+    fi
     # #1148: report and strand file go into the strand's WORKTREE -- the
     # strand commits them on its branch; the main tree is never written.
     report="$tree/plans/$wdir/berichte/$name.md"

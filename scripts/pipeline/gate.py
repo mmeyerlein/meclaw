@@ -815,7 +815,7 @@ class _Pass:
         return EXIT_BY_VERDICT.get(verdict, 2)
 
     def write_legacy(self, v2):
-        gate_dir = os.path.join(target_dir(self.repo), "gate", os.path.basename(self.repo.rstrip("/")))
+        gate_dir = schedule.tree_gate_dir(target_dir(self.repo), self.repo)  # GH #1290
         from .executor import legacy_v1  # the lane writes the same v1 file
         doc = legacy_v1(v2)
         try:

@@ -1,8 +1,8 @@
 {
   "name": "retry",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": {
-    "purpose": "A bounded retry loop around ONE tool, as one code cell: the call passes through it on the way in, the reply passes through it on the way out, and an error reply re-emits the ORIGINAL call -- parked in context by the wiring, counted and bounded by the retry edge, never by the cell. At the cap the give-up lane hands the last error to an error sink with the original error_code intact.",
+    "purpose": "A bounded retry loop around ONE tool, as one code cell: the call passes through it on the way in, the reply passes through it on the way out, and an error reply re-emits the ORIGINAL call -- parked in context by the wiring, counted and bounded by the retry edge, never by the cell. At the cap the give-up lane hands the last error to an error sink with the original error_code intact. Since 1.0.1 (#1276) the template carries this change; it is the third digit.",
     "use_when": "In front of a tool cell whose failures are worth a second try (network tools, busy stores). Wire five lanes in the SAME mutation that instantiates it: the call edge (parks hop.call into context.call and seeds context.attempt), the tool's reply edge back in, the retry edge (increments and bounds on int(context.attempt) < RETRY_MAX), the ok edge, and the give-up edge onto the error sink. Every number condition needs the int() cast.",
     "not_in_scope": "No counting in the cell (the attempt counter is edge authority), no backoff timing, no call bundles (one call per message -- the dispatcher template splits bundles), no fan-in, no knowledge of which cell the tool is.",
     "examples": [

@@ -5,6 +5,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "external_timeout_ms": 30000,
     "summary_on_commit": "1",
     "embed": "1",

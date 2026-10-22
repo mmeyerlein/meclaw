@@ -1,0 +1,11 @@
+{
+  "source": "hand: the template's script (phase A: the apply call with a manifest, phase B: the receipt on in_build_result)",
+  "probes": [
+    {"hop": {"tool_call_id": "call-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call-1",
+                            "text": "{\"manifest\": [{\"scope\": \"/hive-1\", \"diff\": {\"add_nodes\": [{\"name\": \"cell-1\", \"template\": \"door\"}]}}], \"manifest_sha256\": \"abc\"}"}]}},
+    {"hop": {"route": "in_build_result", "applied": 1},
+     "context": {"build_call_id": "call-2"},
+     "body": {"messages": [{"origin": "tool", "type": "text", "text": "applied"}]}}
+  ]
+}

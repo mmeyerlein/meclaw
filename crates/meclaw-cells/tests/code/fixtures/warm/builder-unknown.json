@@ -1,0 +1,27 @@
+{
+  "source": "test: crates/meclaw-cells/tests/builder/builder_unknown_tool_answers.rs",
+  "probes": [
+    {
+      "hop": {
+        "tool_name": "teleport",
+        "tool_call_id": "c-1"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "tool_call",
+            "id": "c-1",
+            "text": "{\"where\": \"/os\"}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {},
+      "body": {
+        "messages": []
+      }
+    }
+  ]
+}

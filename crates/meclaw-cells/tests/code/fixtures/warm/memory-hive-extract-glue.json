@@ -1,0 +1,58 @@
+{
+  "source": "hand: enqueue of a written turn, then the dedup read and the park of the known set",
+  "probes": [
+    {
+      "context": {
+        "mem_phase": "enqueue",
+        "batch_id": ""
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "{\"episode_id\": \"ep-1\", \"session_id\": \"session-1\", \"channel\": \"chat\", \"audience_set\": \"[\\\"member-1\\\"]\", \"sender\": \"user\", \"speaker\": \"member-1\", \"content\": \"hello\", \"token_est\": 3}"
+          }
+        ]
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "dedup",
+        "batch_id": "batch-1"
+      },
+      "hop": {
+        "operation": "insert"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "r-1",
+            "text": "[]"
+          }
+        ]
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "known",
+        "batch_id": "batch-2"
+      },
+      "hop": {
+        "operation": "select"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "r-1",
+            "text": "[{\"episode_id\": \"ep-2\", \"claim_hash\": \"h2\"}, {\"episode_id\": \"ep-1\", \"claim_hash\": \"h1\"}]"
+          }
+        ]
+      }
+    }
+  ]
+}

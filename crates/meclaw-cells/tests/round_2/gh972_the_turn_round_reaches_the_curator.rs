@@ -153,7 +153,7 @@ fn channel_edges(node: &str) -> Value {
     let mut decl = recipe(
         "grow_level",
         json!({"scope": MEMBER_DIR, "level": "channel", "name": node,
-               "template": "chat-channel@1.0.1", "assistant": AGENT,
+               "template": "chat-channel@1.0.2", "assistant": AGENT,
                "ctx": {"member_person": PERSON}}),
     );
     let edges = decl["diff"]["add_edges"].clone();

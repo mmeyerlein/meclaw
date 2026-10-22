@@ -1,0 +1,8 @@
+{
+  "source": "test: 709_a_typed_turn_is_a_turn_of_its_own_channel.rs | hand: in_typed with the member from the param, then from hop.user_id",
+  "overlay": {"user_id": "member-1"},
+  "probes": [
+    {"hop": {"route": "in_typed"}, "body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}]}},
+    {"hop": {"route": "in_typed", "user_id": "member-2"}, "body": {"messages": [{"type": "text", "text": "  and again  "}]}}
+  ]
+}

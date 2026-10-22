@@ -5,6 +5,7 @@
 pub mod duplex_cell;
 pub mod gh1016_nothing_is_said_after_the_call_ended;
 pub mod gh1055_a_ringing_call_finds_its_model_ready;
+pub mod gh1276_a_speaker_turn_passes_no_cold_code_cell;
 pub mod gh728_a_late_answer_after_a_turn_change_is_not_spoken;
 pub mod gh896_a_duplex_call_is_renewed_at_its_limit;
 pub mod gh979_a_spoken_turn_names_the_verified_caller;
@@ -12,6 +13,8 @@ pub mod gh979_an_app_cannot_set_the_speaker;
 pub mod gh979_no_speaker_without_proof;
 pub mod gh979_objects_owner_tools_on_a_real_turn;
 pub mod gh979_speaker_stamp_from_bound_channel;
+#[path = "../support/gh1276_runner_modes.rs"]
+pub mod runner_modes;
 #[path = "../support/speaker_road.rs"]
 pub mod speaker_road;
 pub mod voice_duplex_a_barge_in_cancels_the_open_speak;

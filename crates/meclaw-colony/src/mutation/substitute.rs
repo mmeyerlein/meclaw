@@ -633,7 +633,7 @@ fn token_quoting(s: &str) -> Vec<Quoting> {
 /// value: `hop.n == ${N}` with `N` = `1 || true` parses and is always true,
 /// and carries nothing `cel_string_safe` would catch -- so there it must be a
 /// plain number ([`cel_number_safe`]), the one shape a bare token is written
-/// for (`templates/retry`: `int(context.attempt) < ${RETRY_MAX:-3}`).
+/// for (the shipped retry template: `int(context.attempt) < ${RETRY_MAX:-3}`).
 /// `quoted` is `None` only for a token past an unclosed `${`, which `expand`
 /// refuses anyway.
 fn env_fits(
@@ -2004,7 +2004,7 @@ mod tests {
     /// control character, so `cel_string_safe` passed it, and `hop.n == ${N}`
     /// bound to a condition that is always true. A token outside a string
     /// literal is CEL source: in every CEL slot it binds a plain number (the
-    /// shape `templates/retry` writes, `< ${RETRY_MAX:-3}`) and nothing else;
+    /// shape the shipped retry template writes, `< ${RETRY_MAX:-3}`) and nothing else;
     /// inside `'…'` or `"…"` it binds what a string can hold; an escaped token
     /// and the instance class are not judged.
     #[test]

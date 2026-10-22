@@ -1,0 +1,58 @@
+{
+  "source": "hand: the template's script (a PDF attachment through a real extractor process -- `echo` stands in for pdftotext and prints its argv as the page --, a non-PDF attachment and an attachment without data: those two leave without derived text, no extractor runs)",
+  "overlay": {
+    "extract_cmd": "echo"
+  },
+  "probes": [
+    {
+      "hop": {
+        "route": "in_extract",
+        "op_id": "x-0"
+      },
+      "body": {
+        "path": "/docs/scan.pdf",
+        "mime": "application/pdf",
+        "messages": [],
+        "attachments": [
+          {
+            "ref": "blob-0",
+            "data_b64": "aGVsbG8="
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_extract",
+        "op_id": "x-1"
+      },
+      "body": {
+        "path": "/docs/note.txt",
+        "mime": "text/plain",
+        "messages": [],
+        "attachments": [
+          {
+            "ref": "blob-1",
+            "data_b64": "aGVsbG8="
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_extract",
+        "op_id": "x-2"
+      },
+      "body": {
+        "path": "/docs/paper.pdf",
+        "mime": "application/pdf",
+        "messages": [],
+        "attachments": [
+          {
+            "ref": "blob-2"
+          }
+        ]
+      }
+    }
+  ]
+}

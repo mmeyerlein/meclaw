@@ -1,4 +1,4 @@
-# `dispatcher@1.3.1`
+# `dispatcher@1.4.0`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -50,7 +50,10 @@ messages a graph can route.
 - **help, answered in place.** `F{op: "help", args}` goes to no answerer: it comes back at
   once on the `result` lane, `hop.help_for` naming the family and the request (`args`, e.g.
   `{"op": "read"}`) as the `tool_result` text. It is not an error and carries no
-  `error_code`; the collector fills the answer from its menu store.
+  `error_code`; the collector fills the answer from its menu store. The same holds for a tool
+  the collector keeps at hint level for its own `op` (`hint_own_op`, #1272): `T{op: "help"}`
+  under a name of `context.tools_hinted` comes back with `hop.help_for` naming the tool and the
+  other keys as the request; every other op of it leaves for its answerer as it came.
 - **The expectation set first.** The assistant turn goes to the fan-in *before* any tool
   message leaves (PLAIN order). A tool that answers in a millisecond can otherwise report
   a result for a round the collector has not been told about yet.

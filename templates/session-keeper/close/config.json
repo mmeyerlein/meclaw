@@ -4,6 +4,7 @@
   },
   "params": {
     "runner": "python3",
+    "runner_mode": "warm",
     "idle_ms": 7200000,
     "close_limit": 50,
     "heal_limit": 200,

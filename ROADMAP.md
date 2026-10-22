@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.69.1, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.70.1, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,13 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.70.1: the first published cut of the 0.70 line -- 0.70.0 below plus two fixes from its milestone runs: a
+  figure's capped handset answer reaches the world, and a simple-agent runs its rarely called code cells cold.
+- v0.70.0: a plain agent in one sealed hive -- a turn door, its own tools, client tools a caller adds per
+  turn, an identity seeded into its own affinity, behind a curator and a memory; `npc` becomes `figure`, a world
+  adapter and a handset around that agent (breaking); the curator's day relay orders a rebuild at a role's
+  window target and at the day boundary; every code cell runs warm unless its written reason says otherwise,
+  and an idle runner child stops after its idle timeout
 - v0.69.1: a model without prefill support no longer answers 400 -- a request never ends on an assistant
   message, a consult's window ends on its request, and a provider's refusal keeps its own sentence; a member
   grown from a derived class takes its credential like `member` itself

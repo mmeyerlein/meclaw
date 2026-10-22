@@ -1,0 +1,29 @@
+{
+  "source": "hand: the template's script (watchdog tick, then the store's answers: next expiry arms the watchdog, expired grants, their events booked as expired)",
+  "probes": [
+    {
+      "body": {"messages": [{"origin": "user", "type": "text", "text": "access-sweep"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 1},
+      "context": {"ac_phase": "next"},
+      "body": {"messages": [{"id": "m-2", "origin": "tool", "type": "tool_result",
+        "text": "[{\"expires_at\":\"2099-01-01T00:00:00.000000Z\"}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 2},
+      "context": {"ac_phase": "grants"},
+      "body": {"messages": [{"id": "m-3", "origin": "tool", "type": "tool_result",
+        "text": "[{\"grant_id\":\"grant-2\",\"requester\":\"agent:agent-2\",\"capability\":\"channel.send\",\"expires_at\":\"2026-01-02T00:00:00.000000Z\"},{\"grant_id\":\"grant-1\",\"requester\":\"agent:agent-1\",\"capability\":\"credential.read\",\"expires_at\":\"2026-01-01T00:00:00.000000Z\"}]"}]}
+    },
+    {
+      "hop": {"duration_ms": 0, "operation": "select", "rows_affected": 3},
+      "context": {
+        "ac_phase": "events",
+        "ac_carry": "{\"grants\": [{\"grant_id\": \"grant-2\", \"requester\": \"agent:agent-2\", \"capability\": \"channel.send\", \"expires_at\": \"2026-01-02T00:00:00.000000Z\"}, {\"grant_id\": \"grant-1\", \"requester\": \"agent:agent-1\", \"capability\": \"credential.read\", \"expires_at\": \"2026-01-01T00:00:00.000000Z\"}]}"
+      },
+      "body": {"messages": [{"id": "m-4", "origin": "tool", "type": "tool_result",
+        "text": "[{\"grant_id\":\"grant-2\",\"event\":\"invoked\",\"at\":\"2026-01-01T12:00:00.000000Z\"},{\"grant_id\":\"grant-1\",\"event\":\"expired\",\"at\":\"2026-01-01T00:00:01.000000Z\"},{\"grant_id\":\"grant-1\",\"event\":\"granted\",\"at\":\"2025-12-31T00:00:00.000000Z\"}]"}]}
+    }
+  ]
+}

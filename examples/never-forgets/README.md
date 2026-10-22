@@ -61,7 +61,7 @@ cannot decide which database your life goes into.
 
 | node | from template | what it brings |
 |---|---|---|
-| `/door` | [`door@1.0.2`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
+| `/door` | [`door@1.0.3`](../../templates/door/) | 1 cell. `POST /messages` becomes a turn on the ingress lane. |
 | `/talky` | [`talky`](../../templates/talky/) | 11 cells. Session keeper, context collector, tool dispatcher, sidecar splitter and an `llm` brain, with every internal edge pre-wired. |
 | `/sink` | [`terminal@1.0.2`](../../templates/terminal/) | 1 cell. The stop for the answer lane, which this example does not decide. The `error` lane is deliberately unwired (GH #284): a refusal that ends in a swallowing cell is one nobody reads, so it dead-letters instead. |
 

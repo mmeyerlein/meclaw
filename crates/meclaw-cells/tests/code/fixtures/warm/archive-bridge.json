@@ -1,0 +1,7 @@
+{
+  "source": "hand: the template's script (the last non-empty assistant text becomes one store insert)",
+  "probes": [
+    {"body": {"messages": [{"origin": "user", "type": "text", "text": "hello"}, {"origin": "assistant", "type": "text", "text": "hi there"}]}},
+    {"body": {"messages": [{"origin": "assistant", "type": "text", "text": "first draft"}, {"origin": "tool", "type": "tool_result", "id": "archive-00000000", "text": "{\"ok\": true}"}, {"origin": "assistant", "type": "text", "text": "final answer"}]}}
+  ]
+}

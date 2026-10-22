@@ -1,4 +1,4 @@
-# `retry@1.0.0`
+# `retry@1.0.1`
 
 A bounded retry loop around **one** tool, as one `code` cell -- no new cell type, no
 Rust, and **no counting in the cell**. The attempt counter is edge authority: the wiring

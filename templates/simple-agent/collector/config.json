@@ -1,0 +1,30 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "collector@5.3.0"
+  },
+  "override_params": {
+    "assemble": {
+      "tools": [
+        "bash",
+        "file",
+        "edit",
+        "web_fetch",
+        "web_search",
+        "weather",
+        "memory_recall",
+        "history_outline",
+        "history_read",
+        "history_search"
+      ],
+      "sidecar": "1",
+      "defer_turns": "0",
+      "fold_tools": "1",
+      "max_iter": 16,
+      "round_idle_ms": 120000,
+      "turn_answerers": [
+        "client"
+      ]
+    }
+  }
+}

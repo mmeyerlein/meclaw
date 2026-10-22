@@ -1,0 +1,52 @@
+{
+  "source": "hand: session window read, then the park of the turns page (select echo -> scratch insert)",
+  "probes": [
+    {
+      "context": {
+        "mem_phase": "window",
+        "session_id": "session-1"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "turns",
+        "session_id": "session-2"
+      },
+      "hop": {
+        "operation": "select"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "r-1",
+            "text": "[{\"id\": \"ep-1\", \"session_id\": \"session-2\", \"content\": \"hello\"}]"
+          }
+        ]
+      }
+    },
+    {
+      "context": {
+        "mem_phase": "facts-read",
+        "session_id": "session-2"
+      },
+      "hop": {
+        "operation": "insert"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "r-1",
+            "text": "[]"
+          }
+        ]
+      }
+    }
+  ]
+}
