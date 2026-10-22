@@ -175,7 +175,13 @@ fn figure_is_three_children_and_refs_simple_agent() {
     }
     let tpl = figure("template.json");
     assert_eq!(tpl["name"], "figure");
-    assert_eq!(tpl["version"], "1.0.0");
+    // The merge point numbers the version (a memory-hive fix moves figure's
+    // third digit); the lock is the line, not a literal of one release.
+    let version = tpl["version"].as_str().expect("version");
+    let parts: Vec<&str> = version.split('.').collect();
+    assert_eq!(parts.len(), 3, "{version}");
+    assert_eq!(parts[0], "1", "{version}");
+    assert!(parts.iter().all(|p| p.parse::<u32>().is_ok()), "{version}");
     let mut children = BTreeSet::new();
     for entry in std::fs::read_dir(repo("templates/figure")).expect("readable") {
         let p = entry.expect("entry").path();
@@ -196,7 +202,7 @@ fn figure_is_three_children_and_refs_simple_agent() {
     let agent = figure("simple-agent/config.json");
     assert_eq!(agent["cell"]["type"], "ref", "the agent is referenced");
     assert_eq!(
-        agent["cell"]["template"], "simple-agent@1.0.0",
+        agent["cell"]["template"], "simple-agent@1.1.0",
         "the agent is the pinned simple-agent, never a copy"
     );
     // GH #1276: `world` caches its queue, open turn and call book

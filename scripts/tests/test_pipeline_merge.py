@@ -1012,6 +1012,20 @@ class MergeStepsTest(MergeCase):
                           ["gate", "7s", "RED"]], err)
 
 
+class DefaultBranchTest(unittest.TestCase):
+    """GH #1294 (OR-NZ-4): only a real `-YYYY-MM-DD` suffix leaves the wave
+    name; `folge-0101` was cut to `folge` and the merge looked for
+    `folge/<S>` (`no_branch`)."""
+
+    def test_a_dated_wave_drops_its_date(self):
+        self.assertEqual("welle-x/S", merge.default_branch("/r/plans/welle-x-2026-09-19", "S"))
+        self.assertEqual("welle-x-2/S", merge.default_branch("plans/welle-x-2-2026-09-19", "S"))
+
+    def test_a_wave_without_a_date_stays_whole(self):
+        self.assertEqual("folge-0101/K", merge.default_branch("/r/plans/folge-0101", "K"))
+        self.assertEqual("welle-a-b-c-d/K", merge.default_branch("plans/welle-a-b-c-d", "K"))
+
+
 class PreconditionTest(MergeCase):
 
     def assert_refused(self, reason, strand="S1"):

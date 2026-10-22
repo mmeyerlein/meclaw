@@ -12,6 +12,26 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Fixed
+
+- Kit: a wave directory without a date suffix (`plans/<wave>` instead of `plans/<wave>-YYYY-MM-DD`) is its own wave: `strand.sh new <wave>/<name>` and a strand's branch `<wave>/<name>` find it, and the merge looks for the branch `<wave>/<name>` instead of cutting the name at its last dashes (`no_branch`). Only a real `-YYYY-MM-DD` suffix is dropped; dated waves resolve as before ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
+- Kit: the roadmap anchor gate reads an empty or malformed open-issue listing from the GitHub API (no `gh`, no auth) as an unreachable tracker and skips the issue anchors with a counted notice; before, an empty answer turned every open anchored issue into "not open" and the gate RED. A listing with content judges as before ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
+
+## [0.70.2] — 2026-10-22
+
+A follow-up to 0.70.1 from the figure milestone runs: a turn can require its first tool call, a figure acts instead of only narrating, a phone round counts once, and the memory reads a fenced verdict.
+
+### Added
+
+- simple-agent: a turn may carry `tool_scope: {require: true}`; its first brain call then requires a tool call (`tool_choice: "required"` on the chat wire, `{"type": "any"}` on the Anthropic wire) and the later calls of the same loop go free, so the turn can still end in text. collector: `context.tool_require` `"1"` adds `require` to the `tool_scope` of a turn's first `curate` only ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+
+### Fixed
+
+- memory-hive: the close pass and the night read a verdict their model wrapped in a Markdown code fence (```` ```json ```` or a bare ```` ``` ````) like the same verdict unfenced. Before, a whole verdict in a fence ended the close pass in `closer_failed` and the night in `verdict_not_json`, so the day's memory stayed unclosed; an unfenced answer is read as before, and what is no JSON stays a failure ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- figure: a world turn whose model answered in text alone ended silently, and the figure narrated an action while it stayed where it was. Such a turn now gets exactly one follow-up turn in the same session whose first model call requires a tool call from the world's tools (the calls after a result are free again); `contact`, phone and interview turns and a turn that hit the agent's loop cap stay as they were, and none of them requires a call ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- figure: a second answer of the same colony turn (`hop.round_id` `<round>~<ms>~<hash>`, an advice or delegation that came back in time) reached the figure as a second phone turn and spent a second reply of `phone_replies_max`, so the cap could run out after one message. The handset now hands the base round to the world, which takes each round once; a second answer with another text waits unread for the next world turn, uncounted ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)).
+- **Template versions (#1292):** second digit, `collector@5.4.0`, `simple-agent@1.1.0`; third digit, `memory-hive@3.16.6`; third digit for the pins that follow, `assistant@3.8.6`, `builder@1.28.3`, `builder-librarian@2.2.82`, `cogny@5.12.3`, `figure@1.0.1`, `meclaw-os@2.2.69`, `member@2.6.6`, `org@2.1.43`, `talky@6.10.3`.
+
 ## [0.70.1] — 2026-10-22
 
 First published cut of the 0.70 line; it ships everything under 0.70.0 below plus these fixes found in the 0.70.0 milestone runs.

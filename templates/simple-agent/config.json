@@ -140,7 +140,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -166,7 +167,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -192,7 +194,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -218,7 +221,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -233,7 +237,8 @@
               "iter": "'0'",
               "channel": "hop.channel",
               "audience_set": "hop.audience_set",
-              "agent_id": "hop.agent_id"
+              "agent_id": "hop.agent_id",
+              "tool_require": "has(hop.tool_require) ? hop.tool_require : ''"
             },
             "restore_ttl": true
           }
@@ -251,7 +256,8 @@
               "audience_set": "hop.audience_set",
               "agent_id": "hop.agent_id",
               "tools_allow": "hop.tools_allow",
-              "tools_deny": "hop.tools_deny"
+              "tools_deny": "hop.tools_deny",
+              "tool_require": "has(hop.tool_require) ? hop.tool_require : ''"
             },
             "restore_ttl": true
           }
@@ -554,7 +560,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -893,7 +900,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -919,7 +927,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         },
@@ -1120,7 +1129,8 @@
               "pack_hash",
               "agent_id",
               "tools_allow",
-              "tools_deny"
+              "tools_deny",
+              "tool_require"
             ]
           }
         }

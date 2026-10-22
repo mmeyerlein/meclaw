@@ -1,4 +1,4 @@
-# `figure@1.0.0`
+# `figure@1.0.1`
 
 A character in a shared world, built as an onion: inside, an unchanged
 [`simple-agent`](../simple-agent/) (one model behind a curator, a memory, its own tools, the
@@ -40,12 +40,24 @@ Every lane carries the body slot of its own name.
 
 A world call does not end the turn. The model calls as many world tools as it wants; each one
 leaves as `call`, waits for its `call_result` and goes back into the same turn. The turn ends
-when the model answers without a call. The menu of a turn is its whole menu: a call of a tool
+when the model answers without a call (after at most one follow-up, below). The menu of a turn is its whole menu: a call of a tool
 the open turn did not offer (a world tool the `obs` left out, `phone_message` in a phone or
 interview turn) leaves nothing and is answered as an error result
 `{id, content, is_error: true, error_code: "tool_not_offered"}`, the code in `content` too. The world answers a `query` at once and checks and
 queues an `act`/`task` (at most one `task` per turn), carrying it out when the `intent`
 arrives.
+
+A world turn whose model answers in text alone, without a single world call, has moved nothing
+in the world. The figure then asks once more: a follow-up turn in the same session with the same
+menu (`turn_id` `<turn>:act` at the agent's door), asking the model to choose one action from the
+world's tools. The follow-up carries `tool_scope: {require: true}`, so its first model call must
+call a tool (`tool_choice: "required"`, on the Anthropic wire `{"type": "any"}`); the calls after a
+result are free again, and every other turn (the world turn itself, phone, `contact`, interview)
+requires nothing. Its calls leave under the world's `turn_id`; whatever it ends with ends the world
+turn, and the `intent` text joins both texts. There is no second follow-up. A `contact` turn, a
+turn whose world offered no tool of its own (`phone_message` alone does not count), a turn that hit
+the agent's loop cap (`partial`: its budget is spent), a phone and an interview turn get none. A
+text message counts as an action.
 
 The figure never cuts a turn short: `deadline_ms` is the world's. A lost `call_result` ends
 the turn through the agent's own guard (`round_idle_ms`), so an instance sets the agent's
@@ -77,6 +89,13 @@ day. An answer over it opens no turn and costs no model call: it leaves on the r
 `phone_capped {day, channel, text, replies, max}` for the world's journal, and the figure's
 next world turn lists it as a message that reached the phone unanswered, so it enters the
 figure's memory with that turn. Two agents that text each other stop there for the day.
+
+One colony turn reaches the handset once. A colony may send a second answer of the same turn
+(an advice or a delegation that came back in time), under `hop.round_id` `<round>~<ms>~<hash>`;
+the handset hands the base `<round>` to the world. An answer whose base round the world has
+already taken (the last 64) opens no turn, is not capped and spends no reply: with the same text
+it is dropped, with another text it is a correction and waits unread for the next world turn, as
+one on a phone would. An answer without `hop.round_id` is taken as before.
 
 An `answer` on another channel is refused with
 `error {error_code: "foreign_channel"}`.
@@ -150,9 +169,9 @@ reads its runs out of the message log; the exits delete them.
 - RAM at most 0.5 GB per figure, the agent included.
 - Model cost at most 0.03 $ per figure-day without contact (the turns of a day plus the
   night's close and dream).
-- The queue, the open turn, the call book, the replies counted today and the capped answers
-  not yet shown live in the resident cell's RAM. A replaced child forgets them (the count
-  starts again): a `call_result` it no longer knows is dropped, a call of the agent finds no open
+- The queue, the open turn, the call book, the replies counted today, the answer rounds already
+  taken and the capped or corrected answers not yet shown live in the resident cell's RAM. A
+  replaced child forgets them (the count starts again, a round seen before is taken anew): a `call_result` it no longer knows is dropped, a call of the agent finds no open
   turn and gets an error result, and a final answer is matched by its channel instead.
 
 ## Pins

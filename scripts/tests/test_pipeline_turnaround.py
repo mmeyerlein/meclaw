@@ -1346,6 +1346,31 @@ class DefaultBranchTest(unittest.TestCase):
 
 # --- (i) --------------------------------------------------------------------------
 
+class BranchWaveTest(unittest.TestCase):
+    """GH #1294 (OR-NZ-4): the branch `folge-0101/K` names the wave
+    `plans/folge-0101`, a directory without a date suffix -- as `strand.sh`
+    resolves it (`branch_wave_dir`); a dated wave of the same prefix loses."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = tmp.name
+        tm.git(self.repo, "init", "-q", "-b", "folge-0101/K")
+        tm.git(self.repo, "config", "user.name", "test")
+        tm.git(self.repo, "config", "user.email", "test@example.invalid")
+        commit(self.repo, {"README.md": "start\n"}, "start")
+
+    def test_a_wave_without_a_date_is_the_branch_wave(self):
+        os.makedirs(os.path.join(self.repo, "plans", "folge-0101", "berichte"))
+        self.assertEqual("folge-0101", turnaround.branch_wave(self.repo))
+        os.makedirs(os.path.join(self.repo, "plans", "folge-0101-2026-10-01"))
+        self.assertEqual("folge-0101", turnaround.branch_wave(self.repo))
+
+    def test_a_dated_wave_resolves_as_before(self):
+        os.makedirs(os.path.join(self.repo, "plans", "folge-0101-2026-10-01"))
+        self.assertEqual("folge-0101-2026-10-01", turnaround.branch_wave(self.repo))
+
+
 class PartKeysTest(unittest.TestCase):
 
     def test_i_the_dispatch_carries_the_plan_part_keys(self):

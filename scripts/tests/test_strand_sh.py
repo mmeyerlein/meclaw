@@ -956,6 +956,28 @@ class TestWaveDetection(StrandShTestCase):
         self.assertEqual(2, res.returncode, res.stdout)
         self.assertFalse(self.worktree("kit").exists())
 
+    # --- GH #1294 (OR-NZ-4): a wave name without a date is the whole name ---
+
+    def test_a_wave_without_a_date_is_its_own_prefix_and_branch_wave(self):
+        """`plans/folge-0101` carries no `-YYYY-MM-DD`: `new folge-0101/<S>`
+        looked for `plans/folge-0101-<date>`, and the branch `folge-0101/<S>`
+        never found its wave either."""
+        d = "folge-0101"
+        (self.repo / "plans" / d / "berichte").mkdir(parents=True)
+        res = run_strand(self.repo, "new", "%s/kat" % d, "--issue", "757")
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("strand: wave %s (from the prefix %s/)" % (d, d), res.stderr)
+        self.assertTrue((self.worktree("kat") / "plans" / d / "berichte"
+                         / "kat.md").is_file(), res.stderr)
+        plan = pathlib.Path(self._tmp.name) / "plan.tsv"
+        plan.write_text(PLAN_GREEN)
+        res = run_strand(self.repo, "gate", "ci", cwd=self.worktree("kat"),
+                         extra_env={"MECLAW_GATE_PLAN": str(plan)})
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("strand: wave %s (from the branch)" % d, res.stderr)
+        self.assertTrue((self.repo / "plans" / d / "receipts" / "kat" / "latest"
+                         / "summary.txt").is_file(), res.stderr)
+
     def test_a_row_the_core_does_not_read_as_running_is_none_for_the_kit(self):
         """Re-check v2-kit c23 M-5: one reader of the Running row. A date the
         core's `wave.RUNNING` refuses (it would never turn the row Built) is no

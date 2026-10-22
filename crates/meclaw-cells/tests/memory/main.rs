@@ -6,6 +6,7 @@ pub mod gh1039_a_peer_is_known_by_name_and_a_forget_is_honoured;
 pub mod gh1089_a_name_is_no_common_noun;
 pub mod gh1225_a_topic_taken_up_is_visible_in_the_same_session;
 pub mod gh1249_recur_finds_routines_and_sends_prewarm_candidates;
+pub mod gh1292_a_fenced_verdict_is_read_like_a_bare_one;
 pub mod gh1292_an_episode_written_before_the_credential_gets_its_vector;
 pub mod gh948_a_subject_query_obeys_the_round;
 pub mod gh948_a_taken_alias_is_not_rebound;

@@ -1,4 +1,4 @@
-# `collector@5.3.0`
+# `collector@5.4.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -246,7 +246,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.3.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.4.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -482,7 +482,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.3.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.4.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -528,7 +528,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.3.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.4.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -935,6 +935,11 @@ So the scope travels **per call** and the menu stays whole:
   deploy that merely removes the stamp states nothing, and a session that is already running
   keeps the scope its row holds (absent is inheritance). The row is the channel's policy, not
   part of a round: it stays when a round's rows fall, so a restated scope stays a repeat.
+- **A turn can require a tool call of its first brain call (GH #1292).** `context.tool_require`
+  `"1"`, stamped by the entry edge of a turn (the `simple-agent` door from its turn's
+  `tool_scope.require`), rides in the round's window row and adds `require: true` to the
+  `tool_scope` of the turn's FIRST `curate` only; the later calls of the round go without,
+  so the loop can still end in text. Absent or anything else: no requirement.
 - **On the wire it is `tool_scope`.** The `curate` message carries the top-level body key
   `tool_scope: {"allow": [...], "deny": [...]}` -- only the halves that name something, and
   no key at all when the session has no scope. The `llm` cell filters its menu for that one

@@ -248,6 +248,9 @@ def open_issue_numbers(repo: str) -> tuple[set[int] | None, str]:
         except (urllib.error.URLError, OSError, ValueError) as exc:
             return None, f"GitHub API unreachable ({exc})"
 
+        if not isinstance(batch, list) or not all(
+                isinstance(item, dict) and "number" in item for item in batch):
+            return None, "GitHub API answered something other than an issue list"
         if not batch:
             break
         nums.update(
@@ -258,6 +261,11 @@ def open_issue_numbers(repo: str) -> tuple[set[int] | None, str]:
             break
         page += 1
 
+    # An empty listing is no statement (GH #1294): without auth the API can
+    # answer `[]` for a repository with open issues, and every anchor would
+    # read as closed. Only an answer with content judges.
+    if not nums:
+        return None, "GitHub API listed no open issue (no auth?)"
     return nums, "api.github.com"
 
 

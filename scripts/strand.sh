@@ -374,6 +374,12 @@ branch_wave_dir() {
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
     top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
     case "$branch" in */*) wave=${branch%%/*} ;; *) return 1 ;; esac
+    # GH #1294: a wave without a date suffix (`plans/folge-0101`) is its own
+    # directory; it wins over dated waves of the same prefix.
+    if [ -d "$plans/$wave" ]; then
+        printf '%s\n' "$wave"
+        return 0
+    fi
     for cand in "$plans/$wave"-*/; do
         [ -d "$cand" ] || continue
         hits+=("$(basename -- "${cand%/}")")
@@ -483,6 +489,12 @@ new_wave_hint() {
     while IFS= read -r cand; do
         [ -n "$cand" ] && running+=("$cand")
     done <<<"$list"
+    if [ -n "$prefix" ] && [ -d "$plans/$prefix" ]; then
+        # GH #1294: a wave without a date suffix is the prefix itself
+        echo "strand: wave $prefix (from the prefix $prefix/)" >&2
+        printf '%s\n' "$prefix"
+        return 0
+    fi
     if [ -n "$prefix" ]; then
         for cand in "$plans/$prefix"-*/; do
             [ -d "$cand" ] || continue

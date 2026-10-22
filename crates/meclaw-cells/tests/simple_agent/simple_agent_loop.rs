@@ -1059,3 +1059,94 @@ async fn the_sidecar_memory_section_reaches_the_memory_hive() {
     wait_route(&h, "/agent/splitter", "/agent/curator", "in_section", 1).await;
     wait_route(&h, "/agent/curator", "/agent/memory-hive", "in_remember", 1).await;
 }
+
+/// `in_turn` hops the door handed the collector, from the log.
+async fn in_turn_hops(h: &ColonyHandle) -> Vec<Value> {
+    h.read_log(meclaw_colony::api_dto::MessageLogFilter::default())
+        .await
+        .iter()
+        .filter(|r| {
+            r.from_path.starts_with("/agent/door") && r.to_path.starts_with("/agent/collector")
+        })
+        .filter_map(|r| meclaw_core::serde_json::from_str::<Value>(&r.headers_json).ok())
+        .map(|h| h["hop"].clone())
+        .filter(|hop| hop["route"] == "in_turn")
+        .collect()
+}
+
+/// GH #1292 FA: a turn whose body says `tool_scope: {require: true}` asks its
+/// FIRST brain call for a tool call (`tool_choice: "required"`, the normal
+/// form every agent has); the next call of the same tool loop goes without,
+/// so the turn can end in text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_that_requires_a_tool_call_requires_it_of_its_first_brain_call_only() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_tool_calls(vec![("c-weather", "weather", r#"{"place":"Berlin"}"#)]),
+            canned_chat_completion("Sunny.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    let mut t = turn("t-1", "Weather?", Value::Null);
+    if let Body::Inline(b) = &mut t.body {
+        b["tool_scope"] = json!({"require": true});
+    }
+    h.send(t).await;
+    let mut seen = Vec::new();
+    let answer = next_on(&h, &mut ports, "answer", &mut seen).await;
+    assert_eq!(body_of(&answer)["answer"]["text"], "Sunny.");
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 2, "the required call, then the answer");
+    assert_eq!(
+        reqs[0].body["tool_choice"], "required",
+        "the first call of the turn requires a tool call: {}",
+        reqs[0].body
+    );
+    assert!(
+        reqs[1].body.get("tool_choice").is_none(),
+        "the next call of the loop is free again: {}",
+        reqs[1].body["tool_choice"]
+    );
+}
+
+/// GH #1292 FA: a turn without `tool_scope` is the turn of before -- no
+/// requirement on the wire and no new key on the door's `in_turn`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_without_a_requirement_reaches_the_wire_unchanged() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_tool_calls(vec![("c-weather", "weather", r#"{"place":"Berlin"}"#)]),
+            canned_chat_completion("Sunny.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(turn("t-1", "Weather?", Value::Null)).await;
+    let mut seen = Vec::new();
+    next_on(&h, &mut ports, "answer", &mut seen).await;
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 2);
+    for (i, r) in reqs.iter().enumerate() {
+        assert!(
+            r.body.get("tool_choice").is_none(),
+            "call {i} carries no tool_choice: {}",
+            r.body["tool_choice"]
+        );
+    }
+    let hops = in_turn_hops(&h).await;
+    assert_eq!(hops.len(), 1, "{hops:?}");
+    assert!(
+        hops[0].get("tool_require").is_none(),
+        "the door's in_turn is the one of before: {}",
+        hops[0]
+    );
+}

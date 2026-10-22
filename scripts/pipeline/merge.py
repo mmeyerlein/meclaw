@@ -199,9 +199,15 @@ def strand_name(name):
     return name.rstrip("/").rsplit("/", 1)[-1]
 
 
+# The date suffix of a wave directory, `<wave>-YYYY-MM-DD` -> `<wave>`; a name
+# without one is the whole prefix (GH #1294). `wave_name` in `strand.sh` cuts
+# the same suffix.
+WAVE_DATE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+
 def default_branch(wave, strand):
     """`<wave prefix>/<strand>` -- the branch `strand.sh new` creates."""
-    return "%s/%s" % (os.path.basename(wave).rsplit("-", 3)[0], strand)
+    return "%s/%s" % (WAVE_DATE.sub("", os.path.basename(wave.rstrip("/"))), strand)
 
 
 def on_branch(root, branch, rel):

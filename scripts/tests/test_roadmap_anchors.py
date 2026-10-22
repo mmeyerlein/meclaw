@@ -10,6 +10,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from scripts.tests import store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -85,6 +86,56 @@ class RoadmapAnchorsTest(unittest.TestCase):
                              "- Another, by register. (register: some-id)\n\n  orphaned indent")
         strays = self.mod.stray_lines(self.roadmap(text))
         self.assertEqual([s.text for s in strays], ["orphaned indent"])
+
+
+class _Reply:
+    """A stand-in for `urlopen`'s response: `body` as the API sent it."""
+
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.body
+
+
+class OpenIssuesTest(unittest.TestCase):
+    """GH #1294: without `gh` and without auth, `?state=open` answered `[]` and
+    every anchor -- #618, open on the tracker -- was "not open": an empty or
+    malformed answer is an unreachable tracker (a counted skip), never the
+    truth. An answer with content judges as before."""
+
+    def setUp(self):
+        self.mod = load_script()
+        for patch in (mock.patch.object(self.mod.shutil, "which", return_value=None),
+                      mock.patch.dict(self.mod.os.environ, {}, clear=True)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def numbers(self, body):
+        with mock.patch.object(self.mod.urllib.request, "urlopen",
+                               return_value=_Reply(body)):
+            return self.mod.open_issue_numbers("example/repo")
+
+    def test_an_empty_answer_is_unreachable_not_all_closed(self):
+        nums, how = self.numbers(b"[]")
+        self.assertIsNone(nums, how)
+        self.assertIn("no open issue", how)
+
+    def test_a_malformed_answer_is_unreachable(self):
+        for body in (b'{"message": "Bad credentials"}', b"[1, 2]"):
+            nums, how = self.numbers(body)
+            self.assertIsNone(nums, (body, how))
+
+    def test_an_answer_with_content_judges(self):
+        nums, how = self.numbers(b'[{"number": 618}, {"number": 7, "pull_request": {}}]')
+        self.assertEqual({618}, nums)
+        self.assertEqual("api.github.com", how)
 
 
 def setUpModule():

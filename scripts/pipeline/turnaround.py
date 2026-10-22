@@ -243,13 +243,16 @@ def python_readers(repo, path, rev=None, specs=PY_READERS):
 
 def branch_wave(repo):
     """The wave directory of the strand's branch `<wave>/<strand>`, as
-    `strand.sh` resolves it (`branch_wave_dir`): the one `plans/<wave>-*`, else
+    `strand.sh` resolves it (`branch_wave_dir`): `plans/<wave>` itself when it
+    exists (a wave without a date suffix), the one `plans/<wave>-*`, else
     the one holding `berichte/<strand>.md`; None in doubt."""
     got = _lines(repo, "rev-parse", "--abbrev-ref", "HEAD")
     if not got or "/" not in got[0]:
         return None
     prefix, strand = got[0].split("/", 1)[0], got[0].rsplit("/", 1)[-1]
     plans = os.path.join(repo, "plans")
+    if os.path.isdir(os.path.join(plans, prefix)):
+        return prefix   # GH #1294: a wave without a date suffix is its own directory
     try:
         hits = sorted(d for d in os.listdir(plans)
                       if d.startswith(prefix + "-") and os.path.isdir(os.path.join(plans, d)))

@@ -1,4 +1,4 @@
-# `simple-agent@1.0.0`
+# `simple-agent@1.1.0`
 
 A plain agent in hive form, built the way agents are commonly built: a system prompt and
 messages, native tool calling, results as `tool_result`, and a loop until the model stops
@@ -34,7 +34,7 @@ Every rim lane carries the body slot of its own name.
 
 | lane | direction | hop | body |
 |---|---|---|---|
-| `turn` | in | `turn_id` (required), `session_id`, `channel`, `audience_set` (a JSON array of participant ids) | `messages` (meclaw turns, or `{role, content}`), optional `tools[]` |
+| `turn` | in | `turn_id` (required), `session_id`, `channel`, `audience_set` (a JSON array of participant ids) | `messages` (meclaw turns, or `{role, content}`), optional `tools[]`, optional `tool_scope: {require: true}` |
 | `tool_result` | in | the five round keys of its `calls` message: `turn_id`, `session_id`, `iter`, `channel`, `audience_set` | `{id, content, is_error?}` |
 | `close` | in | -- | `{session_id}` |
 | `in_pack` | in | -- | `system.*` slots for the brain (`identity`, `persona`, `handover`, `instructions`), e.g. an instance's standing instructions |
@@ -54,6 +54,14 @@ agent already owns (one of the six families, `memory_recall`, `history_*`,
 `affinity_propose`) is dropped, and the turn carries `client_tools_dropped` (a JSON array of
 the names) on its hop -- the menu merges rows by answerer, and `client` sorts first, so the
 caller's tool would otherwise replace the agent's own.
+
+**A turn can require a tool call.** `tool_scope: {require: true}` on a turn asks the turn's
+**first** brain call for a tool call (the `llm` cell's `tool_scope.require`: `tool_choice:
+"required"` on the chat wire, `{"type": "any"}` on the Anthropic wire). The door stamps
+`tool_require: "1"` on its `in_turn`, and the collector adds `require` to the scope of that
+one call only: the next calls of the same loop go free, so the turn still ends in text and
+`max_iter` stays the bound. Only `require` is read; the scope of the turn stays the door's
+`tools_allow`/`tools_deny`. A turn without `tool_scope` is unchanged.
 
 **A client call does not end the turn.** It runs the synchronous path of a tool call: the
 collector expects its id, the door sends it out on `calls`, and the matching `tool_result`

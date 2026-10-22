@@ -1466,9 +1466,15 @@ class TheKernHook(StoreCase):
         self.assertEqual(calls, [None, flakes.GH_RUNNER])
 
     def test_the_dispatch_carries_the_valid_quarantine(self):
+        # GH #1294: `_flake_quarantine` reads `store.now()`; the clock is the
+        # test's, never the wall's -- armed at `AT`, the entry ran out on the
+        # wall at AT + 14 days and the test turned red on its own.
         flakes.quarantine(self.db, f"{BIN}::wobbles", 4711, owner="o", cause="time", at=AT)
-        got = gate._flake_quarantine(self.db)
+        with mock.patch.object(store, "now", return_value="2026-10-09T12:00:00Z"):
+            got = gate._flake_quarantine(self.db)
         self.assertEqual([(q["test"], q["issue"]) for q in got], [(f"{BIN}::wobbles", 4711)])
+        with mock.patch.object(store, "now", return_value="2026-10-22T12:00:01Z"):
+            self.assertEqual(gate._flake_quarantine(self.db), [])
 
     def test_the_quarantine_file_reaches_the_nextest_station(self):
         ws = self.root / "ws"

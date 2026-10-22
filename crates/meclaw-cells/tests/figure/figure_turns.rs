@@ -336,6 +336,15 @@ async fn boot(
     brain: Vec<meclaw_testing::mock_http::MockResponse>,
     world: Value,
 ) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
+    boot_capped(brain, world, None).await
+}
+
+/// `boot`, the agent's loop capped at `max_iter` rounds when given.
+async fn boot_capped(
+    brain: Vec<meclaw_testing::mock_http::MockResponse>,
+    world: Value,
+    max_iter: Option<u64>,
+) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
     let stubs = Stubs {
         brain: MockOpenAI::start(brain).await,
         // One answer for every background model: an empty verdict is a close
@@ -344,6 +353,13 @@ async fn boot(
     };
     let td = tempfile::TempDir::new().expect("tempdir");
     build(&td, &stubs, &world);
+    if let Some(n) = max_iter {
+        override_params_on_disk(
+            &td.path()
+                .join("main/figure/simple-agent/collector/assemble"),
+            &json!({"max_iter": n}),
+        );
+    }
     let h = ColonyHandle::new_with_factories_at(&td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(256);
     h.spawn(Path::new("/sink"), move || {
@@ -585,6 +601,25 @@ fn phone_answer(text: &str) -> Message {
     ctx.insert("channel".into(), json!(chat));
     MessageBuilder::new(Path::new(FIGURE))
         .hop(as_map(&json!({"route": "answer", "chat_id": chat})))
+        .context(ctx)
+        .body(Body::Inline(
+            json!({"messages": [], "answer": {"text": text}}),
+        ))
+        .ttl(400)
+        .build()
+}
+
+/// `phone_answer` as the colony's collector sends it: `hop.round_id` names the
+/// round the answer left; a second answer of the same turn carries the base id
+/// with the suffix `~<ms>~<hash>` (GH #728).
+fn phone_answer_round(text: &str, round_id: &str) -> Message {
+    let chat = format!("hp:{WORLD_ID}:{FIGURE_ID}");
+    let mut ctx = Map::new();
+    ctx.insert("channel".into(), json!(chat));
+    MessageBuilder::new(Path::new(FIGURE))
+        .hop(as_map(
+            &json!({"route": "answer", "chat_id": chat, "round_id": round_id}),
+        ))
         .context(ctx)
         .body(Body::Inline(
             json!({"messages": [], "answer": {"text": text}}),
@@ -980,6 +1015,312 @@ async fn the_ai_question_is_answered_honestly_in_both_roles() {
     }
 }
 
+/// R-NPC-14 (GH #1292 FT): a world turn whose model answers with text alone
+/// gets exactly one follow-up turn that asks for an action from the world's
+/// menu; here the figure then acts, and the world turn ends as one intent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_world_turn_that_ends_in_text_alone_is_asked_once_for_an_action() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("Fire! I run to the market.", "stop"),
+            canned_tool_calls(vec![("c-walk", "walk", r#"{"at":"the market"}"#)]),
+            canned_chat_completion("I am at the market.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(
+        11,
+        "Smoke rises over the market.",
+        json!([world_tool("walk")]),
+    ))
+    .await;
+    let mut seen = Vec::new();
+    let call = next_on(&h, &mut ports, "call", &mut seen).await;
+    let c = body_of(&call)["call"].clone();
+    assert_eq!(
+        c["turn_id"], 11,
+        "the world's own id, also after the follow-up: {c}"
+    );
+    assert_eq!(c["tool"], "walk", "{c}");
+    h.send(call_result(&call, json!({"accepted": true}))).await;
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 11, "{slot}");
+    assert_eq!(slot["done"], true, "{slot}");
+    let text = slot["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("I run to the market."),
+        "the first text stays: {slot}"
+    );
+    assert!(text.contains("I am at the market."), "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        2,
+        "the world turn and its one follow-up"
+    );
+    assert_eq!(
+        count_route(&h, "/figure/world", "", "intent").await,
+        1,
+        "the text alone ended nothing on the rim"
+    );
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 3, "text, the follow-up's call, the final text");
+    let follow = wire_text(&reqs[1]);
+    assert!(
+        follow.contains("Choose one action from the world's tools"),
+        "the follow-up asks for an action: {follow}"
+    );
+    assert!(
+        tool_names(&reqs[1]).iter().any(|n| n == "walk"),
+        "the follow-up carries the turn's menu: {:?}",
+        tool_names(&reqs[1])
+    );
+}
+
+/// The follow-up is asked once: a second answer in text alone ends the world
+/// turn as today, both texts in its intent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_world_turn_is_asked_for_an_action_only_once() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("I keep watching.", "stop"),
+            canned_chat_completion("I stay where I am.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(12, "Rain.", json!([world_tool("walk")]))).await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 12, "{slot}");
+    assert_eq!(slot["done"], true, "{slot}");
+    let text = slot["text"].as_str().unwrap_or_default();
+    assert!(text.contains("I keep watching."), "{slot}");
+    assert!(text.contains("I stay where I am."), "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        2,
+        "one follow-up, no second"
+    );
+    assert_eq!(stubs.brain.recorded_requests().await.len(), 2);
+}
+
+/// A phone turn may stay silent or answer in text alone (OR-SA-43): no
+/// follow-up, its text is the reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_turn_in_text_alone_gets_no_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![canned_chat_completion("See you at eight.", "stop")],
+        json!({}),
+    )
+    .await;
+    h.send(phone_answer("Dinner at eight?")).await;
+    let mut seen = Vec::new();
+    let reply = next_on(&h, &mut ports, "turn", &mut seen).await;
+    assert_eq!(body_of(&reply)["messages"][0]["text"], "See you at eight.");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "the phone turn alone"
+    );
+    assert_eq!(stubs.brain.recorded_requests().await.len(), 1);
+}
+
+/// A world turn that hit the agent's loop cap (`partial`) has spent its
+/// budget: no follow-up, even when no call of it was taken (GH #1292 FT).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_world_turn_at_the_loop_cap_gets_no_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, _stubs, h, mut ports) = boot_capped(
+        vec![canned_tool_calls(vec![(
+            "c-fly",
+            "fly",
+            r#"{"at":"the market"}"#,
+        )])],
+        json!({}),
+        Some(1),
+    )
+    .await;
+    h.send(obs(13, "Smoke rises.", json!([world_tool("walk")])))
+        .await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 13, "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "the capped turn alone, no follow-up"
+    );
+    assert_eq!(
+        count_route(&h, "/figure/world", "", "call").await,
+        0,
+        "the call of a tool not offered never left"
+    );
+}
+
+/// A `contact` turn's text is its answer to the one in front of the figure
+/// (OR-SA.FT.1): text alone, world tools offered, no follow-up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_contact_turn_in_text_alone_gets_no_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![canned_chat_completion("Hello, neighbour.", "stop")],
+        json!({}),
+    )
+    .await;
+    h.send(rim_in(
+        "obs",
+        json!({"turn_id": 14, "kind": "contact", "text": "Kim greets you.",
+               "tools": [world_tool("walk")], "day": 1}),
+        Value::Null,
+    ))
+    .await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 14, "{slot}");
+    assert_eq!(
+        slot["text"], "Hello, neighbour.",
+        "the answer unchanged: {slot}"
+    );
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "the contact turn alone"
+    );
+    assert_eq!(stubs.brain.recorded_requests().await.len(), 1);
+}
+
+/// A text message is an action: a world turn that only calls
+/// `phone_message` is not asked for one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_world_turn_that_only_texts_gets_no_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_tool_calls(vec![(
+                "c-phone",
+                "phone_message",
+                r#"{"text":"Fire at the market!"}"#,
+            )]),
+            canned_chat_completion("I warned Robin.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(15, "Smoke rises.", json!([world_tool("walk")])))
+        .await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 15, "{slot}");
+    assert_eq!(slot["text"], "I warned Robin.", "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "the world turn alone"
+    );
+    assert_eq!(stubs.brain.recorded_requests().await.len(), 2);
+}
+
+/// A world that offers no tool of its own (the menu is `phone_message` alone)
+/// asks for nothing: text alone ends the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_world_turn_with_only_the_phone_on_the_menu_gets_no_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![canned_chat_completion("I sit and wait.", "stop")],
+        json!({}),
+    )
+    .await;
+    h.send(obs(16, "Quiet evening.", json!([]))).await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 16, "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "no follow-up without a world tool"
+    );
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 1);
+    let names = tool_names(&reqs[0]);
+    assert!(
+        names.iter().any(|n| n == "phone_message"),
+        "the menu: {names:?}"
+    );
+    assert!(!names.iter().any(|n| n == "walk"), "the menu: {names:?}");
+}
+
+/// The answer of a follow-up whose world cell lost its open turn (a replaced
+/// child) ends as the world turn's intent under the world's id, never under
+/// `<id>:act`, and asks for nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follow_up_answer_after_a_replaced_child_ends_the_world_turn() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(vec![], json!({})).await;
+    let channel = format!("world:{WORLD_ID}");
+    let mut ctx = Map::new();
+    ctx.insert("channel".into(), json!(channel));
+    h.send_from(
+        Path::new("/figure/simple-agent"),
+        MessageBuilder::new(Path::new("/figure/world"))
+            .hop(as_map(&json!({"route": "answer", "turn_id": "17:act",
+                                "channel": channel})))
+            .context(ctx)
+            .body(Body::Inline(json!({"messages": [],
+                                      "answer": {"turn_id": "17:act", "text": "I walk."}})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(
+        slot["turn_id"], "17",
+        "the world's id, not the follow-up's: {slot}"
+    );
+    assert_eq!(slot["done"], true, "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        0,
+        "no further follow-up"
+    );
+    assert_eq!(stubs.brain.recorded_requests().await.len(), 0);
+}
+
 // ═══════════════════════════════════════════════ instance params (C-T6)
 
 fn registry_of(dir: &std::path::Path) -> TemplatesRegistry {
@@ -1068,5 +1409,196 @@ fn an_instance_override_reaches_the_agent_brain() {
     assert_ne!(
         curator_brain["model"], "the-instance-model",
         "the override is per cell, not per tree: {curator_brain}"
+    );
+}
+
+/// GH #1292 FA: the follow-up of a world turn requires a tool call of its
+/// FIRST brain call (`tool_choice: "required"` on the wire); the world turn
+/// before it and the call after the tool result stay free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_follow_up_requires_a_tool_call_of_its_first_brain_call_only() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("Fire! I run to the market.", "stop"),
+            canned_tool_calls(vec![("c-walk", "walk", r#"{"at":"the market"}"#)]),
+            canned_chat_completion("I am at the market.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(
+        21,
+        "Smoke rises over the market.",
+        json!([world_tool("walk")]),
+    ))
+    .await;
+    let mut seen = Vec::new();
+    let call = next_on(&h, &mut ports, "call", &mut seen).await;
+    h.send(call_result(&call, json!({"accepted": true}))).await;
+    next_on(&h, &mut ports, "intent", &mut seen).await;
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 3, "text, the follow-up's call, the final text");
+    assert!(
+        reqs[0].body.get("tool_choice").is_none(),
+        "the world turn itself is free: {}",
+        reqs[0].body["tool_choice"]
+    );
+    assert_eq!(
+        reqs[1].body["tool_choice"], "required",
+        "the follow-up requires a call: {}",
+        reqs[1].body["tool_choice"]
+    );
+    assert!(
+        reqs[2].body.get("tool_choice").is_none(),
+        "after the result the turn may end in text: {}",
+        reqs[2].body["tool_choice"]
+    );
+}
+
+/// GH #1292 FA (OR-SA-43, R-NPC-14): a phone turn, a contact turn and an
+/// interview turn require no tool call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn phone_contact_and_interview_turns_require_no_tool_call() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("See you at eight.", "stop"),
+            canned_chat_completion("Hello, neighbour.", "stop"),
+            canned_chat_completion("I walked to the market.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(phone_answer("Dinner at eight?")).await;
+    let mut seen = Vec::new();
+    next_on(&h, &mut ports, "turn", &mut seen).await;
+    h.send(rim_in(
+        "obs",
+        json!({"turn_id": 22, "kind": "contact", "text": "Kim greets you.",
+               "tools": [world_tool("walk")], "day": 1}),
+        Value::Null,
+    ))
+    .await;
+    next_on(&h, &mut ports, "intent", &mut seen).await;
+    h.send(rim_in(
+        "interview",
+        json!({"question_id": "q-fa", "question": "What did you do today?"}),
+        Value::Null,
+    ))
+    .await;
+    next_on(&h, &mut ports, "interview", &mut seen).await;
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(
+        reqs.len(),
+        3,
+        "the phone, the contact and the interview turn"
+    );
+    for (i, r) in reqs.iter().enumerate() {
+        assert!(
+            r.body.get("tool_choice").is_none(),
+            "call {i} requires nothing: {}",
+            r.body["tool_choice"]
+        );
+    }
+}
+
+/// GH #1292 FA2 (village M3b3): a second answer of the same colony turn
+/// (`<round_id>~<ms>~<hash>`) reaches the figure once: no second phone turn,
+/// and it does not spend a reply of `phone_replies_max`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_answer_of_the_same_round_is_delivered_once() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![canned_chat_completion("See you at eight.", "stop")],
+        json!({"phone_replies_max": 1}),
+    )
+    .await;
+    // The handset is a pool (`warm`): answers sent together may reach the
+    // world in any order, so the round's first answer is through before the
+    // repeat and the next round are sent.
+    h.send(phone_answer_round("Dinner at eight?", "r-1")).await;
+    let mut seen = Vec::new();
+    next_on(&h, &mut ports, "turn", &mut seen).await;
+    h.send(phone_answer_round(
+        "Dinner at eight?",
+        "r-1~1761130000000~ab12cd34",
+    ))
+    .await;
+    h.send(phone_answer_round("Still there?", "r-2")).await;
+    let capped = next_on(&h, &mut ports, "phone_capped", &mut seen).await;
+    let slot = body_of(&capped)["phone_capped"].clone();
+    assert_eq!(
+        slot["text"], "Still there?",
+        "the repeat neither opened a turn nor was capped: {slot}"
+    );
+    assert_eq!(slot["replies"], 1, "one reply spent, not two: {slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "exactly one phone turn for the round"
+    );
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure", "phone_capped").await,
+        1,
+        "the repeat is dropped, not capped"
+    );
+    assert_eq!(stubs.brain.recorded_requests().await.len(), 1);
+}
+
+/// GH #1292 FA3: a second answer of the same round with another text is a
+/// correction, read like one on a phone: it opens no turn and spends no reply,
+/// and waits unread for the figure's next world turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_corrected_answer_of_the_same_round_waits_unread() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("See you at eight.", "stop"),
+            canned_chat_completion("I sit and wait.", "stop"),
+        ],
+        json!({"phone_replies_max": 1}),
+    )
+    .await;
+    h.send(phone_answer_round("Dinner at eight?", "r-1")).await;
+    let mut seen = Vec::new();
+    next_on(&h, &mut ports, "turn", &mut seen).await;
+    // Each answer through before the next: the handset is a pool (`warm`).
+    h.send(phone_answer_round(
+        "Sorry, dinner at nine.",
+        "r-1~1761130000000~ab12cd34",
+    ))
+    .await;
+    h.quiesce().await;
+    h.send(phone_answer_round("Still there?", "r-2")).await;
+    let capped = next_on(&h, &mut ports, "phone_capped", &mut seen).await;
+    let slot = body_of(&capped)["phone_capped"].clone();
+    assert_eq!(slot["text"], "Still there?", "{slot}");
+    assert_eq!(slot["replies"], 1, "the correction spent no reply: {slot}");
+    h.send(obs(17, "Quiet evening.", json!([]))).await;
+    next_on(&h, &mut ports, "intent", &mut seen).await;
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        2,
+        "one phone turn for the round, then the world turn"
+    );
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 2);
+    let world = wire_text(&reqs[1]);
+    assert!(
+        world.contains("- Sorry, dinner at nine.") && world.contains("- Still there?"),
+        "the correction and the capped answer wait unread: {world}"
     );
 }
