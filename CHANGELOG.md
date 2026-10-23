@@ -12,6 +12,14 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.70.4] — 2026-10-23
+
+A security patch to 0.70.3: the TLS certificate verifier and its bundled root store move to fixed versions that drop the distrusted emSign intermediates; no template or behaviour change.
+
+### Security
+
+- Dependencies: `rustls-webpki` 0.103.15 -> 0.103.16 (RUSTSEC-2026-0382) and `webpki-roots` 1.0.7 -> 1.0.10 (RUSTSEC-2026-0381), both drop the distrusted emSign intermediates; `Cargo.lock` only ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
+
 ## [0.70.3] — 2026-10-23
 
 A follow-up to 0.70.2 that lightens a member colony: the rarely called code cells of the shipped templates run cold, so a colony boots far fewer python children, plus two kit fixes.
