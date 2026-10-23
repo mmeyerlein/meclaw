@@ -1,4 +1,4 @@
-# `collector@5.4.0`
+# `collector@5.4.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -88,7 +88,7 @@ message context.
 | `in_depart` | the composite, when its curator hands a turn to the backend on `consult` ([#1247](https://github.com/mmeyerlein/meclaw/issues/1247)) | writes the `depart` row of that consult under its `consult_id` (hop, else context), keyed by the member's turn, deadline `late_after_ms` -- the row `in_calls` writes for a handed call, so the advisor's `in_advice` opens its round under the member's turn. No turn or no id: dropped with a warn line. |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
-| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)) |
+| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)); a curator's bridge (`context.curator_call` `<call>-bridge`) and an answer that may follow one (a stamped turn's answer from iteration 1 on or for `<call>-esc`) pass the store first, so a bridge is said at most once and never after its turn's answer, and a late one is dropped with a stderr line ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). The round is open while its opening row `leg-window` is there. The sentence rides beside the store op (`hop.gate` → `context.col_gate`), so a refused op never swallows the answer: it leaves with `hop.store_error`/`hop.store_operation` and without `hop.degraded`, and a bridge the store could not check is not said |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
 | `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under -- and, since `4.1.0`, `sidecar[]` beside them, the sections that answerer wants in the block a `splitter` cuts out of the answer (GH #606). Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and both halves are re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" and "One block, several offers" below |
 | `mutation_committed` | the level above, carrying the mutation door's receipt (GH #553) | the occasion to ask for the menu again. The hive's own door turns it into the internal `in_menu_tick`, which is why nothing outside ever names that lane. It replaced `./menu-clock`, a five-minute poll |
@@ -246,7 +246,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.4.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.4.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -482,7 +482,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.4.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.4.1`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -528,7 +528,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.4.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.4.1` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 

@@ -1,4 +1,4 @@
-# `figure@1.0.3`
+# `figure@1.0.4`
 
 A character in a shared world, built as an onion: inside, an unchanged
 [`simple-agent`](../simple-agent/) (one model behind a curator, a memory, its own tools, the

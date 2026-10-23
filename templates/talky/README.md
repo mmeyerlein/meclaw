@@ -1,4 +1,4 @@
-# `talky@6.10.5`
+# `talky@6.10.6`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -68,13 +68,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.4.0"}}
+{"cell": {"type": "ref", "template": "collector@5.4.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.10.5` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.10.6` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -778,7 +778,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.10.5",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.10.6",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1457,7 +1457,7 @@ below names the CELL the knob belongs to, because that is what an
 | `tools` | param | `["web_search", "web_fetch", "history_search", "history_read", "history_outline"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two search tools and not `["*"]`, plus the model's own wall, which `./curator` answers inside (since `6.1.0`, GH #893). The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
 | `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the word-for-word check of quoted fields, per section (GH #1079): `{"<section>": {"<field>": "turn" | "turn+recall" | "answer" | "source", "mode"?, "items"?}}` (`source`, GH #1225: the rows of the source the item names itself); a section named here goes through `./curator`, which drops (or marks) every item whose quote does not stand in its source and reports each on `error`. Empty checks nothing. See [Quotes are checked word for word](#the-sidecar-inline-extraction) |
 | `answer_check` | param | `[]` | splitter -- the sections whose checker gets the sent answer on the lane `answer_check`, on every answer, written section or not (GH #1255); an array or one comma-separated string. Empty sends nothing. See [The sent answer reaches its declared checker](#the-sidecar-inline-extraction) |
-| `reasoning_effort` | param | `null` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)). Unset sends no reasoning field, so the request is byte for byte the one from before the declaration; set, it reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
+| `reasoning_effort` | param | `"medium"` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)); ships `medium` like every shipped `llm` cell ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). It reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
 | `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `late_ms`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `1500`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `fold_tools` | param | `"1"` (collector default `"0"`, GH #1248, T5-11) | collector -- talky and talky-chat see their menu folded: one tool per name-prefix family with two or more members (`web{op, args}`, `history{op, args}`, `file{op, args}`), `help` answered from the collector's menu store; a lone tool (`consult_cogny`) stays as it is. The quick voice's `tool_scope` names these families (`allow` and `hint`, GH #1248). `"0"` on the ref marker's `override_params` (`collector/assemble`) is the way back (R-WM-6) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |

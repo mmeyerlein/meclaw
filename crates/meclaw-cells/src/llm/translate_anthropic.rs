@@ -99,8 +99,10 @@ pub(crate) fn build_messages_request(
 /// Not beside thinking (fix round 1, review M-3): the Messages wire refuses a
 /// forced tool call next to extended thinking with a 400, so a request whose
 /// `thinking` is on keeps its tool choice as built and the call answers
-/// `false` -- the cell says so in a `WARN` line. `thinking: {type:
-/// "disabled"}` is off.
+/// `false` -- the cell says so in a `WARN` line. Only `thinking: {type:
+/// "disabled"}` counts as off here: Sonnet 5.5's `between_tools` off
+/// ([`thinking_is_off`]) is no way past it, because Sonnet 5.5 refuses a forced
+/// tool choice in every thinking mode (GH #1300 review).
 pub(crate) fn require_tool_call(request: &mut Value) -> bool {
     let Some(body) = request.as_object_mut() else {
         return false;
@@ -190,24 +192,83 @@ pub(crate) fn sampling_fields(params: &LlmParams) -> Vec<(&'static str, Value)> 
 /// T10-05: write each field the model takes in its Messages form --
 /// `reasoning_effort` as `output_config.effort` (`none` = thinking
 /// disabled), `thinking_budget` as the `budget_tokens` of an older model,
-/// `reasoning` as the `thinking` object verbatim.
+/// `reasoning` as the `thinking` object verbatim. GH #1300: "off" takes the
+/// form the model accepts ([`thinking_off`]), and a chat-wire `reasoning`
+/// object without a `type` (`{"enabled": false}`, `{"effort": …}`) is read
+/// as the off or effort it means.
 fn place_sampling(body: &mut Map<String, Value>, params: &LlmParams) {
     for (name, value) in sampling_fields(params) {
         if !takes_param(params, name) {
             continue;
         }
+        if name == "reasoning"
+            && value.get("type").is_none()
+            && value.get("enabled") != Some(&Value::Bool(false))
+            && value.get("effort").is_none()
+        {
+            // GH #1300 review: a chat-wire object that is neither an off nor
+            // an effort (`{"enabled": true}`, `{"exclude": true}`, `{"max_tokens":
+            // N}`) has no Messages form; adaptive thinking is the field left out.
+            continue;
+        }
         let (key, value) = match name {
-            "reasoning_effort" if value == "none" => ("thinking", json!({"type": "disabled"})),
+            "reasoning_effort" if value == "none" => thinking_off(&params.model),
             "reasoning_effort" => ("output_config", json!({"effort": value})),
             "thinking_token_budget" => (
                 "thinking",
                 json!({"type": "enabled", "budget_tokens": value}),
             ),
+            "reasoning" if value.get("type").is_none() => {
+                if value.get("enabled") == Some(&Value::Bool(false)) {
+                    thinking_off(&params.model)
+                } else {
+                    ("output_config", json!({"effort": value["effort"]}))
+                }
+            }
             "reasoning" => ("thinking", value),
             other => (other, value),
         };
         body.insert(key.into(), value);
     }
+}
+
+/// GH #1300: thinking switched off, in the form the model takes. Opus 5.5,
+/// Fable 5 / 5.1 and Mythos 5.1 think always and refuse any explicit
+/// `disabled` with a 400, so the nearest they have is the lowest effort;
+/// Sonnet 5.5 refuses `disabled` and turns thinking off with `between_tools`;
+/// the older models take `disabled`.
+fn thinking_off(model: &str) -> (&'static str, Value) {
+    if model.contains("opus-5-5") || model.contains("fable") || model.contains("mythos") {
+        ("output_config", json!({"effort": "low"}))
+    } else if model.contains("sonnet-5-5") {
+        ("thinking", json!({"type": "between_tools"}))
+    } else {
+        ("thinking", json!({"type": "disabled"}))
+    }
+}
+
+/// GH #1300: whether a built `thinking` object switches thinking off --
+/// `disabled`, or Sonnet 5.5's `between_tools` ([`thinking_off`]). A provider
+/// switch reads it to keep an instance's off across the switch.
+pub(crate) fn thinking_is_off(thinking: &Value) -> bool {
+    matches!(
+        thinking.get("type").and_then(Value::as_str),
+        Some("disabled" | "between_tools")
+    )
+}
+
+/// GH #1273 (R-AW-3): an open tool round without its signed thinking came
+/// from another model, and the Messages wire refuses thinking beside it, so a
+/// `thinking` that is on leaves the request; one that is off
+/// ([`thinking_is_off`], GH #1300) stays, or Sonnet 5.5 would run this call
+/// adaptive at its own default although the instance set `none`. `true` when
+/// it removed one.
+pub(crate) fn skip_thinking_after_switch(request: &mut Value) -> bool {
+    let on = request.get("thinking").is_some_and(|t| !thinking_is_off(t));
+    if on && let Some(obj) = request.as_object_mut() {
+        obj.remove("thinking");
+    }
+    on
 }
 
 /// T10-06 (GH #890 on this wire): `implicit` is the top-level mark, the
@@ -601,7 +662,7 @@ fn tool_call_turn(i: usize, block: &Value) -> Result<Value, TranslateError> {
 mod tests {
     use super::{
         bind_replayed_thinking, binds_thinking, build_messages_request, parse_messages_response,
-        require_tool_call,
+        require_tool_call, skip_thinking_after_switch, thinking_is_off,
     };
     use crate::llm::params::LlmParams;
     use crate::llm::translate::{TranslateError, parse_openai_response};
@@ -792,6 +853,90 @@ mod tests {
             raw[k] = v;
         }
         LlmParams::parse(&raw).expect("params")
+    }
+
+    /// GH #1300: "off" in the form each 5.5 model accepts. Opus 5.5 cannot
+    /// switch thinking off (`disabled` is a 400 at every effort), so its off is
+    /// the lowest effort; Sonnet 5.5 refuses `disabled` and takes
+    /// `between_tools`; every other model keeps `disabled`. A chat-wire
+    /// `reasoning` object a registry push leaves on the cell (`{"enabled":
+    /// false}`, `{"effort": …}`) is read in the same terms instead of being
+    /// sent as a `thinking` object the Messages wire answers with a 400.
+    #[test]
+    fn off_and_chat_reasoning_objects_take_the_form_each_model_accepts() {
+        let q = [json!({"origin": "user", "type": "text", "text": "q"})];
+        let body = |extra: Value| {
+            build_messages_request(&anthropic(extra), "", &q, &[], Vec::new()).expect("request")
+        };
+        for off in [
+            json!({"reasoning_effort": "none"}),
+            json!({"reasoning": {"enabled": false}}),
+        ] {
+            let mut sonnet = off.clone();
+            sonnet["model"] = json!("claude-sonnet-5-5");
+            let b = body(sonnet);
+            assert_eq!(b["thinking"], json!({"type": "between_tools"}), "{b}");
+            assert!(b.get("output_config").is_none(), "{b}");
+
+            let mut opus = off.clone();
+            opus["model"] = json!("claude-opus-5-5");
+            let b = body(opus);
+            assert_eq!(b["output_config"], json!({"effort": "low"}), "{b}");
+            assert!(b.get("thinking").is_none(), "{b}");
+
+            for always_on in ["claude-fable-5", "claude-fable-5-1", "claude-mythos-5-1"] {
+                let mut m = off.clone();
+                m["model"] = json!(always_on);
+                let b = body(m);
+                assert_eq!(
+                    b["output_config"],
+                    json!({"effort": "low"}),
+                    "{always_on}: {b}"
+                );
+                assert!(b.get("thinking").is_none(), "{always_on}: {b}");
+            }
+
+            let b = body(off);
+            assert_eq!(b["thinking"], json!({"type": "disabled"}), "{b}");
+        }
+        for neither in [
+            json!({"enabled": true}),
+            json!({"exclude": true}),
+            json!({"max_tokens": 2048}),
+        ] {
+            let b = body(json!({"reasoning": neither, "model": "claude-sonnet-5-5"}));
+            assert!(
+                b.get("thinking").is_none() && b.get("output_config").is_none(),
+                "{neither} has no Messages form, so it is left out: {b}"
+            );
+        }
+        let b = body(json!({"reasoning": {"effort": "high", "max_tokens": 2048}}));
+        assert_eq!(b["output_config"], json!({"effort": "high"}), "{b}");
+        assert!(b.get("thinking").is_none(), "{b}");
+        for (t, off) in [
+            ("disabled", true),
+            ("between_tools", true),
+            ("adaptive", false),
+            ("enabled", false),
+        ] {
+            assert_eq!(thinking_is_off(&json!({"type": t})), off, "{t}");
+            let mut r = json!({"thinking": {"type": t}});
+            assert_eq!(skip_thinking_after_switch(&mut r), !off, "{t}");
+            assert_eq!(r.get("thinking").is_some(), off, "after a switch, {t}: {r}");
+        }
+        let b = body(json!({"reasoning_effort": "none", "model": "claude-sonnet-5-5"}));
+        let mut r = b.clone();
+        assert!(
+            !skip_thinking_after_switch(&mut r)
+                && r["thinking"] == json!({"type": "between_tools"}),
+            "an instance's `none` on Sonnet 5.5 survives a provider switch: {r}"
+        );
+        let b = body(json!({"reasoning": {"effort": "medium"}}));
+        assert_eq!(b["output_config"], json!({"effort": "medium"}), "{b}");
+        assert!(b.get("thinking").is_none(), "{b}");
+        let b = body(json!({"reasoning_effort": "medium", "model": "claude-sonnet-5-5"}));
+        assert_eq!(b["output_config"], json!({"effort": "medium"}), "{b}");
+        assert!(b.get("thinking").is_none(), "{b}");
     }
 
     /// T10-05 (GH #1241): `reasoning_effort` becomes `output_config.effort`

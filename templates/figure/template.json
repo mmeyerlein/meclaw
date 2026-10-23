@@ -1,8 +1,8 @@
 {
   "name": "figure",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": {
-    "purpose": "A character in a shared world: a world adapter and a handset around a referenced `simple-agent`. The world's tools are client tools of each turn, the handset speaks to a colony the way a human channel does, and the role (`human-sim` or `npc`) sets the agent's frame. Since 1.0.1 (#1292) the template pins `simple-agent@1.0.1`; it is the third digit. Since 1.0.2 (#1294) the template pins `simple-agent@1.1.1`; it is the third digit. Since 1.0.3 (#1298) the template pins `simple-agent@1.1.2`; it is the third digit.",
+    "purpose": "A character in a shared world: a world adapter and a handset around a referenced `simple-agent`. The world's tools are client tools of each turn, the handset speaks to a colony the way a human channel does, and the role (`human-sim` or `npc`) sets the agent's frame. Since 1.0.1 (#1292) the template pins `simple-agent@1.0.1`; it is the third digit. Since 1.0.2 (#1294) the template pins `simple-agent@1.1.1`; it is the third digit. Since 1.0.3 (#1298) the template pins `simple-agent@1.1.2`; it is the third digit. Since 1.0.4 (#1300) the template pins `simple-agent@1.1.3`; it is the third digit.",
     "use_when": "One instance per character, in a world colony or a player's own colony alike.",
     "not_in_scope": "No model, memory or grant of its own (all the agent's), no world knowledge, no deadline of its own.",
     "examples": [

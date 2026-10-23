@@ -288,8 +288,13 @@ fn gh1037_every_reachable_row_states_its_input_bounds_and_cache_price() {
 }
 
 /// KD diagnosis (fix 2a): the consolidation cells think on a budget of their
-/// own, a cell param -- not on an effort the provider maps to whatever it
-/// likes. The closer spent 6.6k of 8k on thinking at day 0.
+/// own, a cell param. The closer spent 6.6k of 8k on thinking at day 0.
+/// GH #1300 (owner ruling: every shipped llm cell at effort medium): the
+/// effort travels beside the budget -- on the chat wire as one nested
+/// `{"effort": "medium", "max_tokens": <budget>}` (GH #854), on a native
+/// Messages row as `output_config.effort` (the budget is not in such a row's
+/// `supported_params`). No verbatim `reasoning` object anywhere: it would win
+/// whole over both.
 #[test]
 fn gh1037_the_consolidation_cells_think_on_a_budget() {
     let root = templates_root().join("memory-hive");
@@ -303,9 +308,13 @@ fn gh1037_the_consolidation_cells_think_on_a_budget() {
             p["thinking_budget"], want,
             "memory-hive/{cell}: thinking_budget"
         );
+        assert_eq!(
+            p["reasoning_effort"], "medium",
+            "memory-hive/{cell}: the effort every shipped llm cell runs at, beside the budget"
+        );
         assert!(
-            p["provider_extra"].get("reasoning").is_none() && p.get("reasoning_effort").is_none(),
-            "memory-hive/{cell}: no effort beside the budget (provider_extra wins whole)"
+            p["provider_extra"].get("reasoning").is_none() && p.get("reasoning").is_none(),
+            "memory-hive/{cell}: no verbatim reasoning object (it wins whole over effort and budget)"
         );
     }
 }

@@ -878,7 +878,7 @@ fn gh1273_a_member_grown_from_a_derived_class_is_granted() {
     // Whatever else a renderer raises on the grow path is a refusal with an
     // error_code, never a traceback without an answer.
     let broken = with_screen(
-        "display@2.11.0",
+        "display@2.11.1",
         json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
                "template": "member", "credential": "not-an-object"}),
     );

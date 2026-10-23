@@ -212,6 +212,12 @@ fn quiet(name: &str, to: &str, id: &str) -> Value {
 /// A code cell that appends every message it is handed to one file per lane, so
 /// a wait can be a wait for something that HAD to arrive (GH #587: one
 /// `O_APPEND` write, never a read-modify-write).
+///
+/// It runs up to four scripts at once (the code cell's default), so the ORDER
+/// of the lines in one lane file is not the order the messages were sent in:
+/// two receipts handed over back to back race each other to the append, and
+/// under the gate's full load that race was lost (0.70.2 and 0.70.6). A lane
+/// is therefore read as what its lines say, never by their position.
 fn flag_cell(dir: &str) -> Value {
     json!({
         "cell": {"type": "code"},
@@ -425,7 +431,7 @@ fn members_manifest(fence: &std::path::Path) -> Value {
                 json!({"transfer": {"base_path": fence.to_str().unwrap()}}),
             );
         }
-        nodes.push(json!({"name": name, "template": "member@2.6.8",
+        nodes.push(json!({"name": name, "template": "member@2.6.9",
                           "override_params": Value::Object(over)}));
         // The two members get the lane each of them needs and no more: one run
         // directory is named per export, and two members exporting into it at
@@ -925,51 +931,71 @@ async fn a_grown_memory_arrives_in_an_empty_hive_row_for_row() {
     std::fs::create_dir_all(&fence).unwrap();
     let h = grown(&td, &flags, &fence).await;
 
-    // ONE message in. The receipt is the whole directory's, not one part's.
-    poke(
-        &h,
-        DST,
-        "in_import",
-        vec![
-            ("import_hive", json!("memory-hive")),
-            ("import_from", json!(RUN)),
-        ],
-    )
-    .await;
-    let receipts = wait_lane(&flags, "dump", 1, &h).await;
+    // ONE message in, and the same directory again right behind it, before the
+    // first one is acknowledged. The two apply in the order they were sent (one
+    // porter slot, one store connection, one IMMEDIATE transaction each), so the
+    // later one finds every key already present. The lane already carries the
+    // source's own seed receipt from `grown`, and the recorder does not keep
+    // the order of the two (see `flag_cell`): the receipts are read as what they
+    // say, never by their line.
+    let seed_receipts = lane_entries(&lane_file(&flags, "dump"));
+    for _ in 0..2 {
+        poke(
+            &h,
+            DST,
+            "in_import",
+            vec![
+                ("import_hive", json!("memory-hive")),
+                ("import_from", json!(RUN)),
+            ],
+        )
+        .await;
+    }
+    let all = wait_lane(&flags, "dump", 3, &h).await;
     assert_eq!(
-        receipts.len(),
-        1,
+        all.len(),
+        3,
         "the import leg is ONE message now: sixteen receipts would mean sixteen calls, \
-         and sixteen calls cannot leave a broken document unapplied: {receipts:?}"
+         and sixteen calls cannot leave a broken document unapplied: {all:?}"
     );
-    let hop = &receipts[0]["hop"];
+    // The source's seed receipt was on the lane before either import; what is
+    // left are the two imports, in whatever order the recorder wrote them.
+    let mut imports: Vec<Value> = all.iter().map(|r| r["hop"].clone()).collect();
+    for seed in &seed_receipts {
+        let at = imports
+            .iter()
+            .position(|r| *r == seed["hop"])
+            .unwrap_or_else(|| panic!("the seed receipt left the lane: {all:?}"));
+        imports.remove(at);
+    }
+    assert_eq!(
+        (seed_receipts.len(), imports.len()),
+        (1, 2),
+        "the lane carries the seed receipt and one receipt per import: {all:?}"
+    );
+    let rows = |r: &Value| r["rows_written"].as_i64().unwrap_or(-1);
+    let wrote: Vec<&Value> = imports.iter().filter(|r| rows(r) > 0).collect();
+    let nothing: Vec<&Value> = imports.iter().filter(|r| rows(r) == 0).collect();
+    assert_eq!(
+        (wrote.len(), nothing.len()),
+        (1, 1),
+        "the same document applied twice must write nothing the second time: \
+         exactly one import writes, the other finds every key already there: {imports:?}"
+    );
+    let hop = wrote[0];
     assert_eq!(hop["export_final"], "1");
     assert_eq!(
         hop["export_of"], 16,
         "the receipt counts the tables of the walk: {hop}"
     );
     assert!(
-        hop["rows_written"].as_i64().unwrap_or(0) >= 5,
+        rows(hop) >= 5,
         "three episodes and two facts at the very least: {hop}"
     );
-
     // The same directory again: nothing new, and no refusal either.
-    poke(
-        &h,
-        DST,
-        "in_import",
-        vec![
-            ("import_hive", json!("memory-hive")),
-            ("import_from", json!(RUN)),
-        ],
-    )
-    .await;
-    let again = wait_lane(&flags, "dump", 3, &h).await;
     assert_eq!(
-        again[2]["hop"]["rows_written"], 0,
-        "the same document applied twice must write nothing the second time: {:?}",
-        again[2]
+        hop["export_final"], nothing[0]["export_final"],
+        "both imports are whole documents: {imports:?}"
     );
     assert!(
         !lane_file(&flags, "reject").exists(),

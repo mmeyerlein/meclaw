@@ -14,11 +14,14 @@
     "system_order": ["instructions"],
     "provider_extra": {"response_format": {"type": "json_object"}},
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
-    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "reasoning_effort": "medium"
   },
   "contract": {
     "version": "1.0.0",
     "settings": {
+      "reasoning_effort": {"type": "string", "secret": false, "default": "medium",
+                           "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it."},
       "model": {"type": "string", "secret": false, "default": "",
                 "description": "Provider model id of the screen's judge. Empty as shipped: a screen without a judge is judged by the floor alone. Set at instantiation (`DISPLAY_JUDGE_MODEL`) or per override_params."},
       "api_key": {"type": "string", "secret": true, "default": "",

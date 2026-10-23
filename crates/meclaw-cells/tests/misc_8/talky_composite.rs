@@ -759,26 +759,57 @@ async fn a_tool_round_without_its_call_is_answered_by_the_brain() {
     });
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
+    let mark = h.log_mark().await;
     h.send(turn("will it rain in hamburg tomorrow?")).await;
     let (answer, seen) =
         recv_text(&mut sink_rx, "The brain looked: rain in Hamburg tomorrow.").await;
     let answer = answer.unwrap_or_else(|| panic!("no brain answer at the reply exit: {seen:?}"));
     assert_eq!(hop_of(&answer, "route"), "answer");
+    // GH #1300 (OR-EF-22): the bridge runs beside the required call, so the
+    // brain's answer may reach the reply exit first -- then the bridge falls
+    // in the collector. Read on to quiescence: whatever the order, a bridge
+    // is said at most once, never after the answer, and the required call's
+    // prose never.
+    h.quiesce().await;
+    let mut after = Vec::new();
+    while let Ok(m) = sink_rx.try_recv() {
+        after.push(answer_text(&m));
+    }
     let said: Vec<&String> = seen
         .iter()
         .filter(|t| QUICK.contains(&t.as_str()))
         .collect();
-    assert_eq!(
-        said.len(),
-        1,
-        "the bridge is said once and the required call's prose never: {seen:?}"
+    assert!(
+        !after.iter().any(|t| QUICK.contains(&t.as_str())),
+        "nothing of the quick voice after the answer: {seen:?} then {after:?}"
     );
+    assert!(
+        said.len() <= 1,
+        "the bridge is said at most once and the required call's prose never: {seen:?}"
+    );
+    // The answer of this round took the ordered road (the collector's
+    // `answer-gate`): the path and the escalated call reach the collector.
+    let gated = h
+        .log_since(
+            &mark,
+            meclaw_colony::api_dto::MessageLogFilter {
+                from_path_prefix: Some("/talky/collector/assemble".into()),
+                to_path_prefix: Some("/talky/collector/window".into()),
+                limit: 1000,
+                ..Default::default()
+            },
+        )
+        .await
+        .into_iter()
+        .filter(|r| r.headers_json.contains("\"answer-gate\""))
+        .count();
+    assert_eq!(gated, 1, "the brain's answer left through the store once");
 
     let quick_reqs = quick.recorded_requests().await;
     // The copied quick cell carries no tool menu, so its `llm` cell drops the
     // requirement on the wire (its own pin); the curator's road is the same.
     assert_eq!(quick_reqs.len(), 2, "the bridge and the required call");
-    // WHICH of the two was said (GH #1260): the stub answers in arrival
+    // WHICH one was said, if one was (GH #1260): the stub answers in arrival
     // order, so `QUICK[i]` answers `quick_reqs[i]`, and the bridge's request is
     // the one that tells the model to say only that it is looking it up. The
     // sentence at the reply exit is that request's answer -- a swallowed bridge
@@ -796,10 +827,9 @@ async fn a_tool_round_without_its_call_is_answered_by_the_brain() {
         "exactly one quick request is the bridge: {:?}",
         [wire(0), wire(1)]
     );
-    assert_eq!(
-        said,
-        vec![QUICK[bridges[0]]],
-        "the sentence said is the bridge's answer, not the required call's prose"
+    assert!(
+        said.iter().all(|t| t.as_str() == QUICK[bridges[0]]),
+        "the sentence said is the bridge's answer, not the required call's prose: {said:?}"
     );
     let brain_reqs = brain.recorded_requests().await;
     assert_eq!(brain_reqs.len(), 1, "the round went to the brain once");

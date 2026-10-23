@@ -1,4 +1,4 @@
-# `llm-registry@2.12.2`
+# `llm-registry@2.12.3`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -741,12 +741,12 @@ break every other.
 on, nothing more: how a deployment runs a model (reasoning effort, token budget, the lines a model
 needs) is its own decision, and the form is in *The model package* above. Two exceptions. A row
 whose endpoint refuses to switch reasoning off (`openai/gpt-oss-120b`, `google/gemini-3.8-flash`)
-sends the measured low effort as the `reasoning` object `{"effort": "low"}`, not as the
-`reasoning_effort` shorthand: a push resets every other key to its birth value, and a cell born
-with reasoning switched off (talky's `quick`, builder's `compose`) would otherwise keep the switch,
-which outranks the shorthand and which the endpoint answers with HTTP 400. The object outranks a
-`reasoning_effort` the cell sets itself as well (a brain born with an effort runs on such a row at the
-row's low effort). And
+sends the effort as the `reasoning` object `{"effort": "medium"}` (measured at `low`; `medium`
+since [#1300](https://github.com/mmeyerlein/meclaw/issues/1300), the effort every shipped cell runs
+at), not as the `reasoning_effort` shorthand: a push resets every other key to its birth value, and
+a cell born with reasoning switched off (talky's `quick`) would otherwise keep the switch, which
+outranks the shorthand and which the endpoint answers with HTTP 400. The object outranks a
+`reasoning_effort` the cell sets itself as well (a brain runs on such a row at the row's effort). And
 `openai/gpt-oss-120b` was measured on one pinned host, so its package also sends `provider_extra`
 `{"provider": {"order": ["crusoe/bf16"], "allow_fallbacks": false}}`, the gateway's provider
 order with the fallback forbidden (a fallback would serve a slower host under the measured time).

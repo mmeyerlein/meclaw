@@ -2708,10 +2708,8 @@ impl LlmCell {
                             // thinking at the provider, never the turn.
                             translate_anthropic::bind_replayed_thinking(&mut r);
                         } else if !open_round.is_empty()
-                            && r.get("thinking").is_some_and(|t| t["type"] != "disabled")
-                            && let Some(obj) = r.as_object_mut()
+                            && translate_anthropic::skip_thinking_after_switch(&mut r)
                         {
-                            obj.remove("thinking");
                             // GH #1273 (R-AW-3): an open tool round without
                             // its signed thinking came from another model
                             // (a provider switch); the Messages wire refuses

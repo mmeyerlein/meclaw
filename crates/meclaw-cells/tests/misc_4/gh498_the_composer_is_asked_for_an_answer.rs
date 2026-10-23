@@ -19,13 +19,14 @@
 //! `no_manifest_in_answer` — paid for, and nothing delivered, which is the one
 //! ending the round budget exists against (GH #485).
 //!
-//! This is the composer's setting rather than the model's fault. This is the one
-//! `llm` cell in the system whose whole product is a JSON document, and there is
-//! no lane that reads `message.reasoning` — nor should there be: a manifest is
-//! an answer, not a train of thought. The `llm` cell already carries the knob
-//! (`params.reasoning`, passed through verbatim since GH #124) and its default
-//! is "do not send the field", which is exactly what hands the decision to the
-//! provider.
+//! This is the composer's setting rather than the model's fault: an unsent field
+//! hands the decision to the provider. GH #498 answered with `reasoning` OFF.
+//! GH #1300 (owner ruling: every shipped llm cell, every Anthropic model, effort
+//! medium; the composer runs on Sonnet 5.5 native) replaces that with a declared
+//! `reasoning_effort: "medium"`. The empty answer above came from the old small
+//! cap; since GH #1097 the ceiling is the catalogue's `max_output`, which a
+//! medium deliberation does not exhaust. What stays from GH #498 is that the
+//! composer NAMES its effort instead of leaving it to the provider.
 //!
 //! A drift lock in the sense of `docs/development-rules.md` § 2d: it asserts the
 //! setting AND that the cell's description still says why, because a param
@@ -41,21 +42,31 @@ fn compose() -> Value {
         .expect("parses")
 }
 
+/// GH #1300 (owner ruling: every shipped llm cell at effort medium): the
+/// composer still names what it wants of a reasoning model rather than leaving
+/// it to the provider's default -- now `reasoning_effort: "medium"`, under a
+/// ceiling that is the catalogue's `max_output` since GH #1097, so a medium
+/// deliberation no longer exhausts the budget the measurement above ran out of.
+/// The OFF object is gone: it outranked the declared effort, and on the
+/// Anthropic wire it was no form the Messages API reads.
 #[test]
 fn the_composer_declares_what_it_wants_of_a_reasoning_model() {
     let cfg = compose();
-    let reasoning = &cfg["params"]["reasoning"];
+    assert_eq!(
+        cfg["params"]["reasoning_effort"], "medium",
+        "`compose` must name its effort, or a reasoning model is called at its \
+         provider's default: {}",
+        cfg["params"]
+    );
     assert!(
-        !reasoning.is_null(),
-        "`compose` sends no `reasoning` block, so a reasoning model is called at \
-         its provider's default and may answer with reasoning and no content -- \
-         which this hive reads as `no_manifest_in_answer`: {}",
+        cfg["params"].get("reasoning").is_none(),
+        "a `reasoning` object outranks the declared effort: {}",
         cfg["params"]
     );
     assert_eq!(
-        reasoning["enabled"], false,
-        "the composer's product is a JSON document and nothing here reads \
-         `message.reasoning`: {reasoning}"
+        cfg["params"]["max_tokens"], 0,
+        "the ceiling is the catalogue's max_output (GH #1097), not a cap a medium \
+         deliberation could exhaust"
     );
 }
 

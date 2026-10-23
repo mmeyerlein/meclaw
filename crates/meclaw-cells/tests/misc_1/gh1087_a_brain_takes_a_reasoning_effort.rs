@@ -13,11 +13,12 @@
 //!
 //! 1. the door admits `reasoning_effort` on both brains of the shipped
 //!    assistant (the refusal the issue quotes, turned around);
-//! 2. the declaration ships UNSET (`null`, the form `memory-hive/recall`
-//!    ships its derived bounds in) and no ref marker of the assistant sets it;
-//! 3. on the wire: the brain's own params, declared as shipped, produce a
-//!    request byte-identical to the same params without the key, and a set
-//!    `low` adds exactly `"reasoning": {"effort": "low"}` and nothing else.
+//! 2. the declaration ships `medium` since GH #1300 (until then UNSET, `null`:
+//!    the owner's rule puts every shipped llm cell at medium) and no ref marker
+//!    of the assistant sets it;
+//! 3. on the wire: the brain's own params, declared as shipped, send
+//!    `"reasoning": {"effort": "medium"}`, and a set `low` changes exactly that
+//!    value and nothing else.
 
 use meclaw_cells::llm::LlmCell;
 use meclaw_cells::llm::params::LlmParams;
@@ -102,21 +103,17 @@ fn the_door_admits_a_reasoning_effort_on_both_brains_of_an_assistant() {
 }
 
 #[test]
-fn the_brain_declares_the_effort_and_ships_it_unset() {
+fn the_brain_declares_the_effort_and_ships_it_medium() {
     let brain = read_json("templates/talky/brain/config.json");
     let params = brain["params"].as_object().expect("brain params");
-    assert!(
-        params.contains_key("reasoning_effort"),
-        "talky/brain must declare reasoning_effort under params"
-    );
-    assert!(
-        params["reasoning_effort"].is_null(),
-        "it ships unset (null), got {}",
-        params["reasoning_effort"]
+    assert_eq!(
+        params.get("reasoning_effort"),
+        Some(&json!("medium")),
+        "talky/brain must declare reasoning_effort under params and ship medium (GH #1300)"
     );
     let setting = &brain["contract"]["settings"]["reasoning_effort"];
     assert_eq!(setting["type"], "string", "declared as a string setting");
-    assert!(setting["default"].is_null(), "its default is unset");
+    assert_eq!(setting["default"], "medium", "its default is medium");
     assert_eq!(setting["secret"], false);
 
     // No keeper of the assistant sets it: unset is what a generation gets.
@@ -200,33 +197,23 @@ async fn captured_body(extra: Value) -> (Value, Vec<u8>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unset_effort_sends_the_request_byte_for_byte() {
-    let shipped = read_json("templates/talky/brain/config.json");
-    assert!(
-        shipped["params"]
-            .as_object()
-            .is_some_and(|p| p.contains_key("reasoning_effort")),
-        "the comparison is vacuous unless the brain declares the key"
-    );
-    let (declared, declared_raw) = captured_body(json!({})).await;
-    let (_, without_raw) = captured_body(json!({"reasoning_effort": null})).await;
-    assert!(
-        declared.get("reasoning").is_none(),
-        "unset: the provider sees no reasoning field: {declared}"
-    );
+async fn the_shipped_effort_reaches_the_provider_as_medium() {
+    let (shipped, _) = captured_body(json!({})).await;
     assert_eq!(
-        String::from_utf8_lossy(&declared_raw),
-        String::from_utf8_lossy(&without_raw),
-        "the declared-but-unset brain sends the same bytes as a brain without the key"
+        shipped["reasoning"],
+        json!({"effort": "medium"}),
+        "the shipped brain deliberates at medium: {shipped}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_low_effort_reaches_the_provider_and_nothing_else_moves() {
-    let (unset, _) = captured_body(json!({})).await;
+    let (shipped, _) = captured_body(json!({})).await;
     let (low, _) = captured_body(json!({"reasoning_effort": "low"})).await;
     assert_eq!(low["reasoning"], json!({"effort": "low"}), "{low}");
     let mut rest = low.clone();
     rest.as_object_mut().unwrap().remove("reasoning");
-    assert_eq!(rest, unset, "the effort is the only difference on the wire");
+    let mut base = shipped.clone();
+    base.as_object_mut().unwrap().remove("reasoning");
+    assert_eq!(rest, base, "the effort is the only difference on the wire");
 }

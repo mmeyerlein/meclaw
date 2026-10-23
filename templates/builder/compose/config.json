@@ -6,14 +6,11 @@
   "params": {
     "provider": "openai",
     "model": "${MODEL_BUILDER:-}",
-    "requirement": "Turns a briefed request into a draft manifest: strict JSON in a closed vocabulary, following long instructions and tool results exactly. It needs precise instruction following and reliable structured output of up to many thousands of tokens, and no deliberate reasoning step. An operator waits on it, so an answer within a few minutes is required, the price per call should stay moderate, and a model served locally is welcome.",
+    "requirement": "Turns a briefed request into a draft manifest: strict JSON in a closed vocabulary, following long instructions and tool results exactly. It needs precise instruction following and reliable structured output of up to many thousands of tokens, after a medium deliberation (GH #1300). An operator waits on it, so an answer within a few minutes is required, the price per call should stay moderate, and a model served locally is welcome.",
     "api_key": "",
     "credential_grant_id": "",
     "base_url": "${LOCAL_LLM_BASE_URL:-}",
     "temperature": 0,
-    "reasoning": {
-      "enabled": false
-    },
     "max_tokens": 0,
     "external_timeout_ms": 3058000,
     "system_order": [
@@ -21,7 +18,8 @@
       "tools"
     ],
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
-    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "reasoning_effort": "medium"
   },
   "contract": {
     "version": "1.0.0",
@@ -43,6 +41,12 @@
         "secret": false,
         "default": "openai/gpt-6-sol",
         "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": "medium",
+        "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it."
       }
     },
     "emits": {
@@ -161,6 +165,6 @@
   "description": {
     "purpose": "The one model call of the design lane: it turns a briefed request into a draft manifest. `provider` names the WIRE PROTOCOL, not the vendor, so any OpenAI-shaped endpoint serves -- including the stub the scenario suite starts, which is why the composed class is provable at zero cost. The system tree has a third slot since GH #485: `budget`, rendered fresh by the fan-in on every re-briefing rather than parked with the instructions -- it says which round this is, how many are left, and that the last one is offered no tools at all. It is deliberately NOT in `system_order`: `concat_system_prompt` appends the slots that are not named there after the ones that are, so the budget lands LAST in the prompt -- which is where a rule about THIS round belongs -- and the declared order stays the two slots every other shipped llm cell declares.",
     "use_when": "Behind `brief`, on hop.route == 'compose'.",
-    "not_in_scope": "No parsing and no trust: whatever it answers is read by `normalise` before it becomes a manifest. And no boot-time demand: all three variables carry an EMPTY default. This hive travels inside the OS shell, and a shell that could not be grown without a model credential would make the FAST LANE -- which asks no model at all -- conditional on one. A colony with no composer configured still rewires an edge; what it cannot do fails at call time, loudly, and not at boot. The completion budget is the model's catalogue `max_output` (`max_tokens` 0, GH #1097 / R-HK-13), and it is a CEILING rather than a spend: a completion is billed by what it produces, so the only thing the cap buys is room to answer in ONE turn -- and what this cell answers with is a whole manifest, up to `normalise`'s declaration cap, which for a rendered level is thousands of tokens of JSON. A cap that is too small does not save the call, it truncates it: `finish_reason: length` on a half-written JSON object is read by `normalise` as `no_manifest_in_answer`, which is a round paid for and nothing delivered. The one thing that DID make a large ceiling expensive was deliberation, because a reasoning model spends the ceiling first and bills all of it -- measured on a design build's writing round: the entire budget spent on reasoning, `finish_reason: length`, content empty, 0.39 USD. With `reasoning` declared off (below) that spend has no producer left, so the ceiling now costs nothing it does not deliver. And no deliberation for its own sake (GH #498): `reasoning` is declared OFF, because this is the one llm cell whose whole product is a JSON document and nothing in this hive reads `message.reasoning`. Left unsent, the field hands the decision to the provider's default -- measured against a hosted Sonnet-class model on a design build's writing round, that default returned 967 completion tokens of which 965 were reasoning and a content of \"\", which `normalise` reads as `no_manifest_in_answer`: paid for, nothing delivered. The same call with the block declared answered with the manifest in 744 tokens. A build that wants the deliberation turns it back on where every other tuning decision in this hive is made -- `override_params` addressing this cell and this param."
+    "not_in_scope": "No parsing and no trust: whatever it answers is read by `normalise` before it becomes a manifest. And no boot-time demand: all three variables carry an EMPTY default. This hive travels inside the OS shell, and a shell that could not be grown without a model credential would make the FAST LANE -- which asks no model at all -- conditional on one. A colony with no composer configured still rewires an edge; what it cannot do fails at call time, loudly, and not at boot. The completion budget is the model's catalogue `max_output` (`max_tokens` 0, GH #1097 / R-HK-13), and it is a CEILING rather than a spend: a completion is billed by what it produces, so the only thing the cap buys is room to answer in ONE turn -- and what this cell answers with is a whole manifest, up to `normalise`'s declaration cap, which for a rendered level is thousands of tokens of JSON. A cap that is too small does not save the call, it truncates it: `finish_reason: length` on a half-written JSON object is read by `normalise` as `no_manifest_in_answer`, which is a round paid for and nothing delivered. The one thing that DID make a large ceiling expensive was deliberation, because a reasoning model spends the ceiling first and bills all of it -- measured on a design build's writing round: the entire budget spent on reasoning, `finish_reason: length`, content empty, 0.39 USD. Since GH #1097 the ceiling is the catalogue's `max_output`, so a medium deliberation (below) spends its tokens under a ceiling it cannot exhaust. Deliberation runs at `medium` since GH #1300 (owner ruling: every shipped llm cell, every Anthropic model, effort medium), declared as `reasoning_effort`. From GH #498 until then `reasoning` was declared OFF, because an unsent field handed the decision to the provider's default -- measured against a hosted Sonnet-class model on a design build's writing round, that default returned 967 completion tokens of which 965 were reasoning and a content of \"\" under the old small cap; on the Anthropic wire the OFF object was not a form the Messages API reads, and the cell ran at the model's own default (high on Sonnet 5.5). A build that wants another depth sets it where every other tuning decision in this hive is made -- `override_params` addressing this cell and `reasoning_effort` (`none` switches it off in the form the model takes)."
   }
 }

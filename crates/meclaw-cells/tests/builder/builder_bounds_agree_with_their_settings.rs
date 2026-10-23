@@ -164,12 +164,20 @@ fn the_completion_ceiling_the_description_names_is_the_one_that_ships() {
         "the description names a completion budget the cell does not ship, so \
          the argument in it is about a different cell: {prose}"
     );
-    // The mechanism half of the drift lock: a ceiling is only free while nothing
-    // deliberates into it, which is the sentence the number is argued on.
+    // The mechanism half of the drift lock (GH #1300, owner ruling: every
+    // shipped llm cell at effort medium): the composer deliberates at medium,
+    // and the description argues why that is safe -- the ceiling is the
+    // catalogue's `max_output`, which a medium deliberation cannot exhaust.
     assert_eq!(
-        compose["params"]["reasoning"]["enabled"], false,
-        "the description argues the ceiling is free because nothing spends it \
-         on reasoning -- turn that on and the argument is gone: {}",
+        compose["params"]["reasoning_effort"], "medium",
+        "the composer runs at the effort every shipped llm cell runs at: {}",
         compose["params"]
+    );
+    assert!(
+        prose.contains(
+            "a medium deliberation (below) spends its tokens under a ceiling it cannot exhaust"
+        ),
+        "the description must say why a medium deliberation leaves the ceiling \
+         room for the manifest: {prose}"
     );
 }

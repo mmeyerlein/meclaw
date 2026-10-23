@@ -113,7 +113,8 @@
               "col_phase": "hop.phase",
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
-              "iter": "hop.iter"
+              "iter": "hop.iter",
+              "col_gate": "hop.gate"
             }
           }
         },
@@ -129,7 +130,8 @@
           "modifier": {
             "delete_context": [
               "col_phase",
-              "store_origin"
+              "store_origin",
+              "col_gate"
             ]
           }
         }

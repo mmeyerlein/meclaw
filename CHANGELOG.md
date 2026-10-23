@@ -12,6 +12,26 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+### Security
+
+- Dependencies: `tokio` 1.52.3 -> 1.53.3 (RUSTSEC-2026-0386, unsound `AsyncFd` constructors); `Cargo.lock` only ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)) (shipped in v0.70.6).
+
+### Fixed
+
+- `collector`: a tool round's bridge sentence is said at most once and never after its turn's answer. The bridge runs beside the required call, so the brain's answer of an escalated round could reach the reply exit first; the bridge and an answer that may follow it now meet in the collector's store, a bridge that arrives after the answer is dropped and logged, and a store refusal on that road never swallows the answer ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)) (shipped in v0.70.6).
+- Tests: the lock that every shipped `llm` cell declares `reasoning_effort` judges the cells the tree ships, at least one, instead of a fixed floor of 20 that the public tree (18 cells) never reached; the release station `export-tree-tests` keeps it selected ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)) (shipped in v0.70.6).
+- Tests: the `memory-hive` round trip (#261) no longer reads import receipts by their line on the shared `dump` lane. Its first wait was answered by the source's own seed receipt, and two receipts handed to the recorder back to back could land in either order under load, so the second import read as `rows_written = 30`. The store applied both in order and the second wrote nothing; the test now reads the receipts by what they say (the seed, one import that wrote rows, one that wrote none), in any order ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)) (shipped in v0.70.6).
+- **Template versions (#1300):** third digit, `collector@5.4.1`.
+
+## [0.70.6] — 2026-10-23
+
+A follow-up to 0.70.5 for reasoning effort: every shipped `llm` cell declares `reasoning_effort` with the default `medium`, and the native Anthropic lane sends "off" in the form each model accepts.
+
+### Fixed
+
+- Templates, llm: every shipped `llm` cell (all but the `decisions` lane) now declares `reasoning_effort` with the default `"medium"` under `params` and `contract.settings`. Cells that left it undeclared ran at the provider's own default (`high` on Sonnet 5.5: cogny's and the curator's summarizer, builder's composer), and an instance could not set it, because the mutation door refuses an `override_params` key the cell does not carry. `memory-hive`'s `judge` (was `high`) and `dialectic` move their effort from a verbatim `provider_extra.reasoning` overlay, which the Anthropic Messages wire refuses, to the flat param; builder's `compose` drops its `reasoning: {"enabled": false}` object, which outranked the effort. On the native Anthropic lane `reasoning_effort: "none"` now takes the off the model accepts (`thinking: {type: between_tools}` on Sonnet 5.5, the lowest effort on Opus 5.5, Fable 5/5.1 and Mythos 5.1, `disabled` on the older models), that off survives a provider switch in an open tool round, and a chat-wire `reasoning` object without a `type` is read as the off or effort it means, or left out when it is neither, instead of being sent as a `thinking` object. The registry packages of `google/gemini-3.8-flash` and `openai/gpt-oss-120b` send `{"effort": "medium"}` instead of `low` ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)).
+- **Template versions (#1300):** third digit, `argus@1.4.3`, `assistant@3.8.9`, `builder@1.28.6`, `builder-librarian@2.2.85`, `coder-pipeline@3.0.4`, `cogny@5.12.6`, `curator@1.15.3`, `display@2.11.1`, `egon@2.2.4`, `file-space@1.5.3`, `llm-registry@2.12.3`, `memory-hive@3.16.9`, `research-assistant@2.3.4`, `simple-agent@1.1.3`, `slack-agent@2.2.4`, `steward@2.2.4`, `summarizer@2.3.4`, `talky@6.10.6`; third digit for the pins that follow, `figure@1.0.4`, `meclaw-os@2.2.72`, `member@2.6.9`, `org@2.1.46`.
+
 ## [0.70.5] — 2026-10-23
 
 A follow-up to 0.70.4 for a brain's tool round: the call after a tool result keeps the system its turn began with, and the native Anthropic lane drops a replayed thinking block whose prefix changed instead of refusing the turn.

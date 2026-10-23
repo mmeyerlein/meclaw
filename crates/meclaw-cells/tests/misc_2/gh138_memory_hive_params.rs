@@ -514,13 +514,25 @@ fn every_model_cell_carries_its_deliberation_budget_as_a_literal() {
             "{cell}: the declared thinking_budget and the shipped one disagree"
         );
     }
-    for (cell, effort) in [("dialectic", "medium"), ("judge", "high")] {
+    // GH #1300: the effort is the flat `reasoning_effort` (medium, the owner's
+    // rule for every llm cell), no longer a verbatim provider_extra overlay
+    // the Anthropic Messages wire would refuse.
+    for cell in ["dialectic", "judge"] {
         let cfg = config(cell);
-        let shipped = &cfg["params"]["provider_extra"];
         assert_eq!(
-            shipped["reasoning"]["effort"].as_str(),
-            Some(effort),
-            "{cell}: params.provider_extra.reasoning.effort is not the shipped literal"
+            cfg["params"]["reasoning_effort"].as_str(),
+            Some("medium"),
+            "{cell}: params.reasoning_effort is not the shipped literal"
+        );
+        assert_eq!(
+            cfg["contract"]["settings"]["reasoning_effort"]["default"],
+            cfg["params"]["reasoning_effort"],
+            "{cell}: the declared reasoning_effort and the shipped one disagree"
+        );
+        let shipped = &cfg["params"]["provider_extra"];
+        assert!(
+            shipped.get("reasoning").is_none(),
+            "{cell}: provider_extra.reasoning would outrank the declared effort"
         );
         assert_eq!(
             &cfg["contract"]["settings"]["provider_extra"]["default"], shipped,
