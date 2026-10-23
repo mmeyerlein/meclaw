@@ -253,6 +253,7 @@ pub(crate) async fn emit_assistant_turn(
     response_id: &str,
     started_at_unix_ms: i64,
     latency_ms: u64,
+    thinking_dropped: &[Value],
 ) {
     let mut header = Map::new();
     header.insert(
@@ -280,6 +281,14 @@ pub(crate) async fn emit_assistant_turn(
     meta.insert("response_id".into(), Value::String(response_id.to_string()));
     meta.insert("latency_ms".into(), Value::from(latency_ms));
     meta.insert("started_at".into(), Value::from(started_at_unix_ms));
+    if !thinking_dropped.is_empty() {
+        // GH #1298 (review m4 of F2): the replayed thinking the provider
+        // dropped, `{path, reason}` each -- only when there is one.
+        meta.insert(
+            "thinking_dropped".into(),
+            Value::Array(thinking_dropped.to_vec()),
+        );
+    }
 
     let mut body = Map::new();
     body.insert("messages".into(), Value::Array(assistant_turns));
@@ -601,6 +610,7 @@ mod tests {
             "chatcmpl-1",
             1234567890,
             42,
+            &[],
         )
         .await;
         let em = rx.recv().await.unwrap();
@@ -647,6 +657,7 @@ mod tests {
             "chatcmpl-1",
             1,
             7,
+            &[],
         )
         .await;
         let em = rx.recv().await.unwrap();
@@ -683,6 +694,7 @@ mod tests {
             "chatcmpl-1",
             1,
             0,
+            &[],
         )
         .await;
         let em = rx.recv().await.unwrap();
@@ -720,6 +732,7 @@ mod tests {
             "r",
             started,
             latency,
+            &[],
         )
         .await;
         rx.recv().await.unwrap().content["header"].clone()

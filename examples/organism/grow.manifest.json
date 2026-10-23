@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.2.70"
+            "template": "meclaw-os@2.2.71"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.1.44"
+            "template": "org@2.1.45"
           }
         ],
         "add_edges": [
@@ -131,7 +131,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.6.7",
+            "template": "member@2.6.8",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -255,7 +255,7 @@
         "add_nodes": [
           {
             "name": "assistants/scribe",
-            "template": "assistant@3.8.7",
+            "template": "assistant@3.8.8",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2,

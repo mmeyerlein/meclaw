@@ -566,6 +566,7 @@ fn build_translated(
         cost: usage.cost,
         model,
         response_id,
+        thinking_dropped: Vec::new(),
     })
 }
 

@@ -3,7 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
 pub mod gh1225_kr_p_a_sweep_names_only_what_went;
 pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
@@ -28,6 +27,7 @@ pub mod gh1272_a_new_day_turns_the_old_day_into_its_tier;
 pub mod gh1272_a_role_rebuilds_at_its_window_target;
 pub mod gh1272_tool_results_of_an_old_day_shrink;
 pub mod gh1280_a_pending_consult_takes_the_consult_tool_away;
+pub mod gh1298_a_tool_round_keeps_its_system;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;

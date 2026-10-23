@@ -1,4 +1,4 @@
-# `simple-agent@1.1.1`
+# `simple-agent@1.1.2`
 
 A plain agent in hive form, built the way agents are commonly built: a system prompt and
 messages, native tool calling, results as `tool_result`, and a loop until the model stops

@@ -1404,6 +1404,11 @@ pub(crate) struct TranslatedResponse {
     pub(crate) model: String,
     /// Provider response-id from `response.id`.
     pub(crate) response_id: String,
+    /// GH #1298 (review m4 of F2): the replayed thinking blocks the provider
+    /// dropped (`input_transformations` entries of type `thinking_dropped`
+    /// on the Messages wire, `{path, reason}` each). Empty on every other wire
+    /// and when nothing was dropped.
+    pub(crate) thinking_dropped: Vec<Value>,
 }
 
 /// Cache-read tokens out of a provider `usage` object, across the three
@@ -1582,6 +1587,7 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
         cost: usage_cost(usage),
         model,
         response_id,
+        thinking_dropped: Vec::new(),
     })
 }
 

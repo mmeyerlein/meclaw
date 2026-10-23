@@ -1,4 +1,4 @@
-# `builder@1.28.4`
+# `builder@1.28.5`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.

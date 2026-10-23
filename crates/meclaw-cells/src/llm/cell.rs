@@ -287,7 +287,14 @@ async fn run_messages_lane(
             .unwrap_or(wire::ANTHROPIC_DEFAULT_BASE_URL),
         wire::ANTHROPIC_MESSAGES_PATH,
     );
-    let attribution = translate::build_attribution_headers(&cell.params);
+    let mut attribution = translate::build_attribution_headers(&cell.params);
+    if translate_anthropic::binds_thinking(request_json) {
+        // GH #1298: the field is refused without the beta that admits it.
+        attribution.push((
+            "anthropic-beta".to_string(),
+            translate_anthropic::THINKING_BINDING_BETA.to_string(),
+        ));
+    }
     let (result, timings) = wire::call_messages_timed(
         &cell.http,
         &url,
@@ -306,6 +313,15 @@ async fn run_messages_lane(
     }
     let translated = translate_anthropic::parse_messages_response(&json)
         .map_err(|e| LaneFailure::from_translate(&e, "parse"))?;
+    if !translated.thinking_dropped.is_empty() {
+        // GH #1298 (review m4 of F2): a dropped block costs the model its
+        // earlier reasoning -- said, never silent (and on `meta`).
+        let dropped = Value::Array(translated.thinking_dropped.clone());
+        tracing::warn!(
+            dropped = %dropped,
+            "llm: the provider dropped replayed thinking (prefix or model changed)"
+        );
+    }
     save_tool_turn_thinking(
         db,
         open_round,
@@ -2688,6 +2704,9 @@ impl LlmCell {
                     .map(|mut r| {
                         if let Some(blocks) = thinking {
                             translate_anthropic::replay_thinking(&mut r, blocks);
+                            // GH #1298: a changed prefix drops the replayed
+                            // thinking at the provider, never the turn.
+                            translate_anthropic::bind_replayed_thinking(&mut r);
                         } else if !open_round.is_empty()
                             && r.get("thinking").is_some_and(|t| t["type"] != "disabled")
                             && let Some(obj) = r.as_object_mut()
@@ -2811,6 +2830,7 @@ impl LlmCell {
                             &t.response_id,
                             started_at_unix_ms,
                             latency_ms,
+                            &t.thinking_dropped,
                         )
                         .await;
                         self.log_phases(&clock, "ok");
@@ -3054,6 +3074,7 @@ impl LlmCell {
                 &translated.response_id,
                 started_at_unix_ms,
                 latency_ms,
+                &translated.thinking_dropped,
             )
             .await;
             self.log_phases(&clock, "ok");

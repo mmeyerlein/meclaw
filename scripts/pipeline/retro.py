@@ -865,14 +865,24 @@ def proposal_lines(findings):
     return sorted(lines)
 
 
-def wave_window(wave_dir_name, db):
+def wave_window(wave_dir_name, db, root=None, runner=None):
     """(since, until) of a wave: from 00:00 UTC of the date in its folder name
     (`<name>-YYYY-MM-DD`) until now. The journal has no wave-close event yet
-    (V0 section 3), so `until` is now; `pipeline retro --until` sets it."""
+    (V0 section 3), so `until` is now; `pipeline retro --until` sets it.
+    A wave without a date in its name (GH #1294, `nachzug-0702`) starts where
+    the kit recorded it (`wave.wave_window_start`: `wave start` rev or the
+    `wave open` row); no recorded start is refused as before."""
     dates = WAVE_DATE.findall(wave_dir_name or "")
-    if not dates:
-        raise ValueError(f"no date in the wave name {wave_dir_name!r}")
-    return f"{dates[-1]}T00:00:00Z", _store.now()
+    if dates:
+        return f"{dates[-1]}T00:00:00Z", _store.now()
+    from . import wave as _wave  # noqa: PLC0415 -- wave imports retro lazily too
+    row = db.execute("PRAGMA database_list").fetchone() if db is not None else None
+    root = root or pathlib.Path(__file__).resolve().parents[2]
+    start, why = _wave.wave_window_start(wave_dir_name, root, (row[2] if row else None) or None,
+                                         runner)
+    if start is None:
+        raise ValueError(f"no date in the wave name {wave_dir_name!r} and {why}")
+    return start, _store.now()
 
 
 # --- hook and metrics -------------------------------------------------------------

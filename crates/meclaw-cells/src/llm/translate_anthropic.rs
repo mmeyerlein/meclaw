@@ -344,6 +344,48 @@ pub(crate) fn replay_thinking(request: &mut Value, blocks: Value) {
     }
 }
 
+/// GH #1298: the `anthropic-beta` value that admits `thinking.block_binding`.
+pub(crate) const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+
+/// GH #1298: a replayed tool round asks the provider to DROP a thinking block
+/// whose prefix changed instead of refusing the request. The provider binds
+/// a signed thinking block to the `system`, the `tools` and every message
+/// before it; a replay under a changed prefix was answered 400 "Invalid
+/// signature in thinking block ... The system prompt differs" (production,
+/// talky under a native brain), and the turn died after its interim sentence.
+/// Set only beside adaptive thinking (an absent `thinking` is adaptive on the
+/// models that sign blocks; on the 5.5 models `enabled`, `disabled` and
+/// `between_tools` refuse the field), and the call then sends [`THINKING_BINDING_BETA`]
+/// ([`binds_thinking`]). Returns whether the field was set.
+pub(crate) fn bind_replayed_thinking(request: &mut Value) -> bool {
+    let Some(body) = request.as_object_mut() else {
+        return false;
+    };
+    let thinking = body
+        .entry("thinking")
+        .or_insert_with(|| json!({"type": "adaptive"}));
+    if thinking.get("type").and_then(Value::as_str) != Some("adaptive") {
+        return false;
+    }
+    let Some(obj) = thinking.as_object_mut() else {
+        return false;
+    };
+    obj.insert(
+        "block_binding".into(),
+        json!({"prefix_mismatch_behavior": "drop_block"}),
+    );
+    true
+}
+
+/// GH #1298: whether the request carries `thinking.block_binding`, which the
+/// provider admits only under [`THINKING_BINDING_BETA`].
+pub(crate) fn binds_thinking(request: &Value) -> bool {
+    request
+        .get("thinking")
+        .and_then(|t| t.get("block_binding"))
+        .is_some()
+}
+
 /// The Messages wire refuses an empty text block anywhere in `messages[]`
 /// with 400 "text content blocks must be non-empty", old turns included, and
 /// the chat parse keeps `content: ""` next to `tool_calls` as a text turn
@@ -504,7 +546,29 @@ pub(crate) fn parse_messages_response(json: &Value) -> Result<TranslatedResponse
         cost: usage_cost(usage),
         model,
         response_id,
+        thinking_dropped: thinking_dropped_of(json),
     })
+}
+
+/// GH #1298 (review m4 of F2): the replayed thinking blocks the provider
+/// dropped, out of the top-level `input_transformations` of an answer under
+/// the binding beta (`[{"type": "thinking_dropped", "path", "reason"}]`,
+/// reason `prefix_binding_mismatch` or `model_binding_mismatch`). Entries of
+/// any other type are not drops and are passed over, as the provider asks of
+/// types a client does not know. Empty without the field.
+pub(crate) fn thinking_dropped_of(json: &Value) -> Vec<Value> {
+    json.get("input_transformations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.get("type").and_then(Value::as_str) == Some("thinking_dropped"))
+        .map(|e| {
+            json!({
+                "path": e.get("path").cloned().unwrap_or(Value::Null),
+                "reason": e.get("reason").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect()
 }
 
 /// A `tool_use` block as the UBF `tool_call` turn the chat wire yields: its
@@ -535,7 +599,10 @@ fn tool_call_turn(i: usize, block: &Value) -> Result<Value, TranslateError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_messages_request, parse_messages_response, require_tool_call};
+    use super::{
+        bind_replayed_thinking, binds_thinking, build_messages_request, parse_messages_response,
+        require_tool_call,
+    };
     use crate::llm::params::LlmParams;
     use crate::llm::translate::{TranslateError, parse_openai_response};
     use meclaw_core::serde_json::{Value, json};
@@ -562,6 +629,29 @@ mod tests {
         assert_eq!(body["tool_choice"], json!({"type": "auto"}));
         assert!(require_tool_call(&mut body));
         assert_eq!(body["tool_choice"], json!({"type": "any"}));
+    }
+
+    /// GH #1298: the drop request rides beside adaptive thinking only -- an
+    /// absent `thinking` becomes adaptive, `enabled`/`disabled` stay as they
+    /// are and carry no binding (the provider refuses the field there).
+    #[test]
+    fn the_drop_request_rides_beside_adaptive_thinking_only() {
+        let bound = json!({"type": "adaptive",
+                           "block_binding": {"prefix_mismatch_behavior": "drop_block"}});
+        let mut body = json!({"model": "m"});
+        assert!(bind_replayed_thinking(&mut body) && binds_thinking(&body));
+        assert_eq!(body["thinking"], bound);
+        let mut body = json!({"thinking": {"type": "adaptive", "display": "summarized"}});
+        assert!(bind_replayed_thinking(&mut body));
+        assert_eq!(body["thinking"]["display"], "summarized");
+        for other in [
+            json!({"type": "disabled"}),
+            json!({"type": "enabled", "budget_tokens": 1024}),
+        ] {
+            let mut body = json!({"thinking": other.clone()});
+            assert!(!bind_replayed_thinking(&mut body) && !binds_thinking(&body));
+            assert_eq!(body["thinking"], other);
+        }
     }
 
     /// Fix round 1 (review M-3): beside thinking the requirement is not

@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.70.5] — 2026-10-23
+
+A follow-up to 0.70.4 for a brain's tool round: the call after a tool result keeps the system its turn began with, and the native Anthropic lane drops a replayed thinking block whose prefix changed instead of refusing the turn.
+
+### Fixed
+
+- Curator, llm: a turn whose brain called a tool could die after its interim sentence: the call after the tool result was built under a different window (the last answer's `input_soft`, here the quick voice's) and carried another `system`, and the native Anthropic wire refused the replay of the tool round's signed thinking (400 "Invalid signature in thinking block"). The curator now keeps the window of each way apart (a brain answer stamps `input_soft`/`input_hard`, any other way `input_soft:<way>`/`input_hard:<way>`), so a quick answer no longer cuts the brain's contract, renders its earlier answers or guards its hard line; every brain call of one turn sends the system leaves, the window and the contract cuts of its first call (`state` `turn_system:<session>:<turn>`, taken down when the brain's answer ends the turn); and the `llm` cell's Anthropic lane asks the provider to drop a replayed thinking block whose prefix changed (`thinking.block_binding.prefix_mismatch_behavior: "drop_block"` under `anthropic-beta: thinking-binding-controls-2026-08-01`) instead of refusing the call, and names every block the provider dropped on the answer (`meta.thinking_dropped`, `{path, reason}` from `input_transformations`, plus a warn line) ([#1298](https://github.com/mmeyerlein/meclaw/issues/1298)).
+- **Template versions (#1298):** third digit, `builder-librarian@2.2.84`, `curator@1.15.2`; third digit for the pins that follow, `assistant@3.8.8`, `builder@1.28.5`, `cogny@5.12.5`, `figure@1.0.3`, `meclaw-os@2.2.71`, `member@2.6.8`, `memory-hive@3.16.8`, `org@2.1.45`, `simple-agent@1.1.2`, `talky@6.10.5`.
+
 ## [0.70.4] — 2026-10-23
 
 A security patch to 0.70.3: the TLS certificate verifier and its bundled root store move to fixed versions that drop the distrusted emSign intermediates; no template or behaviour change.

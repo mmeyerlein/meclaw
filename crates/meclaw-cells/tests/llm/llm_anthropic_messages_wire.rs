@@ -10,6 +10,9 @@
 //!   youngest `user` turn, never in a `peer` turn.
 //! * T10-10: the thinking blocks of a tool turn go back unchanged, signature
 //!   included -- only in the open tool round.
+//! * GH #1298: a replayed round asks the provider to drop a block whose
+//!   prefix changed (`block_binding` + beta header) -- a strict mock refuses
+//!   the replay otherwise, as the provider does, and the turn is lost.
 //! * The registry's push (`$reset` naming `wire_dialect` among the other
 //!   package keys) changes the model of an anthropic cell like that of a
 //!   decisions cell.
@@ -391,4 +394,148 @@ async fn a_window_ending_on_a_bridge_sentence_is_sent_without_a_prefill() {
         said.ends_with("One moment, I am looking that up."),
         "{said}"
     );
+}
+
+/// The exact refusal of the Messages wire when a replayed thinking block was
+/// made under another prefix (measured in production, GH #1298).
+const BINDING_REFUSAL: &str = "messages.1.content.0: Invalid `signature` in `thinking` block. \
+The block is bound to a different conversation. Remove the block, or set \
+`thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\". That setting requires the \
+`thinking-binding-controls-2026-08-01` value in the `anthropic-beta` header. The system prompt \
+differs from the one this block was created with.";
+
+/// GH #1298: a tool round whose system changed after its thinking was made
+/// costs the provider the thinking, never the turn. The mock plays the
+/// provider's binding rule strictly: it remembers the `system` a thinking
+/// block was signed under, and a request that replays the block under another
+/// system is answered with the 400 above -- unless it asks to drop the block
+/// (`thinking.block_binding.prefix_mismatch_behavior: "drop_block"`, adaptive
+/// thinking) under the beta header that admits the field; then it answers
+/// as the provider does, without the reasoning. A call that replays nothing
+/// carries neither the field nor the header.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tool_round_under_a_changed_system_drops_its_thinking_and_answers() {
+    let (addr, _join, mut held) = meclaw_testing::mock_http::start_mock_server_held()
+        .await
+        .expect("the held mock binds");
+    let raw = json!({
+        "provider": "anthropic", "model": "claude-test-a", "api_key": "test-key-1298",
+        "base_url": format!("http://{addr}"), "max_tokens": 64,
+        "x_title": "meclaw-lab gh1298", "http_referer": "https://example.com",
+    });
+    let mut cell = LlmCell::new(LlmParams::parse(&raw).unwrap(), reqwest::Client::new());
+    let td = TempDir::new().unwrap();
+    let mut db = cell_db(&td);
+    let (out, mut rx) = sink();
+    let driver = tokio::spawn(async move {
+        let first = json!({"system": {"identity": {"text": "S1"}}, "messages": [user("q")]});
+        cell.handle(message(first), &out, &mut db).await;
+        let second = json!({
+            "system": {"identity": {"$replace": true, "text": "S2"}},
+            "messages": [user("q"), tool_call("t1"), tool_result("t1")]
+        });
+        cell.handle(message(second), &out, &mut db).await;
+    });
+
+    let mut signed_under: Option<Value> = None;
+    let mut bodies = Vec::new();
+    for _ in 0..2 {
+        let req = meclaw_testing::deadline::hang("the cell calls the provider", held.recv())
+            .await
+            .expect("a request");
+        let body = req.json();
+        let beta = req
+            .request
+            .headers
+            .get("anthropic-beta")
+            .cloned()
+            .unwrap_or_default();
+        let replays = body["messages"].as_array().into_iter().flatten().any(|m| {
+            m["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|b| b["type"] == "thinking")
+        });
+        let response = if !replays {
+            signed_under = Some(body["system"].clone());
+            answer(
+                json!([{"type": "thinking", "thinking": "plan", "signature": "sig-1"},
+                       {"type": "tool_use", "id": "t1", "name": "get", "input": {}}]),
+                "tool_use",
+            )
+        } else if Some(&body["system"]) == signed_under.as_ref() {
+            answer(json!([{"type": "text", "text": "done"}]), "end_turn")
+        } else if body["thinking"]["type"] == "adaptive"
+            && body["thinking"]["block_binding"]["prefix_mismatch_behavior"] == "drop_block"
+            && beta
+                .split(',')
+                .any(|b| b.trim() == "thinking-binding-controls-2026-08-01")
+        {
+            // The provider says what it dropped (`input_transformations`,
+            // under the beta that admits the field).
+            let mut body: Value = meclaw_core::serde_json::from_slice(
+                &answer(
+                    json!([{"type": "text", "text": "done without the old reasoning"}]),
+                    "end_turn",
+                )
+                .body,
+            )
+            .expect("the answer is JSON");
+            body["input_transformations"] = json!([
+                {"type": "thinking_dropped", "path": "messages.1.content.0",
+                 "reason": "prefix_binding_mismatch"},
+                {"type": "a_later_kind", "path": "messages.0.content.0"}
+            ]);
+            MockResponse::ok_json(body.to_string().as_bytes())
+        } else {
+            let err = json!({"type": "error", "error": {
+                "type": "invalid_request_error", "message": BINDING_REFUSAL}});
+            MockResponse {
+                status: 400,
+                body: err.to_string().into_bytes(),
+                content_type: "application/json".into(),
+                delay: None,
+            }
+        };
+        bodies.push((body, beta));
+        req.release(response);
+    }
+    driver.await.unwrap();
+
+    let ems = drain(&mut rx);
+    assert_eq!(ems.len(), 2, "{ems:?}");
+    let last = &ems[1].content;
+    assert_eq!(
+        last["header"]["finish_reason"], "stop",
+        "the turn is answered: {last}"
+    );
+    assert_eq!(
+        last["messages"][0]["text"], "done without the old reasoning",
+        "{last}"
+    );
+    // Review m4 of F2: the drop is said on the answer, never silent; an
+    // entry of a kind the cell does not know is no drop.
+    assert_eq!(
+        last["meta"]["thinking_dropped"],
+        json!([{"path": "messages.1.content.0", "reason": "prefix_binding_mismatch"}]),
+        "{last}"
+    );
+    assert!(
+        ems[0].content["meta"].get("thinking_dropped").is_none(),
+        "an answer that dropped nothing names nothing: {}",
+        ems[0].content
+    );
+    let (first, first_beta) = &bodies[0];
+    assert!(
+        first.get("thinking").is_none() && first_beta.is_empty(),
+        "a call that replays nothing binds nothing: {first} / {first_beta:?}"
+    );
+    let (second, second_beta) = &bodies[1];
+    assert_eq!(
+        second["thinking"],
+        json!({"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}),
+        "{second}"
+    );
+    assert_eq!(second_beta, "thinking-binding-controls-2026-08-01");
 }

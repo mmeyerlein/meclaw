@@ -99,6 +99,12 @@ pub(crate) fn joined(
         },
         model: next.model,
         response_id: next.response_id,
+        thinking_dropped: prev
+            .thinking_dropped
+            .iter()
+            .cloned()
+            .chain(next.thinking_dropped)
+            .collect(),
     }
 }
 
@@ -201,6 +207,7 @@ mod tests {
             cost: Some(0.5),
             model: "m".into(),
             response_id: format!("r{completion}"),
+            thinking_dropped: Vec::new(),
         }
     }
 

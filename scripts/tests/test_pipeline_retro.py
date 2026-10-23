@@ -591,6 +591,26 @@ class HookTests(StoreCase):
         with self.assertRaises(ValueError):
             retro.wave_window("wave-without-date", self.db)
 
+    def test_wave_window_of_an_undated_wave_starts_at_its_wave_start(self):
+        # GH #1294: `nachzug-0702` has no date in its name; `wave close` died on
+        # the retro window. The start comes from the kit's own record of the wave
+        # (`wave_window_start`: the commit time of the `wave start` rev).
+        events.emit(self.db, "wave_started", "status",
+                    {"wave": "nachzug-x", "start": "a" * 40}, at=at(0))
+        calls = []
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            out = "2026-01-10T09:30:00+01:00\n" if "show" in argv else ""
+            return argparse.Namespace(returncode=0, stdout=out, stderr="")
+
+        since, until = retro.wave_window("nachzug-x", self.db, root=self.tmp, runner=runner)
+        self.assertEqual(since, "2026-01-10T08:30:00Z")
+        self.assertGreater(until, since)
+        self.assertTrue(any("show" in c for c in calls))
+        with self.assertRaisesRegex(ValueError, "no date in the wave name"):   # no start known
+            retro.wave_window("nachzug-y", self.db, root=self.tmp, runner=runner)
+
     def test_retro_cli_writes_json_and_markdown_with_before_and_after(self):
         self.pass_("old", "strand", at(0, days=-2), at(30, days=-2), lane=1800)
         self.pass_("new", "strand", at(0), at(60), lane=3600, crit=1800)
