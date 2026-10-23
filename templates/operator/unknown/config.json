@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "runner_mode": "warm",
+    "runner_mode": "cold",
     "script_inline": "\nimport sys, json\n\n# The target of this hive's guarded default door: a request on a lane nobody\n# wired comes back as ONE ordinary receipt naming the lane that was asked for,\n# on the same lane every occupant answers on.\n#\n# Not a dead letter. A dead letter is a message the colony lost; this is a\n# message the colony read, understood as unaddressed, and answered. An operator\n# who mistyped a lane learns which one they typed, in the same round, instead of\n# reading a queue.\n\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nroute = str(hop.get(\"route\") or \"\")\nasked = route if route else \"(none)\"\ncall_id = str(hop.get(\"tool_call_id\") or \"\")\nsys.stdout.write(json.dumps({\n    \"header\": {\"route\": \"receipt\", \"operation\": \"operator_unknown\",\n               \"error_code\": \"unknown_route\", \"route_asked\": route,\n               \"tool_call_id\": call_id},\n    \"messages\": [{\"origin\": \"tool\", \"type\": \"tool_result\", \"id\": call_id,\n                  \"text\": \"no lane named %s is wired into this hive\" % asked}]}))\n",
     "external_timeout_ms": 10000,
     "sandbox": {

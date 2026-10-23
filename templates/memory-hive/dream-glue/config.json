@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "runner_mode": "warm",
+    "runner_mode": "cold",
     "dream_axis_limit": 5000,
     "canon_judge": "1",
     "canon_max_predicates": 60,

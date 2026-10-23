@@ -22,6 +22,17 @@ pub fn templates() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates")
 }
 
+/// Whether a row with this `mode` and `passes` must say why in writing:
+/// `cold` and `resident` always (warm is the default); `warm` when the cell
+/// runs `rare` -- a warm child stands 30 minutes after its last job (GH
+/// #1276), and the apply broadcast wakes every warm cell that answers it
+/// (a member colony on meclaw 0.70.2 held 91 python children for 48 code cells, 36 of them
+/// schema answers, measured 22.10., GH #1294). A rarely called cell runs
+/// `cold` unless its row says why not.
+pub fn needs_a_reason(mode: &str, passes: &str) -> bool {
+    mode == "cold" || mode == "resident" || (mode == "warm" && passes == "rare")
+}
+
 /// Whether this is the private tree: `plans/` never travels with the public
 /// one (the marker `gh80_shipped_conditions_are_guarded` uses).
 pub fn private_tree() -> bool {

@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.15.0"
+    "template": "curator@1.15.1"
   },
   "override_params": {
     "intake": {
@@ -10,12 +10,6 @@
     },
     "policy": {
       "role": "talky"
-    },
-    "schemas": {
-      "runner_mode": "cold"
-    },
-    "stats": {
-      "runner_mode": "cold"
     },
     "summarizer": {
       "credential_grant_id": "grant:openrouter@template-simple-agent/curator-summarizer",

@@ -16,7 +16,8 @@
 //!   the parser's default);
 //! * `passes` is one of `turn|tool|session|after|rare` (the `?` a new row
 //!   gets from the inventory tool is red until it is placed);
-//! * `cold` and `resident` carry a reason;
+//! * `cold` and `resident` carry a reason, and so does a `warm` row that
+//!   passes `rare` (GH #1294: a rarely called cell runs cold);
 //! * the file names no template version (`name@x.y.z`).
 
 // harness_fold: #[path = "support/gh1276_runner_modes.rs"]
@@ -24,8 +25,8 @@
 use crate::runner_modes; // harness_fold: mod runner_modes;
 
 use runner_modes::{
-    MODES, PASSES, code_cells, inventory_text, judges_the_row, names_a_version, parse,
-    private_tree, templates,
+    MODES, PASSES, code_cells, inventory_text, judges_the_row, names_a_version, needs_a_reason,
+    parse, private_tree, templates,
 };
 use std::collections::BTreeMap;
 
@@ -82,11 +83,11 @@ fn every_shipped_code_cell_has_one_row_with_its_mode() {
                 row.passes
             ));
         }
-        if (row.mode == "cold" || row.mode == "resident") && row.reason.is_empty() {
+        if needs_a_reason(&row.mode, &row.passes) && row.reason.is_empty() {
             errors.push(format!(
-                "{cell}: `{}` without a reason -- rule: warm is the default, anything else is \
-                 said in writing",
-                row.mode
+                "{cell}: `{}` on passes `{}` without a reason -- rule: warm is the default \
+                 for a cell a turn passes, cold for a rare one, anything else is said in writing",
+                row.mode, row.passes
             ));
         }
     }
@@ -142,4 +143,23 @@ fn the_parser_reads_a_blank_reason_and_refuses_a_pipe() {
         Some("talky@1.2.3".into())
     );
     assert_eq!(names_a_version("a mail@example or x@1.2"), None);
+}
+
+/// GH #1294: a rare cell runs cold unless its row says why it stays warm; a
+/// cell a turn passes runs warm without a word.
+#[test]
+fn a_warm_row_of_a_rare_cell_needs_its_reason() {
+    assert!(needs_a_reason("warm", "rare"));
+    assert!(needs_a_reason("cold", "turn"));
+    assert!(needs_a_reason("resident", "after"));
+    for passes in ["turn", "tool", "session", "after"] {
+        assert!(
+            !needs_a_reason("warm", passes),
+            "warm on {passes} is the default"
+        );
+    }
+    assert!(
+        needs_a_reason("cold", "rare"),
+        "cold keeps its reason on every pass"
+    );
 }

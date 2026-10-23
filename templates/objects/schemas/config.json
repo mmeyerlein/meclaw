@@ -4,7 +4,7 @@
   },
   "params": {
     "runner": "python3",
-    "runner_mode": "warm",
+    "runner_mode": "cold",
     "external_timeout_ms": 10000,
     "sandbox": {
       "trust": "restricted",

@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.70.2, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.70.3, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.70.3: a lighter member colony -- the rarely called code cells of the shipped templates run cold, so a
+  colony boots far fewer python children; the kit finds a wave without a date and reads an empty issue
+  listing as an unreachable tracker.
 - v0.70.2: follow-up fixes from the figure milestone runs -- a turn may require its first tool call, a figure's
   world turn that only narrated gets one follow-up turn that must act, a second answer of the same phone round
   no longer spends a reply, and the memory reads a verdict wrapped in a code fence.

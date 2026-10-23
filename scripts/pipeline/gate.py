@@ -31,7 +31,7 @@ import threading
 import time
 import uuid
 
-from . import cache, cpus, events, flakes, full_pass, gitenv, lane, plan, progress, receipt, schedule, store
+from . import cache, cpus, events, flakes, full_pass, gitenv, lane, plan, progress, receipt, schedule, store, turnaround
 from . import register as satellites
 
 MODES = ("strand", "integration", "release")
@@ -2065,27 +2065,21 @@ def _main_root(repo):
 
 
 def _wave_dir(plans, want, key, err):
-    """`--wave`, else the one `plans/<wave>-*` of the strand's key `<wave>/<S>`
-    -- the branch, or a `--strand <wave>/<S>` in a detached tree (GH #1199 f);
-    the strand's report breaks a tie."""
+    """`--wave`, else the wave of the strand's key `<wave>/<S>` -- the branch,
+    or a `--strand <wave>/<S>` in a detached tree (GH #1199 f): `plans/<wave>`
+    itself, else the one `plans/<wave>-*`, the strand's report breaks a tie
+    (`turnaround.key_wave`; GH #1294: the copy here knew only `<wave>-*`, the
+    merge point's golden step of an undated wave ended "cannot tell the wave")."""
     if want:
         want = want.rstrip("/")
         if not os.path.isdir(os.path.join(plans, want)):
             raise _TestExit(2, "strand: no such wave: plans/%s" % want)
         print("strand: wave %s" % want, file=err)
         return want
-    branch = key
-    if "/" in branch:
-        wave, name = branch.split("/", 1)[0], branch.rsplit("/", 1)[-1]
-        try:
-            hits = sorted(d for d in os.listdir(plans)
-                          if d.startswith(wave + "-") and os.path.isdir(os.path.join(plans, d)))
-        except OSError:
-            hits = []
-        owners = [d for d in hits if os.path.isfile(os.path.join(plans, d, "berichte", name + ".md"))]
-        for cand in (hits if len(hits) == 1 else owners if len(owners) == 1 else []):
-            print("strand: wave %s (from the branch)" % cand, file=err)
-            return cand
+    cand = turnaround.key_wave(plans, key)
+    if cand:
+        print("strand: wave %s (from the branch)" % cand, file=err)
+        return cand
     raise _TestExit(2, "strand: cannot tell the wave from the branch -- pass --wave")
 
 

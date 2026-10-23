@@ -1,4 +1,4 @@
-# `simple-agent@1.1.0`
+# `simple-agent@1.1.1`
 
 A plain agent in hive form, built the way agents are commonly built: a system prompt and
 messages, native tool calling, results as `tool_result`, and a loop until the model stops
@@ -144,18 +144,22 @@ that directory.
 
 ## Runner modes
 
-The ref markers set the `code` cells that run rarely in this agent to `runner_mode: "cold"`
-(`override_params`; `cell.idle_timeout_ms` sits in the `cell` block, which a marker cannot
-reach). A warm child of each would stand 30 minutes after its last job (GH #1276), and in a
-figure they were most of its idle processes. None of them sits on a turn: each holds no cache
+The ref markers set the `code` cells that a turn passes elsewhere but this agent calls only
+rarely to `runner_mode: "cold"` (`override_params`; `cell.idle_timeout_ms` sits in the `cell`
+block, which a marker cannot reach). A warm child of each would stand 30 minutes after its
+last job (GH #1276), and in a figure they were most of its idle processes. Each holds no cache
 (warm answers like cold), so cold changes only that every message starts its own process.
 
 | cells | why they run rarely here |
 |---|---|
 | `affinity/brief`, `affinity/gate`, `affinity/push` | the identity boot after a restart and an `affinity_propose` -- no edge of a turn reaches affinity |
-| `curator/schemas`, `memory-hive/schemas`, `tools/schemas` | answered once when the collector asks for its tools, at boot and after a mutation |
-| `memory-hive/close-glue`, `memory-hive/dream-glue`, `memory-hive/entity-glue`, `memory-hive/recur` | the close of a session and the dream run, in a figure once a night |
-| `access/policy`, `access/sweep`, `curator/stats` | a grant decision, the TTL timer, an observer's `in_stats` |
+| `memory-hive/close-glue`, `memory-hive/entity-glue` | the close of a session and its entity pass, in a figure once a night |
+
+The cells that run rarely in every consumer ship `cold` from their own template since GH
+#1294 and need no marker here: `curator/schemas`, `memory-hive/schemas`, `tools/schemas`
+(answered when the collector asks for its tools, at boot and after a mutation),
+`memory-hive/dream-glue`, `memory-hive/recur` (the dream run), `access/policy`, `access/sweep`,
+`curator/stats` (a grant decision, the TTL timer, an observer's `in_stats`).
 
 Every other code cell keeps the mode its template ships; `access/invoke` stays warm because a
 model cell waking after its own idle asks it for the credential before the first call.

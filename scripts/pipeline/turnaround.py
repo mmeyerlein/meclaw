@@ -247,10 +247,19 @@ def branch_wave(repo):
     exists (a wave without a date suffix), the one `plans/<wave>-*`, else
     the one holding `berichte/<strand>.md`; None in doubt."""
     got = _lines(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    if not got or "/" not in got[0]:
+    if not got:
         return None
-    prefix, strand = got[0].split("/", 1)[0], got[0].rsplit("/", 1)[-1]
-    plans = os.path.join(repo, "plans")
+    return key_wave(os.path.join(repo, "plans"), got[0])
+
+
+def key_wave(plans, key):
+    """The wave directory under `plans` of a strand key `<wave>/<strand>` (a
+    branch or a `--strand <wave>/<S>`): the one rule of `branch_wave` for every
+    Python reader (GH #1294, K2: `pipeline.py test` kept a copy that knew only
+    `plans/<wave>-*`); None without a `/` or in doubt."""
+    if "/" not in key:
+        return None
+    prefix, strand = key.split("/", 1)[0], key.rsplit("/", 1)[-1]
     if os.path.isdir(os.path.join(plans, prefix)):
         return prefix   # GH #1294: a wave without a date suffix is its own directory
     try:

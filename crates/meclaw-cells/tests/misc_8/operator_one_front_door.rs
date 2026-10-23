@@ -664,7 +664,7 @@ fn the_shell_doors_every_caller_lane_to_the_front_door_and_takes_the_answer_out(
             env!("CARGO_MANIFEST_DIR"),
             "/../../templates/meclaw-os/operator/config.json"
         ))["cell"]["template"],
-        "operator@1.2.8",
+        "operator@1.2.9",
         "pinned exactly: a bare name would adopt a new front door on a bump"
     );
     assert!(

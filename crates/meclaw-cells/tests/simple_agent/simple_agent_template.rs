@@ -566,8 +566,17 @@ fn the_door_knows_the_tools_the_collector_asks_for() {
 /// their messages (GH #1292, R-SA-10): the identity boot and a proposal
 /// (`affinity`), the schema answers the collector asks once at boot, the
 /// night's close, dream and entity passes, the operator reads and timers.
-/// A warm child of each would stand 30 minutes after its last job (GH #1276);
-/// the ref markers set them `cold` instead, and the README says why.
+/// A warm child of each would stand 30 minutes after its last job (GH #1276).
+/// Five are turn cells elsewhere and go `cold` here through the ref markers
+/// (`MARKED_COLD`); the other eight run rarely everywhere and ship `cold` from
+/// their own template since GH #1294. The README names all thirteen.
+const MARKED_COLD: [&str; 5] = [
+    "affinity/brief",
+    "affinity/gate",
+    "affinity/push",
+    "memory-hive/close-glue",
+    "memory-hive/entity-glue",
+];
 const COLD_RARE: [&str; 13] = [
     "access/policy",
     "access/sweep",
@@ -611,25 +620,25 @@ fn simple_agent_runs_its_rare_code_cells_cold_and_its_turn_road_as_shipped() {
             "{cell}: a rare cell runs cold in the agent"
         );
     }
-    // Every other code cell keeps the mode its own template ships: the turn
-    // road (door, splitter, collector, dispatcher, curator, recall, embed, the
-    // credential door) never starts a child per message.
-    for (rel, cfg) in &code {
-        if COLD_RARE.contains(&rel.as_str()) {
-            continue;
-        }
-        let shipped_cfg = if rel == "door" || rel == "splitter" {
-            read_json(&repo(&format!("templates/simple-agent/{rel}/config.json")))
+    let shipped = |rel: &str| -> (String, Value) {
+        if rel == "door" || rel == "splitter" {
+            let row = format!("simple-agent/{rel}");
+            let cfg = read_json(&repo(&format!("templates/{row}/config.json")));
+            (row, cfg)
         } else {
-            let (tpl, cell) = rel.split_once('/').unwrap_or((rel.as_str(), ""));
-            read_json(&repo(&format!("templates/{tpl}/{cell}/config.json")))
-        };
+            let cfg = read_json(&repo(&format!("templates/{rel}/config.json")));
+            (rel.to_string(), cfg)
+        }
+    };
+    // GH #1294: a marker sets only a cell its own template ships warm; the
+    // eight that run rarely everywhere ship cold and carry no marker here.
+    for cell in COLD_RARE {
+        let (_, shipped_cfg) = shipped(cell);
         assert_eq!(
-            mode(cfg),
-            mode(&shipped_cfg),
-            "{rel}: keeps its shipped mode"
+            mode(&shipped_cfg) != "cold",
+            MARKED_COLD.contains(&cell),
+            "{cell}: a ref marker sets it cold exactly when its template ships it warm"
         );
-        assert_ne!(mode(cfg), "cold", "{rel}: no turn-road cell runs cold");
     }
     // Each cold cell has its written reason (RUNNER-MODES.md: `cold` only with
     // a reason) in the README's runner-mode section.
@@ -639,6 +648,27 @@ fn simple_agent_runs_its_rare_code_cells_cold_and_its_turn_road_as_shipped() {
         .nth(1)
         .and_then(|s| s.split("\n## ").next())
         .expect("a `## Runner modes` section");
+    // Every other code cell keeps the mode its own template ships: the turn
+    // road (door, splitter, collector, dispatcher, curator, recall, embed, the
+    // credential door) never starts a child per message; a cold one runs
+    // rarely and the README's runner-mode section names it.
+    for (rel, cfg) in &code {
+        if COLD_RARE.contains(&rel.as_str()) {
+            continue;
+        }
+        let (_, shipped_cfg) = shipped(rel);
+        assert_eq!(
+            mode(cfg),
+            mode(&shipped_cfg),
+            "{rel}: keeps its shipped mode"
+        );
+        if mode(cfg) == "cold" {
+            assert!(
+                section.contains(&format!("`{rel}`")),
+                "{rel}: no turn-road cell runs cold"
+            );
+        }
+    }
     for cell in COLD_RARE {
         assert!(
             section.contains(&format!("`{cell}`")),

@@ -1,4 +1,4 @@
-# `access@2.6.1`
+# `access@2.6.2`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -820,7 +820,7 @@ path:
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "access", "template": "access@2.6.1",
+ "nodes": [{"name": "access", "template": "access@2.6.2",
             "override_params": {
               "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
               "sweep":  {"sweep_rows": 500},

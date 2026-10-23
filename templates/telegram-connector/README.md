@@ -1,4 +1,4 @@
-# `telegram-connector@2.2.3`
+# `telegram-connector@2.2.4`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
@@ -128,11 +128,11 @@ grant and the two edges in the same mutation (`seed_rows` writes through the mut
     "add_nodes": [
       {
         "name": "access",
-        "template": "access@2.6.1"
+        "template": "access@2.6.2"
       },
       {
         "name": "telegram-connector",
-        "template": "telegram-connector@2.2.3"
+        "template": "telegram-connector@2.2.4"
       }
     ],
     "seed_rows": [
@@ -218,7 +218,7 @@ cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.2.3",
+{"name": "telegram-connector-2", "template": "telegram-connector@2.2.4",
  "override_params": {"bot_token_grant_id": "grant:telegram-bot-2@template-telegram-connector/bot-2"}}
 ```
 
@@ -276,7 +276,7 @@ this node itself:
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.2.3",
+        "template": "telegram-connector@2.2.4",
         "birth": "inactive",
         "override_params": {
           "bot_token_grant_id": "",
@@ -330,7 +330,7 @@ credential -- the graph swap `swap_nodes` was re-dedicated for:
         "match": {"name": "telegram"},
         "with": {
           "name": "telegram-live",
-          "template": "telegram-connector@2.2.3",
+          "template": "telegram-connector@2.2.4",
           "params": {"bot_token_grant_id": "grant:telegram-bot@template-telegram-connector/bot"}
         }
       }

@@ -131,7 +131,7 @@ fn shipped() -> bool {
 fn a_manifest() -> Value {
     json!([
         {"scope": "/os/orgs/acme", "ctx": {},
-         "diff": {"add_nodes": [{"name": "scribe", "template": "member@2.6.6"}]}}
+         "diff": {"add_nodes": [{"name": "scribe", "template": "member@2.6.7"}]}}
     ])
 }
 

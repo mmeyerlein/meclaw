@@ -754,18 +754,34 @@ def _wave_reader_scope(path):
 
 def _wave_dirs(repo):
     """The open wave directories under `plans/` -- the `plans/welle-*` of
-    `turnaround.NEUTRAL` but the closed ones (`_closed_waves`); none without
+    `turnaround.NEUTRAL` and every wave section Live names as running
+    (`_running_waves`), but the closed ones (`_closed_waves`); none without
     `plans/` (the published tree). The merge judges the post-gate commits of
-    its own wave, a closed one gets none (re-check fr4 d0f8f69e8 M1)."""
+    its own wave, a closed one gets none (re-check fr4 d0f8f69e8 M1). GH #1294
+    (K2): the glob alone missed every wave without the `welle-` prefix -- the
+    running undated wave of GH #1294 got no needle."""
     import fnmatch
     globs = {g.split("/")[1] for g in _turnaround().NEUTRAL}
     try:
         names = os.listdir(os.path.join(repo, "plans"))
     except OSError:
         return []
-    closed = _closed_waves(repo)
-    return sorted(n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs)
+    closed, running = _closed_waves(repo), _running_waves(repo)
+    return sorted(n for n in names
+                  if (n in running or any(fnmatch.fnmatchcase(n, g) for g in globs))
                   and os.path.isdir(os.path.join(repo, "plans", n)) and n not in closed)
+
+
+def _running_waves(repo):
+    """The waves section Live of `plans/README.md` names as running
+    (`wave.live_running`, the reader `strand.sh wave_dir` asks); none when the
+    file or its table is unreadable -- the `welle-*` glob still counts."""
+    from pipeline import wave
+    try:
+        with open(os.path.join(repo, "plans", "README.md"), encoding="utf-8") as fh:
+            return set(wave.live_running(fh.read()))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return set()
 
 
 def _closed_waves(repo):
@@ -794,7 +810,8 @@ def _post_gate_needles(repo, waves):
             dirs.sort()
             for name in sorted(names):
                 rel = os.path.relpath(os.path.join(d, name), repo).replace(os.sep, "/")
-                if ta.allowlisted(rel):
+                # the wave's own globs: `NEUTRAL` alone is `welle-*` (GH #1294)
+                if ta.allowlisted(rel, wave):
                     for needle in ta._needles(rel):
                         first.setdefault(needle, rel)
     return [(n, whole, rel, re.compile(ta._bounded(n, whole)))

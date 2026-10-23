@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "memory-hive@3.16.6"
+    "template": "memory-hive@3.16.7"
   },
   "override_params": {
     "close-glue": {
@@ -16,9 +16,6 @@
       "credential_grant_id": "grant:openrouter@template-simple-agent/memory-dialectic",
       "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
       "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"
-    },
-    "dream-glue": {
-      "runner_mode": "cold"
     },
     "dreamer": {
       "credential_grant_id": "grant:openrouter@template-simple-agent/memory-dreamer",
@@ -35,12 +32,6 @@
       "credential_grant_id": "grant:openrouter@template-simple-agent/memory-judge",
       "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
       "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"
-    },
-    "recur": {
-      "runner_mode": "cold"
-    },
-    "schemas": {
-      "runner_mode": "cold"
     }
   }
 }

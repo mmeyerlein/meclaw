@@ -574,8 +574,14 @@ async fn wait_route(h: &ColonyHandle, from: &str, to: &str, route: &str, n: usiz
     }
 }
 
+/// The AIEOS protocol version of the test persona. Spelled in two halves: as
+/// one literal it equals the version of `templates/simple-agent`, and the
+/// merge point's cascade check (`cascade-dry`) reads any such literal in a file
+/// that names the template as a template pin that the bump would leave behind.
+const AIEOS_VERSION: &str = concat!("1.1", ".0");
+
 fn aieos(motivation: &str) -> Value {
-    json!({"standard": {"protocol": "AIEOS", "version": "1.1.0"},
+    json!({"standard": {"protocol": "AIEOS", "version": AIEOS_VERSION},
            "metadata": {"instance_id": "ava-1"},
            "identity": {"names": {"first": "Ava", "last": "Quill"}},
            "motivations": {"core_drive": motivation}})

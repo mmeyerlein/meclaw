@@ -449,9 +449,9 @@ Scope is `channels`, the hive that already exists.
   "ctx": {"model": "<the brain's model, as a resolved literal>"},
   "diff": {
     "add_nodes": [
-      {"name": "telegram", "template": "telegram-connector@2.2.3",
+      {"name": "telegram", "template": "telegram-connector@2.2.4",
        "override_params": {"bot_token_grant_id": "grant:telegram-bot@<subject>/channels-telegram"}},
-      {"name": "talky", "template": "talky@6.10.3"}
+      {"name": "talky", "template": "talky@6.10.4"}
     ]
   }
 }

@@ -2814,6 +2814,28 @@ class TestArchiveReasonPath(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(reason), "receipt.json")))
 
 
+class TestWaveDirWithoutDate(unittest.TestCase):
+    """GH #1294 (K2): `pipeline.py test` resolved its wave only from
+    `plans/<wave>-*` -- the merge point's golden step of the wave
+    of an undated wave ended in "cannot tell the wave". The bare
+    `plans/<prefix>/` is the wave, as `strand.sh` `branch_wave_dir` reads it;
+    a dated wave of the same prefix loses."""
+
+    def test_a_wave_without_a_date_is_the_wave_of_the_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "folge-0101", "berichte"))
+            os.makedirs(os.path.join(tmp, "folge-0101-2026-10-01"))
+            err = io.StringIO()
+            self.assertEqual("folge-0101", gate._wave_dir(tmp, None, "folge-0101/K2", err))
+            self.assertIn("strand: wave folge-0101 (from the branch)", err.getvalue())
+
+    def test_a_dated_wave_resolves_as_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "folge-0101-2026-10-01"))
+            self.assertEqual("folge-0101-2026-10-01",
+                             gate._wave_dir(tmp, None, "folge-0101/K2", io.StringIO()))
+
+
 class TestArchiveNotes(unittest.TestCase):
     """Review Z-I1: the narrowing's NOTE stands in summary.txt too, not only on stdout."""
 

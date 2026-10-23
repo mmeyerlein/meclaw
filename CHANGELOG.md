@@ -12,10 +12,20 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.70.3] — 2026-10-23
+
+A follow-up to 0.70.2 that lightens a member colony: the rarely called code cells of the shipped templates run cold, so a colony boots far fewer python children, plus two kit fixes.
+
+### Changed
+
+- Templates: every `code` cell that runs rarely (`rare` in `templates/RUNNER-MODES.md`: build, operation, night, timer, and the schema answers the collector asks at boot and after each apply) ships `runner_mode: "cold"` -- 46 cells, among them all eight `*/schemas` cells, `llm-registry/hand` and `select`, the builder, operator, steward and argus cells. A warm child of each stood 30 minutes after its last call, and the `mutation_committed` broadcast woke the schema cells after every apply. `access/invoke` and `firewall/screen` stay warm with one slot (`max_concurrency: 1`); `daily-digest/void` stays warm with its written reason (a push-only bot's inbound burst, GH #852). The runner-mode lock refuses a `warm` row on `rare` without a written reason; `simple-agent` drops the eight ref-marker overrides its templates now ship ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
+
 ### Fixed
 
+- Memory: a member colony on the shipped templates booted about 90 python children for about 50 code cells (one colony was killed at its 1.5 GB memory limit); after this change the rare cells start a child per call that ends with it, and `access/invoke` and `firewall/screen` hold one child instead of up to four ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
 - Kit: a wave directory without a date suffix (`plans/<wave>` instead of `plans/<wave>-YYYY-MM-DD`) is its own wave: `strand.sh new <wave>/<name>` and a strand's branch `<wave>/<name>` find it, and the merge looks for the branch `<wave>/<name>` instead of cutting the name at its last dashes (`no_branch`). Only a real `-YYYY-MM-DD` suffix is dropped; dated waves resolve as before ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
 - Kit: the roadmap anchor gate reads an empty or malformed open-issue listing from the GitHub API (no `gh`, no auth) as an unreachable tracker and skips the issue anchors with a counted notice; before, an empty answer turned every open anchored issue into "not open" and the gate RED. A listing with content judges as before ([#1294](https://github.com/mmeyerlein/meclaw/issues/1294)).
+- **Template versions (#1294):** third digit, `access@2.6.2`, `argus@1.4.2`, `builder@1.28.4`, `builder-librarian@2.2.83`, `canvy@2.4.4`, `coder-pipeline@3.0.3`, `cogny@5.12.4`, `colony-view@1.2.1`, `curator@1.15.1`, `daily-digest@2.2.8`, `file-space@1.5.2`, `firewall@2.5.2`, `librarian@1.0.4`, `llm-registry@2.12.2`, `memory-hive@3.16.7`, `objects@1.0.4`, `operator@1.2.9`, `research-assistant@2.3.3`, `simple-agent@1.1.1`, `steward@2.2.3`, `submit@2.4.4`, `talky@6.10.4`, `tools@1.6.2`; third digit for the pins that follow, `assistant@3.8.7`, `egon@2.2.3`, `figure@1.0.2`, `freeswitch@2.4.7`, `meclaw-os@2.2.70`, `member@2.6.7`, `org@2.1.44`, `slack-agent@2.2.3`, `summarizer@2.3.3`, `telegram-connector@2.2.4`, `voice@2.6.5`.
 
 ## [0.70.2] — 2026-10-22
 

@@ -1,4 +1,4 @@
-# `objects@1.0.3`
+# `objects@1.0.4`
 
 The objects of one member ([#951](https://github.com/mmeyerlein/meclaw/issues/951)): a thing its conversations keep naming becomes a row -- a type, its aliases, six slots and references -- learned in a round and visible only to the rounds that round covers. The hive is sealed (`params.ports: []`). Cells: `gate` (code, the one writer), `brief` (code, renders), `push` (code, events out), `source` (code, node source for the graph space), `tools` and `schemas` (code, a model's tools), `store` (store, `write_surface: internal`). No model, no network, no clock.
 

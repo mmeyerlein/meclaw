@@ -683,6 +683,26 @@ class WaveName(unittest.TestCase):
         self.assertIn("scripts/new.py:2 ", found[0].message)
 
 
+class WaveNameWithoutDate(WaveName):
+    """GH #1294 (K2): the open waves were only the `plans/welle-*` of
+    `turnaround.NEUTRAL`, and their post-gate files only the ones that glob
+    matched -- the running wave of GH #1294 (no `welle-` prefix, no
+    date) got no needle, a line naming its report was silent. A wave section
+    Live names as running counts as well, its files by its own name."""
+
+    WAVE = "folge-0101"
+
+    def repo(self, base_files=None):
+        from pipeline import wave
+        table = "# Plans\n\n## Live\n\n| Path | What it is |\n|---|---|\n"
+        files = {"plans/README.md": wave.live_open(table, self.WAVE, "Wave F.", "2026-01-01")}
+        files.update(base_files or {})
+        return super().repo(files)
+
+    # the closed/open cases build their own README for a dated wave
+    test_a_file_name_only_a_closed_wave_carries_is_silent_and_red_while_it_is_open = None
+
+
 class RunArtefacts(unittest.TestCase):
     """`last_run.json` and stray symlinks: four incidents, no gate run lost."""
 
