@@ -1,4 +1,4 @@
-# `member@2.7.1`
+# `member@2.7.2`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and four edges.
@@ -430,7 +430,11 @@ still wins where it names a turn, and a call from inside a round finds the round
 `collector -> brain` put it. The collector says on stderr when it parks a result without one.
 
 **The record, and the subscription it owns.** Read on `in_brief`, write on
-`in_propose`, answers back out. And the **push** into a subscribing brain belongs
+`in_propose`, answers back out -- to an outside caller only: an `ack` or `error` that
+carries `context.propose_caller` belongs to a caller inside the member (an app's
+embedded agent, whose road the builder draws) and takes that road alone
+([#1315](https://github.com/mmeyerlein/meclaw/issues/1315); before, a copy climbed the
+levels and died as `hive_no_route`). And the **push** into a subscribing brain belongs
 here: that was the half [#302](https://github.com/mmeyerlein/meclaw/issues/302)
 left open and it is decided ([#453](https://github.com/mmeyerlein/meclaw/issues/453)).
 A subscription is a **row in the record**, the record is this level's, and an
@@ -841,7 +845,7 @@ steal each other's updates.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.2.4"}],
+  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.2.5"}],
   "add_edges": [
     {"from": "./channels/telegram", "to": "./channels",
      "condition": "!has(hop.error_code)",
@@ -885,7 +889,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.7.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.7.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1121,7 +1125,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.7.1"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.7.2"}]
 }}
 ```
 
@@ -1130,7 +1134,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.0"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.1"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

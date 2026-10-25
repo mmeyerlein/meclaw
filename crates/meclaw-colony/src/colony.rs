@@ -10938,6 +10938,7 @@ pub(crate) async fn handle_mutation(
         &registered_by_this_mutation,
         &id,
         message_timeout_default_ms,
+        |target| registry.get(target).is_some_and(|e| e.active),
     );
     if !resolved_seed_rows.is_empty() {
         // GH #1077: every target is a `store` (resolve refused anything else),
@@ -13880,7 +13881,7 @@ mod tests {
         };
         assert_eq!(
             receipt_paths_of(&json!({"scope": "/os/orgs/o/members/m",
-                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.0"}],
+                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.1"}],
                          "add_edges": [{"from": "./figure", "to": "./access"}]}})),
             own(&["/os/orgs/o/members/m"], &["/os/orgs/o/members/m/figure"])
         );

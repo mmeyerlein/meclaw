@@ -309,6 +309,11 @@ fn marker(dir: &Path, name: &str) {
 /// `in_hand` requires `context.actor`; the header-contract check finds that
 /// setter upstream of `/os/orgs`, over the registry's push), and the member
 /// `/os/orgs/o/members/m` with its `access`, `affinity` and an empty `apps`.
+/// `/os` is connected the way the shell's is: its only external edges lead to
+/// `/colony/*` endpoints (a lab shell, 25.10.: `/os/builder/eyes ->
+/// /colony/graph` and its siblings). Without one the unit `/os` has no external
+/// edge, the boot derives its whole subtree inactive, and the member's
+/// `access/store` can never answer a seed order (#1315, OR-agent-2.N2.6).
 /// Returns the member's directory.
 fn member_colony(td: &Path) -> PathBuf {
     let main = td.join("main");
@@ -317,6 +322,8 @@ fn member_colony(td: &Path) -> PathBuf {
     hive(
         &os,
         serde_json::json!([
+            {"from": ".", "to": "/colony/graph",
+             "condition": "has(hop.route) && hop.route == 'graph'"},
             {"from": ".", "to": "./llm-registry",
              "condition": "has(hop.route) && hop.route == 'in_hand'",
              "modifier": {"set_context": {"actor": "'operator'"}}},
@@ -335,14 +342,31 @@ fn member_colony(td: &Path) -> PathBuf {
     );
     marker(&os.join("llm-registry"), "llm-registry");
     let member = os.join("orgs/o/members/m");
-    for dir in [
-        os.join("orgs"),
-        os.join("orgs/o"),
-        os.join("orgs/o/members"),
+    // Each level serves the next one down, and the member's `access` answers
+    // up to the member -- the shell's own roads (lab slot-3, 25.10.), without
+    // which every hive below `/os/orgs` has no external edge and stays inactive.
+    for (dir, child, key, name) in [
+        (os.join("orgs"), "./o", "org", "o"),
+        (os.join("orgs/o"), "./members", "", ""),
+        (os.join("orgs/o/members"), "./m", "member", "m"),
     ] {
-        hive(&dir, serde_json::json!([]));
+        let condition = if key.is_empty() {
+            "has(hop.route) && hop.route == 'in_turn'".to_string()
+        } else {
+            format!(
+                "has(hop.route) && hop.route == 'in_turn' && (!has(context.{key}) || context.{key} == '{name}')"
+            )
+        };
+        hive(
+            &dir,
+            serde_json::json!([{"from": ".", "to": child, "condition": condition}]),
+        );
     }
-    hive(&member, serde_json::json!([]));
+    hive(
+        &member,
+        serde_json::json!([{"from": "./access", "to": ".",
+                            "condition": "has(hop.route) && hop.route == 'error'"}]),
+    );
     hive(&member.join("apps"), serde_json::json!([]));
     marker(&member.join("access"), "access");
     marker(&member.join("affinity"), "affinity");
@@ -437,6 +461,27 @@ fn the_simple_agent_block_commits_in_a_member_colony() {
         member.join("agent/enrol/config.json").is_file(),
         "the door laid the agent down at the member: {out}"
     );
+    the_store_answered_every_seed_order(&member);
+}
+
+/// #1315 (OR-agent-2.N2.6): the seed order reached the member's running
+/// `access/store` and the store wrote it on its own connection. The rows in
+/// its `grants` table are the store's receipt: the deadline path
+/// (`seed_receipt_timeout`) and an inactive store (`seed_target_inactive`)
+/// both leave the table empty, because the door writes into `cell.db` only for
+/// a store the same mutation grows. Read after `--apply` has exited.
+fn the_store_answered_every_seed_order(member: &Path) {
+    let path = member.join("access/store/cell.db");
+    let db =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap_or_else(|e| panic!("the store's own database {}: {e}", path.display()));
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM grants", [], |r| r.get(0))
+        .expect("the store's grants");
+    assert!(
+        rows > 0,
+        "the block seeds ./access/store, and the store wrote no grant: the door answered without it"
+    );
 }
 
 /// GH #1312 (K-4, OR-AG-76/-77) -- `install_app` of an app that embeds
@@ -485,4 +530,5 @@ fn install_app_wires_the_rim_of_an_embedded_agent_in_a_member_colony() {
             .is_file(),
         "the door laid the app's agent down: {out}"
     );
+    the_store_answered_every_seed_order(&member);
 }

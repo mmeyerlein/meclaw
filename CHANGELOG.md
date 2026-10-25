@@ -12,6 +12,26 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.73.0] — 2026-10-26
+
+Builder -> submit grows an embedded `simple-agent@2` without the `model_push_form` refusal, every embedding names the app that owns it, an empty `phone_message` counts as a figure's action, a seed order to a store that is inactive answers at once, an embedded agent's enrolment acks leave no dead letters, and the timer takes a lead time `after_ms` so a debounce can no longer arrive in the past; an inner turn now crosses the firewall with its kind, source and delivery channel and reaches talky on its own channel, and a booted run over the member's whole road closes the test gap of #1305.
+
+### Changed
+
+- `submit`: the gate takes the model road of an agent the builder grows one level below the registry's container -- the level's bare `in_model` door in the entry that bears the agent, the push one hive deeper to a brain the same manifest announces, and the announcement off that level's receipt -- so builder -> submit of the `simple_agent` block or of `install_app` with an embedded `simple-agent@2` is no longer refused `model_push_form`; the door stays refused for every other bare `in_model` edge (#1315).
+- `memory-hive`: `./embed` takes `x_title` / `http_referer` as params (default: the environment's value, as before) and the `simple_agent` block and `install_app` set the instance's app id on it, so every embedding names the app that owns it; a lock holds every code cell that calls a provider to the same form (#1315).
+- `figure`: an empty `phone_message`, which the world refuses, counts as the turn's action and costs no follow-up; documented and locked as the deliberate form (#1315).
+- Mutation door: a `seed_rows` order to a store that is inactive once the mutation's topology stands is no longer sent and waited for until its backstop (121 s with the shipped default); the door books `seed_target_inactive` at once and answers (#1315).
+- `member`: the outside reply road of `./affinity` (`ack`, `error`) no longer carries an answer that names an inside caller (`context.propose_caller`), so an embedded agent's enrolment leaves no `hive_no_route` dead letters (#1315).
+- `timer`: `add`/`modify` take a lead time `after_ms` in place of `at`, resolved on the timer's own clock, and the watchdog block's `retrigger` sends its quiet time that way, so a debounce can no longer arrive in the past (`at_in_past`) (#1315).
+- **Template versions (#1315):** second digit, `memory-hive@3.18.0`, `submit@2.5.0`; third digit, `access@2.6.3`, `affinity@3.11.2`, `argus@1.4.4`, `builder@1.30.1`, `builder-librarian@2.2.88`, `figure@2.0.1`, `member@2.7.2`, `session-keeper@2.7.1`, `simple-agent@2.1.1`; third digit for the pins that follow, `assistant@3.10.1`, `coder-pipeline@3.0.5`, `daily-digest@2.2.9`, `egon@2.2.5`, `freeswitch@2.4.8`, `meclaw-os@2.3.2`, `operator@1.2.10`, `org@2.2.2`, `research-assistant@2.3.5`, `slack-agent@2.2.5`, `steward@2.2.5`, `summarizer@2.3.5`, `talky@6.11.2`, `telegram-connector@2.2.5`, `voice@2.6.6`.
+
+### Fixed
+
+- `firewall`: an inner turn keeps `kind`, `inner_source` and `deliver_channel_node` through the screen, its store round trips and a hold, so it reaches talky's inner door on its own channel `inner:<source>` and its answer reaches the channel it names, instead of being stamped as a person's turn on channel `default`; a person's turn crosses byte for byte as before ([#1316](https://github.com/mmeyerlein/meclaw/issues/1316)).
+- The inner turns of [#1305](https://github.com/mmeyerlein/meclaw/issues/1305) shipped without a run over the member's whole road; a booted run from the member's door through its firewall, an assistant and talky to the channel now closes that gap ([#1316](https://github.com/mmeyerlein/meclaw/issues/1316)).
+- **Template versions (#1316):** third digit, `firewall@2.5.3`.
+
 ## [0.72.0] — 2026-10-25
 
 `figure@2.0.0` stands on `simple-agent@2` and is an agent of its colony; the builder grows that agent one level deeper inside another template, and `install_app` draws the same required lanes for an app that embeds it, with one `agent_id` and grant ids that name it; enrolment and mutation receipts name the scopes and paths a knock wrote, apps can hand a tool's answer back as a later turn, the curator's history answers `context_turns` again, and the kit's unit runner no longer reports a failed set-up as green.

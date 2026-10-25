@@ -1415,6 +1415,55 @@ async fn a_world_turn_that_only_texts_gets_no_follow_up() {
     assert_eq!(stubs.brain.recorded_requests().await.len(), 2);
 }
 
+/// GH #1315 (F1 review M2, OR-agent-2.N2.4): an EMPTY `phone_message` costs
+/// no follow-up either. The world answers it `empty message` (an error, no
+/// text leaves the phone), and the agent's door counts the call as the turn's
+/// action all the same (mode `any` counts the calls the brain made, not their
+/// results): one round, two brain calls, no request that asks for an action.
+/// Pinned as the deliberate form since the move onto the door of
+/// `simple-agent@2`; before it, an empty text set no `acted` and the world
+/// asked once more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_text_message_costs_no_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_tool_calls(vec![("c-phone", "phone_message", r#"{"text":"  "}"#)]),
+            canned_chat_completion("Never mind.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(16, "Smoke rises.", json!([world_tool("walk")])))
+        .await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 16, "{slot}");
+    assert_eq!(slot["text"], "Never mind.", "{slot}");
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 2, "the call and the answer after its result");
+    assert!(
+        reqs.iter().all(|r| !r
+            .body
+            .to_string()
+            .contains("Choose one action from the world's tools")),
+        "no request asks for an action"
+    );
+    assert!(
+        reqs[1].body.to_string().contains("empty message"),
+        "the brain read the world's refusal of the empty text"
+    );
+    assert_eq!(
+        count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
+        1,
+        "the world turn alone"
+    );
+}
+
 /// A world that offers no tool of its own (the menu is `phone_message` alone)
 /// asks for nothing: text alone ends the turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

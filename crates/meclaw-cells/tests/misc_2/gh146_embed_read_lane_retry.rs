@@ -511,3 +511,53 @@ async fn the_write_lane_does_not_retry_in_process() {
         run.stderr
     );
 }
+
+// ------------------------------------------------------------- attribution
+
+/// GH #1315 (OR-AG-408 a): the embedder names the app of the instance that
+/// owns it, from its params -- the shipped default when nothing is set (the
+/// environment's value at instantiation, `MeClaw` / `https://meclaw.ai` here),
+/// a set's or the builder's values when they are. Before, the script held the
+/// environment's value as a literal and the params carried no key a set could
+/// override, so every embedding of a colony was billed to its default title.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_embedder_names_the_app_its_params_carry() {
+    for (over, title, referer) in [
+        (json!({}), "MeClaw", "https://meclaw.ai"),
+        (
+            json!({"x_title": "Example App", "http_referer": "https://example.com"}),
+            "Example App",
+            "https://example.com",
+        ),
+    ] {
+        let (addr, _join, cap) = start_mock_server_capturing(vec![embeddings_response(None)]).await;
+        let script = embed_script(&format!("http://{addr}/v1/embeddings"));
+        let mut params = embed_params(over.clone());
+        // The shipped params carry the `${…}` token; the colony resolves it
+        // at instantiation exactly as `embed_script` resolves the script's.
+        for key in ["x_title", "http_referer"] {
+            if let Some(token) = params[key].as_str().filter(|v| v.starts_with("${")) {
+                let default = token
+                    .trim_end_matches('}')
+                    .split_once(":-")
+                    .map(|(_, d)| d.to_string())
+                    .unwrap_or_default();
+                params[key] = json!(default);
+            }
+        }
+        let run = run_embed(&script, &query_doc("what does the user eat", params)).await;
+        assert_eq!(run.query_body()["degraded"], false, "{:?}", run.stderr);
+        let seen = cap.lock().await;
+        assert_eq!(seen.len(), 1, "{over}");
+        assert_eq!(
+            seen[0].headers.get("x-title").map(String::as_str),
+            Some(title),
+            "{over}"
+        );
+        assert_eq!(
+            seen[0].headers.get("http-referer").map(String::as_str),
+            Some(referer),
+            "{over}"
+        );
+    }
+}

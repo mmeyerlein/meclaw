@@ -265,14 +265,15 @@ impl LongRunningCell for TimerCell {
             // carries the id every answer below has to echo; on the raw-body
             // path there is none, and that `None` is what keeps that path
             // exactly as silent as it was.
-            let (op_val, tool_call_id) = match crate::timer::op::resolve_op_source(&msg, &body_val)
-            {
-                Ok(src) => (src.value, src.tool_call_id),
-                Err(e) => {
-                    crate::timer::emit::emit_op_error(sink, &msg, "parse_error", &e, None).await;
-                    return;
-                }
-            };
+            let (mut op_val, tool_call_id) =
+                match crate::timer::op::resolve_op_source(&msg, &body_val) {
+                    Ok(src) => (src.value, src.tool_call_id),
+                    Err(e) => {
+                        crate::timer::emit::emit_op_error(sink, &msg, "parse_error", &e, None)
+                            .await;
+                        return;
+                    }
+                };
 
             // GH #1019 (review B1): the gate sits before the parse, so a refused
             // op is refused whole -- nothing of it is read, planned or written.
@@ -308,6 +309,22 @@ impl LongRunningCell for TimerCell {
                 .get("schedule_id")
                 .and_then(|x| x.as_str())
                 .map(str::to_string);
+            // #1315 (K-6 b): a lead time (`after_ms`) is resolved against THIS
+            // clock read, so it cannot run out in flight the way a sender's
+            // own `at` does (orga-hive O1 lab 0.72.0: the gate's debounce
+            // `at = its now + 1 s` arrived past and was refused twice).
+            if let Err(e) = crate::timer::op::resolve_after(&mut op_val, op_now) {
+                crate::timer::emit::emit_op_error_for(
+                    sink,
+                    &msg,
+                    "parse_error",
+                    &e,
+                    tool_call_id.as_deref(),
+                    op_schedule_id.as_deref(),
+                )
+                .await;
+                return;
+            }
             let op = match crate::timer::op::TimerOp::parse(&op_val) {
                 Ok(o) => o,
                 Err(e) => {

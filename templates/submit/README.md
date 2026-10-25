@@ -1,4 +1,4 @@
-# `submit@2.4.4`
+# `submit@2.5.0`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -387,7 +387,7 @@ reaches the registry's hand on the lane the tree announces its brains on.
 So every `add_edges` entry whose condition or modifier names the road -- the lanes
 `in_model`, `model_subscribe` and, since 2.3.4, `model_refused` and `in_refused`, or
 the context keys `model_announcer`, `model_generation` and `model_announced` -- must
-be one of the three forms the builder renders, byte for byte:
+be one of the four forms the builder renders, byte for byte:
 
 - **push:** `from` is the declaration's own scope (`.`), `to` is a node under it
   whose path is a plain CEL literal (no quote, no backslash), the condition is
@@ -401,10 +401,26 @@ be one of the three forms the builder renders, byte for byte:
   named exception reaches one hive deeper since 2.3.5
   ([#877](https://github.com/mmeyerlein/meclaw/issues/877)): `curator/<cell>`, the
   summarizer of the curator a talky or cogny stands in front of, which the
-  composite's own `in_model` door hands on; any other two-segment path is refused.
+  composite's own `in_model` door hands on; any other two-segment path is refused,
+  but one ([#1315](https://github.com/mmeyerlein/meclaw/issues/1315)): `<hive>/<cell>`
+  under an agent the SAME manifest brings into the world and whose announcement
+  names exactly that brain -- the brain of a `simple-agent@2` embedded in an app.
   Violation → `model_push_form`.
+- **level door** (since [#1315](https://github.com/mmeyerlein/meclaw/issues/1315)): the one
+  bare `in_model` edge. `from` is `.`, `to` is an agent the SAME declaration
+  instantiates and whose brains the same manifest announces, the condition is exactly
+  `has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) ||
+  hop.subscriber.startsWith('<to>/'))`, and there is no modifier. It is the required
+  lane of the agent's rim, drawn by the entry that bears it (the door's birth check
+  probes the bare route), when the builder grows the agent one level below the
+  registry's container (`simple_agent` block, `install_app` of an app that embeds
+  one). A bare `in_model` edge onto anything else, in another entry, with another
+  condition, or with nobody announcing the agent's brains → `model_push_form`.
 - **announcement:** `from` is a generation some declaration of the SAME manifest
-  instantiates (the anchor rule of GH #566), `to` is `.`, the condition is exactly
+  instantiates (the anchor rule of GH #566) -- or, since
+  [#1315](https://github.com/mmeyerlein/meclaw/issues/1315), the level a declaration of
+  the same manifest stands at when it instantiates the announced generation below it
+  (an agent born into an existing level announces off that level's receipt) --, `to` is `.`, the condition is exactly
   the mutation receipt (`has(hop.route) && hop.route == 'mutation_committed'`),
   and the modifier is exactly `set_hop route 'model_subscribe'` plus two context
   keys: the generation itself on `context.model_generation`, and the announced

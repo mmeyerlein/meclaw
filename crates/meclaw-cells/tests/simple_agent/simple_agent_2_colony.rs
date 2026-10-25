@@ -1121,7 +1121,7 @@ fn sa2_builder_block_renders_one_agent_the_door_accepts() {
     let diff = &decl["diff"];
     let nodes = diff["add_nodes"].as_array().expect("add_nodes");
     assert_eq!(nodes.len(), 1, "one agent");
-    assert_eq!(nodes[0]["template"], "simple-agent@2.1.0");
+    assert_eq!(nodes[0]["template"], "simple-agent@2.1.1");
     assert_eq!(
         decl["ctx"]["model"], "example-provider/brain-model",
         "ctx.model"
@@ -1310,8 +1310,8 @@ fn nest_wish(extra: Value) -> Value {
     p
 }
 
-/// The provider cells of `@2` -- its llm cells; `memory-hive/embed` and
-/// `tools/web_search` are code cells and read the colony's own app id.
+/// The llm cells of `@2`. Its embedder (`memory-hive/embed`) names the app
+/// too since GH #1315; `tools/web_search` calls no model and takes no app id.
 const LLM_CELLS: [&str; 7] = [
     "brain",
     "strong",
@@ -1364,20 +1364,23 @@ fn sa2_builder_block_renders_an_agent_one_level_deeper() {
             "{cell}"
         );
     }
-    // The app id reaches every llm cell (W1 finding 3); `strong` only when it is on.
-    for cell in LLM_CELLS.iter().filter(|c| **c != "strong") {
+    // The app id reaches every llm cell (W1 finding 3) and, since GH #1315
+    // (OR-AG-408 a), the embedder; `strong` only when it is on.
+    for cell in LLM_CELLS
+        .iter()
+        .filter(|c| **c != "strong")
+        .chain(&["memory-hive/embed"])
+    {
         let o = &overrides[&format!("simple-agent/{cell}")];
         assert_eq!(o["x_title"], "meclaw-example simple-agent-colony", "{cell}");
         assert_eq!(o["http_referer"], "https://meclaw.ai", "{cell}");
     }
-    for cell in ["memory-hive/embed", "tools/web_search"] {
-        assert!(
-            overrides
-                .get(&format!("simple-agent/{cell}"))
-                .is_none_or(|o| o.get("x_title").is_none()),
-            "{cell} is a code cell"
-        );
-    }
+    assert!(
+        overrides
+            .get("simple-agent/tools/web_search")
+            .is_none_or(|o| o.get("x_title").is_none()),
+        "the search cell calls no model"
+    );
     let edges = diff["add_edges"].as_array().cloned().unwrap_or_default();
     let contract = contract_from_cell_dir(&nest, "/nest").expect("the nest has a contract");
     check_required_lanes(std::slice::from_ref(&contract), &root_table(&edges))
@@ -1726,7 +1729,7 @@ async fn wait_sealed(h: &meclaw_testing::ColonyHandle) -> usize {
 fn embedding_app_wish() -> Value {
     let example = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
     let figure = read_json(&repo("templates/figure/config.json"));
-    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.0.0",
+    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.0.1",
            "screen": "display", "ctx": {"model": "example-provider/brain-model"},
            "declaration": {}, "credential": example["credential"],
            "override_params": {"world": {"figure_id": "fig", "world_id": "w", "role": "npc"}},
@@ -1836,58 +1839,250 @@ fn sa2_install_app_draws_the_rim_of_an_embedded_agent() {
     );
 }
 
-/// K-4 item 3 (OR-AG-79, finding for N2): `install_app` of an app that embeds
-/// `simple-agent@2` does NOT pass the submit gate. The gate's model-road forms
-/// know a push to one segment under a composite (`<to>/<cell>`, or
-/// `curator/<cell>`) and the assistant's announcement; the agent's push
-/// (`<app>/simple-agent/brain`) is refused `model_push_form`, and without the
-/// push the announcement is refused `model_announcement_form`. Nothing else is
-/// refused: with the model road taken out the same manifest is parked and
-/// asked. The gate is not loosened here (OR-AG-79); the lock holds the refusal
-/// until N2 widens the forms, and the operator way (`--apply`) is pinned by
-/// `install_app_wires_the_rim_of_an_embedded_agent_in_a_member_colony`.
+/// GH #1315 (OR-AG-408 a): `install_app` of an app that embeds
+/// `simple-agent@2` names the app on the agent's embedder too, like on its llm
+/// cells -- the wish's `app_id` on `simple-agent/memory-hive/embed`; the search
+/// cell calls no model and gets none. Before, only the llm cells carried it
+/// and every embedding of the figure was billed to the colony's default title.
 #[test]
-fn sa2_install_app_of_an_embedded_agent_stops_at_the_submit_gates_model_forms() {
-    let gate = repo("templates/submit/gate/config.json");
-    if !shipped() || !repo("templates/figure/config.json").is_file() || !gate.is_file() {
+fn sa2_install_app_names_the_app_on_the_embedder() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
         return;
     }
-    let submit = |decls: &Value| -> Vec<Value> {
-        let canon = meclaw_testing::code_wire::run_shipped_script(
-            concat!(
-                "import sys, json, hashlib\n",
-                "d = json.load(sys.stdin)\n",
-                "c = json.dumps(d, sort_keys=True, separators=(',', ':'), ensure_ascii=False)\n",
-                "sys.stdout.write(hashlib.sha256(c.encode('utf-8')).hexdigest())\n"
-            ),
-            &decls.to_string(),
-        );
-        let sha = String::from_utf8(canon.stdout).expect("hex");
-        meclaw_testing::emit_all(
-            &meclaw_testing::shipped_script(gate.to_str().expect("a utf-8 path")),
-            &json!({
-                "target": "/os/operator/submit",
-                "reply_to": "/os/operator/submit",
-                "header": {"hop": {"manifest_sha256": sha}, "context": {}},
-                "ttl": 64,
-                "manifest": decls,
-                "messages": [{"origin": "assistant", "type": "tool_call", "id": "op:c1",
-                              "text": "{}"}],
-                "params": {}
-            }),
-        )
-    };
-    let refused = |out: &[Value]| {
-        out.iter()
-            .find(|m| m["header"]["route"] == "receipt")
-            .and_then(|m| m["header"]["error_code"].as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
+    let mut wish = embedding_app_wish();
+    wish["app_id"] = json!("example-app fig");
+    let answer = render_install(&wish);
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    let overrides = app_overrides(&answer);
+    for cell in ["brain", "memory-hive/closer", "memory-hive/embed"] {
+        let o = &overrides[format!("simple-agent/{cell}")];
+        assert_eq!(o["x_title"], "example-app fig", "{cell}: {overrides:#}");
+        assert_eq!(o["http_referer"], "https://meclaw.ai", "{cell}");
+    }
+    assert!(
+        overrides["simple-agent/tools/web_search"]
+            .get("x_title")
+            .is_none(),
+        "{overrides:#}"
+    );
+}
+
+/// The submit gate (`templates/submit/gate`) on `decls`, submitted by
+/// `requester`: every message of its first phase.
+fn submit_gate(decls: &Value, requester: &str) -> Vec<Value> {
+    let gate = repo("templates/submit/gate/config.json");
+    let canon = meclaw_testing::code_wire::run_shipped_script(
+        concat!(
+            "import sys, json, hashlib\n",
+            "d = json.load(sys.stdin)\n",
+            "c = json.dumps(d, sort_keys=True, separators=(',', ':'), ensure_ascii=False)\n",
+            "sys.stdout.write(hashlib.sha256(c.encode('utf-8')).hexdigest())\n"
+        ),
+        &decls.to_string(),
+    );
+    let sha = String::from_utf8(canon.stdout).expect("hex");
+    meclaw_testing::emit_all(
+        &meclaw_testing::shipped_script(gate.to_str().expect("a utf-8 path")),
+        &json!({
+            "target": "/os/operator/submit",
+            "reply_to": requester,
+            "header": {"hop": {"manifest_sha256": sha}, "context": {}},
+            "ttl": 64,
+            "manifest": decls,
+            "messages": [{"origin": "assistant", "type": "tool_call", "id": "op:c1",
+                          "text": "{}"}],
+            "params": {}
+        }),
+    )
+}
+
+/// The gate's refusal code, or "" when it parked the manifest.
+fn gate_refused(out: &[Value]) -> String {
+    out.iter()
+        .find(|m| m["header"]["route"] == "receipt")
+        .and_then(|m| m["header"]["error_code"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Parked and its first question asked: the gate took the form.
+fn gate_parked_and_asked(out: &[Value]) -> bool {
+    gate_refused(out).is_empty()
+        && out.iter().any(|m| m["header"]["route"] == "sstore")
+        && out.iter().any(|m| m["header"]["route"] == "ask")
+}
+
+/// The operator, and an agent inside the registry's container: the two
+/// requesters a builder -> submit carries.
+const SUBMITTERS: [&str; 2] = [
+    "/os/operator/submit",
+    "/os/orgs/o/members/m/assistants/a/talky/brain",
+];
+
+/// GH #1315 (OR-AG-79, N1 K-4 item 3): builder -> submit of an app that
+/// embeds `simple-agent@2` passes the submit gate. The road `install_app`
+/// renders is the block's: the level's door onto the app in the entry that
+/// bears it (the bare `in_model` lane, the door's birth probe), one push per
+/// announced brain from the container onto the app, addressed one hive deeper
+/// (`<app>/simple-agent/brain`), and the announcement off the level's
+/// receipt. Before, the gate refused the level's door `model_push_form` and
+/// only operator manifests (`--apply`) could grow such an app.
+#[test]
+fn sa2_install_app_of_an_embedded_agent_passes_the_submit_gate() {
+    if !shipped()
+        || !repo("templates/figure/config.json").is_file()
+        || !repo("templates/submit/gate/config.json").is_file()
+    {
+        return;
+    }
     let manifest = render_install(&embedding_app_wish())["manifest"].clone();
-    let out = submit(&manifest);
-    assert_eq!(refused(&out), "model_push_form", "{out:#?}");
-    // Only the model road: without it the gate parks and asks.
+    for requester in SUBMITTERS {
+        let out = submit_gate(&manifest, requester);
+        assert!(gate_parked_and_asked(&out), "{requester}: {out:#?}");
+    }
+}
+
+/// GH #1315: the block's own road (`simple_agent` with the registry's
+/// container) is the same form one hive shallower and passes the same way.
+#[test]
+fn sa2_builder_block_in_a_member_colony_passes_the_submit_gate() {
+    if !shipped() || !repo("templates/submit/gate/config.json").is_file() {
+        return;
+    }
+    let mut wish = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    wish["scope"] = json!("/os/orgs/o/members/m");
+    let answer = render_wish_with(&wish, json!({"model_registry_scope": "/os/orgs"}));
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    for requester in SUBMITTERS {
+        let out = submit_gate(&answer["manifest"], requester);
+        assert!(gate_parked_and_asked(&out), "{requester}: {out:#?}");
+    }
+}
+
+/// GH #1315, the other half: the model door is not loosened for anything but
+/// that form. A bare `in_model` edge onto a node this manifest does not bring
+/// into the world, one whose brains nobody announces, one drawn outside the
+/// entry that bears the agent, one with a looser condition; a push one hive
+/// deeper to a brain nobody announced; an announcement off a level the agent
+/// is not born at -- each is refused, unasked. (Before GH #1315 this lock held
+/// the refusal of the whole rendered road; it now holds the foreign edges.)
+#[test]
+fn sa2_a_foreign_bare_model_edge_stays_refused_at_the_submit_gate() {
+    if !shipped()
+        || !repo("templates/figure/config.json").is_file()
+        || !repo("templates/submit/gate/config.json").is_file()
+    {
+        return;
+    }
+    let manifest = render_install(&embedding_app_wish())["manifest"].clone();
+    let level_door = |to: &str, abs: &str| {
+        json!({"from": ".", "to": to,
+               "condition": format!("has(hop.route) && hop.route == 'in_model' && \
+                                     (!has(hop.subscriber) || \
+                                     hop.subscriber.startsWith('{abs}/'))")})
+    };
+    let with_edge = |decl: usize, edge: Value| {
+        let mut m = manifest.clone();
+        m[decl]["diff"]["add_edges"]
+            .as_array_mut()
+            .expect("edges")
+            .push(edge);
+        m
+    };
+    let mut cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "a door onto a node already in the tree",
+            with_edge(
+                0,
+                level_door("./apps/other", "/os/orgs/o/members/m/apps/other"),
+            ),
+            "model_push_form",
+        ),
+        (
+            "a door onto the newborn, its condition looser",
+            with_edge(
+                0,
+                json!({"from": ".", "to": "./apps/fig",
+                       "condition": "has(hop.route) && hop.route == 'in_model'"}),
+            ),
+            "model_push_form",
+        ),
+        (
+            "a door onto the newborn addressed under somebody else",
+            with_edge(
+                0,
+                level_door("./apps/fig", "/os/orgs/o/members/m/apps/other"),
+            ),
+            "model_push_form",
+        ),
+        (
+            "a push one hive deeper to a brain nobody announced",
+            with_edge(
+                1,
+                json!({"from": ".", "to": "./o/members/m/apps/fig",
+                       "condition": "has(hop.route) && hop.route == 'in_model' && \
+                                     has(hop.subscriber) && hop.subscriber == \
+                                     '/os/orgs/o/members/m/apps/fig/simple-agent/strong'",
+                       "modifier": {"set_hop": {"route": "'in_model'"}}}),
+            ),
+            "model_push_form",
+        ),
+    ];
+    // The level's door alone: the container's entry (push + announcement) gone.
+    let mut alone = manifest.clone();
+    alone.as_array_mut().expect("entries").truncate(1);
+    cases.push(("the door with nobody announcing", alone, "model_push_form"));
+    // The door drawn in an entry of its own, not the one that bears the app.
+    let mut moved = manifest.clone();
+    let door = moved[0]["diff"]["add_edges"]
+        .as_array()
+        .and_then(|e| {
+            e.iter().position(|e| {
+                e["to"] == "./apps/fig"
+                    && e["modifier"].is_null()
+                    && e["condition"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("'in_model'"))
+            })
+        })
+        .expect("the level's door");
+    let edge = moved[0]["diff"]["add_edges"]
+        .as_array_mut()
+        .expect("edges")
+        .remove(door);
+    moved
+        .as_array_mut()
+        .expect("entries")
+        .push(json!({"scope": "/os/orgs/o/members/m", "diff": {"add_edges": [edge]}}));
+    cases.push(("the door outside the birth entry", moved, "model_push_form"));
+    // The announcement off a level the app is not born at.
+    let mut elsewhere = manifest.clone();
+    for e in elsewhere[1]["diff"]["add_edges"]
+        .as_array_mut()
+        .expect("edges")
+        .iter_mut()
+    {
+        if e["condition"]
+            .as_str()
+            .is_some_and(|c| c.contains("mutation_committed"))
+        {
+            e["from"] = json!("./o/members/n");
+        }
+    }
+    cases.push((
+        "an announcement off another level",
+        elsewhere,
+        "model_announcement_form",
+    ));
+    for (what, decls, code) in cases {
+        let out = submit_gate(&decls, SUBMITTERS[1]);
+        assert_eq!(gate_refused(&out), code, "{what}: {out:#?}");
+        assert!(
+            !out.iter().any(|m| m["header"]["route"] == "ask"),
+            "{what}: refused without asking the broker: {out:#?}"
+        );
+    }
+    // Only the model road: without it the same manifest is parked and asked.
     let mut bare = manifest.clone();
     for decl in bare.as_array_mut().into_iter().flatten() {
         if let Some(edges) = decl["diff"]["add_edges"].as_array_mut() {
@@ -1897,13 +2092,7 @@ fn sa2_install_app_of_an_embedded_agent_stops_at_the_submit_gates_model_forms() 
             });
         }
     }
-    let out = submit(&bare);
-    assert!(
-        refused(&out).is_empty()
-            && out.iter().any(|m| m["header"]["route"] == "sstore")
-            && out.iter().any(|m| m["header"]["route"] == "ask"),
-        "{out:#?}"
-    );
+    assert!(gate_parked_and_asked(&submit_gate(&bare, SUBMITTERS[1])));
 }
 
 /// The node override params of an `install_app` answer's first entry.
@@ -2057,4 +2246,64 @@ fn sa2_builder_block_takes_the_agents_own_id_and_refuses_two() {
     );
     let text = answer["messages"][0]["text"].as_str().unwrap_or_default();
     assert!(text.contains("\"field\": \"agent_id\""), "{text}");
+}
+
+/// The member's own edges out of `./affinity` that a message with `hop` and
+/// `context` would take (template `member`).
+fn member_affinity_exits(hop: Value, context: Value) -> Vec<String> {
+    let cfg: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../templates/member/config.json"),
+        )
+        .expect("templates/member/config.json"),
+    )
+    .expect("member config");
+    let (Value::Object(hop), Value::Object(context)) = (hop, context) else {
+        panic!("objects");
+    };
+    cfg["params"]["graph"]["edges"]
+        .as_array()
+        .expect("member edges")
+        .iter()
+        .filter(|e| e["from"] == json!("./affinity"))
+        .filter(|e| match e["condition"].as_str() {
+            None => true,
+            Some(src) => {
+                let c = meclaw_colony::cel_eval::parse_condition(src).expect("condition");
+                meclaw_colony::cel_eval::evaluate_condition(&c, &context, &hop).unwrap_or(false)
+            }
+        })
+        .map(|e| e["to"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// #1315 (K-6 a, orga-hive O1 lab 0.72.0, trace 01a173d3): the gate's answer to
+/// a proposal of an embedded agent left the member twice. The builder's road
+/// (`./affinity -> <caller>`, `context.propose_caller`) took it home, and the
+/// member's outside reply road (`./affinity -> .` on `ack`/`error`) took a
+/// copy up the levels, where no edge carried it on (`hive_no_route` at `/os`,
+/// three dead letters). The outside road answers outside callers only: an
+/// answer that names an inside caller takes no member exit.
+#[test]
+fn sa2_an_inside_callers_ack_takes_no_outside_road_of_the_member() {
+    for route in ["ack", "error"] {
+        let inside = member_affinity_exits(
+            json!({"route": route, "outcome": "accepted"}),
+            json!({"actor": "agent:a", "propose_caller": "./apps/orga"}),
+        );
+        assert!(
+            inside.is_empty(),
+            "an inside caller's {route} leaves the member by {inside:?}"
+        );
+        let outside = member_affinity_exits(
+            json!({"route": route, "outcome": "accepted"}),
+            json!({"actor": "operator"}),
+        );
+        assert_eq!(
+            outside,
+            vec!["."],
+            "an outside caller's {route} still goes home"
+        );
+    }
 }

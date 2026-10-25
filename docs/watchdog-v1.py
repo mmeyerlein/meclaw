@@ -28,8 +28,12 @@ def once(name, at_ms, emit_to, body, catch_up=True):
 
 def retrigger(name, now_ms, quiet_ms, emit_to, body):
     """Debounce: fires `quiet_ms` (> 0) after the last call; every call
-    pushes it out."""
-    return once(name, int(now_ms) + max(1, int(quiet_ms)), emit_to, body)
+    pushes it out. The lead travels as `after_ms` and the timer resolves it
+    on its own clock, so it cannot run out in flight; `now_ms` is not read."""
+    order = once(name, 0, emit_to, body)
+    del order["at"]
+    order["after_ms"] = max(1, int(quiet_ms))
+    return order
 
 
 def calendar(name, cron, emit_to, body):

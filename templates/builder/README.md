@@ -1,4 +1,4 @@
-# `builder@1.30.0`
+# `builder@1.30.1`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -995,7 +995,12 @@ byte. A push edge starts at the declaration's container and carries only the pus
 to one cell standing directly in its composite, or to the summarizer of the curator that composite
 stands in front of (GH #877); a return edge runs from one composite under the
 container to the container itself; an announcement edge starts at a generation the same
-manifest instantiates. Anything else is refused as `model_push_form`, `model_refusal_form` or
+manifest instantiates. An agent grown one level below the container (`simple_agent`, or
+`install_app` of an app that embeds `simple-agent@2`) adds the one bare `in_model` edge: the
+level's door onto the agent, in the entry that bears it, with its push one hive deeper
+(`<app>/simple-agent/brain`) and its announcement off the level's receipt -- each only together
+with the others and only for the brains that announcement names (GH #1315; before, only an
+operator manifest could grow it). Anything else is refused as `model_push_form`, `model_refusal_form` or
 `model_announcement_form` before the broker is asked, and so is any edge that writes the hop keys
 the road is addressed by, the two keys of a refusal among them (`model_road_key`), or computes a
 route the gate cannot list (`model_route_computed`). An edge drawn later at `/os/orgs` therefore
@@ -1080,7 +1085,7 @@ value, also the door's `strong`), `agent_id` (default `name`; an id in the `door
 (to `./enrol`), `start_memories` (to the door), `tools_enabled` (to `./tool_gate`, the families
 `bash`, `file`, `edit`, `web`, `weather`; anything else is `app_declaration_invalid`), `app_id` and
 `referer` (`x_title`/`http_referer` on every llm cell of the agent: both brains, the curator summarizer and
-the four memory cells; the embedder and the search are code cells and keep the colony's own),
+the four memory cells, and since GH #1315 the embedder `memory-hive/embed`; the search cell calls no model and takes none),
 `override_params`, `birth`, `ctx` and `contract` (below). `strong` also decides whether the second
 brain spends a grant: without it no grant row, no credential edge and no `credential_grant_id` names
 `strong`. Every grant id names the agent (`grant:<cred tail>@<subject>/<agent_id>/<consumer>`), so two

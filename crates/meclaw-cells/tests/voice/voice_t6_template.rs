@@ -415,7 +415,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.6.5"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.6.6"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()

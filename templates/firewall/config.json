@@ -114,7 +114,10 @@
               "fw_body": "hop.fw_body",
               "fw_now": "hop.fw_now",
               "fw_hold": "hop.fw_hold",
-              "turn_id": "hop.turn_id"
+              "turn_id": "hop.turn_id",
+              "fw_kind": "hop.fw_kind",
+              "fw_inner_source": "hop.fw_inner_source",
+              "fw_deliver_channel_node": "hop.fw_deliver_channel_node"
             }
           }
         },
@@ -141,7 +144,10 @@
               "wd_body",
               "wd_meta",
               "wd_now",
-              "wd_phase"
+              "wd_phase",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -163,7 +169,10 @@
               "wd_body",
               "wd_meta",
               "wd_now",
-              "wd_phase"
+              "wd_phase",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -228,7 +237,10 @@
               "wd_body",
               "wd_meta",
               "wd_now",
-              "wd_phase"
+              "wd_phase",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -250,7 +262,10 @@
               "wd_body",
               "wd_meta",
               "wd_now",
-              "wd_phase"
+              "wd_phase",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -272,7 +287,10 @@
               "wd_body",
               "wd_meta",
               "wd_now",
-              "wd_phase"
+              "wd_phase",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -352,7 +370,10 @@
               "port_phase",
               "port_run",
               "port_table",
-              "user_id"
+              "user_id",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -374,7 +395,10 @@
               "port_phase",
               "port_run",
               "port_table",
-              "user_id"
+              "user_id",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         },
@@ -396,7 +420,10 @@
               "port_phase",
               "port_run",
               "port_table",
-              "user_id"
+              "user_id",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
             ]
           }
         }

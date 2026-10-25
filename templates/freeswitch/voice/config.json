@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "voice@2.6.5"
+    "template": "voice@2.6.6"
   },
   "override_params": {
     "": {

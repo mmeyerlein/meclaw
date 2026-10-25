@@ -1,4 +1,4 @@
-# `simple-agent@2.1.0`
+# `simple-agent@2.1.1`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
@@ -265,7 +265,8 @@ and `./llm-registry` of the level it is born into, the grants in that level's
 `model` is the brain's start value (`ctx.model`); `strong` names the second brain's and
 switches it on at the door; `identity`, `charter` and `disclose` go to `./enrol`,
 `start_memories` to the door, `tools_enabled` to `./tool_gate`, and `app_id`/`referer` to
-`x_title`/`http_referer` of `brain` and `strong`. One grant per consumer of the credential
+`x_title`/`http_referer` of every model cell: both brains, the curator summarizer, the four memory
+cells and the embedder (GH #1315). One grant per consumer of the credential
 table (`tools/web_search` only with a `search_cred_ref`). The model road: the registry's
 pushes under the agent's path arrive as `in_model`, refusals go back as `in_refused`, and every
 receipt of the level announces `brain` (and `strong`) with their need. No runner mode per tool
@@ -281,7 +282,7 @@ is no deep merge: overriding `collector` replaces only the top-level key named.
 |---|---|---|---|
 | `brain` | `model` | `${ctx.model}` | the provider model id, a resolved literal |
 | `brain` | `reasoning_effort` | `medium` | `low`/`medium`/`high`, passed through |
-| every model cell | `x_title`, `http_referer` | `${OPENROUTER_X_TITLE:-MeClaw}`, `${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}` | the app attribution every request sends |
+| every model cell and `memory-hive/embed` | `x_title`, `http_referer` | `${OPENROUTER_X_TITLE:-MeClaw}`, `${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}` | the app attribution every request sends (the embedder's since GH #1315) |
 | `door` | `agent_id` | `agent` | the agent's id: entry `entity:<id>` in the colony's affinity, actor `agent:<id>` |
 | every model cell | `credential_grant_id`, `api_key` | `""` | the grant in the colony's access, set at birth (above) |
 | `door` | `start_memories` | `[]` | `{what, with?, at?}` written once as episodes |

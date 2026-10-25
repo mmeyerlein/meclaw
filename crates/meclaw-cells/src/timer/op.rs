@@ -282,6 +282,36 @@ fn parse_add(
     })
 }
 
+/// #1315 (K-6 b): turn a lead time into the moment it names. An `add` or
+/// `modify` may say `after_ms` (an integer > 0) instead of `at`; the timer
+/// sets `at = now + after_ms` with `now` its own clock read for the op, so a
+/// debounce cannot arrive already past (a sender's `at` loses its lead in
+/// flight). `after_ms` beside `at` or `cron` is refused; an op without it is
+/// left as it is.
+pub fn resolve_after(v: &mut JsonValue, now: DateTime<Utc>) -> Result<(), String> {
+    let Some(obj) = v.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(raw) = obj.remove("after_ms") else {
+        return Ok(());
+    };
+    if obj.contains_key("at") || obj.contains_key("cron") {
+        return Err("after_ms XOR at|cron -- exclusive".into());
+    }
+    let ms = raw
+        .as_i64()
+        .filter(|ms| *ms > 0)
+        .ok_or("after_ms: an integer > 0")?;
+    let at = now
+        .checked_add_signed(chrono::Duration::milliseconds(ms))
+        .ok_or("after_ms: the moment does not fit a timestamp")?;
+    obj.insert(
+        "at".into(),
+        JsonValue::String(at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+    );
+    Ok(())
+}
+
 /// GH #81: where an op arrived from, and what the answer has to echo.
 #[derive(Debug)]
 pub struct OpSource {

@@ -60,7 +60,9 @@ every such store has sent its receipt; the receipts, digest included, then sit i
 the `mutation_log` row under `seed_receipts`. A reader right after `committed`
 sees the rows. A store that sends no receipt within its `cell.message_timeout`
 leaves an entry with `error_code: "seed_receipt_timeout"` there instead, and the
-answer stays `committed`.
+answer stays `committed`. A store that is inactive when the mutation leaves it
+(disconnected, or failed past its restart limit) gets no message at all: it could not answer, so the
+entry reads `error_code: "seed_target_inactive"` at once.
 
 Since #1236, the model twin of a `swap_nodes` (an `llm` cell put in place of an
 `llm` cell, GH #1034) gets the original's state by message as well. The colony
@@ -449,9 +451,9 @@ Scope is `channels`, the hive that already exists.
   "ctx": {"model": "<the brain's model, as a resolved literal>"},
   "diff": {
     "add_nodes": [
-      {"name": "telegram", "template": "telegram-connector@2.2.4",
+      {"name": "telegram", "template": "telegram-connector@2.2.5",
        "override_params": {"bot_token_grant_id": "grant:telegram-bot@<subject>/channels-telegram"}},
-      {"name": "talky", "template": "talky@6.11.1"}
+      {"name": "talky", "template": "talky@6.11.2"}
     ]
   }
 }

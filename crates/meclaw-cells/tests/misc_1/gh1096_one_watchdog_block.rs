@@ -94,13 +94,63 @@ fn blocks_in(text: &str) -> Vec<Result<String, String>> {
     out
 }
 
+/// A frozen template version: `<name>@<major>.<minor>.<patch>` (R-SA-37), the
+/// name of a template directory right under the swept root. Any other `@` in
+/// a path is swept like every other directory.
+fn is_frozen_version(dir: &str) -> bool {
+    let Some((name, version)) = dir.split_once('@') else {
+        return false;
+    };
+    let parts: Vec<&str> = version.split('.').collect();
+    !name.is_empty()
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Every block found in the `config.json` strings and `.py` files under `dir`.
+fn blocks_under(dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+    let mut out = Vec::new();
+    for f in files {
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let mut texts = Vec::new();
+        if name == "config.json" {
+            let raw = std::fs::read_to_string(&f).expect("config.json");
+            let v: Value = sj::from_str(&raw).expect("config.json parses");
+            strings_of(&v, &mut texts);
+        } else if name.ends_with(".py") {
+            texts.push(std::fs::read_to_string(&f).expect(".py"));
+        }
+        for t in texts {
+            out.extend(blocks_in(&t).into_iter().flatten());
+        }
+    }
+    out
+}
+
 /// (canonical copies seen, findings) over every `config.json` string and
 /// every `.py` file under `root`.
+///
+/// A frozen version directory (`<name>@<version>`, e.g. `simple-agent@1.1.4`)
+/// is not swept: it carries the block of the day it froze, its bytes are held
+/// by `scripts/tests/test_frozen_templates.py`, and an old block there still
+/// speaks a contract the timer keeps (`at`; #1315 added `after_ms` beside it).
 fn sweep(root: &Path, canonical: &str) -> (usize, Vec<String>) {
     let mut files = Vec::new();
     walk(root, &mut files);
     let (mut copies, mut findings) = (0, Vec::new());
     for f in files {
+        let frozen = f
+            .strip_prefix(root)
+            .ok()
+            .and_then(|rel| rel.components().next())
+            .is_some_and(|c| is_frozen_version(&c.as_os_str().to_string_lossy()));
+        if frozen {
+            continue;
+        }
         let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let texts: Vec<String> = if name == "config.json" {
             let raw = std::fs::read_to_string(&f).expect("config.json");
@@ -162,9 +212,70 @@ fn a_drifted_copy_and_a_lone_marker_are_findings() {
     assert!(findings[1].contains("without its closing"), "{findings:?}");
 }
 
+/// #1315 (OR-agent-2.N2.8): the sweep skips a frozen version directory only.
+/// A drifted copy under a directory with an `@` that names no version is
+/// still a finding.
+#[test]
+fn only_a_frozen_version_directory_is_skipped() {
+    let canonical = canonical();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let drifted = canonical.replace("catch_up=True", "catch_up=False");
+    for t in ["t@1.0.0/cell", "t@next/cell", "t/c@1.0.0"] {
+        let cell = dir.path().join(t);
+        std::fs::create_dir_all(&cell).expect("dirs");
+        let cfg = sj::json!({"params": {"script_inline": drifted.clone()}});
+        std::fs::write(cell.join("config.json"), cfg.to_string()).expect("write");
+    }
+    let (_, findings) = sweep(dir.path(), &canonical);
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    assert!(
+        findings.iter().all(|f| !f.contains("t@1.0.0")),
+        "the frozen version is skipped: {findings:#?}"
+    );
+}
+
+/// #1315 (OR-agent-2.N2.8): the frozen `simple-agent@1.1.4` keeps the block
+/// of the day it froze, whose debounce names a moment (`at`). The timer still
+/// takes it: the lead-time resolution leaves such an op as it is, and it
+/// parses as the same one-shot it always was, so v1 stays runnable.
+#[test]
+fn the_frozen_block_still_speaks_a_contract_the_timer_keeps() {
+    let blocks = blocks_under(&repo("templates/simple-agent@1.1.4"));
+    assert!(!blocks.is_empty(), "simple-agent@1.1.4 carries the block");
+    let now = chrono::DateTime::from_timestamp_millis(1_893_456_000_000).expect("now");
+    for block in blocks {
+        assert_ne!(block, canonical(), "the frozen copy is the old block");
+        let ops = ops_with(
+            &block,
+            "AT = 1893456000000\n\
+             print(json.dumps(retrigger('w', AT, 30000, '../x', {'messages': []})))\n",
+        );
+        assert_eq!(ops.len(), 1);
+        let mut op = ops[0].clone();
+        assert!(
+            op.get("after_ms").is_none(),
+            "the old block names a moment: {op}"
+        );
+        meclaw_cells::timer::op::resolve_after(&mut op, now).expect("an op without a lead");
+        assert_eq!(op, ops[0], "the timer leaves a moment as it came");
+        match TimerOp::parse(&op).expect("the timer takes the old op") {
+            TimerOp::Add { row, .. } => match row.kind {
+                ScheduleKind::At(t) => assert_eq!(t.timestamp_millis(), 1_893_456_030_000),
+                other => panic!("a one-shot, not {other:?}"),
+            },
+            other => panic!("an add, not {other:?}"),
+        }
+    }
+}
+
 /// The ops the block builds, as JSON lines, from a probe appended to it.
 fn ops_of(probe: &str) -> Vec<Value> {
-    let script = format!("{}\nimport json\n{probe}\n", canonical());
+    ops_with(&canonical(), probe)
+}
+
+/// The ops `block` builds, as JSON lines, from a probe appended to it.
+fn ops_with(block: &str, probe: &str) -> Vec<Value> {
+    let script = format!("{block}\nimport json\n{probe}\n");
     let mut child = Command::new("python3")
         .arg("-")
         .stdin(Stdio::piped())
@@ -226,13 +337,26 @@ fn the_block_speaks_the_timer_contract() {
         once_ms, 1_893_456_000_001,
         "the moment travels to the millisecond"
     );
-    let (id2, quiet_ms) = at(&ops[1]);
+    // #1315 (K-6 b): a debounce carries its lead, not a moment of the
+    // caller's clock; the timer resolves `after_ms` on its own clock read
+    // (here a fixed one, the AT of the script).
+    let timer_now = chrono::DateTime::from_timestamp_millis(1_893_456_000_000).expect("AT");
+    let resolved = |v: &Value| {
+        assert!(
+            v.get("at").is_none(),
+            "a debounce names no moment of the caller: {v}"
+        );
+        let mut v = v.clone();
+        meclaw_cells::timer::op::resolve_after(&mut v, timer_now).expect("a lead time");
+        v
+    };
+    let (id2, quiet_ms) = at(&resolved(&ops[1]));
     assert_eq!(id, id2, "one name, one id: re-arming replaces");
     assert_eq!(
         quiet_ms, 1_893_456_030_000,
-        "a debounce fires `quiet` after the call"
+        "a debounce fires `quiet` after the timer took it"
     );
-    let (_, zero_ms) = at(&ops[2]);
+    let (_, zero_ms) = at(&resolved(&ops[2]));
     assert!(
         zero_ms > 1_893_456_000_000,
         "a zero quiet time is still ahead, never `now`"

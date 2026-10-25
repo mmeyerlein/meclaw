@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.72.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.73.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.73.0: builder -> submit grows an embedded `simple-agent@2`, embeddings name their app, a seed order to an
+  inactive store answers at once, the timer takes a lead time `after_ms`, and an inner turn crosses the firewall
+  to reach talky on its own channel.
 - v0.72.0: `figure@2` stands on `simple-agent@2`; the builder grows the agent one level deeper and
   `install_app` draws its lanes under one `agent_id`, receipts name scopes and paths, apps hand answers back
   as later turns, and the curator's history answers `context_turns` again.

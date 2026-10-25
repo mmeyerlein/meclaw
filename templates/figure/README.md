@@ -1,4 +1,4 @@
-# `figure@2.0.0`
+# `figure@2.0.1`
 
 A character in a shared world, built as an onion: inside, an unchanged
 [`simple-agent@2`](../simple-agent/), the agent of a colony (one model behind a curator, a
@@ -66,7 +66,9 @@ nothing. Its calls leave under the world's `turn_id`; the door's one answer ends
 and its text joins both texts. There is no second follow-up. A `contact` turn, a
 turn whose world offered no tool of its own (`phone_message` alone does not count), a turn that hit
 the agent's loop cap (`partial`: its budget is spent), a phone and an interview turn get none. A
-text message counts as an action; a call of an extra tool does not.
+text message counts as an action; a call of an extra tool does not. The door counts the calls the
+model made, not their results: an empty `phone_message`, which the world refuses (`empty message`,
+nothing leaves the phone), counts too and costs no follow-up (GH #1315).
 
 The figure never cuts a turn short: `deadline_ms` is the world's. A lost `call_result` ends
 the turn through the agent's own guard (`round_idle_ms`), so an instance sets the agent's
@@ -220,8 +222,8 @@ shipped value whole (no deep merge), so `phone` is given as a whole object.
 | `world` | `extra_tools` | `[]`: client tools offered on every turn beside the world's menu (above) |
 | `simple-agent/<cell>` | every `simple-agent@2` param | addressed by the cell's path inside the agent, e.g. `simple-agent/brain` (`model`, `reasoning_effort`, `x_title`, `http_referer`), `simple-agent/door` (`agent_id`, `start_memories`), `simple-agent/enrol` (`agent_id`, `identity`), every model cell and `simple-agent/tools/web_search` (`credential_grant_id`, at birth), `simple-agent/door` and `simple-agent/collector/assemble` (`round_idle_ms`, both the same value) |
 
-The app attribution is the agent's: every model cell of `simple-agent` carries `x_title` and
-`http_referer`, and an instance names its origin there (`<product> <colony>`).
+The app attribution is the agent's: every model cell of `simple-agent` and its embedder
+(`simple-agent/memory-hive/embed`, since GH #1315) carry `x_title` and `http_referer`, and an instance names its origin there (`<product> <colony>`).
 
 ## The rim is marked
 

@@ -78,6 +78,111 @@ struct Site {
 /// is not JSON is no cell any boot could start, and is left to the tests of
 /// its own tree.
 fn llm_sites(top: &str) -> Vec<Site> {
+    cell_sites(top, |config| config["cell"]["type"] == "llm")
+}
+
+/// The API routes a model or embedding provider serves under its versioned
+/// base (`…/v1/embeddings`, `…/v1/chat/completions`, …). These are the shape
+/// of the call, not words of a prompt.
+const PROVIDER_ROUTES: &[&str] = &[
+    "/embeddings",
+    "/chat/completions",
+    "/completions",
+    "/responses",
+    "/messages",
+];
+
+/// Whether `text` holds a URL that addresses a provider route: `http(s)://`,
+/// then a path whose last segments are `v<digits>` and one of
+/// [`PROVIDER_ROUTES`]. A `${VAR:-https://…}` default counts like a literal.
+fn names_a_provider_endpoint(text: &str) -> bool {
+    let stop = |c: char| c.is_whitespace() || "\"'`}),;<>".contains(c);
+    let mut rest = text;
+    while let Some(at) = rest.find("http") {
+        let tail = &rest[at..];
+        rest = &rest[at + 4..];
+        let Some(after) = tail
+            .strip_prefix("https://")
+            .or_else(|| tail.strip_prefix("http://"))
+        else {
+            continue;
+        };
+        let url = after.split(stop).next().unwrap_or_default();
+        let url = url.split(['?', '#']).next().unwrap_or_default();
+        let url = url.trim_end_matches('/');
+        for route in PROVIDER_ROUTES {
+            if let Some(head) = url.strip_suffix(route)
+                && let Some((_, version)) = head.rsplit_once('/')
+                && version.len() > 1
+                && version.starts_with('v')
+                && version[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Every string a value holds, depth first.
+fn strings_of(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|v| strings_of(v, out)),
+        Value::Object(map) => map.values().for_each(|v| strings_of(v, out)),
+        _ => {}
+    }
+}
+
+/// Whether a `config.json` is a `code` cell that calls a provider itself: its
+/// script or any of its params names a provider endpoint (the URL it sends
+/// to, or the default behind an `endpoint` param), or its script already
+/// sends the attribution header. Recognised by the call, not by the header:
+/// a new cell that calls a provider and sends no app id at all is found too.
+fn calls_a_provider(config: &Value) -> bool {
+    if config["cell"]["type"] != "code" {
+        return false;
+    }
+    let script = config["params"]["script_inline"]
+        .as_str()
+        .unwrap_or_default();
+    let mut strings = Vec::new();
+    strings_of(&config["params"], &mut strings);
+    script.contains("\"X-Title\"") || strings.iter().any(|s| names_a_provider_endpoint(s))
+}
+
+/// Every directory under `top` whose `config.json` is a `code` cell that calls
+/// a provider itself ([`calls_a_provider`]): it speaks to a model or embedding
+/// endpoint on the colony's key (GH #1315: `memory-hive/embed`,
+/// `file-space/embed`). The search and fetch tools are native cells that call
+/// no provider and are not code.
+fn provider_code_sites(top: &str) -> Vec<Site> {
+    cell_sites(top, calls_a_provider)
+}
+
+/// What a provider-calling code cell lacks of its app id: both keys in the
+/// reference form under `params`, and no attribution of the environment
+/// written into the script itself.
+fn params_findings(dir: &str, config: &Value, form: &Value) -> Vec<String> {
+    let mut missing = Vec::new();
+    for key in KEYS {
+        if config["params"][*key] != form[*key] {
+            missing.push(format!("{dir} {key} = {}", config["params"][*key]));
+        }
+    }
+    let script = config["params"]["script_inline"]
+        .as_str()
+        .unwrap_or_default();
+    if script.contains("${OPENROUTER_X_TITLE") || script.contains("${OPENROUTER_HTTP_REFERER") {
+        missing.push(format!(
+            "{dir}: the script holds the environment's attribution itself"
+        ));
+    }
+    missing
+}
+
+/// Every directory under `top` whose `config.json` `pick` takes, sorted by path.
+fn cell_sites(top: &str, pick: impl Fn(&Value) -> bool) -> Vec<Site> {
     let root = core_root();
     let top_dir = root.join(top);
     let mut out = Vec::new();
@@ -101,7 +206,7 @@ fn llm_sites(top: &str) -> Vec<Site> {
             let Ok(config) = meclaw_core::serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            if config["cell"]["type"] != "llm" {
+            if !pick(&config) {
                 continue;
             }
             let cell_dir = p.parent().expect("a config.json has a directory");
@@ -238,6 +343,110 @@ fn the_door_admits_a_sets_attribution_on_every_cell() {
         "a set's attribution must pass the door:\n{}",
         refused.join("\n")
     );
+}
+
+/// GH #1315 (OR-AG-408 a): a code cell that calls a model or embedding
+/// endpoint itself names its app like an llm cell -- both keys as params in the
+/// reference form, read from `params` by its script, so a set or the builder
+/// sets them per instance. Before, `memory-hive/embed` wrote the environment's
+/// value into its script text: every embedding of every agent of a colony
+/// carried the colony's default title, and no override could reach it (the
+/// door refuses a key the cell's params do not carry).
+#[test]
+fn every_code_cell_that_calls_a_provider_carries_the_attribution_as_params() {
+    let form = read_json(&format!("{REFERENCE}/config.json"))["params"].clone();
+    let mut sites = provider_code_sites("templates");
+    sites.extend(provider_code_sites("examples"));
+    assert!(
+        sites.iter().any(|s| s.dir == "templates/memory-hive/embed"),
+        "the walk did not find templates/memory-hive/embed -- wrong root"
+    );
+    let registry = shipped_registry();
+    let mut missing = Vec::new();
+    for site in &sites {
+        let config = read_json(&format!("{}/config.json", site.dir));
+        missing.extend(params_findings(&site.dir, &config, &form));
+        let Some((template_root, cell_key)) = &site.template else {
+            continue;
+        };
+        let template = template_root.trim_start_matches("templates/");
+        let parsed = parse_subtree(&core_root().join(template_root), &registry)
+            .unwrap_or_else(|e| panic!("the shipped template '{template}' parses: {e:?}"));
+        let version = read_json(&format!("{template_root}/template.json"))["version"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if let Some(cell) = parsed.cells.iter().find(|c| c.rel_path == *cell_key)
+            && let Err(why) = check_override_params(
+                cell,
+                Some(cell_key),
+                &format!("{template}@{version}"),
+                &json!({"x_title": "Example App", "http_referer": "https://example.com"}),
+            )
+        {
+            missing.push(format!("{template}/{cell_key}: the door refuses {why:?}"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "a provider-calling code cell without its app id as params:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// The lock finds a provider-calling code cell by its call, not by the header
+/// it already sends. Mutant: a copy of `memory-hive/embed` that sends no app
+/// id at all (no `x_title`/`http_referer` params, no `X-Title` header) is
+/// still recognised and is a finding; a colony URL or a catalog's
+/// `base_url` field is no provider call.
+#[test]
+fn a_copy_of_an_embed_cell_without_its_app_id_is_found() {
+    let form = read_json(&format!("{REFERENCE}/config.json"))["params"].clone();
+    let mut copy = read_json("templates/memory-hive/embed/config.json");
+    let params = copy["params"].as_object_mut().expect("params");
+    for key in KEYS {
+        params.remove(*key);
+    }
+    let script = params["script_inline"]
+        .as_str()
+        .expect("script_inline")
+        .replace(", \"X-Title\": X_TITLE", "")
+        .replace(
+            "\"HTTP-Referer\": HTTP_REFERER",
+            "\"Accept\": \"application/json\"",
+        );
+    assert!(
+        !script.contains("X-Title") && !script.contains("HTTP-Referer"),
+        "the mutant still sends an attribution header"
+    );
+    params.insert("script_inline".into(), Value::String(script));
+    assert!(
+        calls_a_provider(&copy),
+        "a copy of memory-hive/embed without its app id is not recognised as a provider call"
+    );
+    let findings = params_findings("copy-of/memory-hive/embed", &copy, &form);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+
+    for not_a_call in [
+        "http://127.0.0.1:7800/colony/messages",
+        "base_url = row[\"base_url\"]",
+        "https://example.com/v1/models",
+    ] {
+        assert!(
+            !names_a_provider_endpoint(not_a_call),
+            "{not_a_call} read as a provider call"
+        );
+    }
+    for call in [
+        "${MEMORY_EMBED_ENDPOINT:-https://openrouter.ai/api/v1/embeddings}",
+        "url = \"https://api.anthropic.com/v1/messages\"",
+        "http://127.0.0.1:8000/v1/chat/completions?x=1",
+    ] {
+        assert!(
+            names_a_provider_endpoint(call),
+            "{call} not read as a provider call"
+        );
+    }
 }
 
 /// The cell's own shipped params with every `${…}` placeholder resolved to its

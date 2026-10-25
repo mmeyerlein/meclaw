@@ -9,7 +9,7 @@
         "add_nodes": [
           {
             "name": "agent",
-            "template": "simple-agent@2.1.0",
+            "template": "simple-agent@2.1.1",
             "override_params": {
               "brain": {
                 "credential_grant_id": "grant:openrouter@colony-example/ava/brain",
@@ -42,7 +42,9 @@
                 "http_referer": "https://meclaw.ai"
               },
               "memory-hive/embed": {
-                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-embed"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-embed",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               },
               "door": {
                 "agent_id": "ava"

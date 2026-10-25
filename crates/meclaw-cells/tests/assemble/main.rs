@@ -16,6 +16,7 @@ pub mod gh1282_a_consult_window_ends_on_its_request;
 pub mod gh1292_a_turn_answerers_menu_never_folds;
 pub mod gh1300_a_bridge_never_follows_its_answer;
 pub mod gh1304_the_stamp_asks_the_products_choices;
+pub mod gh1316_an_inner_turn_crosses_the_member_to_its_channel;
 pub mod gh532_two_askers_one_hive;
 pub mod gh533_the_outside_asker_gets_an_answer;
 pub mod gh562_recall_rides_a_v_lane_and_the_member_stamps;

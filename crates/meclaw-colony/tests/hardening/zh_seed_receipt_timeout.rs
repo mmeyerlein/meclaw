@@ -128,3 +128,75 @@ async fn a_store_that_never_answers_its_seed_lane_still_gets_a_committed_answer(
     assert_eq!(r["error_code"], json!("seed_receipt_timeout"), "{r}");
     h.shutdown().await;
 }
+
+/// #1315 (OR-agent-2.N2.6): a store that is INACTIVE when the mutation leaves
+/// it — here because its hive has no external edge, as `/os` had none in the
+/// gh1310 member colony — can never answer: routing dead-letters its seed
+/// order as `cell_inactive` without waking it. The door therefore books the
+/// refusal itself at once (`seed_target_inactive`) instead of waiting out the
+/// store's backstop. The marker is the code: the deadline path writes
+/// `seed_receipt_timeout`, so `seed_target_inactive` in the ledger means the
+/// deadline never ran. The store's backstop is set far beyond the hang marker,
+/// so a door that still waited for it would not answer within it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_store_that_is_inactive_gets_its_refusal_without_a_wait() {
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let main = td.path().join("main");
+    std::fs::create_dir_all(main.join("h").join(NODE)).expect("cell dirs");
+    std::fs::write(
+        main.join("config.json"),
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[]}}}"#,
+    )
+    .expect("root config");
+    // The hive serves its store but nothing outside reaches the hive: the unit
+    // has no external edge, so the boot derives it inactive.
+    std::fs::write(
+        main.join("h/config.json"),
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[{"from":".","to":"./keeper"}]}}}"#,
+    )
+    .expect("hive config");
+    let mut cfg = store_config();
+    cfg["cell"]["message_timeout"] = json!(3_600_000);
+    std::fs::write(
+        main.join("h").join(NODE).join("config.json"),
+        cfg.to_string(),
+    )
+    .expect("store config");
+    let factory: Arc<dyn CellFactory> = Arc::new(PersistCellFactory {
+        spawn_count: Arc::new(AtomicU32::new(0)),
+    });
+    let h = ColonyHandle::new_with_factories_at(&td, vec![("store".to_string(), factory.clone())]);
+    let mut boot = meclaw_colony::CellFactoryRegistry::new();
+    boot.insert("store".into(), factory);
+    meclaw_colony::bootstrap_from_filesystem(td.path(), &boot, &h.runtime())
+        .await
+        .expect("the boot from the tree");
+
+    let out = mutate(
+        &h,
+        json!({"scope": "/", "diff": {"seed_rows": [
+            {"target": format!("h/{NODE}"), "table": "policy", "rows": [{"rule_id": "r1"}]}
+        ]}}),
+    )
+    .await;
+    let id = match &out {
+        MutationOutcome::Committed { id, .. } => id.clone(),
+        other => panic!("the answer stays committed: {other:?}"),
+    };
+    let row = h
+        .mutations_audit(None)
+        .await
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("the audit names no mutation {id}"));
+    let payload: Value =
+        meclaw_core::serde_json::from_str(&row.payload_json).expect("payload json");
+    let receipts = payload["seed_receipts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the ledger names no seed receipt: {payload}"));
+    assert_eq!(receipts.len(), 1, "{payload}");
+    let r = &receipts[0];
+    assert_eq!(r["target"], json!(format!("/h/{NODE}")), "{r}");
+    assert_eq!(r["error_code"], json!("seed_target_inactive"), "{r}");
+    h.shutdown().await;
+}

@@ -403,3 +403,80 @@ async fn a_one_shot_that_came_due_inside_the_io_set_fires() {
         .expect("run_io hung after reconfig close")
         .unwrap();
 }
+
+/// #1315 (K-6 b, orga-hive O1 lab 0.72.0): a debounce is a lead time, not a
+/// moment. The affinity gate armed `at = its own now + 1 s`, and `affinity/clock`
+/// refused it twice in one enrolment (`add: at ... is not in the future`): the
+/// lead ran out in flight, exactly the window this file is about. `after_ms`
+/// is resolved against the op's own clock read, so even a lead of one
+/// millisecond is ahead at the guard by construction: the row is stored and
+/// planned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_with_a_lead_time_is_resolved_on_the_timer_clock_and_planned() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    setup_timer_schema(&conn).unwrap();
+    let mut db = DbConn::wrap(conn, None);
+    let mut cell = TimerCell::new(Path::new("/t"), vec![], 5000);
+
+    let (out_tx, _out_rx) = mpsc::channel::<CellEmission>(8);
+    let (rc_tx, mut rc_rx) = mpsc::channel::<TimerReconfig>(8);
+
+    let id = Uuid::now_v7();
+    let msg = build_op_msg(json!({
+        "op": "add",
+        "schedule_id": id.to_string(),
+        "schedule_name": "debounce",
+        "after_ms": 1,
+        "emit_to": "/dst",
+        "emit_body": {},
+        "rearm": true,
+    }));
+    let sink = sink_from(&msg, out_tx);
+
+    cell.handle(msg, &sink, &mut db, &rc_tx).await;
+
+    tokio::time::timeout(meclaw_testing::deadline::HANG, rc_rx.recv())
+        .await
+        .expect("a lead time is planned, not refused")
+        .expect("the snapshot");
+    let row = db
+        .call(move |c| load_schedule(c, id))
+        .await
+        .unwrap()
+        .expect("the one-shot is stored");
+    assert!(matches!(row.kind, ScheduleKind::At(_)), "{:?}", row.kind);
+}
+
+/// #1315: `after_ms` names the moment, so beside `at` it is a contradiction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_with_a_lead_time_and_a_moment_is_refused() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    setup_timer_schema(&conn).unwrap();
+    let mut db = DbConn::wrap(conn, None);
+    let mut cell = TimerCell::new(Path::new("/t"), vec![], 5000);
+
+    let (out_tx, mut out_rx) = mpsc::channel::<CellEmission>(8);
+    let (rc_tx, _rc_rx) = mpsc::channel::<TimerReconfig>(8);
+
+    let msg = build_op_msg(json!({
+        "op": "add",
+        "schedule_id": Uuid::now_v7().to_string(),
+        "schedule_name": "both",
+        "after_ms": 1000,
+        "at": FAR_FUTURE,
+        "emit_to": "/dst",
+        "emit_body": {},
+    }));
+    let sink = sink_from(&msg, out_tx);
+    cell.handle(msg, &sink, &mut db, &rc_tx).await;
+
+    let em = tokio::time::timeout(meclaw_testing::deadline::HANG, out_rx.recv())
+        .await
+        .expect("answered")
+        .unwrap();
+    assert_eq!(
+        em.content["header"]["error_code"], "parse_error",
+        "{}",
+        em.content
+    );
+}

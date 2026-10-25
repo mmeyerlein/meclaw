@@ -487,6 +487,14 @@ pub const RECEIPT_SLOT: &str = "seed_receipt";
 /// OR-programm-tm.H3.6).
 pub const RECEIPT_TIMEOUT_CODE: &str = "seed_receipt_timeout";
 
+/// The `error_code` of a ledger receipt the door wrote itself because the store
+/// is inactive when the order would leave (#1315, OR-agent-2.N2.6): routing
+/// dead-letters a message to an inactive cell (`cell_inactive`) without waking
+/// it, so the store can never answer, and waiting out its backstop only delays
+/// the door's answer by `cell.message_timeout` (121 s with the shipped default,
+/// measured in the gh1310 member colony whose `/os` had no external edge).
+pub const RECEIPT_INACTIVE_CODE: &str = "seed_target_inactive";
+
 /// One declaration bound for a RUNNING store (#1233, T6-09). The door no longer
 /// opens a second connection into a cell's `cell.db` (cell boundaries are hard,
 /// an owner ruling); it sends the rows as a message and the store writes them on
@@ -505,6 +513,10 @@ pub struct SeedOrder {
     pub rows: Vec<Map<String, Value>>,
     /// How long the door waits for this store's receipt.
     pub wait: std::time::Duration,
+    /// The store is inactive (disconnected, or failed past its restart limit)
+    /// as the mutation leaves it: the order is not sent, the door books [`RECEIPT_INACTIVE_CODE`]
+    /// at once instead of waiting for a receipt that cannot come (#1315).
+    pub inactive: bool,
 }
 
 impl SeedOrder {
@@ -518,11 +530,16 @@ impl SeedOrder {
     /// either answered or the substrate cut its handle. A store that switched its
     /// backstop off still gets the shipped default, because the door must answer
     /// (OR-programm-tm.H3.6).
+    ///
+    /// `is_active` is the registry's `active` flag after the mutation's own
+    /// activity recompute: an order to an inactive store is marked
+    /// [`SeedOrder::inactive`] (#1315).
     pub fn split(
         resolved: Vec<ResolvedSeedRows>,
         born_here: &[meclaw_core::Path],
         mutation_id: &str,
         message_timeout_default_ms: u64,
+        is_active: impl Fn(&meclaw_core::Path) -> bool,
     ) -> (Vec<ResolvedSeedRows>, Vec<SeedOrder>) {
         let mut direct = Vec::new();
         let mut orders = Vec::new();
@@ -535,6 +552,7 @@ impl SeedOrder {
                         .unwrap_or(std::time::Duration::from_millis(
                             crate::DEFAULT_MESSAGE_TIMEOUT_MS,
                         ));
+                let inactive = !is_active(&r.target);
                 orders.push(SeedOrder {
                     order_id: meclaw_core::Uuid::now_v7().to_string(),
                     mutation_id: mutation_id.to_string(),
@@ -542,6 +560,7 @@ impl SeedOrder {
                     table: r.table,
                     rows: r.rows,
                     wait,
+                    inactive,
                 });
             }
         }
@@ -629,6 +648,32 @@ impl SeedWaits {
         };
         let mut wait = std::time::Duration::ZERO;
         for o in orders {
+            if o.inactive {
+                // #1315: routing would dead-letter this order as `cell_inactive`
+                // without waking the store, so no receipt can come. The door
+                // books the refusal now instead of arming a deadline for it.
+                let mut r = Map::new();
+                r.insert("id".into(), Value::String(o.order_id.clone()));
+                r.insert("target".into(), Value::String(o.target.as_str().into()));
+                r.insert("table".into(), Value::String(o.table.clone()));
+                r.insert(
+                    "error_code".into(),
+                    Value::String(RECEIPT_INACTIVE_CODE.into()),
+                );
+                r.insert(
+                    "error".into(),
+                    Value::String(format!(
+                        "{} is inactive, so its seed lane was not sent",
+                        o.target.as_str()
+                    )),
+                );
+                pending
+                    .receipts
+                    .entry(o.mutation_id)
+                    .or_default()
+                    .push(Value::Object(r));
+                continue;
+            }
             let msg = o.message(trace_id);
             match inbox_self_tx.try_send(crate::colony::ColonyMsg::Route {
                 sender_path: meclaw_core::Path::new(DOOR),

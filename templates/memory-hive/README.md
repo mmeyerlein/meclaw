@@ -1,4 +1,4 @@
-# `memory-hive@3.17.1`
+# `memory-hive@3.18.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1339,7 +1339,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.17.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.18.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1745,7 +1745,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.7.1",
+{"add_nodes": [{"name": "alex", "template": "member@2.7.2",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1785,7 +1785,7 @@ rollout, and set it to the strongest model you have (see below).
 | `MEMORY_EMBED_ENDPOINT` | `https://openrouter.ai/api/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | `MEMORY_EMBED_MODEL` | `google/gemini-embedding-2` | the embedding model. Must match the `model_id` in `store/seed/emb_models.jsonl` |
 | `MEMORY_EMBED_DIM` | `1024` | requested `dimensions`; must match `emb_models.dim` (1024 bits → 128 packed bytes) |
-| `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | OpenRouter app attribution headers |
+| `OPENROUTER_HTTP_REFERER` / `OPENROUTER_X_TITLE` | `https://meclaw.ai` / `MeClaw` | OpenRouter app attribution headers: the default of `http_referer` / `x_title` in the params of every llm cell and, since GH #1315, of `./embed` (a set or the builder names the instance's app there) |
 
 **Why the three embedding lines stayed together, and why they stayed in `.env`.**
 `MEMORY_EMBED_MODEL`, `MEMORY_EMBED_DIM` and the shipped `store/seed/emb_models.jsonl` are ONE
