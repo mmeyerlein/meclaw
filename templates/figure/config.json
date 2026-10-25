@@ -31,9 +31,24 @@
         "because": "an answer on the figure's own human channel becomes a phone turn whose reply leaves as a turn"
       },
       {
+        "accepts": "tool_result",
+        "emits": "intent",
+        "because": "an extra tool's result goes back into the open turn, which ends as an intent"
+      },
+      {
         "accepts": "in_model",
         "emits": "model_refused",
         "because": "a refused push is otherwise silent"
+      },
+      {
+        "accepts": "in_pack",
+        "emits": "pack_ack",
+        "because": "the colony's affinity books a pack only on its receipt"
+      },
+      {
+        "accepts": "in_conversations",
+        "emits": "conversations",
+        "because": "a reader that is never answered cannot tell an empty history from a lost answer"
       }
     ],
     "contract": {
@@ -63,12 +78,64 @@
           "because": "the colony's answer on the figure's human channel (`context.channel` = `<prefix>:<world_id>:<figure_id>`): a phone turn"
         },
         {
+          "route": "tool_result",
+          "because": "the result of one extra tool's `calls`: `{id, content, is_error?}`, the `id` of the call; it continues the open turn"
+        },
+        {
           "route": "in_model",
-          "because": "a model package of the llm-registry for a model cell of the agent (GH #858), handed on unchanged"
+          "because": "a model package of the colony's llm-registry for a model cell of the agent (GH #858), handed on unchanged; required as at the agent",
+          "required": true
         },
         {
           "route": "mutation_committed",
-          "because": "the graph moved: handed on to the agent, which asks for its tools again"
+          "because": "the graph moved: handed on to the agent, which asks for its tools again and enrols itself on a receipt that concerns it (simple-agent@2 `enrol`)"
+        },
+        {
+          "route": "in_pack",
+          "at": [
+            "./simple-agent/curator"
+          ],
+          "required": true,
+          "because": "the figure's identity and `instructions` from the colony's affinity, pushed to the subscription of the figure's entry `entity:<agent_id>`. A V-LANE docking at the agent's curator, as at the agent; the embedder's edge promotes `hop.pack_sub` and `hop.pack_hash` into context. Required"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./simple-agent/brain",
+            "./simple-agent/strong",
+            "./simple-agent/curator/summarizer",
+            "./simple-agent/memory-hive/closer",
+            "./simple-agent/memory-hive/dialectic",
+            "./simple-agent/memory-hive/dreamer",
+            "./simple-agent/memory-hive/judge",
+            "./simple-agent/memory-hive/embed",
+            "./simple-agent/tools/web_search"
+          ],
+          "required": true,
+          "because": "the colony access's sealed box for the model cell (or `tools/web_search`) that asked: one edge per consumer, addressed by `hop.grant_id`. A V-LANE docking at the cell itself; the figure holds no grant. Required"
+        },
+        {
+          "route": "in_briefing",
+          "at": [
+            "./simple-agent/collector"
+          ],
+          "required": true,
+          "because": "the colony affinity's brief for a turn's counterpart. A figure's turns name no counterpart, so none is asked; the lane is the agent's and required at its birth"
+        },
+        {
+          "route": "in_note",
+          "at": [
+            "./simple-agent/curator"
+          ],
+          "because": "notes for the agent's window (curator `in_note`), with the round in `context.audience_set`"
+        },
+        {
+          "route": "in_propose_ack",
+          "because": "the colony affinity's answer to one `affinity_propose` of the agent (its affinity tool or its enrolment, `context.sa_enrol`), handed on unchanged"
+        },
+        {
+          "route": "in_conversations",
+          "because": "a reader asks the agent's memory for whole conversations (simple-agent@2), handed on unchanged; answered on `conversations`"
         }
       ],
       "emits": [
@@ -97,12 +164,47 @@
           "because": "a message of the figure's handset in the form of a door: `hop.chat_id` `<prefix>:<world_id>:<figure_id>`, one user turn (prefix `hp`, or `game` with hop `speaker`)"
         },
         {
+          "route": "calls",
+          "because": "an extra tool the model called: `{id, name, arguments}`, hop `tool_name`, `tool_call_id` and the round keys; its result comes back on `tool_result`"
+        },
+        {
           "route": "model_refused",
           "because": "a model package a model cell of the agent refused (GH #863)"
         },
         {
           "route": "error",
           "because": "`{error_code, turn_id?, kind}`; `error_code` is never null"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./simple-agent/brain",
+            "./simple-agent/strong",
+            "./simple-agent/curator/summarizer",
+            "./simple-agent/memory-hive/closer",
+            "./simple-agent/memory-hive/dialectic",
+            "./simple-agent/memory-hive/dreamer",
+            "./simple-agent/memory-hive/judge",
+            "./simple-agent/memory-hive/embed",
+            "./simple-agent/tools/web_search"
+          ],
+          "because": "a model cell of the agent (or `tools/web_search`) born with a grant asks the colony's access for its key: one edge per consumer, from the cell itself"
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of a colony pack that came in on `in_pack`, with `context.pack_sub` and `context.pack_hash`, for the colony affinity's `in_pack_ack`. The world's own frame pack never leaves"
+        },
+        {
+          "route": "brief",
+          "because": "the agent's brief request about a turn's counterpart; a figure's turns name none, so it stays silent"
+        },
+        {
+          "route": "affinity_propose",
+          "because": "one write of the agent into its own entry: the affinity tool's, or a step of its enrolment (`context.sa_enrol`), as affinity's `in_propose` takes it"
+        },
+        {
+          "route": "conversations",
+          "because": "the answer to `in_conversations`: the conversations the reader may see"
         }
       ]
     },
@@ -147,6 +249,21 @@
           "from": ".",
           "to": "./simple-agent",
           "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": ".",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'in_propose_ack'"
+        },
+        {
+          "from": ".",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'in_conversations'"
+        },
+        {
+          "from": ".",
+          "to": "./world",
+          "condition": "has(hop.route) && hop.route == 'tool_result' && !has(hop.figure_rim)"
         },
         {
           "from": "./world",
@@ -239,6 +356,21 @@
           }
         },
         {
+          "from": "./world",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'calls' && has(hop.figure_rim) && hop.figure_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'calls'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
           "from": "./phone",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'turn' && has(hop.figure_rim) && hop.figure_rim == 'out'",
@@ -285,8 +417,9 @@
         },
         {
           "from": "./world",
-          "to": "./simple-agent",
-          "condition": "has(hop.route) && hop.route == 'in_pack' && !has(hop.figure_rim)"
+          "to": "./simple-agent/curator",
+          "condition": "has(hop.route) && hop.route == 'in_pack'",
+          "lane": "in_pack"
         },
         {
           "from": "./simple-agent",
@@ -324,6 +457,62 @@
           }
         },
         {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'pack_ack' && has(context.pack_sub) && context.pack_sub != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'pack_ack'"
+            },
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./simple-agent",
+          "to": "./world",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'pack_ack' && !(has(context.pack_sub) && context.pack_sub != '')"
+        },
+        {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brief'",
+          "modifier": {
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'affinity_propose'",
+          "modifier": {
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'conversations'",
+          "modifier": {
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
           "from": "./world",
           "to": "./phone",
           "condition": "has(hop.route) && hop.route == 'phone_out'"
@@ -337,9 +526,9 @@
     }
   },
   "description": {
-    "purpose": "A character in a shared world: a world adapter and a handset around a referenced simple agent; the world's tools are client tools of each turn.",
-    "use_when": "Instantiate once per character with `override_params` {\"world\": {\"figure_id\", \"world_id\", \"role\", \"phone\"}, \"agent/door\": {\"agent_id\", \"aieos\"}, …} and draw the world's lanes to its path.",
-    "not_in_scope": "No world knowledge, no deadline of its own, no copy of the agent.",
+    "purpose": "A character in a shared world: a world adapter and a handset around a referenced simple-agent@2, the agent of the colony; the world's tools are client tools of each turn.",
+    "use_when": "Instantiate once per character in a colony with `override_params` {\"world\": {\"figure_id\", \"world_id\", \"role\", \"phone\"}, \"simple-agent/door\": {\"agent_id\"}, \"simple-agent/enrol\": {\"agent_id\", \"identity\"}, the grant ids of the agent's model cells, ...}, draw the world's lanes to its path and the contract lanes to the colony's access, affinity and llm-registry.",
+    "not_in_scope": "No world knowledge, no deadline of its own, no copy of the agent, no grant and no access.",
     "examples": [
       "obs {turn_id: 't1', kind: 'contact', text, tools: [look, say]} -> call look -> call_result -> intent {turn_id: 't1', done: true, text}"
     ]

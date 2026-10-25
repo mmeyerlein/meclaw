@@ -93,7 +93,7 @@ The whole file of a `ref` directory, with a default for the referenced template'
 {
   "cell": {
     "type": "ref",
-    "template": "dispatcher@1.5.0"
+    "template": "dispatcher@1.6.0"
   },
   "override_params": {
     "": { "external_timeout_ms": 30000 }

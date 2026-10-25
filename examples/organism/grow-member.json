@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "alex",
-        "template": "member@2.7.0",
+        "template": "member@2.7.1",
         "override_params": {
           "access/vault": {
             "key_source": "plainfile",
@@ -43,6 +43,11 @@
         "from": ".",
         "to": "./alex",
         "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.member) || context.member == 'alex')"
+      },
+      {
+        "from": ".",
+        "to": "./alex",
+        "condition": "has(hop.route) && hop.route == 'in_conversations' && (!has(context.member) || context.member == 'alex')"
       },
       {
         "from": ".",
@@ -113,6 +118,31 @@
         "from": "./alex",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'stats'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'stamp'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'opened'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'closed'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'inner_silent'"
+      },
+      {
+        "from": "./alex",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'conversations'"
       }
     ]
   }

@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "dispatcher@1.5.0"
+    "template": "dispatcher@1.6.0"
   },
   "override_params": {
     "": {

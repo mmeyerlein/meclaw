@@ -75,7 +75,7 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `door` | warm | turn | |
 | `egon/persona` | warm | turn | |
 | `figure/phone` | warm | turn | |
-| `figure/world` | resident | turn | caches the turn queue, the open turn, the call book, the phone replies counted per world day, the answer rounds already taken (with the crc32 of their texts) and the capped ones not yet shown; a replaced child degrades as the template README says |
+| `figure/world` | resident | turn | caches the turn queue, the open turn, the call book, the phone replies counted per world day, the answer rounds already taken (with the crc32 of their texts), the capped ones not yet shown and the open extra-tool calls; a replaced child degrades as the template README says |
 | `file-space/derive` | warm | after | |
 | `file-space/embed` | warm | after | |
 | `file-space/extract` | warm | turn | its `pdftotext` subprocess ends within the message (`subprocess.run` with a timeout) |

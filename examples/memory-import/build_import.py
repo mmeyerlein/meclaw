@@ -377,11 +377,15 @@ def edges(name):
     # accepts it since member@1.4.0. The org above this container does not carry
     # the lane, so an edge for it here would be one nothing can ever deliver to
     # -- the second step addresses the member path itself.
+    # GH #1314 -- `in_conversations` (GH #1309) stands last among the doors;
+    # the route stamp, the three conversation events and `conversations`
+    # follow `stats` among the exits, in the order the recipe draws them.
     inbound = ["in_turn", "in_recall", "in_brief", "in_propose",
-               "in_build_result", "in_export"]
+               "in_build_result", "in_export", "in_conversations"]
     outbound = ["answer", "bundle", "ack", "reject", "error", "write",
                 "turn_write", "build", "close_report", "export_done",
-                "dump", "stats"]
+                "dump", "stats", "stamp", "opened", "closed",
+                "inner_silent", "conversations"]
     # The doors carry the member's own name as well (GH #478). `Edge.to` is a
     # static path, so a container with two members needs two addresses -- and
     # the guard is PERMISSIVE, because nothing promotes `context.member` today:

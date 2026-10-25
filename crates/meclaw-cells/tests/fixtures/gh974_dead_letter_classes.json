@@ -84,6 +84,20 @@
       "sender": "/os/orgs/lab/members/member/memory-hive/close-glue",
       "target": "/os",
       "why": "The close report of a session's close pass. The member hands it up for a keeper above the person; the library ships none, so it ends at the top of the graph. The pass itself is done; the report is the audit."
+    },
+    {
+      "route": "stamp",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky/route",
+      "target": "/os",
+      "why": "The route stamp on the rim (GH #1304, knob `stamp_out` \"1\"), one per turn, without text or notes. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph. Not a defect: the stamp already did its work inside talky, and the copy is the audit. With the knob off (as shipped) no stamp leaves talky."
+    },
+    {
+      "route": "stamp",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/route",
+      "target": "/os",
+      "why": "The route stamp on the rim (GH #1304, knob `stamp_out` \"1\"), one per turn, without text or notes. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph. Not a defect: the stamp already did its work inside talky, and the copy is the audit. With the knob off (as shipped) no stamp leaves talky."
     }
   ]
 }

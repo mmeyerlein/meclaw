@@ -288,8 +288,10 @@ async fn a_committed_single_mutation_leaves_one_receipt() {
             "form",
             "mutation_id",
             "outcome",
+            "paths",
             "route",
-            "scope"
+            "scope",
+            "scopes"
         ],
     );
     assert_eq!(
@@ -298,6 +300,14 @@ async fn a_committed_single_mutation_leaves_one_receipt() {
         "an edge mutation replaced nothing"
     );
     assert_eq!(hop_str(&receipt, "form"), "single");
+    assert_eq!(
+        (
+            &receipt.headers.hop["scopes"],
+            &receipt.headers.hop["paths"]
+        ),
+        (&json!(["/"]), &json!([])),
+        "GH #1312: an edge mutation at the root names the root"
+    );
     assert_eq!(
         &hop_str(&receipt, "mutation_id"),
         id,
@@ -340,8 +350,10 @@ async fn a_committed_manifest_names_every_id() {
             "form",
             "mutation_ids",
             "outcome",
+            "paths",
             "route",
-            "scope"
+            "scope",
+            "scopes"
         ],
         "a manifest names its ids in the plural key, and nothing else changes"
     );
@@ -351,6 +363,14 @@ async fn a_committed_manifest_names_every_id() {
         "two edge mutations replaced nothing"
     );
     assert_eq!(hop_str(&receipt, "form"), "manifest");
+    assert_eq!(
+        (
+            &receipt.headers.hop["scopes"],
+            &receipt.headers.hop["paths"]
+        ),
+        (&json!(["/"]), &json!([])),
+        "GH #1312: two edge entries at the root wrote there and nowhere else"
+    );
     let got: Vec<String> = receipt.headers.hop["mutation_ids"]
         .as_array()
         .expect("mutation_ids is a list")
@@ -420,4 +440,122 @@ async fn n_mutations_and_one_boot_leave_n_plus_one_receipts() {
         "the boot, then one receipt per mutation — and no receipt begets a receipt"
     );
     stays_quiet(&mut cap_rx).await;
+}
+
+// --- GH #1312 (finding 5): after a restart, the first answer to the boot
+// receipt reaches its target ------------------------------------------------
+//
+// Observed in a lab after a restart: cells that answer the boot receipt
+// emitted onto a neighbour, and the emissions died as `no_route`. The reading
+// to rule out: on a reboot the boot receipt is routed, and answered, before
+// the persisted edges and hive scopes stand. The fixture is the smallest shape
+// of that road: the receipt enters `/hive`, its `{from: "."}` edge hands it to
+// `/hive/a`, and `a` answers at once onto `/hive/capture` over an inner edge.
+// Booted twice on the same `colony.db` (the second boot hydrates edges and
+// scopes from disk), each boot delivers exactly that answer and leaves no dead
+// letter -- a positive receipt plus quiescence, never a time window.
+
+fn reboot_topology(root: &std::path::Path) {
+    // `/door` is the hive's outside: a hive is active only with an edge
+    // external to its unit (`connectivity.rs`, GH #265), as `/os` is in the
+    // shipped library. Nothing is ever sent over it.
+    write(
+        root,
+        "main",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
+            {"from":"./door","to":"./hive",
+             "condition":"has(hop.route) && hop.route == 'never'"}
+        ]}}}"#,
+    );
+    write(
+        root,
+        "main/door",
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hive"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+    );
+    write(
+        root,
+        "main/hive",
+        r#"{"cell":{"type":"hive"},"params":{"graph":{"edges":[
+            {"from":".","to":"./a",
+             "condition":"has(hop.route) && hop.route == 'mutation_committed'"},
+            {"from":"./a","to":"./capture"}
+        ]}}}"#,
+    );
+    write(
+        root,
+        "main/hive/a",
+        r#"{"cell":{"type":"echo"},"params":{"emitted_target":"/hive/capture"},"contract":{"version":"0.1.0","settings":{},"consumes":{}}}"#,
+    );
+    std::fs::write(root.join("colony.json"), OPTED_IN).expect("colony.json");
+}
+
+/// One boot on `td`: the capture first (a live terminal the boot's edge check
+/// resolves), then the filesystem. Returns the handle and what the capture hears.
+async fn boot_on(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
+    let h = ColonyHandle::new_with_factories_at(td, echo_factories());
+    let (cap_tx, cap_rx) = mpsc::channel::<Message>(64);
+    h.spawn(Path::new("/hive/capture"), move || {
+        CaptureCell::new(cap_tx.clone())
+    })
+    .await;
+    bootstrap_from_filesystem(td.path(), &echo_registry(), &h.runtime())
+        .await
+        .expect("the topology boots");
+    (h, cap_rx)
+}
+
+async fn the_answer_arrives(
+    h: &ColonyHandle,
+    rx: &mut mpsc::Receiver<Message>,
+    boot_no: u32,
+) -> Message {
+    let got = tokio::time::timeout(
+        meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG),
+        rx.recv(),
+    )
+    .await;
+    match got {
+        Ok(Some(m)) => m,
+        _ => panic!(
+            "HANG: boot {boot_no}: the answer to the boot receipt never reached the \
+             capture; dead letters: {:?}",
+            dead_lines(h).await
+        ),
+    }
+}
+
+async fn dead_lines(h: &ColonyHandle) -> Vec<String> {
+    h.drain_dead_letters()
+        .await
+        .iter()
+        .map(|d| {
+            format!(
+                "{:?} -> {:?} {:?}",
+                d.sender_path, d.original_target, d.reason
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reboot_routes_the_answer_to_its_boot_receipt() {
+    let td = tempfile::TempDir::new().expect("a tempdir");
+    reboot_topology(td.path());
+
+    for boot_no in 1..=2 {
+        let (h, mut cap_rx) = boot_on(&td).await;
+        // The echo of the boot receipt is the one message `a` ever sends.
+        the_answer_arrives(&h, &mut cap_rx, boot_no).await;
+        h.quiesce().await;
+        let dead = dead_lines(&h).await;
+        assert!(
+            dead.is_empty(),
+            "boot {boot_no}: nothing dies on the road of the boot receipt: {dead:?}"
+        );
+        assert!(
+            cap_rx.try_recv().is_err(),
+            "boot {boot_no}: one receipt, one answer"
+        );
+        h.shutdown().await;
+    }
 }

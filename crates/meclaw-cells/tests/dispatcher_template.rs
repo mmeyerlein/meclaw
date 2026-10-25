@@ -368,6 +368,34 @@ fn a_handoff_tool_is_named_on_both_lists_and_declares_itself_async() {
     assert_eq!(hop_str(&out[3], "async"), "", "a sync tool is untouched");
 }
 
+/// GH #1312: an entry ending in `*` names a family by its prefix. An app the
+/// builder installs with a handoff offer (`consult_<x>`) is installed after the
+/// generation stands, so its name cannot be in the list the level wrote; the
+/// prefix `consult_*` the assistant level declares takes it. A name outside
+/// the prefix stays sync, and a bare `*` is no entry at all.
+#[test]
+fn a_handoff_prefix_takes_every_name_under_it() {
+    let out = emit_with(
+        json!({"handoff_tools": ["consult_*", "*"]}),
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn("c1", "consult_orga", r#"{"question":"who?"}"#),
+                call_turn("c2", "consultant", "{}"),
+                call_turn("c3", "web_search", "{}"),
+            ],
+        ),
+    );
+
+    assert_eq!(route_of(&out[0]), "calls");
+    assert_eq!(hop_str(&out[0], "async_calls"), "c1", "{out:?}");
+    assert_eq!(hop_str(&out[0], "handoff_calls"), "c1", "{out:?}");
+    assert_eq!(hop_str(&out[1], "async"), "1");
+    assert_eq!(hop_str(&out[1], "consult_id"), "c1", "{out:?}");
+    assert_eq!(hop_str(&out[2], "async"), "", "no prefix match: {out:?}");
+    assert_eq!(hop_str(&out[3], "async"), "", "a bare `*` names nothing");
+}
+
 #[test]
 fn a_reply_to_an_open_consult_keeps_the_correlation_id_it_was_given() {
     // The bilateral half: the advisor asked back, the user answered, and the

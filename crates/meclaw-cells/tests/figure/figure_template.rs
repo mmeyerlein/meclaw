@@ -176,11 +176,13 @@ fn figure_is_three_children_and_refs_simple_agent() {
     let tpl = figure("template.json");
     assert_eq!(tpl["name"], "figure");
     // The merge point numbers the version (a memory-hive fix moves figure's
-    // third digit); the lock is the line, not a literal of one release.
+    // third digit); the lock is the line, not a literal of one release. The
+    // move onto `simple-agent@2` is the break to line 2 (GH #1311): a branch
+    // carries 1.x until the merge point numbers it 2.0.0.
     let version = tpl["version"].as_str().expect("version");
     let parts: Vec<&str> = version.split('.').collect();
     assert_eq!(parts.len(), 3, "{version}");
-    assert_eq!(parts[0], "1", "{version}");
+    assert!(parts[0] == "1" || parts[0] == "2", "{version}");
     assert!(parts.iter().all(|p| p.parse::<u32>().is_ok()), "{version}");
     let mut children = BTreeSet::new();
     for entry in std::fs::read_dir(repo("templates/figure")).expect("readable") {
@@ -202,8 +204,8 @@ fn figure_is_three_children_and_refs_simple_agent() {
     let agent = figure("simple-agent/config.json");
     assert_eq!(agent["cell"]["type"], "ref", "the agent is referenced");
     assert_eq!(
-        agent["cell"]["template"], "simple-agent@1.1.4",
-        "the agent is the pinned simple-agent, never a copy"
+        agent["cell"]["template"], "simple-agent@2.1.0",
+        "the agent is the colony's simple-agent@2, never a copy and never the frozen v1"
     );
     // GH #1276: `world` caches its queue, open turn and call book
     // (resident); `phone` keeps nothing between messages (warm).
@@ -241,10 +243,17 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             "interview",
             "mandate",
             "answer",
+            "tool_result",
             "in_model",
-            "mutation_committed"
+            "mutation_committed",
+            "in_pack",
+            "in_sealed",
+            "in_briefing",
+            "in_note",
+            "in_propose_ack",
+            "in_conversations"
         ]),
-        "V-W in, the human channel's answer, the agent's two pushes"
+        "V-W in, the human channel's answer, an extra tool's result, the contract lanes of simple-agent@2"
     );
     assert_eq!(
         emits,
@@ -255,10 +264,16 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             "phone_capped",
             "interview",
             "turn",
+            "calls",
             "model_refused",
-            "error"
+            "error",
+            "credential_request",
+            "pack_ack",
+            "brief",
+            "affinity_propose",
+            "conversations"
         ]),
-        "V-W out, the handset's turn, the agent's refusals"
+        "V-W out, the handset's turn, an extra tool's call, the contract lanes of simple-agent@2"
     );
     let drains: BTreeSet<String> = params["required_drains"]
         .as_array()
@@ -278,9 +293,26 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             "night",
             "interview",
             "answer",
-            "in_model"
+            "tool_result",
+            "in_model",
+            "in_pack",
+            "in_conversations"
         ]),
         "every lane that is answered declares its drain"
+    );
+    // A lane that docks below the rim (`at`) has no door out of `.`: its edge
+    // ends at the connect point (`docs/config.md`, `params.contract`).
+    let docked: BTreeSet<String> = params["contract"]["accepts"]
+        .as_array()
+        .expect("accepts")
+        .iter()
+        .filter(|l| l.get("at").is_some())
+        .filter_map(|l| l["route"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        docked,
+        set(&["in_pack", "in_sealed", "in_briefing", "in_note"]),
+        "the v-lanes of simple-agent@2, one level deeper"
     );
     let hp: HiveParams =
         meclaw_core::serde_json::from_value(params.clone()).expect("the figure's params parse");
@@ -330,10 +362,14 @@ fn figure_lanes_are_the_world_and_phone_contract() {
         }
         if e.to == "./simple-agent" && e.from == "." {
             assert!(
-                named
-                    .iter()
-                    .all(|r| r == "in_model" || r == "mutation_committed"),
-                "only the agent's pushes pass the world adapter by: {cond}"
+                named.iter().all(|r| [
+                    "in_model",
+                    "mutation_committed",
+                    "in_propose_ack",
+                    "in_conversations"
+                ]
+                .contains(&r.as_str())),
+                "only the colony's lanes of the agent pass the world adapter by: {cond}"
             );
         }
         if e.to == "./simple-agent" && e.from != "." {
@@ -342,9 +378,36 @@ fn figure_lanes_are_the_world_and_phone_contract() {
                 "the world adapter is the agent's only caller"
             );
         }
+        // One edge of the figure docks inside the agent: the world's frame
+        // pack, on the agent's own v-lane `in_pack` at `./curator`.
+        if e.to.starts_with("./simple-agent/") {
+            assert_eq!(
+                (e.from.as_str(), e.to.as_str(), named.as_slice()),
+                (
+                    "./world",
+                    "./simple-agent/curator",
+                    &["in_pack".to_string()][..]
+                ),
+                "only the world's frame docks inside the agent: {cond}"
+            );
+        }
     }
-    assert_eq!(opened, accepts, "every accepted lane has a door");
-    assert_eq!(left, emits, "every emitted lane has an exit");
+    let rim_out: BTreeSet<String> = params["contract"]["emits"]
+        .as_array()
+        .expect("emits")
+        .iter()
+        .filter(|l| l.get("at").is_none())
+        .filter_map(|l| l["route"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        opened,
+        accepts
+            .difference(&docked)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        "every accepted rim lane has a door"
+    );
+    assert_eq!(left, rim_out, "every emitted rim lane has an exit");
 
     // V-W: an obs becomes one turn with the world's tools as client tools.
     let out = resident(
@@ -899,4 +962,355 @@ fn phone_replies_over_the_cap_of_the_day_open_no_turn() {
         "once"
     );
     assert_eq!(routes_of(&out[11]), vec!["turn"], "a new day counts anew");
+}
+
+// ═══════════════════════════════════════════ figure@2 on simple-agent@2 (GH #1311)
+
+/// The rim of `templates/simple-agent` (the living @2), read where a test
+/// needs the lanes the figure has to carry one level deeper.
+fn simple_agent_2() -> Value {
+    read_json(&repo("templates/simple-agent/config.json"))
+}
+
+/// `route -> (at, required)` of one side of a hive contract.
+fn docked_lanes(
+    contract: &Value,
+    side: &str,
+) -> std::collections::BTreeMap<String, (Vec<String>, bool)> {
+    contract[side]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|l| {
+            let at: Vec<String> = l["at"]
+                .as_array()?
+                .iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .collect();
+            Some((
+                l["route"].as_str()?.to_string(),
+                (at, l["required"] == json!(true)),
+            ))
+        })
+        .collect()
+}
+
+/// R-SA-13: the figure holds no grant and no access, and its agent has none
+/// either -- the colony's access serves every key. Nothing under the figure
+/// names a grant, seeds one or carries a vault, and the agent it references
+/// is simple-agent@2, which has no `access` child (A1).
+#[test]
+fn figure2_has_no_grant_and_no_access() {
+    if !shipped() {
+        return;
+    }
+    let mut files = Vec::new();
+    files_under(&repo("templates/figure"), &mut files);
+    for (path, text) in &files {
+        assert!(
+            !path.contains("/access/") && !path.contains("/affinity/") && !path.contains("/seed/"),
+            "{path}: the figure carries no access, no affinity and no seed of its own"
+        );
+        assert!(
+            !text.contains("\"type\": \"vault\"") && !text.contains("\"type\": \"access\""),
+            "{path}: no vault and no access cell in the figure"
+        );
+        assert!(
+            !text.contains("grant:"),
+            "{path}: the figure names no grant; the embedder hands them in at birth"
+        );
+    }
+    let agent = figure("simple-agent/config.json");
+    for (cell, params) in agent["override_params"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
+    {
+        assert!(
+            params.get("credential_grant_id").is_none() && params.get("api_key").is_none(),
+            "{cell}: the figure's ref sets no key and no grant"
+        );
+    }
+    // The template the ref resolves to: a 2.x ref names the living
+    // directory (the frozen 1.x line is its own directory and is refused
+    // here). A literal path: the export audit resolves every template a
+    // test reads (R2b), a path built from the ref it cannot.
+    let reference = agent["cell"]["template"].as_str().expect("a ref");
+    assert!(
+        reference.starts_with("simple-agent@2."),
+        "the figure refs the agent of a colony: {reference}"
+    );
+    let sa = repo("templates/simple-agent");
+    if sa.join("config.json").is_file() {
+        assert!(
+            !sa.join("access").exists() && !sa.join("affinity").exists(),
+            "the referenced {reference} holds an access or an affinity of its own"
+        );
+    }
+}
+
+/// The figure carries every contract lane of simple-agent@2 on its own rim
+/// (simple-agent README, "Embedding one level deeper"): a lane that docks
+/// inside the agent docks at the same cells under `./simple-agent`, and what
+/// is required of the agent is required of the figure.
+#[test]
+fn figure2_carries_the_contract_lanes_of_simple_agent_2() {
+    if !shipped() || !repo("templates/simple-agent/config.json").is_file() {
+        return;
+    }
+    let sa = simple_agent_2();
+    let fig = figure("config.json");
+    for side in ["accepts", "emits"] {
+        let want: std::collections::BTreeMap<String, (Vec<String>, bool)> =
+            docked_lanes(&sa["params"]["contract"], side)
+                .into_iter()
+                .map(|(route, (at, required))| {
+                    let deeper = at
+                        .iter()
+                        .map(|p| format!("./simple-agent/{}", p.trim_start_matches("./")))
+                        .collect();
+                    (route, (deeper, required))
+                })
+                .collect();
+        assert_eq!(
+            docked_lanes(&fig["params"]["contract"], side),
+            want,
+            "{side}: the figure's v-lanes are the agent's, one level deeper"
+        );
+    }
+    let required = |cfg: &Value| -> BTreeSet<String> {
+        cfg["params"]["contract"]["accepts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|l| l["required"] == json!(true))
+            .filter_map(|l| l["route"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(
+        required(&fig),
+        required(&sa),
+        "what a birth must draw to the agent it must draw to the figure"
+    );
+    let sa_routes = |side: &str| routes(&sa["params"]["contract"][side]);
+    let fig_accepts = routes(&fig["params"]["contract"]["accepts"]);
+    let fig_emits = routes(&fig["params"]["contract"]["emits"]);
+    // The agent's turn door is the world adapter's; every other lane of the
+    // agent's rim is the colony's and passes the figure.
+    let door_in = set(&["turn", "tool_result", "close"]);
+    let door_out = set(&["answer", "calls", "close_report", "error"]);
+    for r in sa_routes("accepts").difference(&door_in) {
+        assert!(
+            fig_accepts.contains(r),
+            "the figure drops the agent's `{r}`"
+        );
+    }
+    for r in sa_routes("emits").difference(&door_out) {
+        assert!(fig_emits.contains(r), "the figure drops the agent's `{r}`");
+    }
+}
+
+/// R-SA-18: the figure names the agent's own tool families, and the list is
+/// empty -- a figure acts through its world's tools, never through `bash`
+/// or the web. The world adapter offers nothing of the agent's own.
+#[test]
+fn figure2_names_no_own_tool_family() {
+    if !shipped() {
+        return;
+    }
+    let agent = figure("simple-agent/config.json");
+    assert_eq!(
+        agent["override_params"]["tool_gate"]["tools_enabled"],
+        json!([]),
+        "`tools_enabled` is named, and it names nothing"
+    );
+}
+
+/// F3, figure -> member: no turn of the figure names a counterpart, so the
+/// agent's collector never asks the colony's affinity for a brief about the
+/// member; and the figure's ref leaves the enrolment's disclosures at the
+/// default (the figure's own AIeOS to the figure itself).
+#[test]
+fn figure2_never_reads_the_member_entry() {
+    if !shipped() {
+        return;
+    }
+    let agent = figure("simple-agent/config.json");
+    assert!(
+        agent["override_params"]["enrol"].get("disclose").is_none(),
+        "the ref discloses nothing to anyone else"
+    );
+    let out = resident(
+        "world",
+        instance(),
+        &[
+            msg(
+                "obs",
+                json!({"turn_id": 1, "kind": "contact", "text": "Marie is here", "day": 1,
+                       "tools": [{"name": "look", "description": "look", "parameters": {}}]}),
+            ),
+            answer_in("1", json!("Hello.")),
+            phone_in("Are you there?"),
+            answer_in("", json!("")),
+            msg(
+                "interview",
+                json!({"question_id": "q1", "question": "Who is Marie?"}),
+            ),
+        ],
+    );
+    let turns: Vec<&Value> = out
+        .iter()
+        .flatten()
+        .filter(|d| route_of(d) == "turn")
+        .collect();
+    assert_eq!(
+        turns.len(),
+        3,
+        "a world, a phone and an interview turn: {out:?}"
+    );
+    for t in turns {
+        assert!(
+            t["header"].get("counterpart").is_none(),
+            "a figure's turn names no counterpart: {t}"
+        );
+    }
+}
+
+/// `extra_tools` ride on every turn beside the world's menu; a call of one
+/// leaves the figure on its rim as `calls` and its `tool_result` comes back
+/// into the open turn under the round keys of the agent's call. An extra call
+/// is no action in the world: the follow-up still asks for one.
+#[test]
+fn figure2_extra_tools_ride_on_every_turn_and_leave_as_calls() {
+    if !shipped() {
+        return;
+    }
+    let story = json!({"name": "story_read", "description": "read the story",
+                       "parameters": {"type": "object", "properties": {}}});
+    let mut over = instance();
+    over["extra_tools"] = json!([story]);
+    let out = resident(
+        "world",
+        over,
+        &[
+            msg(
+                "obs",
+                json!({"turn_id": 4, "kind": "event", "text": "rain", "day": 1,
+                       "tools": [{"name": "look", "description": "look", "parameters": {}}]}),
+            ),
+            call_in("4", "x1", "story_read", json!({})),
+            msg("tool_result", json!({"id": "x1", "content": "chapter one"})),
+            answer_in("4", json!("I read.")),
+        ],
+    );
+    let turn = out[0]
+        .iter()
+        .find(|d| route_of(d) == "turn")
+        .expect("an obs is a turn");
+    let names: Vec<&str> = turn["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["look", "phone_message", "story_read"]);
+    // Reading is no action in the world: the turn owes one call of the
+    // world's menu or the phone, never of an extra tool (the agent's door asks,
+    // `required_mode: "any"`, OR-AG-65).
+    let required: Value = meclaw_core::serde_json::from_str(
+        turn["header"]["required_tools"].as_str().unwrap_or("null"),
+    )
+    .unwrap_or(Value::Null);
+    assert_eq!(required, json!(["look", "phone_message"]), "{turn}");
+    assert_eq!(turn["header"]["required_mode"], "any", "{turn}");
+    assert_eq!(routes_of(&out[1]), vec!["calls"], "{:?}", out[1]);
+    let call = &out[1][0];
+    assert_eq!(call["header"]["figure_rim"], "out");
+    assert_eq!(call["header"]["tool_name"], "story_read");
+    assert_eq!(call["header"]["tool_call_id"], "x1");
+    assert_eq!(call["calls"]["name"], "story_read", "{call}");
+    assert_eq!(routes_of(&out[2]), vec!["tool_result"], "{:?}", out[2]);
+    let back = &out[2][0];
+    assert_eq!(back["tool_result"]["id"], "x1");
+    assert_eq!(back["tool_result"]["content"], "chapter one");
+    for k in ["turn_id", "session_id", "iter", "channel", "audience_set"] {
+        assert!(
+            back["header"].get(k).is_some(),
+            "the round key {k} comes back: {back}"
+        );
+    }
+    assert_eq!(
+        routes_of(&out[3]),
+        vec!["intent"],
+        "the door's one answer ends the world turn: {:?}",
+        out[3]
+    );
+    // A result nobody waits for is named, never handed to the agent.
+    let stray = resident(
+        "world",
+        instance(),
+        &[msg("tool_result", json!({"id": "nobody", "content": "x"}))],
+    );
+    assert_eq!(routes_of(&stray[0]), vec!["error"], "{:?}", stray[0]);
+    assert_eq!(stray[0][0]["error"]["error_code"], "call_unknown");
+}
+
+/// Without an entry the turns are byte-equal: the shipped default and an
+/// instance's empty list give the same output for the same lanes, and the
+/// template ships the list empty.
+#[test]
+fn figure2_without_extra_tools_the_turns_are_unchanged() {
+    if !shipped() {
+        return;
+    }
+    let lanes = [
+        msg(
+            "obs",
+            json!({"turn_id": 1, "kind": "event", "text": "rain", "day": 1,
+                   "tools": [{"name": "look", "description": "look", "parameters": {}}]}),
+        ),
+        answer_in("1", json!("ok")),
+        phone_in("hi"),
+        answer_in("", json!("hello")),
+        msg(
+            "interview",
+            json!({"question_id": "q", "question": "Who are you?"}),
+        ),
+    ];
+    let mut empty = instance();
+    empty["extra_tools"] = json!([]);
+    let shipped_default = resident("world", instance(), &lanes);
+    assert_eq!(resident("world", empty, &lanes), shipped_default);
+    // Positive: the menus are those of before GH #1311 -- the world's tool and
+    // the phone on a world turn, nothing on a phone or interview turn.
+    let menu = |docs: &[Value]| -> Vec<String> {
+        docs.iter()
+            .find(|d| route_of(d) == "turn")
+            .expect("each lane opens a turn")["tools"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(menu(&shipped_default[0]), vec!["look", "phone_message"]);
+    assert!(
+        menu(&shipped_default[2]).is_empty(),
+        "{:?}",
+        shipped_default[2]
+    );
+    assert!(
+        menu(&shipped_default[4]).is_empty(),
+        "{:?}",
+        shipped_default[4]
+    );
+    let world = figure("world/config.json");
+    assert_eq!(
+        world["params"]["extra_tools"],
+        json!([]),
+        "the template ships no extra tool"
+    );
 }

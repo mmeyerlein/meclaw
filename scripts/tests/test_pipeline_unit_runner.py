@@ -224,7 +224,7 @@ class Jsonl(Runner):
         res = self.run_runner("--by", "file", "--workers", "2", "--include", "tests/test_*.py")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertIn("UNIT-SUMMARY 3/3", res.stdout)
-        # a script's exit code is its verdict: script mode counts no tests
+        # a script without a summary line counts n/a, its exit code is its verdict
         res = self.run_runner("--by", "file", "--run", "script", "--include", "tests/test_empty_*.py")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
@@ -247,9 +247,9 @@ class Satellites(Runner):
                               "--include", "tests/*/test_*.py", "--exclude", "tests/support/**")
         self.assertEqual(1, res.returncode, res.stdout + res.stderr)
         self.assertEqual([
-            "UNIT tests/a/test_exit.py Ns RED tests=0 fail=1 -- bad",
+            "UNIT tests/a/test_exit.py Ns RED tests=n/a fail=1 -- bad",
             "UNIT tests/a/test_main.py Ns GREEN tests=1 fail=0",
-            "UNIT tests/a/test_script.py Ns GREEN tests=0 fail=0",
+            "UNIT tests/a/test_script.py Ns GREEN tests=n/a fail=0",
             "UNIT-SUMMARY 2/3 Ns RED",
         ], strip_secs(res.stdout.strip().splitlines()))
         # a script is a file: by=dir has no script form
@@ -308,6 +308,90 @@ class Satellites(Runner):
         res = self.run_runner("--by", "file", "--include", "nothing/test_*.py", "--list")
         self.assertEqual(1, res.returncode)
         self.assertIn("UNIT-LIST 0", res.stdout)
+
+
+class Counts(Runner):
+    """GH #1313: a unit is never GREEN when its set-up failed, and `tests=0`
+    means that no test ran -- never "the runner could not read the count"."""
+
+    def test_exit_5_with_a_failed_set_up_is_red(self):
+        # soul2me X0 receipt: `UNIT tests/lab_dorf ... GREEN tests=0 fail=1` --
+        # setUpClass raised, Python 3.12 exits 5 ("no tests ran") with errors=1.
+        write(self.root, "tests/test_setup.py", CASE.format(
+            body="    @classmethod\n    def setUpClass(cls):\n        raise RuntimeError('lab down')\n\n"
+                 "    def test_0(self):\n        pass\n"))
+        case(self.root, "tests/test_real.py", "pass")
+        res = self.run_runner("--by", "file", "--include", "tests/test_*.py")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([
+            "UNIT tests/test_real.py Ns GREEN tests=1 fail=0",
+            "UNIT tests/test_setup.py Ns RED tests=0 fail=1 -- set-up failed, no test ran",
+            "UNIT-SUMMARY 1/2 Ns RED",
+        ], strip_secs(res.stdout.strip().splitlines()))
+
+    def test_exit_5_without_failures_stays_green(self):
+        write(self.root, "tests/test_empty.py", "import unittest\n")
+        case(self.root, "tests/test_real.py", "pass")
+        res = self.run_runner("--by", "file", "--include", "tests/test_*.py")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([
+            "UNIT tests/test_empty.py Ns GREEN tests=0 fail=0",
+            "UNIT tests/test_real.py Ns GREEN tests=1 fail=0",
+            "UNIT-SUMMARY 2/2 Ns GREEN",
+        ], strip_secs(res.stdout.strip().splitlines()))
+
+    def test_script_mode_counts_the_summary_line(self):
+        # soul2me tests/member/test_gate.py ran ~800 s and reported tests=0.
+        seven = "".join("    def test_%d(self):\n        pass\n" % i for i in range(7))
+        write(self.root, "tests/test_ut.py", CASE.format(body=seven) + "\nunittest.main()\n")
+        write(self.root, "tests/test_pt.py",
+              "import sys\nprint('=' * 10 + ' 4 passed, 1 failed, 2 warnings in 0.31s ' + '=' * 10)\n"
+              "sys.exit(1)\n")
+        res = self.run_runner("--by", "file", "--run", "script", "--include", "tests/test_*.py")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([
+            "UNIT tests/test_pt.py Ns RED tests=5 fail=1",
+            "UNIT tests/test_ut.py Ns GREEN tests=7 fail=0",
+            "UNIT-SUMMARY 1/2 Ns RED",
+        ], [l.split(" -- ")[0] for l in strip_secs(res.stdout.strip().splitlines())])
+
+    def test_a_line_shaped_like_pytest_without_its_keys_is_n_a(self):
+        # Review KX I1: `12 cases in 85.1s` matched the pytest form and read tests=0.
+        write(self.root, "tests/test_cases.py", "print('12 cases in 85.1s')\n")
+        res = self.run_runner("--by", "file", "--run", "script", "--include", "tests/test_*.py")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([
+            "UNIT tests/test_cases.py Ns GREEN tests=n/a fail=0",
+            "UNIT-SUMMARY 1/1 Ns GREEN",
+        ], strip_secs(res.stdout.strip().splitlines()))
+
+    def test_exit_5_without_a_readable_summary_is_red(self):
+        # Review KX M1: exit 5 says "no tests ran" only beside a summary that says 0.
+        write(self.root, "tests/test_five.py", "import sys\nprint('bye')\nsys.exit(5)\n")
+        case(self.root, "tests/test_real.py", "pass")
+        res = self.run_runner("--by", "file", "--include", "tests/test_*.py")
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([
+            "UNIT tests/test_five.py Ns RED tests=n/a fail=1 -- exit 5 without a readable test summary",
+            "UNIT tests/test_real.py Ns GREEN tests=1 fail=0",
+            "UNIT-SUMMARY 1/2 Ns RED",
+        ], strip_secs(res.stdout.strip().splitlines()))
+
+    def test_script_mode_without_a_summary_is_n_a_and_the_exit_code_rules(self):
+        write(self.root, "tests/test_ok.py", "print('case 1 ok')\n")
+        write(self.root, "tests/test_bad.py", "import sys\nprint('case 2 broken')\nsys.exit(3)\n")
+        path = os.path.join(self.root, "counts.jsonl")
+        res = self.run_runner("--by", "file", "--run", "script", "--include", "tests/test_*.py",
+                              "--jsonl", path)
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([
+            "UNIT tests/test_bad.py Ns RED tests=n/a fail=1 -- case 2 broken",
+            "UNIT tests/test_ok.py Ns GREEN tests=n/a fail=0",
+            "UNIT-SUMMARY 1/2 Ns RED",
+        ], strip_secs(res.stdout.strip().splitlines()))
+        with open(path, encoding="utf-8") as fh:
+            rows = list(events.read_jsonl(fh))
+        self.assertEqual([None, None], [r["data"]["tests"] for r in rows])
 
 
 from pipeline import unit_runner  # noqa: E402 -- the module under test, in-process

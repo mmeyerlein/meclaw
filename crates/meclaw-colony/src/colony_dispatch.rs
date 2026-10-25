@@ -2163,6 +2163,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
             // GH #553: read before the body moves into the door (see
             // `receipt_scope_of`).
             let receipt_scope = crate::colony::receipt_scope_of(&body);
+            let receipt_paths = crate::colony::receipt_paths_of(&body);
             // GH #1231 (T6-02): the door binds the sender BEFORE it opens; a
             // refusal takes the same reply and receipt path as any verdict.
             let refusal = door_sender_refusal(edges, hive_scopes, &sender, &body);
@@ -2211,6 +2212,7 @@ pub(crate) async fn dispatch_colony_endpoint<'fut>(
                     crate::colony::build_mutation_receipt(
                         &outcome,
                         &receipt_scope,
+                        &receipt_paths,
                         trace_id,
                         parent_message_id,
                         to,

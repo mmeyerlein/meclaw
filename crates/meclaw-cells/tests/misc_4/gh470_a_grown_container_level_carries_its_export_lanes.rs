@@ -13,6 +13,11 @@
 //! GH #926 adds one pair, `in_stats` down and `stats` up, the stats question
 //! crossing both container levels the way `in_export` does: 7 + 1 = eight
 //! doors, 11 + 1 = twelve exits, 18 + 2 = twenty edges.
+//! GH #1314 adds the five rim emits org and member declare since GH #1304,
+//! GH #1305 and GH #1309 (`stamp`, `opened`, `closed`, `inner_silent`,
+//! `conversations`) and the door `in_conversations`: nine doors, seventeen
+//! exits, twenty-six edges, read off the two contracts by
+//! `a_grown_container_level_carries_every_rim_lane_its_template_declares`.
 //!
 //! Nothing was red, and the reason is worth naming: the table is pinned byte
 //! for byte against `examples/organism/grow-*.json`
@@ -166,9 +171,9 @@ fn a_grown_container_level_draws_no_exit_for_pack_ack_or_prune() {
         }
         assert_eq!(
             (down(edges, name).len(), exits.len(), edges.len()),
-            (8, 12, 20),
-            "a {level} grown by grow_level no longer renders eight doors and \
-             twelve exits: the exits are {exits:?}"
+            (9, 17, 26),
+            "a {level} grown by grow_level no longer renders nine doors and \
+             seventeen exits: the exits are {exits:?}"
         );
     }
     // One level further in, GH #889 took the same exit: an assistant grown by
@@ -235,8 +240,8 @@ fn the_recipe_and_the_import_tool_render_the_same_member_edges() {
     };
     assert_eq!(
         want.len(),
-        20,
-        "the import tool stopped writing twenty edges — re-read it before \
+        26,
+        "the import tool stopped writing twenty-six edges — re-read it before \
          trusting this comparison"
     );
     assert_eq!(
@@ -277,6 +282,71 @@ fn the_two_container_levels_are_still_the_same_shape_one_level_apart() {
          (examples/memory-import/build_import.py, edges()), so a container edge \
          for it is one nothing can ever deliver to"
     );
+}
+
+/// The rim lanes of one shipped level that cross its container: every accept
+/// and every emit the contract declares WITHOUT `at` (an entry with `at` is a
+/// v-lane that ends on a named child, not on the level's own path), minus
+/// `in_import`, which addresses the level's own path (see above).
+fn rim_lanes(template: &str) -> (Vec<String>, Vec<String>) {
+    let path = repo(&format!("templates/{template}/config.json"));
+    let config: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")),
+    )
+    .expect("a config.json");
+    let side = |key: &str| -> Vec<String> {
+        let mut lanes: Vec<String> = config["params"]["contract"][key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{template}: no contract.{key}"))
+            .iter()
+            .filter(|e| e.get("at").is_none())
+            .filter_map(|e| e["route"].as_str().map(str::to_string))
+            .filter(|l| l != "in_import")
+            .collect();
+        lanes.sort();
+        lanes
+    };
+    (side("accepts"), side("emits"))
+}
+
+#[test]
+fn a_grown_container_level_carries_every_rim_lane_its_template_declares() {
+    // GH #1314 (review I1) -- the table had drifted from the two contracts it
+    // claims to render: `templates/member` and `templates/org` declare
+    // `stamp` (GH #1304), `opened`/`closed`/`inner_silent` (GH #1305) and the
+    // `in_conversations`/`conversations` pair (GH #1309) as lanes that leave
+    // the level the way `stats` does, and the parent of each carries them on
+    // up to the shell (OR-AG-39). A member or an org grown by the fast lane
+    // drew none of them, so a reader above it never got one. The lanes are
+    // read off the shipped contracts here, so the next lane a level declares
+    // turns this red instead of dying at the container.
+    for (template, params, name) in [
+        (
+            "org",
+            json!({"scope": "/os", "level": "org", "name": "acme",
+                       "template": "a-template@1.0.0"}),
+            "acme",
+        ),
+        (
+            "member",
+            json!({"scope": "/os/orgs/acme", "level": "member",
+                          "name": "alex", "template": "a-template@1.0.0"}),
+            "alex",
+        ),
+    ] {
+        let edges = rendered_edges(params);
+        let (accepts, emits) = rim_lanes(template);
+        let mut doors = down(&edges, name);
+        let mut exits = up(&edges, name);
+        doors.sort();
+        exits.sort();
+        assert_eq!(
+            (doors, exits),
+            (accepts, emits),
+            "a {template} grown by grow_level does not carry the rim lanes \
+             templates/{template} declares (doors, exits)"
+        );
+    }
 }
 
 /// The container `.` of one rendered level, as the colony's own edge table

@@ -1,6 +1,11 @@
 {
   "cell": {
     "type": "ref",
-    "template": "simple-agent@1.1.4"
+    "template": "simple-agent@2.1.0"
+  },
+  "override_params": {
+    "tool_gate": {
+      "tools_enabled": []
+    }
   }
 }

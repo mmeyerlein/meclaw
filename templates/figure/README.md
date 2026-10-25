@@ -1,13 +1,16 @@
-# `figure@1.0.5`
+# `figure@2.0.0`
 
 A character in a shared world, built as an onion: inside, an unchanged
-[`simple-agent`](../simple-agent/) (one model behind a curator, a memory, its own tools, the
-turn door); around it, two adapters. `world` speaks the world's lanes, `phone` speaks to a
+[`simple-agent@2`](../simple-agent/), the agent of a colony (one model behind a curator, a
+memory, the turn door; affinity, access and the llm-registry are the colony's); around it, two
+adapters. `world` speaks the world's lanes, `phone` speaks to a
 colony exactly the way a human channel does. The world stands beside the figure, never inside
 it: it renders the situation and hands its tools to each turn as client tools, and the figure
 calls them like any other tool until the model stops.
 
-One instance per character, in a world colony or in a player's own colony alike.
+One instance per character. There is no figure without a colony: each figure lives in a
+colony whose `access`, `affinity` and `llm-registry` serve its agent, and the colony draws the
+agent's contract lanes to the figure's rim (below).
 
 ## Cells
 
@@ -15,10 +18,12 @@ One instance per character, in a world colony or in a player's own colony alike.
 |---|---|---|
 | `world` | `code`, resident | the world adapter and the ONLY sender into the agent's turn door: every turn (world, phone, interview) runs through it, one at a time |
 | `phone` | `code`, warm | the handset: turns a message of the figure into a human-channel `turn`, and an `answer` on that channel into a phone turn |
-| `simple-agent` | ref [`simple-agent`](../simple-agent/) | the agent itself, referenced, never copied |
+| `simple-agent` | ref [`simple-agent@2`](../simple-agent/) | the agent itself, referenced, never copied |
 
-No model cell of its own, no memory of its own, no grants of its own: all of that is the
-agent's.
+No model cell and no memory of its own: both are the agent's. No grant, no `access` and no
+`affinity`: those are the colony's, in the figure as in the agent. The frozen 1.x
+line of `simple-agent` (the max-agent with its own access and affinity) is not what a figure
+runs.
 
 ## Contract with the world (V-W)
 
@@ -35,6 +40,8 @@ Every lane carries the body slot of its own name.
 | `mandate` | in | `{action: start\|stop, until?, frame?, note?}`: the pack leaf `instructions.mandate` of the agent until a `stop` |
 | `phone_capped` | out | `{day, channel, text, replies, max}`: an answer on the handset over `phone_replies_max` of the world day; it opened no turn (see the handset) |
 | `error` | out | `{error_code, turn_id?, kind}`; `error_code` is never null |
+| `calls` | out | `{id, name, arguments}`, hop `tool_name`, `tool_call_id` and the round keys: the model called one of the instance's `extra_tools` (below) |
+| `tool_result` | in | `{id, content, is_error?}`: the result of one `calls`, by its `id`; it continues the same turn. A result nobody waits for is `error {error_code: "call_unknown", kind: "tool_result"}` |
 
 `turn_id` and `question_id` come back in the type they came in (an int stays an int).
 
@@ -48,16 +55,18 @@ queues an `act`/`task` (at most one `task` per turn), carrying it out when the `
 arrives.
 
 A world turn whose model answers in text alone, without a single world call, has moved nothing
-in the world. The figure then asks once more: a follow-up turn in the same session with the same
-menu (`turn_id` `<turn>:act` at the agent's door), asking the model to choose one action from the
-world's tools. The follow-up carries `tool_scope: {require: true}`, so its first model call must
-call a tool (`tool_choice: "required"`, on the Anthropic wire `{"type": "any"}`); the calls after a
-result are free again, and every other turn (the world turn itself, phone, `contact`, interview)
-requires nothing. Its calls leave under the world's `turn_id`; whatever it ends with ends the world
-turn, and the `intent` text joins both texts. There is no second follow-up. A `contact` turn, a
+in the world. The agent then asks once more: the world turn names its menu and `phone_message`
+as `hop.required_tools` with `required_mode: "any"` (one call of any of them is enough) and the
+words of the follow-up as `required_ask`, and the door of `simple-agent@2` sends one follow-up
+turn in the same session with the same menu, asking the model to choose one action from the
+world's tools. In mode `any` the follow-up's first model call must call a tool
+(`tool_choice: "required"`, on the Anthropic wire `{"type": "any"}`); the calls after a result
+are free again, and every other turn (the world turn itself, phone, `contact`, interview) requires
+nothing. Its calls leave under the world's `turn_id`; the door's one answer ends the world turn,
+and its text joins both texts. There is no second follow-up. A `contact` turn, a
 turn whose world offered no tool of its own (`phone_message` alone does not count), a turn that hit
 the agent's loop cap (`partial`: its budget is spent), a phone and an interview turn get none. A
-text message counts as an action.
+text message counts as an action; a call of an extra tool does not.
 
 The figure never cuts a turn short: `deadline_ms` is the world's. A lost `call_result` ends
 the turn through the agent's own guard (`round_idle_ms`), so an instance sets the agent's
@@ -66,6 +75,17 @@ the turn through the agent's own guard (`round_idle_ms`), so an instance sets th
 An `obs` without an integer `day` runs no turn: `error {error_code: "obs_without_day"}` and
 `intent {turn_id, never: true}`. A `turn_id` already taken runs once; a copy is answered with
 `error {error_code: "duplicate_turn"}` alone.
+
+## Extra tools
+
+`world.extra_tools` (default `[]`) is a list of client tools (provider schemas) the figure
+offers on every turn -- world, phone, interview, follow-up -- beside the world's menu. A call of
+one leaves the figure on its rim as `calls` and waits for its `tool_result` on the rim, which
+goes back into the round the call was asked in; the turn goes on. An extra tool whose name the
+turn already offers (a world tool, `phone_message`) stays the world's. An extra call moves
+nothing in the world: it neither ends the turn nor spares the follow-up. Without an entry the
+turns are the same, byte for byte. The colony draws `calls` to whoever serves the tool and its
+answer back to the figure's `tool_result`.
 
 ## The handset (V-H)
 
@@ -135,9 +155,55 @@ frame once, at boot, as the pack leaf `instructions.role`, beside the agent's ow
 
 Both frames say the same two things: asked directly whether it is an AI, the figure says
 truthfully that it is; and it may decline anything, in its own words. Any other value of `role`
-refuses every turn with `error {error_code: "role_unknown"}`. The identity itself is not the
-figure's: it is the agent's AIeOS document (`simple-agent` params `agent_id`, `aieos`,
-`start_memories`), written once into the agent's own affinity.
+refuses every turn with `error {error_code: "role_unknown"}`. The world's frame reaches the
+agent's curator on the agent's own lane `in_pack`; its receipt goes back to the world, never out
+of the figure.
+
+## Identity
+
+The figure's identity is its own entry `entity:<agent_id>` in the colony's affinity: the AIeOS
+document of `simple-agent/enrol` (`identity`), written by the agent's enrolment on a commit
+receipt that concerns it (a boot, a manifest), through the figure's rim (`affinity_propose`
+with `context.sa_enrol`, back on `in_propose_ack`). The pack of that entry reaches the agent on
+`in_pack`. Keep `simple-agent/door` and `simple-agent/enrol` on the same `agent_id`, and keep it
+the figure's id.
+
+The figure reads no one else's entry. Its turns name no counterpart, so the agent asks the
+colony's affinity for no brief, and the enrolment discloses one field, the figure's own AIeOS,
+to the figure itself (the default of `enrol/disclose`; the figure's ref sets nothing else). A
+colony keeps it that way: no disclosure of the member's entry to the figure.
+
+## Tools
+
+The agent's own tool families are all off: the figure's ref names `tool_gate.tools_enabled` as
+`[]`. A figure acts through its world's tools and, where an instance gives them, its extra
+tools; the world's tools stay client tools of each turn and never become the agent's.
+
+## The colony's lanes
+
+The figure is sealed. It carries every contract lane of `simple-agent@2` on its own rim, one
+level deeper (the agent's README, "Embedding one level deeper"): a lane that docks inside the
+agent docks at the same cells under `./simple-agent`, and what is required of the agent is
+required of the figure. The colony's manifest draws them; the figure draws none outward.
+
+| lane | direction | `at` / inner target | required | what the colony draws |
+|---|---|---|---|---|
+| `credential_request` | out | `./simple-agent/brain`, `./simple-agent/strong`, `./simple-agent/curator/summarizer`, `./simple-agent/memory-hive/closer`, `./simple-agent/memory-hive/dialectic`, `./simple-agent/memory-hive/dreamer`, `./simple-agent/memory-hive/judge`, `./simple-agent/memory-hive/embed`, `./simple-agent/tools/web_search` | -- | one edge per consumer to the colony's access |
+| `in_sealed` | in | the same nine | yes | one edge per consumer from the colony's access, the grant rows, the grant ids in `override_params` |
+| `in_pack` | in | `./simple-agent/curator` | yes | the colony affinity's push for `agent:<agent_id>`, `pack_sub`/`pack_hash` promoted |
+| `pack_ack` | out | the rim | -- | back to the affinity's `in_pack_ack` |
+| `in_briefing` | in | `./simple-agent/collector` | yes | the affinity's brief answer (a figure asks none) |
+| `brief` | out | the rim | -- | to the affinity's `in_brief` |
+| `in_model` | in | the rim, on to the agent | yes | the colony llm-registry's pushes |
+| `model_refused` | out | the rim | -- | back to the llm-registry |
+| `affinity_propose` | out | the rim | -- | to the affinity's `in_propose`, `actor` from `hop.agent_id`, the subscriber of the enrolment's `subscribe` steps |
+| `in_propose_ack` | in | the rim, on to the agent | -- | the affinity's `ack` and `error` back |
+| `in_note` | in | `./simple-agent/curator` | -- | notes for the window |
+| `in_conversations` / `conversations` | in / out | the rim, on to the agent | -- | the conversations a reader may see |
+| `mutation_committed` | in | the rim, on to the agent | -- | the colony's commit receipts (the menu and the enrolment) |
+
+The grants are the colony's: the figure names none, and an instance hands one grant per
+consumer in at birth, as for the agent.
 
 ## Instance params
 
@@ -151,7 +217,8 @@ shipped value whole (no deep merge), so `phone` is given as a whole object.
 | `world` | `role` | `human-sim` or `npc` (required) |
 | `world` | `phone` | `{enabled, speaker, contact}`: `enabled` offers `phone_message` (human-sim only), `speaker` is the switch above, `contact` the name a phone turn names its sender with |
 | `world` | `phone_replies_max` | `4`: answers on the handset that open a phone turn per world day; over it `phone_capped` |
-| `simple-agent/<cell>` | every `simple-agent` param | addressed by the cell's path inside the agent, e.g. `simple-agent/brain` (`model`, `reasoning_effort`, `x_title`, `http_referer`), `simple-agent/door` (`agent_id`, `aieos`, `start_memories`), `simple-agent/tools/file` and `simple-agent/tools/edit` (`base_path`, both the same), `simple-agent/door` and `simple-agent/collector/assemble` (`round_idle_ms`, both the same value) |
+| `world` | `extra_tools` | `[]`: client tools offered on every turn beside the world's menu (above) |
+| `simple-agent/<cell>` | every `simple-agent@2` param | addressed by the cell's path inside the agent, e.g. `simple-agent/brain` (`model`, `reasoning_effort`, `x_title`, `http_referer`), `simple-agent/door` (`agent_id`, `start_memories`), `simple-agent/enrol` (`agent_id`, `identity`), every model cell and `simple-agent/tools/web_search` (`credential_grant_id`, at birth), `simple-agent/door` and `simple-agent/collector/assemble` (`round_idle_ms`, both the same value) |
 
 The app attribution is the agent's: every model cell of `simple-agent` carries `x_title` and
 `http_referer`, and an instance names its origin there (`<product> <colony>`).
@@ -176,6 +243,11 @@ reads its runs out of the message log; the exits delete them.
 
 ## Pins
 
-`crates/meclaw-cells/tests/figure/figure_template.rs`: three children and the ref, the world
-and phone lanes, no old names and no product names, the required role and its two frames, and
-the adapters' answers to each lane.
+`crates/meclaw-cells/tests/figure/figure_template.rs`: three children and the ref to
+`simple-agent@2`, the world and phone lanes, the contract lanes of the agent one level deeper,
+no grant and no access, no own tool family, no counterpart on any turn, the extra tools, no old
+names and no product names, the required role and its two frames, and the adapters' answers to
+each lane. `crates/meclaw-cells/tests/figure/figure_turns.rs`: the turns in a colony with the
+colony's access and affinity, stub models only -- the identity as the figure's own entry, no
+brief, the world's tools as client tools, the follow-up, the extra tools on the rim, the
+handset.

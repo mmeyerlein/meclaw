@@ -49,12 +49,15 @@ OUTPUT
 ======
 After the pool is done, sorted by unit -- the same order in every run:
 
-    UNIT <unit> <secs>s <GREEN|RED> tests=<n> fail=<n> [-- <reason>]
+    UNIT <unit> <secs>s <GREEN|RED> tests=<n|n/a> fail=<n> [-- <reason>]
     UNIT-SUMMARY <green>/<total> <secs>s <GREEN|RED>
 
 The tail of each RED unit's output goes to stderr. A unit that runs longer
 than `--timeout-s` is killed with its process group and is RED with the
-reason `timeout after <n>s`. No unit at all is RED. Exit 0 GREEN, 1 RED,
+reason `timeout after <n>s`. `tests` comes from the unit's unittest or
+pytest summary line; without one it is `n/a` (null in the jsonl), never 0.
+Exit 5 ("no tests ran") is GREEN only without failures and errors -- a
+failed set-up exits 5 too (GH #1313). No unit at all is RED. Exit 0 GREEN, 1 RED,
 2 usage. `--jsonl FILE` writes one `test_result` stream line per unit
 (`scripts/pipeline/events.py`: `{at, run, kind: note, event: test_result,
 text, data: {run, station, part, verdict, secs, tests, fail[, reason]}}`).
@@ -132,6 +135,11 @@ DEFAULT_TIMEOUT_S = 1800
 
 _RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
 _FAILED = re.compile(r"^FAILED \(([^)]*)\)", re.MULTILINE)
+# pytest's closing line, decorated (`=== 4 passed, 1 failed in 0.31s ===`) or
+# quiet (`4 passed in 0.31s`): the script mode's second readable count (#1313).
+_PYTEST = re.compile(r"^=*\s*(\d+ [a-z]+(?:, \d+ [a-z]+)*) in [\d.]+s\b", re.MULTILINE)
+_PYTEST_RAN = ("passed", "failed", "error", "errors", "skipped", "xfailed", "xpassed")
+_PYTEST_FAIL = ("failed", "error", "errors")
 
 
 # --- the units ------------------------------------------------------------------
@@ -210,17 +218,35 @@ def units(root, by, include, exclude=(), top="root"):
 # --- one unit -------------------------------------------------------------------
 
 def counts(text):
-    """`(tests, fail)` from unittest's closing lines; `(0, 0)` without them."""
+    """`(tests, fail)` from unittest's closing lines, else from pytest's;
+    `tests` is None when the output carries neither (GH #1313: soul2me's case
+    scripts ran 85-870 s and reported `tests=0` -- `0` claimed that nothing
+    ran, the runner only could not read a count). `tests == 0` is only ever
+    a summary that says so."""
     ran = _RAN.findall(text)
-    tests = int(ran[-1]) if ran else 0
-    fail = 0
-    failed = _FAILED.findall(text)
-    if failed:
-        for item in failed[-1].split(","):
-            key, _, value = item.strip().partition("=")
-            if key in ("failures", "errors", "unexpected successes") and value.isdigit():
+    if ran:
+        fail = 0
+        failed = _FAILED.findall(text)
+        if failed:
+            for item in failed[-1].split(","):
+                key, _, value = item.strip().partition("=")
+                if key in ("failures", "errors", "unexpected successes") and value.isdigit():
+                    fail += int(value)
+        return int(ran[-1]), fail
+    pytest = _PYTEST.findall(text)
+    if pytest:
+        tests = fail = 0
+        seen = False  # review KX I1: `12 cases in 85.1s` has the form, not the keys
+        for item in pytest[-1].split(","):
+            value, _, key = item.strip().partition(" ")
+            if key in _PYTEST_RAN:
+                tests += int(value)
+                seen = True
+            if key in _PYTEST_FAIL:
                 fail += int(value)
-    return tests, fail
+        if seen:
+            return tests, fail
+    return None, 0
 
 
 def _last_line(text):
@@ -267,9 +293,18 @@ def run_unit(unit, modules, root, python, env, timeout_s, run="unittest", top="r
         verdict, reason = "RED", "timeout after %ds" % timeout_s
     elif proc.returncode == 0:
         verdict, reason = "GREEN", ""
-    elif run == "unittest" and proc.returncode == 5 and tests == 0:
-        # Python 3.12: a module without tests exits 5 ("NO TESTS RAN")
+    elif run == "unittest" and proc.returncode == 5 and tests == 0 and fail == 0:
+        # Python 3.12: a module without tests exits 5 ("NO TESTS RAN"). Only
+        # without failures and errors: a failed setUpClass exits 5 as well,
+        # with `FAILED (errors=1)` -- that unit was GREEN (GH #1313). And only
+        # beside a summary that says 0: exit 5 without one is no statement.
         verdict, reason = "GREEN", ""
+    elif run == "unittest" and proc.returncode == 5:
+        verdict = "RED"
+        if fail:
+            reason = "set-up failed, no test ran"
+        else:
+            reason, fail = "exit 5 without a readable test summary", 1
     else:
         verdict = "RED"
         reason = _last_line(output) or "exit %d" % proc.returncode
@@ -324,8 +359,9 @@ def run_pool(todo, root, python, workers, slots, slot_env=None, timeout_s=DEFAUL
 
 
 def line(res):
-    text = "UNIT %s %.1fs %s tests=%d fail=%d" % (res["unit"], res["secs"], res["verdict"],
-                                                 res["tests"], res["fail"])
+    tests = "n/a" if res["tests"] is None else "%d" % res["tests"]
+    text = "UNIT %s %.1fs %s tests=%s fail=%d" % (res["unit"], res["secs"], res["verdict"],
+                                                 tests, res["fail"])
     return "%s -- %s" % (text, res["reason"]) if res["verdict"] == "RED" and res["reason"] else text
 
 
@@ -333,11 +369,14 @@ def summary(results, secs, run="unittest"):
     """The closing line and the verdict. A unittest run where no test ran at all
     is RED (GH #997, re-check W10 I2): a station glob that only hits test-less
     modules would otherwise report a GREEN gate without one test. A single
-    test-less unit stays GREEN; script mode counts no tests, its exit codes rule."""
+    test-less unit stays GREEN. Only counted units decide it: a unit without a
+    readable count (`tests=n/a`, mostly script mode) is not "no test ran", and
+    its exit code rules (GH #1313)."""
     green = sum(1 for r in results if r["verdict"] == "GREEN")
     verdict = "GREEN" if results and green == len(results) else "RED"
     text = "UNIT-SUMMARY %d/%d %.1fs %s" % (green, len(results), secs, verdict)
-    if verdict == "GREEN" and run != "script" and sum(r["tests"] for r in results) == 0:
+    counted = [r["tests"] for r in results]
+    if verdict == "GREEN" and None not in counted and sum(counted) == 0:
         verdict = "RED"
         text = "UNIT-SUMMARY %d/%d %.1fs RED -- no test ran in %d units" % (
             green, len(results), secs, len(results))

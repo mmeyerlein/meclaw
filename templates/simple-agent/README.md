@@ -1,4 +1,4 @@
-# `simple-agent@2.0.0`
+# `simple-agent@2.1.0`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
@@ -125,6 +125,14 @@ comes without a call of one of them, the door sends exactly one follow-up turn i
 session ("Call <name> now.", the turn's client tools in the menu again); its answer is the
 turn's answer, with `missing_required: [...]` if a tool is still missing. The door checks
 this in code: `tool_scope.require` has no effect on a native Anthropic model.
+`hop.required_mode` chooses what counts: `all` (the default, also when absent) requires every
+named tool; `any` is satisfied by a call of one of them. In mode `any` a turn that hit the loop
+cap (`partial`) gets no follow-up (its budget is spent; `missing_required` still names the
+tools), the follow-up's first model call must call a tool (`tool_choice: "required"`), and the
+answer keeps the first text before the follow-up's (joined by a blank line). `hop.required_ask`
+replaces the follow-up's words ("Call <name> now.", in mode `any` "Call one of <a>, <b> now.").
+The follow-up runs as round `<turn_id>.follow`, so its client calls carry that `turn_id`; the
+answer carries the turn's own.
 
 **Client calls have a deadline.** A client call unanswered after `client_tool_timeout_ms`
 (door param, default 30000) becomes the result `error: timeout: ...` in its round, and the
@@ -172,13 +180,14 @@ frame (`instructions.frame`), the affinity tool's menu row and the start memorie
 **Enrolment.** The agent enrols itself; the enrolment is the agent's, not its embedder's. A
 manifest sends no message, and `subscribe` takes its subscriber from the edge, so `./enrol`
 does it on a commit receipt (`mutation_committed`) that concerns the agent: the boot's
-(`form: boot`), every manifest's (`form: manifest`), or a single mutation whose `scope` is
-the agent, lies under it, or is the level it was born into (a birth is a mutation of that
-level, and a receipt names no added nodes, so a sibling's birth there enrols again). A
-manifest's receipt always says `scope: "/"` -- its entries each bring their own, and the
-receipt does not name them -- and a builder block arrives as a manifest, so every manifest
-counts: correctness before cost, the steps are idempotent. A single mutation anywhere else
-writes nothing: each `subscribe` books a new row and pushes a pack. The steps, one after the acknowledgement
+(`form: boot`), or one whose `paths` name a node at, under or above the agent (it was born or
+lifted with that node -- a `figure` grown by one `add_nodes` at the member carries its agent
+one level deeper) or whose `scopes` name one at or under it (its own graph was written). Both
+keys are on every mutation receipt since GH #1312 (`docs/meclaw-overview.en.md`, receipt). A
+sibling's birth, a builder block elsewhere and the colony's container write nothing of the
+agent's: each `subscribe` books a new row and pushes a pack. A receipt without the two keys (a
+colony before GH #1312) keeps the reading before: every manifest, and a single mutation whose
+`scope` is the agent, lies under it, or is the level it was born into. The steps, one after the acknowledgement
 of the one before: `upsert_entity` (`entity:<agent_id>`, kind agent, the AIeOS document of
 `enrol/identity`, `mx.brain` from `enrol/charter`), one `set_disclosure` per `enrol/disclose`
 entry (default `aieos` to the agent itself; `mx.brain` too with a charter), `subscribe` with

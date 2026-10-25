@@ -201,7 +201,8 @@ fn sa2_has_no_access_and_no_affinity_child() {
         ),
         "@2 emits the turn door and the colony's lanes"
     );
-    // The frozen copy keeps both (R-SA-37): `figure@1.0.5` pins it.
+    // The frozen copy keeps both (R-SA-37); since figure@2 (GH #1311) no
+    // template pins it, it stays as the max-agent line.
     let v1 = repo("templates/simple-agent@1.1.4");
     if v1.join("config.json").is_file() {
         assert!(v1.join("access").is_dir() && v1.join("affinity").is_dir());
@@ -851,6 +852,101 @@ async fn sa2_a_turn_before_any_enrolment_answers_without_identity() {
     assert_eq!(enrol_steps(&h, "upsert").await, 0, "a turn enrols nothing");
 }
 
+/// Whether `./enrol`'s shipped script writes the entry on a commit receipt
+/// with the hop keys `hop`, delivered at `target` (`<agent>/enrol`).
+fn enrol_writes(target: &str, hop: Value) -> bool {
+    let mut hop = as_map(&hop);
+    hop.insert("route".into(), json!("mutation_committed"));
+    hop.insert("outcome".into(), json!("committed"));
+    hop.insert("changes".into(), json!([]));
+    let out = meclaw_testing::emit_all(
+        &meclaw_testing::shipped_script(
+            repo("templates/simple-agent/enrol/config.json")
+                .to_str()
+                .expect("a utf-8 path"),
+        ),
+        &json!({"target": target, "header": {"hop": hop, "context": {}}, "ttl": 64,
+                "messages": [],
+                "params": {"agent_id": AGENT_ID,
+                           "identity": simple_agent_loop::aieos("to keep the lighthouse")}}),
+    );
+    !out.is_empty()
+}
+
+/// GH #1312 (N1, F1 report, OR-AG-61): with `scopes` and `paths` on the
+/// receipt, the enrolment counts a node born at, under or ABOVE the agent and
+/// a scope at or under it -- a figure grown by ONE `add_nodes` at the member
+/// enrols the agent one level deeper inside it; a sibling's birth, a builder
+/// block elsewhere and the colony's container do not. A receipt without the
+/// keys keeps the reading before.
+#[test]
+fn sa2_enrol_reads_where_the_knock_wrote() {
+    if !shipped() {
+        return;
+    }
+    let deep = "/m/figure/simple-agent/enrol";
+    let flat = "/m/agent/enrol";
+    let cases = [
+        (
+            "one add_nodes bears the figure above the agent",
+            deep,
+            json!({"form": "single", "scope": "/m", "scopes": ["/m"], "paths": ["/m/figure"]}),
+            true,
+        ),
+        (
+            "a sibling of the figure",
+            deep,
+            json!({"form": "single", "scope": "/m", "scopes": ["/m"], "paths": ["/m/other"]}),
+            false,
+        ),
+        (
+            "a block elsewhere and the container's road",
+            deep,
+            json!({"form": "manifest", "scope": "/", "scopes": ["/m", "/os"], "paths": ["/m/other"]}),
+            false,
+        ),
+        (
+            "the block that grows the agent",
+            flat,
+            json!({"form": "manifest", "scope": "/", "scopes": ["/m", "/os"], "paths": ["/m/agent"]}),
+            true,
+        ),
+        (
+            "a sibling at the level",
+            flat,
+            json!({"form": "single", "scope": "/m", "scopes": ["/m"], "paths": ["/m/other"]}),
+            false,
+        ),
+        (
+            "a write inside the agent",
+            flat,
+            json!({"form": "manifest", "scope": "/", "scopes": ["/m/agent"], "paths": []}),
+            true,
+        ),
+        (
+            "a receipt before GH #1312, manifest",
+            flat,
+            json!({"form": "manifest", "scope": "/"}),
+            true,
+        ),
+        (
+            "a receipt before GH #1312, the level",
+            flat,
+            json!({"form": "single", "scope": "/m"}),
+            true,
+        ),
+        (
+            "the boot",
+            deep,
+            json!({"form": "boot", "scope": "/"}),
+            true,
+        ),
+    ];
+    for (why, target, hop, want) in cases {
+        assert_eq!(enrol_writes(target, hop), want, "{why}");
+    }
+}
+
 /// Knock one manifest at the colony's mutation door (no sender, as
 /// `--apply` and the HTTP door knock) and return its verdict.
 async fn knock_manifest(h: &meclaw_testing::ColonyHandle, manifest: Value) -> MutationDoorOutcome {
@@ -869,13 +965,15 @@ async fn knock_manifest(h: &meclaw_testing::ColonyHandle, manifest: Value) -> Mu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sa2_enrol_runs_on_a_manifest_receipt_one_level_down() {
+async fn sa2_enrol_runs_on_a_manifest_receipt_that_wrote_at_the_agent() {
     if !shipped() {
         return;
     }
     // A builder block arrives as a manifest, and a manifest's receipt says
-    // scope `/`: it does not say where it was. An agent one level down
-    // enrols on it -- entry, disclosure, subscription -- without the boot.
+    // scope `/`: it does not say where it was. Since GH #1312 it names its
+    // `scopes` and `paths`, so an agent one level down enrols on a manifest
+    // that wrote at it -- entry, disclosure, subscription -- and on none that
+    // wrote elsewhere (OR-AG-61: before, every manifest counted).
     let (_td, _stubs, h, mut ports) = simple_agent_loop::boot_form(
         simple_agent_loop::Form::V2Deep,
         vec![canned_chat_completion("I am Ava.", "stop")],
@@ -898,50 +996,69 @@ async fn sa2_enrol_runs_on_a_manifest_receipt_one_level_down() {
         0,
         "the boot's receipt never reached the agent"
     );
-    // A real manifest through the door, at a level that is not the agent's.
-    let outcome = knock_manifest(
-        &h,
-        json!([{"scope": "/", "diff": {"add_edges": [
-            {"from": "./sink", "to": "./sink", "condition": "has(hop.route) && hop.route == 'a5_never'"}
-        ]}}]),
-    )
-    .await;
-    assert!(
-        matches!(
-            outcome,
-            MutationDoorOutcome::Manifest(meclaw_colony::ManifestOutcome::Committed { .. })
-        ),
-        "precondition: the manifest commits: {outcome:?}"
-    );
-    let receipt = loop {
-        let m = next_on(&h, &mut ports, "mutation_committed", &mut seen).await;
-        if m.headers.hop.get("form").and_then(Value::as_str) == Some("manifest") {
-            break m;
+    // Two real manifests through the door: one at the root, one inside the agent.
+    let never = "has(hop.route) && hop.route == 'a5_never'";
+    let mut handed = Vec::new();
+    for (scope, from, own) in [("/", "./sink", false), (agent.as_str(), "./watch", true)] {
+        let outcome = knock_manifest(
+            &h,
+            json!([{"scope": scope, "diff": {"add_edges": [
+                {"from": from, "to": from, "condition": never}
+            ]}}]),
+        )
+        .await;
+        assert!(
+            matches!(
+                outcome,
+                MutationDoorOutcome::Manifest(meclaw_colony::ManifestOutcome::Committed { .. })
+            ),
+            "precondition: the manifest at {scope} commits: {outcome:?}"
+        );
+        // The copy re-sent at the agent's rim below surfaces on the sink as
+        // well; a receipt already handed on is skipped, never counted.
+        let receipt = loop {
+            let m = next_on(&h, &mut ports, "mutation_committed", &mut seen).await;
+            if m.headers.hop.get("form").and_then(Value::as_str) == Some("manifest")
+                && !handed.contains(&m.headers.hop)
+            {
+                break m;
+            }
+        };
+        handed.push(receipt.headers.hop.clone());
+        assert_eq!(
+            receipt.headers.hop["scope"], "/",
+            "{:?}",
+            receipt.headers.hop
+        );
+        assert_eq!(receipt.headers.hop["scopes"], json!([scope]));
+        // The door's receipt, verbatim, at the agent's rim.
+        h.send(
+            MessageBuilder::new(Path::new(&agent))
+                .hop(receipt.headers.hop.clone())
+                .context(Map::new())
+                .body(Body::Inline(json!({"messages": []})))
+                .ttl(400)
+                .build(),
+        )
+        .await;
+        if own {
+            wait_route(
+                &h,
+                &format!("{level}/affinity"),
+                &agent,
+                "in_propose_ack",
+                3,
+            )
+            .await;
+        } else {
+            h.quiesce().await;
+            assert_eq!(
+                enrol_steps_at(&h, level, "upsert").await,
+                0,
+                "a manifest at the root wrote nothing of the agent's"
+            );
         }
-    };
-    assert_eq!(
-        receipt.headers.hop["scope"], "/",
-        "{:?}",
-        receipt.headers.hop
-    );
-    // The door's receipt, verbatim, at the agent's rim.
-    h.send(
-        MessageBuilder::new(Path::new(&agent))
-            .hop(receipt.headers.hop.clone())
-            .context(Map::new())
-            .body(Body::Inline(json!({"messages": []})))
-            .ttl(400)
-            .build(),
-    )
-    .await;
-    wait_route(
-        &h,
-        &format!("{level}/affinity"),
-        &agent,
-        "in_propose_ack",
-        3,
-    )
-    .await;
+    }
     h.quiesce().await;
     for step in ["upsert", "disclose:0:1", "subscribe"] {
         assert_eq!(enrol_steps_at(&h, level, step).await, 1, "{step}");
@@ -963,6 +1080,17 @@ async fn sa2_enrol_runs_on_a_manifest_receipt_one_level_down() {
 /// (`examples/simple-agent-colony/wish.json`): the recipe's whole answer.
 fn render_block() -> Value {
     let wish = read_json(&repo("examples/simple-agent-colony/wish.json"));
+    let first = render_wish(&wish["params"]);
+    assert!(
+        first["header"]["error_code"].is_null(),
+        "the recipe refused the block: {first}"
+    );
+    first
+}
+
+/// The `simple_agent` recipe's first answer on the wish `params` (a manifest or
+/// a refusal).
+fn render_wish(params: &Value) -> Value {
     let out = meclaw_testing::emit_all(
         &meclaw_testing::shipped_script(
             repo("templates/builder/recipes/config.json")
@@ -974,16 +1102,11 @@ fn render_block() -> Value {
             "header": {"hop": {"route": "recipe"}, "context": {}},
             "ttl": 64,
             "messages": [{"origin": "tool", "type": "tool_result", "id": "",
-                          "text": json!({"recipe": wish["recipe"], "request": "grow the agent",
-                                         "params": wish["params"]}).to_string()}],
+                          "text": json!({"recipe": "simple_agent", "request": "grow the agent",
+                                         "params": params}).to_string()}],
         }),
     );
-    let first = out.into_iter().next().expect("the recipe answered nothing");
-    assert!(
-        first["header"]["error_code"].is_null(),
-        "the recipe refused the block: {first}"
-    );
-    first
+    out.into_iter().next().expect("the recipe answered nothing")
 }
 
 #[test]
@@ -998,7 +1121,7 @@ fn sa2_builder_block_renders_one_agent_the_door_accepts() {
     let diff = &decl["diff"];
     let nodes = diff["add_nodes"].as_array().expect("add_nodes");
     assert_eq!(nodes.len(), 1, "one agent");
-    assert_eq!(nodes[0]["template"], "simple-agent@2.0.0");
+    assert_eq!(nodes[0]["template"], "simple-agent@2.1.0");
     assert_eq!(
         decl["ctx"]["model"], "example-provider/brain-model",
         "ctx.model"
@@ -1084,11 +1207,12 @@ fn sa2_builder_block_puts_the_grants_into_the_colony_access() {
         .find(|t| t["table"] == "grants")
         .and_then(|t| t["rows"].as_array())
         .expect("grant rows");
-    // `tools/web_search` stays anonymous without a search credential (OR-VG-5).
+    // `tools/web_search` stays anonymous without a search credential (OR-VG-5),
+    // and `strong` without `strong` in the wish (K-3, OR-AG-75).
     let spending: Vec<&str> = MODEL_CELLS
         .iter()
         .copied()
-        .filter(|c| *c != "tools/web_search")
+        .filter(|c| *c != "tools/web_search" && *c != "strong")
         .collect();
     assert_eq!(
         grants.len(),
@@ -1129,6 +1253,390 @@ fn sa2_builder_block_puts_the_grants_into_the_colony_access() {
         rows.iter().any(|t| t["table"] == "grant_events"),
         "each grant with its birth event"
     );
+}
+
+// ─────────────────────────────────── one level deeper (GH #1312, N1, OR-AG-69)
+
+/// `@2`'s rim with every `at` one level down (`./simple-agent/brain`, ...):
+/// the form a template carries that holds the agent under a ref (`figure@2`).
+fn deeper_contract() -> Value {
+    let mut c = v2()["params"]["contract"].clone();
+    for side in ["accepts", "emits"] {
+        for lane in c[side].as_array_mut().into_iter().flatten() {
+            if let Some(at) = lane.get_mut("at").and_then(Value::as_array_mut) {
+                for a in at.iter_mut() {
+                    let cell = a
+                        .as_str()
+                        .unwrap_or_default()
+                        .trim_start_matches("./")
+                        .to_string();
+                    *a = json!(format!("./simple-agent/{cell}"));
+                }
+            }
+        }
+    }
+    c
+}
+
+/// A fixture template `nest` laid out as a colony grows it: a hive whose rim is
+/// [`deeper_contract`], with `@2` resolved under `./simple-agent`.
+fn nest_instantiated() -> (tempfile::TempDir, std::path::PathBuf) {
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let nest = td.path().join("main/nest");
+    copy_resolved(
+        &repo("templates/simple-agent"),
+        &nest.join("simple-agent"),
+        0,
+    );
+    std::fs::write(
+        nest.join("config.json"),
+        json!({"cell": {"type": "hive"},
+               "params": {"ports": [], "contract": deeper_contract()}})
+        .to_string(),
+    )
+    .expect("the nest's config");
+    (td, nest)
+}
+
+/// The example's wish for the fixture `nest`, its rim handed in as `contract`.
+fn nest_wish(extra: Value) -> Value {
+    let mut p = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    p["name"] = json!("nest");
+    p["template"] = json!("nest@1.0.0");
+    p["contract"] = deeper_contract();
+    for (k, v) in as_map(&extra) {
+        p[k.as_str()] = v;
+    }
+    p
+}
+
+/// The provider cells of `@2` -- its llm cells; `memory-hive/embed` and
+/// `tools/web_search` are code cells and read the colony's own app id.
+const LLM_CELLS: [&str; 7] = [
+    "brain",
+    "strong",
+    "curator/summarizer",
+    "memory-hive/closer",
+    "memory-hive/dialectic",
+    "memory-hive/dreamer",
+    "memory-hive/judge",
+];
+
+#[test]
+fn sa2_builder_block_renders_an_agent_one_level_deeper() {
+    if !shipped() {
+        return;
+    }
+    let answer = render_wish(&nest_wish(json!({})));
+    assert!(
+        answer["header"]["error_code"].is_null(),
+        "refused: {answer}"
+    );
+    let manifest = answer["manifest"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        manifest.len(),
+        1,
+        "a registry beside the agent: one declaration"
+    );
+    let diff = &manifest[0]["diff"];
+    let node = &diff["add_nodes"][0];
+    assert_eq!(node["template"], "nest@1.0.0");
+    let (_td, nest) = nest_instantiated();
+    let registry = TemplatesRegistry::from_entries(Vec::new());
+    let parsed = parse_subtree(&nest, &registry).expect("the nest parses");
+    let overrides = as_map(&node["override_params"]);
+    for (cell, params) in &overrides {
+        assert!(
+            cell.starts_with("simple-agent/"),
+            "a key above the agent: {cell}"
+        );
+        let c = parsed
+            .cells
+            .iter()
+            .find(|x| x.rel_path == cell.as_str())
+            .unwrap_or_else(|| panic!("the override names no cell of the nest: {cell}"));
+        check_override_params(c, Some(cell.as_str()), "nest", params)
+            .unwrap_or_else(|why| panic!("{cell}: {why:?}"));
+    }
+    for cell in ["door", "enrol", "tool_gate"] {
+        assert!(
+            overrides.contains_key(&format!("simple-agent/{cell}")),
+            "{cell}"
+        );
+    }
+    // The app id reaches every llm cell (W1 finding 3); `strong` only when it is on.
+    for cell in LLM_CELLS.iter().filter(|c| **c != "strong") {
+        let o = &overrides[&format!("simple-agent/{cell}")];
+        assert_eq!(o["x_title"], "meclaw-example simple-agent-colony", "{cell}");
+        assert_eq!(o["http_referer"], "https://meclaw.ai", "{cell}");
+    }
+    for cell in ["memory-hive/embed", "tools/web_search"] {
+        assert!(
+            overrides
+                .get(&format!("simple-agent/{cell}"))
+                .is_none_or(|o| o.get("x_title").is_none()),
+            "{cell} is a code cell"
+        );
+    }
+    let edges = diff["add_edges"].as_array().cloned().unwrap_or_default();
+    let contract = contract_from_cell_dir(&nest, "/nest").expect("the nest has a contract");
+    check_required_lanes(std::slice::from_ref(&contract), &root_table(&edges))
+        .unwrap_or_else(|e| panic!("the block satisfies the nest's birth: {e:?}"));
+    for e in &edges {
+        for end in ["from", "to"] {
+            let p = e[end].as_str().unwrap_or_default();
+            if let Some(cell) = p.strip_prefix("./nest/") {
+                assert!(
+                    cell.starts_with("simple-agent/"),
+                    "an end above the agent: {e}"
+                );
+                assert!(
+                    nest.join(cell).join("config.json").is_file(),
+                    "into nothing: {e}"
+                );
+            }
+        }
+    }
+    let announced = edges
+        .iter()
+        .find(|e| e["to"] == "./llm-registry" && e["from"] == ".")
+        .expect("the announcement");
+    assert!(
+        announced["modifier"]["set_context"]["model_announced"]
+            .as_str()
+            .is_some_and(|a| a.contains("\"cell_path\":\"/nest/simple-agent/brain\"")),
+        "the brain is announced where it stands: {announced}"
+    );
+}
+
+/// The `simple_agent` recipe's first answer on the wish `params`, with the
+/// builder's own settings (`model_registry_scope`, the assistant's knob).
+fn render_wish_with(params: &Value, settings: Value) -> Value {
+    let out = meclaw_testing::emit_all(
+        &meclaw_testing::shipped_script(
+            repo("templates/builder/recipes/config.json")
+                .to_str()
+                .expect("a utf-8 path"),
+        ),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "ttl": 64,
+            "params": settings,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": json!({"recipe": "simple_agent", "request": "grow the agent",
+                                         "params": params}).to_string()}],
+        }),
+    );
+    out.into_iter().next().expect("the recipe answered nothing")
+}
+
+/// K-1 + review C1 (GH #1312): in a member colony the registry stands under
+/// `/os` and its pushes arrive at the container the builder names
+/// (`model_registry_scope`, `/os/orgs`), exactly as for the assistant. The
+/// required lane `in_model` is wired by the entry that gives the agent birth --
+/// the door judges each entry on its own -- and the container's edges reach
+/// the agent in a second entry. Nothing names `./llm-registry` beside the
+/// agent.
+#[test]
+fn sa2_builder_block_finds_the_registry_through_the_container_scope() {
+    if !shipped() {
+        return;
+    }
+    let answer = render_wish_with(
+        &nest_wish(json!({"scope": "/os/orgs/o/members/m"})),
+        json!({"model_registry_scope": "/os/orgs"}),
+    );
+    assert!(
+        answer["header"]["error_code"].is_null(),
+        "refused: {answer}"
+    );
+    let manifest = answer["manifest"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        manifest.len(),
+        2,
+        "the birth, then the container's road: {answer}"
+    );
+    assert_eq!(manifest[0]["scope"], "/os/orgs/o/members/m");
+    assert_eq!(manifest[1]["scope"], "/os/orgs");
+    for d in &manifest {
+        for e in d["diff"]["add_edges"].as_array().into_iter().flatten() {
+            for end in ["from", "to"] {
+                assert!(
+                    !e[end].as_str().unwrap_or_default().contains("llm-registry"),
+                    "no registry beside the agent: {e}"
+                );
+            }
+        }
+    }
+    // The birth entry ALONE satisfies the rim: every required lane, `in_model`
+    // included (C1: before the fix it stood only in the second entry).
+    let birth = manifest[0]["diff"]["add_edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let (_td, nest) = nest_instantiated();
+    let contract = contract_from_cell_dir(&nest, "/nest").expect("the nest has a contract");
+    check_required_lanes(std::slice::from_ref(&contract), &root_table(&birth))
+        .unwrap_or_else(|e| panic!("the birth entry wires every required lane: {e:?}"));
+    assert!(
+        birth.iter().any(|e| e["from"] == "./nest"
+            && e["to"] == "."
+            && e["condition"] == "has(hop.route) && hop.route == 'model_refused'"),
+        "a refusal leaves the agent to its level: {birth:?}"
+    );
+    // The container's road, in the forms the assistant's road has: a push per
+    // announced brain onto the agent, the refusal on from the level, the
+    // announcement off the level's receipt with the brains it stands for.
+    let road = manifest[1]["diff"]["add_edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let agent = "./o/members/m/nest";
+    assert_eq!(
+        road[0],
+        json!({"from": ".", "to": agent,
+               "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) \
+                             && hop.subscriber == '/os/orgs/o/members/m/nest/simple-agent/brain'",
+               "modifier": {"set_hop": {"route": "'in_model'"}}}),
+        "{road:?}"
+    );
+    assert!(
+        road.iter()
+            .all(|e| !(e["to"] == agent
+                && e["condition"].as_str().unwrap_or("").contains("/strong'"))),
+        "no strong brain without `strong`: {road:?}"
+    );
+    let announced = road
+        .iter()
+        .find(|e| e["modifier"]["set_hop"]["route"] == "'model_subscribe'")
+        .expect("the announcement");
+    assert_eq!(announced["from"], "./o/members/m");
+    assert_eq!(announced["to"], ".");
+    assert_eq!(
+        announced["modifier"]["set_context"]["model_generation"],
+        "'/os/orgs/o/members/m/nest'"
+    );
+    assert!(
+        road.iter().any(|e| e["from"] == "./o/members/m"
+            && e["to"] == "."
+            && e["condition"] == "has(hop.route) && hop.route == 'model_refused'"
+            && e.get("modifier").is_none()),
+        "the refusal goes on to the container: {road:?}"
+    );
+    // Without the setting the rendering is the default one, byte for byte.
+    let plain = render_wish_with(&nest_wish(json!({})), json!({}));
+    assert_eq!(plain, render_wish(&nest_wish(json!({}))));
+}
+
+#[test]
+fn sa2_builder_block_refuses_an_unknown_template_without_its_rim() {
+    if !shipped() {
+        return;
+    }
+    let mut p = nest_wish(json!({}));
+    if let Some(o) = p.as_object_mut() {
+        o.remove("contract");
+    }
+    let answer = render_wish(&p);
+    assert_eq!(
+        answer["header"]["error_code"], "app_declaration_invalid",
+        "{answer}"
+    );
+    let text = answer["messages"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("\"field\": \"contract\""), "{text}");
+    // An agent at the container itself has no level between it and the
+    // registry's road (OR-agent-2.N1.10): refused by name.
+    let answer = render_wish_with(
+        &nest_wish(json!({"scope": "/os/orgs"})),
+        json!({"model_registry_scope": "/os/orgs"}),
+    );
+    assert_eq!(
+        answer["header"]["error_code"], "app_declaration_invalid",
+        "{answer}"
+    );
+}
+
+/// Every grant id a rendered block names: rows, overrides, answer edges.
+fn grant_ids(answer: &Value) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let diff = &answer["manifest"][0]["diff"];
+    for t in diff["seed_rows"].as_array().into_iter().flatten() {
+        for r in t["rows"].as_array().into_iter().flatten() {
+            if let Some(id) = r["grant_id"].as_str() {
+                out.insert(id.to_string());
+            }
+        }
+    }
+    for (_cell, o) in as_map(&diff["add_nodes"][0]["override_params"]) {
+        if let Some(id) = o["credential_grant_id"].as_str() {
+            out.insert(id.to_string());
+        }
+    }
+    out
+}
+
+/// K-2 (GH #1312): two agents of one member -- two roles under one subject --
+/// get disjoint grant ids. Before, the id named the subject and the cell only,
+/// so the second agent's `seed_rows` overwrote the first one's grants.
+#[test]
+fn sa2_two_agents_of_one_member_hold_their_own_grants() {
+    if !shipped() {
+        return;
+    }
+    let mut first = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    first["name"] = json!("counselor");
+    first["agent_id"] = json!("counselor");
+    let mut second = first.clone();
+    second["name"] = json!("care");
+    second["agent_id"] = json!("care");
+    let a = grant_ids(&render_wish(&first));
+    let b = grant_ids(&render_wish(&second));
+    assert!(!a.is_empty() && !b.is_empty(), "{a:?} {b:?}");
+    assert!(
+        a.is_disjoint(&b),
+        "two roles share grant ids: {:?}",
+        a.intersection(&b).collect::<Vec<_>>()
+    );
+    for id in &a {
+        assert!(id.contains("/counselor/"), "the agent in the id: {id}");
+    }
+}
+
+/// K-3 (OR-AG-75): the second brain spends a grant only when the wish turns it
+/// on. Without `strong` no row, no override, no edge names it; with it, all three.
+#[test]
+fn sa2_strong_holds_a_grant_only_when_it_is_on() {
+    if !shipped() {
+        return;
+    }
+    let wish = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    let off = render_wish(&wish);
+    let text = off["manifest"].to_string();
+    assert!(
+        !text.contains("./agent/strong"),
+        "an edge names strong: {text}"
+    );
+    assert!(
+        as_map(&off["manifest"][0]["diff"]["add_nodes"][0]["override_params"])
+            .get("strong")
+            .is_none(),
+        "an override names strong"
+    );
+    assert!(
+        grant_ids(&off).iter().all(|id| !id.ends_with("/strong")),
+        "{:?}",
+        grant_ids(&off)
+    );
+    let mut on = wish.clone();
+    on["strong"] = json!("example-provider/strong-model");
+    let on = render_wish(&on);
+    let overrides = as_map(&on["manifest"][0]["diff"]["add_nodes"][0]["override_params"]);
+    let id = overrides["strong"]["credential_grant_id"]
+        .as_str()
+        .expect("strong is born with its grant");
+    assert!(grant_ids(&on).contains(id), "{id}");
+    assert!(on["manifest"].to_string().contains("./agent/strong"));
 }
 
 /// The resident set size in kB of a process (`/proc/<pid>/status`, `VmRSS`).
@@ -1209,4 +1717,344 @@ async fn sa2_example_colony_answers_a_turn_with_the_stub() {
 async fn wait_sealed(h: &meclaw_testing::ColonyHandle) -> usize {
     wait_route(h, "/access", "/agent", "in_sealed", 1).await;
     count_route(h, "/access", "/agent", "in_sealed").await
+}
+
+/// An `install_app` wish for the app `fig` grown from `figure@2` -- an app
+/// whose rim embeds `simple-agent@2` one level down (orga's coordinator has
+/// the same shape) -- its rim handed in as `contract`, with the example's
+/// credential.
+fn embedding_app_wish() -> Value {
+    let example = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    let figure = read_json(&repo("templates/figure/config.json"));
+    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.0.0",
+           "screen": "display", "ctx": {"model": "example-provider/brain-model"},
+           "declaration": {}, "credential": example["credential"],
+           "override_params": {"world": {"figure_id": "fig", "world_id": "w", "role": "npc"}},
+           "contract": figure["params"]["contract"]})
+}
+
+/// The `install_app` recipe's first answer on `params`, the registry's
+/// container `/os/orgs` set (as `meclaw-os` sets it).
+fn render_install(params: &Value) -> Value {
+    let out = meclaw_testing::emit_all(
+        &meclaw_testing::shipped_script(
+            repo("templates/builder/recipes/config.json")
+                .to_str()
+                .expect("a utf-8 path"),
+        ),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "ttl": 64,
+            "params": {"model_registry_scope": "/os/orgs"},
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": json!({"recipe": "install_app", "request": "install fig",
+                                         "params": params}).to_string()}],
+        }),
+    );
+    out.into_iter().next().expect("the recipe answered nothing")
+}
+
+/// K-4 (GH #1312, OR-AG-76): an app whose rim REQUIRES `in_sealed` -- the
+/// orga coordinator's case, orga-hive O1 report line 541 -- installed without
+/// `credential` is refused by name at the recipe. Before, the recipe rendered
+/// the app with no credential pair and the door refused its birth with a
+/// `hive_contract` message that named the lane, never the missing wish key.
+#[test]
+fn sa2_install_app_refuses_an_embedded_agent_without_its_credential() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let mut p = embedding_app_wish();
+    if let Some(o) = p.as_object_mut() {
+        o.remove("credential");
+    }
+    let answer = render_install(&p);
+    assert_eq!(
+        answer["header"]["error_code"], "app_declaration_invalid",
+        "{answer}"
+    );
+    let text = answer["messages"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("\"field\": \"credential\""), "{text}");
+}
+
+/// K-4 (GH #1312, OR-AG-76/-77): `install_app` of an app that embeds
+/// `simple-agent@2` draws the agent's required lanes in the entry that
+/// instantiates the app -- `in_briefing` and `in_pack` onto the cells the rim
+/// names, the level's `in_model` door onto the app -- and the container's road
+/// as a second entry, by the block's own function. The agent's search cell
+/// stays anonymous as in the block (OR-VG-5). Before, only the credential
+/// pairs were drawn (and the search cell was handed the provider key).
+#[test]
+fn sa2_install_app_draws_the_rim_of_an_embedded_agent() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let answer = render_install(&embedding_app_wish());
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    let manifest = answer["manifest"].as_array().cloned().unwrap_or_default();
+    assert_eq!(manifest.len(), 2, "the app, then the container's road");
+    let edges = manifest[0]["diff"]["add_edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let onto = |lane: &str, to: &str| {
+        edges
+            .iter()
+            .any(|e| e["lane"] == lane && e["to"] == to && e["from"] == "./affinity")
+    };
+    assert!(
+        onto("in_briefing", "./apps/fig/simple-agent/collector"),
+        "{edges:#?}"
+    );
+    assert!(
+        onto("in_pack", "./apps/fig/simple-agent/curator"),
+        "{edges:#?}"
+    );
+    assert!(
+        edges.iter().any(|e| e["from"] == "."
+            && e["to"] == "./apps/fig"
+            && e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("hop.route == 'in_model'"))),
+        "the level's in_model door onto the app: {edges:#?}"
+    );
+    assert_eq!(manifest[1]["scope"], "/os/orgs");
+    assert!(
+        manifest[1]
+            .to_string()
+            .contains("hop.subscriber == '/os/orgs/o/members/m/apps/fig/simple-agent/brain'"),
+        "{:#}",
+        manifest[1]
+    );
+    assert!(
+        !manifest[0]
+            .to_string()
+            .contains("simple-agent/tools/web_search"),
+        "the search cell spends no provider key: {:#}",
+        manifest[0]
+    );
+}
+
+/// K-4 item 3 (OR-AG-79, finding for N2): `install_app` of an app that embeds
+/// `simple-agent@2` does NOT pass the submit gate. The gate's model-road forms
+/// know a push to one segment under a composite (`<to>/<cell>`, or
+/// `curator/<cell>`) and the assistant's announcement; the agent's push
+/// (`<app>/simple-agent/brain`) is refused `model_push_form`, and without the
+/// push the announcement is refused `model_announcement_form`. Nothing else is
+/// refused: with the model road taken out the same manifest is parked and
+/// asked. The gate is not loosened here (OR-AG-79); the lock holds the refusal
+/// until N2 widens the forms, and the operator way (`--apply`) is pinned by
+/// `install_app_wires_the_rim_of_an_embedded_agent_in_a_member_colony`.
+#[test]
+fn sa2_install_app_of_an_embedded_agent_stops_at_the_submit_gates_model_forms() {
+    let gate = repo("templates/submit/gate/config.json");
+    if !shipped() || !repo("templates/figure/config.json").is_file() || !gate.is_file() {
+        return;
+    }
+    let submit = |decls: &Value| -> Vec<Value> {
+        let canon = meclaw_testing::code_wire::run_shipped_script(
+            concat!(
+                "import sys, json, hashlib\n",
+                "d = json.load(sys.stdin)\n",
+                "c = json.dumps(d, sort_keys=True, separators=(',', ':'), ensure_ascii=False)\n",
+                "sys.stdout.write(hashlib.sha256(c.encode('utf-8')).hexdigest())\n"
+            ),
+            &decls.to_string(),
+        );
+        let sha = String::from_utf8(canon.stdout).expect("hex");
+        meclaw_testing::emit_all(
+            &meclaw_testing::shipped_script(gate.to_str().expect("a utf-8 path")),
+            &json!({
+                "target": "/os/operator/submit",
+                "reply_to": "/os/operator/submit",
+                "header": {"hop": {"manifest_sha256": sha}, "context": {}},
+                "ttl": 64,
+                "manifest": decls,
+                "messages": [{"origin": "assistant", "type": "tool_call", "id": "op:c1",
+                              "text": "{}"}],
+                "params": {}
+            }),
+        )
+    };
+    let refused = |out: &[Value]| {
+        out.iter()
+            .find(|m| m["header"]["route"] == "receipt")
+            .and_then(|m| m["header"]["error_code"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let manifest = render_install(&embedding_app_wish())["manifest"].clone();
+    let out = submit(&manifest);
+    assert_eq!(refused(&out), "model_push_form", "{out:#?}");
+    // Only the model road: without it the gate parks and asks.
+    let mut bare = manifest.clone();
+    for decl in bare.as_array_mut().into_iter().flatten() {
+        if let Some(edges) = decl["diff"]["add_edges"].as_array_mut() {
+            edges.retain(|e| {
+                let text = e.to_string();
+                !text.contains("'in_model'") && !text.contains("model_subscribe")
+            });
+        }
+    }
+    let out = submit(&bare);
+    assert!(
+        refused(&out).is_empty()
+            && out.iter().any(|m| m["header"]["route"] == "sstore")
+            && out.iter().any(|m| m["header"]["route"] == "ask"),
+        "{out:#?}"
+    );
+}
+
+/// The node override params of an `install_app` answer's first entry.
+fn app_overrides(answer: &Value) -> Value {
+    answer["manifest"][0]["diff"]["add_nodes"][0]["override_params"].clone()
+}
+
+/// The subscriber the `in_pack` edge of an `install_app` answer docks for.
+fn pack_condition(answer: &Value) -> String {
+    answer["manifest"][0]["diff"]["add_edges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|e| e["lane"] == "in_pack")
+        .and_then(|e| e["condition"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Review I-1 (GH #1312, OR-AG-81): `install_app` of an app that embeds
+/// `simple-agent@2` names the agent ONCE -- the subject of its rim edges
+/// (`agent:<id>`), its door's and its enrolment's `agent_id` are one value,
+/// by default the app's name, so two such apps of one member are two
+/// entities. Before, the edges took the agent's folder (`agent:simple-agent`)
+/// and the door and the enrolment kept their default `agent`: the enrolment
+/// wrote `entity:agent`, and two apps of a member shared it.
+#[test]
+fn sa2_install_app_names_the_embedded_agent_once_per_app() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let mut ids = Vec::new();
+    for app in ["fig", "fig2"] {
+        let mut p = embedding_app_wish();
+        p["app"] = json!(app);
+        let answer = render_install(&p);
+        assert!(answer["header"]["error_code"].is_null(), "{answer}");
+        let o = app_overrides(&answer);
+        let door = o["simple-agent/door"]["agent_id"].clone();
+        assert_eq!(door, json!(app), "{o:#}");
+        assert_eq!(o["simple-agent/enrol"]["agent_id"], door, "{o:#}");
+        let cond = pack_condition(&answer);
+        assert!(
+            cond.contains(&format!("hop.subscriber == 'agent:{app}'")),
+            "{cond}"
+        );
+        ids.push(door);
+    }
+    assert_ne!(ids[0], ids[1], "two apps of one member, two entities");
+}
+
+/// Review I-1 (GH #1312): an `agent_id` named in the agent's own overrides is
+/// the agent's id for the edges too; two different values are refused by the
+/// field, not rendered as two identities.
+#[test]
+fn sa2_install_app_takes_the_agents_own_id_and_refuses_two() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let mut p = embedding_app_wish();
+    p["override_params"]["simple-agent/enrol"] =
+        json!({"agent_id": "coordinator", "identity": {"name": "Coordinator"}});
+    let answer = render_install(&p);
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    let o = app_overrides(&answer);
+    assert_eq!(o["simple-agent/door"]["agent_id"], "coordinator", "{o:#}");
+    assert_eq!(
+        o["simple-agent/enrol"]["identity"]["name"], "Coordinator",
+        "{o:#}"
+    );
+    assert!(
+        pack_condition(&answer).contains("'agent:coordinator'"),
+        "{answer:#}"
+    );
+    p["agent_id"] = json!("other");
+    let answer = render_install(&p);
+    assert_eq!(
+        answer["header"]["error_code"], "app_declaration_invalid",
+        "{answer}"
+    );
+    let text = answer["messages"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("\"field\": \"agent_id\""), "{text}");
+}
+
+/// Review minor (GH #1312, K-3 for `install_app`): the embedded agent's second
+/// brain spends a grant only when it is on -- `strong` in the wish or in the
+/// agent's door overrides. Before, `install_app` drew its grant, its two
+/// credential edges and its `credential_grant_id` always.
+#[test]
+fn sa2_install_app_grants_the_strong_brain_only_when_it_is_on() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let off = render_install(&embedding_app_wish());
+    assert!(off["header"]["error_code"].is_null(), "{off}");
+    let text = off["manifest"][0].to_string();
+    assert!(
+        !text.contains("simple-agent/strong"),
+        "{:#}",
+        off["manifest"][0]
+    );
+    assert!(
+        text.contains("simple-agent/brain"),
+        "the brain still spends"
+    );
+    let mut p = embedding_app_wish();
+    p["strong"] = json!("example-provider/strong-model");
+    let on = render_install(&p);
+    assert!(on["header"]["error_code"].is_null(), "{on}");
+    let o = app_overrides(&on);
+    assert!(
+        o["simple-agent/strong"]["credential_grant_id"].is_string(),
+        "{o:#}"
+    );
+    assert_eq!(
+        o["simple-agent/door"]["strong"],
+        "example-provider/strong-model"
+    );
+}
+
+/// Review I-1 (GH #1312), the block's half of the shared id
+/// (`_sa_agent_id`): an `agent_id` the wish names only in the agent's own
+/// overrides is the id of its edges and grants as well, and two different
+/// values are refused by the field. Before, the block's edges and grants took
+/// `name` while the override's id reached the door alone.
+#[test]
+fn sa2_builder_block_takes_the_agents_own_id_and_refuses_two() {
+    if !shipped() {
+        return;
+    }
+    let mut wish = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    if let Some(o) = wish.as_object_mut() {
+        o.remove("agent_id");
+    }
+    wish["override_params"] = json!({"enrol": {"agent_id": "zed"}});
+    let answer = render_wish(&wish);
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    let overrides = as_map(&answer["manifest"][0]["diff"]["add_nodes"][0]["override_params"]);
+    assert_eq!(overrides["door"]["agent_id"], "zed", "{overrides:?}");
+    assert!(
+        grant_ids(&answer).iter().all(|id| id.contains("/zed/")),
+        "{:?}",
+        grant_ids(&answer)
+    );
+    assert!(answer["manifest"].to_string().contains("'agent:zed'"));
+    wish["agent_id"] = json!("ava");
+    let answer = render_wish(&wish);
+    assert_eq!(
+        answer["header"]["error_code"], "app_declaration_invalid",
+        "{answer}"
+    );
+    let text = answer["messages"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("\"field\": \"agent_id\""), "{text}");
 }

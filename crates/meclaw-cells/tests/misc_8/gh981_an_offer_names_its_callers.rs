@@ -591,3 +591,165 @@ fn an_app_without_runs_draws_no_run_edge() {
         "listens": ["answer"], "reads": "./sink"})));
     assert!(!as_set(&got).iter().any(|e| e.contains("run_")), "{got:#?}");
 }
+
+// --- GH #1312: an app tool as a handoff, like the advisor lanes ------------
+//
+// A tool offer answers inside the round (`tool_result`). An app whose answer
+// takes longer than a round -- a coordinator that has to ask around -- had no
+// way to answer later: the handoff is a knob of the surface's dispatcher and
+// two hand-drawn edges (`templates/talky/README.md` § The advisor lanes). The
+// declaration says it now: `offers: [{"kind": "handoff", "at", "tools"}]`,
+// every name in the family `consult_<x>` the assistant level declares as a
+// handoff (`consult_*`). Per surface the builder draws the call onto the app's
+// cell and the way back (`advice` restamped `in_advice` in the member's
+// round). A declaration without the word renders what it rendered before.
+
+const ASSISTANT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates/assistant");
+const HANDOFF_SURFACES: [&str; 2] = ["talky", "talky-chat"];
+const DESK: &str = "./apps/probe-app/desk";
+
+fn handoff() -> Value {
+    json!({"offers": [{"kind": "handoff", "at": "./desk", "tools": ["consult_probe"]}]})
+}
+
+/// Red before GH #1312: `handoff` is no offer kind (`app_declaration_invalid`).
+/// Per surface: one call edge onto the app's cell, one menu tick, one way back
+/// onto the surface's `in_advice` -- and nothing for the core, which answers
+/// no channel.
+#[test]
+fn a_handoff_offer_draws_the_call_and_the_way_back_per_surface() {
+    if !shipped() {
+        return;
+    }
+    let got = edges(&params(handoff()));
+    for s in HANDOFF_SURFACES {
+        let rim = format!("./assistants/sam/{s}");
+        let calls: Vec<&Value> = got
+            .iter()
+            .filter(|e| e["from"] == json!(rim) && e["lane"] == json!("tool"))
+            .collect();
+        assert_eq!(calls.len(), 1, "{s}: {got:#?}");
+        let call = calls[0];
+        assert_eq!(call["to"], DESK);
+        assert_eq!(
+            call["condition"],
+            "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && \
+             hop.tool_name == 'consult_probe' && has(hop.consult_id) && hop.consult_id != ''",
+            "only a call the dispatcher sent as a handoff"
+        );
+        let ctx = &call["modifier"]["set_context"];
+        assert_eq!(ctx["consult_id"], "hop.consult_id", "{call}");
+        assert_eq!(ctx["col_phase"], "''", "{call}");
+        assert_eq!(ctx["tool_caller"], json!(format!("'{s}'")), "{call}");
+        assert_eq!(ctx["assistant"], "'sam'", "{call}");
+        assert_eq!(call["modifier"]["restore_ttl"], json!(true), "{call}");
+        let gone = call["modifier"]["delete_context"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !gone.contains(&json!("consult_id")) && !gone.contains(&json!("col_phase")),
+            "set, not deleted: {call}"
+        );
+        let ticks = got
+            .iter()
+            .filter(|e| e["from"] == json!(rim) && e["lane"] == json!("schemas"))
+            .count();
+        assert_eq!(ticks, 1, "{s}: the brain sees the tool");
+        let back: Vec<&Value> = got
+            .iter()
+            .filter(|e| e["from"] == json!(DESK) && e["to"] == json!(rim))
+            .collect();
+        assert_eq!(back.len(), 1, "{s}: {got:#?}");
+        assert_eq!(
+            back[0]["condition"],
+            json!(format!(
+                "has(hop.route) && hop.route == 'advice' && has(context.consult_id) && \
+                 context.consult_id != '' && has(context.tool_caller) && \
+                 context.tool_caller == '{s}'"
+            ))
+        );
+        assert_eq!(back[0]["modifier"]["set_hop"]["route"], "'in_advice'");
+        assert_eq!(back[0]["modifier"]["set_context"]["col_phase"], "''");
+        assert_eq!(
+            back[0]["modifier"]["set_context"]["audience_set"],
+            MEMBER_ROUND
+        );
+        assert_eq!(back[0]["modifier"]["restore_ttl"], json!(true));
+    }
+    assert!(
+        !got.iter()
+            .any(|e| e["from"] == json!("./assistants/sam/cogny")),
+        "the core is no caller of a handoff: {got:#?}"
+    );
+    assert!(
+        !got.iter().any(|e| e["condition"]
+            .as_str()
+            .is_some_and(|c| c.contains("'tool_result'") && c.contains("consult_probe"))),
+        "a handoff leaves no tool result: {got:#?}"
+    );
+}
+
+/// The family is the dispatcher's word: a name outside `consult_`, the core's
+/// own `consult_cogny` and a `callers` key are refused before anything renders.
+#[test]
+fn a_handoff_offer_names_only_the_reserved_family() {
+    if !shipped() {
+        return;
+    }
+    let outside = refusal(&params(json!({"offers": [
+        {"kind": "handoff", "at": "./desk", "tools": ["orga_ask"]}]})));
+    assert_eq!(outside["field"], "offers[0].tools[0]", "{outside}");
+    let core = refusal(&params(json!({"offers": [
+        {"kind": "handoff", "at": "./desk", "tools": ["consult_cogny"]}]})));
+    assert_eq!(core["field"], "offers[0].tools[0]", "{core}");
+    let callers = refusal(&params(json!({"offers": [
+        {"kind": "handoff", "at": "./desk", "tools": ["consult_probe"],
+         "callers": ["cogny"]}]})));
+    assert_eq!(callers["field"], "offers[0]", "{callers}");
+    let twice = refusal(&params(json!({"offers": [
+        {"kind": "handoff", "at": "./desk", "tools": ["consult_probe"]},
+        {"kind": "handoff", "at": "./tools", "tools": ["consult_probe"]}]})));
+    assert_eq!(twice["field"], "offers[1].tools", "{twice}");
+}
+
+/// Review I1 (GH #1312): the family `consult_*` is reserved for handoffs. A
+/// `tool` offer under that name would be declared async+handoff by every
+/// surface (`handoff_tools: consult_*`), the turn would end, and the app's
+/// `tool_result` would arrive in a round that is already over -- refused at
+/// the tool offer, by its field.
+#[test]
+fn a_tool_offer_may_not_take_the_handoff_family() {
+    if !shipped() {
+        return;
+    }
+    let tool = refusal(&params(json!({"offers": [
+        {"kind": "tool", "at": "./tools", "tools": ["ok_tool", "consult_x"]}]})));
+    assert_eq!(tool["field"], "offers[0].tools[1]", "{tool}");
+    let fine = run_recipes(&params(json!({"offers": [
+        {"kind": "tool", "at": "./tools", "tools": ["consulting"]}]})));
+    assert!(
+        fine.iter().all(|m| m["header"]["error_code"].is_null()),
+        "a name that only starts like the family word passes: {fine:?}"
+    );
+}
+
+/// The other half of the contract: both surfaces of the shipped assistant
+/// level declare the family as a handoff, so a call the builder routes to an
+/// app is never waited for inside the round.
+#[test]
+fn the_assistant_level_declares_the_handoff_family() {
+    for s in HANDOFF_SURFACES {
+        let path = format!("{ASSISTANT_DIR}/{s}/config.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let doc: Value = serde_json::from_str(&text).expect("config json");
+        let knob = &doc["override_params"]["dispatcher"]["handoff_tools"];
+        assert!(
+            knob.as_array()
+                .is_some_and(|l| l.contains(&json!("consult_*"))),
+            "{s}: {knob}"
+        );
+    }
+}

@@ -4172,6 +4172,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // that names none means the root, exactly as the
                         // mutation's own guard reads it.
                         let receipt_scope = receipt_scope_of(&payload);
+                        let receipt_paths = receipt_paths_of(&payload);
                         // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
                         // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
                         let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
@@ -4212,6 +4213,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             enqueue_colony_receipt(&inbox_self_tx, build_mutation_receipt(
                                 &crate::mutation::MutationDoorOutcome::Single(outcome.clone()),
                                 &receipt_scope,
+                                &receipt_paths,
                                 trace_id,
                                 parent_message_id,
                                 &Path::new(&r.to),
@@ -4246,6 +4248,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         }
                         // GH #553: see the Mutation arm above.
                         let receipt_scope = receipt_scope_of(&payload);
+                        let receipt_paths = receipt_paths_of(&payload);
                         // Phase-11 T16: Templates-Snapshot SYNCHRON (ColonyDb is
                         // !Sync → no &ColonyDb across an .await boundary).
                         let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
@@ -4286,6 +4289,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             enqueue_colony_receipt(&inbox_self_tx, build_mutation_receipt(
                                 &outcome,
                                 &receipt_scope,
+                                &receipt_paths,
                                 trace_id,
                                 parent_message_id,
                                 &Path::new(&r.to),
@@ -11584,6 +11588,7 @@ fn build_ttl_notice(
 pub(crate) fn build_mutation_receipt(
     outcome: &crate::mutation::MutationDoorOutcome,
     scope: &str,
+    paths: &ReceiptPaths,
     trace_id: Uuid,
     parent_message_id: Uuid,
     target: &Path,
@@ -11617,6 +11622,18 @@ pub(crate) fn build_mutation_receipt(
         meclaw_core::serde_json::to_value(changes)
             .unwrap_or_else(|_| meclaw_core::serde_json::Value::Array(vec![])),
     );
+    // GH #1312 (N1, OR-AG-61): the seventh and eighth key. A manifest's
+    // `scope` says `/` (it names no one scope), so a listener could not tell a
+    // builder block grown below it from any other knock and took every
+    // manifest as its own (`simple-agent@2`'s enrolment, the A5 review of
+    // the wave agent-2); a single knock named its scope but not the node it bore, so an
+    // agent born inside a new node never heard its own birth (F1 report).
+    // `scopes` and `paths` say where -- read off the body, never off the tree.
+    let list = |l: &[String]| {
+        meclaw_core::serde_json::Value::Array(l.iter().map(|p| p.as_str().into()).collect())
+    };
+    hop.insert("scopes".into(), list(&paths.scopes));
+    hop.insert("paths".into(), list(&paths.paths));
     Some(receipt_message(
         hop,
         scope,
@@ -11641,6 +11658,82 @@ pub(crate) fn receipt_scope_of(payload: &meclaw_core::serde_json::Value) -> Stri
         .and_then(|v| v.as_str())
         .unwrap_or("/")
         .to_string()
+}
+
+/// GH #1312 — where a declaration's node names point: the op key of the diff
+/// and the JSON pointer of the name inside one item.
+const RECEIPT_NODE_NAMES: [(&str, &str); 6] = [
+    ("add_nodes", "/name"),
+    ("remove_nodes", "/match/name"),
+    ("replace_nodes", "/match/name"),
+    ("swap_nodes", "/with/name"),
+    ("move_nodes", "/match/name"),
+    ("move_nodes", "/to"),
+];
+
+/// `scope` joined with a node name relative to it (`./x`, `x`, `a/b`).
+fn receipt_join(scope: &str, name: &str) -> String {
+    let base = scope.trim_end_matches('/');
+    let rel = name.trim_start_matches("./").trim_matches('/');
+    if rel.is_empty() || rel == "." {
+        return if base.is_empty() {
+            "/".to_string()
+        } else {
+            base.to_string()
+        };
+    }
+    format!("{base}/{rel}")
+}
+
+/// GH #1312 (N1, OR-AG-61) — where a knock wrote, read off the knocking body
+/// like [`receipt_scope_of`]: the `scopes` of its declarations (the single
+/// body, or each manifest entry in order; absent = `/`) and the absolute
+/// `paths` of every node a diff adds, removes, replaces, swaps in or moves.
+/// Each list names a path once, in first-seen order. Two lists and not one,
+/// because a listener asks two questions: "was a node at or above me born or
+/// replaced" (a node path above it) and "was my own graph written" (a scope at
+/// or below it) -- a scope above a listener says neither. A manifest's `scope`
+/// key stays `/` byte for byte. Read before the body moves into the door, so
+/// a refused knock computes it for nothing -- the receipt builder drops it.
+///
+/// Panic-free by construction (A1′ Hot-Path class): no indexing, no unwrap.
+pub(crate) fn receipt_paths_of(payload: &meclaw_core::serde_json::Value) -> ReceiptPaths {
+    let entries: Vec<&meclaw_core::serde_json::Value> =
+        match payload.get("manifest").and_then(|m| m.as_array()) {
+            Some(list) => list.iter().collect(),
+            None => vec![payload],
+        };
+    let keep = |list: &mut Vec<String>, p: String| {
+        if !list.contains(&p) {
+            list.push(p);
+        }
+    };
+    let mut out = ReceiptPaths::default();
+    for entry in entries {
+        let scope = entry.get("scope").and_then(|v| v.as_str()).unwrap_or("/");
+        keep(&mut out.scopes, receipt_join(scope, "."));
+        let Some(diff) = entry.get("diff") else {
+            continue;
+        };
+        for (op, pointer) in RECEIPT_NODE_NAMES {
+            let items = diff.get(op).and_then(|v| v.as_array());
+            for item in items.into_iter().flatten() {
+                if let Some(name) = item.pointer(pointer).and_then(|v| v.as_str()) {
+                    keep(&mut out.paths, receipt_join(scope, name));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// GH #1312 — the two lists [`receipt_paths_of`] reads off a knocking body.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ReceiptPaths {
+    /// The declarations' scopes, absolute.
+    pub(crate) scopes: Vec<String>,
+    /// The nodes the diffs added, removed, replaced, swapped in or moved, absolute.
+    pub(crate) paths: Vec<String>,
 }
 
 /// GH #553 (ruling O-0904-2) — the boot's own receipt.
@@ -13645,7 +13738,15 @@ mod tests {
         use crate::mutation::{ManifestOutcome, MutationDoorOutcome, MutationOutcome};
         let target = Path::new("/hive");
         let build = |o: &MutationDoorOutcome| {
-            build_mutation_receipt(o, "/", Uuid::now_v7(), Uuid::now_v7(), &target, 8)
+            build_mutation_receipt(
+                o,
+                "/",
+                &ReceiptPaths::default(),
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                &target,
+                8,
+            )
         };
 
         // The shape the DRAIN produces: both doors refuse before they stage
@@ -13701,6 +13802,10 @@ mod tests {
                 changes: Vec::new(),
             }),
             "/os",
+            &ReceiptPaths {
+                scopes: vec!["/os".to_string()],
+                paths: vec!["/os/talky".to_string()],
+            },
             trace,
             parent,
             &target,
@@ -13732,22 +13837,95 @@ mod tests {
                 "form",
                 "mutation_id",
                 "outcome",
+                "paths",
                 "route",
-                "scope"
+                "scope",
+                "scopes"
             ],
-            "six keys and no more: what the tree looks like is `/colony/graph`'s \
-             answer; `changes` (GH #682) says only what a lift did to each child"
+            "eight keys and no more: what the tree looks like is `/colony/graph`'s \
+             answer; `changes` (GH #682) says only what a lift did to each child, \
+             `scopes` and `paths` (GH #1312) only where the knock wrote"
         );
         assert_eq!(
             msg.headers.hop["changes"],
             meclaw_core::serde_json::json!([]),
             "a knock that replaced nothing carries the key, empty"
         );
+        assert_eq!(
+            msg.headers.hop["scopes"],
+            meclaw_core::serde_json::json!(["/os"])
+        );
+        assert_eq!(
+            msg.headers.hop["paths"],
+            meclaw_core::serde_json::json!(["/os/talky"])
+        );
         assert_eq!(msg.headers.hop["route"], "mutation_committed");
         assert_eq!(msg.headers.hop["scope"], "/os");
         assert_eq!(
             msg.body,
             Body::Inline(meclaw_core::serde_json::json!({"messages": []}))
+        );
+    }
+
+    /// GH #1312 (N1, OR-AG-61) — `scopes` and `paths` are read off the knocking
+    /// body: every declaration's scope, and every node a diff adds, removes,
+    /// replaces, swaps in or moves, each once and in order; a manifest names
+    /// every entry's, while its `scope` stays `/`.
+    #[test]
+    fn a_receipt_names_the_paths_the_knock_wrote() {
+        use meclaw_core::serde_json::json;
+        let own = |s: &[&str], p: &[&str]| ReceiptPaths {
+            scopes: s.iter().map(|x| x.to_string()).collect(),
+            paths: p.iter().map(|x| x.to_string()).collect(),
+        };
+        assert_eq!(
+            receipt_paths_of(&json!({"scope": "/os/orgs/o/members/m",
+                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.0"}],
+                         "add_edges": [{"from": "./figure", "to": "./access"}]}})),
+            own(&["/os/orgs/o/members/m"], &["/os/orgs/o/members/m/figure"])
+        );
+        assert_eq!(
+            receipt_paths_of(&json!({"diff": {"add_edges": []}})),
+            own(&["/"], &[]),
+            "a body without a scope means the root"
+        );
+        let manifest = json!({"manifest": [
+            {"scope": "/os/orgs/o/members/m", "diff": {
+                "add_nodes": [{"name": "./figure"}],
+                "replace_nodes": [{"match": {"name": "display"}}],
+                "remove_nodes": [{"match": {"name": "old"}}],
+                "swap_nodes": [{"match": {"name": "a"}, "with": {"name": "b"}}],
+                "move_nodes": [{"match": {"name": "fetch"}, "to": "desk/fetch"}]}},
+            {"scope": "/os", "diff": {"add_edges": []}},
+            {"scope": "/os/orgs/o/members/m", "diff": {"add_nodes": [{"name": "figure"}]}},
+        ]});
+        assert_eq!(
+            receipt_paths_of(&manifest),
+            own(
+                &["/os/orgs/o/members/m", "/os"],
+                &[
+                    "/os/orgs/o/members/m/figure",
+                    "/os/orgs/o/members/m/old",
+                    "/os/orgs/o/members/m/display",
+                    "/os/orgs/o/members/m/b",
+                    "/os/orgs/o/members/m/fetch",
+                    "/os/orgs/o/members/m/desk/fetch",
+                ]
+            )
+        );
+        assert_eq!(
+            receipt_scope_of(&manifest),
+            "/",
+            "the scope key does not move"
+        );
+        // Pathological bodies never panic and name what they can.
+        assert_eq!(
+            receipt_paths_of(&json!({"manifest": "x"})),
+            own(&["/"], &[])
+        );
+        assert_eq!(
+            receipt_paths_of(&json!({"scope": "/a", "diff": {"add_nodes": [{"name": 7}, "x"]}})),
+            own(&["/a"], &[])
         );
     }
 

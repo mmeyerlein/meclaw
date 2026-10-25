@@ -46,7 +46,8 @@
           "type": "string",
           "values": [
             "lstore",
-            "tool_result"
+            "tool_result",
+            "turns"
           ],
           "required": true
         },

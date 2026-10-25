@@ -2,6 +2,11 @@
 //! figure (world adapter, phone adapter, `ref simple-agent`) with stub models
 //! (no real model call).
 //!
+//! The colony is the one simple-agent@2 needs (GH #1311): the figure beside
+//! the colony's own `access` and `affinity`, the grants seeded there and named
+//! at birth, the contract lanes drawn by the run's root as an embedder draws
+//! them.
+//!
 //! A world turn calls world tools as client tools and ends as one `intent`
 //! when the model stops; a phone message leaves as a human-channel `turn`; an
 //! answer on that channel waits for the open world turn; the game-agent switch
@@ -37,7 +42,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 const FIGURE: &str = "/figure";
-const VAULT_CELL: &str = "/main/figure/simple-agent/access/vault";
+const VAULT_CELL: &str = "/main/access/vault";
 const VAULT_PASSPHRASE: &[u8] = b"figure-test-passphrase";
 const BRAIN_MODEL: &str = "brain-stub";
 const FIGURE_ID: &str = "f1";
@@ -205,21 +210,63 @@ fn world_params(world: &Value) -> Value {
     p
 }
 
-/// The figure under `/figure`, every `llm` cell at a stub (the agent's brain at
-/// the scripted one), every timer out of the run's way, the weather at the
-/// background stub, the provider key in the agent's own vault.
-fn build(td: &tempfile::TempDir, stubs: &Stubs, world: &Value) {
+/// The cells of the figure's simple-agent@2 that may spend a grant (the
+/// agent's README, "The colony's lanes"): none is born with one, the embedder
+/// names it at birth.
+const MODEL_CELLS: [&str; 9] = [
+    "brain",
+    "strong",
+    "curator/summarizer",
+    "memory-hive/closer",
+    "memory-hive/dialectic",
+    "memory-hive/dreamer",
+    "memory-hive/judge",
+    "memory-hive/embed",
+    "tools/web_search",
+];
+
+/// The figure's entry in the colony's affinity is `entity:<figure>` and its
+/// subscriber token `agent:<figure>` (R-NPC-0: the figure's id is its agent's).
+const SUBSCRIBER: &str = "agent:f1";
+
+/// The grant a consumer of the figure is born with in the run's colony.
+fn grant_of(cell: &str) -> String {
+    format!("grant:openrouter@figure-test/{}", cell.replace('/', "-"))
+}
+
+/// The figure under `/figure` beside the colony's own `access` and
+/// `affinity` (R-SA-13: the figure and its agent hold neither), the grants
+/// seeded in the colony's access and named at birth, the contract lanes drawn
+/// by the run's root the way an embedder draws them (figure README, "The
+/// colony's lanes"); every `llm` cell at a stub (the agent's brain at the
+/// scripted one), every timer out of the run's way, the weather at the
+/// background stub, the provider key in the colony's vault. `agent` maps a
+/// cell path inside the figure's agent to params laid over it.
+fn build(td: &tempfile::TempDir, stubs: &Stubs, world: &Value, agent_over: &Value) {
     let root = td.path();
     let main = root.join("main");
     let figure = main.join("figure");
     let agent = figure.join("simple-agent");
     copy_resolved(&repo("templates/figure"), &figure, 0);
+    copy_resolved(&repo("templates/access"), &main.join("access"), 0);
+    copy_resolved(&repo("templates/affinity"), &main.join("affinity"), 0);
     override_params_on_disk(&figure.join("world"), &world_params(world));
+    for cell in MODEL_CELLS {
+        override_params_on_disk(
+            &agent.join(cell),
+            &json!({"credential_grant_id": grant_of(cell)}),
+        );
+    }
+    override_params_on_disk(&agent.join("door"), &json!({"agent_id": FIGURE_ID}));
+    override_params_on_disk(&agent.join("enrol"), &json!({"agent_id": FIGURE_ID}));
     override_params_on_disk(
         &agent.join("tools/weather"),
         &json!({"geocode_endpoint": format!("{}/v1/geocode", stubs.background.base_url),
                 "forecast_endpoint": format!("{}/v1/forecast", stubs.background.base_url)}),
     );
+    for (cell, params) in as_map(agent_over) {
+        override_params_on_disk(&agent.join(cell), &params);
+    }
     let mut files = Vec::new();
     configs_under(&main, &mut files);
     for f in &files {
@@ -264,9 +311,9 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, world: &Value) {
         &agent.join("memory-hive/writer"),
         &json!({"night_at_utc": ""}),
     );
-    let edges = json!([
-        {"from": "./figure", "to": "/sink", "condition": "has(hop.route)"}
-    ]);
+    seed_grants(&main.join("access/store/seed"));
+    let mut edges = vec![json!({"from": "./figure", "to": "/sink", "condition": "has(hop.route)"})];
+    edges.extend(colony_edges());
     write_json(
         &main.join("config.json"),
         &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}}),
@@ -274,7 +321,7 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, world: &Value) {
     let key_file = root.join("vault.key");
     std::fs::write(&key_file, VAULT_PASSPHRASE).expect("key file");
     override_params_on_disk(
-        &agent.join("access/vault"),
+        &main.join("access/vault"),
         &json!({"key_source": "plainfile", "key_file": key_file.display().to_string()}),
     );
     #[cfg(unix)]
@@ -289,7 +336,7 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, world: &Value) {
         b"test-key",
         VAULT_PASSPHRASE,
     )
-    .expect("the cold deposit into the agent's vault");
+    .expect("the cold deposit into the colony's vault");
     let mut vars = bare_env_tokens(&files);
     vars.insert(
         "MECLAW_VAULT_KEY_FILE".into(),
@@ -305,6 +352,99 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, world: &Value) {
     );
     let body: String = vars.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
     std::fs::write(root.join(".env"), body).expect("the env file");
+}
+
+/// The colony's grants for the figure's consumers: what the embedder seeds
+/// into the colony's access (`seed_rows` of a builder block).
+fn seed_grants(seed: &std::path::Path) {
+    std::fs::create_dir_all(seed).expect("mkdir seed");
+    let mut grants = vec![json!({"schema": {
+        "constraints": "json", "capability": "text", "cred_ref": "text", "expires_at": "text",
+        "grant_id": "text", "issued_at": "text", "purpose": "text", "requester": "text",
+        "rule_id": "text", "scope": "json", "subject": "text"}})];
+    let mut events = vec![json!({"schema": {
+        "actor": "text", "at": "text", "detail": "json", "event": "text", "grant_id": "text",
+        "id": "text", "reason_code": "text"}})];
+    for cell in MODEL_CELLS {
+        let id = grant_of(cell);
+        grants.push(json!({
+            "capability": "credential.read", "constraints": {"rate_per_min": 60},
+            "cred_ref": "cred:openrouter", "expires_at": "2099-01-01T00:00:00.000000Z",
+            "grant_id": id, "issued_at": "2026-10-24T00:00:00.000000Z",
+            "purpose": "the run's figure spends its provider key",
+            "requester": format!("agent:figure/simple-agent/{cell}"),
+            "rule_id": "test-credential-read", "scope": {"actions": ["vault.deliver"]},
+            "subject": "colony:test"}));
+        events.push(json!({
+            "actor": "operator", "at": "2026-10-24T00:00:00.000000Z",
+            "detail": {"why": "seeded by the run's colony"}, "event": "granted",
+            "grant_id": id, "id": format!("ev-{}", id.replace([':', '@', '/'], "-")),
+            "reason_code": ""}));
+    }
+    let lines = |rows: &[Value]| -> String {
+        rows.iter()
+            .map(|r| {
+                format!(
+                    "{}\n",
+                    meclaw_core::serde_json::to_string(r).expect("a row")
+                )
+            })
+            .collect()
+    };
+    std::fs::write(seed.join("grants.jsonl"), lines(&grants)).expect("grants");
+    std::fs::write(seed.join("grant_events.jsonl"), lines(&events)).expect("grant events");
+}
+
+/// The edges an embedder draws around `figure@2` (figure README, "The
+/// colony's lanes"; the agent's README, "Embedding one level deeper"): the
+/// credential v-lanes per consumer under `./figure/simple-agent`, the brief
+/// road, the proposal road (the enrolment's steps among them) and the
+/// identity pack road into the colony's affinity.
+fn colony_edges() -> Vec<Value> {
+    let mut edges = Vec::new();
+    for cell in MODEL_CELLS {
+        let grant = grant_of(cell);
+        edges.push(json!({
+            "from": format!("./figure/simple-agent/{cell}"), "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+            "modifier": {"set_hop": {"route": "'in_invoke'"},
+                         "set_context": {"requester": format!("'agent:figure/simple-agent/{cell}'")}}}));
+        edges.push(json!({
+            "from": "./access", "to": format!("./figure/simple-agent/{cell}"), "lane": "in_sealed",
+            "condition": format!("has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == '{grant}'"),
+            "modifier": {"set_hop": {"route": "'in_sealed'"}}}));
+    }
+    edges.extend([
+        json!({"from": "./figure", "to": "./affinity",
+               "condition": "has(hop.route) && hop.route == 'brief'",
+               "modifier": {"set_hop": {"route": "'in_brief'"},
+                            "set_context": {"asker": format!("'{SUBSCRIBER}'"),
+                                            "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+                                            "brief_caller": "'figure'"}}}),
+        json!({"from": "./affinity", "to": "./figure/simple-agent/collector", "lane": "in_briefing",
+               "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'error') && has(context.brief_caller) && context.brief_caller == 'figure'",
+               "modifier": {"set_hop": {"route": "'in_briefing'", "brief_outcome": "hop.route"},
+                            "delete_context": ["asker", "brief_caller"]}}),
+        json!({"from": "./figure", "to": "./affinity",
+               "condition": "has(hop.route) && hop.route == 'affinity_propose'",
+               "modifier": {"set_hop": {"route": "'in_propose'"},
+                            "set_context": {"actor": "'agent:' + hop.agent_id",
+                                            "subscriber": format!("has(context.sa_enrol) && context.sa_enrol == 'subscribe' ? '{SUBSCRIBER}' : (has(context.sa_enrol) && context.sa_enrol == 'subscribe_brain' ? '{SUBSCRIBER}/brain' : '')"),
+                                            "propose_caller": "'figure'"}}}),
+        json!({"from": "./affinity", "to": "./figure",
+               "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error') && has(context.propose_caller) && context.propose_caller == 'figure'",
+               "modifier": {"set_hop": {"route": "'in_propose_ack'", "propose_outcome": "hop.route"},
+                            "delete_context": ["actor", "propose_caller"]}}),
+        json!({"from": "./affinity", "to": "./figure/simple-agent/curator", "lane": "in_pack",
+               "condition": format!("has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && (hop.subscriber == '{SUBSCRIBER}' || hop.subscriber == '{SUBSCRIBER}/brain')"),
+               "modifier": {"set_hop": {"route": "'in_pack'"},
+                            "set_context": {"pack_sub": "hop.pack_sub", "pack_hash": "hop.pack_hash"}}}),
+        json!({"from": "./figure", "to": "./affinity",
+               "condition": "has(hop.route) && hop.route == 'pack_ack' && has(context.pack_sub) && context.pack_sub != ''",
+               "modifier": {"set_hop": {"route": "'in_pack_ack'"}}}),
+    ]);
+    edges
 }
 
 struct Ports {
@@ -342,13 +482,24 @@ async fn boot(
     brain: Vec<meclaw_testing::mock_http::MockResponse>,
     world: Value,
 ) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
-    boot_capped(brain, world, None).await
+    boot_agent(brain, world, json!({}), None).await
 }
 
 /// `boot`, the agent's loop capped at `max_iter` rounds when given.
 async fn boot_capped(
     brain: Vec<meclaw_testing::mock_http::MockResponse>,
     world: Value,
+    max_iter: Option<u64>,
+) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
+    boot_agent(brain, world, json!({}), max_iter).await
+}
+
+/// `boot` with `agent` laid over the cells of the figure's agent (a cell path
+/// inside `simple-agent` -> params), the loop capped when given.
+async fn boot_agent(
+    brain: Vec<meclaw_testing::mock_http::MockResponse>,
+    world: Value,
+    agent: Value,
     max_iter: Option<u64>,
 ) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
     let stubs = Stubs {
@@ -358,7 +509,7 @@ async fn boot_capped(
         background: MockOpenAI::start(vec![canned_chat_completion("{}", "stop")]).await,
     };
     let td = tempfile::TempDir::new().expect("tempdir");
-    build(&td, &stubs, &world);
+    build(&td, &stubs, &world, &agent);
     if let Some(n) = max_iter {
         override_params_on_disk(
             &td.path()
@@ -694,7 +845,7 @@ async fn a_world_turn_calls_two_world_tools_and_ends_when_the_model_stops() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_phone_message_leaves_as_a_human_channel_turn() {
+async fn figure2_phone_is_still_a_human_channel() {
     if !shipped() {
         return;
     }
@@ -1066,8 +1217,8 @@ async fn a_world_turn_that_ends_in_text_alone_is_asked_once_for_an_action() {
     h.quiesce().await;
     assert_eq!(
         count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
-        2,
-        "the world turn and its one follow-up"
+        1,
+        "the world sends one turn; the follow-up is the agent's (simple-agent@2 `required_tools`)"
     );
     assert_eq!(
         count_route(&h, "/figure/world", "", "intent").await,
@@ -1115,8 +1266,8 @@ async fn a_world_turn_is_asked_for_an_action_only_once() {
     h.quiesce().await;
     assert_eq!(
         count_route(&h, "/figure/world", "/figure/simple-agent", "turn").await,
-        2,
-        "one follow-up, no second"
+        1,
+        "the world sends one turn; the agent asks once, no second"
     );
     assert_eq!(stubs.brain.recorded_requests().await.len(), 2);
 }
@@ -1153,7 +1304,7 @@ async fn a_world_turn_at_the_loop_cap_gets_no_follow_up() {
     if !shipped() {
         return;
     }
-    let (_td, _stubs, h, mut ports) = boot_capped(
+    let (_td, stubs, h, mut ports) = boot_capped(
         vec![canned_tool_calls(vec![(
             "c-fly",
             "fly",
@@ -1180,6 +1331,17 @@ async fn a_world_turn_at_the_loop_cap_gets_no_follow_up() {
         0,
         "the call of a tool not offered never left"
     );
+    // The follow-up runs in the agent's door now: no request of the capped
+    // turn asks for an action.
+    let reqs = stubs.brain.recorded_requests().await;
+    assert!(!reqs.is_empty());
+    for r in &reqs {
+        assert!(
+            !wire_text(r).contains("Choose one action from the world's tools"),
+            "{}",
+            wire_text(r)
+        );
+    }
 }
 
 /// A `contact` turn's text is its answer to the one in front of the figure
@@ -1286,9 +1448,10 @@ async fn a_world_turn_with_only_the_phone_on_the_menu_gets_no_follow_up() {
     assert!(!names.iter().any(|n| n == "walk"), "the menu: {names:?}");
 }
 
-/// The answer of a follow-up whose world cell lost its open turn (a replaced
-/// child) ends as the world turn's intent under the world's id, never under
-/// `<id>:act`, and asks for nothing more.
+/// The answer of a turn whose world cell lost its open turn (a replaced
+/// child) ends as the world turn's intent under the world's id and asks for
+/// nothing more: the agent's door answers its follow-up under the turn's own
+/// id (simple-agent@2, GH #1311), so the world never sees a follow-up id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_follow_up_answer_after_a_replaced_child_ends_the_world_turn() {
     if !shipped() {
@@ -1301,11 +1464,11 @@ async fn a_follow_up_answer_after_a_replaced_child_ends_the_world_turn() {
     h.send_from(
         Path::new("/figure/simple-agent"),
         MessageBuilder::new(Path::new("/figure/world"))
-            .hop(as_map(&json!({"route": "answer", "turn_id": "17:act",
+            .hop(as_map(&json!({"route": "answer", "turn_id": "17",
                                 "channel": channel})))
             .context(ctx)
             .body(Body::Inline(json!({"messages": [],
-                                      "answer": {"turn_id": "17:act", "text": "I walk."}})))
+                                      "answer": {"turn_id": "17", "text": "I walk."}})))
             .ttl(400)
             .build(),
     )
@@ -1313,10 +1476,7 @@ async fn a_follow_up_answer_after_a_replaced_child_ends_the_world_turn() {
     let mut seen = Vec::new();
     let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
     let slot = body_of(&intent)["intent"].clone();
-    assert_eq!(
-        slot["turn_id"], "17",
-        "the world's id, not the follow-up's: {slot}"
-    );
+    assert_eq!(slot["turn_id"], "17", "the world's id: {slot}");
     assert_eq!(slot["done"], true, "{slot}");
     h.quiesce().await;
     assert_eq!(
@@ -1367,7 +1527,8 @@ fn an_instance_override_reaches_the_agent_brain() {
         "world": world_params(&json!({})),
         "simple-agent/brain": {"model": "the-instance-model", "x_title": "figure-lab f1",
                         "http_referer": "https://meclaw.ai"},
-        "simple-agent/door": {"agent_id": "ava", "aieos": seed},
+        "simple-agent/door": {"agent_id": "ava"},
+        "simple-agent/enrol": {"agent_id": "ava", "identity": seed},
         "simple-agent/tools/file": {"base_path": "ava-files"}
     }}));
     let staged = stage_subtree(
@@ -1407,7 +1568,17 @@ fn an_instance_override_reaches_the_agent_brain() {
     assert_eq!(brain["http_referer"], "https://meclaw.ai", "{brain}");
     let door = params_of("/main/ava/simple-agent/door");
     assert_eq!(door["agent_id"], "ava", "{door}");
-    assert_eq!(door["aieos"]["identity"]["names"]["first"], "Ava", "{door}");
+    // simple-agent@2: the identity is the enrolment's, written into the
+    // colony's affinity (A5), never a param of the door.
+    let enrol = params_of("/main/ava/simple-agent/enrol");
+    assert_eq!(
+        enrol["identity"]["identity"]["names"]["first"], "Ava",
+        "{enrol}"
+    );
+    assert!(door.get("aieos").is_none(), "{door}");
+    // R-SA-18: the figure's ref names the families, and none of them.
+    let gate = params_of("/main/ava/simple-agent/tool_gate");
+    assert_eq!(gate["tools_enabled"], json!([]), "{gate}");
     let file = params_of("/main/ava/simple-agent/tools/file");
     assert_eq!(file["base_path"], "ava-files", "{file}");
     // What the instance did not name keeps the template's value.
@@ -1606,5 +1777,316 @@ async fn a_corrected_answer_of_the_same_round_waits_unread() {
     assert!(
         world.contains("- Sorry, dinner at nine.") && world.contains("- Still there?"),
         "the correction and the capped answer wait unread: {world}"
+    );
+}
+
+// ═══════════════════════════════════════════ figure@2 in a colony (GH #1311)
+
+/// The logged headers of every message on `route` from under `from` to under
+/// `to`.
+async fn headers_on(h: &ColonyHandle, from: &str, to: &str, route: &str) -> Vec<Value> {
+    h.read_log(meclaw_colony::api_dto::MessageLogFilter::default())
+        .await
+        .iter()
+        .filter(|r| r.from_path.starts_with(from) && r.to_path.starts_with(to))
+        .filter_map(|r| meclaw_core::serde_json::from_str::<Value>(&r.headers_json).ok())
+        .filter(|h| h["hop"]["route"] == route)
+        .collect()
+}
+
+/// The AIEOS protocol version of the test persona, in two halves: as one
+/// literal it equals a template version, and the merge point's cascade check
+/// would read it as a pin left behind.
+const AIEOS_VERSION: &str = concat!("1.1", ".0");
+
+fn aieos(motivation: &str) -> Value {
+    json!({"standard": {"protocol": "AIEOS", "version": AIEOS_VERSION},
+           "metadata": {"instance_id": "ada-1"},
+           "identity": {"names": {"first": "Ada", "last": "Brook"}},
+           "motivations": {"core_drive": motivation}})
+}
+
+/// The figure's enrolment: its own id and its AIeOS document.
+fn enrolled() -> Value {
+    json!({"enrol": {"agent_id": FIGURE_ID, "identity": aieos("to keep the lighthouse")}})
+}
+
+/// The commit receipt of the colony's boot at the figure's rim (the hop keys
+/// the mutation door stamps): the agent inside enrols on it.
+fn boot_receipt() -> Message {
+    rim_in(
+        "mutation_committed",
+        Value::Null,
+        json!({"form": "boot", "scope": "/", "outcome": "committed", "changes": []}),
+    )
+}
+
+/// Boot receipt in, the enrolment through, the identity pack booked.
+async fn enrol(h: &ColonyHandle) {
+    h.send(boot_receipt()).await;
+    wait_route(h, "/affinity", "/figure/simple-agent/curator", "in_pack", 1).await;
+    wait_route(h, "/figure", "/affinity", "in_pack_ack", 1).await;
+    h.quiesce().await;
+}
+
+/// R-SA-14, D41 R-NPC-0: the figure's identity is its own entry
+/// `entity:<figure>` in the colony's affinity, written by the agent's own
+/// enrolment (A5) through the figure's rim; the pack comes back to the agent
+/// and the brain speaks with it beside the role's frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn figure2_identity_is_its_own_colony_entry() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot_agent(
+        vec![canned_chat_completion("I keep the lighthouse.", "stop")],
+        json!({}),
+        enrolled(),
+        None,
+    )
+    .await;
+    enrol(&h).await;
+    let props = headers_on(&h, "/figure", "/affinity", "in_propose").await;
+    assert_eq!(
+        props
+            .iter()
+            .filter(|p| p["context"]["sa_enrol"] == "upsert")
+            .count(),
+        1,
+        "one entry written on the birth: {props:?}"
+    );
+    let sub = props
+        .iter()
+        .find(|p| p["context"]["sa_enrol"] == "subscribe")
+        .expect("the subscription");
+    assert_eq!(sub["context"]["subscriber"], SUBSCRIBER, "{sub}");
+    assert_eq!(sub["context"]["actor"], SUBSCRIBER, "{sub}");
+    h.send(obs(3, "Morning at the coast.", json!([]))).await;
+    let mut seen = Vec::new();
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    assert_eq!(body_of(&intent)["intent"]["done"], true);
+    let reqs = stubs.brain.recorded_requests().await;
+    let wire = wire_text(&reqs[0]);
+    assert!(wire.contains("lighthouse"), "the colony's entry: {wire}");
+    assert!(
+        wire.contains("living the life"),
+        "the role's frame stays beside the identity: {wire}"
+    );
+}
+
+/// F3, figure -> member (Mess-Reinheit, R-SA-15): the figure asks the
+/// colony's affinity nothing about anyone else -- no brief on any turn -- and
+/// its enrolment discloses one field, its own AIeOS, to itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn figure2_never_reads_the_member_entry() {
+    if !shipped() {
+        return;
+    }
+    let (_td, _stubs, h, mut ports) = boot_agent(
+        vec![
+            canned_chat_completion("Hello, Robin.", "stop"),
+            canned_chat_completion("See you tonight.", "stop"),
+        ],
+        json!({}),
+        enrolled(),
+        None,
+    )
+    .await;
+    enrol(&h).await;
+    h.send(rim_in(
+        "obs",
+        json!({"turn_id": 5, "kind": "contact", "text": "Robin is here.", "tools": [], "day": 1}),
+        Value::Null,
+    ))
+    .await;
+    let mut seen = Vec::new();
+    next_on(&h, &mut ports, "intent", &mut seen).await;
+    h.send(phone_answer("Are you coming?")).await;
+    next_on(&h, &mut ports, "turn", &mut seen).await;
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure", "", "brief").await,
+        0,
+        "no brief leaves the figure:\n{}",
+        road(&h).await
+    );
+    assert_eq!(count_route(&h, "", "/affinity", "in_brief").await, 0);
+    let props = headers_on(&h, "/figure", "/affinity", "in_propose").await;
+    let disclosures: Vec<&Value> = props
+        .iter()
+        .filter(|p| {
+            p["context"]["sa_enrol"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("disclose:"))
+        })
+        .collect();
+    assert_eq!(
+        disclosures.len(),
+        1,
+        "one disclosure, the figure's own: {disclosures:?}"
+    );
+}
+
+/// R-SA-18: the world's tools are client tools of the turn and leave the
+/// figure as `call`; the agent's own families are all off, so none of them is
+/// on the brain's menu.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn figure2_world_tools_stay_client_tools() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_tool_calls(vec![("c-look", "look", r#"{"at":"the sea"}"#)]),
+            canned_chat_completion("Calm sea.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(
+        9,
+        "You stand on the pier.",
+        json!([world_tool("look")]),
+    ))
+    .await;
+    let mut seen = Vec::new();
+    let call = next_on(&h, &mut ports, "call", &mut seen).await;
+    assert_eq!(body_of(&call)["call"]["tool"], "look");
+    h.send(call_result(
+        &call,
+        json!({"accepted": true, "seen": "calm"}),
+    ))
+    .await;
+    next_on(&h, &mut ports, "intent", &mut seen).await;
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    let names = tool_names(&reqs[0]);
+    assert!(names.iter().any(|n| n == "look"), "{names:?}");
+    for own in ["bash", "file", "edit", "web_fetch", "web_search", "weather"] {
+        assert!(
+            !names.iter().any(|n| n == own),
+            "the agent's own `{own}` is off in a figure: {names:?}"
+        );
+    }
+}
+
+/// R-NPC-14 on simple-agent@2: a world turn whose model answers in text alone
+/// is asked once more for an action from the world's menu; the action leaves
+/// as a world call and the world turn ends as one intent. The asking is the
+/// agent's (`required_tools` in mode `any`, OR-AG-65): the world sends ONE turn
+/// that names its menu and `phone_message` -- never an extra tool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn figure2_plain_text_gets_the_required_follow_up() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("The bell rings.", "stop"),
+            canned_tool_calls(vec![("c-ring", "ring", r#"{"at":"the bell"}"#)]),
+            canned_chat_completion("I rang the bell.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    h.send(obs(12, "Noon in the village.", json!([world_tool("ring")])))
+        .await;
+    let mut seen = Vec::new();
+    let call = next_on(&h, &mut ports, "call", &mut seen).await;
+    assert_eq!(body_of(&call)["call"]["turn_id"], 12);
+    assert_eq!(body_of(&call)["call"]["tool"], "ring");
+    h.send(call_result(&call, json!({"accepted": true}))).await;
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    let slot = body_of(&intent)["intent"].clone();
+    assert_eq!(slot["turn_id"], 12, "{slot}");
+    assert_eq!(slot["done"], true, "{slot}");
+    h.quiesce().await;
+    assert_eq!(
+        count_route(&h, "/figure/world", "", "intent").await,
+        1,
+        "one intent for the world turn"
+    );
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 3, "text, the follow-up's call, the final text");
+    assert!(
+        tool_names(&reqs[1]).iter().any(|n| n == "ring"),
+        "the follow-up carries the world's menu: {:?}",
+        tool_names(&reqs[1])
+    );
+    let turns = headers_on(&h, "/figure/world", "/figure/simple-agent", "turn").await;
+    assert_eq!(turns.len(), 1, "one turn from the world: {turns:?}");
+    let hop = &turns[0]["hop"];
+    assert_eq!(hop["required_mode"], "any", "{hop}");
+    let required: Vec<String> =
+        meclaw_core::serde_json::from_str(hop["required_tools"].as_str().unwrap_or("[]"))
+            .unwrap_or_default();
+    assert_eq!(required, vec!["ring", "phone_message"], "{hop}");
+    assert!(
+        hop["required_ask"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Choose one action from the world's tools"),
+        "{hop}"
+    );
+}
+
+/// `extra_tools` (GH #1311): a client tool the figure offers beside the
+/// world's menu leaves the figure on its rim as `calls` with `hop.tool_name`;
+/// its `tool_result` on the rim continues the same turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn figure2_extra_tools_leave_the_rim_and_return() {
+    if !shipped() {
+        return;
+    }
+    let story = json!({"name": "story_read", "description": "Read your own story.",
+                       "parameters": {"type": "object", "properties": {}}});
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_tool_calls(vec![("c-story", "story_read", "{}")]),
+            canned_chat_completion("I remember the well.", "stop"),
+        ],
+        json!({"extra_tools": [story]}),
+    )
+    .await;
+    h.send(rim_in(
+        "obs",
+        json!({"turn_id": 21, "kind": "contact", "text": "Robin asks about your past.",
+               "tools": [world_tool("look")], "day": 1}),
+        Value::Null,
+    ))
+    .await;
+    let mut seen = Vec::new();
+    let out = next_on(&h, &mut ports, "calls", &mut seen).await;
+    assert_eq!(
+        out.headers.hop["tool_name"], "story_read",
+        "{:?}",
+        out.headers.hop
+    );
+    let id = out.headers.hop["tool_call_id"]
+        .as_str()
+        .expect("the call's id")
+        .to_string();
+    assert_eq!(
+        count_route(&h, "/figure", "", "call").await,
+        0,
+        "an extra tool is no world call"
+    );
+    h.send(rim_in(
+        "tool_result",
+        json!({"id": id, "content": "Chapter one: the well."}),
+        Value::Null,
+    ))
+    .await;
+    let intent = next_on(&h, &mut ports, "intent", &mut seen).await;
+    assert_eq!(body_of(&intent)["intent"]["text"], "I remember the well.");
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    let names = tool_names(&reqs[0]);
+    for t in ["look", "story_read"] {
+        assert!(names.iter().any(|n| n == t), "{t} on the menu: {names:?}");
+    }
+    assert!(
+        wire_text(&reqs[1]).contains("Chapter one"),
+        "the result is in the same turn's window"
     );
 }

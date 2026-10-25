@@ -695,3 +695,216 @@ async fn sa2_a_client_tool_passes_when_its_family_is_not_enabled() {
         tool_names(&reqs[0])
     );
 }
+
+// ═══════════════════════════════════════ required tools: one is enough (GH #1311)
+
+/// A second client tool beside `look`.
+fn open_tool() -> Value {
+    json!({"name": "open", "description": "Open something.",
+           "parameters": {"type": "object", "properties": {"what": {"type": "string"}}}})
+}
+
+/// Lock of the default (`required_mode` absent = `all`, byte-equal to before
+/// GH #1311): every named tool is required, the follow-up asks for the missing
+/// one by name with no `tool_choice`, and its answer replaces the first text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_required_default_asks_for_every_tool() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            look_call(),
+            canned_chat_completion("Looked.", "stop"),
+            canned_chat_completion("Still not opening.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    h.send(turn_on(
+        "t-1",
+        "Look and open.",
+        json!([look_tool(), open_tool()]),
+        json!({"required_tools": "[\"look\", \"open\"]"}),
+    ))
+    .await;
+    let calls = next_on(&h, &mut ports, "calls", &mut seen).await;
+    h.send(result_for(&calls, &ROUND_KEYS, "A red door.")).await;
+    let a = answer_of(&next_on(&h, &mut ports, "answer", &mut seen).await);
+    assert_eq!(a["missing_required"], json!(["open"]), "{a}");
+    assert_eq!(a["text"], "Still not opening.", "{a}");
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 3, "the call, the text, one follow-up");
+    assert!(
+        wire_text(&reqs[2]).contains("Call open now."),
+        "{}",
+        wire_text(&reqs[2])
+    );
+    assert!(
+        reqs[2].body.get("tool_choice").is_none(),
+        "the default follow-up requires no call on the wire: {}",
+        reqs[2].body["tool_choice"]
+    );
+}
+
+/// `required_mode: "any"`: a call of one of the named tools is enough -- no
+/// follow-up, nothing missing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_required_any_one_tool_is_enough() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![look_call(), canned_chat_completion("A red door.", "stop")],
+        json!({}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    h.send(turn_on(
+        "t-1",
+        "Look or open.",
+        json!([look_tool(), open_tool()]),
+        json!({"required_tools": "[\"look\", \"open\"]", "required_mode": "any"}),
+    ))
+    .await;
+    let calls = next_on(&h, &mut ports, "calls", &mut seen).await;
+    h.send(result_for(&calls, &ROUND_KEYS, "A red door.")).await;
+    let a = answer_of(&next_on(&h, &mut ports, "answer", &mut seen).await);
+    assert_eq!(a["text"], "A red door.", "{a}");
+    assert!(a.get("missing_required").is_none(), "{a}");
+    h.quiesce().await;
+    assert_eq!(
+        stubs.brain.recorded_requests().await.len(),
+        2,
+        "no follow-up"
+    );
+}
+
+/// `required_mode: "any"` with no call: one follow-up that asks for one of the
+/// tools (`required_ask` when the caller names its words), requires a call of
+/// its first brain call, and the turn's answer keeps the first text before the
+/// follow-up's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_required_any_keeps_the_first_text() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("I see a door.", "stop"),
+            canned_chat_completion("I leave it shut.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    h.send(turn_on(
+        "t-1",
+        "Look or open.",
+        json!([look_tool(), open_tool()]),
+        json!({"required_tools": "[\"look\", \"open\"]", "required_mode": "any",
+               "required_ask": "Choose one action now."}),
+    ))
+    .await;
+    let a = answer_of(&next_on(&h, &mut ports, "answer", &mut seen).await);
+    assert_eq!(a["turn_id"], "t-1", "{a}");
+    assert_eq!(a["text"], "I see a door.\n\nI leave it shut.", "{a}");
+    assert_eq!(a["missing_required"], json!(["look", "open"]), "{a}");
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 2, "exactly one follow-up");
+    assert!(
+        wire_text(&reqs[1]).contains("Choose one action now."),
+        "{}",
+        wire_text(&reqs[1])
+    );
+    assert_eq!(
+        reqs[1].body["tool_choice"], "required",
+        "the follow-up requires a call: {}",
+        reqs[1].body["tool_choice"]
+    );
+    assert!(
+        reqs[0].body.get("tool_choice").is_none(),
+        "the turn itself is free"
+    );
+    assert_eq!(
+        count_route(&h, "/agent", "/sink", "answer").await,
+        1,
+        "one answer"
+    );
+}
+
+/// `required_mode: "any"` without `required_ask`: the follow-up names the
+/// tools as a choice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_required_any_asks_for_one_of_the_tools() {
+    if !shipped() {
+        return;
+    }
+    let (_td, stubs, h, mut ports) = boot(
+        vec![
+            canned_chat_completion("Nothing.", "stop"),
+            canned_chat_completion("Still nothing.", "stop"),
+        ],
+        json!({}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    h.send(turn_on(
+        "t-1",
+        "Look or open.",
+        json!([look_tool(), open_tool()]),
+        json!({"required_tools": "[\"look\", \"open\"]", "required_mode": "any"}),
+    ))
+    .await;
+    next_on(&h, &mut ports, "answer", &mut seen).await;
+    h.quiesce().await;
+    let reqs = stubs.brain.recorded_requests().await;
+    assert_eq!(reqs.len(), 2);
+    assert!(
+        wire_text(&reqs[1]).contains("Call one of look, open now."),
+        "{}",
+        wire_text(&reqs[1])
+    );
+}
+
+/// `required_mode: "any"`: a turn at the loop cap (`partial`) has spent its
+/// budget -- no follow-up; the answer says what is missing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_required_any_no_follow_up_after_partial() {
+    if !shipped() {
+        return;
+    }
+    let call = |id: &str| canned_tool_calls(vec![(id, "weather", r#"{"place":"Berlin"}"#)]);
+    let (_td, stubs, h, mut ports) = boot(
+        vec![call("c-1"), call("c-2"), call("c-3"), call("c-4")],
+        json!({"collector/assemble": {"max_iter": 2}, "tool_gate": {"tools_enabled": ["weather"]}}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    h.send(turn_on(
+        "t-1",
+        "Look.",
+        json!([look_tool()]),
+        json!({"required_tools": "[\"look\"]", "required_mode": "any"}),
+    ))
+    .await;
+    let a = answer_of(&next_on(&h, &mut ports, "answer", &mut seen).await);
+    assert_eq!(a["partial"], true, "{a}");
+    assert_eq!(a["missing_required"], json!(["look"]), "{a}");
+    h.quiesce().await;
+    for r in stubs.brain.recorded_requests().await {
+        assert!(
+            !wire_text(&r).contains("look now."),
+            "no follow-up after partial: {}",
+            wire_text(&r)
+        );
+    }
+    assert_eq!(
+        count_route(&h, "/agent", "/sink", "answer").await,
+        1,
+        "one answer"
+    );
+}

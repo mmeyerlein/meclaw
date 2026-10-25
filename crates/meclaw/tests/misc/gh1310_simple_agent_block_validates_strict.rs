@@ -283,3 +283,206 @@ fn the_example_readme_apply_commits_the_block() {
         "the door laid the agent down: {stdout}"
     );
 }
+
+/// A hive directory with `edges` as its graph.
+fn hive(dir: &Path, edges: Value) {
+    write_json(
+        &dir.join("config.json"),
+        &serde_json::json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}}),
+    );
+}
+
+/// A `ref` marker of the example's seed (`access`, `affinity`, `llm-registry`)
+/// at `dir`.
+fn marker(dir: &Path, name: &str) {
+    let m = read_json(
+        &repo("examples/simple-agent-colony/seed/main")
+            .join(name)
+            .join("config.json"),
+    );
+    write_json(&dir.join("config.json"), &m);
+}
+
+/// A member colony under the shell, laid down as files: the registry under
+/// `/os`, its pushes arriving at the container `/os/orgs` (the shell's road
+/// of `meclaw-os`, verbatim, with its operator door onto the registry --
+/// `in_hand` requires `context.actor`; the header-contract check finds that
+/// setter upstream of `/os/orgs`, over the registry's push), and the member
+/// `/os/orgs/o/members/m` with its `access`, `affinity` and an empty `apps`.
+/// Returns the member's directory.
+fn member_colony(td: &Path) -> PathBuf {
+    let main = td.join("main");
+    hive(&main, serde_json::json!([]));
+    let os = main.join("os");
+    hive(
+        &os,
+        serde_json::json!([
+            {"from": ".", "to": "./llm-registry",
+             "condition": "has(hop.route) && hop.route == 'in_hand'",
+             "modifier": {"set_context": {"actor": "'operator'"}}},
+            {"from": "./llm-registry", "to": "./orgs",
+             "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber.startsWith('/os/orgs/')",
+             "modifier": {"set_hop": {"route": "'in_model'"}}},
+            {"from": "./orgs", "to": "./llm-registry",
+             "condition": "has(hop.route) && hop.route == 'model_refused' && has(hop.refused_subscriber) && hop.refused_subscriber.startsWith('/os/orgs/')",
+             "modifier": {"set_hop": {"route": "'in_refused'"}, "delete_context": ["actor"]}},
+            {"from": "./orgs", "to": "./llm-registry",
+             "condition": "has(hop.route) && hop.route == 'model_subscribe'",
+             "modifier": {"set_hop": {"route": "'in_hand'"},
+                          "set_context": {"model_announcer": "'meclaw-os'"},
+                          "delete_context": ["actor"]}}
+        ]),
+    );
+    marker(&os.join("llm-registry"), "llm-registry");
+    let member = os.join("orgs/o/members/m");
+    for dir in [
+        os.join("orgs"),
+        os.join("orgs/o"),
+        os.join("orgs/o/members"),
+    ] {
+        hive(&dir, serde_json::json!([]));
+    }
+    hive(&member, serde_json::json!([]));
+    hive(&member.join("apps"), serde_json::json!([]));
+    marker(&member.join("access"), "access");
+    marker(&member.join("affinity"), "affinity");
+    let mut names = BTreeSet::new();
+    // The agent's ref markers reach further into the library than its own
+    // directory: every bare token of the library gets a dummy.
+    env_tokens(&repo("templates"), &mut names);
+    let body: String = names.iter().map(|k| format!("{k}=dummy-{k}\n")).collect();
+    std::fs::write(td.join(".env"), body).expect("the env file");
+    member
+}
+
+/// The shipped `recipes` script's manifest for `recipe` on `params`, with the
+/// builder's registry container `/os/orgs` (as `meclaw-os` sets it).
+fn render(recipe: &str, params: &Value) -> Value {
+    let answer = meclaw_testing::emit_all(
+        &meclaw_testing::shipped_script(
+            repo("templates/builder/recipes/config.json")
+                .to_str()
+                .expect("a utf-8 path"),
+        ),
+        &serde_json::json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "ttl": 64,
+            "params": {"model_registry_scope": "/os/orgs"},
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": serde_json::json!({"recipe": recipe,
+                                                     "request": "grow it",
+                                                     "params": params}).to_string()}],
+        }),
+    )
+    .into_iter()
+    .next()
+    .expect("the recipe answered");
+    assert!(
+        answer["header"]["error_code"].is_null(),
+        "refused: {answer}"
+    );
+    answer["manifest"].clone()
+}
+
+/// `meclaw --apply` of `manifest` on the colony under `td`: (success, output).
+fn apply(td: &Path, manifest: &Value) -> (bool, String) {
+    let grow = td.join("grow.json");
+    write_json(&grow, &serde_json::json!({"manifest": manifest}));
+    let out = Command::new(env!("CARGO_BIN_EXE_meclaw"))
+        .arg("--root")
+        .arg(td)
+        .arg("--templates")
+        .arg(repo("templates"))
+        .arg("--apply")
+        .arg(&grow)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run meclaw --apply");
+    let text = format!(
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+/// GH #1312 (K-1, review C1) -- the block in a MEMBER colony goes through the
+/// real mutation door. The registry stands under `/os`, its pushes arrive at
+/// the container `/os/orgs` (the shell's three edges of `meclaw-os`), and the
+/// builder names that container as `model_registry_scope`, as for the
+/// assistant. The door judges each manifest entry on its own: the entry that
+/// gives the agent birth must wire every required lane (`in_model`
+/// included), and the container's road follows as the second entry. Before
+/// the fix the block drew `./llm-registry` beside the agent, where none stands.
+#[test]
+fn the_simple_agent_block_commits_in_a_member_colony() {
+    if !repo("templates/simple-agent/config.json").is_file()
+        || !repo("templates/builder/recipes/config.json").is_file()
+        || !repo("templates/llm-registry/config.json").is_file()
+    {
+        return;
+    }
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let member = member_colony(td.path());
+    let mut wish = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    wish["scope"] = serde_json::json!("/os/orgs/o/members/m");
+    let manifest = render("simple_agent", &wish);
+    assert_eq!(manifest.as_array().map(Vec::len), Some(2), "{manifest}");
+    let (ok, out) = apply(td.path(), &manifest);
+    assert!(ok, "the door refuses the block in a member colony:\n{out}");
+    assert!(
+        member.join("agent/enrol/config.json").is_file(),
+        "the door laid the agent down at the member: {out}"
+    );
+}
+
+/// GH #1312 (K-4, OR-AG-76/-77) -- `install_app` of an app that embeds
+/// `simple-agent@2` (orga's coordinator; here `figure@2`, whose rim carries
+/// the agent's lanes one level down) goes through the real mutation door in a
+/// member colony. The app's rim declares `in_sealed`, `in_pack`,
+/// `in_briefing` and `in_model` as required, and the door wants each of them
+/// wired in the entry that instantiates the app. Before the fix `install_app`
+/// drew only the credential pair (`in_sealed`) and the door refused the birth
+/// (`hive_contract`: "declares the lane ... as required ... but the mutation
+/// that instantiates it draws no edge", orga-hive O1 report line 541). The
+/// rim's other lanes come from the block's own function (`_sa_rim`).
+#[test]
+fn install_app_wires_the_rim_of_an_embedded_agent_in_a_member_colony() {
+    if !repo("templates/figure/config.json").is_file()
+        || !repo("templates/builder/recipes/config.json").is_file()
+        || !repo("templates/llm-registry/config.json").is_file()
+    {
+        return;
+    }
+    let td = tempfile::TempDir::new().expect("tempdir");
+    let member = member_colony(td.path());
+    let example = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
+    let figure = read_json(&repo("templates/figure/config.json"));
+    let version = read_json(&repo("templates/figure/template.json"))["version"].clone();
+    let wish = serde_json::json!({
+        "scope": "/os/orgs/o/members/m",
+        "app": "fig",
+        "template": format!("figure@{}", version.as_str().unwrap_or_default()),
+        "screen": "display",
+        "ctx": {"model": "example-provider/brain-model"},
+        "declaration": {},
+        "override_params": {"world": {"figure_id": "fig", "world_id": "w", "role": "npc"}},
+        "credential": example["credential"],
+        "contract": figure["params"]["contract"],
+    });
+    let manifest = render("install_app", &wish);
+    let (ok, out) = apply(td.path(), &manifest);
+    assert!(
+        ok,
+        "the door refuses an app that embeds simple-agent@2:\n{out}\nmanifest: {manifest:#}"
+    );
+    assert!(
+        member
+            .join("apps/fig/simple-agent/enrol/config.json")
+            .is_file(),
+        "the door laid the app's agent down: {out}"
+    );
+}

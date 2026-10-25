@@ -1,4 +1,4 @@
-# `dispatcher@1.5.0`
+# `dispatcher@1.6.0`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -191,7 +191,7 @@ tool class list, which is exactly the thing they must not share -- a
 |---|---|---|
 | `max_calls` | `16` | per-answer call budget. **At** the cap the bundle runs; one call over it, the bundle is refused **as a whole** and every id is answered with `call budget exceeded`. |
 | `async_tools` | `""` | tool names that answer on a lane of their own instead of inside the round, as a JSON array or as one comma-separated string. Empty = no call is ever async. |
-| `handoff_tools` | `""` | tool names whose call ends the **turn**, because the answer comes from a later one. Same two forms. Naming a tool here declares it async as well -- the two lists are unioned. Empty = every async call is fire-and-forget. |
+| `handoff_tools` | `""` | tool names whose call ends the **turn**, because the answer comes from a later one. Same two forms. Naming a tool here declares it async as well -- the two lists are unioned. Empty = every async call is fire-and-forget. In both lists an entry ending in `*` names a family by its prefix (`consult_*`, GH #1312: the handoff offer of an app the builder installs after the level was written); a bare `*` names nothing. |
 | `interim` | `"1"` | whether a sentence standing next to a bundle leaves as an **interim** answer ([#539](https://github.com/mmeyerlein/meclaw/issues/539)). Off (`""`, `0`, `false`, `no`) the brain behind this cell has no channel, and the sentence does not leave the cell at all -- so it never reaches the window either, because the `calls` lane's text is dropped by the fan-in on the ground that the answer lane wrote it. A sentence nobody could hear was never said. A **final** sentence is unaffected. |
 | `conversation_events` | `"0"` | GH #1305: whether an inner turn answered with silence gets a receipt. Nothing is said either way; `"1"` marks the answer `silent: "1"` and the composite lets `inner_silent` out of its rim, the shipped `"0"` marks it `silent: "0"`, the fan-in only ends the round, and a stderr line is all that is said |
 

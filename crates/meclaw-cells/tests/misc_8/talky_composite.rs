@@ -841,3 +841,134 @@ async fn a_tool_round_without_its_call_is_answered_by_the_brain() {
     );
     h.shutdown().await;
 }
+
+/// GH #1314: a route with `context_turns > 0` asks the curator's wall for the
+/// person's last turns before the decide call (GH #1304), and the turn is
+/// still answered. Before the fix the history cell answered that ask on
+/// `turns`, a lane its own `contract.emits` did not list: the code cell
+/// dropped the answer as `contract_violation`, decide was never asked, and a
+/// collector that waits for its stamp left every turn unanswered. The cell
+/// pins of GH #1304 ran the route and the history cell one by one, without the
+/// contract the substrate checks between them, so nothing saw it.
+///
+/// Here the shipped tree runs it: two turns, the collector waits for the
+/// stamp, decide talks to a stub of its own. Both turns are answered by the
+/// brain, decide is asked once per turn, the second ask carries the first
+/// turn's words (the stamp's questions answered with the person's history in
+/// front of them), and no emission of the round broke its contract.
+///
+/// `assistant` runs `talky` twice (`./talky`, `./talky-chat`) as references
+/// to this same template, so this tree is theirs as well; `cogny` and
+/// `simple-agent` carry the same curator but no route cell, so nothing in them
+/// asks on this lane.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn context_turns_answer_the_turn_with_the_persons_history() {
+    let brain = MockOpenAI::start(vec![
+        canned_chat_completion("Sunday sounds lovely.", "stop"),
+        canned_chat_completion("Rest the knee for a day.", "stop"),
+    ])
+    .await;
+    // Decide's own stub: its answers are no valid decision, so each stamp
+    // takes the declared fallback. What is read is what decide was ASKED.
+    let decide = MockOpenAI::start(vec![
+        canned_chat_completion("{}", "stop"),
+        canned_chat_completion("{}", "stop"),
+    ])
+    .await;
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &brain.base_url);
+    let root = td.path();
+    patch(root, "main/talky/decide/config.json", |v| {
+        v["params"]["base_url"] = json!(decide.base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    patch(root, "main/talky/route/config.json", |v| {
+        v["params"]["context_turns"] = json!(3);
+    });
+    // The turn waits for its stamp (the shipped 0 takes no stamp at all), as a
+    // product that reads the stamp runs it.
+    patch(root, "main/talky/collector/assemble/config.json", |v| {
+        v["params"]["route_wait_ms"] = json!(600_000);
+    });
+    let (h, mut sink_rx, _park_rx) = boot(&td).await;
+
+    h.send(turn("I went hiking on Sunday.")).await;
+    let (first, seen) = recv_text(&mut sink_rx, "Sunday sounds lovely.").await;
+    let dead = h.drain_dead_letters().await;
+    assert!(
+        first.is_some(),
+        "the first turn with context_turns 3 is answered: saw {seen:?}, dead letters {:?}",
+        dead.iter()
+            .map(|d| format!(
+                "{} -> {} {:?} {:?}",
+                d.sender_path.as_str(),
+                d.resolved_target.as_str(),
+                d.reason,
+                d.message.headers.hop.get("error_code")
+            ))
+            .collect::<Vec<_>>()
+    );
+    h.send(turn("My knee hurts again.")).await;
+    let (second, seen) = recv_text(&mut sink_rx, "Rest the knee for a day.").await;
+    assert!(
+        second.is_some(),
+        "the second turn is answered: saw {seen:?}"
+    );
+    h.quiesce().await;
+
+    let asked = decide.recorded_requests().await;
+    assert_eq!(asked.len(), 2, "decide is asked once per turn");
+    // The whole request: how decide puts its question on the wire (messages,
+    // a tool schema, a response format) is the llm cell's, not this pin's.
+    let wire = |i: usize| meclaw_core::serde_json::to_string(&asked[i].body).unwrap_or_default();
+    assert!(
+        !wire(0).contains("Earlier in this conversation"),
+        "the first turn has no history to show: {}",
+        wire(0)
+    );
+    let second_ask = wire(1);
+    let earlier = second_ask
+        .find("I went hiking on Sunday.")
+        .unwrap_or_else(|| panic!("the first turn's words reach decide: {second_ask}"));
+    let now = second_ask
+        .rfind("My knee hurts again.")
+        .unwrap_or_else(|| panic!("the turn itself reaches decide: {second_ask}"));
+    assert!(
+        earlier < now,
+        "the history stands before the turn: {second_ask}"
+    );
+    assert_eq!(
+        brain.recorded_requests().await.len(),
+        2,
+        "the brain answered both turns"
+    );
+    let broken: Vec<String> = h
+        .drain_dead_letters()
+        .await
+        .into_iter()
+        .chain(dead)
+        // The code cell's own refusal of an emission travels as its error
+        // reply (`hop.error_code`), the substrate's as the reason.
+        .filter(|d| {
+            d.reason == meclaw_colony::dead_letter::DeadLetterReason::ContractViolation
+                || d.message
+                    .headers
+                    .hop
+                    .get("error_code")
+                    .and_then(|v| v.as_str())
+                    == Some("contract_violation")
+        })
+        .map(|d| {
+            format!(
+                "{} -> {}",
+                d.sender_path.as_str(),
+                d.resolved_target.as_str()
+            )
+        })
+        .collect();
+    assert!(
+        broken.is_empty(),
+        "no emission of the round broke its contract: {broken:?}"
+    );
+    h.shutdown().await;
+}

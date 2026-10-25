@@ -769,6 +769,18 @@ impl Lab {
     /// Boot and grow the four stages; every dead letter on the way, the boot's
     /// own included, is returned for the class table.
     async fn grown() -> (Self, Vec<Dead>) {
+        Self::grown_with(json!({})).await
+    }
+
+    /// As `grown`, the assistant born with these `override_params` on top of
+    /// the lab's own (GH #1314: the route's knobs on both surfaces).
+    async fn grown_with(extra: Value) -> (Self, Vec<Dead>) {
+        let mut over = json!({
+            "talky/session-keeper/close": {"idle_ms": 1},
+            "talky-chat/session-keeper/close": {"idle_ms": 1}});
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            over[k.as_str()] = v.clone();
+        }
         let lab = Lab::boot().await;
         let mut dead = lab.drain().await;
         lab.shell().await;
@@ -792,9 +804,7 @@ impl Lab {
                    "template": pin("assistant"), "door": true,
                    "ctx": {"model": "stub-ctx-model", "model_fast": "stub-ctx-fast",
                            "model_surface": "stub-ctx-surface"},
-                   "override_params": {
-                       "talky/session-keeper/close": {"idle_ms": 1},
-                       "talky-chat/session-keeper/close": {"idle_ms": 1}}}),
+                   "override_params": over}),
         )
         .await;
         dead.extend(lab.drain().await);
@@ -989,6 +999,64 @@ async fn a_person_round_leaves_only_declared_dead_letters() {
         bad.is_empty(),
         "a person's round left dead letters no class declares (measured 21 \
          undeclared before GH #974): {bad:#?}"
+    );
+    lab.h.shutdown().await;
+}
+
+/// GH #1314: the same round with the route's two knobs on, on both surfaces
+/// of the assistant -- `context_turns` 2 (the wall is asked for the person's
+/// last turns before decide, GH #1304) and `stamp_out` "1" (the stamp leaves
+/// talky for a reader). Before the fix the wall's answer died as
+/// `contract_violation` at `curator/history`, decide was never asked and no
+/// stamp left at all; now both turns are answered, nothing broke a contract,
+/// and the stamp that climbs to the top with no reader in the library is its
+/// declared class (`stamp`, `hive_no_route`, the route as emitter) -- read
+/// here, so the row is a class this run shows and not a guess.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_round_with_context_turns_and_the_stamp_out_leaves_only_declared_dead_letters() {
+    if !shipped() {
+        return;
+    }
+    let knobs = json!({"context_turns": 2, "stamp_out": "1"});
+    let (lab, grown) = Lab::grown_with(json!({
+        "talky/route": knobs.clone(),
+        "talky-chat/route": knobs}))
+    .await;
+    lab.grow_channel().await;
+    let mut dead = lab.drain().await;
+
+    let round = lab.mark().await;
+    lab.turn("the plumber came").await;
+    lab.turn("and the roofer").await;
+    lab.echoes(&round, 2).await;
+    let hits = lab.sentinel(&mut dead).await;
+    assert_eq!(hits.len(), 1, "the sentinel: {:#?}", say(&hits));
+    report("knobs", &dead);
+
+    let broken: Vec<String> = dead
+        .iter()
+        .chain(grown.iter())
+        // The code cell's own refusal of an emission travels as its error
+        // reply (`hop.error_code`), the substrate's as the reason.
+        .filter(|d| d.code == "contract_violation" || d.error == "contract_violation")
+        .map(Dead::say)
+        .collect();
+    assert!(
+        broken.is_empty(),
+        "a round with context_turns > 0 broke a contract: {broken:#?}"
+    );
+    let stamps = dead.iter().filter(|d| d.route == "stamp").count();
+    assert_eq!(
+        stamps,
+        2,
+        "one stamp per turn reaches the top with no reader: {:#?}",
+        say(&dead)
+    );
+    let mut bad = undeclared(&grown);
+    bad.extend(undeclared(&dead));
+    assert!(
+        bad.is_empty(),
+        "a round with the route's knobs on left dead letters no class declares: {bad:#?}"
     );
     lab.h.shutdown().await;
 }

@@ -9,33 +9,40 @@
         "add_nodes": [
           {
             "name": "agent",
-            "template": "simple-agent@2.0.0",
+            "template": "simple-agent@2.1.0",
             "override_params": {
               "brain": {
-                "credential_grant_id": "grant:openrouter@colony-example/brain",
+                "credential_grant_id": "grant:openrouter@colony-example/ava/brain",
                 "x_title": "meclaw-example simple-agent-colony",
                 "http_referer": "https://meclaw.ai"
               },
-              "strong": {
-                "credential_grant_id": "grant:openrouter@colony-example/strong"
-              },
               "curator/summarizer": {
-                "credential_grant_id": "grant:openrouter@colony-example/curator-summarizer"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/curator-summarizer",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               },
               "memory-hive/closer": {
-                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-closer"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-closer",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               },
               "memory-hive/dialectic": {
-                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-dialectic"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-dialectic",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               },
               "memory-hive/dreamer": {
-                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-dreamer"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-dreamer",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               },
               "memory-hive/judge": {
-                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-judge"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-judge",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               },
               "memory-hive/embed": {
-                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-embed"
+                "credential_grant_id": "grant:openrouter@colony-example/ava/memory-hive-embed"
               },
               "door": {
                 "agent_id": "ava"
@@ -225,32 +232,7 @@
             "from": "./access",
             "to": "./agent/brain",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/brain'",
-            "modifier": {
-              "set_hop": {
-                "route": "'in_sealed'"
-              }
-            }
-          },
-          {
-            "from": "./agent/strong",
-            "to": "./access",
-            "lane": "credential_request",
-            "condition": "has(hop.route) && hop.route == 'credential_request'",
-            "modifier": {
-              "set_hop": {
-                "route": "'in_invoke'"
-              },
-              "set_context": {
-                "requester": "'agent:agent/strong'"
-              }
-            }
-          },
-          {
-            "from": "./access",
-            "to": "./agent/strong",
-            "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/strong'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/brain'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -275,7 +257,7 @@
             "from": "./access",
             "to": "./agent/curator/summarizer",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/curator-summarizer'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/curator-summarizer'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -300,7 +282,7 @@
             "from": "./access",
             "to": "./agent/memory-hive/closer",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-closer'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/memory-hive-closer'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -325,7 +307,7 @@
             "from": "./access",
             "to": "./agent/memory-hive/dialectic",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-dialectic'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/memory-hive-dialectic'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -350,7 +332,7 @@
             "from": "./access",
             "to": "./agent/memory-hive/dreamer",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-dreamer'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/memory-hive-dreamer'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -375,7 +357,7 @@
             "from": "./access",
             "to": "./agent/memory-hive/judge",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-judge'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/memory-hive-judge'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -400,7 +382,7 @@
             "from": "./access",
             "to": "./agent/memory-hive/embed",
             "lane": "in_sealed",
-            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-embed'",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/memory-hive-embed'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -414,7 +396,7 @@
             "table": "grants",
             "rows": [
               {
-                "grant_id": "grant:openrouter@colony-example/brain",
+                "grant_id": "grant:openrouter@colony-example/ava/brain",
                 "requester": "agent:agent/brain",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -434,27 +416,7 @@
                 }
               },
               {
-                "grant_id": "grant:openrouter@colony-example/strong",
-                "requester": "agent:agent/strong",
-                "capability": "credential.read",
-                "subject": "colony:example",
-                "scope": {
-                  "actions": [
-                    "vault.deliver"
-                  ],
-                  "cred_class": "llm"
-                },
-                "cred_ref": "cred:openrouter",
-                "purpose": "authenticate agent's strong against the provider",
-                "issued_at": "2026-10-24T00:00:00.000000Z",
-                "expires_at": "2099-01-01T00:00:00.000000Z",
-                "rule_id": "credential-read",
-                "constraints": {
-                  "rate_per_min": 60
-                }
-              },
-              {
-                "grant_id": "grant:openrouter@colony-example/curator-summarizer",
+                "grant_id": "grant:openrouter@colony-example/ava/curator-summarizer",
                 "requester": "agent:agent/curator-summarizer",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -474,7 +436,7 @@
                 }
               },
               {
-                "grant_id": "grant:openrouter@colony-example/memory-hive-closer",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-closer",
                 "requester": "agent:agent/memory-hive-closer",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -494,7 +456,7 @@
                 }
               },
               {
-                "grant_id": "grant:openrouter@colony-example/memory-hive-dialectic",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-dialectic",
                 "requester": "agent:agent/memory-hive-dialectic",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -514,7 +476,7 @@
                 }
               },
               {
-                "grant_id": "grant:openrouter@colony-example/memory-hive-dreamer",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-dreamer",
                 "requester": "agent:agent/memory-hive-dreamer",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -534,7 +496,7 @@
                 }
               },
               {
-                "grant_id": "grant:openrouter@colony-example/memory-hive-judge",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-judge",
                 "requester": "agent:agent/memory-hive-judge",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -554,7 +516,7 @@
                 }
               },
               {
-                "grant_id": "grant:openrouter@colony-example/memory-hive-embed",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-embed",
                 "requester": "agent:agent/memory-hive-embed",
                 "capability": "credential.read",
                 "subject": "colony:example",
@@ -580,18 +542,7 @@
             "rows": [
               {
                 "id": "ev-agent-brain",
-                "grant_id": "grant:openrouter@colony-example/brain",
-                "event": "granted",
-                "at": "2026-10-24T00:00:00.000000Z",
-                "actor": "operator",
-                "reason_code": "",
-                "detail": {
-                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
-                }
-              },
-              {
-                "id": "ev-agent-strong",
-                "grant_id": "grant:openrouter@colony-example/strong",
+                "grant_id": "grant:openrouter@colony-example/ava/brain",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",
@@ -602,7 +553,7 @@
               },
               {
                 "id": "ev-agent-curator-summarizer",
-                "grant_id": "grant:openrouter@colony-example/curator-summarizer",
+                "grant_id": "grant:openrouter@colony-example/ava/curator-summarizer",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",
@@ -613,7 +564,7 @@
               },
               {
                 "id": "ev-agent-memory-hive-closer",
-                "grant_id": "grant:openrouter@colony-example/memory-hive-closer",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-closer",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",
@@ -624,7 +575,7 @@
               },
               {
                 "id": "ev-agent-memory-hive-dialectic",
-                "grant_id": "grant:openrouter@colony-example/memory-hive-dialectic",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-dialectic",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",
@@ -635,7 +586,7 @@
               },
               {
                 "id": "ev-agent-memory-hive-dreamer",
-                "grant_id": "grant:openrouter@colony-example/memory-hive-dreamer",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-dreamer",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",
@@ -646,7 +597,7 @@
               },
               {
                 "id": "ev-agent-memory-hive-judge",
-                "grant_id": "grant:openrouter@colony-example/memory-hive-judge",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-judge",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",
@@ -657,7 +608,7 @@
               },
               {
                 "id": "ev-agent-memory-hive-embed",
-                "grant_id": "grant:openrouter@colony-example/memory-hive-embed",
+                "grant_id": "grant:openrouter@colony-example/ava/memory-hive-embed",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",

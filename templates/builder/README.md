@@ -1,4 +1,4 @@
-# `builder@1.29.0`
+# `builder@1.30.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -292,17 +292,19 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 ## A level is a recipe
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
-rewrote from scratch on every build: an organisation gets **20** transit edges, a
-member **20**, an assistant **35**, a channel **4**, a screen **3**, an app
+rewrote from scratch on every build: an organisation gets **26** transit edges, a
+member **26**, an assistant **39**, a channel **4**, a screen **3**, an app
 **3** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
 
 A container level — an org, a member — costs the doors `in_turn`, `in_recall`,
-`in_brief`, `in_propose`, `in_build_result`, `in_export`, `mutation_committed` and, since
+`in_brief`, `in_propose`, `in_build_result`, `in_export`, `in_conversations`, `mutation_committed` and, since
 [#926](https://github.com/mmeyerlein/meclaw/issues/926), `in_stats`, and the exits
 `answer`, `bundle`, `ack`, `reject`, `error`, `write`, `turn_write`, `build`,
-`close_report`, `export_done`, `dump` and `stats`. The two levels share one renderer
+`close_report`, `export_done`, `dump`, `stats`, `stamp`, `opened`, `closed`, `inner_silent` and
+`conversations` (`in_conversations` and the last five exits since GH #1314: lanes both contracts declare and each
+parent carries on up to the shell). The two levels share one renderer
 because they share one contract, lane for lane, one storey apart. `in_import` is
 the lane both accept and neither wires: an import addresses the level's own
 path, so an edge from the container could never deliver one. **The table stood
@@ -313,7 +315,7 @@ of that same set, `examples/memory-import/build_import.py`, had been writing it
 correctly the whole time, and the two are now compared element for element.
 
 **A container's children are ADDRESSES, not a broadcast** ([#478](https://github.com/mmeyerlein/meclaw/issues/478)). Each
-of those eight doors carries the child's own name beside the lane —
+of those nine doors carries the child's own name beside the lane —
 `(!has(context.member) || context.member == '<name>')` for a member,
 `context.org` for an organisation — because `Edge.to` is a static path one storey
 up as well. Without the name, a container holding two children fans every message
@@ -447,7 +449,7 @@ on a `channel` (§ *A round is provenance*).
 | `subscribe` | optional, `assistant` | draw the identity door as well — since #877 six v-lanes: one push from the member's own `./affinity` into each brain rim of the generation (`talky`, `talky-chat`, `cogny`), and one `pack_ack` drain back from each. It is not part of the level and is not counted in the table above; see § *The identity door is opt-in* |
 | — | never for `member` | there is **no** parameter that turns the screen off, chooses what fills it or names its door. A member always gets both devices, and what fills them is the builder's own configuration (§ *A member grows a screen and an app, and the OS hands out the mount*) |
 | `credential` | optional, `assistant` | grow the generation with **no key of its own** — four more v-lanes to the member's own broker, the grants that answer them, and both credential params on both brains. `{"cred_ref": …, "subject": …, "expires_at": …}` are required inside it, `rule_id` and `rate_per_min` optional. Since `1.6.1` it is drawn in the SAME declaration as the generation, which stands at the member for it; the four edges are not counted in the table above; see § *The credential lanes are opt-in too, and they ride in the level's own declaration*. A template the consumer list does not carry falls back to its level's consumers for an assistant, a member and a screen — a derived member class (an instance derivation of `member`) has the cells of `member`, a derived screen class (`display-<x>`, the builder's `member_screen_template`) those of `display`, and each takes `credential` like its base; an app and the presenter stay strict |
-| `credential` | optional, `install_app` (the presenter) | the same object for an app whose template has a cell that spends a provider key -- today the presenter's `decide` ([#976](https://github.com/mmeyerlein/meclaw/issues/976)): an EMPTY `api_key` and `credential_grant_id` on that cell (`override_params`), two v-lanes between it and the member's `./access` (requester `app:<app>/<cell>`, handle `grant:<cred tail>@<subject>/<app>-<cell>`) behind the app's own edges, and the grant with its birth event in `seed_rows`. WHICH cells spend a grant is the app's own rim: the `at` of the `credential_request` emit in its template's `params.contract`, which the wish hands in verbatim as `contract` (beside `declaration`; OR-AG-35, until then a fixed list of two templates). A `credential` without a `contract` that names such an `at` is refused as `app_declaration_invalid` on the field `contract`; every consumer spends `cred_ref` |
+| `credential` | optional, `install_app` (the presenter) | the same object for an app whose template has a cell that spends a provider key -- today the presenter's `decide` ([#976](https://github.com/mmeyerlein/meclaw/issues/976)): an EMPTY `api_key` and `credential_grant_id` on that cell (`override_params`), two v-lanes between it and the member's `./access` (requester `app:<app>/<cell>`, handle `grant:<cred tail>@<subject>/<app>-<cell>`) behind the app's own edges, and the grant with its birth event in `seed_rows`. WHICH cells spend a grant is the app's own rim: the `at` of the `credential_request` emit in its template's `params.contract`, which the wish hands in verbatim as `contract` (beside `declaration`; OR-AG-35, until then a fixed list of two templates). A `credential` without a `contract` that names such an `at` is refused as `app_declaration_invalid` on the field `contract`; every consumer spends `cred_ref`. A `contract` whose `accepts` marks `in_sealed` as `required` without a `credential` is refused on the field `credential`. An app whose rim requires `in_briefing` and `in_pack` embeds a `simple-agent@2` (orga's coordinator): `install_app` then draws the agent's rim with the `simple_agent` block's own edges -- the brief and pack roads to the member's `./affinity`, the receipt and the model road (beside, or through `model_registry_scope` as a second declaration) -- with ONE `agent_id` for the edges, the door and the enrolment (the wish's, or the one the agent's own `<agent>/door` / `<agent>/enrol` overrides name, default the app's name; two different values are `app_declaration_invalid` on `agent_id`), the block's own override keys and the brain's start value from `ctx.model`; the second brain spends a grant only with `strong`; the agent's search cell stays anonymous unless the credential names a search key, and only its brain gets the empty `api_key` ([#1312](https://github.com/mmeyerlein/meclaw/issues/1312)) |
 | `credential` | optional, `channel` (`voice`, `telegram-connector`) | the same object for a channel whose cell spends a key ([#1061](https://github.com/mmeyerlein/meclaw/issues/1061)): `stt_cred_ref`, `tts_cred_ref`, `duplex_cred_ref` for `voice`, `bot_cred_ref` (or plain `cred_ref`) for the Telegram connector, beside `subject` and `expires_at`. One ask v-lane from the cell to the member's `./access` (requester `agent:<channel>/channel`), one answer per handle, the grants in `seed_rows`, the declaration at the member; the ingress no longer carries the cell's `credential_request` as a turn. See § *A channel that spends a key asks the same broker* |
 | `door` | optional, `assistant` | grow the generation as its **member's door**: one default edge more, from the container into it, on `in_turn` only, stamping `context.assistant` with its name — so a turn that names no agent reaches it instead of dying at the container as `hive_no_route`. One door per member is a rule of the wish, not checked here. A value that is not a boolean is refused as `door_invalid`; on any other level it is refused as `door_level_invalid`; see § *The member's door is one default edge* |
 
@@ -924,7 +926,7 @@ level's own set and behind both older switches, so no index either of them rende
  "modifier": {"set_context": {"assistant": "'<name>'"}}}
 ```
 
-An assistant grown with `door: true` carries **36** edges: the level's own set and this one.
+An assistant grown with `door: true` carries **40** edges: the level's own set and this one.
 The edge takes the level's form. It is `.` → `./<name>` in the container, and
 `./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
 the member. The absolute edge is the same either way, so the door adds no third reason for the
@@ -1074,14 +1076,41 @@ identity pack and its ack, the commit receipt into the agent, the registry's pus
 announcement), the grants in `./access/store` (`seed_rows`, the shape of the assistant's) and the
 override params. Required: `scope`, `name`, `model` (the brain's start value, `ctx.model`) and
 `credential` (`cred_ref`, `subject`, `expires_at`). Optional: `strong` (the second brain's start
-value, also the door's `strong`), `agent_id` (default `name`), `identity`, `charter`, `disclose`
+value, also the door's `strong`), `agent_id` (default `name`; an id in the `door` or `enrol` overrides counts as well, two different ones are refused on `agent_id`), `identity`, `charter`, `disclose`
 (to `./enrol`), `start_memories` (to the door), `tools_enabled` (to `./tool_gate`, the families
 `bash`, `file`, `edit`, `web`, `weather`; anything else is `app_declaration_invalid`), `app_id` and
-`referer` (`x_title`/`http_referer` on `brain` and `strong`), `override_params`, `birth`, `ctx`.
+`referer` (`x_title`/`http_referer` on every llm cell of the agent: both brains, the curator summarizer and
+the four memory cells; the embedder and the search are code cells and keep the colony's own),
+`override_params`, `birth`, `ctx` and `contract` (below). `strong` also decides whether the second
+brain spends a grant: without it no grant row, no credential edge and no `credential_grant_id` names
+`strong`. Every grant id names the agent (`grant:<cred tail>@<subject>/<agent_id>/<consumer>`), so two
+agents of one member never share one.
 The consumers are the credential table's row `simple-agent`, held to the template by the same
 drift lock as every other row. The block renders no runner mode per tool family: the own
 families are built-in cell types without a runner. The three neighbours stand at fixed names,
 like the container of a level. Worked through in `examples/simple-agent-colony`.
+
+**One level deeper** ([#1312](https://github.com/mmeyerlein/meclaw/issues/1312)). A template that holds
+`simple-agent@2` under a ref (`figure@2` keeps it at `./simple-agent`) carries the agent's lanes on its
+own rim, every `at` one level down. The recipe reads no tree, so the wish hands that rim in verbatim as
+`contract` (the template's `params.contract`, as `install_app` takes an app's), and the block reads the
+depth off it: the cells that spend a grant are the `at` of its `credential_request` emit, the agent's
+level is the folder of its `in_briefing` `at`, and the brief answer and the identity pack dock where
+`in_briefing` and `in_pack` say. Every override key of the block (`simple-agent/door`, ...), every
+consumer, requester and lane target then names that level. A template outside the credential table
+without `contract` is `app_declaration_invalid` on the field `contract`; without `contract` a
+`simple-agent@2` renders as before, byte for byte.
+
+**Where the registry stands.** Without the builder setting `model_registry_scope` the registry stands
+beside the agent at `./llm-registry`, and the block is one declaration. With it (`meclaw-os`: `/os/orgs`)
+the block finds the registry as the assistant does: its pushes arrive at that container already stamped
+`in_model`, and the shell carries announcements and refusals on to the registry. The door judges every
+manifest entry on its own, and a required lane is wired by the diff that gives the hive birth, so the
+declaration at the level carries the lane: the level's `in_model` door onto the agent's rim and the rim's
+`model_refused` up to the level. A second declaration at the container follows with one push edge per
+announced brain onto the agent, the refusal on from the level, and the announcement (`model_subscribe`)
+off the level's receipt. An agent whose level is not below the container is `app_declaration_invalid` on
+`scope`.
 
 ## An app is a declaration
 
@@ -1102,6 +1131,24 @@ block the app's `template.json` carries beside `"tags": ["app"]`:
   "drives":  [{"cell": "browser", "out": ["open", "close", "navigate"], "back": ["page", "receipt"]}]
 }
 ```
+
+**A `handoff` offer answers in a later turn, like the core's consult** (GH #1312). A
+`tool` offer answers inside the round with a `tool_result`; an app that has to ask around
+first declares `{"kind": "handoff", "at": "./desk", "tools": ["consult_orga"]}` instead.
+Per surface (`talky`, `talky-chat`; the core answers no channel and takes none, so the
+offer has no `callers`) the recipe draws the pair `templates/talky/README.md` § The
+advisor lanes draws for the core: the call off the surface's rim onto the cell on its
+`tool` lane, taken only with a `hop.consult_id`, writing `consult_id` into the context,
+clearing `col_phase` and restoring the routing budget; and the way back, `advice` off
+the cell restamped `in_advice` onto the surface named by `context.tool_caller`, in the
+member's round. Every name is in the family `consult_<x>`, which both surfaces of the
+shipped assistant level declare as a handoff (`handoff_tools: consult_*`, the dispatcher
+reads a trailing `*` as a prefix): the app is installed after the generation stands, so
+its own name cannot be on the list the level wrote. A name outside the family, the core's
+`consult_cogny` or a `callers` key is `app_declaration_invalid`. On a surface without the
+family the call is sync, matches no handoff edge and is answered by the generation's
+`./tools` as an unknown tool -- a loud error instead of a round waiting for a turn that
+never comes. A declaration without the word renders what it rendered before.
 
 **The wish carries the block, and the recipe reads nothing else.** `recipes`
 reads its stdin and no disk, and the library answers `/colony/templates` with
@@ -1148,8 +1195,8 @@ passes the same check; otherwise the wish goes to the design lane, which asks.
 `view` and `withdraw` (`error` always travels with them), `screen.back` is
 `["event", "receipt"]`, `listens` from `turn`, `answer`, `partial`,
 `mutation_committed` and `close`, `pins` names a cell `./<name>` inside the app,
-an offer is a `tool` (with its `tools` and, optionally, its `callers`) or a `sidecar`
-(with its `section`) at a cell `./<name>` inside the app, `runs` is `{at, brain}`, and a drive names a
+an offer is a `tool` (with its `tools` and, optionally, its `callers`), a `sidecar`
+(with its `section`) or a `handoff` (with its `tools`) at a cell `./<name>` inside the app, `runs` is `{at, brain}`, and a drive names a
 cell of the member with the lanes it sends and hears back. An app that
 "listens to gossip" would otherwise install green and hear nothing. A tool offer
 does not name a tool the assistant level answers itself -- `memory_recall`,

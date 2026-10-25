@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "acme",
-        "template": "org@2.2.0"
+        "template": "org@2.2.1"
       }
     ],
     "add_edges": [
@@ -37,6 +37,11 @@
         "from": ".",
         "to": "./acme",
         "condition": "has(hop.route) && hop.route == 'in_export' && (!has(context.org) || context.org == 'acme')"
+      },
+      {
+        "from": ".",
+        "to": "./acme",
+        "condition": "has(hop.route) && hop.route == 'in_conversations' && (!has(context.org) || context.org == 'acme')"
       },
       {
         "from": ".",
@@ -107,6 +112,31 @@
         "from": "./acme",
         "to": ".",
         "condition": "has(hop.route) && hop.route == 'stats'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'stamp'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'opened'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'closed'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'inner_silent'"
+      },
+      {
+        "from": "./acme",
+        "to": ".",
+        "condition": "has(hop.route) && hop.route == 'conversations'"
       }
     ]
   }
