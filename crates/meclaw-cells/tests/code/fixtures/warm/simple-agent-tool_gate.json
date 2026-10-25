@@ -1,0 +1,11 @@
+{
+  "source": "hand: the template's script (the menu ask loses the families nobody enabled and tells the door what is enabled; a call of a name without a family goes on to the tools; a call of a family nobody enabled goes to the door)",
+  "probes": [
+    {"hop": {"route": "schemas", "turn_id": "T-1"}, "context": {"turn_id": "T-1"},
+     "body": {"messages": [], "tools": ["memory_recall", "bash", "web_fetch", "web_search", "weather"]}},
+    {"hop": {"route": "tool", "tool_name": "memory_recall", "tool_call_id": "call_1"}, "context": {"turn_id": "T-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call_1", "text": "{\"query\":\"coffee\"}"}]}},
+    {"hop": {"route": "tool", "tool_name": "bash", "tool_call_id": "call_2"}, "context": {"turn_id": "T-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call_2", "text": "{\"command\":\"ls\"}"}]}}
+  ]
+}

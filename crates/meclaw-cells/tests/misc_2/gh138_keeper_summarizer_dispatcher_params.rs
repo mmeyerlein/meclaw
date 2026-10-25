@@ -103,6 +103,8 @@ const SCRIPTED: &[Scripted] = &[
             // This migration only made it read through the same accessor as its
             // three neighbours instead of an open-coded `P.get`.
             ("interim", "_str"),
+            // GH #1305: whether an inner turn's silence leaves as `inner_silent`.
+            ("conversation_events", "_str"),
         ],
     },
 ];
@@ -374,10 +376,11 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 12,
+        total, 13,
         "the scripted half of this migration is ten knobs, GH #954 added `heal_limit` and \
          GH #1085 took `phaseout_chars` and `tool_chars` away and added `input_soft_fallback`, \
-         GH #1229 added the night window `night_from_utc`/`night_until_utc`"
+         GH #1229 added the night window `night_from_utc`/`night_until_utc`, GH #1305 the \
+         dispatcher's `conversation_events`"
     );
 }
 

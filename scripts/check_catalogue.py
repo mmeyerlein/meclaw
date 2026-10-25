@@ -21,6 +21,9 @@ table = (root/'templates/README.md').read_text()
 for tj in root.glob('templates/*/template.json'):
     name = tj.parent.name
     if name.startswith('_'): continue
+    # a frozen version `<name>@<x.y.z>/` is not the number its name ships at
+    # (development-rules § 4, frozen versions); the living directory is
+    if '@' in name: continue
     ver = json.loads(tj.read_text()).get('version')
     # private templates are not in the public catalogue at all -- only a
     # listed template with a stale version is a finding

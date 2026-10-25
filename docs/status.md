@@ -11,7 +11,7 @@ authentication and no TLS; put a reverse proxy in front of it, like any Linux da
 files are the whole interface, and there is no SDK to import.
 
 meclaw is under heavy development, and I would not leave it unattended in production. The
-0.70.5 release gate ran 11312 tests. One measured colony spent 0.32 EUR on a day of
+0.71.0 integration pass ran 11438 tests. One measured colony spent 0.32 EUR on a day of
 conversation.
 
 ## What 0.x binds

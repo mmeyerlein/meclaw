@@ -52,6 +52,20 @@ pub fn params_of(rel: &str, over: &[(&str, Value)]) -> Value {
 
 /// Run a shipped code cell over one message. Returns the emissions and stderr.
 pub fn run_cell(rel: &str, over: &[(&str, Value)], doc: Value) -> (Vec<Value>, String) {
+    let (stdout, stderr) = run_cell_stdout(rel, over, doc);
+    let v: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("{rel}: output is not JSON ({e}): {stdout}"));
+    let msgs = match v {
+        Value::Array(a) => a,
+        one => vec![one],
+    };
+    (msgs, stderr)
+}
+
+/// Run a shipped code cell over one message and hand back its stdout as written,
+/// for a golden that compares bytes (key order, one emission or a list) rather
+/// than parsed values (GH #1304).
+pub fn run_cell_stdout(rel: &str, over: &[(&str, Value)], doc: Value) -> (String, String) {
     let script = config_of(rel)["params"]["script_inline"]
         .as_str()
         .expect("script_inline")
@@ -82,17 +96,7 @@ pub fn run_cell(rel: &str, over: &[(&str, Value)], doc: Value) -> (Vec<Value>, S
     let out = child.wait_with_output().expect("wait");
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "{rel} exited non-zero: {stderr}");
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!(
-            "{rel}: output is not JSON ({e}): {}",
-            String::from_utf8_lossy(&out.stdout)
-        )
-    });
-    let msgs = match v {
-        Value::Array(a) => a,
-        one => vec![one],
-    };
-    (msgs, stderr)
+    (String::from_utf8_lossy(&out.stdout).to_string(), stderr)
 }
 
 pub fn assemble(over: &[(&str, Value)], doc: Value) -> Vec<Value> {

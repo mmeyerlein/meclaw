@@ -93,6 +93,7 @@
  "scripts.tests.test_pipeline_two_phase_build": 8.5,
  "scripts.tests.test_pipeline_unit_runner": 5.4,
  "scripts.tests.test_pipeline_versions": 1.7,
+ "scripts.tests.test_frozen_templates": 0.4,
  "scripts.tests.test_precheck": 34.4,
  "scripts.tests.test_precheck.TheRealTreeIsGreen": 28.8,
  "scripts.tests.test_precheck_testing_bans": 1.8,

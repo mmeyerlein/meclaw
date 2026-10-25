@@ -1,4 +1,4 @@
-# `org@2.1.46`
+# `org@2.2.0`
 
 The namespace, and nothing else.
 
@@ -55,13 +55,15 @@ The contract carries exactly what must cross this level to reach or leave a memb
 | emits | `export_done` | one member's memory is written out completely, marker file and all |
 | accepts | `in_stats` | a question an observer asks about one brain of one generation of a member: what its curator counted in a window (GH #926). The member hands it on to the generation `context.assistant` names; this level only carries it into `./members` |
 | emits | `stats` | the answer to one `in_stats`, on its way back out to whoever asked, matched by its `hop.stats_tag` |
+| emits | `stamp` | the route stamp of one turn (GH #1304), raised only when a surface's route knob `stamp_out` is "1": path, intent, the product's own choices, no text and no turn notes |
+| emits | `opened`, `closed`, `inner_silent` | the conversation events of a member (GH #1305): a generation began, one ended, an inner turn was answered with silence -- no text, raised only when a knob `conversation_events` is "1"; one exit each, like every lane here |
 
 Each lane's `because` says the same thing in the hive's own words: **the level is a
 boundary and a namespace, not a participant.** It reads nothing, decides nothing and
 holds nothing, and it translates nothing -- hop and context cross untouched.
 
-The internal graph is twenty-one edges and nothing else: **nine doors** `.` into
-`./members`, one per accepted lane, and **twelve exits** `./members` back out to `.`, one
+The internal graph is twenty-seven edges and nothing else: **ten doors** `.` into
+`./members`, one per accepted lane, and **seventeen exits** `./members` back out to `.`, one
 per emitted lane. The pair that arrived with GH #425, the three with GH #447, `pack_ack`
 with GH #458 (gone again since GH #877), `in_import` with GH #467, `bundle` with GH #533 and
 `in_stats`/`stats` with GH #926 add no cell
@@ -80,7 +82,7 @@ The occupant of this level is `member`. Its accepts list is `in_turn`, `in_recal
 `in_brief`, `in_propose`, `in_build_result`, `in_export`, `in_import`, `mutation_committed`,
 `in_stats`; its emits list is
 `answer`, `bundle`, `ack`, `reject`, `error`, `write`, `turn_write`, `build`,
-`close_report`, `export_done`, `dump`, `stats`. **Nothing is subtracted**, because the only
+`close_report`, `export_done`, `dump`, `stats`, `stamp`. **Nothing is subtracted**, because the only
 thing inside an org is the container -- there is no sibling here to consume anything. So
 the union is the whole of both lists, and every `because` in `config.json` names the
 version it came from.
@@ -181,7 +183,7 @@ the first second.
 
 Two mutations, in this order.
 
-1. **The organisation.** One `add_nodes` with the template `org@2.1.46`, plus the transit
+1. **The organisation.** One `add_nodes` with the template `org@2.2.0`, plus the transit
    edges -- one per accepted lane onto the org's own path, and one per emitted lane
    back out to whoever asked. Nothing is registered as a cell: both directories become
    hive scopes, and a hive is a scope marker, not an actor. The inbound edges carry

@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod gh121_root_lease;
+pub mod gh1310_simple_agent_block_validates_strict;
 pub mod gh423_apply_one_shot;
 pub mod gh424_validate_lists_growths;
 pub mod gh440_apply_registers_a_template;

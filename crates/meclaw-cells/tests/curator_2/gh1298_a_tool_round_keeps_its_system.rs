@@ -559,3 +559,75 @@ fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
         call2.body["system"]
     );
 }
+
+// ======================================== agent-2 A2, review I1 (OR-AG-50)
+
+/// A call of session `s1` from a parent with stages (simple-agent 2): the
+/// collector's context carries `sa_stage`, the call leaves on `brain`.
+fn staged(h: &mut Hive, turn_id: &str, stage: &str, ask: &str) -> Msg {
+    h.out.clear();
+    let hop = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0", "phase": ""});
+    let ctx = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0",
+                     "channel": "test", "audience_set": ROUND_E, "sa_stage": stage});
+    h.lane(
+        "in_curate",
+        ctx,
+        hop,
+        json!({"messages": [user(ask)], "system": mode("Be brief.")}),
+    );
+    let calls = h.routed("brain");
+    assert_eq!(calls.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    calls[0].clone()
+}
+
+#[test]
+fn each_stage_is_sized_by_the_package_of_its_own_model() {
+    if !shipped() {
+        return;
+    }
+    // fast answers with a large package, strong with a small one: the
+    // contract fits a tenth of fast's window and not a tenth of strong's.
+    let fast = json!({"input_soft": 90000, "input_hard": 180000, "tokens_prompt": 100});
+    let strong = json!({"input_soft": 1000, "input_hard": 400000, "tokens_prompt": 100});
+    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    slot(&mut h, &contract());
+    let first = staged(&mut h, "t0", "strong", "q0");
+    h.tap(&first, "stop", strong.clone(), json!([said("a0")]));
+    for i in 1..=5 {
+        let call = staged(&mut h, &format!("t{i}"), "fast", &format!("q{i}"));
+        // The first fast call knows no fast package yet: it takes the last
+        // answer's, as a way without a window of its own does.
+        assert!(
+            i == 1 || contract_cuts(&call).is_empty(),
+            "fast is sized by fast's package: {:?}",
+            call.hop
+        );
+        h.tap(&call, "stop", fast.clone(), json!([said("a")]));
+    }
+    // A strong turn after five fast ones: strong's window, not the last
+    // answer's -- and no hard rebuild.
+    let call = staged(&mut h, "t6", "strong", "q6");
+    assert!(
+        !contract_cuts(&call).is_empty(),
+        "strong is sized by strong's package, not by fast's last answer: {:?}",
+        call.hop
+    );
+    h.tap(&call, "stop", strong.clone(), json!([said("a6")]));
+    let mark = |h: &Hive| {
+        meclaw_core::serde_json::from_str::<Value>(&h.state_in("curate", ROUND_E))
+            .unwrap_or(Value::Null)["curate_mark"]
+            .clone()
+    };
+    assert_ne!(mark(&h), json!("hard"), "{:?}", h.stderr);
+    // And back: a fast turn after strong takes fast's window again.
+    let call = staged(&mut h, "t7", "fast", "q7");
+    assert!(
+        contract_cuts(&call).is_empty(),
+        "fast after strong is sized by fast's package: {:?}",
+        call.hop
+    );
+    h.tap(&call, "stop", fast, json!([said("a7")]));
+    assert_ne!(mark(&h), json!("hard"), "{:?}", h.stderr);
+    // The bare key stays the last answer's: the memory ask is sized by it.
+    assert_eq!(h.state("input_soft"), "90000");
+}

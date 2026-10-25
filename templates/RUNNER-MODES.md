@@ -109,6 +109,7 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `memory-hive/recall` | warm | turn | |
 | `memory-hive/recur` | cold | rare | rarely called: a night or timer pass; a warm child would stand 30 min after each call (GH #1294) |
 | `memory-hive/schemas` | cold | rare | rarely called: it answers the collector's menu ask, at boot and after each apply (the `mutation_committed` broadcast); a warm child would stand 30 min after each call (GH #1294) |
+| `memory-hive/sessions` | cold | rare | rarely called: a reader's ask for whole conversations (`in_conversations`) or a session read (`memory_tier: "session"`); a warm child would stand 30 min after each call (GH #1309) |
 | `memory-hive/tool` | warm | tool | |
 | `memory-hive/writer` | warm | after | |
 | `objects/brief` | warm | tool | |
@@ -137,8 +138,10 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `session-keeper/close` | warm | session | |
 | `session-keeper/porter` | warm | session | |
 | `session-keeper/stamp` | warm | turn | |
-| `simple-agent/door` | resident | turn | caches whether the identity boot ran, the rounds whose watchdog is armed, the answered turns and the turns that wait for the boot; a new child boots once more |
+| `simple-agent/door` | resident | turn | caches the state it keeps durable in `./door_store` (queue, open turn, answered turns, start-memory mark, open client calls), plus whether the menu tick ran, the rounds whose watchdog is armed and the proposals that wait for the colony's answer; a new child reads the store back and ticks once more |
+| `simple-agent/enrol` | cold | rare | rarely called: a mutation receipt and the acknowledgements of its enrolment steps; a warm child would stand 30 min after each receipt (GH #1294) |
 | `simple-agent/splitter` | warm | turn | |
+| `simple-agent/tool_gate` | warm | tool | |
 | `slack-agent/persona` | warm | turn | |
 | `steward/meter` | cold | rare | rarely called: an operation round (probe, meter, mutation); a warm child would stand 30 min after each call (GH #1294) |
 | `steward/mutator` | cold | rare | rarely called: an operation round (probe, meter, mutation); a warm child would stand 30 min after each call (GH #1294) |

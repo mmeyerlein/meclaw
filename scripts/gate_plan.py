@@ -4567,6 +4567,7 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_side_effect_guard",
               "scripts.tests.test_pipeline_merge",
               "scripts.tests.test_pipeline_versions",
+              "scripts.tests.test_frozen_templates",
               "scripts.tests.test_pipeline_revert",
               "scripts.tests.test_pipeline_flakes",
               "scripts.tests.test_pipeline_graph",

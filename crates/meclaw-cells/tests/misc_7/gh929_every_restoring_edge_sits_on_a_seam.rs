@@ -90,6 +90,7 @@ const TALKY: &str = "talky/config.json";
 const COGNY: &str = "cogny/config.json";
 const FIGURE: &str = "figure/config.json";
 const SIMPLE_AGENT: &str = "simple-agent/config.json";
+const SIMPLE_AGENT_1: &str = "simple-agent@1.1.4/config.json";
 const BUILDER: &str = "builder/config.json";
 const FILE_SPACE: &str = "file-space/config.json";
 const MEMBER: &str = "member/config.json";
@@ -268,8 +269,84 @@ const SEAMS: &[Row] = &[
         None,
         Seam::Round,
     ),
+    // agent-2 A2 (GH #1308): the strong stage's round goes to the second thinking cell.
     row(
         SIMPLE_AGENT,
+        "./curator",
+        "./strong",
+        "brain",
+        None,
+        Seam::Round,
+    ),
+    row(
+        SIMPLE_AGENT,
+        "./curator",
+        "./memory-hive",
+        "write",
+        None,
+        Seam::Door,
+    ),
+    // The frozen `simple-agent@1.1.4` (R-SA-37), byte-equal to the 1.x line:
+    // the same seams under its own directory. The simple agent itself (GH #1292): its door hands a turn, a client
+    // tool's result and a close to the round's owners; the round is the
+    // curator's, the close pass enters the memory hive. A turn enters on one
+    // of two edges, with and without a tool scope.
+    split(
+        row(
+            SIMPLE_AGENT_1,
+            "./door",
+            "./collector",
+            "in_turn",
+            None,
+            Seam::Door,
+        ),
+        "&& has(hop.sa_scope)",
+    ),
+    split(
+        row(
+            SIMPLE_AGENT_1,
+            "./door",
+            "./collector",
+            "in_turn",
+            None,
+            Seam::Door,
+        ),
+        "!has(hop.sa_scope)",
+    ),
+    row(
+        SIMPLE_AGENT_1,
+        "./door",
+        "./collector",
+        "in_tool",
+        None,
+        Seam::Door,
+    ),
+    row(
+        SIMPLE_AGENT_1,
+        "./door",
+        "./curator",
+        "in_close",
+        None,
+        Seam::Door,
+    ),
+    row(
+        SIMPLE_AGENT_1,
+        "./collector",
+        "./curator",
+        "curate",
+        None,
+        Seam::CuratorEntry,
+    ),
+    row(
+        SIMPLE_AGENT_1,
+        "./curator",
+        "./brain",
+        "brain",
+        None,
+        Seam::Round,
+    ),
+    row(
+        SIMPLE_AGENT_1,
         "./curator",
         "./memory-hive",
         "write",

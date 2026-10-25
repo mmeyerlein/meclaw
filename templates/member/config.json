@@ -14,6 +14,10 @@
           "because": "a question against this member's memory from outside the member. The lane is named for the asker's side of it -- the level turns it into the hive's own `in_query` at the door -- and since GH #533 the answer LEAVES THIS LEVEL: the bundle on `bundle`, the refusal on `reject`, both addressed back to the outside asker by the reply-to token this door stamps, `context.recall_caller = 'outside'` (ADR-0019). The door STAMPS that token rather than carrying what the caller sent, because the value space of the token at this boundary is this level's own: an outside caller with several askers of its own tells its rounds apart on a hop key of its own, which crosses the hive untouched -- this door promotes no correlation at all, because since GH #552 the `in_query` lane has ONE meaning and the hive's own `bundle` exit branches on `context.memory_call_id` to tell a tool round from the ambient one. What a caller sends with it is the recall shape `memory-hive` asks for (`hop.recall_query`, `hop.memory_tier`, `hop.recall_window_from`, `hop.recall_window_to`) plus the round it is asking in (`context.audience_set`, `context.channel`): a recall without an audience is not a recall with an empty one, and the hive refuses it rather than answering unfiltered. Whoever wires this lane owes it a drain -- `params.required_drains` pairs it with `bundle`, because for two waves this lane was a promise the level had no exit for and every answer to it died inside `./assistants`"
         },
         {
+          "route": "in_conversations",
+          "because": "a reader outside the member asks this member's memory for whole conversations (the memory hive's `in_conversations`, unchanged): the lane crosses the level to `./memory-hive`, the answer comes back out on `conversations`. The same form a reader asks of a simple-agent@2."
+        },
+        {
           "route": "recall",
           "at": [
             "./assistants"
@@ -85,7 +89,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@3.8.9\""
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@3.9.0\""
         }
       ],
       "emits": [
@@ -191,7 +195,27 @@
         },
         {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@3.8.9\""
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@3.9.0\""
+        },
+        {
+          "route": "stamp",
+          "because": "the route stamp of one turn (GH #1304), out of the generation unchanged: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes, hop `turn_id`, `path`, `fallback` on a fallback stamp. The route cell raises it only when its knob `stamp_out` is \"1\", so a member that set no knob carries nothing. Nothing inside this member reads it -- the reader is a product outside -- so it LEAVES the level the way `stats` does. Derived from the emits list of \"assistant@3.9.0\""
+        },
+        {
+          "route": "opened",
+          "because": "GH #1305: a conversation of one generation began, out unchanged: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, no text. Raised inside an assistant's talky only when its stamp knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.9.0\""
+        },
+        {
+          "route": "closed",
+          "because": "GH #1305: a conversation of one generation ended, out unchanged right behind its `write`: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text. Raised only when the curator writer knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.9.0\""
+        },
+        {
+          "route": "inner_silent",
+          "because": "GH #1305: an inner turn answered with silence -- nothing went to a channel; hop `inner_source`, `turn_id`, no text. Raised only when the dispatcher knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.9.0\""
+        },
+        {
+          "route": "conversations",
+          "because": "the memory hive's answer to `in_conversations`, out of the level to the reader that asked (`hop.reader`)."
         }
       ]
     },
@@ -1347,6 +1371,44 @@
               "has_file"
             ]
           }
+        },
+        {
+          "from": "./assistants",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stamp'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "has_file"
+            ]
+          }
+        },
+        {
+          "from": "./assistants",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'opened' || hop.route == 'closed' || hop.route == 'inner_silent')",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "has_file"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'in_conversations'"
+        },
+        {
+          "from": "./memory-hive",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'conversations'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "has_file"
+            ]
+          }
         }
       ]
     },
@@ -1355,12 +1417,17 @@
         "accepts": "in_recall",
         "emits": "bundle",
         "because": "a question sent at this member's own recall door is answered OUT of the level, and until GH #533 there was nowhere for that answer to go: `bundle` was not an emits lane, so the one return edge the level had carried it into `./assistants`, where it died as `no_route` -- or, worse, was handed to whichever generation `context.assistant` happened to name. A caller that asks and does not subscribe to the answer rebuilds that failure one level up. The trigger is the caller's STAMP (GH #237): a parent that names this lane in a condition instead is not caught here, which is why the shipped recipes are pinned by `gh533_the_outside_asker_gets_an_answer.rs` as well"
+      },
+      {
+        "accepts": "in_conversations",
+        "emits": "conversations",
+        "because": "the answer belongs to the reader outside the level; undrained it would end at the rim"
       }
     ]
   },
   "description": {
     "purpose": "One person, and the things every assistant that person owns must share: the memory of what was said to them, the curated record of who they and their people are, the screen every inbound turn passes, and -- since 1.3.0 -- the CHANNELS they are reached on. Three refs plus three open containers -- `assistants`, `channels` and, since GH #459, `apps` -- plus one cell of its own: the sink that turns a memory export into files on disk. The level owns nothing else -- no brain, no tools. Since GH #475 the transfer lanes reach one thing more: a generation's session keeper, four levels down, through `./assistants` -- the sessions are the last table of a member that a rebuild could not recompute. Since member@1.5.0 the level also carries an `access` of its own (GH #560). Authorisation and key ownership are two different jobs: the shell's broker answers the submitter's policy questions, but the provider keys this person's brains burn belong to the PERSON -- the same ADR-0013 logic that puts the memory hive at this level. Nothing in this graph reaches it except the drain for its `error` lane, and that is deliberate: the two edges that carry a credential are V-LANES (GH #559), drawn by the manifest that grows a generation, from the brain that spends the grant straight to `./access`. See README section `The credential v-lanes`.",
-    "use_when": "One per person (or per group that owns an agent nobody owns personally -- that group is a member with its own name). Instantiate it into an org's members container, and wire its nine inbound lanes and its twelve outbound ones in the same mutation -- the three refusal and receipt lanes above all (`reject`, `close_report`, `export_done`), because `memory-hive` pairs every ingress this level sends with an egress the level above has to take, and an undrained pairing refuses the mutation rather than the message. `bundle` is the twelfth and youngest of them (GH #533) and this level pairs it itself: it is the answer to a question sent at the `in_recall` door, and a caller that asks and does not subscribe gets the answer nowhere. Assistants are instantiated into ./assistants afterwards, one at a time, and each of those mutations draws its own two addressing edges to the container. Channels are instantiated into ./channels the same way, one at a time, and each of those draws two edges as well -- see templates/member/README.md, 'Addressing an assistant through a channel'.",
+    "use_when": "One per person (or per group that owns an agent nobody owns personally -- that group is a member with its own name). Instantiate it into an org's members container, and wire its ten inbound lanes and its seventeen outbound ones in the same mutation -- the three refusal and receipt lanes above all (`reject`, `close_report`, `export_done`), because `memory-hive` pairs every ingress this level sends with an egress the level above has to take, and an undrained pairing refuses the mutation rather than the message. `bundle` is the twelfth and youngest of them (GH #533) and this level pairs it itself: it is the answer to a question sent at the `in_recall` door, and a caller that asks and does not subscribe gets the answer nowhere. Assistants are instantiated into ./assistants afterwards, one at a time, and each of those mutations draws its own two addressing edges to the container. Channels are instantiated into ./channels the same way, one at a time, and each of those draws two edges as well -- see templates/member/README.md, 'Addressing an assistant through a channel'.",
     "not_in_scope": "No brain and no tool surface -- those are the assistant's, and one member may own several. No memory-drain: per-turn extraction (GH #298, ruling Q11) replaced it, and it does not belong in the assistant either. No terminal: a refusal here leaves the level and becomes no_route in the DLQ if nobody consumes it -- recorded and self-localising, which is state (2) of GH #284. And since 1.6.0 there is no cell here at all to be a counter-example: the one that landed an export on disk is gone, because every store writes its own files (GH #555). No org-level anything: what a group knows about a person is a filter on the read, never a second store. The push into a subscribing brain is this level's to own and the instantiating mutation's to draw (GH #453): a subscribe writes a row, never an edge, so the two edges of the recipe are drawn per subscribing cell at instantiation (templates/affinity/README.md, 'Wiring out_push for a subscribing brain'). This level ships the half a template CAN ship -- the answer exit conditioned on hop.subscriber == '', so a push can never leave on the brief lane."
   }
 }

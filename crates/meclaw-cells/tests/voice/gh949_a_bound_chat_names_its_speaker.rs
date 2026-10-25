@@ -589,8 +589,18 @@ fn only_the_bound_ingress_names_a_speaker_and_only_a_close_drops_it() {
                 ".".to_string(),
                 "has(hop.route) && hop.route == 'close'".to_string(),
             ),
+            // GH #1305: `opened` leaves the keeper beside the held turn, as its
+            // own message for an app outside; it drops what the close drops, so
+            // no speaker rides out on it. The turn itself keeps it.
+            (
+                "session-keeper/config.json".to_string(),
+                "./stamp".to_string(),
+                ".".to_string(),
+                "has(hop.route) && hop.route == 'opened'".to_string(),
+            ),
         ],
-        "the speaker is dropped by exactly the keeper's close and its arm edge"
+        "the speaker is dropped by exactly the keeper's close, its arm edge and the \
+         `opened` exit"
     );
 }
 

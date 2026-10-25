@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 36] = [
+const SHARED: [&str; 37] = [
     "actor",
     "asker",
     "audience_now",
@@ -88,6 +88,13 @@ const SHARED: [&str; 36] = [
     // handover would reach no call.
     "call_id",
     "channel",
+    // GH #1305 -- the delivery node of a turn. The firewall stamps it on its
+    // exit for a person's turn, and talky's inner door stamps it from
+    // `hop.deliver_channel_node` for an event without a speaking person; either
+    // way the member's `./assistants -> ./channels` edge reads it on the answer
+    // that comes back out of the assistant. Cleared at talky's rim, an inner
+    // turn's answer would reach no channel.
+    "channel_node",
     "chat_id",
     // GH #834 -- who a turn on a channel with many counterparts is WITH, as an
     // entity reference (`peer:<...>`). The entry edge of such a channel stamps

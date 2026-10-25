@@ -48,6 +48,10 @@
           "because": "a question against a member's memory, asked from outside the organisation that holds it. Derived from org"
         },
         {
+          "route": "in_conversations",
+          "because": "a reader asking a member's memory for whole conversations from outside the organisation that holds it (GH #1309). Derived from org"
+        },
+        {
           "route": "in_brief",
           "because": "a read against a member's curated record -- who is this person, who are they to the asker. Derived from org"
         },
@@ -150,6 +154,18 @@
           "because": "the receipt of one close pass -- what the strong model added, sharpened, corrected, closed or restated when it read an ended session whole. Nothing in this shell triggers the pass (a member fires it on its own closed sessions) and nothing here reads the receipt, so the outermost boundary does the one thing it can honestly do: it refuses to swallow it. Derived from org"
         },
         {
+          "route": "opened",
+          "because": "GH #1305: a conversation of one generation began, out unchanged: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, no text. Raised inside an assistant's talky only when its stamp knob `conversation_events` is \"1\", so a shell that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `close_report` does. Derived from the emits list of \"org\""
+        },
+        {
+          "route": "closed",
+          "because": "GH #1305: a conversation of one generation ended, out unchanged right behind its `write`: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text. Raised only when the curator writer knob `conversation_events` is \"1\", so a shell that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `close_report` does. Derived from the emits list of \"org\""
+        },
+        {
+          "route": "inner_silent",
+          "because": "GH #1305: an inner turn answered with silence -- nothing went to a channel; hop `inner_source`, `turn_id`, no text. Raised only when the dispatcher knob `conversation_events` is \"1\", so a shell that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `close_report` does. Derived from the emits list of \"org\""
+        },
+        {
           "route": "dump",
           "because": "the receipt of one applied import part, from a member somewhere below, on its way out of the colony. Same reason as `close_report`: the shell is transit for a receipt it did not ask for. Derived from the emits list of org (GH #555)"
         },
@@ -168,6 +184,14 @@
         {
           "route": "slot_update",
           "because": "a text change that passed its evaluation batch, or the way back from one: the slot's name and text, `hop.target` naming the cell. Like `mutate` it reaches only the cells a colony draws an edge to. Derived from argus"
+        },
+        {
+          "route": "stamp",
+          "because": "the route stamp of one turn (GH #1304): path, intent, the product's own choices and the duration, no text and no turn notes, raised inside a member only when a surface's route knob `stamp_out` is \"1\". Nothing in this shell reads it -- its reader is a product outside -- so the outermost boundary lets it out unchanged, like `close_report`. Derived from org"
+        },
+        {
+          "route": "conversations",
+          "because": "the member memory's answer to `in_conversations`, carried out of the organisation and out of the shell to the reader on `hop.reader` (GH #1309). This level does not read it. Derived from org"
         }
       ]
     },
@@ -462,6 +486,11 @@
           "from": ".",
           "to": "./orgs",
           "condition": "has(hop.route) && hop.route == 'in_recall'"
+        },
+        {
+          "from": ".",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_conversations'"
         },
         {
           "from": ".",
@@ -806,7 +835,43 @@
         {
           "from": "./orgs",
           "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'opened' || hop.route == 'closed' || hop.route == 'inner_silent')",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stamp'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
           "condition": "has(hop.route) && hop.route == 'dump'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./orgs",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'conversations'",
           "modifier": {
             "delete_context": [
               "operator_caller",

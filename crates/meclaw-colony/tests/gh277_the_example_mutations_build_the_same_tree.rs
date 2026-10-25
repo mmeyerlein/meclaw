@@ -883,7 +883,29 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// splitter copy draws none. Two talkies: 2 x 1. First measured red in the
 /// strand's gate (472 against 470), carried onto 489 by the rebase and onto
 /// 501 by the merge with GH #1248.
-const EDGES: usize = 503;
+///
+/// Moved 503 -> 506 with GH #1303: every `talky` and the `cogny` draw one edge
+/// more, `. -> ./curator` on `in_note` (another hive's notes for the newest
+/// turn). Two talkies and one cogny: 3 x 1. Measured red in the strand's gate
+/// (506 against 503).
+///
+/// Moved 506 -> 512 with GH #1304: every `talky` draws three edges more,
+/// `./route -> ./curator`, `./curator -> ./route` and `./route -> .`. Two
+/// talkies: 2 x 3.
+///
+/// Moved 512 -> 519 with GH #1306: every `talky` two edges more
+/// (`./splitter -> ./curator` on a stamped `answer_check`, `./curator -> .`
+/// on `answer_check`) and every `curator` one more (`./intake -> .` on
+/// `answer_check`). Two talkies and three curators: 2 x 2 + 3 x 1. First
+/// measured red in the strand's gate (510 against 503), carried onto 512 by
+/// the rebase over GH #1303/#1304.
+///
+/// Moved 519 -> 527 with GH #1305: every `talky` three edges more (the inner
+/// door `. -> ./session-keeper`, `./session-keeper -> .` on `opened`,
+/// `./collector -> .` on `inner_silent`) and its `session-keeper` one more
+/// (`./stamp -> .` on `opened`). Two talkies: 2 x 4. Measured red on the
+/// lane (527 against 519).
+const EDGES: usize = 527;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

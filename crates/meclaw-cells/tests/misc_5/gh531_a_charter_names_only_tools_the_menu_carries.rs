@@ -608,7 +608,9 @@ fn the_judged_set_covers_every_shipped_collector() {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if !entry.path().is_dir() || name.starts_with('_') {
+        // A frozen version `<name>@<x.y.z>/` (development-rules § 4) is
+        // immutable and was judged as the release it copies.
+        if !entry.path().is_dir() || name.starts_with('_') || name.contains('@') {
             continue;
         }
         let mut stack = vec![entry.path()];

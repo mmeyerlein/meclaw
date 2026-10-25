@@ -400,7 +400,7 @@ max-threads = 4
 filter = '''
     (binary_id(=meclaw-cells::round_2) & test(=gh906_a_repo_round_trips_through_the_hive::a_repo_round_trips_through_the_hive))
   + (binary_id(=meclaw-cells::member_road) & (test(=gh974_a_person_round_leaves_no_dead_letter::a_person_round_leaves_only_declared_dead_letters) + test(=gh974_a_person_round_leaves_no_dead_letter::growing_a_level_leaves_only_declared_dead_letters) + test(=gh974_a_person_round_leaves_no_dead_letter::the_ways_own_messages_never_dead_letter)))
-  + (binary_id(=meclaw-cells::misc_8) & test(=gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64))
+  + (binary_id(=meclaw-cells::misc_7) & test(=gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64))
   + (binary_id(=meclaw-cells::member_road) & (test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_0_to_2) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_12_to_14) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_15_to_17) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_18_to_20) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_3_to_5) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_6_to_8) + test(=gh954_two_first_turns_open_one_generation::two_first_turns_open_one_generation_runs_9_to_11)))
   + (binary_id(=meclaw-cells::member_road) & (test(=gh953_a_round_change_closes_after_the_last_answer::a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_0_to_2) + test(=gh953_a_round_change_closes_after_the_last_answer::a_double_message_without_ids_closes_after_the_answer_to_the_last_turn_runs_3_to_5) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_0_to_4) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_10_to_14) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_15_to_19) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_closes_after_the_last_answer_runs_5_to_9) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_0_to_4) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_10_to_14) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_15_to_19) + test(=gh953_a_round_change_closes_after_the_last_answer::a_round_change_waits_for_a_late_last_answer_runs_5_to_9)))
   + (binary_id(=meclaw-cells::misc_7) & test(=gh905_a_workspace_is_materialized_and_adopted::a_workspace_is_materialized_and_adopted))
@@ -505,7 +505,7 @@ filter = 'binary_id(=meclaw-cells::member_road) & (test(=gh974_a_person_round_le
 priority = 62
 # gh975_a_projection_job_fits_the_colony_ttl: 1, longest 56.5 s
 [[profile.default.overrides]]
-filter = 'binary_id(=meclaw-cells::misc_8) & test(=gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64)'
+filter = 'binary_id(=meclaw-cells::misc_7) & test(=gh975_a_projection_job_fits_the_colony_ttl::a_projection_job_of_six_files_fits_ttl_64)'
 priority = 56
 # gh954_two_first_turns_open_one_generation: 7, longest 53.8 s
 [[profile.default.overrides]]

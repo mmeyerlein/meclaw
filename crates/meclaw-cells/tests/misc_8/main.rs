@@ -1,10 +1,6 @@
 //! Test harness `misc_8` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh964_the_screen_draws_the_map;
-pub mod gh965_the_residents_have_topics_on_the_screen;
-pub mod gh975_a_projection_job_fits_the_colony_ttl;
-pub mod gh976_seed_slug_has_the_model_id_form;
 pub mod gh980_a_long_chain_is_not_capped;
 pub mod gh980_the_writer_drives_its_projection;
 pub mod gh981_an_offer_names_its_callers;

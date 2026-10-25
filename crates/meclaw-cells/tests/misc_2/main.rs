@@ -17,6 +17,7 @@ pub mod gh1255_the_sent_answer_reaches_its_declared_checker;
 pub mod gh1260_a_required_scope_asks_for_the_call;
 pub mod gh1260_the_weather_tool_answers_from_its_endpoints;
 pub mod gh1266_the_night_keeps_its_contract_and_its_moment;
+pub mod gh1305_conversation_events_and_inner_turns_at_the_rims;
 pub mod gh135_happened_at_over_ubf;
 pub mod gh138_affinity_firewall_params;
 pub mod gh138_keeper_summarizer_dispatcher_params;

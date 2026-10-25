@@ -112,9 +112,12 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The template directory a file belongs to: `templates/<this>/…`.
+/// The template directory a file belongs to: `templates/<this>/…`; a frozen
+/// version `templates/<name>@<x.y.z>/` (development-rules § 4) belongs to
+/// `<name>`, whose own version it names.
 fn owning_template(rel: &str) -> Option<&str> {
-    rel.strip_prefix("templates/")?.split('/').next()
+    let dir = rel.strip_prefix("templates/")?.split('/').next()?;
+    dir.split('@').next()
 }
 
 #[test]

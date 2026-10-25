@@ -1,4 +1,4 @@
-# `collector@5.4.1`
+# `collector@5.5.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -84,7 +84,7 @@ message context.
 | `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `in_briefing` | the member's `affinity`, restamped by the member ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) | becomes the **brief leg** of this turn: affinity's answer to the `brief` this hive raised, parked as text -- its `system` is dropped at the lane. `hop.brief_outcome == 'error'` parks the leg EMPTY. Since `collector@4.3.0` |
-| `in_route` | a route cell of the composite ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)) | becomes the **route leg** of this turn while `route_wait_ms` is above 0: the path the route cell chose, the body slot `stamp` = `{turn_id, path, p, intent, needs, families, duration}` with `hop.turn_id` and `hop.path` beside it. Ignored at `0`. See "Folded menu and route stamp" below. |
+| `in_route` | a route cell of the composite ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)) | becomes the **route leg** of this turn while `route_wait_ms` is above 0: the path the route cell chose, the body slot `stamp` = `{turn_id, path, p, intent, needs, families, duration}` with `hop.turn_id` and `hop.path` beside it, plus `choices` and `turn_notes` from a route cell that asks a product's questions ([#1304](https://github.com/mmeyerlein/meclaw/issues/1304)). Ignored at `0`. See "Folded menu and route stamp" below. |
 | `in_depart` | the composite, when its curator hands a turn to the backend on `consult` ([#1247](https://github.com/mmeyerlein/meclaw/issues/1247)) | writes the `depart` row of that consult under its `consult_id` (hop, else context), keyed by the member's turn, deadline `late_after_ms` -- the row `in_calls` writes for a handed call, so the advisor's `in_advice` opens its round under the member's turn. No turn or no id: dropped with a warn line. |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
@@ -98,7 +98,7 @@ Exits leave **from the hive path** on `hop.route`:
 | route | to | notes |
 |---|---|---|
 | `curate` | the curator's `in_curate` lane | THE seam, since `collector@5.0.0` in place of `brain` (GH #889) and sent exactly when `brain` was: the running round uncut, every element rendered once, with every hop key `brain` carried. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since `collector@4.4.0` it carries the session's tool scope as the body key `tool_scope` (absent without one) and `hop.scope_changed`, and writes two more slots on every assembly, empty included: `system.roster` (the legend of a peer or group channel) and `system.instructions.peer` (see "The channel's tool scope" and "The other side's words"). **An `llm` cell with a `system_writable` allowlist must carry `roster` from `4.4.0` on**, beside `instructions`, `consult` and `memory`: the gate refuses the WHOLE update when one slot is outside the list, so a brain whose list lacks it refuses every turn. |
-| `answer` | the reply sink | the brain's final turn -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no"). Since `collector@4.2.1` every answer also carries `hop.round_id` (the key of the round it left) and `hop.late`; an answer of an advice or delegation round carries the member's turn as `hop.turn_id`. Since `collector@4.4.0` every answer carries `hop.finish_reason` and `hop.truncated` too (see "An answer says how it ended") |
+| `answer` | the reply sink | the brain's final turn -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no"). Since `collector@4.2.1` every answer also carries `hop.round_id` (the key of the round it left) and `hop.late`; an answer of an advice or delegation round carries the member's turn as `hop.turn_id`. Since `collector@4.4.0` every answer carries `hop.finish_reason` and `hop.truncated` too (see "An answer says how it ended"). An answer marked `hop.silent` (GH #1305, the dispatcher's silence to an inner turn) ends its round all the same (`drop_round`) and says nothing: `"1"` leaves ONE empty `answer` with `hop.silent` `"1"` for the composite's receipt lane, `"0"` leaves no answer at all |
 | `recall` | the memory hive's recall port | the per-turn leg, and only that (`memory_tier` set); promote `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter`. A `memory_recall` CALL does not travel here since `4.0.0` -- it leaves the composite on the ordinary `tool` lane and the memory answers it ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `brief` | the member's `affinity` (via the member's stamping edge) | the brief leg's request, only with `brief_slots` set and a `context.counterpart` to be briefed about: one `tool_call` `{subject, channel, slots}` under an id derived from the turn and the subject, `hop.turn_id` the turn. Who asks and in which round are edge truth -- the member stamps `asker`, the turn's `audience_set` rides along. Since `collector@4.3.0` ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `schemas` | a tools hive's `in_schemas` door | the tool names `params.tools` declares, as the whole body (`{"tools": [...]}`); `["*"]` asks for everything that hive has. It leaves on a TICK, not per turn. A parent that wires this must wire the answer back, or the tick asks into a dead letter every period |
@@ -246,7 +246,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.4.1",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.5.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -482,7 +482,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.4.1`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.5.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -528,7 +528,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.4.1` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.5.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -623,6 +623,12 @@ as `hop.families` and its needs as `hop.needs` (GH #1260; comma lists in stamp o
 stamp, and the folded families as `hop.tools_folded` (see the fold above), for the curator to branch on, to scope the quick path's tools and to require the call of a turn that
 needs a `tool`. `0` (shipped) is off: no route leg, a stamp on `in_route` is ignored, and the fan-in
 is the one of before.
+
+A route cell that asks a product's own questions ([#1304](https://github.com/mmeyerlein/meclaw/issues/1304),
+talky's `choices`) adds two keys to the stamp: `choices` (one `{value, p, source}` per question) and `turn_notes`
+(the note of each value the model chose). Both are parked with the leg. The notes ride on every seam of the turn
+as `hop.turn_notes`, a JSON array string, `""` without; the composite lifts them into `context.turn_notes` on its
+curate edge, so a note stands before the person's newest turn in the window of that same turn.
 
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
 

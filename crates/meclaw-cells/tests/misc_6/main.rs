@@ -1,8 +1,6 @@
 //! Test harness `misc_6` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-pub mod gh694_one_subject_one_window;
-pub mod gh694_the_dock_shows_what_is_present;
 pub mod gh694_the_os_mark_is_the_anchor;
 pub mod gh695_blur_is_for_modal_moments_only;
 pub mod gh695_the_dock_is_a_layer_of_tiles;
@@ -60,6 +58,9 @@ pub mod gh839_a_foreign_pointer_never_crosses;
 pub mod gh840_a_peer_url_outside_egress_is_refused;
 pub mod gh844_a_big_script_does_not_import_from_its_temp_dir;
 pub mod gh847_a_peer_turn_reaches_the_wire_framed;
+pub mod gh847_an_image_never_rides_on_a_peer_turn;
+pub mod gh847_the_mount_restamps_every_turn_as_peer;
+pub mod gh849_a_peer_says_it_and_the_memory_says_who;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../llm/mock_responses.rs"]

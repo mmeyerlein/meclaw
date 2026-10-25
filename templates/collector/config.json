@@ -32,7 +32,7 @@
         },
         {
           "route": "in_route",
-          "because": "the route stamp of a turn (T4-05): the body slot `stamp` = {turn_id, path, p, intent, needs, families, duration} with `hop.turn_id`/`hop.path` beside it, the path a route cell chose; a leg of the turn while `route_wait_ms` is above 0"
+          "because": "the route stamp of a turn (T4-05): the body slot `stamp` = {turn_id, path, p, intent, needs, families, duration} with `hop.turn_id`/`hop.path` beside it, the path a route cell chose; a leg of the turn while `route_wait_ms` is above 0. Since GH #1304 a stamp may carry `choices` and `turn_notes` as well (a product's own questions); the notes ride on every seam of the turn as `hop.turn_notes`"
         },
         {
           "route": "in_depart",

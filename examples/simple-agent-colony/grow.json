@@ -1,0 +1,690 @@
+{
+  "manifest": [
+    {
+      "scope": "/",
+      "ctx": {
+        "model": "example-provider/brain-model"
+      },
+      "diff": {
+        "add_nodes": [
+          {
+            "name": "agent",
+            "template": "simple-agent@2.0.0",
+            "override_params": {
+              "brain": {
+                "credential_grant_id": "grant:openrouter@colony-example/brain",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
+              },
+              "strong": {
+                "credential_grant_id": "grant:openrouter@colony-example/strong"
+              },
+              "curator/summarizer": {
+                "credential_grant_id": "grant:openrouter@colony-example/curator-summarizer"
+              },
+              "memory-hive/closer": {
+                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-closer"
+              },
+              "memory-hive/dialectic": {
+                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-dialectic"
+              },
+              "memory-hive/dreamer": {
+                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-dreamer"
+              },
+              "memory-hive/judge": {
+                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-judge"
+              },
+              "memory-hive/embed": {
+                "credential_grant_id": "grant:openrouter@colony-example/memory-hive-embed"
+              },
+              "door": {
+                "agent_id": "ava"
+              },
+              "enrol": {
+                "agent_id": "ava",
+                "identity": {
+                  "standard": {
+                    "protocol": "AIEOS",
+                    "version": "1.1.0"
+                  },
+                  "metadata": {
+                    "instance_id": "ava-1"
+                  },
+                  "identity": {
+                    "names": {
+                      "first": "Ava",
+                      "last": "Quill"
+                    }
+                  },
+                  "motivations": {
+                    "core_drive": "to keep the lighthouse"
+                  }
+                }
+              },
+              "tool_gate": {
+                "tools_enabled": [
+                  "weather"
+                ]
+              }
+            }
+          }
+        ],
+        "add_edges": [
+          {
+            "from": "./agent",
+            "to": "./affinity",
+            "condition": "has(hop.route) && hop.route == 'brief'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_brief'"
+              },
+              "set_context": {
+                "asker": "'agent:ava'",
+                "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+                "brief_caller": "'agent'"
+              }
+            }
+          },
+          {
+            "from": "./affinity",
+            "to": "./agent/collector",
+            "lane": "in_briefing",
+            "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'error') && has(context.brief_caller) && context.brief_caller == 'agent'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_briefing'",
+                "brief_outcome": "hop.route"
+              },
+              "delete_context": [
+                "asker",
+                "brief_caller"
+              ]
+            }
+          },
+          {
+            "from": "./agent",
+            "to": "./affinity",
+            "condition": "has(hop.route) && hop.route == 'affinity_propose'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_propose'"
+              },
+              "set_context": {
+                "actor": "'agent:' + hop.agent_id",
+                "subscriber": "has(context.sa_enrol) && context.sa_enrol == 'subscribe' ? 'agent:ava' : (has(context.sa_enrol) && context.sa_enrol == 'subscribe_brain' ? 'agent:ava/brain' : '')",
+                "propose_caller": "'agent'"
+              }
+            }
+          },
+          {
+            "from": "./affinity",
+            "to": "./agent",
+            "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error') && has(context.propose_caller) && context.propose_caller == 'agent'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_propose_ack'",
+                "propose_outcome": "hop.route"
+              },
+              "delete_context": [
+                "actor",
+                "propose_caller"
+              ]
+            }
+          },
+          {
+            "from": "./affinity",
+            "to": "./agent/curator",
+            "lane": "in_pack",
+            "condition": "has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && (hop.subscriber == 'agent:ava' || hop.subscriber == 'agent:ava/brain')",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_pack'"
+              },
+              "set_context": {
+                "pack_sub": "hop.pack_sub",
+                "pack_hash": "hop.pack_hash"
+              }
+            }
+          },
+          {
+            "from": "./agent",
+            "to": "./affinity",
+            "condition": "has(hop.route) && hop.route == 'pack_ack' && has(context.pack_sub) && context.pack_sub != ''",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_pack_ack'"
+              }
+            }
+          },
+          {
+            "from": ".",
+            "to": "./agent",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+          },
+          {
+            "from": "./llm-registry",
+            "to": "./agent",
+            "condition": "has(hop.route) && hop.route == 'update' && has(hop.subscriber) && hop.subscriber.startsWith('/agent/')",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_model'"
+              }
+            }
+          },
+          {
+            "from": "./llm-registry",
+            "to": "./agent",
+            "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.startsWith('/agent/'))"
+          },
+          {
+            "from": "./agent",
+            "to": "./llm-registry",
+            "condition": "has(hop.route) && hop.route == 'model_refused'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_refused'"
+              },
+              "delete_context": [
+                "actor"
+              ]
+            }
+          },
+          {
+            "from": ".",
+            "to": "./llm-registry",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_hand'"
+              },
+              "set_context": {
+                "model_announcer": "'simple_agent'",
+                "model_generation": "'/agent'",
+                "model_announced": "'[{\"cell_path\":\"/agent/brain\",\"start_model\":\"example-provider/brain-model\",\"requirement\":\"The one mind of a general-purpose agent: it reads a conversation, plans, calls tools over several steps, reads their results and answers when the work is done. It needs dependable native tool calling, sound multi-step reasoning and a long context; a caller waits on every turn, so a reply should start within seconds and the price per call should stay moderate.\"}]'"
+              },
+              "delete_context": [
+                "actor"
+              ]
+            }
+          },
+          {
+            "from": "./agent/brain",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/brain'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/brain",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/brain'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/strong",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/strong'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/strong",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/strong'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/curator/summarizer",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/curator-summarizer'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/curator/summarizer",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/curator-summarizer'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/memory-hive/closer",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/memory-hive-closer'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/memory-hive/closer",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-closer'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/memory-hive/dialectic",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/memory-hive-dialectic'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/memory-hive/dialectic",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-dialectic'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/memory-hive/dreamer",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/memory-hive-dreamer'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/memory-hive/dreamer",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-dreamer'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/memory-hive/judge",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/memory-hive-judge'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/memory-hive/judge",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-judge'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./agent/memory-hive/embed",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/memory-hive-embed'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/memory-hive/embed",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/memory-hive-embed'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          }
+        ],
+        "seed_rows": [
+          {
+            "target": "./access/store",
+            "table": "grants",
+            "rows": [
+              {
+                "grant_id": "grant:openrouter@colony-example/brain",
+                "requester": "agent:agent/brain",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's brain against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/strong",
+                "requester": "agent:agent/strong",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's strong against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/curator-summarizer",
+                "requester": "agent:agent/curator-summarizer",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's curator/summarizer against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/memory-hive-closer",
+                "requester": "agent:agent/memory-hive-closer",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's memory-hive/closer against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/memory-hive-dialectic",
+                "requester": "agent:agent/memory-hive-dialectic",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's memory-hive/dialectic against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/memory-hive-dreamer",
+                "requester": "agent:agent/memory-hive-dreamer",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's memory-hive/dreamer against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/memory-hive-judge",
+                "requester": "agent:agent/memory-hive-judge",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's memory-hive/judge against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@colony-example/memory-hive-embed",
+                "requester": "agent:agent/memory-hive-embed",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ]
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's memory-hive/embed against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              }
+            ]
+          },
+          {
+            "target": "./access/store",
+            "table": "grant_events",
+            "rows": [
+              {
+                "id": "ev-agent-brain",
+                "grant_id": "grant:openrouter@colony-example/brain",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-strong",
+                "grant_id": "grant:openrouter@colony-example/strong",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-curator-summarizer",
+                "grant_id": "grant:openrouter@colony-example/curator-summarizer",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-memory-hive-closer",
+                "grant_id": "grant:openrouter@colony-example/memory-hive-closer",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-memory-hive-dialectic",
+                "grant_id": "grant:openrouter@colony-example/memory-hive-dialectic",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-memory-hive-dreamer",
+                "grant_id": "grant:openrouter@colony-example/memory-hive-dreamer",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-memory-hive-judge",
+                "grant_id": "grant:openrouter@colony-example/memory-hive-judge",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-memory-hive-embed",
+                "grant_id": "grant:openrouter@colony-example/memory-hive-embed",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              }
+            ]
+          },
+          {
+            "target": "./access/store",
+            "table": "cred_refs",
+            "rows": [
+              {
+                "ref": "cred:openrouter",
+                "class": "llm",
+                "connector": "",
+                "env_var": "",
+                "owner": "colony:example",
+                "rotated_at": "2026-10-24T00:00:00.000000Z",
+                "status": "active"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

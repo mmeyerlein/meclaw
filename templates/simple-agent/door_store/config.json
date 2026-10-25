@@ -1,0 +1,79 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "state": {
+        "slot": "text",
+        "payload": "json"
+      }
+    },
+    "indexes": {
+      "state_slot": {
+        "table": "state",
+        "on": [
+          "slot"
+        ],
+        "unique": true
+      }
+    },
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "write_surface": "internal",
+    "transfer": "none",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The door's durable state: one row per slot in `state` (the held queue, the open turn, seen turn ids, enabled tool families), written as a snapshot after every change and read back before the first message of a new child life.",
+    "use_when": "Only the door talks to it: hydration (select of all slots) and snapshot writes (insert or replace by slot).",
+    "not_in_scope": "Memories, history and tool results; those live in the memory-hive and the collector."
+  }
+}

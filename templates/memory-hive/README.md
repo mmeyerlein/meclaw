@@ -1,4 +1,4 @@
-# `memory-hive@3.16.9`
+# `memory-hive@3.17.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -647,6 +647,29 @@ from the model: one call per round (almost always one per session), the round wh
 a strong model by ruling. Budget one
 such call per closed session and size `close_turn_rows` / `close_fact_rows` knowing
 that both bound what the prompt pays for.
+
+## A conversation, read whole ([#1309](https://github.com/mmeyerlein/meclaw/issues/1309))
+
+Tier 0 reads a session as a budgeted mix of beliefs, preview and at most a dozen episodes without
+ids. An evaluation of a conversation and the check of a quote need every turn, in order, with an
+id to cite. `./sessions` serves both, without a model, from one store read:
+
+- **`in_query` with `memory_tier: "session"`** answers the asking round (`audience_now`,
+  `channel`, as every question) with a `bundle` whose JSON is `{tier: "session", session_id,
+  episodes: [{episode_ref, role, speaker?, speaker_name?, text, happened_at, cut?}], truncated,
+  withheld}`. No beliefs, no preview. `role` is `person`, `assistant` or `peer`. `hop.max_chars`
+  bounds the text (default `session_max_chars`, 24000).
+- **`in_conversations`** answers a reader outside the round. The body carries `{reader,
+  audience_set, session_id? | channel? + since?, max_chars?}`; the answer leaves on
+  `conversations`, one `{session_id, channel, episodes}` per session in order, `hop.reader`
+  naming the reader. Only sessions on conversation channels answer: a channel's class is the
+  part before its first `:`, and `conversation_channels` (default every class but `role`,
+  `ask` and `inner`) decides. A reader never sees role runs, asks or inner turns.
+
+Both doors refuse without a round (`missing_audience`), read a row recorded without
+participants for nobody, and count a forgotten or muted turn as `withheld` instead of
+showing it. A cut (the character bound or a full store page of `session_page` rows) says
+`truncated: true`; an episode that does not fit even first is cut and marked `cut`.
 
 ## The audience gate — who may be told what (#244)
 
@@ -1316,7 +1339,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.16.9` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.17.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1722,7 +1745,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.6.9",
+{"add_nodes": [{"name": "alex", "template": "member@2.7.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1829,6 +1852,14 @@ say "no legacy subject at all".
 | `query_tokens` | `null` (package; `24` without) | How many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
 | `lift_turns` | `512` | How many turns of the session (newest first) the lift of a muted topic in the same session reads (GH #1225); close-glue's `close_turn_rows` default. A full page is said: `lift_cut` on a tier-0 answer, `complete_reason` on tier 1 |
 | `lift_marks` | `512` | How many live mutes that lift reads (GH #1225), the same bound and the same report of a full page |
+
+### The params of `./sessions`
+
+| param | default | meaning |
+|---|---|---|
+| `session_max_chars` | 24000 | the text bound of an answer when the ask names none |
+| `session_page` | 2000 | rows one store read takes; a fuller page is cut and says `truncated` |
+| `conversation_channels` | `{"include": ["*"], "exclude": ["role", "ask", "inner"]}` | the channel classes `in_conversations` answers for |
 
 ### The params of `./dream-glue`
 

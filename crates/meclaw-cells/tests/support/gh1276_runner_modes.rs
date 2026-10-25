@@ -80,6 +80,15 @@ pub fn code_cells(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
         .unwrap_or_else(|e| panic!("{dir:?}: {e}"))
         .map(|e| e.expect("a dir entry").path())
         .filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n != "seed"))
+        // A frozen version `templates/<name>@<x.y.z>/` (development-rules § 4)
+        // is immutable and keeps the modes of its release; its directory
+        // names a version, which the inventory never does.
+        .filter(|p| {
+            dir != root
+                || !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains('@'))
+        })
         .collect();
     subs.sort();
     for sub in subs {

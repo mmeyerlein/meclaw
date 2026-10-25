@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.70.6, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.71.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.71.0: `simple-agent@2` is the agent of a colony and enrols at its affinity; the speaking rims carry notes,
+  the stamp's own questions, conversation events and the sources of an answer check; tools open by enablement,
+  and the builder grows the agent in one block.
 - v0.70.6: every shipped `llm` cell declares `reasoning_effort` (default `medium`), and the Anthropic lane
   sends off in the form each model accepts.
 - v0.70.5: a brain's tool round keeps the system its turn began with -- the curator holds each way's window

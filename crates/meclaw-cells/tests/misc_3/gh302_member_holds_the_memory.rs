@@ -1126,7 +1126,7 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
 /// so the assistant no longer accepts the lane and there is nothing left to
 /// subtract. `in_candidate` stood here until GH #951: the member's own `./objects`
 /// hands the assistants its briefs on that lane, so a sibling supplies it now.
-const NOT_CARRIED: [(&str, &str); 6] = [
+const NOT_CARRIED: [(&str, &str); 7] = [
     (
         "in_advice",
         "answered inside the assistant by ./cogny; the other producer is a SECOND agent, \
@@ -1163,6 +1163,13 @@ const NOT_CARRIED: [(&str, &str); 6] = [
          cell an app declared as `reads`, which `install_app` wires straight to \
          `<member>/assistants/<agent>`; a door at this level would hand every caller outside a \
          read of the member's curators",
+    ),
+    (
+        "in_note",
+        "another hive's notes for the newest turn (GH #1303). Like `in_pin`, its producer \
+         addresses `<member>/assistants/<agent>` directly over an edge drawn for it, and the \
+         note is fail-closed on its `audience_set`; a door at this level would let any caller \
+         outside put words right before every curator's newest turn",
     ),
 ];
 

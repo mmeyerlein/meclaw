@@ -24,6 +24,16 @@
         "accepts": "in_model",
         "emits": "model_refused",
         "because": "a refused push is otherwise silent"
+      },
+      {
+        "accepts": "in_pack",
+        "emits": "pack_ack",
+        "because": "the colony's affinity books a pack only on its receipt"
+      },
+      {
+        "accepts": "in_conversations",
+        "emits": "conversations",
+        "because": "a reader that is never answered cannot tell an empty history from a lost answer"
       }
     ],
     "contract": {
@@ -42,15 +52,59 @@
         },
         {
           "route": "in_pack",
-          "because": "instructions of the instance for the brain's system slots (`identity`, `persona`, `handover`, `instructions`), as the curator's pack lane takes them"
+          "at": [
+            "./curator"
+          ],
+          "required": true,
+          "because": "the agent's identity and `instructions`, pushed by the colony's affinity to the subscription of the agent's entry (`slots: [\"identity\"]`), into the brain's system slots (`identity`, `persona`, `handover`, `instructions`) as the curator's pack lane takes them. A V-LANE docking at `./curator`, the one address this rim opens for it. The embedder's edge promotes `hop.pack_sub` and `hop.pack_hash` into context; the receipt leaves on `pack_ack` with both. Required: a birth without the edge is refused, the agent would never learn who it is"
         },
         {
           "route": "in_model",
-          "because": "a model package for one model cell of this hive, pushed by the colony's llm-registry (GH #858). `hop.subscriber` names the cell; without one it goes to `./brain`"
+          "because": "a model package for one model cell of this hive, pushed by the colony's llm-registry (GH #858). `hop.subscriber` names the cell; without one it goes to `./brain`. Required: the colony's llm-registry is the only way a model reaches the agent",
+          "required": true
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./brain",
+            "./strong",
+            "./curator/summarizer",
+            "./memory-hive/closer",
+            "./memory-hive/dialectic",
+            "./memory-hive/dreamer",
+            "./memory-hive/judge",
+            "./memory-hive/embed",
+            "./tools/web_search"
+          ],
+          "required": true,
+          "because": "the answer half of the credential lane: the colony access's `ack` for `vault.deliver` with the sealed box, renamed at the boundary, addressed by `hop.grant_id` (one grant per consumer, set by the embedder at birth through `override_params`). It lands on the cell that asked and on nothing else -- the box is sealed to that cell's ephemeral key. Required: a model cell without it waits for a box nobody sends"
+        },
+        {
+          "route": "in_briefing",
+          "at": [
+            "./collector"
+          ],
+          "required": true,
+          "because": "the colony affinity's answer (or error, `hop.brief_outcome == 'error'`, stamped by the embedder) to this turn's `brief`, the third leg of the turn; a V-LANE docking at `./collector`, the one address this rim opens for it; an error parks the leg empty and the turn goes on without a brief. Required: with `brief_slots` set a turn with a counterpart waits for it"
+        },
+        {
+          "route": "in_note",
+          "at": [
+            "./curator"
+          ],
+          "because": "notes for the window (curator C1, GH #1303) -- a care or role hint near the newest turn; the embedder's edge reaches the curator one level deeper"
+        },
+        {
+          "route": "in_propose_ack",
+          "because": "the colony affinity's `ack` (or `error`, `hop.propose_outcome == 'error'`, stamped by the embedder) of one `affinity_propose`, back into its round as the affinity tool's `tool_result`; anything but an accepted write reads `error:`, never silence; one that carries `context.sa_enrol` is the enrolment's own and goes to `./enrol`, which takes the next step"
         },
         {
           "route": "mutation_committed",
-          "because": "the graph moved: the collector asks for its tools again"
+          "because": "the graph moved: the collector asks for its tools again, and `./enrol` writes the agent's entry, its disclosures and its subscriptions at the colony's affinity when the receipt is the agent's own: the boot's, every manifest's (it names no scope but `/`), or a single mutation whose scope is the agent, lies under it or is its level (idempotent; a single mutation elsewhere writes nothing)"
+        },
+        {
+          "route": "in_conversations",
+          "because": "the mandatory capability of every simple-agent@2 (R-SA-17 (3)): a reader asks this agent's memory for whole conversations; the lane lands on the agent's own memory hive (`in_conversations` there, its form unchanged) and the answer leaves on `conversations`"
         }
       ],
       "emits": [
@@ -67,12 +121,43 @@
           "because": "the receipt of a `close`: `{session_id, ok, added, closed}` after the memory's close report (`ok` false when the close pass was refused)"
         },
         {
+          "route": "credential_request",
+          "at": [
+            "./brain",
+            "./strong",
+            "./curator/summarizer",
+            "./memory-hive/closer",
+            "./memory-hive/dialectic",
+            "./memory-hive/dreamer",
+            "./memory-hive/judge",
+            "./memory-hive/embed",
+            "./tools/web_search"
+          ],
+          "because": "the ask half of the credential lane: a model cell born with a `credential_grant_id` and no key sends the grant handle with a fresh recipient key. A V-LANE: `ports` stays `[]` and the nine cells in `at` (the seven model cells and `./tools/web_search`) are the only addresses this rim opens for it; the embedder points the edge at the colony's access and stamps `context.requester` (R-AC-1). A cell nested in the memory hive or the curator names its full path, because every sealed level the edge crosses must open for it"
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of one pack that came in on `in_pack`, accepted and refused alike (`hop.error_code` empty, `slot_unknown` or `pack_empty`), with `context.pack_sub` and `context.pack_hash` as the embedder's edge promoted them, for the colony affinity's `in_pack_ack`. The door's own frame pack never leaves"
+        },
+        {
+          "route": "brief",
+          "because": "the brief about this turn's counterpart (GH #834): raised by the collector at the turn's opening when `brief_slots` is set and the turn names a `counterpart` -- one `tool_call` `{subject, channel, slots}`, `hop.turn_id` the turn, the round as `context.audience_set`. The embedder stamps the asker and carries it to the colony's affinity (`in_brief`), which refuses a brief without a round"
+        },
+        {
+          "route": "affinity_propose",
+          "because": "one write of the affinity tool into the agent's entry in the colony's affinity, as its `in_propose` takes it: a `tool_call` turn whose text is the op; hop `agent_id` (the embedder stamps the actor `agent:<agent_id>` from it, never from the body) and the round keys. The answer comes back on `in_propose_ack`; the enrolment's writes (`upsert_entity`, `set_disclosure`, `subscribe`) leave on the same lane with `context.sa_enrol` naming the step, and for `subscribe`/`subscribe_brain` the embedder's edge stamps the subscriber token"
+        },
+        {
           "route": "model_refused",
           "because": "a model package pushed through `in_model` that a model cell refused (GH #863)"
         },
         {
           "route": "error",
-          "because": "a failed turn (`{error_code, turn_id}`), a refused rim message (`turn_without_id`, `tool_result_unkeyed`, `close_without_session`), a refused identity boot (`identity_refused`) or a failure of `./access` or `./affinity`; never silent"
+          "because": "a failed turn (`{error_code, turn_id}`), a refused rim message (`turn_without_id`, `tool_result_unkeyed`, `close_without_session`) or a refused frame pack (`kind: pack`); never silent; `enrol_refused` (`{error_code, step, reason_code}`) when the colony's affinity refused a step of the enrolment"
+        },
+        {
+          "route": "conversations",
+          "because": "the agent's memory hive's answer to `in_conversations`, to the reader named on `hop.reader`"
         }
       ]
     },
@@ -95,8 +180,8 @@
         },
         {
           "from": ".",
-          "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'in_pack' && !has(hop.sa_rim)"
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'in_propose_ack' && !(has(context.sa_enrol) && context.sa_enrol != '')"
         },
         {
           "from": ".",
@@ -105,8 +190,84 @@
         },
         {
           "from": ".",
+          "to": "./enrol",
+          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+        },
+        {
+          "from": ".",
+          "to": "./enrol",
+          "condition": "has(hop.route) && hop.route == 'in_propose_ack' && has(context.sa_enrol) && context.sa_enrol != ''"
+        },
+        {
+          "from": "./enrol",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'affinity_propose' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'affinity_propose'"
+            },
+            "set_context": {
+              "sa_enrol": "hop.sa_enrol"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
+            ]
+          }
+        },
+        {
+          "from": "./enrol",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'error'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
+            ]
+          }
+        },
+        {
+          "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.contains('/memory-hive/')))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/strong') || hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.contains('/memory-hive/')))"
+        },
+        {
+          "from": ".",
+          "to": "./strong",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/strong')"
         },
         {
           "from": ".",
@@ -134,14 +295,16 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
@@ -161,14 +324,16 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
@@ -188,14 +353,16 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
@@ -215,14 +382,45 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
+            ]
+          }
+        },
+        {
+          "from": "./door",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'affinity_propose' && has(hop.sa_rim) && hop.sa_rim == 'out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'affinity_propose'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
@@ -238,7 +436,9 @@
               "channel": "hop.channel",
               "audience_set": "hop.audience_set",
               "agent_id": "hop.agent_id",
-              "tool_require": "has(hop.tool_require) ? hop.tool_require : ''"
+              "tool_require": "has(hop.tool_require) ? hop.tool_require : ''",
+              "counterpart": "has(hop.counterpart) ? hop.counterpart : ''",
+              "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
             },
             "restore_ttl": true
           }
@@ -257,7 +457,9 @@
               "agent_id": "hop.agent_id",
               "tools_allow": "hop.tools_allow",
               "tools_deny": "hop.tools_deny",
-              "tool_require": "has(hop.tool_require) ? hop.tool_require : ''"
+              "tool_require": "has(hop.tool_require) ? hop.tool_require : ''",
+              "counterpart": "has(hop.counterpart) ? hop.counterpart : ''",
+              "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
             },
             "restore_ttl": true
           }
@@ -282,7 +484,8 @@
               "turn_id": "hop.turn_id",
               "iter": "hop.iter",
               "channel": "hop.channel",
-              "audience_set": "hop.audience_set"
+              "audience_set": "hop.audience_set",
+              "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
             },
             "restore_ttl": true
           }
@@ -290,7 +493,12 @@
         {
           "from": "./door",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'in_pack'"
+          "condition": "has(hop.route) && hop.route == 'in_pack'",
+          "modifier": {
+            "set_context": {
+              "sa_pack": "'door'"
+            }
+          }
         },
         {
           "from": "./door",
@@ -336,6 +544,26 @@
           "condition": "has(hop.route) && hop.route == 'watch_op'"
         },
         {
+          "from": "./door",
+          "to": "./door_store",
+          "condition": "has(hop.route) && hop.route == 'door_store'",
+          "modifier": {
+            "set_context": {
+              "ds_kind": "hop.ds_kind"
+            }
+          }
+        },
+        {
+          "from": "./door_store",
+          "to": "./door",
+          "condition": "has(context.ds_kind)",
+          "modifier": {
+            "set_hop": {
+              "route": "'door_store_ack'"
+            }
+          }
+        },
+        {
           "from": "./watch",
           "to": "./collector",
           "condition": "has(hop.schedule_name) && hop.schedule_name.startsWith('round-')",
@@ -351,57 +579,32 @@
           "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'"
         },
         {
-          "from": "./door",
-          "to": "./affinity",
-          "condition": "has(hop.route) && hop.route == 'in_propose'",
+          "from": "./watch",
+          "to": "./door",
+          "condition": "has(hop.schedule_name) && hop.schedule_name.startsWith('ctool-')",
           "modifier": {
-            "set_context": {
-              "actor": "'agent:' + hop.agent_id",
-              "subscriber": "hop.sa_subscriber",
-              "sa_boot": "hop.sa_boot"
+            "set_hop": {
+              "route": "'client_timeout'"
             }
           }
         },
         {
-          "from": "./affinity",
+          "from": "./watch",
           "to": "./door",
-          "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error')"
-        },
-        {
-          "from": "./affinity",
-          "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && hop.subscriber == 'self-brain'",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'deadline'",
           "modifier": {
             "set_hop": {
-              "route": "'in_pack'"
-            },
-            "set_context": {
-              "pack_sub": "hop.pack_sub",
-              "pack_hash": "hop.pack_hash"
+              "route": "'turn_deadline'"
             }
           }
         },
         {
-          "from": "./affinity",
+          "from": "./watch",
           "to": "./door",
-          "condition": "has(hop.route) && hop.route == 'answer' && !(has(hop.subscriber) && hop.subscriber == 'self-brain')"
-        },
-        {
-          "from": "./affinity",
-          "to": "./door",
-          "condition": "has(hop.route) && (hop.route == 'export_done' || hop.route == 'dump' || hop.route == 'reject')"
-        },
-        {
-          "from": "./curator",
-          "to": "./affinity",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'pack_ack' && has(context.pack_sub) && context.pack_sub != ''",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'ds-read'",
           "modifier": {
             "set_hop": {
-              "route": "'in_pack_ack'"
-            },
-            "set_context": {
-              "pack_sub": "context.pack_sub",
-              "pack_hash": "context.pack_hash"
+              "route": "'door_store_retry'"
             }
           }
         },
@@ -422,7 +625,22 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20 && !(has(context.sa_stage) && context.sa_stage == 'strong')",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./strong",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20 && has(context.sa_stage) && context.sa_stage == 'strong'",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -466,13 +684,8 @@
         },
         {
           "from": "./collector",
-          "to": "./tools",
-          "condition": "has(hop.route) && hop.route == 'schemas'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_schemas'"
-            }
-          }
+          "to": "./tool_gate",
+          "condition": "has(hop.route) && hop.route == 'schemas'"
         },
         {
           "from": "./curator",
@@ -554,15 +767,91 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
+          }
+        },
+        {
+          "from": "./strong",
+          "to": "./splitter",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+        },
+        {
+          "from": "./strong",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_llm'"
+            }
+          }
+        },
+        {
+          "from": "./strong",
+          "to": "./door",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'round_error'"
+            }
+          }
+        },
+        {
+          "from": "./strong",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
+            ]
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./door",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'usage'"
+            }
+          }
+        },
+        {
+          "from": "./strong",
+          "to": "./door",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'usage'"
+            }
           }
         },
         {
@@ -627,13 +916,8 @@
         },
         {
           "from": "./dispatcher",
-          "to": "./tools",
-          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'bash' || hop.tool_name == 'file' || hop.tool_name == 'edit' || hop.tool_name == 'web_fetch' || hop.tool_name == 'web_search' || hop.tool_name == 'weather')",
-          "modifier": {
-            "set_hop": {
-              "route": "'tool_call'"
-            }
-          }
+          "to": "./tool_gate",
+          "condition": "has(hop.route) && hop.route == 'tool' && has(hop.tool_name) && (hop.tool_name == 'bash' || hop.tool_name == 'file' || hop.tool_name == 'edit' || hop.tool_name == 'web_fetch' || hop.tool_name == 'web_search' || hop.tool_name == 'weather')"
         },
         {
           "from": "./tools",
@@ -709,6 +993,32 @@
               "tool_answerer",
               "recall_input_soft",
               "input_soft"
+            ]
+          }
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'brief'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
+              "sa_kind",
+              "pack_sub",
+              "pack_hash",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
@@ -894,14 +1204,16 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
@@ -921,199 +1233,28 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
         },
         {
           "from": "./curator",
           "to": "./door",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'pack_ack' || hop.route == 'thing_seen' || hop.route == 'candidate_ack' || hop.route == 'reject' || hop.route == 'stats' || hop.route == 'read')"
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && ((hop.route == 'pack_ack' && has(context.sa_pack) && context.sa_pack == 'door') || hop.route == 'thing_seen' || hop.route == 'candidate_ack' || hop.route == 'reject' || hop.route == 'stats' || hop.route == 'read')"
         },
         {
-          "from": "./brain",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/brain'"
-            }
-          }
-        },
-        {
-          "from": "./access",
-          "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/brain'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          }
-        },
-        {
-          "from": "./curator/summarizer",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/curator/summarizer'"
-            }
-          },
-          "lane": "credential_request"
-        },
-        {
-          "from": "./access",
-          "to": "./curator/summarizer",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/curator-summarizer'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          },
-          "lane": "in_sealed"
-        },
-        {
-          "from": "./memory-hive/closer",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/memory-hive/closer'"
-            }
-          },
-          "lane": "credential_request"
-        },
-        {
-          "from": "./access",
-          "to": "./memory-hive/closer",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-closer'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          },
-          "lane": "in_sealed"
-        },
-        {
-          "from": "./memory-hive/dialectic",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/memory-hive/dialectic'"
-            }
-          },
-          "lane": "credential_request"
-        },
-        {
-          "from": "./access",
-          "to": "./memory-hive/dialectic",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-dialectic'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          },
-          "lane": "in_sealed"
-        },
-        {
-          "from": "./memory-hive/dreamer",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/memory-hive/dreamer'"
-            }
-          },
-          "lane": "credential_request"
-        },
-        {
-          "from": "./access",
-          "to": "./memory-hive/dreamer",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-dreamer'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          },
-          "lane": "in_sealed"
-        },
-        {
-          "from": "./memory-hive/judge",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/memory-hive/judge'"
-            }
-          },
-          "lane": "credential_request"
-        },
-        {
-          "from": "./access",
-          "to": "./memory-hive/judge",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-judge'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          },
-          "lane": "in_sealed"
-        },
-        {
-          "from": "./memory-hive/embed",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:simple-agent/memory-hive/embed'"
-            }
-          },
-          "lane": "credential_request"
-        },
-        {
-          "from": "./access",
-          "to": "./memory-hive/embed",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@template-simple-agent/memory-embed'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          },
-          "lane": "in_sealed"
-        },
-        {
-          "from": "./access",
+          "from": "./curator",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'pack_ack' && !(has(context.sa_pack) && context.sa_pack == 'door')",
           "modifier": {
             "delete_context": [
               "col_phase",
@@ -1123,16 +1264,62 @@
               "input_soft",
               "gap_ask",
               "tools_folded",
-              "sa_boot",
+              "sa_pack",
+              "sa_kind",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./memory-hive",
+          "condition": "has(hop.route) && hop.route == 'in_conversations'"
+        },
+        {
+          "from": "./memory-hive",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'conversations'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
               "sa_kind",
               "pack_sub",
               "pack_hash",
               "agent_id",
               "tools_allow",
               "tools_deny",
-              "tool_require"
+              "tool_require",
+              "ds_kind",
+              "sa_stage"
             ]
           }
+        },
+        {
+          "from": "./tool_gate",
+          "to": "./tools",
+          "condition": "has(hop.route) && (hop.route == 'tool_call' || hop.route == 'in_schemas')"
+        },
+        {
+          "from": "./tool_gate",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'tools_enabled'"
+        },
+        {
+          "from": "./tool_gate",
+          "to": "./door",
+          "condition": "has(hop.route) && hop.route == 'tool'"
         }
       ]
     }

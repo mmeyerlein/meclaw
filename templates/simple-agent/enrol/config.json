@@ -1,0 +1,86 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "external_timeout_ms": 10000,
+    "agent_id": "agent",
+    "identity": {},
+    "charter": {},
+    "disclose": [
+      "aieos"
+    ],
+    "script_inline": "\"\"\"The enrolment of a simple-agent@2 at the colony's affinity (OR-AG-2).\n\nA manifest sends no message, and `subscribe` takes its subscriber from the edge\n(affinity README, \"Identity comes from the edge\"), so the agent enrols itself:\non a mutation receipt (`mutation_committed`) that concerns the agent itself --\nthe boot's (`form: boot`) or one whose `scope` is the agent, lies under it, or\nis the level it was born into -- this cell writes the agent's entry, its disclosures and its subscriptions through the\nrim lane `affinity_propose`, one step after the acknowledgement of the one\nbefore (an entry must exist before a disclosure names it). Every op is an\nupsert or an append that newest-wins, so a receipt that comes again writes\nthe same rows again and duplicates nothing; a receipt of a mutation elsewhere\nin the colony writes nothing (OR-AG-48: each `subscribe` books a new row and\npushes a pack, so idempotent is not free). Cold (`passes=rare`): a receipt is\nrare, and the step travels in `context.sa_enrol`, so no child keeps state.\n\nTurns never wait for this: the door has no boot gate, and until the first pack\nthe agent speaks without the identity slot.\n\nstdin is {envelope, body, params}; stdout a JSON array of content documents.\n\"\"\"\nimport json\nimport sys\n\ndoc = json.load(sys.stdin)\nP = doc.get(\"params\") or {}\nHEADER = (doc.get(\"envelope\") or {}).get(\"header\") or {}\nHOP = HEADER.get(\"hop\") or {}\nCTX = HEADER.get(\"context\") or {}\n\n\ndef _obj(v):\n    return v if isinstance(v, dict) else {}\n\n\ndef agent_id():\n    return str(P.get(\"agent_id\") or \"agent\")\n\n\ndef display_name(identity):\n    names = _obj(_obj(identity.get(\"identity\")).get(\"names\"))\n    parts = [str(names.get(k) or \"\") for k in (\"first\", \"last\")]\n    return \" \".join(p for p in parts if p) or str(names.get(\"nickname\") or \"\") or agent_id()\n\n\ndef propose(step, op_args):\n    \"\"\"One write into the colony affinity's entry of this agent: a `tool_call` turn whose\n    text is the op, as `in_propose` takes it. The actor and, for `subscribe`, the\n    subscriber are the embedder's edge's (`hop.agent_id`, `context.sa_enrol`).\"\"\"\n    head = {\"route\": \"affinity_propose\", \"sa_rim\": \"out\", \"agent_id\": agent_id(), \"sa_enrol\": step}\n    return {\"header\": head, \"messages\": [{\"origin\": \"assistant\", \"type\": \"tool_call\",\n                                          \"id\": \"enrol-%s\" % step, \"text\": json.dumps(op_args)}]}\n\n\ndef charter():\n    return _obj(P.get(\"charter\"))\n\n\ndef disclosures():\n    \"\"\"`disclose` entries: a field path (released to the agent itself), or\n    `{field_path, audience?, audience_set?, mode?}`. With a charter its subtree\n    `mx.brain` is released to the agent as well: without the row the renderer\n    delivers nothing of it (affinity README, fail-closed).\"\"\"\n    me = \"agent:%s\" % agent_id()\n    out = []\n    entries = P.get(\"disclose\")\n    for e in (entries if isinstance(entries, list) else [\"aieos\"]):\n        e = {\"field_path\": e} if isinstance(e, str) else _obj(e)\n        path = str(e.get(\"field_path\") or \"\")\n        if not path:\n            continue\n        audience = str(e.get(\"audience\") or me)\n        aset = e.get(\"audience_set\") if isinstance(e.get(\"audience_set\"), list) else [audience]\n        out.append({\"op\": \"set_disclosure\", \"entity_id\": \"entity:%s\" % agent_id(),\n                    \"field_path\": path, \"audience\": audience, \"audience_set\": aset,\n                    \"mode\": str(e.get(\"mode\") or \"share\")})\n    if charter() and not any(d[\"field_path\"] == \"mx.brain\" for d in out):\n        out.append({\"op\": \"set_disclosure\", \"entity_id\": \"entity:%s\" % agent_id(),\n                    \"field_path\": \"mx.brain\", \"audience\": me, \"audience_set\": [me],\n                    \"mode\": \"share\"})\n    return out\n\n\ndef subscriptions():\n    \"\"\"`identity` and `brain` cannot travel in one request (affinity README,\n    `slots_conflict`), so a charter is a second subscription of its own.\"\"\"\n    subject = \"entity:%s\" % agent_id()\n    out = [propose(\"subscribe\", {\"op\": \"subscribe\", \"subject\": subject, \"slots\": [\"identity\"]})]\n    if charter():\n        out.append(propose(\"subscribe_brain\", {\"op\": \"subscribe\", \"subject\": subject,\n                                               \"slots\": [\"brain\"]}))\n    return out\n\n\ndef concerns_me():\n    \"\"\"The receipt is the agent's own: the boot, a manifest, or a mutation whose\n    scope is the agent, lies under it, or is its parent level (a birth is a\n    mutation of the level it is born into, and the receipt carries no list of\n    added nodes, so a sibling's birth there enrols again; elsewhere in the\n    colony nothing). A manifest receipt always says scope \"/\" -- it does not\n    say where it was -- and a builder block arrives as a manifest, so every\n    manifest counts: correctness before cost, every step is idempotent.\"\"\"\n    if HOP.get(\"form\") in (\"boot\", \"manifest\"):\n        return True\n    target = str((doc.get(\"envelope\") or {}).get(\"target\") or \"\")\n    me = target.rsplit(\"/\", 1)[0] if target.count(\"/\") > 1 else \"\"\n    scope = str(HOP.get(\"scope\") or \"\")\n    if not me or not scope.startswith(\"/\"):\n        return False\n    parent = me.rsplit(\"/\", 1)[0] or \"/\"\n    return scope == me or scope.startswith(me + \"/\") or scope.rstrip(\"/\") == parent.rstrip(\"/\")\n\n\ndef on_receipt():\n    if not concerns_me():\n        return []\n    identity = _obj(P.get(\"identity\"))\n    if not identity:\n        return []  # nothing to enrol: the agent speaks without an identity slot\n    return [propose(\"upsert\", {\"op\": \"upsert_entity\", \"entity_id\": \"entity:%s\" % agent_id(),\n                               \"kind\": \"agent\", \"display_name\": display_name(identity),\n                               \"aieos\": identity, \"mx\": {\"brain\": charter()}})]\n\n\ndef on_ack(step):\n    if HOP.get(\"propose_outcome\") == \"error\" or str(HOP.get(\"outcome\") or \"\") != \"accepted\":\n        # Loud, never silent; the turns are not held by it.\n        return [{\"header\": {\"route\": \"error\", \"sa_rim\": \"out\"},\n                 \"error\": {\"error_code\": \"enrol_refused\", \"step\": step,\n                           \"reason_code\": str(HOP.get(\"reason_code\") or \"\")},\n                 \"messages\": [{\"origin\": \"assistant\", \"type\": \"text\", \"text\": \"error\"}]}]\n    if step == \"upsert\":\n        ds = disclosures()\n        if not ds:\n            return subscriptions()\n        return [propose(\"disclose:%d:%d\" % (i, len(ds)), d) for i, d in enumerate(ds)]\n    if step.startswith(\"disclose:\"):\n        _, i, n = (step.split(\":\") + [\"0\", \"0\"])[:3]\n        # Acks come back in the order the writes left; the last one opens the subscription.\n        return subscriptions() if i.isdigit() and n.isdigit() and int(i) == int(n) - 1 else []\n    return []\n\n\nroute = HOP.get(\"route\")\nif route == \"mutation_committed\":\n    out = on_receipt()\nelif route == \"in_propose_ack\" and CTX.get(\"sa_enrol\"):\n    out = on_ack(str(CTX.get(\"sa_enrol\")))\nelse:\n    out = []\nsys.stdout.write(json.dumps(out))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "agent_id": {
+        "type": "string",
+        "secret": false,
+        "default": "agent",
+        "description": "the agent's id: its entry `entity:<id>` in the colony's affinity; keep it equal to the door's"
+      },
+      "identity": {
+        "type": "object",
+        "secret": false,
+        "default": {},
+        "description": "the agent's AIeOS document, upserted as `entity:<id>` (kind agent); empty = no enrolment"
+      },
+      "charter": {
+        "type": "object",
+        "secret": false,
+        "default": {},
+        "description": "the agent's `mx.brain` families (`{identity|persona|handover|instructions: {leaf: text}}`), delivered by a second subscription with `slots: [\"brain\"]`"
+      },
+      "disclose": {
+        "type": "array",
+        "secret": false,
+        "default": [
+          "aieos"
+        ],
+        "description": "field paths (or `{field_path, audience?, audience_set?, mode?}`) released by `set_disclosure`; default the agent itself; `mx.brain` is added with a charter"
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": true
+        },
+        "sa_rim": {
+          "type": "string",
+          "required": false
+        },
+        "agent_id": {
+          "type": "string",
+          "required": false
+        },
+        "sa_enrol": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  }
+}

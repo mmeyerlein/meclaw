@@ -1,4 +1,4 @@
-# `meclaw-os@2.2.72`
+# `meclaw-os@2.3.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -104,6 +104,7 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `in_select` | — | the model registry: which model serves this tier or these requirements. The door promotes `context.asker = 'operator'`. Since 1.9.0 |
 | `in_turn` | — | the `orgs` container, and through it whichever organisation stands inside |
 | `in_recall` | — | a question against a member's memory, asked from outside the organisation |
+| `in_conversations` | — | a reader asking a member's memory for whole conversations from outside the organisation ([#1309](https://github.com/mmeyerlein/meclaw/issues/1309)) |
 | `in_brief` | — | a read against a member's curated record |
 | `in_propose` | — | a write against that record: a correction, a trust decision, a subscription |
 | `in_build` | — | the baumeister: a build somebody wants **drafted**. The lane an operator uses, because the first build of a fresh colony has no assistant to raise `build` — `./orgs` is empty by construction. The door stamps `context.build_caller = 'operator'`, which is what sends the draft to the front door instead of back into that empty container |
@@ -121,12 +122,14 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `alert` | a symptom the loop **watched** for and counted -- the metric, the goal, the count and the window. Deterministic, no model asked, and deliberately not a decision. Nothing here can act on it, so the shell hands it out |
 | `answer` | what an organisation produced for whoever asked — a turn answered, a brief read — and since 1.9.0 what the model registry answers: a lookup, or the view per cell `show` returns |
 | `bundle` | the answer to a question asked at a member's own `in_recall` door, carried out of the organisation and out of the shell. The lane arrived with [#533](https://github.com/mmeyerlein/meclaw/issues/533): the question has crossed this level since it was written, and the answer had no exit at any of the three levels it has to leave |
+| `conversations` | the member memory's answer to `in_conversations`, carried out of the organisation and out of the shell to the reader on `hop.reader` ([#1309](https://github.com/mmeyerlein/meclaw/issues/1309)) |
 | `reject` | a refusal from inside an organisation that is a **verdict**, not a failure |
 | `error` | a lane of the broker, of the loop or of an organisation failed and it was not a verdict. **The colony that instantiates this shell must drain it, and `reject` with it.** |
 | `receipt` | what the front door answered — a submission's counts, an export's result, a refusal, or a lane nobody wired. **Drain it too:** a manifest has no rollback, so an operator who learns nothing is the one outcome there is no recovery from. |
 | `write` | an assistant's batched conversation write, handed straight out. The shell owns no archive |
 | `turn_write` | one finished turn, offered for archiving as it is produced. A **copy**: since [#527](https://github.com/mmeyerlein/meclaw/issues/527) the member that produced it also fans it into its own memory hive, so this lane is an archive offer and no longer the only place the turn could go. A distribution that wires it nowhere dead-letters it here — `examples/meclaw-os/` routes it to `./sink` |
 | `close_report` | what one close pass did to an ended session. Nothing here triggers the pass and nothing here reads the receipt |
+| `stamp` | the route stamp of one turn (GH #1304), raised inside a member only when a surface's route knob `stamp_out` is "1": path, intent, the product's own choices, no text and no turn notes. Nothing here reads it |
 | `catalogue` | what one reconciliation of the baumeister's corpus against the colony's own template registry did: how many names the registry holds, how many the corpus already carried, how many rows were written and which. Nothing here reads it — the shell drives the nudge, so the shell hands out the report |
 
 Both broker lanes demand a promoted `context.requester`, and the shell demands it too. A
@@ -135,9 +138,9 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The seventy-three edges
+## The seventy-seven edges
 
-Forty-nine of them are a door or an exit, and every declared lane has at least one. The
+Fifty-three of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
@@ -264,10 +267,12 @@ counts are the only thing that tells *nothing was missing* from *the nudge never
   {"from": "<shell>/argus",     "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_turn'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_recall'"},
+  {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_conversations'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_brief'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_propose'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'answer'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'bundle'"},
+  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'conversations'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'ack'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'reject'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'error'"},
@@ -276,6 +281,7 @@ counts are the only thing that tells *nothing was missing* from *the nudge never
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_export'"},
   {"from": "<shell>",           "to": "<shell>/orgs",    "condition": "has(hop.route) && hop.route == 'in_import'"},
   {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'close_report'"},
+  {"from": "<shell>/orgs",      "to": "<shell>",         "condition": "has(hop.route) && hop.route == 'stamp'"},
 
   {"from": "<shell>/orgs",      "to": "<shell>/builder", "condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'draft'"},
   {"from": "<shell>/orgs",      "to": "<shell>/operator","condition": "has(hop.route) && hop.route == 'build' && has(hop.build_op) && hop.build_op == 'apply'"},
@@ -517,7 +523,7 @@ the code does rather than what the field is named.
 So the rule, and all four levels follow it: **the level declares the transit lanes, and the
 level's own edges satisfy them from birth.** `in_turn` has a door because the shell routes
 it into `./orgs`, and `orgs` lies inside the shell; `answer`, `ack`, `reject`, `error`,
-`write`, `turn_write` and `close_report` have exits because the shell
+`write`, `turn_write`, `close_report` and `stamp` have exits because the shell
 routes them back out of `./orgs`. Below the container there is nothing to route to
 until an organisation is instantiated, and the mutation that grows one draws its own edges —
 but the level's promise is already true and already checkable on the day it ships.
@@ -592,7 +598,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.2.72"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.3.0"}}
 ```
 
 ```bash
@@ -678,7 +684,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.2.72"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.3.0"}],
           "add_edges": []}}
 ```
 
@@ -700,7 +706,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.1.46"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.2.0"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

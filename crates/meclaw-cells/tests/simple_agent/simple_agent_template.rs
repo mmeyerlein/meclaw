@@ -78,8 +78,14 @@ fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
             let reference = cfg["cell"]["template"]
                 .as_str()
                 .expect("a ref names a template");
+            // A pinned copy (`simple-agent@1.1.4`) is its own directory.
             let name = reference.split('@').next().unwrap_or_default();
-            let target = repo("templates").join(name);
+            let pinned = repo("templates").join(reference);
+            let target = if pinned.join("config.json").is_file() {
+                pinned
+            } else {
+                repo("templates").join(name)
+            };
             assert!(
                 target.join("config.json").is_file(),
                 "{}: `{reference}` resolves to no template in this tree",
@@ -164,9 +170,13 @@ fn agent_config() -> Value {
 }
 
 fn instantiated() -> (tempfile::TempDir, std::path::PathBuf) {
+    instantiated_from("templates/simple-agent")
+}
+
+fn instantiated_from(template: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let td = tempfile::TempDir::new().expect("tempdir");
     let agent = td.path().join("main/agent");
-    copy_resolved(&repo("templates/simple-agent"), &agent, 0);
+    copy_resolved(&repo(template), &agent, 0);
     (td, agent)
 }
 
@@ -245,21 +255,37 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
                 "close",
                 "in_pack",
                 "in_model",
-                "mutation_committed"
+                "mutation_committed",
+                "in_sealed",
+                "in_briefing",
+                "in_propose_ack",
+                "in_conversations",
+                "in_note"
             ]
             .map(str::to_string)
             .to_vec()
         ),
-        "accepts exactly the turn door (V-T)"
+        "accepts exactly the turn door (V-T) and the colony's lanes (@2)"
     );
     assert_eq!(
         sorted(emits.clone()),
         sorted(
-            ["answer", "calls", "close_report", "model_refused", "error"]
-                .map(str::to_string)
-                .to_vec()
+            [
+                "answer",
+                "calls",
+                "close_report",
+                "model_refused",
+                "error",
+                "credential_request",
+                "pack_ack",
+                "brief",
+                "affinity_propose",
+                "conversations",
+            ]
+            .map(str::to_string)
+            .to_vec()
         ),
-        "emits exactly the turn door (V-T)"
+        "emits exactly the turn door (V-T) and the colony's lanes (@2)"
     );
     let hp: HiveParams =
         meclaw_core::serde_json::from_value(params.clone()).expect("the agent's params parse");
@@ -292,7 +318,7 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
         }
     }
     // Every accepts lane names a drain, and every lane the agent draws into
-    // its memory hive and its affinity is drained.
+    // its memory hive is drained.
     let drained: Vec<String> = params["required_drains"]
         .as_array()
         .cloned()
@@ -300,7 +326,7 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
         .iter()
         .filter_map(|d| d["accepts"].as_str().map(str::to_string))
         .collect();
-    for lane in ["turn", "tool_result", "close", "in_model"] {
+    for lane in ["turn", "tool_result", "close", "in_model", "in_pack"] {
         assert!(drained.contains(&lane.to_string()), "a drain for {lane}");
     }
     let (td, _agent) = instantiated();
@@ -312,7 +338,6 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
     let hives = [
         Path::new("/agent"),
         Path::new("/agent/memory-hive"),
-        Path::new("/agent/affinity"),
         Path::new("/agent/tools"),
     ];
     let reqs = collect_required_drains(td.path(), hives.iter());
@@ -341,8 +366,8 @@ fn simple_agent_has_one_thinking_llm_and_app_id_on_every_model_cell() {
         .collect();
     assert_eq!(
         thinking,
-        vec!["brain".to_string()],
-        "one brain, nothing else thinks"
+        vec!["brain".to_string(), "strong".to_string()],
+        "the brain and its second (`strong`, plan A2), nothing else thinks"
     );
     let mut wrong = Vec::new();
     let llms: Vec<&(String, Value)> = cells
@@ -408,7 +433,7 @@ fn simple_agent_ships_the_six_tool_families_and_no_build_pair() {
         for build in ["build_topology", "apply_manifest", "in_build_result"] {
             assert!(!cond.contains(build), "no edge for {build}: {cond}");
         }
-        if e.from == "./dispatcher" && e.to == "./tools" {
+        if e.from == "./dispatcher" && e.to == "./tool_gate" {
             served.extend(
                 cond.split("hop.tool_name == '")
                     .skip(1)
@@ -425,7 +450,7 @@ fn simple_agent_ships_the_six_tool_families_and_no_build_pair() {
     assert_eq!(
         sorted(served),
         sorted(OWN_TOOLS.map(str::to_string).to_vec()),
-        "the dispatcher sends exactly the six families to the tools hive"
+        "the dispatcher sends exactly the six families to the tools hive, through the gate"
     );
 }
 
@@ -487,12 +512,14 @@ fn simple_agent_roots_files_in_its_own_tools_workspace() {
     assert_ne!(moved[0], ra[0], "the override moved the root");
 }
 
+/// `simple-agent@1` only (R-SA-37): the frozen `@1.1.4` seeds its own
+/// grants. `@2` names none (`simple_agent_2_colony.rs`).
 #[test]
-fn simple_agent_grants_name_only_template_simple_agent() {
-    if !shipped() {
+fn simple_agent_1_grants_name_only_template_simple_agent() {
+    if !shipped() || !repo("templates/simple-agent@1.1.4/config.json").is_file() {
         return;
     }
-    let (_td, agent) = instantiated();
+    let (_td, agent) = instantiated_from("templates/simple-agent@1.1.4");
     let cells = cells_of(&agent);
     let grants = std::fs::read_to_string(agent.join("access/store/seed/grants.jsonl"))
         .expect("the agent seeds its grants");
@@ -519,7 +546,7 @@ fn simple_agent_grants_name_only_template_simple_agent() {
         }
     }
     // The requester an edge stamps is the one the grant names.
-    let cfg = agent_config();
+    let cfg = read_json(&repo("templates/simple-agent@1.1.4/config.json"));
     for e in cfg["params"]["graph"]["edges"].as_array().expect("edges") {
         if let Some(req) = e["modifier"]["set_context"]["requester"].as_str() {
             let req = req.trim_matches('\'');
@@ -528,7 +555,8 @@ fn simple_agent_grants_name_only_template_simple_agent() {
             }
         }
     }
-    let raw = std::fs::read_to_string(repo("templates/simple-agent/config.json")).expect("raw");
+    let raw =
+        std::fs::read_to_string(repo("templates/simple-agent@1.1.4/config.json")).expect("raw");
     for foreign in ["template-npc", "agent:npc/"] {
         if raw.contains(foreign) {
             wrong.push(format!("the hive names {foreign}"));
@@ -563,26 +591,25 @@ fn the_door_knows_the_tools_the_collector_asks_for() {
 }
 
 /// The code cells of the agent that run rarely and keep no child between
-/// their messages (GH #1292, R-SA-10): the identity boot and a proposal
-/// (`affinity`), the schema answers the collector asks once at boot, the
-/// night's close, dream and entity passes, the operator reads and timers.
-/// A warm child of each would stand 30 minutes after its last job (GH #1276).
-/// Five are turn cells elsewhere and go `cold` here through the ref markers
-/// (`MARKED_COLD`); the other eight run rarely everywhere and ship `cold` from
-/// their own template since GH #1294. The README names all thirteen.
+/// their messages (GH #1292, R-SA-10): the schema answers the collector asks
+/// once at boot, the night's close, dream and entity passes, the operator
+/// reads. A warm child of each would stand 30 minutes after its last job (GH
+/// #1276). Two are turn cells elsewhere and go `cold` here through the ref
+/// markers (`MARKED_COLD`); the other six run rarely everywhere and ship
+/// `cold` from their own template since GH #1294. The README names all eight.
+/// `@2` carries no affinity and no access (R-SA-37): their rare cells are the
+/// colony's.
+/// The rare cells a ref marker sets cold here; the tool cells are the
+/// families `tools_enabled` leaves off by default (`weather`) or this agent
+/// never offers (the build pair, R-SA-18).
 const MARKED_COLD: [&str; 5] = [
-    "affinity/brief",
-    "affinity/gate",
-    "affinity/push",
     "memory-hive/close-glue",
     "memory-hive/entity-glue",
+    "tools/weather",
+    "tools/build-draft",
+    "tools/build-apply",
 ];
-const COLD_RARE: [&str; 13] = [
-    "access/policy",
-    "access/sweep",
-    "affinity/brief",
-    "affinity/gate",
-    "affinity/push",
+const COLD_RARE: [&str; 11] = [
     "curator/schemas",
     "curator/stats",
     "memory-hive/close-glue",
@@ -591,6 +618,9 @@ const COLD_RARE: [&str; 13] = [
     "memory-hive/recur",
     "memory-hive/schemas",
     "tools/schemas",
+    "tools/weather",
+    "tools/build-draft",
+    "tools/build-apply",
 ];
 
 #[test]
@@ -621,7 +651,7 @@ fn simple_agent_runs_its_rare_code_cells_cold_and_its_turn_road_as_shipped() {
         );
     }
     let shipped = |rel: &str| -> (String, Value) {
-        if rel == "door" || rel == "splitter" {
+        if rel == "door" || rel == "splitter" || rel == "tool_gate" || rel == "enrol" {
             let row = format!("simple-agent/{rel}");
             let cfg = read_json(&repo(&format!("templates/{row}/config.json")));
             (row, cfg)

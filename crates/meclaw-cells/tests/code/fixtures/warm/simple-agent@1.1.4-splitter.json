@@ -1,0 +1,13 @@
+{
+  "source": "hand: the template's script (an answer with a ```sidecar block -> the answer without it + one message per section; a plain answer with a short id -> pass-through, id cleaned; a round with a tool call -> pass-through to the dispatcher)",
+  "probes": [
+    {"hop": {"turn_id": "T-1", "finish_reason": "stop"}, "context": {"turn_id": "T-1"},
+     "body": {"messages": [{"origin": "assistant", "type": "text",
+       "text": "The meeting moved to Friday.\n\n```sidecar\n{\"memory\":{\"nothing_new\":false,\"facts\":[{\"text\":\"the meeting is on Friday\",\"source\":\"moved to Friday\"}],\"topic\":{\"movement\":\"continue\"}}}\n```"}]}},
+    {"hop": {"turn_id": "T-2"}, "context": {"turn_id": "T-2"},
+     "body": {"messages": [{"origin": "assistant", "type": "text", "text": "As noted in [#0123456789ab], nothing changed."}]}},
+    {"hop": {"turn_id": "T-3"}, "context": {"turn_id": "T-3"},
+     "body": {"messages": [{"origin": "assistant", "type": "tool_call", "id": "call_1", "name": "weather", "arguments": {"city": "Berlin"}},
+       {"origin": "assistant", "type": "text", "text": "Let me look that up."}]}}
+  ]
+}

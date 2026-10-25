@@ -1,6 +1,17 @@
 {
   "cell": {
     "type": "ref",
-    "template": "tools@1.6.2"
+    "template": "tools@1.7.0"
+  },
+  "override_params": {
+    "weather": {
+      "runner_mode": "cold"
+    },
+    "build-draft": {
+      "runner_mode": "cold"
+    },
+    "build-apply": {
+      "runner_mode": "cold"
+    }
   }
 }

@@ -1033,8 +1033,11 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // with `tool_answerer = 'objects'`).
     // 52 -> 53 with GH #1255: the sent answer for the app that checks it,
     // `./assistants -> ./apps` on `answer_check`, beside the sidecar edge.
+    // 53 -> 54 with GH #1304: the route stamp, `./assistants -> .` on `stamp`.
+    // 54 -> 55 with GH #1305: the conversation events, `./assistants -> .` on
+    // `opened`, `closed` and `inner_silent` (one exit for the three lanes).
     assert_eq!(
-        declared, 53,
+        declared, 55,
         "the member's own edges to and from its assistants container are the member \
          template's, drawn ONCE at member instantiation. These reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \

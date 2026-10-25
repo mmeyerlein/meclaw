@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.15.3"
+    "template": "curator@1.16.0"
   },
   "override_params": {
     "intake": {
@@ -12,7 +12,6 @@
       "role": "talky"
     },
     "summarizer": {
-      "credential_grant_id": "grant:openrouter@template-simple-agent/curator-summarizer",
       "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
       "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"
     }

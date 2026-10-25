@@ -1,6 +1,6 @@
 # examples
 
-Nine colonies and one step, in the order they are worth reading. Every one of them is a
+Ten colonies and one step, in the order they are worth reading. Every one of them is a
 directory tree plus edges, and none of them adds a line of Rust.
 
 Each example is here to prove one claim, and the last column is that claim. Read
@@ -19,6 +19,7 @@ and nothing to pay for.
 | [`display-colony-view`](display-colony-view/) | 2 → 10 | yes | < 1 s | two owners on one screen, and neither can touch the other's view |
 | [`telegram-research`](telegram-research/) | 10 | to boot | < 1 s | a multi-tool agent on a real surface, written out node by node |
 | [`memory-import`](memory-import/) | 0 → one member | to boot | < 1 s | the one door a memory comes back through, so a member is born with its past |
+| [`simple-agent-colony`](simple-agent-colony/) | 0 → one agent | to boot | < 1 s | one builder block grows an agent with no key and no record of people beside the colony's access, affinity and llm-registry |
 
 `a → b` means *a* cells are checked in and *b* are running once the example's `grow.json` has
 been applied. A hive is a scope marker and is not counted as a cell. `memory-import` is a step

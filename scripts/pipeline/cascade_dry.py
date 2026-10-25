@@ -105,6 +105,8 @@ def leftovers(tree, moved, dirs):
     alt = "|".join(re.escape(n) for n in sorted(moved, key=len, reverse=True))
     pin_rx = re.compile(r"(?<![A-Za-z0-9_-])(%s)@(%s)(?![0-9.]*[0-9])" % (alt, locks._VERSION))
     by_name = {n: d for d, n in dirs.items()}
+    # an old number frozen beside the living one stays shipped (development-rules § 4)
+    frozen = locks.frozen_templates(tree)
     out = []
     for rel in _git_tree_files(tree):
         if not _scanned(rel):
@@ -120,7 +122,8 @@ def leftovers(tree, moved, dirs):
         for no, line in enumerate(lines, 1):
             for m in pin_rx.finditer(line):
                 name, ver = m.group(1), m.group(2)
-                if ver != moved[name][0] or _history(line, m.start(), rel):
+                if ver != moved[name][0] or ver in frozen.get(name, ()) \
+                        or _history(line, m.start(), rel):
                     continue
                 out.append(locks.Finding(
                     "RED", CHECK, rel, no,

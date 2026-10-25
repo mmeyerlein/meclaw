@@ -1,4 +1,4 @@
-# `tools@1.6.2`
+# `tools@1.7.0`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.

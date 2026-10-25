@@ -12,7 +12,8 @@
         "closed": "int",
         "closed_at": "text",
         "audience_set": "text",
-        "owed_turn": "text"
+        "owed_turn": "text",
+        "channel_node": "text"
       },
       "port_scratch": {
         "key": "text",

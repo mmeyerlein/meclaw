@@ -3,5 +3,8 @@
 
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
+pub mod simple_agent_2_colony;
+pub mod simple_agent_2_door;
+pub mod simple_agent_2_tools;
 pub mod simple_agent_loop;
 pub mod simple_agent_template;

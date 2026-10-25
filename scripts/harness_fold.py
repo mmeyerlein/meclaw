@@ -171,7 +171,11 @@ def _doc_linked_stems(repo, crate):
                 and any(isinstance(t, ast.Name) and t.id == "PUBLIC_TEMPLATES" for t in node.targets)):
             public = [e.value for e in node.value.elts
                       if isinstance(e, ast.Constant) and isinstance(e.value, str)]
-    return _readme_links(repo, crate, public)
+    # a frozen version `<name>@<x.y.z>/` of a public template travels with it
+    # (make_export.py PUBLIC_TEMPLATE_PREFIXES), its README links included
+    frozen = sorted(d for d in (os.listdir(tpl_dir) if os.path.isdir(tpl_dir) else ())
+                    if "@" in d and d.split("@", 1)[0] in public)
+    return _readme_links(repo, crate, public + frozen)
 
 
 def _readme_links(repo, crate, names):

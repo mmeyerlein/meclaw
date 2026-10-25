@@ -1802,7 +1802,15 @@ fn the_hive_takes_the_call_and_hands_back_the_result() {
     assert!(out["condition"].as_str().unwrap().contains("'tool_result'"));
     assert_eq!(
         out["modifier"]["delete_context"],
-        json!(["cur_origin", "cur_phase", "cur_call", "cur_reason"]),
+        // GH #1305: `cur_close` (the facts of a close, writer to `closed`) is the
+        // hive's bookkeeping too.
+        json!([
+            "cur_origin",
+            "cur_phase",
+            "cur_call",
+            "cur_reason",
+            "cur_close"
+        ]),
         "the hive's own bookkeeping never leaves it"
     );
     assert_eq!(

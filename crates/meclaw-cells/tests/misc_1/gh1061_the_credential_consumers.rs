@@ -209,6 +209,8 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         json!({"scope": "/os/orgs/acme/members/alex", "app": "presenter",
                "template": "presenter", "screen": "display", "generation": "scribe",
                "declaration": {"listens": ["turn"]}, "ctx": {"member_person": "alex"},
+               // OR-AG-35: the consumers come from the app's own rim, handed in verbatim.
+               "contract": read(&templates().join("presenter/config.json"))["params"]["contract"],
                "credential": credential()}),
     ));
 
@@ -450,7 +452,7 @@ const BROKERED: &[(&str, usize)] = &[
     ("freeswitch", 2),
     ("meclaw-os", 2),
     ("research-assistant", 2),
-    ("simple-agent", 1),
+    ("simple-agent@1.1.4", 1),
     ("slack-agent", 3),
     ("steward", 1),
     ("summarizer", 1),

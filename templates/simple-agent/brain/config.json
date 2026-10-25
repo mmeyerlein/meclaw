@@ -8,7 +8,7 @@
     "model": "${ctx.model}",
     "requirement": "The one mind of a general-purpose agent: it reads a conversation, plans, calls tools over several steps, reads their results and answers when the work is done. It needs dependable native tool calling, sound multi-step reasoning and a long context; a caller waits on every turn, so a reply should start within seconds and the price per call should stay moderate.",
     "api_key": "",
-    "credential_grant_id": "grant:openrouter@template-simple-agent/brain",
+    "credential_grant_id": "",
     "credential_wait_ms": 30000,
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.7,

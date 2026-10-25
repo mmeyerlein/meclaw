@@ -1,32 +1,41 @@
-# `simple-agent@1.1.3`
+# `simple-agent@2.0.0`
+
+Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
+line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
+Version 2 is the agent of a colony: affinity, access and the llm-registry belong to the
+colony and reach the agent over contract lanes its embedder draws, so the agent keeps no
+record of people and no key of its own.
 
 A plain agent in hive form, built the way agents are commonly built: a system prompt and
 messages, native tool calling, results as `tool_result`, and a loop until the model stops
 (capped at `max_iter` 16). Its own tools come from a [`tools`](../tools/) hive; a caller adds
 **client tools** per turn, which leave the hive as `calls` and come back as `tool_result`
-inside the same turn. Identity and relationships live in the agent's own
-[`affinity`](../affinity/) hive. A [`curator`](../curator/), a [`memory-hive`](../memory-hive/)
-and the sidecar work as in `talky`/`cogny`.
+inside the same turn. A [`curator`](../curator/), a [`memory-hive`](../memory-hive/) and the
+sidecar work as in `talky`/`cogny`.
 
-Sealed (`params.ports: []`), its own [`access`](../access/) with sealed vault grants, the
-`in_model` door. One instance per agent; a caller that needs a world, a phone or a channel
-wraps the agent and speaks its turn door.
+Sealed (`params.ports: []`): the colony sees lanes, never cells. One instance per agent; a
+caller that needs a world, a phone or a channel wraps the agent and speaks its turn door. A
+role is this agent plus the role's own code around it.
 
 ## Cells
 
 | path | type | from |
 |---|---|---|
-| `door` | `code`, resident | the turn door (contract below), the identity boot, the client calls and their watchdog: the only Python of this template |
-| `collector` | ref | [`collector`](../collector/): `max_iter` 16, `fold_tools` on, `round_idle_ms` 120000, the tool names spelled out (no `*`: that would bring the build pair) |
+| `door` | `code`, resident | the turn door (contract below): the queue, the affinity tool's writes, the client calls and their watchdogs, the usage of a turn: the only Python of this template |
+| `door_store` | `store` | the door's durable state: the queue, the open turn, the answered turn ids, the start-memory mark, the open client calls |
+| `collector` | ref | [`collector`](../collector/): `max_iter` 16, `fold_tools` on, `round_idle_ms` 120000, `brief_slots` `["peer", "channel"]`, the tool names spelled out (no `*`: that would bring the build pair) |
 | `watch` | `timer` | one one-shot schedule per round that sent a client call (below) |
-| `curator` | ref | [`curator`](../curator/), role `talky`, its summarizer on its own grant |
-| `brain` | `llm` | the one thinking cell: `${ctx.model}`, `reasoning_effort` unset |
+| `curator` | ref | [`curator`](../curator/), role `talky` |
+| `brain` | `llm` | the thinking cell of a turn: `${ctx.model}`, `reasoning_effort` `medium` |
+| `strong` | `llm` | the second brain of a turn marked `stage: strong`; asked only when the door's `strong` param names it |
 | `splitter` | `code` | as in `cogny`: the sidecar block, sections `window`, `gap`, `memory` |
 | `dispatcher` | ref | [`dispatcher`](../dispatcher/): no async or handoff tools |
 | `memory-hive` | ref | [`memory-hive`](../memory-hive/) |
-| `access` | ref | [`access`](../access/), seeded with the grants of the seven model consumers |
 | `tools` | ref | [`tools`](../tools/): `bash`, `file`, `edit`, `web_fetch`, `web_search`, `weather` -- no `build_topology`/`apply_manifest` |
-| `affinity` | ref | [`affinity`](../affinity/): the agent's identity and relationship record |
+| `tool_gate` | `code` | the own tool families by enablement (below): the menu ask to `./tools` and every own tool call pass it |
+| `enrol` | `code`, cold | the agent's enrolment at the colony's affinity on its own commit receipts (below) |
+
+No `access` and no `affinity`: both are the colony's.
 
 ## The turn door (contract V-T)
 
@@ -34,17 +43,26 @@ Every rim lane carries the body slot of its own name.
 
 | lane | direction | hop | body |
 |---|---|---|---|
-| `turn` | in | `turn_id` (required), `session_id`, `channel`, `audience_set` (a JSON array of participant ids) | `messages` (meclaw turns, or `{role, content}`), optional `tools[]`, optional `tool_scope: {require: true}` |
+| `turn` | in | `turn_id` (required), `session_id`, `channel`, `audience_set` (a JSON array of participant ids), `counterpart` (who the turn is with, the subject of its brief) | `messages` (meclaw turns, or `{role, content}`), optional `tools[]`, optional `tool_scope: {require: true}` |
 | `tool_result` | in | the five round keys of its `calls` message: `turn_id`, `session_id`, `iter`, `channel`, `audience_set` | `{id, content, is_error?}` |
 | `close` | in | -- | `{session_id}` |
-| `in_pack` | in | -- | `system.*` slots for the brain (`identity`, `persona`, `handover`, `instructions`), e.g. an instance's standing instructions |
-| `in_model` | in | `subscriber` | a model package (llm-registry) |
+| `in_pack` | in, required, `at` `./curator` | -- (context `pack_sub`, `pack_hash` from the embedder's edge) | the identity and `instructions` from the colony's affinity, `system.*` slots for the brain (`identity`, `persona`, `handover`, `instructions`) |
+| `in_model` | in, required | `subscriber` | a model package (llm-registry) |
+| `in_sealed` | in, required, `at` the eight model cells (`./strong` among them) and `./tools/web_search` | `grant_id` | the colony access's sealed box for the cell that asked |
+| `in_briefing` | in, required, `at` `./collector` | `brief_outcome` | the colony affinity's brief (or its error) for this turn's counterpart |
+| `in_propose_ack` | in | `propose_outcome`, `outcome` | the colony affinity's answer to one `affinity_propose` |
 | `mutation_committed` | in | -- | the collector asks for its tools again |
+| `in_conversations` | in | -- | `{reader, audience_set, session_id? \| channel? + since?, max_chars?}`: a reader asks this agent's memory for whole conversations (the memory hive's lane, unchanged) |
 | `answer` | out | `turn_id` | `{turn_id, text, partial?, stale?}` |
 | `calls` | out | `turn_id`, `session_id`, `iter`, `channel`, `audience_set`, `tool_name`, `tool_call_id` | `{id, name, arguments}`, one message per client call |
 | `close_report` | out | -- | `{session_id, ok, added, closed}` |
 | `model_refused` | out | `refused_subscriber` | a model package a model cell refused |
 | `error` | out | `turn_id` where there is one | `{error_code, ...}` |
+| `conversations` | out | `reader` | `{reader, sessions: [{session_id, channel, episodes: [{episode_ref, role, text, ...}]}], truncated, withheld}` or `{reader, error_code}`; only sessions on conversation channels, never `role`, `ask` or `inner` |
+| `credential_request` | out, `at` the eight model cells (`./strong` among them) and `./tools/web_search` | `grant_id` | a cell born with a grant asks for its key |
+| `pack_ack` | out | `error_code`, `pack_slots` (context `pack_sub`, `pack_hash`) | the receipt of an `in_pack` |
+| `brief` | out | `turn_id` (context `audience_set`, the round) | `{subject, channel, slots}` about the turn's counterpart |
+| `affinity_propose` | out | `agent_id`, the round keys, `tool_call_id` | one write of the affinity tool, as affinity's `in_propose` takes it |
 
 **Client tools.** `tools[]` of a turn is a list of provider schemas, `{name, description,
 parameters}` or the OpenAI form `{type: "function", function: {...}}`. They are the client's
@@ -79,45 +97,171 @@ that in its window, and the answer carries `stale: true`. A schedule that fires 
 result finds no open round and does nothing. **Set `round_idle_ms` (door and collector, the
 same value) at or above the caller's own deadline for a client call.**
 
-**One caller per agent, turns in series.** The menu is state of the one brain: two callers
-with different client tools would see each other's menus. Several channels of one owner
-share the agent one turn at a time. The door holds it: a `turn` that arrives while another
-turn waits on a client call is refused with `error {error_code: "turn_busy", turn_id,
-open_turn}`, and the open turn's menu row stays as it is.
+**Several callers, one turn at a time (the queue).** The door takes the turns of several
+callers and runs one to its end before the next begins: one round, one window, one menu row
+of client tools. A turn that arrives while another runs is queued, never refused; the next
+to begin is the queued one of the lowest `hop.priority` (0 first, default 5), then the
+earliest. `hop.deadline_ms` (epoch milliseconds, optional): a turn that has not begun by then
+ends as `answer {turn_id, expired: true}` without a model call -- also while another turn
+still runs: one one-shot watchdog of the door, re-armed to the earliest deadline in the queue,
+wakes it at that moment (no tick). Every message back to a caller
+carries the turn's `hop.caller` as the rim edge stamped it on the turn, so an embedder routes
+the answer home by it. A `turn_id` is answered once: a repeat within seven days is refused
+with `error {error_code: "turn_seen", turn_id}`.
+
+**The door's state is durable.** The queue, the open turn, the answered turn ids (seven days),
+the start-memory mark and the open client calls live in `./door_store` (a `code` cell has no
+`cell.db`). A new child life of the door reads them back before it serves its first message,
+so a restart loses no queued turn, writes the start memories no second time and answers no
+turn id twice. A read the store does not answer within `store_read_ms` is asked again.
+
+**The answer says what the turn cost.** `answer` carries `iters` (the brain calls of the
+turn), `usage {in, cached_in, cache_write, out}` and `cost`, summed from the `hop.tokens_*` and
+`hop.cost` of every brain (or `strong`) answer of the turn, and `stage` (`fast` or `strong`,
+the stage that ran).
+
+**Required tools.** `hop.required_tools` (a JSON array of tool names): when the turn's answer
+comes without a call of one of them, the door sends exactly one follow-up turn in the same
+session ("Call <name> now.", the turn's client tools in the menu again); its answer is the
+turn's answer, with `missing_required: [...]` if a tool is still missing. The door checks
+this in code: `tool_scope.require` has no effect on a native Anthropic model.
+
+**Client calls have a deadline.** A client call unanswered after `client_tool_timeout_ms`
+(door param, default 30000) becomes the result `error: timeout: ...` in its round, and the
+loop goes on; a result that arrives after its timeout is dropped.
+
+**Two stages.** `hop.stage: strong` runs the turn on `./strong` when the door's `strong` param
+is set, else on `./brain` and the answer says `stage: fast`. Both share the collector, the
+curator, the memory and the identity; the curator keeps each stage's package (`input_soft`,
+`input_hard`) from the answers of that stage's model (`context.sa_stage`) and sizes a call by
+the package of its own stage, never by the other stage's last answer. Before a stage's model
+has answered once, its first call takes the last answer's package.
 
 **The loop.** The brain calls tools until it answers in text. At `max_iter` (16, the
 collector's cap) the collector stops the loop and the answer carries `partial: true`; the
 composite caps the curate seam at `iter < 20` as well, like `cogny`.
 
-## Identity (contract V-A)
+## The colony's lanes
 
-The agent's identity is one AIeOS 1.1.0 document in its own affinity hive, and it reaches the
-brain only as affinity's pack. At the first message after boot the door writes, in order and
-each after the previous `ack`:
+**Credentials.** Seven cells spend a provider key: `brain`, `curator/summarizer`,
+`memory-hive/closer`, `memory-hive/dialectic`, `memory-hive/dreamer`, `memory-hive/judge`,
+`memory-hive/embed`. None is born with a grant. The embedder seeds one grant per consumer in
+the colony's [`access`](../access/) and names it at birth through `override_params`
+(`credential_grant_id` and `api_key` are immutable, so a message cannot set them):
 
-1. `upsert_entity` `{entity_id: "entity:<agent_id>", kind: "agent", display_name, aieos}` --
-   affinity's gate checks the AIeOS paths it requires;
-2. one `set_disclosure` per path of the door param `disclose` (default `["aieos"]`) to
-   `agent:<agent_id>` -- affinity's brief releases nothing without one (fail-closed);
-3. `subscribe {subject: "entity:<agent_id>", slots: ["identity"]}` with the subscriber token
-   `self-brain` fixed in the template.
+```json
+"override_params": {
+  "brain": {"api_key": "", "credential_grant_id": "grant:example-provider@colony/agent-brain"},
+  "memory-hive/closer": {"credential_grant_id": "grant:example-provider@colony/agent-closer"}
+}
+```
 
-Affinity's push then sends the identity pack to the curator's `in_pack` (the edge compares
-`hop.subscriber == 'self-brain'`), and the curator's `pack_ack` books the delivery back in
-affinity. Every later change of the record sends a new pack. Turns that arrive before the
-first pack wait for it; a refused write ends the boot with `error
-{error_code: "identity_refused"}` and the turns go on without the identity. Without an `aieos`
-document there is no identity boot. The start memories (`start_memories`) are written as
-episodes into the memory hive under the audience `["*"]`, so every caller's recall can find
-them. The actor of every write is `agent:<agent_id>`, set on the
-edge, never taken from a body.
+A cell with a grant asks on `credential_request` and waits for `in_sealed`; a cell without
+one spends its `api_key` (empty: no key at all). One grant per provider is enough: a native
+Anthropic brain (`provider: "anthropic"`) takes a grant on `cred:anthropic` like any other.
+`tools/web_search` ships anonymous; an embedder that names a grant on it (at birth, like a
+model cell) draws the same pair to `./tools/web_search`, which this rim and the tools hive open.
 
-**Relationships.** The agent writes its own record through the tool `affinity_propose`
-(`op` one of `add_relation`, `retract_relation`, `set_trust`, `propose`, `upsert_entity`); its
-`ack` is the tool's result. Nothing else in the core proposes to affinity.
+**Identity.** The agent's identity is its entry `entity:<agent_id>` in the colony's
+[`affinity`](../affinity/). Affinity's push sends the pack of the subscription to the agent's
+curator (`in_pack`, a v-lane at `./curator`), and its `pack_ack` leaves the rim with `pack_sub` and
+`pack_hash`, so affinity books the delivery. Turns never wait for an identity: until the first
+pack the agent speaks without the identity slot. The door writes nothing at boot except the
+frame (`instructions.frame`), the affinity tool's menu row and the start memories.
 
-Affinity ships its placeholder seed (Alex, Robin, Sam, Aiden, with one inactive subscription
-for `aiden`); it is harmless, but do not name an agent `aiden`.
+**Enrolment.** The agent enrols itself; the enrolment is the agent's, not its embedder's. A
+manifest sends no message, and `subscribe` takes its subscriber from the edge, so `./enrol`
+does it on a commit receipt (`mutation_committed`) that concerns the agent: the boot's
+(`form: boot`), every manifest's (`form: manifest`), or a single mutation whose `scope` is
+the agent, lies under it, or is the level it was born into (a birth is a mutation of that
+level, and a receipt names no added nodes, so a sibling's birth there enrols again). A
+manifest's receipt always says `scope: "/"` -- its entries each bring their own, and the
+receipt does not name them -- and a builder block arrives as a manifest, so every manifest
+counts: correctness before cost, the steps are idempotent. A single mutation anywhere else
+writes nothing: each `subscribe` books a new row and pushes a pack. The steps, one after the acknowledgement
+of the one before: `upsert_entity` (`entity:<agent_id>`, kind agent, the AIeOS document of
+`enrol/identity`, `mx.brain` from `enrol/charter`), one `set_disclosure` per `enrol/disclose`
+entry (default `aieos` to the agent itself; `mx.brain` too with a charter), `subscribe` with
+`slots: ["identity"]` and, with a charter, a second one with `slots: ["brain"]` (affinity
+refuses both slots in one request). The steps leave the rim on `affinity_propose` with
+`context.sa_enrol` naming the step and come back on `in_propose_ack`, which the rim hands to
+`./enrol` rather than the door; the embedder's edge stamps the subscriber `agent:<agent_id>`
+for `subscribe` and `agent:<agent_id>/brain` for `subscribe_brain`. Every op is an upsert or
+a newest-wins append, so a receipt that comes again writes the same rows again. A refused step
+leaves the rim as `error` with `enrol_refused` (`step`, `reason_code`), and the turns go on.
+An empty `enrol/identity` enrols nothing.
+
+**Brief.** With `brief_slots` set (`["peer", "channel"]`) and a turn that names a
+`counterpart`, the collector asks `brief` once at the turn's opening, with the turn's round as
+`context.audience_set`, and waits for `in_briefing`. The colony's affinity refuses a brief
+without a round (`no_round`): the leg parks empty and the turn goes on without a brief. A
+turn without a counterpart asks nothing.
+
+**Relationships.** The agent writes its own entry through the tool `affinity_propose` (`op`
+one of `add_relation`, `retract_relation`, `set_trust`, `propose`, `upsert_entity`). The call
+leaves the rim on `affinity_propose` with `agent_id` and the round on its hop; the embedder's
+edge stamps the actor `agent:<agent_id>` and sends it to the colony affinity's `in_propose`.
+The answer comes back on `in_propose_ack` and is the tool's result in its round; a rejected
+op or an affinity error reads `error: ...`, never silence.
+
+The start memories (`start_memories`) are written as episodes into the memory hive under the
+audience `["*"]`, once per life of the door's child, so every caller's recall can find them.
+
+## Embedding one level deeper
+
+Every level the agent crosses -- a figure around the agent, an orga level around a
+coordinator, a role app around an agent -- carries the same lanes on its own rim with the
+same `at` declarations, prefixed by the path of the agent inside it (`./simple-agent/brain`
+for a level that holds the agent at `./simple-agent`). A level that declares a lane without
+the matching `at` is a mandatory hop (`v_lane_mandatory_hop`); a sealed level without the lane
+refuses the edge (`hive_port_boundary`). The embedder at the colony's level draws the edges.
+
+| lane | direction | `at` / inner target | required | what the embedder's manifest draws |
+|---|---|---|---|---|
+| `credential_request` | out | `./brain`, `./strong`, `./curator/summarizer`, `./memory-hive/closer`, `./memory-hive/dialectic`, `./memory-hive/dreamer`, `./memory-hive/judge`, `./memory-hive/embed`, `./tools/web_search` | -- | one edge per consumer to the colony's access (`lane: credential_request`, route `in_invoke`, `context.requester` stamped) |
+| `in_sealed` | in | the same nine | yes | one edge per consumer from the colony's access (`lane: in_sealed`, `ack` of `vault.deliver` addressed by `hop.grant_id`), plus the grant rows and the `override_params` of the grant ids |
+| `in_pack` | in | `./curator` | yes | the colony affinity's push for the agent's subscriber token, `pack_sub`/`pack_hash` promoted into context |
+| `pack_ack` | out | the rim, from `./curator` | -- | back to the colony affinity's `in_pack_ack` |
+| `brief` | out | the rim, from `./collector` | -- | to the colony affinity's `in_brief`, `asker` and `audience_set` stamped |
+| `in_briefing` | in | `./collector` | yes | affinity's `answer` and `error` back, `brief_outcome` stamped |
+| `in_model` | in | the rim, by `hop.subscriber` to `./brain`, `./strong` (subscriber ending `/strong`), `./curator`, `./memory-hive` | yes | the colony llm-registry's pushes |
+| `model_refused` | out | the rim | -- | back to the llm-registry's `in_refused` |
+| `affinity_propose` | out | the rim, from `./door` | -- | to the colony affinity's `in_propose`, `actor` stamped from `hop.agent_id` |
+| `in_propose_ack` | in | the rim, to `./door` | -- | affinity's `ack` and `error` back, `propose_outcome` stamped |
+| `in_note` | in | `./curator` | -- | notes for the window (`notes[]`, curator `in_note`), with the round in `context.audience_set` |
+| `in_conversations` / `conversations` | in / out | announced (A4): to `./memory-hive` | -- | the conversations a reader may see |
+| `affinity_propose` with `context.sa_enrol` | out | the rim, from `./enrol` | -- | the same edge as the affinity tool's; its `subscriber` is `agent:<agent_id>` for the step `subscribe`, `agent:<agent_id>/brain` for `subscribe_brain`, empty otherwise |
+
+The required lanes are checked at birth (`contract.accepts[].required`): a mutation that grows
+the agent without one of them is refused with `hive_contract`. For a lane with `at`, one edge to
+any of its targets satisfies the check; that every grant consumer gets its own edge is the
+embedder's part, not the birth's.
+
+## The builder block
+
+One block grows the agent: the builder's recipe `simple_agent` (`templates/builder`) renders
+the node, every edge of the table above between the agent and the `./access`, `./affinity`
+and `./llm-registry` of the level it is born into, the grants in that level's
+`./access/store` (`seed_rows`) and the override params, in one declaration at the level:
+
+```json
+{"recipe": "simple_agent", "params": {
+  "scope": "/", "name": "agent", "agent_id": "ava", "model": "example-provider/brain-model",
+  "credential": {"cred_ref": "cred:openrouter", "subject": "colony:example",
+                 "expires_at": "2099-01-01T00:00:00.000000Z"},
+  "identity": {"…": "an AIeOS document"}, "tools_enabled": ["weather"],
+  "app_id": "meclaw-example simple-agent-colony"}}
+```
+
+`model` is the brain's start value (`ctx.model`); `strong` names the second brain's and
+switches it on at the door; `identity`, `charter` and `disclose` go to `./enrol`,
+`start_memories` to the door, `tools_enabled` to `./tool_gate`, and `app_id`/`referer` to
+`x_title`/`http_referer` of `brain` and `strong`. One grant per consumer of the credential
+table (`tools/web_search` only with a `search_cred_ref`). The model road: the registry's
+pushes under the agent's path arrive as `in_model`, refusals go back as `in_refused`, and every
+receipt of the level announces `brain` (and `strong`) with their need. No runner mode per tool
+family: the own families are built-in cell types without a runner. Worked through in
+[`examples/simple-agent-colony`](../../examples/simple-agent-colony/).
 
 ## Instance params
 
@@ -127,14 +271,18 @@ is no deep merge: overriding `collector` replaces only the top-level key named.
 | cell | param | default | meaning |
 |---|---|---|---|
 | `brain` | `model` | `${ctx.model}` | the provider model id, a resolved literal |
-| `brain` | `reasoning_effort` | unset | `low`/`medium`/`high`, passed through |
+| `brain` | `reasoning_effort` | `medium` | `low`/`medium`/`high`, passed through |
 | every model cell | `x_title`, `http_referer` | `${OPENROUTER_X_TITLE:-MeClaw}`, `${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}` | the app attribution every request sends |
-| `door` | `agent_id` | `agent` | the agent's id: entity `entity:<id>`, actor `agent:<id>` |
-| `door` | `aieos` | `{}` | the AIeOS 1.1.0 document of the agent |
-| `door` | `disclose` | `["aieos"]` | the field paths the agent's own brain may see |
+| `door` | `agent_id` | `agent` | the agent's id: entry `entity:<id>` in the colony's affinity, actor `agent:<id>` |
+| every model cell | `credential_grant_id`, `api_key` | `""` | the grant in the colony's access, set at birth (above) |
 | `door` | `start_memories` | `[]` | `{what, with?, at?}` written once as episodes |
 | `door` | `round_idle_ms` | 120000 | the watchdog's wait; keep it equal to the collector's |
+| `door` | `client_tool_timeout_ms` | 30000 | how long a client call waits for its result before it is a named timeout |
+| `door` | `store_read_ms` | 10000 | how long a new child life of the door waits for `./door_store` to answer its read before it asks again |
+| `door` | `strong` | `""` | the model (or registry subscription) of `./strong`; empty = no second brain. Set `strong`'s `model` (or its `in_model` subscription) to the same |
 | `door` | `tools_allow`, `tools_deny` | `[]` | the tool scope of every turn; **an allow list also filters client tools** |
+| `enrol` | `agent_id`, `identity`, `charter`, `disclose` | `agent`, `{}`, `{}`, `["aieos"]` | the enrolment (above); keep `agent_id` equal to the door's |
+| `tool_gate` | `tools_enabled` | `[]` | the own tool families on offer: `bash`, `file`, `edit`, `web` (web_fetch, web_search), `weather`; none by default. A family not named is off the menu and a call of it never reaches `./tools`: it goes to the door like any name the agent does not serve, so a client tool of the turn by that name (the caller's `bash`) leaves on the rim. Each menu tick tells the door the enabled families (lane `tools_enabled`); the core tools (`memory_recall`, `history_*`) are never touched |
 | `collector/assemble` | `max_iter`, `round_idle_ms` | 16, 120000 | the loop cap; the idle window of a round |
 | `tools/file`, `tools/edit` | `base_path` | `workspace` | the file root, a directory of this agent's tools hive; set both to the same value to move it |
 
@@ -152,28 +300,25 @@ last job (GH #1276), and in a figure they were most of its idle processes. Each 
 
 | cells | why they run rarely here |
 |---|---|
-| `affinity/brief`, `affinity/gate`, `affinity/push` | the identity boot after a restart and an `affinity_propose` -- no edge of a turn reaches affinity |
 | `memory-hive/close-glue`, `memory-hive/entity-glue` | the close of a session and its entity pass, in a figure once a night |
+| `enrol` | a commit receipt and the acknowledgements of its steps; ships `cold` from this template |
+| `memory-hive/sessions` | a reader's question (`in_conversations`) or the session tier of `in_query`; ships `cold` from its own template, no marker |
+| `tools/weather`, `tools/build-draft`, `tools/build-apply` | every family is off by default, and `weather` is the one family cell that is a `code` cell (the others are built-in cell types with no runner mode); the build pair this agent never offers. An embedder that enables `weather` sets `tools/weather` back to `warm` in the same block |
 
 The cells that run rarely in every consumer ship `cold` from their own template since GH
 #1294 and need no marker here: `curator/schemas`, `memory-hive/schemas`, `tools/schemas`
 (answered when the collector asks for its tools, at boot and after a mutation),
-`memory-hive/dream-glue`, `memory-hive/recur` (the dream run), `access/policy`, `access/sweep`,
-`curator/stats` (a grant decision, the TTL timer, an observer's `in_stats`).
+`memory-hive/dream-glue`, `memory-hive/recur` (the dream run), `curator/stats` (an observer's
+`in_stats`).
 
-Every other code cell keeps the mode its template ships; `access/invoke` stays warm because a
-model cell waking after its own idle asks it for the credential before the first call.
+Every other code cell keeps the mode its template ships.
 
 ## Limits
 
 - No world, no game day, no phone, no companion: a caller that needs one wraps the agent.
 - No build pair: an agent that changes topology is a different template.
-- One caller per agent (the menu is the brain's state); turns in series, an overlapping turn
-  is refused as `turn_busy`.
-- The door's state is RAM and lives as long as its child: the boot gate (turns wait for the
-  first identity pack; a pack that never comes and never fails holds them, there is no boot
-  watchdog), the answered turns (deduplicated by `turn_id` alone, so a caller sends unique turn
-  ids across sessions), and the start-memory flag (a respawned child writes the start memories
-  again; the memory's close pass folds the duplicates).
+- Turns run one at a time. Turn ids are deduplicated by `turn_id` alone, so callers send
+  unique turn ids.
+- The proposals waiting for affinity's answer are RAM and live as long as the door's child.
 - The collector's iteration cap is the only loop guard; a model that never stops answers
   `partial` at 16.

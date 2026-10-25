@@ -62,6 +62,9 @@ fn template_names() -> Vec<String> {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().join("template.json").is_file())
         .map(|e| e.file_name().to_string_lossy().to_string())
+        // A frozen version (`<name>@<x.y.z>`, GH #1307) ships for its pins and is no
+        // catalogue entry: the catalogue offers the living template of the name.
+        .filter(|n| !n.contains('@'))
         .collect();
     names.sort();
     names

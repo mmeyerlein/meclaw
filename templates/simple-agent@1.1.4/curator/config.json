@@ -1,0 +1,20 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "curator@1.16.0"
+  },
+  "override_params": {
+    "intake": {
+      "nothing_block": "{\"memory\":{\"nothing_new\":true,\"facts\":[],\"topic\":{\"movement\":\"continue\"}}}",
+      "pass_sections": "memory"
+    },
+    "policy": {
+      "role": "talky"
+    },
+    "summarizer": {
+      "credential_grant_id": "grant:openrouter@template-simple-agent/curator-summarizer",
+      "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+      "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"
+    }
+  }
+}

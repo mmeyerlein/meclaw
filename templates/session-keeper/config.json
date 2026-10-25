@@ -43,6 +43,10 @@
           "because": "a finished session carrying hop.session_id, hop.channel and hop.audience_set -- the id, the room and the round it was spoken to. Two senders, one shape: the night sweep, and since GH #940 (ADR-0002 E8) a turn whose round differs from the open generation of its channel -- that generation is sealed and handed over under the round it was OPENED in, and the turn runs on in a new generation of its own round. A close of the second kind leaves the turn's chain, so the parent's close edge is a door (restore_ttl); its context is stripped of the turn's round and participants on the way out, like the night's, which never had them"
         },
         {
+          "route": "opened",
+          "because": "GH #1305: a generation began -- ONE per generation, from `./stamp` when its knob `conversation_events` is \"1\", on the turn whose open claimed the round: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, body `messages: []`, no text. Off (the shipped \"0\") nothing leaves."
+        },
+        {
           "route": "reject",
           "because": "a step of this keeper that the session store did not answer (GH #343). hop.reject_reason is 'store_refused', hop.store_error carries the store's own error_code -- a free string, because the store's code list is open -- and hop.store_operation the refused op. The body names the STEP that was refused, because they do not leave the same thing standing -- at 'touch' and 'open' the stamped turn has ALREADY left in the same emission, and at 'open' the missing row makes the next turn open yet another generation. It matters because every one of these failures reads as a correct run: an unanswered lookup looks like a channel with no open session (and used to OPEN a second generation for one that had one), and an unanswered nightly sweep looks like a night with no idle channel. Drain it: undrained, a keeper that stopped keeping is indistinguishable from a quiet one Since 2.1.0 a SECOND producer takes the same lane: `./porter` refuses a transfer it would not carry out -- an export whose read failed mid-walk, or an import part whose format, schema or audience did not survive -- and names the case in the same `hop.reject_reason`. The two are told apart by the reason code, and a drain that takes the lane at all takes both (GH #471)."
         },
@@ -107,7 +111,8 @@
               "keeper_session": "hop.session_id",
               "keeper_body": "hop.keeper_body",
               "turn_id": "hop.turn_id",
-              "keeper_audience": "hop.audience_set"
+              "keeper_audience": "hop.audience_set",
+              "keeper_meta": "has(hop.keeper_meta) ? hop.keeper_meta : ''"
             }
           }
         },
@@ -160,7 +165,8 @@
               "ses_phase": "hop.phase",
               "channel": "hop.channel",
               "keeper_session": "hop.session_id",
-              "keeper_audience": "hop.audience_set"
+              "keeper_audience": "hop.audience_set",
+              "keeper_meta": "has(hop.keeper_meta) ? hop.keeper_meta : ''"
             }
           }
         },
@@ -192,7 +198,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         },
@@ -209,7 +216,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         },
@@ -235,7 +243,35 @@
               "counterpart_name",
               "speaker",
               "turn_id",
-              "user_id"
+              "user_id",
+              "keeper_meta"
+            ]
+          }
+        },
+        {
+          "from": "./stamp",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'opened'",
+          "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin",
+              "asker",
+              "audience_now",
+              "audience_set",
+              "chat_id",
+              "counterpart",
+              "counterpart_name",
+              "speaker",
+              "turn_id",
+              "user_id",
+              "keeper_meta"
             ]
           }
         },
@@ -252,7 +288,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         },
@@ -269,7 +306,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         },
@@ -329,7 +367,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         },
@@ -346,7 +385,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         },
@@ -363,7 +403,8 @@
               "port_run",
               "port_table",
               "ses_phase",
-              "store_origin"
+              "store_origin",
+              "keeper_meta"
             ]
           }
         }

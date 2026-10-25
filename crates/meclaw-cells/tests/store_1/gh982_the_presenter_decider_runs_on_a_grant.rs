@@ -15,6 +15,7 @@
 //! | claim | test |
 //! |---|---|
 //! | `install_app` with a grant renders the empty `api_key`, `credential_grant_id`, the grant and both access v-lanes for `apps/presenter/decide`; another app's grant is refused by name | [`a_install_app_renders_the_deciders_grant`] |
+//! | the consumers of an app are the `at` of its rim's `credential_request` emit (OR-AG-35): presenter and display render what the old table rendered, an app the table never knew is granted per cell | [`or_ag35_the_consumers_come_from_the_apps_credential_request_at`] |
 //! | a presenter whose decider holds a grant and no key anywhere asks the member's broker, and the decide request reaches the provider with the vault's bearer, which is on no record | [`b_the_decider_calls_with_the_granted_bearer`] |
 //!
 //! (a) runs the SHIPPED recipe and needs the recipe change of the strand
@@ -140,8 +141,20 @@ fn render(app: &str, credential: Value) -> Value {
     render_from(app, &format!("{app}@1.1.0"), credential)
 }
 
-/// `install_app` for `app` grown from `template`.
+/// The rim of the shipped template `template` (`name@version`): what a wish hands
+/// in as `contract`, verbatim (OR-AG-35).
+fn contract_of(template: &str) -> Value {
+    let name = template.split('@').next().unwrap_or(template);
+    read_json(&repo(&format!("templates/{name}/config.json")))["params"]["contract"].clone()
+}
+
+/// `install_app` for `app` grown from `template`, its contract handed in.
 fn render_from(app: &str, template: &str, credential: Value) -> Value {
+    render_with(app, template, contract_of(template), credential)
+}
+
+/// `install_app` for `app` grown from `template` with the rim `contract`.
+fn render_with(app: &str, template: &str, contract: Value, credential: Value) -> Value {
     let out = meclaw_testing::emit_all(
         &meclaw_testing::shipped_script(
             repo("templates/builder/recipes/config.json")
@@ -160,6 +173,7 @@ fn render_from(app: &str, template: &str, credential: Value) -> Value {
                                                     "generation": "sam",
                                                     "declaration": {"listens": ["turn"]},
                                                     "ctx": {"member_person": "alex"},
+                                                    "contract": contract,
                                                     "credential": credential}})
                                       .to_string()}],
         }),
@@ -252,26 +266,112 @@ fn a_install_app_renders_the_deciders_grant() {
     );
 }
 
-/// Y fix round 1, M-1: the positive list is the TEMPLATE's. An app called `presenter`
-/// grown from another template gets no grant, and the presenter under another app name
-/// gets none either (its cell paths and requester would name a cell the list does not).
+/// Y fix round 1, M-1, since OR-AG-35 read off the contract: the list is the TEMPLATE's
+/// rim. An app called `presenter` grown from a template without the emit gets no grant;
+/// the presenter installed under another name is granted its own `decide`.
 #[test]
-fn a_grant_follows_the_template_not_the_app_name() {
+fn a_grant_follows_the_templates_contract_not_the_app_name() {
     if !shipped() {
         return;
     }
-    for (app, template) in [("presenter", "objects@1.0.4"), ("deck", "presenter@1.3.1")] {
-        let refused = render_from(app, template, credential());
-        assert_eq!(
-            refused["header"]["error_code"],
-            json!("app_declaration_invalid"),
-            "a grant for {app} from {template} must be refused by name: {refused}"
-        );
-        assert!(
-            refused["manifest"].is_null(),
-            "nothing is rendered for a refused grant: {refused}"
-        );
+    let refused = render_from("presenter", "objects@1.0.4", credential());
+    assert_eq!(
+        refused["header"]["error_code"],
+        json!("app_declaration_invalid"),
+        "a grant for presenter from objects must be refused by name: {refused}"
+    );
+    assert!(
+        refused["manifest"].is_null(),
+        "nothing is rendered for a refused grant: {refused}"
+    );
+    let deck = render_from("deck", "presenter@1.3.1", credential());
+    assert!(deck["header"]["error_code"].is_null(), "{deck}");
+    assert_eq!(
+        deck["manifest"][0]["diff"]["add_nodes"][0]["override_params"]["decide"]["credential_grant_id"],
+        json!("grant:example-decider-primary@member-alex/deck-decide"),
+        "the presenter as `deck` is granted its own decider: {deck}"
+    );
+}
+
+/// The grant rows, the v-lane targets and the overrides of one rendered install.
+fn road(out: &Value) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let diff = &out["manifest"][0]["diff"];
+    let requesters = diff["seed_rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["table"] == json!("grants"))
+        .flat_map(|r| r["rows"].as_array().cloned().unwrap_or_default())
+        .map(|g| g["requester"].as_str().unwrap_or("").to_string())
+        .collect();
+    let sealed = diff["add_edges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["lane"] == json!("in_sealed"))
+        .map(|e| e["to"].as_str().unwrap_or("").to_string())
+        .collect();
+    let mut named: Vec<String> = diff["add_nodes"][0]["override_params"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, v)| v.get("credential_grant_id").is_some())
+        .map(|(k, _)| k.clone())
+        .collect();
+    named.sort();
+    (requesters, sealed, named)
+}
+
+/// OR-AG-35: `install_app` reads WHICH cells spend a grant off the app's own rim -- the
+/// `at` of its `credential_request` emit -- instead of a fixed list of two templates, so
+/// an app of its own (an orga level) can take grants. The two shipped apps render what the
+/// list rendered for them.
+#[test]
+fn or_ag35_the_consumers_come_from_the_apps_credential_request_at() {
+    if !shipped() {
+        return;
     }
+    for (app, cell) in [("presenter", "decide"), ("display", "judge")] {
+        let out = render_from(app, &format!("{app}@1.0.0"), credential());
+        assert!(out["header"]["error_code"].is_null(), "{app}: {out}");
+        let (requesters, sealed, named) = road(&out);
+        assert_eq!(requesters, vec![format!("app:{app}/{cell}")], "{app}");
+        assert_eq!(sealed, vec![format!("./apps/{app}/{cell}")], "{app}");
+        assert_eq!(named, vec![cell.to_string()], "{app}");
+    }
+    // An app no table ever named: two consumers, one of them nested.
+    let rim = json!({"emits": [
+        {"route": "answer"},
+        {"route": "credential_request", "at": ["./coordinator/brain", "./planner"]}]});
+    let out = render_with("orga", "orga-hive@0.12.3", rim, credential());
+    assert!(out["header"]["error_code"].is_null(), "{out}");
+    let (requesters, sealed, named) = road(&out);
+    assert_eq!(
+        requesters,
+        vec![
+            "app:orga/coordinator/brain".to_string(),
+            "app:orga/planner".to_string()
+        ]
+    );
+    assert_eq!(
+        sealed,
+        vec![
+            "./apps/orga/coordinator/brain".to_string(),
+            "./apps/orga/planner".to_string()
+        ]
+    );
+    assert_eq!(
+        named,
+        vec!["coordinator/brain".to_string(), "planner".to_string()]
+    );
+    // Without the contract there is nothing to read: refused by name, never guessed.
+    let none = render_with("orga", "orga-hive@0.12.3", Value::Null, credential());
+    assert_eq!(
+        none["header"]["error_code"],
+        json!("app_declaration_invalid"),
+        "{none}"
+    );
+    assert!(none["manifest"].is_null(), "{none}");
 }
 
 /// Y fix round 1, M-2: `finish_reason` stays required on every decision; only the

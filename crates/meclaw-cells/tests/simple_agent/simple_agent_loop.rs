@@ -7,8 +7,10 @@
 //! dropped; a missing client result ends the turn named (the round's
 //! watchdog); a result without its round keys is refused named; the loop stops
 //! at `max_iter` with a partial answer; `close` reports after the close pass;
-//! the AIeOS seed reaches the brain as affinity's pack, again on change; the
-//! sidecar's memory section reaches the memory hive.
+//! the sidecar's memory section reaches the memory hive. Under `@2` the run
+//! grows the agent the way a colony does (the colony's access and affinity
+//! beside it, the contract lanes drawn by the root); the identity boot into
+//! an own affinity is `@1` only and runs against the frozen `@1.1.4`.
 //!
 //! Real time with hang marks only (AGENTS rule 11): code cells are child
 //! processes, a virtual clock does not reach them.
@@ -32,20 +34,74 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 const AGENT: &str = "/agent";
-const VAULT_CELL: &str = "/main/agent/access/vault";
 const VAULT_PASSPHRASE: &[u8] = b"simple-agent-test-passphrase";
 const BRAIN_MODEL: &str = "brain-stub";
-const AUDIENCE: &str = "[\"member:caller\"]";
+/// The model the second brain (`strong`, plan A2) is born with in a run.
+pub(crate) const STRONG_MODEL: &str = "strong-stub";
+pub(crate) const AUDIENCE: &str = "[\"member:caller\"]";
+
+/// Which simple-agent a run grows (R-SA-37). `@2` grows the way a colony grows
+/// it: the colony's own `access` and `affinity` beside the agent, the grant
+/// ids handed in at birth (`override_params`), and the contract lanes drawn by
+/// the embedder -- here the run's root. `@1` is the frozen `simple-agent@1.1.4`
+/// with its own access and affinity inside.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Form {
+    V1,
+    V2,
+    /// `examples/simple-agent-colony`: the colony's access, affinity and
+    /// llm-registry beside an `@2` grown from the example's `grow.json` (the
+    /// builder block's rendering, plan A5): its override params, its edges
+    /// and its grant rows, laid out the way the door lays them out.
+    Example,
+    /// `@2` one level deeper: the level `/lvl` holds the colony's access,
+    /// affinity and the agent (`/lvl/agent`), drawn as under `V2`, and the
+    /// colony's commit receipts (`mutation_receipts` to `/lvl`) travel on to
+    /// the run's sink only -- the agent hears the boot's receipt from nobody,
+    /// so a run hands it exactly the receipt it chooses.
+    V2Deep,
+}
+
+/// The level of a `V2Deep` run.
+pub(crate) const LEVEL: &str = "/lvl";
+
+/// The agent's id in the colony and the subscriber token of its identity.
+pub(crate) const AGENT_ID: &str = "ava";
+pub(crate) const SUBSCRIBER: &str = "agent:ava";
+/// The provider keys deposited in the colony's vault.
+pub(crate) const OPENROUTER_KEY: &str = "test-key";
+pub(crate) const ANTHROPIC_KEY: &str = "test-anthropic-key";
+
+/// The eight cells of `@2` that may spend a grant (R-SA-37: none of them
+/// carries one in the template; the embedder names it at birth): the eight
+/// model cells (`strong` among them, plan A2) and `tools/web_search`, which ships anonymous but opens the
+/// same credential lane one level deeper (`templates/tools/config.json`).
+pub(crate) const MODEL_CELLS: [&str; 9] = [
+    "brain",
+    "strong",
+    "curator/summarizer",
+    "memory-hive/closer",
+    "memory-hive/dialectic",
+    "memory-hive/dreamer",
+    "memory-hive/judge",
+    "memory-hive/embed",
+    "tools/web_search",
+];
+
+/// The grant a consumer is born with in the run's colony, per credential.
+pub(crate) fn grant_of(cell: &str, cred: &str) -> String {
+    format!("grant:{cred}@colony-test/{}", cell.replace('/', "-"))
+}
 
 // ─────────────────────────────────────────────────────────────── the tree
 
-fn repo(rel: &str) -> std::path::PathBuf {
+pub(crate) fn repo(rel: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(rel)
 }
 
-fn shipped() -> bool {
+pub(crate) fn shipped() -> bool {
     [
         "simple-agent",
         "collector",
@@ -60,7 +116,7 @@ fn shipped() -> bool {
     .all(|t| repo(&format!("templates/{t}/config.json")).is_file())
 }
 
-fn read_json(p: &std::path::Path) -> Value {
+pub(crate) fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     meclaw_core::serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("{} does not parse: {e}", p.display()))
@@ -75,7 +131,7 @@ fn write_json(p: &std::path::Path, v: &Value) {
     .expect("write");
 }
 
-fn as_map(v: &Value) -> Map<String, Value> {
+pub(crate) fn as_map(v: &Value) -> Map<String, Value> {
     v.as_object().cloned().expect("a JSON object")
 }
 
@@ -83,7 +139,7 @@ fn as_map(v: &Value) -> Map<String, Value> {
 /// is replaced by the referenced template, its `override_params` applied
 /// (GH #140, #277), and what the ref directory carries beside its marker (the
 /// grants seeded under `access/store/seed`) laid over it.
-fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
+pub(crate) fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
     assert!(depth < 8, "ref chain does not end at {}", src.display());
     let marker = src.join("config.json");
     if marker.is_file() {
@@ -92,8 +148,14 @@ fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
             let reference = cfg["cell"]["template"]
                 .as_str()
                 .expect("a ref names a template");
+            // A pinned copy (`simple-agent@1.1.4`) is its own directory.
             let name = reference.split('@').next().unwrap_or_default();
-            let target = repo("templates").join(name);
+            let pinned = repo("templates").join(reference);
+            let target = if pinned.join("config.json").is_file() {
+                pinned
+            } else {
+                repo("templates").join(name)
+            };
             assert!(
                 target.join("config.json").is_file(),
                 "{}: `{reference}` resolves to no template in this tree",
@@ -152,26 +214,63 @@ fn configs_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-struct Stubs {
-    brain: MockOpenAI,
-    background: MockOpenAI,
+pub(crate) struct Stubs {
+    pub(crate) brain: MockOpenAI,
+    pub(crate) background: MockOpenAI,
 }
 
 /// Every `llm` cell at a stub (the brain at the scripted one), every model of
 /// the tree named, every timer out of the run's way, the weather's endpoints
-/// at the background stub (no network), the env file and the provider key
-/// deposited in the agent's own vault -- the grants stay the template's.
-/// `overlay` maps a cell path of the agent to params laid over it.
-fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value) {
+/// at the background stub (no network), the env file and the provider keys
+/// deposited in the vault: the agent's own under `@1`, the colony's under
+/// `@2`. `overlay` maps a cell path of the agent to params laid over it.
+fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value, form: Form) {
     let root = td.path();
-    let main = root.join("main");
+    let deep = form == Form::V2Deep;
+    let main = if deep {
+        root.join("main").join(LEVEL.trim_start_matches('/'))
+    } else {
+        root.join("main")
+    };
     let agent = main.join("agent");
-    copy_resolved(&repo("templates/simple-agent"), &agent, 0);
+    let template = match form {
+        Form::V1 => "templates/simple-agent@1.1.4",
+        Form::V2 | Form::V2Deep | Form::Example => "templates/simple-agent",
+    };
+    copy_resolved(&repo(template), &agent, 0);
+    if matches!(form, Form::V2 | Form::V2Deep) {
+        // The colony's own access and affinity (R-SA-37): the agent carries
+        // neither, and its grants are handed in at birth.
+        copy_resolved(&repo("templates/access"), &main.join("access"), 0);
+        copy_resolved(&repo("templates/affinity"), &main.join("affinity"), 0);
+        for cell in MODEL_CELLS {
+            override_params_on_disk(
+                &agent.join(cell),
+                &json!({"credential_grant_id": grant_of(cell, "openrouter")}),
+            );
+        }
+    }
     override_params_on_disk(
         &agent.join("tools/weather"),
         &json!({"geocode_endpoint": format!("{}/v1/geocode", stubs.background.base_url),
                 "forecast_endpoint": format!("{}/v1/forecast", stubs.background.base_url)}),
     );
+    let example = (form == Form::Example).then(example_declaration);
+    if let Some(decl) = &example {
+        copy_resolved(&repo("templates/access"), &main.join("access"), 0);
+        copy_resolved(&repo("templates/affinity"), &main.join("affinity"), 0);
+        copy_resolved(
+            &repo("templates/llm-registry"),
+            &main.join("llm-registry"),
+            0,
+        );
+        let node = &decl["diff"]["add_nodes"][0];
+        assert_eq!(node["name"], "agent", "the example grows `./agent`");
+        for (cell, params) in as_map(&node["override_params"]) {
+            override_params_on_disk(&agent.join(cell), &params);
+        }
+        seed_rows_on_disk(&main, &decl["diff"]["seed_rows"]);
+    }
     for (cell, params) in as_map(overlay) {
         override_params_on_disk(&agent.join(cell), &params);
     }
@@ -187,8 +286,12 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value) {
             .unwrap_or_default();
         match cfg["cell"]["type"].as_str() {
             Some("llm") => {
+                // The second brain answers from the scripted stub as well, under
+                // its own model name, so a run tells the two apart on the wire.
                 let (url, model) = if rel == "brain" {
                     (&stubs.brain.base_url, BRAIN_MODEL.to_string())
+                } else if rel == "strong" {
+                    (&stubs.brain.base_url, STRONG_MODEL.to_string())
                 } else {
                     (
                         &stubs.background.base_url,
@@ -219,9 +322,39 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value) {
         &agent.join("memory-hive/writer"),
         &json!({"night_at_utc": ""}),
     );
-    let edges = json!([
-        {"from": "./agent", "to": "/sink", "condition": "has(hop.route)"}
-    ]);
+    let mut edges = vec![json!({"from": "./agent", "to": "/sink", "condition": "has(hop.route)"})];
+    let vault = match form {
+        Form::V1 => "agent/access/vault",
+        Form::Example => {
+            let decl = example.as_ref().expect("the example's declaration");
+            edges.extend(
+                decl["diff"]["add_edges"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            "access/vault"
+        }
+        Form::V2 | Form::V2Deep => {
+            seed_grants(&main.join("access/store/seed"));
+            edges.extend(colony_edges(&agent));
+            "access/vault"
+        }
+    };
+    if deep {
+        // The receipts enter the level as a hive transit and leave for the
+        // sink; the root above the level is a bare hive.
+        edges.push(json!({"from": ".", "to": "/sink",
+                          "condition": "has(hop.route) && hop.route == 'mutation_committed'"}));
+        write_json(
+            &root.join("main/config.json"),
+            &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": []}}}),
+        );
+        write_json(
+            &root.join("colony.json"),
+            &json!({"schema_version": 1, "mutation_receipts": {"to": LEVEL}}),
+        );
+    }
     write_json(
         &main.join("config.json"),
         &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": edges}}}),
@@ -231,7 +364,7 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value) {
     // The operator's half of a grown vault (as `examples/` seed it): it opens
     // itself from a key file named in the environment.
     override_params_on_disk(
-        &agent.join("access/vault"),
+        &main.join(vault),
         &json!({"key_source": "plainfile", "key_file": key_file.display().to_string()}),
     );
     #[cfg(unix)]
@@ -239,14 +372,25 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).expect("0600");
     }
-    meclaw_cells::vault::user_channel::add(
-        root,
-        VAULT_CELL,
-        "cred:openrouter",
-        b"test-key",
-        VAULT_PASSPHRASE,
-    )
-    .expect("the cold deposit into the agent's vault");
+    let vault_cell = if deep {
+        format!("/main{LEVEL}/{vault}")
+    } else {
+        format!("/main/{vault}")
+    };
+    let mut deposits = vec![("cred:openrouter", OPENROUTER_KEY)];
+    if matches!(form, Form::V2 | Form::V2Deep) {
+        deposits.push(("cred:anthropic", ANTHROPIC_KEY));
+    }
+    for (cred, key) in deposits {
+        meclaw_cells::vault::user_channel::add(
+            root,
+            &vault_cell,
+            cred,
+            key.as_bytes(),
+            VAULT_PASSPHRASE,
+        )
+        .expect("the cold deposit into the vault");
+    }
     let mut vars: BTreeMap<String, String> = BTreeMap::new();
     for f in &files {
         let raw = std::fs::read_to_string(f).unwrap_or_default();
@@ -282,8 +426,148 @@ fn build(td: &tempfile::TempDir, stubs: &Stubs, overlay: &Value) {
     std::fs::write(root.join(".env"), body).expect("the env file");
 }
 
-struct Ports {
-    sink: mpsc::Receiver<Message>,
+/// The one declaration of `examples/simple-agent-colony/grow.json`.
+pub(crate) fn example_declaration() -> Value {
+    let grow = read_json(&repo("examples/simple-agent-colony/grow.json"));
+    let manifest = grow["manifest"].as_array().cloned().unwrap_or_default();
+    assert_eq!(manifest.len(), 1, "the block is one declaration: {grow}");
+    manifest[0].clone()
+}
+
+/// `seed_rows` of a declaration as the seed files of the targeted stores
+/// (`<store>/seed/<table>.jsonl`, schema line first): what the door writes
+/// into a running store, laid out for a first boot. A table the store's
+/// shipped seed already carries keeps its rows and gains these.
+fn seed_rows_on_disk(main: &std::path::Path, seed_rows: &Value) {
+    for entry in seed_rows.as_array().cloned().unwrap_or_default() {
+        let target = entry["target"].as_str().expect("a target");
+        let table = entry["table"].as_str().expect("a table");
+        let store = main.join(target.trim_start_matches("./"));
+        let schema = read_json(&store.join("config.json"))["params"]["schema"][table].clone();
+        let file = store.join("seed").join(format!("{table}.jsonl"));
+        std::fs::create_dir_all(file.parent().expect("a seed dir")).expect("mkdir seed");
+        let mut body = std::fs::read_to_string(&file).unwrap_or_default();
+        if body.is_empty() {
+            // The declared column types of the store (a json column stays json).
+            let types: Map<String, Value> = as_map(&schema)
+                .into_iter()
+                .map(|(k, v)| {
+                    let ty = v["type"].as_str().or_else(|| v.as_str()).unwrap_or("text");
+                    (k, json!(ty))
+                })
+                .collect();
+            body.push_str(&format!("{}\n", json!({"schema": types})));
+        }
+        for row in entry["rows"].as_array().cloned().unwrap_or_default() {
+            body.push_str(&format!("{row}\n"));
+        }
+        std::fs::write(&file, body).expect("seed rows");
+    }
+}
+
+/// The colony's grants for the eight consumers, one per credential the run
+/// deposits: what the embedder seeds into the colony's access (`seed_rows` of
+/// the builder block later, A5).
+fn seed_grants(seed: &std::path::Path) {
+    std::fs::create_dir_all(seed).expect("mkdir seed");
+    let mut grants = vec![json!({"schema": {
+        "constraints": "json", "capability": "text", "cred_ref": "text", "expires_at": "text",
+        "grant_id": "text", "issued_at": "text", "purpose": "text", "requester": "text",
+        "rule_id": "text", "scope": "json", "subject": "text"}})];
+    let mut events = vec![json!({"schema": {
+        "actor": "text", "at": "text", "detail": "json", "event": "text", "grant_id": "text",
+        "id": "text", "reason_code": "text"}})];
+    for cell in MODEL_CELLS {
+        for cred in ["openrouter", "anthropic"] {
+            let id = grant_of(cell, cred);
+            grants.push(json!({
+                "capability": "credential.read", "constraints": {"rate_per_min": 60},
+                "cred_ref": format!("cred:{cred}"), "expires_at": "2099-01-01T00:00:00.000000Z",
+                "grant_id": id, "issued_at": "2026-10-24T00:00:00.000000Z",
+                "purpose": "the run's agent spends its provider key", "requester": format!("agent:agent/{cell}"),
+                "rule_id": "test-credential-read", "scope": {"actions": ["vault.deliver"]},
+                "subject": "colony:test"}));
+            events.push(json!({
+                "actor": "operator", "at": "2026-10-24T00:00:00.000000Z",
+                "detail": {"why": "seeded by the run's colony"}, "event": "granted",
+                "grant_id": id, "id": format!("ev-{}", id.replace([':', '@', '/'], "-")),
+                "reason_code": ""}));
+        }
+    }
+    let lines = |rows: &[Value]| -> String {
+        rows.iter()
+            .map(|r| {
+                format!(
+                    "{}\n",
+                    meclaw_core::serde_json::to_string(r).expect("a row")
+                )
+            })
+            .collect()
+    };
+    std::fs::write(seed.join("grants.jsonl"), lines(&grants)).expect("grants");
+    std::fs::write(seed.join("grant_events.jsonl"), lines(&events)).expect("grant events");
+}
+
+/// The edges an embedder draws around `simple-agent@2` (its README, "Embedding
+/// one level deeper"): the credential v-lanes per consumer, addressed by the
+/// grant each cell was born with, the brief road, the proposal road and the
+/// identity pack road into the colony's affinity.
+pub(crate) fn colony_edges(agent: &std::path::Path) -> Vec<Value> {
+    let mut edges = Vec::new();
+    for cell in MODEL_CELLS {
+        let cfg = read_json(&agent.join(cell).join("config.json"));
+        let grant = cfg["params"]["credential_grant_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        edges.push(json!({
+            "from": format!("./agent/{cell}"), "to": "./access", "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request' && !has(hop.refused_subscriber)",
+            "modifier": {"set_hop": {"route": "'in_invoke'"},
+                         "set_context": {"requester": format!("'agent:agent/{cell}'")}}}));
+        edges.push(json!({
+            "from": "./access", "to": format!("./agent/{cell}"), "lane": "in_sealed",
+            "condition": format!("has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == '{grant}'"),
+            "modifier": {"set_hop": {"route": "'in_sealed'"}}}));
+    }
+    edges.extend([
+        json!({"from": "./agent", "to": "./affinity",
+               "condition": "has(hop.route) && hop.route == 'brief'",
+               "modifier": {"set_hop": {"route": "'in_brief'"},
+                            "set_context": {"asker": format!("'{SUBSCRIBER}'"),
+                                            "audience_set": "has(context.audience_set) ? context.audience_set : ''",
+                                            "brief_caller": "'agent'"}}}),
+        json!({"from": "./affinity", "to": "./agent/collector", "lane": "in_briefing",
+               "condition": "has(hop.route) && (hop.route == 'answer' || hop.route == 'error') && has(context.brief_caller) && context.brief_caller == 'agent'",
+               "modifier": {"set_hop": {"route": "'in_briefing'", "brief_outcome": "hop.route"},
+                            "delete_context": ["asker", "brief_caller"]}}),
+        json!({"from": "./agent", "to": "./affinity",
+               "condition": "has(hop.route) && hop.route == 'affinity_propose'",
+               "modifier": {"set_hop": {"route": "'in_propose'"},
+                            // The enrolment's `subscribe` steps (A5, `./enrol`) take their
+                            // subscriber from this edge (affinity README, "Identity comes
+                            // from the edge"): the identity under the agent's token, the
+                            // charter under its `/brain` (OR-agent-2.A5.2).
+                            "set_context": {"actor": "'agent:' + hop.agent_id",
+                                            "subscriber": format!("has(context.sa_enrol) && context.sa_enrol == 'subscribe' ? '{SUBSCRIBER}' : (has(context.sa_enrol) && context.sa_enrol == 'subscribe_brain' ? '{SUBSCRIBER}/brain' : '')"),
+                                            "propose_caller": "'agent'"}}}),
+        json!({"from": "./affinity", "to": "./agent",
+               "condition": "has(hop.route) && (hop.route == 'ack' || hop.route == 'error') && has(context.propose_caller) && context.propose_caller == 'agent'",
+               "modifier": {"set_hop": {"route": "'in_propose_ack'", "propose_outcome": "hop.route"},
+                            "delete_context": ["actor", "propose_caller"]}}),
+        json!({"from": "./affinity", "to": "./agent/curator", "lane": "in_pack",
+               "condition": format!("has(hop.route) && hop.route == 'answer' && has(hop.subscriber) && (hop.subscriber == '{SUBSCRIBER}' || hop.subscriber == '{SUBSCRIBER}/brain')"),
+               "modifier": {"set_hop": {"route": "'in_pack'"},
+                            "set_context": {"pack_sub": "hop.pack_sub", "pack_hash": "hop.pack_hash"}}}),
+        json!({"from": "./agent", "to": "./affinity",
+               "condition": "has(hop.route) && hop.route == 'pack_ack' && has(context.pack_sub) && context.pack_sub != ''",
+               "modifier": {"set_hop": {"route": "'in_pack_ack'"}}}),
+    ]);
+    edges
+}
+
+pub(crate) struct Ports {
+    pub(crate) sink: mpsc::Receiver<Message>,
 }
 
 fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
@@ -313,7 +597,15 @@ fn factories() -> Vec<(String, Arc<dyn CellFactory>)> {
     ]
 }
 
-async fn boot(
+pub(crate) async fn boot(
+    brain: Vec<meclaw_testing::mock_http::MockResponse>,
+    overlay: Value,
+) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
+    boot_form(Form::V2, brain, overlay).await
+}
+
+pub(crate) async fn boot_form(
+    form: Form,
     brain: Vec<meclaw_testing::mock_http::MockResponse>,
     overlay: Value,
 ) -> (tempfile::TempDir, Stubs, ColonyHandle, Ports) {
@@ -324,8 +616,24 @@ async fn boot(
         background: MockOpenAI::start(vec![canned_chat_completion("{}", "stop")]).await,
     };
     let td = tempfile::TempDir::new().expect("tempdir");
-    build(&td, &stubs, &overlay);
-    let h = ColonyHandle::new_with_factories_at(&td, factories());
+    build(&td, &stubs, &overlay, form);
+    let agent = if form == Form::V2Deep {
+        format!("{LEVEL}{AGENT}")
+    } else {
+        AGENT.to_string()
+    };
+    let (h, ports) = grow(&td, &agent).await;
+    (td, stubs, h, ports)
+}
+
+/// A colony again on a tree an earlier run grew and shut down: every cell
+/// starts a new life on the `cell.db` it left (a restart, not a rebirth).
+pub(crate) async fn reboot(td: &tempfile::TempDir) -> (ColonyHandle, Ports) {
+    grow(td, AGENT).await
+}
+
+async fn grow(td: &tempfile::TempDir, agent: &str) -> (ColonyHandle, Ports) {
+    let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(256);
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(sink_tx.clone())
@@ -341,7 +649,7 @@ async fn boot(
     // The menu before the first turn: a colony asks its collector after a
     // mutation; here the rim lane does, and the run waits for the answers.
     h.send(
-        MessageBuilder::new(Path::new(AGENT))
+        MessageBuilder::new(Path::new(agent))
             .hop(as_map(&json!({"route": "mutation_committed"})))
             .context(Map::new())
             .body(Body::Inline(json!({"messages": []})))
@@ -349,21 +657,22 @@ async fn boot(
             .build(),
     )
     .await;
-    for answerer in ["/agent/tools", "/agent/curator", "/agent/memory-hive"] {
-        wait_route(&h, answerer, "/agent/collector", "in_menu", 1).await;
+    let collector = format!("{agent}/collector");
+    for answerer in ["tools", "curator", "memory-hive"] {
+        wait_route(&h, &format!("{agent}/{answerer}"), &collector, "in_menu", 1).await;
     }
     h.quiesce().await;
-    (td, stubs, h, Ports { sink: sink_rx })
+    (h, Ports { sink: sink_rx })
 }
 
-fn body_of(m: &Message) -> Value {
+pub(crate) fn body_of(m: &Message) -> Value {
     match &m.body {
         Body::Inline(v) => v.clone(),
         other => panic!("an inline body on the rim, got {other:?}"),
     }
 }
 
-fn route_of(m: &Message) -> String {
+pub(crate) fn route_of(m: &Message) -> String {
     m.headers
         .hop
         .get("route")
@@ -374,7 +683,7 @@ fn route_of(m: &Message) -> String {
 
 /// The next rim message on `route`; others on the way are kept. A run that
 /// never brings it fails at the hang mark with the road the messages took.
-async fn next_on(
+pub(crate) async fn next_on(
     h: &ColonyHandle,
     ports: &mut Ports,
     route: &str,
@@ -400,7 +709,7 @@ async fn next_on(
 
 /// `from -> to route` of the last logged messages (the store's own traffic
 /// left out), oldest first.
-async fn road(h: &ColonyHandle) -> String {
+pub(crate) async fn road(h: &ColonyHandle) -> String {
     let mut rows = h
         .read_log(meclaw_colony::api_dto::MessageLogFilter::default())
         .await;
@@ -439,7 +748,7 @@ async fn road(h: &ColonyHandle) -> String {
         .join("\n")
 }
 
-fn wire_text(req: &OpenAiRequestSnapshot) -> String {
+pub(crate) fn wire_text(req: &OpenAiRequestSnapshot) -> String {
     req.messages()
         .cloned()
         .unwrap_or_default()
@@ -457,7 +766,7 @@ fn wire_text(req: &OpenAiRequestSnapshot) -> String {
         .join("\n")
 }
 
-fn system_text(req: &OpenAiRequestSnapshot) -> String {
+pub(crate) fn system_text(req: &OpenAiRequestSnapshot) -> String {
     req.messages()
         .cloned()
         .unwrap_or_default()
@@ -470,14 +779,14 @@ fn system_text(req: &OpenAiRequestSnapshot) -> String {
 
 // ─────────────────────────────────────────────────────────────── the rim
 
-fn look_tool() -> Value {
+pub(crate) fn look_tool() -> Value {
     json!({"name": "look", "description": "Look at something in front of you.",
            "parameters": {"type": "object", "properties": {"at": {"type": "string"}},
                           "required": ["at"]}})
 }
 
 /// One `turn` on the door: hop keys of V-T, a user text, the client tools.
-fn turn(turn_id: &str, text: &str, tools: Value) -> Message {
+pub(crate) fn turn(turn_id: &str, text: &str, tools: Value) -> Message {
     let mut body = json!({"messages": [{"origin": "user", "type": "text", "text": text}]});
     if !tools.is_null() {
         body["tools"] = tools;
@@ -493,8 +802,29 @@ fn turn(turn_id: &str, text: &str, tools: Value) -> Message {
         .build()
 }
 
+/// Tell the door which own tool families are on (A4's `tools_enabled`, which
+/// reaches the door on its `tools_enabled` lane): only an enabled family's
+/// names shadow a client tool.
+pub(crate) async fn enable(h: &ColonyHandle, families: &[&str]) {
+    // From inside the hive (A4's `./tool_gate` sends it there): the sealed rim refuses an outside
+    // caller that names `/agent/door` (`hive_boundary`), and the lane is no rim lane.
+    h.send_from(
+        Path::new("/agent/tools"),
+        MessageBuilder::new(Path::new("/agent/door"))
+            .hop(as_map(&json!({"route": "tools_enabled"})))
+            .context(Map::new())
+            .body(Body::Inline(
+                json!({"messages": [], "tools_enabled": families}),
+            ))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    h.quiesce().await;
+}
+
 /// The `tool_result` for a `calls` message: `keys` of its hop come back.
-fn result_for(calls: &Message, keys: &[&str], content: &str) -> Message {
+pub(crate) fn result_for(calls: &Message, keys: &[&str], content: &str) -> Message {
     let mut hop = json!({"route": "tool_result"});
     for k in keys {
         if let Some(v) = calls.headers.hop.get(*k) {
@@ -511,9 +841,10 @@ fn result_for(calls: &Message, keys: &[&str], content: &str) -> Message {
         .build()
 }
 
-const ROUND_KEYS: [&str; 5] = ["turn_id", "session_id", "iter", "channel", "audience_set"];
+pub(crate) const ROUND_KEYS: [&str; 5] =
+    ["turn_id", "session_id", "iter", "channel", "audience_set"];
 
-fn tool_names(req: &OpenAiRequestSnapshot) -> Vec<String> {
+pub(crate) fn tool_names(req: &OpenAiRequestSnapshot) -> Vec<String> {
     req.tools()
         .cloned()
         .unwrap_or_default()
@@ -522,7 +853,7 @@ fn tool_names(req: &OpenAiRequestSnapshot) -> Vec<String> {
         .collect()
 }
 
-fn tool_description(req: &OpenAiRequestSnapshot, name: &str) -> String {
+pub(crate) fn tool_description(req: &OpenAiRequestSnapshot, name: &str) -> String {
     req.tools()
         .cloned()
         .unwrap_or_default()
@@ -533,7 +864,7 @@ fn tool_description(req: &OpenAiRequestSnapshot, name: &str) -> String {
 }
 
 /// How many logged messages on `route` (any route when empty) went from under `from` to under `to`.
-async fn count_route(h: &ColonyHandle, from: &str, to: &str, route: &str) -> usize {
+pub(crate) async fn count_route(h: &ColonyHandle, from: &str, to: &str, route: &str) -> usize {
     h.read_log(meclaw_colony::api_dto::MessageLogFilter::default())
         .await
         .iter()
@@ -548,7 +879,7 @@ async fn count_route(h: &ColonyHandle, from: &str, to: &str, route: &str) -> usi
 
 /// Waits until `n` messages on `route` went from under `from` to under `to`:
 /// event-driven over the log's commit counter, the hang mark as the deadline.
-async fn wait_route(h: &ColonyHandle, from: &str, to: &str, route: &str, n: usize) {
+pub(crate) async fn wait_route(h: &ColonyHandle, from: &str, to: &str, route: &str, n: usize) {
     let mut seq = h.subscribe_log_seq();
     let wait = async {
         loop {
@@ -580,7 +911,7 @@ async fn wait_route(h: &ColonyHandle, from: &str, to: &str, route: &str, n: usiz
 /// that names the template as a template pin that the bump would leave behind.
 const AIEOS_VERSION: &str = concat!("1.1", ".0");
 
-fn aieos(motivation: &str) -> Value {
+pub(crate) fn aieos(motivation: &str) -> Value {
     json!({"standard": {"protocol": "AIEOS", "version": AIEOS_VERSION},
            "metadata": {"instance_id": "ava-1"},
            "identity": {"names": {"first": "Ava", "last": "Quill"}},
@@ -604,7 +935,7 @@ async fn a_turn_loops_over_own_tools_until_the_model_stops() {
             )]),
             canned_chat_completion("Done.", "stop"),
         ],
-        json!({}),
+        json!({"tool_gate": {"tools_enabled": ["weather", "file", "bash", "edit"]}}),
     )
     .await;
     h.send(turn("t-1", "Note the weather.", Value::Null)).await;
@@ -694,7 +1025,7 @@ async fn client_tools_are_in_the_menu_of_the_same_turn_and_gone_in_the_next() {
             canned_chat_completion("First.", "stop"),
             canned_chat_completion("Second.", "stop"),
         ],
-        json!({}),
+        json!({"tool_gate": {"tools_enabled": ["weather"]}}),
     )
     .await;
     let mut seen = Vec::new();
@@ -726,8 +1057,11 @@ async fn a_client_tool_named_like_an_own_tool_is_dropped() {
     if !shipped() {
         return;
     }
-    let (_td, stubs, h, mut ports) =
-        boot(vec![canned_chat_completion("Fine.", "stop")], json!({})).await;
+    let (_td, stubs, h, mut ports) = boot(
+        vec![canned_chat_completion("Fine.", "stop")],
+        json!({"tool_gate": {"tools_enabled": ["weather"]}}),
+    )
+    .await;
     let fake = json!({"name": "weather", "description": "CLIENT WEATHER",
                       "parameters": {"type": "object", "properties": {}}});
     h.send(turn("t-1", "Hi.", json!([fake, look_tool()]))).await;
@@ -771,6 +1105,7 @@ async fn a_client_tool_named_like_an_own_family_is_dropped() {
     }
     let (_td, stubs, h, mut ports) =
         boot(vec![canned_chat_completion("Fine.", "stop")], json!({})).await;
+    enable(&h, &["web"]).await;
     let fake = json!({"name": "web", "description": "CLIENT WEB",
                       "parameters": {"type": "object", "properties": {}}});
     h.send(turn("t-1", "Hi.", json!([fake, look_tool()]))).await;
@@ -798,45 +1133,6 @@ async fn a_client_tool_named_like_an_own_family_is_dropped() {
     assert!(
         !dropped.is_empty() && dropped.iter().all(|d| d == "[\"web\"]"),
         "the door names the drop of the family word: {dropped:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_turn_while_a_client_call_waits_is_refused_busy() {
-    if !shipped() {
-        return;
-    }
-    let (_td, stubs, h, mut ports) = boot(
-        vec![
-            canned_tool_calls(vec![("c-look", "look", r#"{"at":"the door"}"#)]),
-            canned_chat_completion("I see a red door.", "stop"),
-        ],
-        json!({}),
-    )
-    .await;
-    h.send(turn("t-1", "What is there?", json!([look_tool()])))
-        .await;
-    let mut seen = Vec::new();
-    let calls = next_on(&h, &mut ports, "calls", &mut seen).await;
-    let other = json!({"name": "smell", "description": "Smell something.",
-                       "parameters": {"type": "object", "properties": {}}});
-    h.send(turn("t-2", "And now?", json!([other]))).await;
-    let err = next_on(&h, &mut ports, "error", &mut seen).await;
-    let slot = body_of(&err)["error"].clone();
-    assert_eq!(slot["error_code"], "turn_busy", "{slot}");
-    assert_eq!(slot["turn_id"], "t-2", "{slot}");
-    assert_eq!(slot["open_turn"], "t-1", "{slot}");
-    h.send(result_for(&calls, &ROUND_KEYS, "A red door.")).await;
-    let answer = next_on(&h, &mut ports, "answer", &mut seen).await;
-    assert_eq!(body_of(&answer)["answer"]["turn_id"], "t-1");
-    assert_eq!(body_of(&answer)["answer"]["text"], "I see a red door.");
-    h.quiesce().await;
-    let reqs = stubs.brain.recorded_requests().await;
-    assert_eq!(reqs.len(), 2, "the refused turn opened no round");
-    let names = tool_names(&reqs[1]);
-    assert!(
-        names.contains(&"look".to_string()) && !names.contains(&"smell".to_string()),
-        "the open turn's menu row stays: {names:?}"
     );
 }
 
@@ -950,7 +1246,7 @@ async fn the_loop_stops_at_max_iter_with_a_partial_answer() {
     let call = |id: &str| canned_tool_calls(vec![(id, "weather", r#"{"place":"Berlin"}"#)]);
     let (_td, stubs, h, mut ports) = boot(
         vec![call("c-1"), call("c-2"), call("c-3"), call("c-4")],
-        json!({"collector/assemble": {"max_iter": 2}}),
+        json!({"collector/assemble": {"max_iter": 2}, "tool_gate": {"tools_enabled": ["weather"]}}),
     )
     .await;
     h.send(turn("t-1", "Loop.", Value::Null)).await;
@@ -997,14 +1293,18 @@ async fn close_reports_after_the_close_pass_and_triggers_the_dream() {
     wait_route(&h, "/agent/door", "/agent/memory-hive", "clock_op", 1).await;
 }
 
+/// `simple-agent@1` only (R-SA-37): the frozen `@1.1.4` boots its identity
+/// into its OWN affinity. `@2` takes it from the colony's affinity by pack
+/// (`simple_agent_2_colony.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_aieos_seed_reaches_the_brain_as_a_pack_once_and_again_on_change() {
-    if !shipped() {
+async fn the_aieos_seed_of_simple_agent_1_reaches_the_brain_as_a_pack_once_and_again_on_change() {
+    if !shipped() || !repo("templates/simple-agent@1.1.4/config.json").is_file() {
         return;
     }
     let changed = json!({"op": "upsert_entity", "entity_id": "entity:ava", "kind": "agent",
                          "display_name": "Ava Quill", "aieos": aieos("to map the coast")});
-    let (_td, stubs, h, mut ports) = boot(
+    let (_td, stubs, h, mut ports) = boot_form(
+        Form::V1,
         vec![
             canned_tool_calls(vec![("c-aff", "affinity_propose", &changed.to_string())]),
             canned_chat_completion("Noted.", "stop"),
@@ -1094,7 +1394,7 @@ async fn a_turn_that_requires_a_tool_call_requires_it_of_its_first_brain_call_on
             canned_tool_calls(vec![("c-weather", "weather", r#"{"place":"Berlin"}"#)]),
             canned_chat_completion("Sunny.", "stop"),
         ],
-        json!({}),
+        json!({"tool_gate": {"tools_enabled": ["weather"]}}),
     )
     .await;
     let mut t = turn("t-1", "Weather?", Value::Null);
@@ -1132,7 +1432,7 @@ async fn a_turn_without_a_requirement_reaches_the_wire_unchanged() {
             canned_tool_calls(vec![("c-weather", "weather", r#"{"place":"Berlin"}"#)]),
             canned_chat_completion("Sunny.", "stop"),
         ],
-        json!({}),
+        json!({"tool_gate": {"tools_enabled": ["weather"]}}),
     )
     .await;
     h.send(turn("t-1", "Weather?", Value::Null)).await;

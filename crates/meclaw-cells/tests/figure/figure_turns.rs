@@ -99,8 +99,14 @@ fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
             let reference = cfg["cell"]["template"]
                 .as_str()
                 .expect("a ref names a template");
+            // A pinned copy (`simple-agent@1.1.4`) is its own directory.
             let name = reference.split('@').next().unwrap_or_default();
-            let target = repo("templates").join(name);
+            let pinned = repo("templates").join(reference);
+            let target = if pinned.join("config.json").is_file() {
+                pinned
+            } else {
+                repo("templates").join(name)
+            };
             assert!(
                 target.join("config.json").is_file(),
                 "{}: `{reference}` resolves to no template in this tree",

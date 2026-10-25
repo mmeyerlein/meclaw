@@ -1,4 +1,4 @@
-# `cogny@5.12.6`
+# `cogny@5.13.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.4.1"},
+{"cell": {"type": "ref", "template": "collector@5.5.0"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.15.3"},
+{"cell": {"type": "ref", "template": "curator@1.16.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.12.6` above it in its provenance chain.
+`cogny@5.13.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -525,7 +525,7 @@ nothing ever answers.
 
 ## The internal wiring, edge by edge
 
-Forty-six edges in this hive's `params.graph`, plus the five the sealed collector brings
+Forty-seven edges in this hive's `params.graph`, plus the five the sealed collector brings
 with it and those the sealed curator brings
 ([`../curator/README.md`](../curator/README.md)) -- those are their own door and store
 edges and are neither drawn nor wireable from here. Every edge below names `collector` and
@@ -564,6 +564,7 @@ curator    --(tool_result)-------> collector  in_tool
 .          --(mutation_committed)-> collector
 .          --(in_pack)-----------> curator           <- THE DOOR IN THE WALL, #458
 .          --(in_pin)------------> curator           <- another hive's pin, #916
+.          --(in_note)-----------> curator           <- another hive's notes, #1303
 .          --(in_stats)----------> curator           <- an observer's question, #926
 .          --(in_schemas)--------> schemas           <- #528
 .          --(in_model)----------> brain             <- THE MODEL DOOR, #855
@@ -680,6 +681,7 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
 | `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079); since [#1225](https://github.com/mmeyerlein/meclaw/issues/1225) also the token `source`, the rows of the source each item names itself). The splitter, its knob and its edges are the talky's byte for byte, so the shipped rule stamps this core's `memory` section too -- and this core's curator does not check it: a core keeps no memory, its `memory` stays a topic mark at `./curator` (`pass_sections` empty there), and the intake says on stderr that the rule is ignored. A tree that names another section here gets it checked at `./curator`, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
 | `answer_check` | param | `[]` | splitter -- the talky's hand-over of the sent answer to a declared checker ([#1255](https://github.com/mmeyerlein/meclaw/issues/1255)), here only because the splitter is the talky's byte for byte. This core draws no `answer_check` lane: leave it empty, or every advice dead-letters one message `no_route` |
+| `answer_check_sources` | param | `""` | splitter -- the talky's ask for the sources of a check ([#1306](https://github.com/mmeyerlein/meclaw/issues/1306)), here only because the splitter is the talky's byte for byte; it stamps nothing while `answer_check` is empty. Leave it empty |
 | `async_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
 | `handoff_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- async tools whose call ends the TURN because the answer comes from a later one. Since #894 that is `ask_requester`: the answer to the core's question arrives as its next errand. `escalate_to_deep` is gone since 4.4.0, and `consult_cogny` belongs on the asking side, where an advisor's answer arrives as its own turn. A name in this list that no cell serves is a call the dispatcher marks as answered-elsewhere and nothing ever answers |
 
@@ -704,7 +706,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.12.6", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.13.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -911,6 +913,7 @@ rides on `hop.route`.
 | `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `identity_short`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
 | `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
+| `in_note` | in | notes of another hive for the brain's window, `{notes: [{id, source, text, scope, until?, priority?}]}`, handed to `./curator`'s own `in_note` (`templates/curator/README.md`), which shows the live ones as one block opening the newest message of the person. Nothing answers it. Since GH #1303 |
 | `sidecar` | out | one section of the block the core's answer carried, `hop.section` and `hop.turn_id` (the round) beside it, the body `{messages: [], section, payload}`: every section but `window`, `gap` and `memory`, which `./curator` takes, as a talky does. Since GH #916 |
 | `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 5.2.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). Since 5.1.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |

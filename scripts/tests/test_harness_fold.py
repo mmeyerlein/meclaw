@@ -367,6 +367,20 @@ class TestHarnessFold(Fixture):
         self.assertEqual(plan["alpha_two"], ("keep", "doc_linked"))
         self.assertEqual(plan["alpha_one"], ("alpha", None))
 
+    def test_fold_keeps_files_a_frozen_public_readme_links(self):
+        """A frozen version `templates/<name>@<x.y.z>/` of a public template
+        travels with the export (make_export.py PUBLIC_TEMPLATE_PREFIXES), so
+        the stems its README links stay flat like the living one's."""
+        os.makedirs(os.path.join(self.repo, "plans", "export-fixtures"))
+        with open(os.path.join(self.repo, "plans", "export-fixtures", "make_export.py"), "w") as fh:
+            fh.write('PUBLIC_TEMPLATES = [\n    "pub-tpl",\n]\n')
+        os.makedirs(os.path.join(self.repo, "templates", "pub-tpl@1.1.3"))
+        with open(os.path.join(self.repo, "templates", "pub-tpl@1.1.3", "README.md"), "w") as fh:
+            fh.write("See [the lock](../../crates/fx/tests/alpha_two.rs).\n")
+        plan = self.plan()
+        self.assertEqual(plan["alpha_two"], ("keep", "doc_linked"))
+        self.assertEqual(plan["alpha_one"], ("alpha", None))
+
     def test_fold_keeps_readme_linked_files_in_the_export_tree(self):
         """The export tree ships no `plans/` and exactly the public templates
         (GH #1267: 13 linked files folded into `misc` there, its parts went

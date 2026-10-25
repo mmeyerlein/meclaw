@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@5.4.1"
+    "template": "collector@5.5.0"
   },
   "override_params": {
     "assemble": {
@@ -24,6 +24,10 @@
       "round_idle_ms": 120000,
       "turn_answerers": [
         "client"
+      ],
+      "brief_slots": [
+        "peer",
+        "channel"
       ]
     }
   }

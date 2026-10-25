@@ -12,7 +12,7 @@
             "channel",
             "audience_set"
           ],
-          "because": "a turn from the surface. The caller MUST promote the channel identity to context.channel, or every chat of the colony lands on the channel `default`; and it MUST promote the round to context.audience_set if the closed sessions of this talky are to reach a memory, because the generation this turn opens is where the round is recorded"
+          "because": "a turn from the surface. The caller MUST promote the channel identity to context.channel, or every chat of the colony lands on the channel `default`; and it MUST promote the round to context.audience_set if the closed sessions of this talky are to reach a memory, because the generation this turn opens is where the round is recorded. Since GH #1305 an INNER turn enters here too -- an event without a speaking person, `hop.kind` \"inner\" with `hop.inner_source` and `hop.deliver_channel_node`: its own door puts it on the channel `inner:<inner_source>` with `context.channel_node` = the delivery node, in the round the caller handed in (`context.audience_set`, required); the keeper refuses one without a node (`inner_unrouted`) or without a round (`no_round`)"
         },
         {
           "route": "in_sweep",
@@ -58,6 +58,10 @@
         {
           "route": "in_pin",
           "because": "a pin of another hive for this brain's window (GH #916): `{pins: [{text, source, until?}], replace_sources?}`, handed unchanged to `./curator` on its own `in_pin` door, which writes it into the ledger and shows it in the window (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
+        },
+        {
+          "route": "in_note",
+          "because": "notes of another hive for this brain's window (GH #1303): `{notes: [{id, source, text, scope, until?, priority?}]}`, handed unchanged to `./curator` on its own `in_note` door, which keeps them in its ledger and shows the live ones as one block opening the newest message of the person (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
         },
         {
           "route": "in_candidate",
@@ -114,6 +118,18 @@
           "because": "a closed session as one write batch, for wherever a day belongs. It carries context.channel and context.audience_set of the conversation -- off the generation row, not off the sweep that ended it"
         },
         {
+          "route": "opened",
+          "because": "GH #1305: a conversation began -- ONE per session generation, out of `./session-keeper` when its stamp's knob `conversation_events` is \"1\": hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, body `messages: []`, no text. Off (the shipped \"0\") nothing leaves."
+        },
+        {
+          "route": "closed",
+          "because": "GH #1305: a conversation ended -- ONE per closed generation, out of `./curator` right behind its `write` in the same emission when the curator writer's knob `conversation_events` is \"1\": hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason` (`round`, `night`, `idle`), `turns_person`, `turns_assistant`, `last_turn_id`, `degraded` (`store` when the store refused the read, the counts then 0), body `messages: []`, no text. Off (the shipped \"0\") nothing leaves."
+        },
+        {
+          "route": "inner_silent",
+          "because": "GH #1305: an inner turn (`hop.kind == \"inner\"` at the door) the model answered with silence -- nothing went to the channel. Hop `inner_source`, `turn_id`, body `messages: []`. Leaves only when the dispatcher's knob `conversation_events` is \"1\"; off (the shipped \"0\"), the silence ends the round and a stderr line is all that is said."
+        },
+        {
           "route": "turn_write",
           "because": "ONE finished turn per message after every stored turn and every stored answer -- never a batch (GH #298, ruling Q11): one user/assistant turn in messages[], hop.turn_id '<session_id>#<tag>-<index>' (the tag names the round without naming its audience, the index counts per round, GH #932), hop.turn_index and hop.happened_at beside it, which is the shape a memory hive's episode lane reads. An occasion may carry several messages, one per turn not yet written. On unless the instance switches the turn_write knob of `./curator`'s writer off"
         },
@@ -124,6 +140,10 @@
         {
           "route": "answer_check",
           "because": "the sent answer for the checker this composite declares (GH #1255): the splitter's knob `answer_check` names the sections whose checker reads it, and for each, on every answer -- the section written, empty or missing alike -- ONE message leaves here after the answer: `hop.section` names the section, `hop.turn_id` the round, `hop.section_written` \"1\" when the section also left on `sidecar`, else \"0\"; the body is `{messages: [], section, verify_answer}`, the answer as its reader got it. A model at low reasoning effort writes no `claims`, and a checker fed by the section alone had no input at all. The answer path never waits for it, a tool round sends none, and no section on `sidecar` carries the text. Empty knob (the default), nothing travels here; set, the parent MUST wire it to the checker, or every answer dead-letters one message"
+        },
+        {
+          "route": "stamp",
+          "because": "the route stamp of every turn for a reader outside (GH #1304): raised by `./route` only when its knob `stamp_out` is \"1\", one message per turn -- body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, never the turn's text and never the turn notes, hop `turn_id`, `path` and (on a fallback stamp) `fallback`. `audience_set` says which round the turn belongs to. Nothing travels while the knob is \"0\" (shipped); set it only where a parent draws the edge, or every turn dead-letters one message"
         },
         {
           "route": "recall",
@@ -215,7 +235,19 @@
         {
           "from": ".",
           "to": "./session-keeper",
-          "condition": "has(hop.route) && hop.route == 'in_turn'"
+          "condition": "has(hop.route) && hop.route == 'in_turn' && !(has(hop.kind) && hop.kind == 'inner')"
+        },
+        {
+          "from": ".",
+          "to": "./session-keeper",
+          "condition": "has(hop.route) && hop.route == 'in_turn' && has(hop.kind) && hop.kind == 'inner'",
+          "modifier": {
+            "set_context": {
+              "channel": "'inner:' + (has(hop.inner_source) ? hop.inner_source : '')",
+              "channel_node": "has(hop.deliver_channel_node) ? hop.deliver_channel_node : ''",
+              "inner_source": "has(hop.inner_source) ? hop.inner_source : ''"
+            }
+          }
         },
         {
           "from": ".",
@@ -246,6 +278,11 @@
           "from": ".",
           "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'in_pin'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_note'"
         },
         {
           "from": ".",
@@ -309,7 +346,11 @@
           "condition": "has(hop.route) && hop.route == 'close'",
           "modifier": {
             "set_hop": {
-              "route": "'in_close'"
+              "route": "'in_close'",
+              "close_reason": "has(hop.close_reason) ? hop.close_reason : ''",
+              "opened_at": "has(hop.opened_at) ? hop.opened_at : ''",
+              "closed_at": "has(hop.closed_at) ? hop.closed_at : ''",
+              "channel_node": "has(hop.channel_node) ? hop.channel_node : ''"
             },
             "set_context": {
               "session_id": "hop.session_id",
@@ -331,7 +372,8 @@
             "set_context": {
               "path": "has(hop.path) ? hop.path : ''",
               "tools_folded": "has(hop.tools_folded) ? hop.tools_folded : ''",
-              "tools_hinted": "has(hop.tools_hinted) ? hop.tools_hinted : ''"
+              "tools_hinted": "has(hop.tools_hinted) ? hop.tools_hinted : ''",
+              "turn_notes": "has(hop.turn_notes) ? hop.turn_notes : ''"
             }
           }
         },
@@ -386,7 +428,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -482,14 +527,17 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer_check'",
+          "condition": "has(hop.route) && hop.route == 'answer_check' && !(has(hop.answer_check_sources) && hop.answer_check_sources != '')",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -500,8 +548,21 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
+          }
+        },
+        {
+          "from": "./splitter",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'answer_check' && has(hop.answer_check_sources) && hop.answer_check_sources != ''",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_answer_check'"
+            }
           }
         },
         {
@@ -556,7 +617,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -577,7 +641,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -614,7 +681,7 @@
         {
           "from": "./collector",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer'",
+          "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.silent)",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -625,14 +692,43 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
+          }
+        },
+        {
+          "from": "./collector",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer' && has(hop.silent) && hop.silent == '1'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "inner_source",
+              "route_state",
+              "turn_notes"
+            ],
+            "set_hop": {
+              "route": "'inner_silent'",
+              "inner_source": "has(context.inner_source) ? context.inner_source : ''",
+              "turn_id": "has(context.turn_id) ? context.turn_id : (has(hop.turn_id) ? hop.turn_id : '')"
+            }
           }
         },
         {
           "from": "./curator",
           "to": ".",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'write'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'write' || hop.route == 'closed')",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -643,7 +739,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -661,7 +760,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -700,7 +802,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -724,7 +829,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -742,7 +850,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -760,7 +871,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -779,7 +893,31 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'answer_check'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -800,7 +938,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -818,7 +959,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -842,7 +986,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -860,7 +1007,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -877,6 +1027,27 @@
         {
           "from": "./session-keeper",
           "to": ".",
+          "condition": "has(hop.route) && hop.route == 'opened'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "inner_source",
+              "route_state",
+              "turn_notes"
+            ]
+          }
+        },
+        {
+          "from": "./session-keeper",
+          "to": ".",
           "condition": "has(hop.route) && hop.route == 'export_done'",
           "modifier": {
             "delete_context": [
@@ -888,7 +1059,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -906,7 +1080,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -964,7 +1141,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -982,7 +1162,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -1000,7 +1183,10 @@
               "path",
               "route_asked_at",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -1068,7 +1254,10 @@
               "route_asked_at",
               "path",
               "tools_folded",
-              "tools_hinted"
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
             ]
           }
         },
@@ -1080,6 +1269,60 @@
             "set_hop": {
               "route": "'in_route'"
             }
+          }
+        },
+        {
+          "from": "./route",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'turns_ask'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turns_ask'"
+            },
+            "set_context": {
+              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
+              "route_state": "has(hop.state) ? hop.state : ''"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./route",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turns'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turns'",
+              "state": "has(context.route_state) ? context.route_state : ''",
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''"
+            },
+            "delete_context": [
+              "route_state",
+              "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./route",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stamp_out'",
+          "modifier": {
+            "set_hop": {
+              "route": "'stamp'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source"
+            ]
           }
         }
       ]

@@ -35,6 +35,10 @@
           "because": "one section of the sidecar block of an answer of the model this hive serves, cut by the parent's splitter (OR-KY-G2): `hop.section` names it, the body is the splitter's `{messages: [], section, payload}`, the context the one the answer came with (`session_id`, `turn_id`). `window` (`release`/`pin`, block ids) leaves `marks` rows, `gap` goes to `./push` (through `./policy`), which marks it once and looks it up; `memory` leaves a `topic` mark and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`; `things` leaves as one `thing_seen` when `./intake` `things_section` is \"1\" and the turn has a round (GH #949), and is dropped otherwise; any other section is dropped and said. Since GH #1079 a section whose hop carries `sidecar_verify` (the parent splitter's rule for it, canonical JSON) and is none of `window`, `gap`, `things` is checked first: each item of its array, its quoted fields word for word against the round's `user`/`peer` turns (`turn`), those and the memory bundle (`turn+recall`) or the body's `verify_answer` (`answer`), and leaves on `sidecar` whatever its name"
         },
         {
+          "route": "in_answer_check",
+          "because": "GH #1306: the parent splitter's `answer_check` stamped `answer_check_sources` (`turn+recall`): `./intake` reads the user and peer rows of the turn and the recall rows of the window of this answer (earlier turns too, never past the answer) through the audience gate and hands the check on on `answer_check`."
+        },
+        {
           "route": "in_pin",
           "because": "the door other hives pin through (GH #892): `pins[]`, each `{text, source, until?}` -- `source` the pinning hive's name (one path segment, never `model`), `until` RFC 3339 or absent; optional `replace_sources[]` (at most 16 names by the same rule) ends every live pin of those sources first (`until` = now, no row deleted; a hash of the new set that lives stays alive; `pins: []` with it empties them). Each pin becomes a block of kind `pin` and a `pins` row, and stands in the window under `system.pinned.<source>.<id>` (at the next rebuild; until then as a message where it arrived, `broadcast_mode tail`). Nothing else of this hive is written through it. A pin without `context.audience_set` is refused (`missing_audience`, a stderr line like every pin refusal, nothing written); a kept pin carries a round and reaches only a window whose round passes it (GH #925). Since GH #972 a pin may name its own `audience_set`: it is kept when it is the round of the turn the message belongs to (`context.turn_round`, stamped by the edge that raised the turn, never settable by a config's own edge) or lies inside `context.audience_set` (the ceiling the builder's pin edge stamps); otherwise the pin is not placed (`pin:held`, a stderr line with the reason) and the source pins it again in a turn of that round. A pin without one takes `context.audience_set`. So every audience group of one source travels in ONE message with ONE `replace_sources`, which ends every live pin of the source in any round except those the message carries, held ones included"
         },
@@ -67,6 +71,10 @@
           "because": "push candidates of another hive or an app (GH #949), one door for every sender: `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?: [id]}` -- `source` one path segment by the pin rule (never `model`), at most 32 candidates, `id` 1 to 64 characters, `text` 1 to 600, at most 16 `triggers` of 1 to 64 characters with a letter or digit in each, `priority` 0 to 9 (default 5), `once` (default true without triggers, false with them), `until` RFC 3339 or absent; a repeated `id` is its last entry. Each kept candidate becomes a block of kind `candidate` and one `candidates` row per `(source, id)`, written again in place (a new text, `once` or triggers start the push's marks over), and `withdraw` ends the named ones now (`until` = now). Fail-closed on the round, `context.audience_set`: without one nothing is written (`missing_audience`); a candidate without `audience_set` takes the round, one with it must name only members of the round -- `*` only when the round holds `*`, the empty set only in an empty round -- or it alone is refused (`audience_widened`); a field out of bounds refuses it alone (`invalid_input`), a broken body the whole message. Answered on `candidate_ack` only when `hop.ack` is \"1\""
         },
         {
+          "route": "in_note",
+          "because": "notes for the window (GH #1303): `notes[{id, source, text, scope, until?, priority?}]` -- `source` one path segment, never `model`; `scope` `turn` (the next window of the round, and every later call of that turn), `session` (until the close of the generation it came in) or `until` (until that RFC 3339 time, or until withdrawn); `priority` 0 to 9, 0 first, default 5; the same id with text \"\" withdraws it. At most 32 per body, a repeated id counts by its last entry. Each becomes one `notes` row in the round of `context.audience_set`, which is required: a body without one is refused (`missing_audience`, a stderr line, nothing written), a note out of its bounds alone (a stderr line). The window shows the live ones as ONE block that opens the newest message of the person, never in the system part, within the role's `notes_share`. Nothing answers it"
+        },
+        {
           "route": "in_read",
           "because": "an app's read of its own round off this hive's wall (GH #949), answered by `./reader`: `hop.read_tag` (1 to 64 characters, echoed), the body `{what, session_id?, since?, limit?}` -- `turns`, the wall rows of the round oldest first after the cursor `since` (a `seq`), optionally of one session, with the text of their blocks, at most `limit` (default 20, at most 100) a page; or `sessions`, the round's sessions with their first and last row. Fail-closed on the round, `context.audience_set`: without one, or with the declared empty one, nothing is read and the answer is `missing_audience`; with one, the store selects through `covers`, so only rows whose own audience holds the round (or names `*`) are read at all and a row without an audience never is. Answered exactly once on `read`"
         },
@@ -76,6 +84,10 @@
             "./summarizer"
           ],
           "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
+        },
+        {
+          "route": "in_turns_ask",
+          "because": "GH #1304 (OR-EP-4): `talky/route` asks for the person's last turns before its decide call, `{messages: [], turns_ask: {n, budget_tokens}}` with the turn's context (`session_id` the running generation, `turn_id` the running turn, `audience_set` the round). Answered by `./history` out of this hive's wall with exactly one `turns`. Fail-closed on the round like `history_read` (GH #925): without `context.audience_set` nothing is read and the answer is empty with `hop.refused` `no_round`"
         }
       ],
       "emits": [
@@ -104,6 +116,10 @@
           "because": "a closed session as ONE batch in the collector's close contract: `messages[]` the participant turns, `rounds` everything else raw, `hop.turn_count`/`hop.round_count`, only the rows whose audience holds the close round (GH #925)"
         },
         {
+          "route": "closed",
+          "because": "GH #1305: ONE per close, right behind its `write` in the same emission, from `./writer` when its knob `conversation_events` is \"1\": hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, body `messages: []` -- no text. Off (the shipped \"0\") nothing leaves."
+        },
+        {
           "route": "pack_ack",
           "because": "the receipt of one pack: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown`, `pack_empty`), `hop.pack_unknown`; the context of the pack rides on"
         },
@@ -114,6 +130,10 @@
         {
           "route": "sidecar",
           "because": "a section of the model's block the intake passes on unchanged (`pass_sections`, a talky's `memory`): the splitter's body and hop, `hop.section` naming it, for the door that section always had; and a gap's find in a duplex call (`context.engine` \"duplex\"), as the section `fact` the voice model paraphrases: `hop.section` \"fact\", the body `{messages: [], section, payload: {payload}}` the splitter writes for a section; and the handover block for a renewed live session (GH #896): `hop.section` `context`, `hop.call_id`, `hop.renewal_n`, the words under `payload` -- the splitter's section shape, so the member's advise edge turns it into the call's `in_advise` like any `context` section. `context.call_id` is set from `hop.call_id` on the way out. Since GH #1079 also a checked section: the splitter's hop without `sidecar_verify`, its body without `verify_answer`, each item that passed with `verified`, each that failed dropped -- or kept with `failed` under the rule's `mode` mark"
+        },
+        {
+          "route": "answer_check",
+          "because": "GH #1306: a check of the sent answer that came in on `in_answer_check`, handed on with the words of its turn (`verify_turn`) and the recall answers of its round (`verify_recall`, `[{ref, text}]`) -- or with `hop.sources_error` `store_error` and neither, when the round's rows could not be read. Only the round's own rows count."
         },
         {
           "route": "tool_schemas",
@@ -153,6 +173,10 @@
         {
           "route": "reject",
           "because": "one item of a checked section that failed (GH #1079): `hop.reject_reason` `quote_missing` (the field is absent or holds no words) or `quote_not_in_source`, `hop.section`, `hop.field` (the first that failed), `hop.session_id`, `hop.turn_id`, `hop.episode_turn_id`, `messages: []` -- never the item's words, so a drain counts refusals by class and files no claim. A talky hands it to its `error` drain"
+        },
+        {
+          "route": "turns",
+          "because": "the answer to one `in_turns_ask`: `{messages: [], turns: [{turn_id, text}], truncated}` -- the person's words alone (wall rows of kind `user`, a turn's messages joined by a line break), of the running generation and of rows the round may see, never the running turn, the newest `n` oldest first, within `budget_tokens` (at most 4000; at or below 0, or none, 1500) by the templates' one token estimate, the oldest dropped first and `truncated` then true. `hop.refused` `no_round` or `bad_arguments`, `hop.degraded` `store` when the ledger refused a read -- each with `turns: []`. The context rides on"
         }
       ]
     },
@@ -161,7 +185,7 @@
         {
           "from": ".",
           "to": "./intake",
-          "condition": "has(hop.route) && (hop.route == 'in_curate' || hop.route == 'in_slots' || hop.route == 'in_llm' || hop.route == 'in_pack' || (hop.route == 'in_section' && (!has(hop.section) || hop.section != 'gap')) || hop.route == 'in_pin' || hop.route == 'in_candidate')"
+          "condition": "has(hop.route) && (hop.route == 'in_curate' || hop.route == 'in_slots' || hop.route == 'in_llm' || hop.route == 'in_pack' || (hop.route == 'in_section' && (!has(hop.section) || hop.section != 'gap')) || hop.route == 'in_pin' || hop.route == 'in_candidate' || hop.route == 'in_note' || hop.route == 'in_answer_check' || hop.route == 'in_close')"
         },
         {
           "from": ".",
@@ -181,7 +205,7 @@
         {
           "from": ".",
           "to": "./history",
-          "condition": "has(hop.route) && hop.route == 'in_history_call'"
+          "condition": "has(hop.route) && (hop.route == 'in_history_call' || hop.route == 'in_turns_ask')"
         },
         {
           "from": "./intake",
@@ -218,7 +242,8 @@
               "cur_origin": "hop.reply_cell",
               "cur_phase": "hop.phase",
               "cur_call": "hop.cur_call",
-              "cur_reason": "hop.cur_reason"
+              "cur_reason": "hop.cur_reason",
+              "cur_close": "has(hop.cur_close) ? hop.cur_close : ''"
             }
           }
         },
@@ -312,7 +337,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -325,33 +351,36 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
         {
           "from": "./writer",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'turn_write' || hop.route == 'write')",
+          "condition": "has(hop.route) && (hop.route == 'turn_write' || hop.route == 'write' || hop.route == 'closed')",
           "modifier": {
             "delete_context": [
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
         {
           "from": "./history",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'tool_result'",
+          "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'turns')",
           "modifier": {
             "delete_context": [
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -367,7 +396,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -380,7 +410,22 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer_check'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -396,7 +441,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -452,7 +498,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -511,7 +558,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -547,7 +595,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -560,7 +609,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -596,7 +646,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         },
@@ -609,7 +660,8 @@
               "cur_origin",
               "cur_phase",
               "cur_call",
-              "cur_reason"
+              "cur_reason",
+              "cur_close"
             ]
           }
         }
@@ -620,7 +672,7 @@
     "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got, by the policy of the model's role. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
     "not_in_scope": "No retrieval of its own (memory answers; `./push` only builds the question) and no tool fan-out -- the one tool family it serves is its own wall (`history_*`, GH #893) -- no persona of its own. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
-    "contract_in": "Sixteen lanes on `hop.route`: in_curate, in_slots, in_llm, in_pack, in_close, in_model, in_section, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_candidate, in_read.",
-    "contract_out": "Thirteen routes on `hop.route`, leaving through the hive path: brain, turn_write, write, pack_ack, model_refused, sidecar, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read."
+    "contract_in": "Nineteen lanes on `hop.route`: in_curate, in_slots, in_llm, in_pack, in_close, in_model, in_section, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_candidate, in_note, in_read, in_sealed, in_turns_ask.",
+    "contract_out": "Nineteen routes on `hop.route`, leaving through the hive path: brain, quick, consult, research, turn_write, write, pack_ack, model_refused, sidecar, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, turns."
   }
 }

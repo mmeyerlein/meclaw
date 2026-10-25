@@ -43,12 +43,31 @@ THE LOCKS
                        `docs/superpowers/plans/` are no class of the cascade.
                        Re-checks B-1/B-2: 27 of 54 bumps RED with a net over
                        every text and spelling, 0 with this one.
+                       A frozen version `templates/<name>@<x.y.z>/` (its
+                       template.json declares that name and version) is
+                       shipped: a pin on it is provided, its number is never
+                       left behind, and it is never the version of its name
+                       (`frozen_templates`, development-rules § 4).
     version-lock       a strand diff that changes the `version` of a
                        `templates/*/template.json` or the
                        `workspace.package.version` of `Cargo.toml` is RED:
                        versions are assigned at the merge point (OR-DT-13).
                        `allow_bump` (the coordinator's merge, with a reason)
                        turns it into a NOTE that names the reason.
+                       The one number change a break writes -- the living
+                       template.json moves above a number frozen beside it --
+                       is a NOTE that names the frozen directory.
+    frozen-template-lock  a frozen version is immutable: a diff path under
+                       `templates/<name>@<x.y.z>/` that the base already had
+                       (changed or deleted) is RED; a new file there is free.
+                       The one change allowed (OR-agent-2.A1.2): lines that
+                       differ only in pin positions `"<other>@<x.y.z>"` now on
+                       a version the tree ships -- the cascade raising a
+                       dependency pin, so the bytes of a frozen version's
+                       instances may change in its dependency pins and only
+                       there; its own name and number never move.
+                       A directory with `@` in its name whose template.json
+                       does not declare that name and version is RED.
     test-line-lock     a changed promise (`templates/*/README.md`,
                        `docs/stability.en.md`, `CHANGELOG.md`) without a
                        changed test in the same diff: NOTE, never RED --
@@ -200,18 +219,67 @@ def _closed(fn):
 
 
 def template_versions(tree):
-    """`{name: version}` from `templates/*/template.json`; `{}` without them.
-    Only the tree's own files (`listed`, GH #1199 K19)."""
+    """`{name: version}` from the LIVING `templates/*/template.json`; `{}` without
+    them. Only the tree's own files (`listed`, GH #1199 K19). A frozen directory
+    (`frozen_templates`) is never the version of its name."""
     out = {}
     for name in template_dirs(tree):
-        path = os.path.join(tree, "templates", name, "template.json")
-        try:
-            with open(path, encoding="utf-8") as fh:
-                doc = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if isinstance(doc, dict) and doc.get("version"):
+        doc = _template_doc(tree, name)
+        if doc is not None and doc.get("version"):
             out[doc.get("name") or name] = str(doc["version"])
+    return out
+
+
+def _template_doc(tree, d):
+    """The `template.json` object of `templates/<d>/`, or None."""
+    try:
+        with open(os.path.join(tree, "templates", d, "template.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+# A frozen version: `templates/<name>@<x.y.z>/` directly under templates/. The
+# scanner registers it beside the living `templates/<name>/` (name AND version
+# are unique, GH #664), so a break can leave the old number shipped for the
+# pinners that still need it (figure@1.0.5 pins simple-agent@1.1.4 while
+# simple-agent moves to 2.0.0). Until then the kit took one directory per name:
+# the second overwrote the first in `versions.assign`'s `by_name`, the cascade
+# raised the frozen pin, the pin-lock called it "not provided".
+_FROZEN_DIR = re.compile(r"^(?P<name>[a-z0-9][a-z0-9_-]*)@(?P<ver>%s)$" % _VERSION)
+
+
+def frozen_dir(d):
+    """`(name, version)` when the directory NAME `d` has the frozen form, else None."""
+    m = _FROZEN_DIR.match(d)
+    return (m.group("name"), m.group("ver")) if m else None
+
+
+def _all_template_dirs(tree):
+    return sorted({rel.split("/")[1] for rel in listed(tree, "templates")
+                   if rel.count("/") == 2 and rel.endswith("/template.json")})
+
+
+def frozen_dirs(tree):
+    """The frozen directories `<name>@<x.y.z>` whose template.json declares exactly
+    that name and that version."""
+    out = []
+    for d in _all_template_dirs(tree):
+        nv = frozen_dir(d)
+        doc = _template_doc(tree, d) if nv else None
+        if doc is not None and (doc.get("name"), str(doc.get("version"))) == nv:
+            out.append(d)
+    return out
+
+
+def frozen_templates(tree):
+    """`{name: {versions}}` of the frozen directories (`frozen_dirs`): numbers that
+    ship although no living directory carries them."""
+    out = {}
+    for d in frozen_dirs(tree):
+        name, ver = frozen_dir(d)
+        out.setdefault(name, set()).add(ver)
     return out
 
 
@@ -251,9 +319,10 @@ def listed(tree, top):
 
 
 def template_dirs(tree):
-    """The directories `<d>` of `templates/<d>/template.json` among `listed`."""
-    return sorted({rel.split("/")[1] for rel in listed(tree, "templates")
-                   if rel.count("/") == 2 and rel.endswith("/template.json")})
+    """The LIVING directories `<d>` of `templates/<d>/template.json` among `listed`:
+    a directory with `@` in its name is a frozen version (`frozen_dirs`) or a
+    finding of the frozen-template-lock, never the one directory of a name."""
+    return [d for d in _all_template_dirs(tree) if "@" not in d]
 
 
 def _walk(tree, top, suffix):
@@ -268,9 +337,12 @@ def _lines(tree, rel):
         return []
 
 
-def _stale_pins(tree, rels, versions, check):
+def _stale_pins(tree, rels, versions, check, frozen=None):
+    """RED for every pin position the tree does not provide; a pin on a frozen
+    version (`frozen`, `{name: {versions}}`) is provided."""
     if not versions:
         return []
+    frozen = frozen or {}
     rx = _pin_re(versions)
     out = []
     for rel in rels:
@@ -279,7 +351,7 @@ def _stale_pins(tree, rels, versions, check):
                 continue
             for m in rx.finditer(line):
                 name, ver = m.group("name"), m.group("ver")
-                if versions[name] != ver:
+                if versions[name] != ver and ver not in frozen.get(name, ()):
                     out.append(Finding(
                         "RED", check, rel, no,
                         "%s@%s not provided" % (name, ver),
@@ -306,7 +378,7 @@ def moved_templates(diff_paths, tree, base):
     now = template_versions(tree)
     out = {}
     for rel in diff_paths:
-        m = re.match(r"templates/([^/]+)/template\.json$", rel)
+        m = re.match(r"templates/([^/@]+)/template\.json$", rel)
         if not m:
             continue
         try:
@@ -321,18 +393,38 @@ def moved_templates(diff_paths, tree, base):
     return out
 
 
+def frozen_prefixes(tree):
+    """`templates/<d>/` of every directory with `@` in its name: the cascade writes
+    there only dependency pins in JSON (OR-agent-2.A1.2, frozen-template-lock)."""
+    return tuple("templates/%s/" % d for d in _all_template_dirs(tree) if "@" in d)
+
+
+def frozen_owner(rel):
+    """The template name of the frozen directory `rel` lies in, else None."""
+    parts = rel.split("/")
+    if len(parts) > 2 and parts[0] == "templates" and "@" in parts[1]:
+        return parts[1].split("@", 1)[0]
+    return None
+
+
 def _net_files(tree):
-    """The files the cascade owns (`NET_CLASSES`), without the frozen archive."""
+    """The files the cascade owns (`NET_CLASSES`), without the frozen archive. Of a
+    frozen template version only the JSON class: the cascade raises its dependency
+    pins there and nothing else (OR-agent-2.A1.2)."""
+    skip = frozen_prefixes(tree)
     for suffix, tops in NET_CLASSES:
         for top in tops:
             for rel in _walk(tree, top, suffix):
-                if not rel.startswith(FROZEN):
+                if not rel.startswith(FROZEN) and (suffix == ".json" or not rel.startswith(skip)):
                     yield rel
 
 
 def left_behind(diff_paths, tree, base):
-    """The net: every pin position `<name>@<old>` of a template the diff bumped."""
-    moved = moved_templates(diff_paths, tree, base)
+    """The net: every pin position `<name>@<old>` of a template the diff bumped --
+    unless the old number stays shipped as a frozen version beside it."""
+    frozen = frozen_templates(tree)
+    moved = {n: v for n, v in moved_templates(diff_paths, tree, base).items()
+             if v[0] not in frozen.get(n, ())}
     if not moved:
         return []
     rx = pin_position_re(moved)
@@ -342,10 +434,11 @@ def left_behind(diff_paths, tree, base):
         lines = _lines(tree, rel)
         if not any(o in line for line in lines for o in olds):
             continue
+        own = frozen_owner(rel)
         for no, line in enumerate(lines, 1):
             for m in rx.finditer(line):
                 name, ver = m.group("name"), m.group("ver")
-                if ver != moved[name][0]:
+                if ver != moved[name][0] or name == own:
                     continue
                 out.append(Finding(
                     "RED", "pin-lock", rel, no,
@@ -371,7 +464,8 @@ def check_pin_lock(diff_paths, tree, ctx=None):
         rels.extend(r for r in _walk_json(tree, top)
                     if not r.startswith(SCENARIO_ROOT + "/"))
     rels.extend(_sets(tree))
-    out = _stale_pins(tree, rels, versions, "pin-lock")
+    frozen = frozen_templates(tree)
+    out = _stale_pins(tree, rels, versions, "pin-lock", frozen)
     prose = _prose_re(versions)
     base = (ctx or {}).get("base")
     for rel in diff_paths:
@@ -383,7 +477,7 @@ def check_pin_lock(diff_paths, tree, ctx=None):
                 continue
             for m in prose.finditer(line):
                 name, ver = m.group(1), m.group(2)
-                if versions[name] != ver:
+                if versions[name] != ver and ver not in frozen.get(name, ()):
                     out.append(Finding(
                         "NOTE", "pin-lock", rel, no,
                         "%s@%s is not the tree's %s" % (name, ver, versions[name]),
@@ -412,7 +506,7 @@ def _added_lines(tree, base, rel):
 def check_scenario_pin_lock(diff_paths, tree, ctx=None):
     versions = template_versions(tree)
     return _stale_pins(tree, list(_walk_json(tree, SCENARIO_ROOT)), versions,
-                       "scenario-pin-lock")
+                       "scenario-pin-lock", frozen_templates(tree))
 
 
 def _git(tree, *args):
@@ -454,14 +548,112 @@ def check_version_lock(diff_paths, tree, ctx=None):
         line = next((n for n, l in enumerate(_lines(tree, rel), 1)
                      if re.match(r'\s*"?version"?\s*[:=]', l)), 1)
         allow = ctx.get("allow_bump")
+        kept = _frozen_beside(tree, rel, old)
         if allow:
             out.append(Finding("NOTE", "version-lock", rel, line,
                                "%s -> %s allowed: %s" % (old, new, allow), ""))
+        elif kept:
+            # The one number change a strand must write: the old number moves to
+            # its frozen directory, and two template.json declaring it would make
+            # the scan fail with DuplicateVersion (GH #664).
+            out.append(Finding("NOTE", "version-lock", rel, line,
+                               "%s -> %s: %s keeps %s frozen; the merge point gives the new "
+                               "number" % (old, new, kept, old), ""))
         else:
             out.append(Finding("RED", "version-lock", rel, line,
                                "%s -> %s: versions are assigned at the merge point" % (old, new),
                                "revert the bump, the coordinator assigns it (OR-DT-13)"))
     return out
+
+
+def _frozen_beside(tree, rel, old):
+    """`templates/<name>@<old>/` when the living `rel` (`templates/<d>/template.json`)
+    leaves its old number frozen beside it, else None."""
+    m = re.match(r"templates/([^/@]+)/template\.json$", rel)
+    if not m:
+        return None
+    doc = _template_doc(tree, m.group(1)) or {}
+    name = doc.get("name") or m.group(1)
+    return "templates/%s@%s/" % (name, old) if old in frozen_templates(tree).get(name, ()) \
+        else None
+
+
+_ANY_PIN = re.compile(r'(?P<esc>\\*)"(?P<name>[a-z][a-z0-9-]*)@(?P<ver>%s)(?P=esc)"' % _VERSION)
+
+
+def _only_dependency_pins(tree, base, rel, d):
+    """True when `rel` differs from `base` only in pin positions `"<name>@<x.y.z>"`
+    of OTHER templates, each now on a version the tree ships (living or frozen):
+    the one change the cascade makes under a frozen directory (OR-agent-2.A1.2)."""
+    if not os.path.isfile(os.path.join(tree, rel)):
+        return False
+    old = _git(tree, "show", "%s:%s" % (base, rel))
+    try:
+        with open(os.path.join(tree, rel), encoding="utf-8") as fh:
+            new = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if old is None or old == new:
+        return old is not None
+    olds, news = old.split("\n"), new.split("\n")
+    if len(olds) != len(news):
+        return False
+    own = d.split("@", 1)[0]
+    living, frozen = template_versions(tree), frozen_templates(tree)
+    for a, b in zip(olds, news):
+        if a == b:
+            continue
+        pa, pb = list(_ANY_PIN.finditer(a)), list(_ANY_PIN.finditer(b))
+        if _ANY_PIN.sub("<pin>", a) != _ANY_PIN.sub("<pin>", b) or len(pa) != len(pb):
+            return False
+        for x, y in zip(pa, pb):
+            if (x.group("esc"), x.group("name")) != (y.group("esc"), y.group("name")):
+                return False
+            if x.group("ver") == y.group("ver"):
+                continue
+            name, ver = y.group("name"), y.group("ver")
+            if name == own or (living.get(name) != ver and ver not in frozen.get(name, ())):
+                return False
+    return True
+
+
+@_closed
+def check_frozen_template_lock(diff_paths, tree, ctx=None):
+    """A frozen version is immutable: RED for a diff path under a frozen directory
+    that the base already had (changed or deleted; a new file is free), and RED for
+    a directory with `@` in its name that is no frozen version (`frozen_dirs`)."""
+    dirs = _all_template_dirs(tree)
+    good = set(frozen_dirs(tree))
+    for d in dirs:
+        if "@" in d and d not in good:
+            nv = frozen_dir(d)
+            doc = _template_doc(tree, d) or {}
+            yield Finding("RED", "frozen-template-lock", "templates/%s/template.json" % d, 0,
+                          "declares %s@%s, the directory says %s"
+                          % (doc.get("name"), doc.get("version"), d),
+                          "name a frozen directory <name>@<x.y.z> after the name and version "
+                          "its template.json declares" if nv else
+                          "only a frozen version <name>@<x.y.z> carries `@` in its name")
+    base = (ctx or {}).get("base")
+    if not base:
+        return
+    seen = set()
+    for rel in diff_paths:
+        parts = rel.split("/")
+        if len(parts) < 3 or parts[0] != "templates" or "@" not in parts[1] or rel in seen:
+            continue
+        seen.add(rel)
+        if _git(tree, "cat-file", "-e", "%s:%s" % (base, rel)) is None:
+            continue  # new in this diff: freezing is adding
+        if _only_dependency_pins(tree, base, rel, parts[1]):
+            continue  # OR-agent-2.A1.2: the cascade raised a dependency pin
+        yield Finding("RED", "frozen-template-lock", rel, 0,
+                      "%s a file of the frozen version %s" % (
+                          "changes" if os.path.lexists(os.path.join(tree, rel)) else "deletes",
+                          parts[1]),
+                      "a frozen version is immutable: restore it (`git checkout %s -- %s`); "
+                      "a change belongs to the living templates/%s/"
+                      % (base[:12], rel, (frozen_dir(parts[1]) or (parts[1],))[0]))
 
 
 def check_test_line_lock(diff_paths, tree, ctx=None):
@@ -1206,6 +1398,7 @@ def check_out_link_lock(diff_paths, tree, ctx=None):
 LOCKS = (
     ("pin-lock", check_pin_lock),
     ("version-lock", check_version_lock),
+    ("frozen-template-lock", check_frozen_template_lock),
     ("test-line-lock", check_test_line_lock),
     ("scenario-pin-lock", check_scenario_pin_lock),
     ("set-drift-lock", check_set_drift_lock),

@@ -47,6 +47,8 @@ pub mod gh1225_kr_a_refused_read_of_intake_writes_nothing_blind;
 pub mod gh1225_kr_a_refused_write_is_written_by_the_next_message;
 pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
 pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
+pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
+pub mod gh1225_kr_p_a_sweep_names_only_what_went;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

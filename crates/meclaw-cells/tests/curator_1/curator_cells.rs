@@ -699,6 +699,8 @@ fn curator_template_shape() {
             "in_close",
             "in_model",
             "in_section",
+            // GH #1306: a check of the sent answer asking for its round's words.
+            "in_answer_check",
             "in_pin",
             "in_schemas",
             "in_history_call",
@@ -707,10 +709,14 @@ fn curator_template_shape() {
             "in_renewed",
             "in_stats",
             "in_candidate",
+            // GH #1303: notes right before the newest turn.
+            "in_note",
             "in_read",
             // GH #1061 (#801): the summarizer's sealed key, answered by the
             // member's broker over a v-lane.
-            "in_sealed"
+            "in_sealed",
+            // GH #1304: talky/route's question for the person's last turns.
+            "in_turns_ask"
         ]
     );
     assert_eq!(
@@ -723,9 +729,13 @@ fn curator_template_shape() {
             "research",
             "turn_write",
             "write",
+            // GH #1305: a conversation's end, right behind its `write`.
+            "closed",
             "pack_ack",
             "model_refused",
             "sidecar",
+            // GH #1306: that check, with `verify_turn` and `verify_recall`.
+            "answer_check",
             "tool_schemas",
             "tool_result",
             "recall",
@@ -735,7 +745,9 @@ fn curator_template_shape() {
             "read",
             "credential_request",
             // GH #1079: one per item of a section that failed its word-for-word check.
-            "reject"
+            "reject",
+            // GH #1304: the answer to `in_turns_ask`.
+            "turns"
         ]
     );
     let types: Vec<(&str, &str)> = vec![
@@ -778,10 +790,12 @@ fn curator_template_shape() {
         "pins": ["hash", "source", "until", "at", "audience_set"],
         "candidates": ["source", "cand_id", "hash", "triggers", "until", "once", "used_at",
                        "last_seq", "priority", "audience_set", "at"],
+        "notes": ["source", "note_id", "text", "scope", "until", "priority",
+                  "audience_set", "session_id", "at", "used_turn"],
     });
     // GH #892: `marks` and `pins` joined the seven of 1.0.0; GH #949
-    // `candidates`.
-    assert_eq!(schema.as_object().unwrap().len(), 10, "ten tables");
+    // `candidates`; GH #1303 `notes`.
+    assert_eq!(schema.as_object().unwrap().len(), 11, "eleven tables");
     // The llm cell stamps `cost` as a fraction; the store knows `int`, `text`
     // and `json`, and only `json` says what the column holds (review M4).
     assert_eq!(schema["calls"]["cost"], "json", "calls.cost");

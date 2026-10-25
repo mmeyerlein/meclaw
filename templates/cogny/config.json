@@ -32,6 +32,10 @@
           "because": "a pin of another hive for this brain's window (GH #916): `{pins: [{text, source, until?}], replace_sources?}`, handed unchanged to `./curator` on its own `in_pin` door, which writes it into the ledger and shows it in the window (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
         },
         {
+          "route": "in_note",
+          "because": "notes of another hive for this brain's window (GH #1303): `{notes: [{id, source, text, scope, until?, priority?}]}`, handed unchanged to `./curator` on its own `in_note` door, which keeps them in its ledger and shows the live ones as one block opening the newest message of the person (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
+        },
+        {
           "route": "in_candidate",
           "because": "a set of push candidates of another hive for this brain's curator (GH #949): `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?}`, handed unchanged to `./curator` on its own `in_candidate` door, which stores each candidate in its ledger and offers it to the memory push of a later turn whose round it covers -- with triggers only when the person's words name one (`templates/curator/README.md`). `context.audience_set` travels with it untouched: it is the round the candidates are stored for, and a candidate never reaches a wider one. It is answered on `candidate_ack` only when `hop.ack` is \"1\""
         },
@@ -167,6 +171,11 @@
           "from": ".",
           "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'in_pin'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_note'"
         },
         {
           "from": ".",

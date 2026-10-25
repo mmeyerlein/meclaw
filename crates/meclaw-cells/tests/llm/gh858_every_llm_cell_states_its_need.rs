@@ -390,10 +390,13 @@ fn what_the_recipe_announces_is_what_the_cell_states() {
             "memory-hive/dreamer",
             "memory-hive/judge",
             "presenter/decide",
+            "simple-agent/brain",
+            "simple-agent/strong",
             "talky/brain"
         ],
         "the recipe announces the assistant's brains, its curator summarizers (GH #877), \
-         the member's memory cells and the presenter's decider (GH #963, PE-DP-11)"
+         the member's memory cells, the presenter's decider (GH #963, PE-DP-11) and the \
+         simple-agent's two model cells (GH #1310)"
     );
     for (cell, copy) in &copies {
         let cfg = read_json(&repo(&format!("templates/{cell}/config.json")));

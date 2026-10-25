@@ -1,0 +1,98 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "warm",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    },
+    "tools_enabled": [],
+    "tool_families": {
+      "bash": [
+        "bash"
+      ],
+      "file": [
+        "file"
+      ],
+      "edit": [
+        "edit"
+      ],
+      "web": [
+        "web_fetch",
+        "web_search"
+      ],
+      "weather": [
+        "weather"
+      ]
+    },
+    "script_inline": "\nimport sys, json\n\n# The tool families this agent offers (R-SA-18): `tools_enabled` names them,\n# by family (`web` is web_fetch and web_search), and the default is none. The\n# menu the collector asks `./tools` for loses every tool of a family nobody\n# enabled, and a call of such a tool never reaches `./tools`: it is not the\n# agent's own, so it goes on to the door like every name the agent does not\n# serve -- the door owns the turn's client menu, and a caller's `bash` while\n# the agent's bash family is off is the caller's call (OR-AG-47). Each menu\n# tick also tells the door which families are enabled (lane `tools_enabled`),\n# so the door keeps a client tool whose own family is off. Names that are no\n# family's (memory_recall, history_*) pass untouched: the agent's own core\n# tools are always there.\n\ndoc = json.load(sys.stdin)\nP = doc.get(\"params\") or {}\nbody = doc.get(\"body\") or {}\nhop = ((doc.get(\"envelope\") or {}).get(\"header\") or {}).get(\"hop\") or {}\n# The shipped default, so a bare run gates exactly like the shipped cell.\nFAMILIES = {\"bash\": [\"bash\"], \"file\": [\"file\"], \"edit\": [\"edit\"],\n            \"web\": [\"web_fetch\", \"web_search\"], \"weather\": [\"weather\"]}\nfamilies = P.get(\"tool_families\") or FAMILIES\nenabled = {str(f) for f in (P.get(\"tools_enabled\") or []) if isinstance(f, str)}\nfamily_of = {}\nfor fam, names in families.items():\n    for n in names or []:\n        family_of[str(n)] = str(fam)\n\n\ndef allowed(name):\n    fam = family_of.get(name)\n    return fam is None or fam in enabled\n\n\nroute = str(hop.get(\"route\", \"\"))\nout = []\nif route == \"schemas\":\n    asked = body.get(\"tools\")\n    msg = dict(body)\n    if isinstance(asked, list):\n        msg[\"tools\"] = [n for n in asked if not isinstance(n, str) or allowed(n)]\n    msg.setdefault(\"messages\", [])\n    msg[\"header\"] = dict(hop, route=\"in_schemas\")\n    on = sorted(enabled)\n    out = [msg, {\"header\": {\"route\": \"tools_enabled\", \"tools_enabled\": json.dumps(on)},\n                 \"tools_enabled\": on, \"messages\": []}]\nelif route == \"tool\":\n    name = str(hop.get(\"tool_name\") or \"\")\n    if allowed(name):\n        msg = dict(body)\n        msg.setdefault(\"messages\", [])\n        msg[\"header\"] = dict(hop, route=\"tool_call\")\n        out = [msg]\n    else:\n        # Not the agent's own tool: to the door, as the dispatcher would have\n        # sent a name it has no cell for.\n        msg = dict(body)\n        msg.setdefault(\"messages\", [])\n        msg[\"header\"] = dict(hop, route=\"tool\")\n        out = [msg]\nsys.stdout.write(json.dumps(out))\n"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "multi_send_capable": true,
+    "settings": {
+      "tools_enabled": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "the own tool families on offer; none by default"
+      },
+      "tool_families": {
+        "type": "object",
+        "secret": false,
+        "default": {
+          "bash": [
+            "bash"
+          ],
+          "file": [
+            "file"
+          ],
+          "edit": [
+            "edit"
+          ],
+          "web": [
+            "web_fetch",
+            "web_search"
+          ],
+          "weather": [
+            "weather"
+          ]
+        },
+        "description": "family -> the tool names it folds (`web` is web_fetch and web_search)"
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "tools": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "required": false
+        },
+        "tool_name": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  }
+}

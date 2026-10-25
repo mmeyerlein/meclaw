@@ -60,6 +60,16 @@ commit, by the two greps of development-rules § 4a:
                 is measurement records and stays.
     shorthand   `name@N` is historical by definition and never touched.
 
+A frozen version (`templates/<name>@<x.y.z>/`, `locks.frozen_templates`) stays
+shipped beside the living directory: a pin on it is never raised, in no file
+class and not in the catalogue, and it numbers nothing (`template_dirs` holds
+living directories only). Under a frozen directory the cascade raises the
+JSON pins of OTHER living templates and nothing else (OR-agent-2.A1.2: figure
+-> simple-agent@1.1.4 -> curator must keep resolving when curator moves), so
+the bytes of a frozen version's instances may change in their dependency
+pins; its own name, its prose and its number never move, and its pinners
+(figure) get no bump -- their pin did not move.
+
 A template whose files the cascade changed has changed: it gets a fix bump
 of its own, and its pinners follow (`meclaw-os` after `builder`). The loop
 ends when no file moves. Satellite sets (`sets/*.json` in other
@@ -263,8 +273,8 @@ def issues_of(doc):
 # --- the tree -------------------------------------------------------------------
 
 def template_dirs(tree):
-    """`{dir: name}` of every `templates/<dir>/template.json` of the tree's own files
-    (`locks.listed`, GH #1199 K19)."""
+    """`{dir: name}` of every LIVING `templates/<dir>/template.json` of the tree's own
+    files (`locks.listed`, GH #1199 K19); a frozen `<name>@<x.y.z>` is none of them."""
     out = {}
     for d in locks.template_dirs(tree):
         path = os.path.join(tree, "templates", d, "template.json")
@@ -404,11 +414,13 @@ def _raise_inter_crate_pins(tree, new):
 
 # --- the cascade -------------------------------------------------------------------
 
-def _files(tree, top, suffix):
+def _files(tree, top, suffix, frozen_too=False):
     """The cascade's files: the pin readers' own (`locks._walk`, GH #1199 K19 -- an
-    ignored rest is no file of the tree), without the frozen archive."""
+    ignored rest is no file of the tree), without the frozen archive and -- unless
+    `frozen_too` (the JSON pins, OR-agent-2.A1.2) -- the frozen template versions."""
+    skip = FROZEN + (() if frozen_too else locks.frozen_prefixes(tree))
     for rel in locks._walk(tree, top, suffix):
-        if not rel.startswith(FROZEN):
+        if not rel.startswith(skip):
             yield rel
 
 
@@ -423,6 +435,7 @@ def cascade(tree, moved, also=None):
     if not moved:
         return []
     also = also or {}
+    frozen = locks.frozen_templates(tree)
     names = sorted(moved, key=len, reverse=True)
     alt = "|".join(re.escape(n) for n in names)
     # one pin form with the stale-pin scan and the net: `"name@x.y.z"`, escaped to
@@ -440,6 +453,7 @@ def cascade(tree, moved, also=None):
         except (OSError, UnicodeDecodeError):
             return
         changed = False
+        own = locks.frozen_owner(rel)
         for no, line in enumerate(lines):
             if "@" not in line:
                 continue
@@ -448,7 +462,8 @@ def cascade(tree, moved, also=None):
                 nonlocal changed
                 name, ver = m.group("name"), m.group("ver")
                 old, new = moved[name]
-                if ver == new or (only_old and ver not in (old, also.get(name))):
+                if ver == new or name == own or ver in frozen.get(name, ()) or (
+                        only_old and ver not in (old, also.get(name))):
                     return m.group(0)
                 changed = True
                 out.append({"path": rel, "line": no + 1, "template": name,
@@ -460,7 +475,7 @@ def cascade(tree, moved, also=None):
                 fh.write("\n".join(lines))
 
     for top in SURFACES:
-        for rel in _files(tree, top, ".json"):
+        for rel in _files(tree, top, ".json", frozen_too=True):
             rewrite(rel, json_rx, only_old=False)
     for top in PROSE_SURFACES:
         for rel in _files(tree, top, ".md"):
@@ -468,7 +483,7 @@ def cascade(tree, moved, also=None):
     for top in CODE_SURFACES:
         for rel in _files(tree, top, ".rs"):
             rewrite(rel, json_rx, only_old=True)
-    out.extend(catalogue(tree, moved, alt))
+    out.extend(catalogue(tree, moved, alt, frozen))
     return out
 
 
@@ -485,6 +500,10 @@ def left_pins(tree, moved):
     JSON files are left out (the pin-lock reads every JSON pin; prose inside
     a JSON string is a history sentence) and so are generated files.
     Returns `[{path, line, template, version}]`."""
+    frozen = locks.frozen_templates(tree)
+    # an old number that stays shipped frozen beside the living one is no leftover
+    moved = {n: set(v) - frozen.get(n, set()) for n, v in moved.items()}
+    moved = {n: v for n, v in moved.items() if v}
     if not moved:
         return []
     names = sorted(moved, key=len, reverse=True)
@@ -513,25 +532,30 @@ def left_pins(tree, moved):
 CATALOGUE = "templates/README.md"
 
 
-def catalogue(tree, moved, alt):
+def catalogue(tree, moved, alt, frozen=None):
     """The version column of the public catalogue (`scripts/check_catalogue.py`):
-    a listed template's row names the number it ships at."""
+    a listed template's row names the number it ships at. A row that links a
+    frozen directory (`(<name>@<x.y.z>/)`) at a frozen number keeps it."""
+    frozen = frozen or {}
     path = os.path.join(tree, CATALOGUE)
     try:
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().split("\n")
     except (OSError, UnicodeDecodeError):
         return []
-    rx = re.compile(r"^(\|\s*\[`(%s)`\]\([^)]*\)\s*\|\s*)(%s)(\s*\|)" % (alt, locks._VERSION))
+    rx = re.compile(r"^(\|\s*\[`(%s)`\]\(([^)]*)\)\s*\|\s*)(%s)(\s*\|)" % (alt, locks._VERSION))
     out = []
     for no, line in enumerate(lines):
         hit = rx.match(line)
-        if not hit or hit.group(3) == moved[hit.group(2)][1]:
+        if not hit or hit.group(4) == moved[hit.group(2)][1]:
+            continue
+        if hit.group(4) in frozen.get(hit.group(2), ()) and \
+                hit.group(3).strip().rstrip("/") == "%s@%s" % (hit.group(2), hit.group(4)):
             continue
         new = moved[hit.group(2)][1]
         out.append({"path": CATALOGUE, "line": no + 1, "template": hit.group(2),
-                    "from": hit.group(3), "to": new})
-        lines[no] = hit.group(1) + new + hit.group(4) + line[hit.end():]
+                    "from": hit.group(4), "to": new})
+        lines[no] = hit.group(1) + new + hit.group(5) + line[hit.end():]
     if out:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))

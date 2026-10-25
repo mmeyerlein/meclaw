@@ -280,11 +280,15 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // `./cogny` on `consult` (with its `consult_id`), one per keeper.
     // GH #1255: one hundred and one -- the `answer_check` exit out of each keeper,
     // the sent answer for the checker a member binds at this level's path.
+    // GH #1303: one hundred and four -- the `in_note` door into each keeper and
+    // the core.
+    // GH #1304: one hundred and six -- the route stamp, `stamp`, out of each
+    // keeper.
     assert_eq!(
         hp.graph.edges.len(),
-        101,
-        "one hundred and one edges, forty around each keeper. The number is asserted so \
-         that an edge added on one side and forgotten on the other is loud"
+        106,
+        "one hundred and six edges, forty-two around each keeper. The number is asserted \
+         so that an edge added on one side and forgotten on the other is loud"
     );
 }
 

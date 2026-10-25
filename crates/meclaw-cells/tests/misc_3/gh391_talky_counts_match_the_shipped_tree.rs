@@ -194,6 +194,25 @@ fn word(n: usize) -> &'static str {
         // checker on `answer_check` -- seventy-three, the boundary forty-one.
         (41, "forty-one"),
         (73, "seventy-three"),
+        // GH #1303: another hive's notes reach the curator on `in_note` --
+        // seventy-four, the boundary forty-two.
+        (42, "forty-two"),
+        (74, "seventy-four"),
+        // GH #1304: the route stamp's read of the wall (`./route -> ./curator`
+        // and back) and its rim copy `stamp` -- seventy-seven, thirty-four of round,
+        // the boundary forty-three, twenty-four leaving.
+        (43, "forty-three"),
+        (77, "seventy-seven"),
+        // GH #1306: a check that asks for the words it answered goes through
+        // the curator -- one edge of round in from the splitter, one leaving
+        // to the rim: seventy-nine, thirty-five of round, the boundary
+        // forty-four, twenty-five leaving.
+        (35, "thirty-five"),
+        (44, "forty-four"),
+        (79, "seventy-nine"),
+        (47, "forty-seven"),
+        (82, "eighty-two"),
+        (25, "twenty-five"),
     ]
     .into_iter()
     .collect();
