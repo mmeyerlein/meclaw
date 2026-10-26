@@ -2,6 +2,7 @@
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
 pub mod gh1063_a_cold_deposit_is_refused_while_a_colony_holds_the_lease;
+pub mod gh1326_validate_replays_apply_params;
 pub mod gh17_timer_trigger_http;
 pub mod gh325_the_registry_spawns_what_the_catalogue_lists;
 pub mod gh423_apply_flag_surface;

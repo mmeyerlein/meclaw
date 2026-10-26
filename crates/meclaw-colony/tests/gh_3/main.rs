@@ -1,6 +1,7 @@
 //! Test harness `gh_3` of `meclaw-colony`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod gh491_a_node_born_asleep_stays_asleep;
 pub mod gh495_a_derived_island_stays_asleep;
 pub mod gh500_a_numeric_condition_fires;
 pub mod gh507_a_refusal_names_no_host_path;

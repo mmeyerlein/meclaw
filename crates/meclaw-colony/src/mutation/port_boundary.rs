@@ -195,8 +195,9 @@ pub fn validate_hive_port_boundary(
 /// that declares a `lane` is a v-lane, and the levels it crosses are judged by
 /// the rule table in [`v_lane_verdict`]: a level that declares the lane and
 /// permits this endpoint waives its seal for THIS edge, a level that declares
-/// the lane and permits nothing may not be skipped, and the target hive owes a
-/// connect point. `contracts` carries what every hive declared — an empty slice
+/// the lane and permits nothing may not be skipped, and the target hive of the
+/// delivered end (`to`) owes a connect point (GH #1327: the sending end owes
+/// none). `contracts` carries what every hive declared — an empty slice
 /// still RUNS the rule table (a colony where nobody declared a contract owes a
 /// v-lane a connect point just the same); it is the seal-only face above that
 /// skips it entirely.
@@ -269,11 +270,14 @@ fn addressed_port_boundary(
         // what to do about it.
         let mut waived: Vec<(String, String)> = Vec::new();
         if let (Some(cs), Some(lane)) = (contracts, e.get("lane").and_then(|v| v.as_str())) {
-            for (endpoint_abs, other_abs) in [
-                (from_abs.as_str(), to_abs.as_str()),
-                (to_abs.as_str(), from_abs.as_str()),
+            // GH #1327: each end is judged for the role it plays. Only the
+            // delivered end (`to`) owes a connect point (row 5); the sending
+            // end's own hive is read like any other crossed level.
+            for (end, endpoint_abs, other_abs) in [
+                (LaneEnd::Sender, from_abs.as_str(), to_abs.as_str()),
+                (LaneEnd::Delivered, to_abs.as_str(), from_abs.as_str()),
             ] {
-                let verdict = v_lane_verdict(lane, endpoint_abs, other_abs, sealed, cs);
+                let verdict = v_lane_end_verdict(end, lane, endpoint_abs, other_abs, sealed, cs);
                 waived.extend(verdict.waived);
                 violations.extend(verdict.violations);
             }
@@ -357,6 +361,47 @@ fn check_endpoint_pair(
     ));
 }
 
+/// GH #1327 — the door's whole verdict on the SENDING end of one v-lane: the
+/// rule table read for [`LaneEnd::Sender`] (rows 1-4, never row 5), then each
+/// seal in `sealed` with the waivers that reading granted — the two halves
+/// [`addressed_port_boundary`] runs for `from`, composed rather than copied.
+///
+/// The swap's re-anchor verdict (`mutation::swap::v_lane_reanchor_verdict`)
+/// asks it about a v-lane whose sending end moves into a successor, so a swap
+/// demands of the successor exactly what `add_edges` demands of the same edge
+/// drawn fresh. Before, the swap judged both ends as if delivered to and
+/// refused (`v_lane_unanchored`) an edge out of an open, contract-free hive
+/// that the door had just admitted.
+pub(crate) fn sender_end_violations(
+    lane: &str,
+    endpoint_abs: &str,
+    other_abs: &str,
+    sealed: &[SealedHive],
+    contracts: &[crate::mutation::hive_contract::HiveContract],
+) -> Vec<(MutationError, String)> {
+    let verdict = v_lane_end_verdict(
+        LaneEnd::Sender,
+        lane,
+        endpoint_abs,
+        other_abs,
+        sealed,
+        contracts,
+    );
+    let mut out = verdict.violations;
+    for hive in sealed {
+        check_endpoint_pair(
+            hive,
+            endpoint_abs,
+            endpoint_abs,
+            other_abs,
+            "from",
+            &verdict.waived,
+            &mut out,
+        );
+    }
+    out
+}
+
 /// GH #559 — what [`v_lane_verdict`] decided about ONE endpoint of a v-lane.
 #[derive(Debug, Default)]
 pub struct VLaneVerdict {
@@ -438,7 +483,7 @@ fn relative_to(scope: &str, abs: &str) -> Option<String> {
 /// | unsealed | declared, no `at` naming this endpoint | `v_lane_mandatory_hop` |
 /// | sealed | `at` names this endpoint | allowed — the seal is waived |
 /// | sealed | nothing, or `at` without a hit | the existing `hive_port_boundary` stays |
-/// | the target hive | `at` does not name this endpoint | `v_lane_no_connect_point` |
+/// | the target hive (delivered end only) | `at` does not name this endpoint | `v_lane_no_connect_point` |
 ///
 /// The two halves are one rule read from two sides. A level that DECLARES a
 /// lane has said it takes part in it — it stamps, filters, guards — so skipping
@@ -448,11 +493,53 @@ fn relative_to(scope: &str, abs: &str) -> Option<String> {
 /// has to stay literally true — the v-lane is the exception a template
 /// pronounces about ITSELF, never one a caller helps itself to.
 ///
+/// This face judges `endpoint_abs` as the DELIVERED end (`to`) of the edge;
+/// [`v_lane_end_verdict`] names the end. GH #1327: row 5 is a promise of the
+/// hive a lane is delivered INTO, so the caller owes none. An app under the
+/// member's open, contract-free `./apps` drawing `in_note` onto a sealed
+/// figure's declared `./simple-agent/curator` was refused
+/// `v_lane_no_connect_point` naming `/m/apps` -- its own container, asked for
+/// a connect point it never promised. For the sending end the endpoint's own
+/// hive is therefore one more crossed level (rows 1-4); a reach OUT of a
+/// sealed hive still meets that hive's seal (row 4, `hive_port_boundary`).
+///
 /// PURE: paths and declarations, no FS and no registry. An endpoint that is a
 /// direct member of the common scope is not deep and is not judged at all,
 /// which is what keeps an ordinary edge that happens to carry a lane honest.
 #[must_use]
 pub fn v_lane_verdict(
+    lane: &str,
+    endpoint_abs: &str,
+    other_abs: &str,
+    sealed: &[SealedHive],
+    contracts: &[crate::mutation::hive_contract::HiveContract],
+) -> VLaneVerdict {
+    v_lane_end_verdict(
+        LaneEnd::Delivered,
+        lane,
+        endpoint_abs,
+        other_abs,
+        sealed,
+        contracts,
+    )
+}
+
+/// GH #1327 — which end of a v-lane [`v_lane_end_verdict`] judges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneEnd {
+    /// The end the lane is delivered to (`to`): its own hive is the target
+    /// that owes the connect point (row 5).
+    Delivered,
+    /// The end the lane leaves from (`from`).
+    Sender,
+}
+
+/// [`v_lane_verdict`] for one named end of the edge: [`LaneEnd::Delivered`]
+/// reads all five rows, [`LaneEnd::Sender`] reads the endpoint's own hive as a
+/// crossed level and never row 5 (GH #1327).
+#[must_use]
+pub fn v_lane_end_verdict(
+    end: LaneEnd,
     lane: &str,
     endpoint_abs: &str,
     other_abs: &str,
@@ -484,7 +571,9 @@ pub fn v_lane_verdict(
     levels.reverse();
 
     for level in levels {
-        let is_target = level == target;
+        // GH #1327: only the delivered end has a target that owes a connect
+        // point; for the sender its own hive is an ordinary crossed level.
+        let is_target = end == LaneEnd::Delivered && level == target;
         // Every crossed level is an ancestor of the endpoint by construction —
         // but this runs inside the colony task, where a wrong assumption is not
         // a failed check, it is the whole colony gone (invariant: the colony
@@ -1034,6 +1123,180 @@ mod tests {
         let v = v_lane_verdict("recall", "/a", "/b", &sealed(), &[]);
         assert!(v.violations.is_empty(), "{:?}", v.violations);
         assert!(v.waived.is_empty());
+    }
+
+    // ---- GH #1327: row 5 is owed by the delivered end only ----
+
+    /// A contract that declares `in_note` in its accepts, docked at `at`.
+    fn in_note_at(hive: &str, at: &[&str]) -> crate::mutation::hive_contract::HiveContract {
+        crate::mutation::hive_contract::HiveContract {
+            hive_path: hive.to_string(),
+            accepts: vec![crate::mutation::hive_contract::Lane {
+                route: "in_note".to_string(),
+                context: Vec::new(),
+                at: at.iter().map(|s| (*s).to_string()).collect(),
+                required: false,
+                because: "notes for the window".to_string(),
+            }],
+            emits: Vec::new(),
+        }
+    }
+
+    /// The figure of GH #1327: `/m/channels/fig` sealed with `ports: []`,
+    /// `in_note` at `./simple-agent/curator`; its `simple-agent` sealed too,
+    /// `in_note` at `./curator`.
+    fn figure() -> (
+        Vec<SealedHive>,
+        Vec<crate::mutation::hive_contract::HiveContract>,
+    ) {
+        let seal = |path: &str| SealedHive {
+            path: path.into(),
+            ports: vec![],
+            slots: vec![],
+        };
+        (
+            vec![
+                seal("/m/channels/fig"),
+                seal("/m/channels/fig/simple-agent"),
+            ],
+            vec![
+                in_note_at("/m/channels/fig", &["./simple-agent/curator"]),
+                in_note_at("/m/channels/fig/simple-agent", &["./curator"]),
+            ],
+        )
+    }
+
+    fn lane_edge(from: &str, to: &str, lane: &str) -> JsonValue {
+        json!({"add_edges": [{"from": from, "to": to, "lane": lane}]})
+    }
+
+    fn codes(v: &[(MutationError, String)]) -> Vec<&'static str> {
+        v.iter().map(|(e, _)| e.error_code()).collect()
+    }
+
+    /// (a) The sending end stands under an open, contract-free container
+    /// (`<member>/apps`). That container promised nothing and owes nothing:
+    /// the v-lane onto the figure's connect point is legal.
+    #[test]
+    fn a_sender_under_an_open_contract_free_hive_owes_no_connect_point() {
+        let (sealed, contracts) = figure();
+        let v = addressed_port_boundary(
+            &lane_edge(
+                "./apps/care",
+                "./channels/fig/simple-agent/curator",
+                "in_note",
+            ),
+            "/m",
+            &sealed,
+            Some(&contracts),
+        );
+        assert!(v.is_empty(), "{:?}", codes(&v));
+    }
+
+    /// (b) The sending end stands INSIDE a sealed hive that names no `at` for
+    /// it: reaching out of a seal is still the breach the seal refuses.
+    #[test]
+    fn a_sender_inside_a_sealed_hive_without_at_is_still_refused_by_the_seal() {
+        let (mut sealed, mut contracts) = figure();
+        sealed.push(SealedHive {
+            path: "/m/apps".into(),
+            ports: vec![],
+            slots: vec![],
+        });
+        contracts.push(in_note_at("/m/apps", &[]));
+        let v = addressed_port_boundary(
+            &lane_edge(
+                "./apps/care",
+                "./channels/fig/simple-agent/curator",
+                "in_note",
+            ),
+            "/m",
+            &sealed,
+            Some(&contracts),
+        );
+        assert_eq!(codes(&v), ["hive_port_boundary"], "{v:?}");
+        assert_eq!(v[0].1, "/m/apps/care");
+    }
+
+    /// (c) The sending end's open container DECLARES the lane without an `at`
+    /// for this endpoint: a level that takes part in the lane is a mandatory
+    /// hop, read from the sender's side like any other crossed level.
+    #[test]
+    fn a_sender_under_an_open_hive_that_declares_the_lane_is_a_mandatory_hop() {
+        let (sealed, mut contracts) = figure();
+        contracts.push(in_note_at("/m/apps", &[]));
+        let v = addressed_port_boundary(
+            &lane_edge(
+                "./apps/care",
+                "./channels/fig/simple-agent/curator",
+                "in_note",
+            ),
+            "/m",
+            &sealed,
+            Some(&contracts),
+        );
+        assert_eq!(codes(&v), ["v_lane_mandatory_hop"], "{v:?}");
+        assert_eq!(v[0].1, "/m/apps/care");
+    }
+
+    /// (d) The DELIVERED end still owes its connect point: a curator the
+    /// figure's `simple-agent` does not name is refused by row 5.
+    #[test]
+    fn the_delivered_end_without_a_connect_point_is_still_refused() {
+        let (sealed, mut contracts) = figure();
+        contracts[1] = in_note_at("/m/channels/fig/simple-agent", &["./brain"]);
+        let v = addressed_port_boundary(
+            &lane_edge(
+                "./apps/care",
+                "./channels/fig/simple-agent/curator",
+                "in_note",
+            ),
+            "/m",
+            &sealed,
+            Some(&contracts),
+        );
+        assert!(
+            codes(&v).contains(&"v_lane_no_connect_point"),
+            "{:?}",
+            codes(&v)
+        );
+        assert!(
+            v.iter()
+                .all(|(_, at)| at == "/m/channels/fig/simple-agent/curator"),
+            "only the delivered end is named: {v:?}"
+        );
+    }
+
+    /// The pure face of (a)/(d): `v_lane_verdict` judges the delivered end,
+    /// `v_lane_end_verdict` with [`LaneEnd::Sender`] the sending one.
+    #[test]
+    fn the_rule_table_reads_row_five_for_the_delivered_end_only() {
+        let (sealed, contracts) = figure();
+        let as_target = v_lane_verdict(
+            "in_note",
+            "/m/apps/care",
+            "/m/channels/fig/simple-agent/curator",
+            &sealed,
+            &contracts,
+        );
+        assert_eq!(
+            codes(&as_target.violations),
+            ["v_lane_no_connect_point"],
+            "read as the delivered end, `/m/apps` owes a connect point"
+        );
+        let as_sender = v_lane_end_verdict(
+            LaneEnd::Sender,
+            "in_note",
+            "/m/apps/care",
+            "/m/channels/fig/simple-agent/curator",
+            &sealed,
+            &contracts,
+        );
+        assert!(
+            as_sender.violations.is_empty(),
+            "{:?}",
+            codes(&as_sender.violations)
+        );
     }
 
     /// The seal-only face is LANE-BLIND, and that is a promise its callers

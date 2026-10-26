@@ -223,7 +223,52 @@ pub fn build_staging_tree_from_templates(
     ),
     MutationError,
 > {
-    let staging_root = root.join(".staging").join(mutation_id);
+    build_staging_tree_into(
+        &root.join(".staging").join(mutation_id),
+        root,
+        scope,
+        diff,
+        templates,
+        env,
+        ctx,
+        factories,
+        pulse,
+        twins,
+    )
+}
+
+/// GH #1326: [`build_staging_tree_from_templates`] with the staging directory
+/// named by the caller instead of `<root>/.staging/<mutation_id>`.
+///
+/// The door stages inside the root, because its staged directories are
+/// renamed into the tree with one `rename(2)` each and a rename cannot cross a
+/// filesystem. `meclaw --validate --apply` renames nothing: it stages a
+/// manifest only to ask every grown cell the door's own `validate_params` /
+/// `validate_declared_params` questions, and it must leave the colony root as
+/// it found it (No-Delete makes a stray `.staging` there permanent). So the
+/// dry run stages into a scratch directory of its own; `root` still answers
+/// everything else -- final paths, existing nodes, twins -- exactly as for the
+/// door. One staging body, two places to put the result.
+#[allow(clippy::too_many_arguments)]
+pub fn build_staging_tree_into(
+    staging_root: &std::path::Path,
+    root: &std::path::Path,
+    scope: &str,
+    diff: &JsonValue,
+    templates: &TemplatesRegistry,
+    env: &HashMap<String, String>,
+    ctx: &HashMap<String, String>,
+    factories: &crate::CellFactoryRegistry,
+    pulse: &crate::watchdog::WorkPulse,
+    twins: &crate::mutation::twin::TwinFacts,
+) -> Result<
+    (
+        Vec<StagedDir>,
+        Vec<crate::mutation::subtree::StagedSubtreeMerge>,
+    ),
+    MutationError,
+> {
+    let staging_root = staging_root.to_path_buf();
     std::fs::create_dir_all(&staging_root)
         .map_err(|e| MutationError::Schema(format!("create staging root: {e}")))?;
     let mut out = Vec::new();
@@ -324,9 +369,9 @@ pub fn build_staging_tree_from_templates(
             .len()
             > 1
         {
-            let staged_subtree = crate::mutation::subtree::stage_subtree_merge(
+            let staged_subtree = crate::mutation::subtree::stage_subtree_merge_into(
+                &staging_root,
                 root,
-                mutation_id,
                 scope,
                 name,
                 &tpl.filesystem_path,

@@ -13,8 +13,10 @@
 //! declaration's scope, and its target hive `channels` declares no contract on
 //! purpose (`templates/member/channels/config.json`: open, unsealed, no
 //! `params.contract`). Rule row 5 of `port_boundary::v_lane_verdict` then
-//! refuses every such edge with `v_lane_no_connect_point`, and the whole wish
-//! with it. The form the colony takes for an endpoint under an open,
+//! refused every such edge with `v_lane_no_connect_point`, and the whole wish
+//! with it. (Since GH #1327 row 5 binds only the delivered end, so the ask OUT
+//! of the channel would pass as a v-lane; the answer delivered INTO it still
+//! would not.) The form the colony takes for an endpoint under an open,
 //! contract-free hive is the plain deep edge without `lane`; the guards that
 //! address the ask and the answer are unchanged.
 //!

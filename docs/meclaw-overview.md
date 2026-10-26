@@ -1036,7 +1036,8 @@ a future code. Notes on the substrate codes:
   in its contract (`accepts`/`emits`) without an `at` that reaches the endpoint. Whoever declares a
   lane may not be passed by.
 - `v_lane_unanchored` (GH #559): a `swap_nodes` replaces a subtree a v-lane ends in, and the new
-  form has no such relative path or does not name it for this lane. The whole swap is refused.
+  form has no such relative path or does not name it for this lane (the delivered end; the sending
+  end meets what `add_edges` would demand of it, GH #1327). The whole swap is refused.
 - `operator_param_unset` (GH #661): an instantiating diff entry grows a node from a template that
   declares a param `operator_set` in its `contract.settings`, and brings no value for it. Such a
   param has no meaning until an operator sets it — the shipped `default` is a shape and not a
@@ -1406,8 +1407,16 @@ additive to direct mode: direct mode is exactly "neither `--api` nor `--daemon` 
 any `--api` switches the stdin/stdout bridge off.
 
 `--validate` (from phase 12) is a dry run: filesystem bootstrap, schema checks, template resolution,
-mutation replay from `colony.db`, but no cell spawns and no HTTP listen. Exit code 0 if everything
-is consistent, otherwise an error list on stderr.
+but no cell spawns and no HTTP listen. Exit code 0 if everything is consistent, otherwise an error
+list on stderr. With `--apply f` (GH #1326) it also stages every entry of the manifest through the
+same staging path as the mutation door, into a directory outside the root that is gone afterwards,
+and asks every cell the manifest would grow (in subtree templates and on the `with` side of a
+`swap_nodes` too) the door's param questions. What the colony would refuse at birth, such as
+`anthropic_unsupported_param`, is one line `validate: manifest entry <n>: …` per refusal and a
+non-zero exit; the `scope` is read literally, as at the door. Not replayed: `mutation_log`, the
+door's post-state checks (edges, header contracts, ports), `replace_nodes` lifts and the effect of
+one entry on the next; a template that an `add_templates` of the same or an earlier entry provides
+under exactly that name is a `note:` line, any other missing template a refusal.
 
 The exit-code contract is narrow: `0` means it worked, and anything else means it failed. No code
 carries a diagnosis, and a script must not branch on the specific non-zero value, because the values
@@ -1438,7 +1447,7 @@ receipt the immediately following shutdown still eats is healed by the next star
 | `meclaw --root R --apply f` | One-shot: boot, apply, receipt on stdout, graceful shutdown, exit 0 on `committed` and non-zero otherwise. The shutdown waits for the colony's ack up to `shutdown_drain_timeout_ms` plus a teardown margin; an ack that does not come, or a colony task that panics in its teardown (the `colony.db` writer, for one), is non-zero with the cause on stderr, even after a `committed`. The stdin/stdout bridge is off, as under `--daemon` |
 | `meclaw --root R --daemon --apply f` | Boot, apply, receipt, keeps running. A `rejected` does not end the daemon: the colony stands, the mutation does not, which is the audit semantics of every mutation. The line goes to stderr |
 | `meclaw --root R --api A --apply f` | as `--daemon --apply` |
-| `meclaw --root R --validate --apply f` | `--validate` has precedence, with a `note:` line on stderr |
+| `meclaw --root R --validate --apply f` | `--validate` has precedence, with a `note:` line on stderr: the manifest is staged offline and checked, not applied (see `--validate` above) |
 | `--apply` against a held root | `LeaseError::Held`, with the message the lease already writes today. That is the refusal, and it is right: against a running colony you mutate through its HTTP door, and that door takes the same manifest body form, so it is one `curl` instead of five |
 
 The exit-code contract above holds unchanged. The receipt itself is free text to read; a `rejected`
@@ -2388,7 +2397,10 @@ itself: a connect point is a promise made by the contract, never a right taken b
 Levels in between are transparent by default and a mandatory hop by declaration. Whoever takes
 influence on a lane, by stamping, filtering or guarding, declares it and may then not be skipped.
 This is checked in mutation validation, where `hive_port_boundary` sits, for both endpoints of an
-edge carrying `lane` and for every level between the lowest common ancestor and the endpoint:
+edge carrying `lane` and for every level between the lowest common ancestor and the endpoint. The
+last row binds the delivered end (`to`) only (GH #1327): the caller owes no connect point, so the
+hive the sending end (`from`) stands in is read like any other crossed level, and a reach out of a
+sealed hive still meets its seal:
 
 | Crossed level between LCA and endpoint | What the contract says about the lane | Result |
 |---|---|---|
@@ -2396,7 +2408,7 @@ edge carrying `lane` and for every level between the lowest common ancestor and 
 | unsealed | lane declared (accepts/emits), without a matching `at` | `v_lane_mandatory_hop`, the skip is refused |
 | sealed (`params.ports` present) | `at` contains the relative path leading to the endpoint | allowed |
 | sealed | nothing, or `at` without a hit | today's `hive_port_boundary` stands |
-| the target hive itself | `at` does not name the endpoint for this lane | `v_lane_no_connect_point` |
+| the target hive itself (the hive the `to` end stands in) | `at` does not name the endpoint for this lane | `v_lane_no_connect_point` |
 
 An edge without the `lane` field keeps exactly today's behaviour: an undeclared deep edge stays
 permitted exactly as far as it is today.
@@ -2438,7 +2450,11 @@ sender at the rim and never fires.
 The third code belongs to rebuilding: `v_lane_unanchored`. When a v-lane ends inside a subtree a
 `swap_nodes` replaces, it is re-anchored by its relative form, since the new implementation has the
 same sub-path. If that path is missing, or the new form's contract does not name it as a connect
-point for this lane, the whole swap is refused by name. An affected edge is identified purely by the
+point for this lane, the whole swap is refused by name. That demand belongs to the delivered end
+(`to`); for the sending end (`from`) the successor is asked what `add_edges` asks of the same edge
+drawn fresh (GH #1327), so an open successor that says nothing about the lane re-anchors it, one
+that declares the lane without that path is a skipped hop, and a sealed one keeps its seal. An
+affected edge is identified purely by the
 subtree membership of its endpoints; there is no owner field and no second bookkeeping beside the
 edge table. `move_nodes` re-addresses v-lanes by itself, because the edge table names paths, and the
 known remaining gap is unchanged: path literals inside conditions and modifiers do not travel.

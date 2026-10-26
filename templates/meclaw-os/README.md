@@ -1,4 +1,4 @@
-# `meclaw-os@2.3.3`
+# `meclaw-os@2.3.4`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -598,7 +598,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.3.3"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.3.4"}}
 ```
 
 ```bash
@@ -684,7 +684,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.3.3"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.3.4"}],
           "add_edges": []}}
 ```
 

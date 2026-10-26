@@ -2775,6 +2775,41 @@ pub fn stage_subtree_merge(
     pulse: &crate::watchdog::WorkPulse, // GH #439 — one beat per staged cell
     birth: crate::mutation::Birth,      // GH #437 — the entry's declared instantiation activity
 ) -> Result<StagedSubtreeMerge, MutationError> {
+    stage_subtree_merge_into(
+        &root.join(".staging").join(mutation_id),
+        root,
+        scope,
+        name,
+        template_root,
+        env,
+        ctx,
+        provenance,
+        overrides,
+        templates,
+        factories,
+        pulse,
+        birth,
+    )
+}
+
+/// GH #1326: [`stage_subtree_merge`] with the staging directory named by the
+/// caller (see [`crate::mutation::stage::build_staging_tree_into`]).
+#[allow(clippy::too_many_arguments)]
+pub fn stage_subtree_merge_into(
+    staging_root: &std::path::Path,
+    root: &std::path::Path,
+    scope: &str,
+    name: &str,
+    template_root: &std::path::Path,
+    env: &HashMap<String, String>,
+    ctx: &HashMap<String, String>,
+    provenance: Option<&crate::config::NodeProvenance>,
+    overrides: &SubtreeOverrides,
+    templates: &crate::templates::TemplatesRegistry,
+    factories: &crate::CellFactoryRegistry,
+    pulse: &crate::watchdog::WorkPulse, // GH #439 — one beat per staged cell
+    birth: crate::mutation::Birth,      // GH #437 — the entry's declared instantiation activity
+) -> Result<StagedSubtreeMerge, MutationError> {
     let template = parse_subtree(template_root, templates)?;
     let partition = classify_subtree_nodes(root, scope, name, template_root, templates)?;
     let subtree_root_abs = crate::mutation::resolve_scoped_path(scope, name);
@@ -2786,8 +2821,8 @@ pub fn stage_subtree_merge(
     let mut rename_root_stagings: Vec<StagedRenameRoot> = Vec::new();
     for (root_rel, _is_hive) in &roots {
         rename_root_stagings.push(stage_rename_root(
+            staging_root,
             root,
-            mutation_id,
             scope,
             name,
             template_root,
@@ -2833,8 +2868,10 @@ pub fn stage_subtree_merge(
 /// template name while the old directory is renamed beside it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_rename_root(
+    // GH #1326: `<root>/.staging/<mutation_id>` at the door, a scratch
+    // directory outside the root for `--validate --apply`.
+    staging_root: &std::path::Path,
     root: &std::path::Path,
-    mutation_id: &str,
     scope: &str,
     name: &str,
     template_root: &std::path::Path,
@@ -2857,11 +2894,9 @@ pub(crate) fn stage_rename_root(
     // side did.
     let template_subdir = template_dir_for_rel(template_root, templates, root_rel)?;
     let root_staging_path = if root_rel.is_empty() {
-        root.join(".staging").join(mutation_id).join(name)
+        staging_root.join(name)
     } else {
-        root.join(".staging")
-            .join(mutation_id)
-            .join(format!("{name}/{root_rel}"))
+        staging_root.join(format!("{name}/{root_rel}"))
     };
     copy_template_tree(&template_subdir, &root_staging_path, templates, &[])?;
     // GH #1061: a missing branch reached THROUGH a ref keeps the seed overlay a

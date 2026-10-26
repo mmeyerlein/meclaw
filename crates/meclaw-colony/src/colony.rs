@@ -8018,9 +8018,13 @@ pub(crate) async fn handle_mutation(
                 .iter()
                 .find(|c| c.hive_path == t3.as_str())
                 .or(from_template.as_ref());
-            if let Err(err) =
-                crate::mutation::swap::v_lane_reanchor_verdict(t2, t3, edges, successor)
-            {
+            if let Err(err) = crate::mutation::swap::v_lane_reanchor_verdict(
+                t2,
+                t3,
+                edges,
+                successor,
+                &sealed_hives,
+            ) {
                 rejection.push(crate::mutation::rejection::Violation::from_error(
                     crate::mutation::rejection::Stage::ContractLocality,
                     &err,

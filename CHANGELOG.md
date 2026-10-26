@@ -12,6 +12,19 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.75.0] — 2026-10-26
+
+`meclaw --validate --apply <manifest>` now refuses offline what a colony would refuse at birth: every manifest entry is staged through the mutation door's own staging path, so the params of every cell the manifest grows meet the same checks as at the door. And an app under the member's open `./apps` can draw a v-lane onto a connect point a sealed hive declares, such as a figure's curator: the rule that the target owes the connect point binds the delivered end only, and a swap re-anchors the sending end by the same rule.
+
+### Added
+
+- `meclaw --validate --apply <manifest>` refuses offline what the colony would refuse at birth ([#1326](https://github.com/mmeyerlein/meclaw/issues/1326)). Every manifest entry is staged through the mutation door's own staging path into a scratch directory outside the root, so every cell the manifest grows (single-cell and subtree templates, `swap_nodes` with-sides) meets the same `validate_params` / `validate_declared_params` checks as at the door, such as `anthropic_unsupported_param`. Each refusal is a `validate: manifest entry <n>:` line and a non-zero exit; nothing is written into the root and no colony starts. Not replayed yet: `mutation_log`, the door's post-state checks and `replace_nodes` lifts.
+- **Template versions (#1326):** third digit, `builder-librarian@2.2.90`; third digit for the pins that follow, `builder@1.30.3`, `meclaw-os@2.3.4`.
+
+### Fixed
+
+- A v-lane from an app under the member's open `./apps` onto a connect point a sealed hive declares (a figure's `in_note` at `./simple-agent/curator`) commits ([#1327](https://github.com/mmeyerlein/meclaw/issues/1327)). The rule "the target hive owes the connect point" now binds only the delivered end (`to`); the hive of the sending end is read like any other crossed level, so a reach out of a sealed hive still meets `hive_port_boundary`. A `swap_nodes` re-anchors the sending end by the same rule, so swapping the app's container no longer refuses that lane with `v_lane_unanchored`.
+
 ## [0.74.0] — 2026-10-26
 
 A model catalogue row carries its price steps by prompt length, and every model cell books the cost of the step its prompt falls in, so the curator no longer weighs a long prompt at the base price. The memory hive takes a correction where it is said: the recall parks the facts it shows for a turn as that turn's replacement window, so the turn's inline block can replace one of them, and a new lane `in_correction` lets a third cell report one wrong fact or topic and have that one axis checked at once instead of at the session's close. A turn can narrow its own loop cap through the door of `simple-agent@2` (`hop.max_iter`), an inner turn the model answers with silence stays silent, and a member hands out conversations only to a question that came through its own door. `install_app` of an app that embeds `simple-agent@2` seeds the embedder's and the search cell's grants with the keys they spend and names the app beside the agent under that cell's own path, and conversation events that reach the top of the graph with no reader are a declared dead-letter class.

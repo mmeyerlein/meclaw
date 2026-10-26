@@ -155,17 +155,37 @@ fn reanchor(p: &Path, t2: &Path, t3: &Path, hit: bool) -> Path {
 /// `successor` is `t3`'s contract: the live one when `t3` already stands, the
 /// TEMPLATE's when the same diff is growing it. `None` (no contract at all) is
 /// a successor that invites no lane in, which is a refusal like any other.
+///
+/// GH #1327: that demand is the DELIVERED end's (`to`). The sending end
+/// (`from`) is asked what `add_edges` asks of the same edge drawn fresh
+/// ([`sender_end_violations`]): the successor is one more crossed level of the
+/// re-anchored endpoint — open and silent is transparent, open and declaring
+/// the lane without this `at` is a skipped hop, sealed without this `at` keeps
+/// its seal. `sealed` is the colony's sealed hives as the door reads them; only
+/// `t3`'s entry is consulted, because every level inside the unit travels with
+/// it and was judged when the edge was drawn. Without this split a swap of an
+/// open, contract-free `./apps` refused (`v_lane_unanchored`) the app's lane
+/// onto a sealed figure that the door had just admitted.
+///
+/// [`sender_end_violations`]: crate::mutation::port_boundary::sender_end_violations
 pub(crate) fn v_lane_reanchor_verdict(
     t2: &Path,
     t3: &Path,
     edges: &EdgeTable,
     successor: Option<&crate::mutation::hive_contract::HiveContract>,
+    sealed: &[crate::mutation::port_boundary::SealedHive],
 ) -> Result<(), MutationError> {
+    let t3_sealed: Vec<_> = sealed
+        .iter()
+        .filter(|h| h.path == t3.as_str())
+        .cloned()
+        .collect();
+    let t3_contract = successor.map_or(&[][..], std::slice::from_ref);
     for e in edges.iter() {
         let Some(lane) = e.lane.as_deref() else {
             continue;
         };
-        for (endpoint, other) in [(&e.from, &e.to), (&e.to, &e.from)] {
+        for (endpoint, other, sends) in [(&e.from, &e.to, true), (&e.to, &e.from, false)] {
             if !is_inside_subtree(endpoint.as_str(), t2.as_str()) {
                 continue;
             }
@@ -179,7 +199,20 @@ pub(crate) fn v_lane_reanchor_verdict(
                     .chain(c.emits.iter())
                     .find(|l| l.route == lane)
             });
-            if declared.is_some_and(|l| l.at.contains(&rel)) {
+            let docks = if sends {
+                let moved = reanchor(endpoint, t2, t3, true);
+                crate::mutation::port_boundary::sender_end_violations(
+                    lane,
+                    moved.as_str(),
+                    other.as_str(),
+                    &t3_sealed,
+                    t3_contract,
+                )
+                .is_empty()
+            } else {
+                declared.is_some_and(|l| l.at.contains(&rel))
+            };
+            if docks {
                 continue;
             }
             return Err(MutationError::VLaneUnanchored(format!(
@@ -766,5 +799,132 @@ mod tests {
             .find(|sw| sw.from == c)
             .expect("swung incoming edge");
         assert_eq!(swung_in.to, t3);
+    }
+
+    // ── GH #1327: the re-anchor verdict reads each end for its role ────────
+
+    fn lane_edge(from: &str, to: &str, lane: &str) -> Edge {
+        let mut e = make_edge(from, to);
+        e.lane = Some(lane.into());
+        e
+    }
+
+    fn contract(
+        hive: &str,
+        lane: &str,
+        at: &[&str],
+    ) -> crate::mutation::hive_contract::HiveContract {
+        let l = crate::mutation::hive_contract::Lane {
+            route: lane.into(),
+            context: Vec::new(),
+            at: at.iter().map(|a| (*a).to_string()).collect(),
+            required: false,
+            because: "the test says so".into(),
+        };
+        crate::mutation::hive_contract::HiveContract {
+            hive_path: hive.into(),
+            accepts: vec![l.clone()],
+            emits: vec![l],
+        }
+    }
+
+    fn sealed(hive: &str) -> crate::mutation::port_boundary::SealedHive {
+        crate::mutation::port_boundary::SealedHive {
+            path: hive.into(),
+            ports: Vec::new(),
+            slots: Vec::new(),
+        }
+    }
+
+    /// The #1327 topology, the open container swapped: an app under the
+    /// member's open, contract-free `./apps` draws `in_note` onto a sealed
+    /// figure's connect point. `add_edges` admits that edge since GH #1327
+    /// (the sending end owes no connect point); a swap of `./apps` for a
+    /// successor that is just as open and silent must re-anchor it the same
+    /// way, not refuse it `v_lane_unanchored`.
+    #[test]
+    fn a_swapped_open_sender_hive_re_anchors_the_lane_like_the_door_admits_it() {
+        let edges = table_with(vec![lane_edge(
+            "/m/apps/care",
+            "/m/fig/simple-agent/curator",
+            "in_note",
+        )]);
+        let verdict = v_lane_reanchor_verdict(
+            &Path::new("/m/apps"),
+            &Path::new("/m/apps2"),
+            &edges,
+            None,
+            &[sealed("/m/fig")],
+        );
+        assert!(
+            verdict.is_ok(),
+            "the open successor is transparent: {verdict:?}"
+        );
+    }
+
+    /// The other side of the same edge: the figure is swapped (a version
+    /// change). The delivered end still owes the connect point, and the
+    /// successor that declares it takes the lane.
+    #[test]
+    fn a_swapped_figure_keeps_the_apps_lane_where_the_successor_declares_it() {
+        let edges = table_with(vec![lane_edge(
+            "/m/apps/care",
+            "/m/fig/simple-agent/curator",
+            "in_note",
+        )]);
+        let t3 = contract("/m/fig2", "in_note", &["./simple-agent/curator"]);
+        assert!(
+            v_lane_reanchor_verdict(
+                &Path::new("/m/fig"),
+                &Path::new("/m/fig2"),
+                &edges,
+                Some(&t3),
+                &[sealed("/m/fig"), sealed("/m/fig2")],
+            )
+            .is_ok()
+        );
+        let bare = contract("/m/fig2", "in_note", &[]);
+        let refused = v_lane_reanchor_verdict(
+            &Path::new("/m/fig"),
+            &Path::new("/m/fig2"),
+            &edges,
+            Some(&bare),
+            &[],
+        );
+        assert!(
+            matches!(refused, Err(MutationError::VLaneUnanchored(_))),
+            "the delivered end still owes its connect point: {refused:?}"
+        );
+    }
+
+    /// The sending end is not waved through: what the door refuses for the
+    /// same edge drawn fresh, the swap refuses too — an open successor that
+    /// takes part in the lane without this `at` (a skipped hop), and a sealed
+    /// successor that says nothing (its seal).
+    #[test]
+    fn a_swapped_sender_hive_is_held_to_the_rows_the_door_reads() {
+        let edges = table_with(vec![lane_edge(
+            "/m/apps/care",
+            "/m/fig/simple-agent/curator",
+            "in_note",
+        )]);
+        let t2 = Path::new("/m/apps");
+        let t3 = Path::new("/m/apps2");
+        let hop = contract("/m/apps2", "in_note", &[]);
+        let r = v_lane_reanchor_verdict(&t2, &t3, &edges, Some(&hop), &[]);
+        assert!(
+            matches!(r, Err(MutationError::VLaneUnanchored(_))),
+            "skipped hop: {r:?}"
+        );
+        let r = v_lane_reanchor_verdict(&t2, &t3, &edges, None, &[sealed("/m/apps2")]);
+        assert!(
+            matches!(r, Err(MutationError::VLaneUnanchored(_))),
+            "seal: {r:?}"
+        );
+        // A sealed successor that opens for the lane at this endpoint waives
+        // its seal, exactly as at the door (row 3).
+        let open = contract("/m/apps2", "in_note", &["./care"]);
+        let r = v_lane_reanchor_verdict(&t2, &t3, &edges, Some(&open), &[sealed("/m/apps2")]);
+        assert!(r.is_ok(), "row 3 waives the seal: {r:?}");
     }
 }

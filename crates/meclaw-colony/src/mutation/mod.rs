@@ -6,6 +6,7 @@
 
 pub mod apply;
 pub mod apply_replace;
+pub mod dry_run;
 pub mod header_views;
 pub mod hive_contract;
 pub(crate) mod hive_scan;

@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.74.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.75.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.75.0: `--validate --apply` replays the params of every cell a manifest grows, and an app under `./apps`
+  reaches a connect point below a sealed hive's rim.
 - v0.74.0: a catalogue row carries price steps by prompt length, the memory hive takes a correction from the turn
   it is said in or from a third cell's report on `in_correction`, a turn narrows its own loop cap, and an app that
   embeds `simple-agent@2` seeds the keys its cells spend.

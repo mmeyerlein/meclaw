@@ -1547,15 +1547,20 @@ fn an_answer_never_asks_again() {
 }
 
 /// The way back is a legal v-lane by the colony's own rule table
-/// (`v_lane_verdict`, ADR-0020): the answer DOCKS at each brain's rim because
-/// the generation declares `read` with those three connect points, and the
-/// app's cell is a connect point its own hive names. Without the generation's
-/// `at` the mutation door refuses the edge (`v_lane_no_connect_point`) -- the
-/// control below takes it away and sees that refusal.
+/// (`v_lane_end_verdict`, ADR-0020), each end judged for the role it plays at
+/// the mutation door: the answer LEAVES each brain's rim (`from`, the sending
+/// end) through the generation, which declares `read` with those three connect
+/// points, and it is DELIVERED to the app's cell (`to`), a connect point its
+/// own hive names. Without the generation's `at` the door refuses the edge as
+/// a skipped hop (`v_lane_mandatory_hop`): the generation is open and takes
+/// part in `read`, so the rim may not leave past it -- the control below takes
+/// the connect points away and sees exactly that refusal, at the rim. It is
+/// not `v_lane_no_connect_point`: since GH #1327 only the delivered end owes a
+/// connect point.
 #[test]
 fn the_way_back_is_a_v_lane_the_colony_admits() {
     use meclaw_colony::mutation::hive_contract::{HiveContract, Lane, contract_from_cell_dir};
-    use meclaw_colony::mutation::port_boundary::v_lane_verdict;
+    use meclaw_colony::mutation::port_boundary::{LaneEnd, v_lane_end_verdict};
     if !road_shipped() {
         return;
     }
@@ -1579,9 +1584,19 @@ fn the_way_back_is_a_v_lane_the_colony_admits() {
     let sink = cell_of(PROBE_APP);
     for brain in BRAINS {
         let rim = format!("{GEN}/{brain}");
-        for (end, other) in [(rim.as_str(), sink.as_str()), (sink.as_str(), rim.as_str())] {
-            let verdict =
-                v_lane_verdict("read", end, other, &[], &[generation.clone(), app.clone()]);
+        // The answer runs rim -> sink: the rim sends, the sink is delivered to.
+        for (role, end, other) in [
+            (LaneEnd::Sender, rim.as_str(), sink.as_str()),
+            (LaneEnd::Delivered, sink.as_str(), rim.as_str()),
+        ] {
+            let verdict = v_lane_end_verdict(
+                role,
+                "read",
+                end,
+                other,
+                &[],
+                &[generation.clone(), app.clone()],
+            );
             assert!(
                 verdict.violations.is_empty(),
                 "{brain}: the way back is refused at {end}: {:?}",
@@ -1595,13 +1610,16 @@ fn the_way_back_is_a_v_lane_the_colony_admits() {
     for l in bare.emits.iter_mut().filter(|l| l.route == "read") {
         l.at.clear();
     }
-    let verdict = v_lane_verdict("read", &format!("{GEN}/talky"), &sink, &[], &[bare, app]);
-    assert!(
-        verdict
-            .violations
-            .iter()
-            .any(|(e, _)| format!("{e:?}").contains("VLaneNoConnectPoint")),
-        "without `at` the generation owes a connect point: {:?}",
-        verdict.violations
+    let rim = format!("{GEN}/talky");
+    let verdict = v_lane_end_verdict(LaneEnd::Sender, "read", &rim, &sink, &[], &[bare, app]);
+    let refusals: Vec<(String, &str)> = verdict
+        .violations
+        .iter()
+        .map(|(e, at)| (e.error_code().to_string(), at.as_str()))
+        .collect();
+    assert_eq!(
+        refusals,
+        [("v_lane_mandatory_hop".to_string(), rim.as_str())],
+        "without `at` the rim may not leave past the generation, which takes part in `read`"
     );
 }

@@ -515,7 +515,8 @@ pub fn collect_lane_doors(
 /// A lane that names connect points (`at`) says where in the hive it lands, and
 /// that address is never the hive path: `at` is a list of paths strictly below
 /// it, and the v-lane rule table refuses a lane-carrying edge that ends anywhere
-/// else ([`crate::mutation::port_boundary::v_lane_verdict`], rows 3 and 5). So
+/// else ([`crate::mutation::port_boundary::v_lane_end_verdict`]: row 5 for the
+/// delivered end, rows 2-4 for the sending end since GH #1327). So
 /// the door of such a lane is the connect point, not an edge out of `.`, and
 /// demanding a rim door for it would refuse exactly the migration ADR-0020
 /// describes: the level whose pass-through hop was replaced by one deep edge no

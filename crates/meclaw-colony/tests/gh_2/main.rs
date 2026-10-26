@@ -1,6 +1,7 @@
 //! Test harness `gh_2` of `meclaw-colony`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod gh244_a_fact_remembers_who_was_there;
 pub mod gh245_a_stub_names_a_lane_the_hive_admits;
 pub mod gh253_db_transfer;
 pub mod gh256_a_generation_swap_leaves_the_old_generations_inside_alone;
@@ -47,4 +48,3 @@ pub mod gh47_a_timer_cannot_hold_the_drain;
 pub mod gh47_the_drain_waits_for_quiescence;
 pub mod gh47_the_ledger_counts_what_the_router_hands_over;
 pub mod gh47_the_teardown_behaves_exactly_as_before;
-pub mod gh491_a_node_born_asleep_stays_asleep;

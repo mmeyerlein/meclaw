@@ -879,14 +879,28 @@ pub async fn run_with_hooks_tuned(
     // Aggregation: eprintln every error, then `Err(...)` at the end if ANY check
     // fails — process exit != 0. exit 0 only when all three are clean.
     //
-    // Spec aspiration gap: schema checks (validate_params), template resolution
-    // (add_nodes replay) and mutation replay from `mutation_log` stay deferred
-    // (their own robustness pass). See PROGRESS § phase-12 limitations.
+    // Schema checks (`validate_params`) run for every cell of the tree in
+    // `plan_bootstrap`, and since GH #1326 for every cell an `--apply` manifest
+    // grows (`add_nodes`, subtree templates, `swap_nodes` with-sides): the
+    // manifest is staged through the door's own staging body into a scratch
+    // directory outside the root (`mutation::dry_run`). Still deferred: the
+    // replay of `mutation_log` (what a running colony has already applied),
+    // the door's post-state checks of a manifest (edges, header contracts,
+    // ports) and its `replace_nodes` lifts.
     if cli.validate {
-        if cli.api.is_some() || cli.daemon || cli.apply.is_some() {
-            eprintln!("note: --validate has precedence; --api/--daemon/--apply ignored");
+        if cli.api.is_some() || cli.daemon {
+            eprintln!("note: --validate has precedence; --api/--daemon ignored");
+        }
+        if cli.apply.is_some() {
+            eprintln!(
+                "note: --validate has precedence; --apply is staged offline and checked, \
+                 not applied"
+            );
         }
         let mut had_error = false;
+        // GH #1326: the manifest refusals, carried into the final error as
+        // well -- they are the answer an `--apply` author asked for.
+        let mut manifest_refusals: Vec<String> = Vec::new();
         // GH #97: does anything in this tree ask to be sandboxed? Decides
         // whether the appendix below may fork the two spawning probes. A tree
         // whose plan did not even come together answers "no" — there is
@@ -1073,6 +1087,23 @@ pub async fn run_with_hooks_tuned(
             }
         }
 
+        // 1b. GH #1326: what the door would refuse of the `--apply` manifest
+        //     at birth. The same staging body as `POST /colony/mutations`, so
+        //     the same `validate_params` / `validate_declared_params` answers;
+        //     staged outside the root and spawned nowhere.
+        if let Some(source) = &cli.apply {
+            manifest_refusals = validate_apply_manifest(
+                &cli.root,
+                source,
+                cli.env.as_deref(),
+                &validate_templates,
+                &factories,
+            );
+            if !manifest_refusals.is_empty() {
+                had_error = true;
+            }
+        }
+
         // 2. colony.db consistency (additive, called directly — no panic).
         match meclaw_colony::probe_boot_state(&db_path) {
             Ok(meclaw_colony::BootState::FirstBoot) | Ok(meclaw_colony::BootState::Reboot) => {}
@@ -1117,6 +1148,15 @@ pub async fn run_with_hooks_tuned(
         );
 
         if had_error {
+            if !manifest_refusals.is_empty() {
+                // The refusals are printed once, here: `main` prints this
+                // error, and an in-process caller (the GH #1326 test) reads
+                // them from it.
+                return Err(anyhow::anyhow!(
+                    "validate failed: see stderr for diagnostics; the --apply manifest is refused:\n{}",
+                    manifest_refusals.join("\n")
+                ));
+            }
             return Err(anyhow::anyhow!(
                 "validate failed: see stderr for diagnostics"
             ));
@@ -1904,6 +1944,62 @@ pub fn declares_restricted_sandbox(params: &meclaw_core::JsonValue) -> bool {
         Ok(_) => false,
         Err(_) => params.get("sandbox").is_some(),
     }
+}
+
+/// GH #1326: `--validate --apply <manifest>` -- stage the manifest the way the
+/// mutation door would and return one `validate:` line per refusal, naming the
+/// 1-based manifest entry (empty = nothing refused). The lines are not printed
+/// here: they travel in the error `run` returns, which `main` prints once.
+///
+/// The environment is the one the boot substitution of `--validate` reads:
+/// `--env` when given, else `<root>/.env`; an unreadable file is an empty map,
+/// as at the door. Entries that cannot be checked offline are a `note`, never
+/// an error.
+fn validate_apply_manifest(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    env_override: Option<&std::path::Path>,
+    templates: &meclaw_colony::templates::TemplatesRegistry,
+    factories: &meclaw_colony::CellFactoryRegistry,
+) -> Vec<String> {
+    let mut refusals = Vec::new();
+    let body = match crate::apply::read_manifest_source(source, &mut std::io::stdin()) {
+        Ok(b) => b,
+        Err(e) => {
+            refusals.push(format!("validate: {e}"));
+            return refusals;
+        }
+    };
+    let manifest = match meclaw_colony::ManifestBody::detect(&body) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            refusals.push(format!("validate: --apply manifest refused: {e}"));
+            return refusals;
+        }
+        // `read_manifest_source` already refused a body without `manifest`.
+        None => return refusals,
+    };
+    let env_path = env_override
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".env"));
+    let env = meclaw_colony::env_file::load_env(&env_path).unwrap_or_default();
+    for finding in meclaw_colony::mutation::dry_run::dry_run_manifest(
+        root, &manifest, templates, &env, factories,
+    ) {
+        match finding {
+            meclaw_colony::mutation::dry_run::DryRunFinding::Refused { position, error } => {
+                refusals.push(format!(
+                    "validate: manifest entry {position}: {} (error_code: {})",
+                    error.message(),
+                    error.error_code()
+                ));
+            }
+            meclaw_colony::mutation::dry_run::DryRunFinding::NotChecked { position, reason } => {
+                eprintln!("validate: note: manifest entry {position} not checked: {reason}");
+            }
+        }
+    }
+    refusals
 }
 
 #[cfg(test)]

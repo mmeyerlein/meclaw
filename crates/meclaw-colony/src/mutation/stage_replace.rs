@@ -337,8 +337,8 @@ fn stage_one_lift(
     let provenance = provenance_of(tpl);
     let stage = |root_rel: &str| {
         stage_rename_root(
+            &root.join(".staging").join(mutation_id),
             root,
-            mutation_id,
             scope,
             name,
             template_root,
