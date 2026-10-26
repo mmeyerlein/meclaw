@@ -449,6 +449,9 @@ fn the_package_keys_are_the_contract() {
             "input_hard",
             "cost_in",
             "cost_cached_in",
+            // GH #1318: the price steps by prompt length -- a contract change,
+            // made on purpose.
+            "price_tiers",
             // GH #1085: the rates the window estimate counts a prompt with --
             // a contract change, made on purpose.
             "chars_per_token",

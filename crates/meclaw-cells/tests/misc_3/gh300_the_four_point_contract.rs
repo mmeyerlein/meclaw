@@ -795,8 +795,9 @@ fn the_night_reviews_both_closure_authors() {
     // ROLES apart, not the policies.
     let script = script_of(DREAM_GLUE);
     assert!(
-        script.contains("CLOSURE_SOURCE_PREFIXES = (\"extract:\", \"close:\")"),
-        "the night knows both authors of a closure"
+        script.contains("CLOSURE_SOURCE_PREFIXES = (\"extract:\", \"close:\", \"correction:\")"),
+        "the night knows every author of a closure: the ingress, the close pass and \
+         a correction (GH #1323)"
     );
     assert!(
         !script.contains("EXTRACT_SOURCE_PREFIX"),

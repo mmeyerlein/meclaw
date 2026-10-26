@@ -279,6 +279,7 @@ async fn run_messages_lane(
     request_json: &Value,
     timeout: std::time::Duration,
     wire_out: &mut Option<wire::WireTimings>,
+    silence_ok: bool,
 ) -> Result<TranslatedResponse, LaneFailure> {
     let url = crate::llm::params::endpoint_url(
         cell.params
@@ -311,7 +312,7 @@ async fn run_messages_lane(
     if let Some(e) = wire::classify_in_body_error(&json) {
         return Err(LaneFailure::from_wire(&e));
     }
-    let translated = translate_anthropic::parse_messages_response(&json)
+    let translated = translate_anthropic::parse_messages_response_with(&json, silence_ok)
         .map_err(|e| LaneFailure::from_translate(&e, "parse"))?;
     if !translated.thinking_dropped.is_empty() {
         // GH #1298 (review m4 of F2): a dropped block costs the model its
@@ -2020,6 +2021,11 @@ impl LlmCell {
             // runs on (the GH #853 rule). Only the `params` slot is bound; a
             // message without the key is byte-identical to before.
             let push_for = push_for(&msg.headers.hop, sink.sender_path());
+            // GH #1320 K-13: the caller's edge allows this turn to stay
+            // unanswered (talky sets it for an inner turn only). Read here,
+            // before the message moves on; absent, an empty answer stays the
+            // #999 F2 error.
+            let silence_ok = msg.headers.hop.get("silence_ok").and_then(Value::as_str) == Some("1");
             if has_params && let PushFor::Other(to) = &push_for {
                 tracing::warn!(
                     target: package::PARAMS_LOG_TARGET,
@@ -2798,6 +2804,7 @@ impl LlmCell {
                                     &request_json,
                                     timeout,
                                     &mut wire_timings,
+                                    silence_ok,
                                 )
                                 .await
                             } else {
@@ -2822,8 +2829,10 @@ impl LlmCell {
                             t.assistant_turn,
                             &t.finish_reason,
                             usage,
-                            // GH #890: when the cache goes cold, and the window.
-                            output::HopCache::of(&self.params),
+                            // GH #890: when the cache goes cold, and the window;
+                            // GH #1318 the price step of the prompt.
+                            output::HopCache::of(&self.params)
+                                .priced_for(&self.params, t.tokens_prompt),
                             &t.model,
                             &t.response_id,
                             started_at_unix_ms,
@@ -3010,7 +3019,7 @@ impl LlmCell {
             // GH #1260: a call leaked as harmony tokens in the text is a call.
             // GH #1260 (delta review H): the frame a length cut leaves open is read off
             // the raw text before the recovery drops it, for the continuation.
-            let parsed = translate::parse_openai_response(&response_json);
+            let parsed = translate::parse_openai_response_with(&response_json, silence_ok);
             let cut = parsed.as_ref().ok().and_then(sanitize::cut_frame);
             let translated =
                 match parsed.and_then(|t| sanitize::recover_harmony_tool_calls(t, &request_json)) {
@@ -3041,6 +3050,9 @@ impl LlmCell {
                     }
                 };
 
+            // GH #1318: the price step is the first call's -- a continuation
+            // sums the prompts of every call into one figure.
+            let first_prompt = translated.tokens_prompt;
             // Step 7b (GH #1037): a `length` finish is continued, never cut
             // in silence -- see `continuation.rs` for why the cell owns it.
             let translated = self
@@ -3066,8 +3078,9 @@ impl LlmCell {
                 translated.assistant_turn,
                 &translated.finish_reason,
                 usage,
-                // GH #890: when the cache goes cold, and the window.
-                output::HopCache::of(&self.params),
+                // GH #890: when the cache goes cold, and the window; GH #1318
+                // the price step of the prompt.
+                output::HopCache::of(&self.params).priced_for(&self.params, first_prompt),
                 &translated.model,
                 &translated.response_id,
                 started_at_unix_ms,

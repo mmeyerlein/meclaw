@@ -174,9 +174,25 @@ const SEAMS: &[Row] = &[
         None,
         Seam::CuratorEntry,
     ),
-    row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+    // GH #1320 (K-13): each round is two edges, a person's turn and an inner
+    // turn (`context.inner_source`, which sets `hop.silence_ok`); both restore.
+    split(
+        row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+        "&& !(has(context.inner_source)",
+    ),
+    split(
+        row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+        "< 12 && has(context.inner_source)",
+    ),
     // GH #1248 (T4-09): the quick voice's round, the brain's edge once more.
-    row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
+    split(
+        row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
+        "&& !(has(context.inner_source)",
+    ),
+    split(
+        row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
+        "< 12 && has(context.inner_source)",
+    ),
     // A close job enters the curator (GH #940, ADR-0002 E8): since a turn of
     // another round seals its channel's generation, a `close` can leave the
     // turn's own chain mid-turn -- the night's leaves a fresh root. The edge

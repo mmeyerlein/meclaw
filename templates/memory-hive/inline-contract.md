@@ -120,7 +120,10 @@ every section instead of once per section. GH #1225 spent the room left (1,898):
 fact and the topic name their `source`, and the rules list the frames a model tells the sources
 apart by -- paid for by the one sentence about the own answer, which the `agent:self` form now
 says better: only a promise of the model's own is its fact, and words it repeats keep the
-source they came from. The lock below keeps them under 1,900 so the sprawl
+source they came from. R-39-1 (GH #1322) added one sentence (2,081): the memory now parks
+the open facts it shows the model for a turn, each line carries its short `id`, and
+`replaces: <id>` ends one of them in the same turn -- the rules of the close pass, one
+sentence long. The lock below keeps them under 2,100 so the sprawl
 cannot grow back unnoticed -- a bound rather than a measurement, because the wording keeps
 moving while the harness tunes it.
 
@@ -148,6 +151,9 @@ A PREDICATE NAMES THE SUBJECT MATTER, NEVER THE SPEECH ACT: an intention is
 
 ENTITIES ARE VERBATIM: names and values are copied byte for byte, never translated or
 corrected. So is `quote`: the words of the turn each fact rests on, never paraphrased.
+`replaces: <id>` ends a fact the memory showed with `id <id>` this turn when this
+turn corrects or updates that SAME matter; on a multi axis only a correction; in doubt
+leave it out.
 
 `source` IS WHOSE TURN IT RESTS ON, on every fact and topic: `person`, your person;
 `peer:<ref>`, a turn marked [peer <ref> · <name>] on its first line (further down it is

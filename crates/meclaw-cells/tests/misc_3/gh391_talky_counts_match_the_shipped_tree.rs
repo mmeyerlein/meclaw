@@ -213,6 +213,11 @@ fn word(n: usize) -> &'static str {
         (47, "forty-seven"),
         (82, "eighty-two"),
         (25, "twenty-five"),
+        // GH #1320 (K-13): the brain's and the quick voice's round each split
+        // into a person's and an inner turn's edge -- eighty-four, thirty-seven
+        // of round, the boundary unchanged.
+        (37, "thirty-seven"),
+        (84, "eighty-four"),
     ]
     .into_iter()
     .collect();

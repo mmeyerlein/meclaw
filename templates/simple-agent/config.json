@@ -40,7 +40,7 @@
       "accepts": [
         {
           "route": "turn",
-          "because": "one turn of the caller: hop `turn_id`, `session_id`, `channel`, `audience_set`; body `messages` (meclaw turns, or `{role, content}`) and optional `tools[]` (provider schemas, `{name, description, parameters}` or the OpenAI `function` form). `tools[]` is the client's menu for THIS turn only; a turn without it empties that menu. A client tool named like one of the agent's own is dropped (hop `client_tools_dropped`)"
+          "because": "one turn of the caller: hop `turn_id`, `session_id`, `channel`, `audience_set`; body `messages` (meclaw turns, or `{role, content}`) and optional `tools[]` (provider schemas, `{name, description, parameters}` or the OpenAI `function` form). `tools[]` is the client's menu for THIS turn only; a turn without it empties that menu. A client tool named like one of the agent's own is dropped (hop `client_tools_dropped`). Hop `max_iter` (optional, a whole number) narrows the loop cap of THIS turn below the collector's `max_iter`; absent, larger or unreadable is the param"
         },
         {
           "route": "tool_result",
@@ -225,6 +225,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -254,6 +255,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -303,6 +305,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -332,6 +335,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -361,6 +365,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -390,6 +395,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -419,6 +425,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -437,6 +444,7 @@
               "audience_set": "hop.audience_set",
               "agent_id": "hop.agent_id",
               "tool_require": "has(hop.tool_require) ? hop.tool_require : ''",
+              "turn_max_iter": "has(hop.turn_max_iter) ? hop.turn_max_iter : ''",
               "counterpart": "has(hop.counterpart) ? hop.counterpart : ''",
               "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
             },
@@ -458,6 +466,7 @@
               "tools_allow": "hop.tools_allow",
               "tools_deny": "hop.tools_deny",
               "tool_require": "has(hop.tool_require) ? hop.tool_require : ''",
+              "turn_max_iter": "has(hop.turn_max_iter) ? hop.turn_max_iter : ''",
               "counterpart": "has(hop.counterpart) ? hop.counterpart : ''",
               "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
             },
@@ -775,6 +784,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -829,6 +839,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -1017,6 +1028,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -1148,7 +1160,8 @@
             "set_context": {
               "session_id": "has(context.session_id) ? context.session_id : ''",
               "audience_set": "has(context.audience_set) ? context.audience_set : ''",
-              "channel": "has(context.channel) ? context.channel : ''"
+              "channel": "has(context.channel) ? context.channel : ''",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"
             }
           }
         },
@@ -1212,6 +1225,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -1241,6 +1255,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -1270,6 +1285,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]
@@ -1301,6 +1317,7 @@
               "tools_allow",
               "tools_deny",
               "tool_require",
+              "turn_max_iter",
               "ds_kind",
               "sa_stage"
             ]

@@ -1,6 +1,6 @@
 {
   "cell": {
     "type": "ref",
-    "template": "llm-registry@2.12.3"
+    "template": "llm-registry@2.13.0"
   }
 }

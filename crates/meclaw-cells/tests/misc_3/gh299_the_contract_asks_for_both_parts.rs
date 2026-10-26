@@ -57,7 +57,12 @@ const SCHEMAS_CONFIG: &str = "../../templates/memory-hive/schemas/config.json";
 /// paragraph explains the fence, and both shown forms are now fenced the way
 /// the answer must fence them. 1,573 characters became 1,878. (The plan
 /// estimated 1,700; it had costed the sentence and not the two fences.)
-const LENGTH_BOUND: usize = 1_900;
+///
+/// Raised a second time for R-39-1 (GH #1322): the inline lane may now end a
+/// fact the memory showed in the same turn, and the one sentence that says how
+/// (`replaces: <id>`, same matter, multi axis only on a correction, in doubt
+/// leave it out) costs 183 characters: 1,898 became 2,081.
+const LENGTH_BOUND: usize = 2_100;
 
 /// `${VAR:-default}` becomes the default, a bare `${VAR}` becomes the empty string --
 /// the same substitution the colony performs when it instantiates the template.

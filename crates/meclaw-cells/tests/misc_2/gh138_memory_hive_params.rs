@@ -149,6 +149,8 @@ const SCRIPTED: &[Scripted] = &[
             ("forget_fallback", "_flag"),
             // GH #1225 (kfm B3): the words a question opens with, language data.
             ("question_words", "_data"),
+            // GH #1323 (R-39-1): the fact page of one correction's axis.
+            ("correction_fact_rows", "_int"),
         ],
         documented: &[],
     },
@@ -480,7 +482,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 67,
+        total, 68,
         "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040), \
          `generation_idle_ms` (GH #1042), `require_quote` (GH #1079), `tier1_graph_node_facts` \
          and the four graph page sizes of `recall`, the three thresholds and two page sizes of \
@@ -488,7 +490,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
          its switch `forget_fallback` (R-TR-25), less `tier0_episode_chars` and \
          `tier1_item_chars` (GH #1085: an item has no length of its own), plus \
          `input_soft_fallback` (GH #1085), plus the language data `stopwords_lang` of `recall` \
-         (GH #1095), plus the language data `question_words` of `close-glue` and `recall` and `forget_lang` of `recall` (GH #1225), plus the language data `entity_stop_lang` of `recall` and `entity-glue` (GH #1089), plus the lift bounds `lift_turns` and `lift_marks` of `recall` (GH #1225), plus `night_at_utc` of `writer` (GH #1229)"
+         (GH #1095), plus the language data `question_words` of `close-glue` and `recall` and `forget_lang` of `recall` (GH #1225), plus the language data `entity_stop_lang` of `recall` and `entity-glue` (GH #1089), plus the lift bounds `lift_turns` and `lift_marks` of `recall` (GH #1225), plus `night_at_utc` of `writer` (GH #1229), plus `correction_fact_rows` of `close-glue` (GH #1323)"
     );
 }
 

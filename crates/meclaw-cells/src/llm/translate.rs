@@ -1496,6 +1496,22 @@ pub(crate) fn usage_cost(usage: Option<&Value>) -> Option<f64> {
 ///    provider uses ([`usage_tokens_cached`]) and the provider's own `cost`
 ///    ([`usage_cost`]).
 pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, TranslateError> {
+    parse_openai_response_with(json, false)
+}
+
+/// [`parse_openai_response`] for a turn whose caller allowed silence
+/// (`hop.silence_ok == "1"`, GH #1320 K-13). With `silence_ok`, an answer
+/// with neither text nor a call is no `EmptyAnswer` but one empty text turn:
+/// an inner turn (an event without a speaking person) may stay unanswered,
+/// and only an answer that arrives reaches the dispatcher, which names it
+/// `inner_silent`. Before, the silence died here as `empty_answer`
+/// (`gh1320_an_inner_turn_answered_with_silence_leaves_inner_silent`:
+/// parked `error`). A budget spent on thinking stays `ReasoningExhausted` --
+/// that is a cut, not silence. Without the knob nothing changes (#999 F2).
+pub(crate) fn parse_openai_response_with(
+    json: &Value,
+    silence_ok: bool,
+) -> Result<TranslatedResponse, TranslateError> {
     use meclaw_core::serde_json::json;
 
     let choice = json
@@ -1550,13 +1566,21 @@ pub(crate) fn parse_openai_response(json: &Value) -> Result<TranslatedResponse, 
     // caller can tell a budget spent on thinking from a provider that sent
     // nothing at all.
     if calls == 0 && !has_text {
-        return Err(
-            if finish_reason == "length" && has_thinking_trace(message) {
+        let exhausted = finish_reason == "length" && has_thinking_trace(message);
+        if exhausted || !silence_ok {
+            return Err(if exhausted {
                 TranslateError::ReasoningExhausted
             } else {
                 TranslateError::EmptyAnswer
-            },
-        );
+            });
+        }
+        // GH #1320 K-13: allowed silence is one empty text turn. It keeps its
+        // finish reason: a `length` cut without a thinking trace lands here
+        // too and goes on into the length continuation, not into the
+        // dispatcher's silence, which marks `stop` only (unit
+        // `gh1320_silence_ok_lets_an_empty_answer_through_on_both_wires`).
+        assistant_turn.retain(|t| t.get("type").and_then(|v| v.as_str()) != Some("text"));
+        assistant_turn.push(json!({"origin": "assistant", "type": "text", "text": ""}));
     }
 
     let model = json

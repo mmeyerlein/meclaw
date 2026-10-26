@@ -1164,3 +1164,72 @@ async fn a_shell_with_no_vault_deposit_leaves_only_declared_dead_letters() {
     );
     lab.h.shutdown().await;
 }
+
+/// GH #1319 (K-12, orga O3 lab on 0.73.0): the same round with the
+/// conversation events on, on both surfaces of the assistant (GH #1305: the
+/// keeper's stamp, the curator writer and the dispatcher, `conversation_events`
+/// "1"). The member, the org and the shell hand `opened`, `closed` and
+/// `inner_silent` up a level (GH #1314) for a reader the product binds above
+/// the person; the library ships none, so they end at the top of the graph
+/// like the route stamp -- a declared class, never a reader invented at the
+/// shell (OR-AG-39). Before, the table knew only `stamp` at `/os`, and the
+/// lab read `hive_no_route .../session-keeper/stamp -> /os route=opened` and
+/// `.../curator/writer -> /os route=closed` as defects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_round_with_the_conversation_events_on_leaves_only_declared_dead_letters() {
+    if !shipped() {
+        return;
+    }
+    let on = json!({"conversation_events": "1"});
+    let mut knobs = json!({});
+    for surface in ["talky", "talky-chat"] {
+        for cell in ["session-keeper/stamp", "curator/writer", "dispatcher"] {
+            knobs[format!("{surface}/{cell}")] = on.clone();
+        }
+    }
+    let (lab, grown) = Lab::grown_with(knobs).await;
+    lab.grow_channel().await;
+    let mut dead = lab.drain().await;
+
+    let round = lab.mark().await;
+    lab.turn("the plumber came").await;
+    lab.turn("and the roofer").await;
+    lab.echoes(&round, 2).await;
+    // The session closes (idle_ms 1) on the sweep, as in the person's round
+    // above; the curator writer sends `closed` behind the close's `write`.
+    let mark = lab.mark().await;
+    lab.h
+        .send(
+            MessageBuilder::new(Path::new(GENERATION_PATH))
+                .hop(as_map(&json!({"route": "in_sweep"})))
+                .body(Body::Inline(json!({"messages": [
+                    {"origin": "user", "type": "text", "text": "sweep"}]})))
+                .build(),
+        )
+        .await;
+    lab.wait(
+        &mark,
+        "the close's conversation event at /os",
+        &[GENERATION_PATH],
+        |(to, route, _)| to == "/os" && route == "closed",
+    )
+    .await;
+    let hits = lab.sentinel(&mut dead).await;
+    assert_eq!(hits.len(), 1, "the sentinel: {:#?}", say(&hits));
+    report("events", &dead);
+
+    for route in ["opened", "closed"] {
+        assert!(
+            dead.iter().any(|d| d.route == route && d.target == "/os"),
+            "the {route} event reaches the top with no reader: {:#?}",
+            say(&dead)
+        );
+    }
+    let mut bad = undeclared(&grown);
+    bad.extend(undeclared(&dead));
+    assert!(
+        bad.is_empty(),
+        "a round with the conversation events on left dead letters no class declares: {bad:#?}"
+    );
+    lab.h.shutdown().await;
+}

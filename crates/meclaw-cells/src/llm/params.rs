@@ -145,6 +145,25 @@ pub enum WireDialect {
     Responses,
 }
 
+/// GH #1318: one price step of a model above its base step: the prompt size,
+/// in tokens, the step starts ABOVE, and its prices in cents per million
+/// tokens. `cost_cached_in` is optional -- a step whose list names no cached
+/// price is stamped with its input price as the cached one (no discount
+/// assumed), never with a number of the cell's own.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceTier {
+    /// The step applies to a prompt of more than this many tokens.
+    pub above_input: u64,
+    /// The input price of the step.
+    pub cost_in: f64,
+    /// The output price of the step.
+    pub cost_out: f64,
+    /// The cached-input price of the step, when the list names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cached_in: Option<f64>,
+}
+
 /// Phase-8 LlmCell parameters (cell-types.md `llm`-params block), extended by
 /// the P10 auth dimension.
 ///
@@ -468,6 +487,15 @@ pub struct LlmParams {
     /// 0). A package key.
     #[serde(default)]
     pub cost_cached_in: f64,
+    /// GH #1318: the model's price steps above its base step, by prompt
+    /// length -- a provider that prices a prompt over 100k tokens dearer
+    /// lists that step here, `cost_in` / `cost_cached_in` stay the base step.
+    /// Ordered by `above_input`, rising. The cell stamps the step its reported
+    /// prompt falls in (`hop.cost_in`, `hop.cost_cached_in`), so the curator
+    /// weighs a long window at the price it is billed at. Empty (the
+    /// default) = one price for every length. A package key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub price_tiers: Vec<PriceTier>,
     /// GH #1085 (audit of `llm::window`): the prompt bytes the window
     /// estimate counts as one token of this model, as its catalogue row
     /// states it -- English is about four, JSON, German and code fewer. 0
@@ -543,6 +571,58 @@ fn price(key: &str, value: &Value) -> Result<f64, String> {
         })
 }
 
+/// GH #1318: the price steps as the cell takes them -- a list of objects,
+/// each with a whole `above_input` above 0 and above the step before it, and
+/// a `cost_in` and `cost_out` in the form of a price; `cost_cached_in` is
+/// optional, any other key is refused. Ordered and complete, or refused by
+/// the param's name: a step out of order would bill a prompt at the wrong
+/// price, a step without a price would bill it at none.
+fn price_tiers_checked(value: &Value) -> Result<Value, String> {
+    const KEYS: &[&str] = &["above_input", "cost_in", "cost_out", "cost_cached_in"];
+    let refuse = |why: &str| format!("price_tiers {why}");
+    let steps = value
+        .as_array()
+        .ok_or_else(|| refuse("must be a list of price steps"))?;
+    let mut out = Vec::with_capacity(steps.len());
+    let mut last = 0u64;
+    for step in steps {
+        let obj = step
+            .as_object()
+            .ok_or_else(|| refuse("must be a list of objects"))?;
+        if let Some(k) = obj.keys().find(|k| !KEYS.contains(&k.as_str())) {
+            return Err(refuse(&format!("names an unknown key '{k}'")));
+        }
+        let above = obj
+            .get("above_input")
+            .ok_or_else(|| refuse("needs above_input on every step"))
+            .and_then(|v| whole_number("price_tiers above_input", v))?;
+        if above <= last {
+            return Err(refuse(
+                "must rise: every above_input above 0 and above the one before",
+            ));
+        }
+        last = above;
+        let mut m = serde_json::Map::new();
+        m.insert("above_input".into(), Value::from(above));
+        for key in ["cost_in", "cost_out", "cost_cached_in"] {
+            match obj.get(key) {
+                Some(v) => {
+                    m.insert(
+                        key.into(),
+                        Value::from(price(&format!("price_tiers {key}"), v)?),
+                    );
+                }
+                None if key != "cost_cached_in" => {
+                    return Err(refuse(&format!("needs {key} on every step")));
+                }
+                None => {}
+            }
+        }
+        out.push(Value::Object(m));
+    }
+    Ok(Value::Array(out))
+}
+
 /// GH #890: the raw params with the cache knobs checked BY NAME before serde
 /// sees them. A serde refusal of an enum names the variant it did not know,
 /// never the field, and would not take the digit strings `whole_number`
@@ -579,6 +659,9 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
                 *v = Value::from(price(key, v)?);
             }
         }
+        if let Some(v) = obj.get_mut("price_tiers") {
+            *v = price_tiers_checked(v)?;
+        }
         // GH #1085: a rate takes the form of a price (fractions, digit
         // strings); its refusal names what it is.
         if let Some(v) = obj.get_mut("chars_per_token") {
@@ -604,7 +687,8 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
 /// GH #993 adds which sampling params the model takes at all.
 /// GH #1037 adds the output limit; R-HK-15/16 the input bounds and the two
 /// prompt prices the curator weighs a cached window with; GH #1085 the two
-/// rates the window estimate counts a prompt with.
+/// rates the window estimate counts a prompt with; GH #1318 the price steps
+/// by prompt length.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -627,6 +711,8 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1318: the price steps by prompt length.
+    "price_tiers",
     "chars_per_token",
     "tokens_per_image",
     "tool_choice_required",
@@ -1330,6 +1416,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1318: the price steps by prompt length, a package key.
+    "price_tiers",
     // GH #1085: the rates the window estimate counts with, package keys.
     "chars_per_token",
     "tokens_per_image",
@@ -1430,6 +1518,55 @@ pub use crate::params_overlay::ParamUpdateError;
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;
+
+    /// GH #1318: the price steps of a model above its base step are a package
+    /// key -- taken ordered and complete, refused by name otherwise.
+    #[test]
+    fn price_tiers_are_taken_ordered_and_complete() {
+        let with = |tiers: Value| {
+            LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k",
+                                     "price_tiers": tiers}))
+        };
+        let p = with(
+            json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250},
+                            {"above_input": "200000", "cost_in": "60.5", "cost_out": 300,
+                             "cost_cached_in": 6}]),
+        )
+        .unwrap();
+        assert_eq!(
+            p.price_tiers,
+            vec![
+                PriceTier {
+                    above_input: 100_000,
+                    cost_in: 50.0,
+                    cost_out: 250.0,
+                    cost_cached_in: None
+                },
+                PriceTier {
+                    above_input: 200_000,
+                    cost_in: 60.5,
+                    cost_out: 300.0,
+                    cost_cached_in: Some(6.0)
+                },
+            ]
+        );
+        assert!(with(json!([])).unwrap().price_tiers.is_empty());
+        for bad in [
+            json!({"above_input": 1, "cost_in": 1, "cost_out": 1}),
+            json!([{"above_input": 2, "cost_in": 1, "cost_out": 1},
+                   {"above_input": 1, "cost_in": 1, "cost_out": 1}]),
+            json!([{"above_input": 1, "cost_in": 1, "cost_out": 1},
+                   {"above_input": 1, "cost_in": 1, "cost_out": 1}]),
+            json!([{"above_input": 0, "cost_in": 1, "cost_out": 1}]),
+            json!([{"above_input": 1, "cost_in": 1}]),
+            json!([{"cost_in": 1, "cost_out": 1}]),
+            json!([{"above_input": 1, "cost_in": -1, "cost_out": 1}]),
+            json!([{"above_input": 1, "cost_in": 1, "cost_out": 1, "x": 1}]),
+        ] {
+            let e = with(bad.clone()).expect_err(&bad.to_string());
+            assert!(e.contains("price_tiers"), "{bad}: {e}");
+        }
+    }
 
     #[test]
     fn parse_rejects_empty_object() {

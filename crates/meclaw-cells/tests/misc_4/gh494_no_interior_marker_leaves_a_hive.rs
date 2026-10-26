@@ -37,7 +37,7 @@
 //!   whole mechanism exists for.
 //! * [`CARRIED`] — a hive's own key that a round trip **out** of the hive has to
 //!   bring back, because the answer re-enters through a door that does not
-//!   re-establish it. Three entries, each with the edge pair that needs it.
+//!   re-establish it. Each entry names the edge pair that needs it.
 //!
 //! An exemption is an assertion, not a mute: a key listed in either table that
 //! no hive sets any more fails this test, so the lists cannot rot into prose.
@@ -188,7 +188,7 @@ const SHARED: [&str; 37] = [
 /// it ([#528](https://github.com/mmeyerlein/meclaw/issues/528)): the core has one
 /// brain, so no edge inside it decides anything on a class and there is no key to
 /// carry across the rim.
-const CARRIED: [(&str, &str, &str); 4] = [
+const CARRIED: [(&str, &str, &str); 5] = [
     (
         "assistant",
         "tool_caller",
@@ -211,6 +211,18 @@ const CARRIED: [(&str, &str, &str); 4] = [
          comes back through the `in_bundle` door, which does not re-establish it \
          — and the advice the core finally produces is filed by the surface's \
          collector under exactly this id (GH #532)",
+    ),
+    (
+        "talky",
+        "inner_source",
+        "the marker of an inner turn (GH #1320, a bare source name, no content): \
+         the turn's round trips leave on `./curator -> .` recall, \
+         `./curator -> .` consult/research and `./dispatcher -> .` tool, and \
+         the answer re-enters through the `in_bundle`/`in_advice`/`in_tool` \
+         doors, which do not re-establish it -- and `./curator -> ./brain` \
+         and `./quick` set `silence_ok` on it, so a turn that recalled or \
+         called a tool first could not stay silent any more. Every other exit \
+         clears it, held edge by edge in `gh1316_an_inner_turn_crosses_the_member_to_its_channel`",
     ),
     (
         "meclaw-os",

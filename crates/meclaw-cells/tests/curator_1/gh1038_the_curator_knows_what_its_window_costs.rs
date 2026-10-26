@@ -359,6 +359,39 @@ fn the_roles_compress_for_cost_under_soft_below_their_window_target() {
     assert_eq!(got["mark"], "none", "{got}");
 }
 
+/// GH #1318 (review N4 I-1): a model priced by prompt length is stamped at
+/// the step its prompt falls in, and a step that names no cached price is
+/// stamped with its input price as the cached one. `curate_mark` weighs the
+/// cached rest only with a cached price stamped -- the stamp of such a step
+/// without one switched the `cost` mark off in the whole band between the
+/// cost aim and soft. With the step's input price it decides `cost` there as
+/// it does with the base prices (the numbers of a stepped row: base 3 / 0.6,
+/// the step 10 and no cached price).
+#[test]
+fn above_a_price_step_the_cost_mark_is_weighed_as_below_it() {
+    if !shipped() {
+        return;
+    }
+    let pkg = |cost_in: f64, cached: f64| {
+        format!(
+            "{{'input_soft': 237500, 'input_hard': 950000, 'cost_in': {cost_in}, \
+             'cost_cached_in': {cached}}}"
+        )
+    };
+    let (got, err) = policy_scope(
+        json!({"role": "talky", "window_target": 0}),
+        &format!(
+            "[curate_mark(200000, {}), curate_mark(200000, {})]",
+            pkg(3.0, 0.6),
+            pkg(10.0, 10.0)
+        ),
+        Value::Null,
+    );
+    assert_eq!(got[0]["mark"], "cost", "at the base prices: {got} {err}");
+    assert_eq!(got[1]["mark"], "cost", "above the step: {got} {err}");
+    assert_eq!(got[1]["rebuild_to"], got[0]["rebuild_to"], "{got}");
+}
+
 #[test]
 fn the_worked_example_amortises_after_three_turns() {
     if !shipped() {

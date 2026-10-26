@@ -1,7 +1,7 @@
 //! GH #1239: the native Anthropic Messages translate (`provider: "anthropic"`).
 //!
 //! Two pure halves, no I/O: [`build_messages_request`] turns the UBF history
-//! into a `POST /v1/messages` body, [`parse_messages_response`] turns the
+//! into a `POST /v1/messages` body, [`parse_messages_response_with`] turns the
 //! Messages answer back into the same [`TranslatedResponse`] the chat wire
 //! yields, so everything after the translate stays dialect-blind. GH #1241
 //! adds what the cell's anthropic lane needs around them: image blocks,
@@ -543,7 +543,17 @@ fn to_messages_tool(tool: &Value) -> Value {
 /// are not read into a turn. `tokens_prompt` is the whole prompt:
 /// `input_tokens` counts only what follows the last cache breakpoint, so the
 /// cache writes and reads are added to it.
-pub(crate) fn parse_messages_response(json: &Value) -> Result<TranslatedResponse, TranslateError> {
+///
+/// `silence_ok` is the caller's allowed silence (`hop.silence_ok == "1"`,
+/// GH #1320 K-13): an answer with neither text nor `tool_use` is then one
+/// empty text turn instead of `EmptyAnswer`, as on the chat wire
+/// ([`crate::llm::translate::parse_openai_response_with`]). A budget spent on
+/// thinking stays `ReasoningExhausted`; without the knob nothing changes
+/// (#999 F2).
+pub(crate) fn parse_messages_response_with(
+    json: &Value,
+    silence_ok: bool,
+) -> Result<TranslatedResponse, TranslateError> {
     let finish_reason = match json.get("stop_reason").and_then(Value::as_str) {
         Some("end_turn" | "stop_sequence") => "stop",
         Some("max_tokens" | "model_context_window_exceeded") => "length",
@@ -568,12 +578,18 @@ pub(crate) fn parse_messages_response(json: &Value) -> Result<TranslatedResponse
             _ => {}
         }
     }
-    if assistant_turn.is_empty() && text.trim().is_empty() {
-        return Err(if finish_reason == "length" && thinking {
-            TranslateError::ReasoningExhausted
-        } else {
-            TranslateError::EmptyAnswer
-        });
+    let silent = assistant_turn.is_empty() && text.trim().is_empty();
+    if silent {
+        let exhausted = finish_reason == "length" && thinking;
+        if exhausted || !silence_ok {
+            return Err(if exhausted {
+                TranslateError::ReasoningExhausted
+            } else {
+                TranslateError::EmptyAnswer
+            });
+        }
+        // GH #1320 K-13: allowed silence is one empty text turn.
+        assistant_turn.push(json!({"origin": "assistant", "type": "text", "text": ""}));
     }
     // A blank text next to `tool_use` stays out of the history: the next
     // request would carry it as an empty text block (re-check I1).
@@ -656,6 +672,15 @@ fn tool_call_turn(i: usize, block: &Value) -> Result<Value, TranslateError> {
         "id": id,
         "text": function.to_string(),
     }))
+}
+
+/// The face without the knob, for the unit tests of this file. The cell
+/// reads `hop.silence_ok` and calls [`parse_messages_response_with`] on every
+/// turn (`run_messages_lane`), so outside the tests this face had no caller
+/// any more (clippy `dead_code`, gate c3dd2cb, GH #1320).
+#[cfg(test)]
+pub(crate) fn parse_messages_response(json: &Value) -> Result<TranslatedResponse, TranslateError> {
+    parse_messages_response_with(json, false)
 }
 
 #[cfg(test)]
@@ -1105,6 +1130,56 @@ mod tests {
             parse_messages_response(&a),
             Err(TranslateError::UnknownFinishReason(_))
         ));
+    }
+
+    /// GH #1320 K-13: `silence_ok` turns an empty answer into one empty text
+    /// turn on both wires; without it, and for a budget spent on thinking,
+    /// the #999 F2 errors stand.
+    #[test]
+    fn gh1320_silence_ok_lets_an_empty_answer_through_on_both_wires() {
+        use crate::llm::translate::parse_openai_response_with;
+        let silent = json!([{"origin": "assistant", "type": "text", "text": ""}]);
+        let empty = json!({"id": "m", "model": "c", "stop_reason": "end_turn",
+                           "content": [{"type": "text", "text": " "}]});
+        assert_eq!(
+            parse_messages_response(&empty).err(),
+            Some(TranslateError::EmptyAnswer)
+        );
+        let r = super::parse_messages_response_with(&empty, true).expect("silence");
+        assert_eq!(Value::Array(r.assistant_turn), silent);
+        assert_eq!(r.finish_reason, "stop");
+        let cut = json!({"id": "m", "model": "c", "stop_reason": "max_tokens",
+                         "content": [{"type": "thinking", "thinking": "hm"}]});
+        assert_eq!(
+            super::parse_messages_response_with(&cut, true).err(),
+            Some(TranslateError::ReasoningExhausted)
+        );
+        for content in [json!(null), json!(" ")] {
+            let chat = json!({"id": "r", "model": "c", "choices": [{
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": content}}]});
+            assert_eq!(
+                parse_openai_response(&chat).err(),
+                Some(TranslateError::EmptyAnswer)
+            );
+            let r = parse_openai_response_with(&chat, true).expect("silence");
+            assert_eq!(Value::Array(r.assistant_turn), silent, "{chat}");
+        }
+        // A cut without a thinking trace is no `ReasoningExhausted`: with the
+        // knob it is the empty turn, but it keeps `length`, so the cell's
+        // length continuation takes it and not the dispatcher's silence
+        // (which marks `stop` only). Held on both wires (re-check m2).
+        let chat_cut = json!({"id": "r", "model": "c", "choices": [{
+            "finish_reason": "length",
+            "message": {"role": "assistant", "content": " "}}]});
+        let r = parse_openai_response_with(&chat_cut, true).expect("an empty cut");
+        assert_eq!(Value::Array(r.assistant_turn), silent);
+        assert_eq!(r.finish_reason, "length");
+        let messages_cut = json!({"id": "m", "model": "c", "stop_reason": "max_tokens",
+                                  "content": [{"type": "text", "text": ""}]});
+        let r = super::parse_messages_response_with(&messages_cut, true).expect("an empty cut");
+        assert_eq!(Value::Array(r.assistant_turn), silent);
+        assert_eq!(r.finish_reason, "length");
     }
 
     /// The closing context note a trailing assistant text travels in (GH #1282).

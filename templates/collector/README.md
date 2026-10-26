@@ -1,4 +1,4 @@
-# `collector@5.5.0`
+# `collector@5.6.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -199,7 +199,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 
 | param | default | meaning |
 |---|---|---|
-| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the turn-opening lanes (`in_turn`, `in_advice`, and since `collector@4.2.0` `in_delegation`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. |
+| `max_iter` | `8` | how often a turn may re-enter the brain with a tool round. At the cap the seam leaves on `answer` instead, with `hop.partial=1` and a named partial answer as its last turn (`collector@3.5.0`, GH #570). The count belongs to ONE round, and a turn opens one: since [#541](https://github.com/mmeyerlein/meclaw/issues/541) the turn-opening lanes (`in_turn`, `in_advice`, and since `collector@4.2.0` `in_delegation`) start at zero whatever `iter` the arrival carried. `in_advice` is the answer lane of another hive's round and carries ITS count -- a core that spent nine iterations used to hand the surface a turn that was over before it began, and the seam left on `answer` with the raw assembled round where the answer belonged, no brain call at all. One round may NARROW it ([#1321](https://github.com/mmeyerlein/meclaw/issues/1321)): `context.turn_max_iter` on the opening lane (a whole number from 1 below this param; anything else is the param) is written into the round's own row and caps that round only, the partial answer naming the cap it hit; the param stays the upper bound. With `defer_turns` `"1"` a deferred turn opens no round of its own and loses its own cap: it rides under the cap of the open round it waits for. `simple-agent@2` stamps it from a turn's `hop.max_iter`. |
 | `late_after_ms` | `30000` | deadline of a consult or a delegation (GH #728). A handed call leaves a `depart` row stamped now + this value; the answer of the round its return opens carries `hop.late = "1"` once the deadline has passed when the answer leaves, `"0"` before. Set per assistant on its talky ref markers. |
 | `defer_turns` | `"1"` | whether a turn that arrives while a tool round of its session is open waits for the next round (`"1"`, GH #103, the telephone model of a channel voice) or opens its own (`"0"`, since `5.1.0`, [#894](https://github.com/mmeyerlein/meclaw/issues/894)) -- a core sets `"0"`, because its session is the conversation that consults it, and a deferred errand or reply there waited for a round nobody opened and came back under another errand's `consult_id`. Blank is the shipped value. |
 | `round_idle_ms` | `120000` | idle window of one tool round (two minutes). A round whose last progress is older **and** whose fan-in is incomplete is closed at the next occasion with synthetic error results and fires with `hop.round_stale=1`. |
@@ -246,7 +246,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.5.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.6.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -482,7 +482,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.5.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.6.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -528,7 +528,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.5.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.6.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 

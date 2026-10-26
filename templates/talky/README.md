@@ -1,4 +1,4 @@
-# `talky@6.11.2`
+# `talky@6.11.3`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- eighty-two edges,
+dispatcher for the fan-out, the close batch out to the write port -- eighty-four edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -68,13 +68,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.5.0"}}
+{"cell": {"type": "ref", "template": "collector@5.6.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.11.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.11.3` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -178,7 +178,7 @@ The rest, each optional and each still at the same address:
 | `stamp` | out | the route stamp of every turn for a reader outside, raised by `./route` only with its knob `stamp_out` `"1"`: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}` -- no text, no turn notes --, hop `turn_id`, `path`, `fallback` on a fallback stamp. Nothing travels while the knob is `"0"` (shipped). See "A product's own questions" ([#1304](https://github.com/mmeyerlein/meclaw/issues/1304)) |
 | `opened` | out | a conversation began (GH #1305): ONE per session generation, out of `./session-keeper` when its stamp's knob `conversation_events` is `"1"` -- hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, body `messages: []`, no text. Off (the shipped `"0"`) nothing leaves |
 | `closed` | out | a conversation ended (GH #1305): ONE per close, out of `./curator` right behind its `write` in the same emission when the curator writer's knob `conversation_events` is `"1"` -- hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason` (`round`, `night`, `idle`), `turns_person`, `turns_assistant`, `last_turn_id`, `degraded` (`store` when the store refused the close's reads twice and no `write` left, the counts then 0), body `messages: []`, never a word. Off nothing leaves |
-| `inner_silent` | out | an inner turn answered with silence (GH #1305): nothing went to the channel; hop `inner_source`, `turn_id`, body `messages: []`. Only when the dispatcher's knob `conversation_events` is `"1"`; off, the silence ends the round and a stderr line of the dispatcher is all that is said |
+| `inner_silent` | out | an inner turn answered with silence (GH #1305): nothing went to the channel; hop `inner_source`, `turn_id`, body `messages: []`. Only when the dispatcher's knob `conversation_events` is `"1"`; off, the silence ends the round and a stderr line of the dispatcher is all that is said. The silence reaches the dispatcher because the edges into `./brain` and `./quick` set `hop.silence_ok` "1" for an inner turn (`context.inner_source`, which the round-trip exits `recall`, `consult`/`research` and `tool` keep, and every other exit clears), so the llm cell lets an answer without text through instead of `empty_answer` (GH #1320); a person's turn carries no such key |
 
 ### The sessions leave, and come back (`in_export` / `in_import`, GH #475)
 
@@ -554,9 +554,11 @@ the tool runs.
 
 ## The internal wiring, edge by edge
 
-Thirty-five edges of round in this hive's `params.graph` (the thirty-third and thirty-fourth the
+Thirty-seven edges of round in this hive's `params.graph` (the thirty-third and thirty-fourth the
 route stamp's read of the curator's wall and its answer, GH #1304, the thirty-fifth a check that
-asks for its words on its way to `./curator`, GH #1306) -- plus the forty-seven that ARE the
+asks for its words on its way to `./curator`, GH #1306, the thirty-sixth and thirty-seventh the
+inner turn's copies of the rounds into `./brain` and `./quick`, which set `hop.silence_ok`,
+GH #1320) -- plus the forty-seven that ARE the
 boundary (twenty door edges from `.`, twenty-seven leaving towards it, and those are the lanes
 above; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
 push, GH #863, and twelve of them leave `./curator` -- `write`, `turn_write`, `pack_ack` and
@@ -823,7 +825,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.11.2",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.11.3",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

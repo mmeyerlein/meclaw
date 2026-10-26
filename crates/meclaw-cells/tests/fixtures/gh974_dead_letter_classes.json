@@ -98,6 +98,48 @@
       "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/route",
       "target": "/os",
       "why": "The route stamp on the rim (GH #1304, knob `stamp_out` \"1\"), one per turn, without text or notes. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph. Not a defect: the stamp already did its work inside talky, and the copy is the audit. With the knob off (as shipped) no stamp leaves talky."
+    },
+    {
+      "route": "opened",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky/session-keeper/stamp",
+      "target": "/os",
+      "why": "The conversation event `opened` (GH #1305, knob `conversation_events` \"1\" on the surface's `session-keeper/stamp`), one per session generation, without text. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph, like the route stamp (GH #1319). Not a defect: the event is an offer, and nothing at the shell is invented to take it (OR-AG-39)."
+    },
+    {
+      "route": "opened",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/session-keeper/stamp",
+      "target": "/os",
+      "why": "The conversation event `opened` (GH #1305, knob `conversation_events` \"1\" on the surface's `session-keeper/stamp`), one per session generation, without text. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph, like the route stamp (GH #1319). Not a defect: the event is an offer, and nothing at the shell is invented to take it (OR-AG-39)."
+    },
+    {
+      "route": "closed",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky/curator/writer",
+      "target": "/os",
+      "why": "The conversation event `closed` (GH #1305, knob `conversation_events` \"1\" on the surface's `curator/writer`), one per close, right behind its `write`, without text. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph, like the route stamp (GH #1319). Not a defect: the event is an offer, and nothing at the shell is invented to take it (OR-AG-39)."
+    },
+    {
+      "route": "closed",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/curator/writer",
+      "target": "/os",
+      "why": "The conversation event `closed` (GH #1305, knob `conversation_events` \"1\" on the surface's `curator/writer`), one per close, right behind its `write`, without text. The assistant carries it out of its surfaces, and the grown generation, the member, the org and the shell each hand it up a level (GH #1314) for a reader the product binds above the person; the library ships none, so with the knob on it ends at the top of the graph, like the route stamp (GH #1319). Not a defect: the event is an offer, and nothing at the shell is invented to take it (OR-AG-39)."
+    },
+    {
+      "route": "inner_silent",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky/collector",
+      "target": "/os",
+      "why": "The conversation event `inner_silent` (GH #1305, knob `conversation_events` \"1\" on the surface's `dispatcher`): an inner turn answered with silence, out of the surface's collector, without text. It climbs as `opened` and `closed` do (GH #1314) and ends at the top of the graph with no reader in the library (GH #1319). The lab's stub never answers an inner turn with silence; the emitter is the one the rim pin reads (`gh1305_conversation_events_and_inner_turns_at_the_rims`). Not a defect: nothing at the shell is invented to take it (OR-AG-39)."
+    },
+    {
+      "route": "inner_silent",
+      "reason": "hive_no_route",
+      "sender": "/os/orgs/lab/members/member/assistants/agent/talky-chat/collector",
+      "target": "/os",
+      "why": "The conversation event `inner_silent` (GH #1305, knob `conversation_events` \"1\" on the surface's `dispatcher`): an inner turn answered with silence, out of the surface's collector, without text. It climbs as `opened` and `closed` do (GH #1314) and ends at the top of the graph with no reader in the library (GH #1319). The lab's stub never answers an inner turn with silence; the emitter is the one the rim pin reads (`gh1305_conversation_events_and_inner_turns_at_the_rims`). Not a defect: nothing at the shell is invented to take it (OR-AG-39)."
     }
   ]
 }

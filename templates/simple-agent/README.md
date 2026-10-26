@@ -1,4 +1,4 @@
-# `simple-agent@2.1.1`
+# `simple-agent@2.2.0`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
@@ -148,6 +148,16 @@ has answered once, its first call takes the last answer's package.
 **The loop.** The brain calls tools until it answers in text. At `max_iter` (16, the
 collector's cap) the collector stops the loop and the answer carries `partial: true`; the
 composite caps the curate seam at `iter < 20` as well, like `cogny`.
+
+**A turn can narrow its own cap.** `hop.max_iter` (a whole number, optional) on a turn sets
+the loop cap of THAT turn, counted like the collector's `max_iter` (tool rounds; N rounds are
+N + 1 brain calls), so an embedder spends a short budget on one errand without retuning the
+agent. It only narrows: the collector's `max_iter` stays the default and the upper bound, and a
+value at or above it, zero, negative, a fraction (`2.7`) or not a number is the param, without an error (the param
+is the operator's ceiling; a caller asking for more has asked for nothing the agent may grant).
+The door stamps it as `turn_max_iter` on its `in_turn` (and on the turn's required-tools
+follow-up), the collector writes it into the round's own row, and the row falls with the round:
+the next turn starts from the param again.
 
 ## The colony's lanes
 
@@ -331,4 +341,4 @@ Every other code cell keeps the mode its template ships.
   unique turn ids.
 - The proposals waiting for affinity's answer are RAM and live as long as the door's child.
 - The collector's iteration cap is the only loop guard; a model that never stops answers
-  `partial` at 16.
+  `partial` at 16, or at the turn's own `hop.max_iter` when that is lower.

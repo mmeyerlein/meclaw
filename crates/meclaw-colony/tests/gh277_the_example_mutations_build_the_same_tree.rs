@@ -905,7 +905,12 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// `./collector -> .` on `inner_silent`) and its `session-keeper` one more
 /// (`./stamp -> .` on `opened`). Two talkies: 2 x 4. Measured red on the
 /// lane (527 against 519).
-const EDGES: usize = 527;
+///
+/// Moved 527 -> 531 with GH #1320: every `talky` two edges more, each round
+/// (`./curator -> ./brain`, `./curator -> ./quick`) split into a person's
+/// edge and an inner turn's edge that sets `hop.silence_ok`. Two talkies:
+/// 2 x 2.
+const EDGES: usize = 531;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

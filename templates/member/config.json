@@ -89,7 +89,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@3.10.1\""
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@3.10.2\""
         }
       ],
       "emits": [
@@ -195,23 +195,23 @@
         },
         {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@3.10.1\""
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@3.10.2\""
         },
         {
           "route": "stamp",
-          "because": "the route stamp of one turn (GH #1304), out of the generation unchanged: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes, hop `turn_id`, `path`, `fallback` on a fallback stamp. The route cell raises it only when its knob `stamp_out` is \"1\", so a member that set no knob carries nothing. Nothing inside this member reads it -- the reader is a product outside -- so it LEAVES the level the way `stats` does. Derived from the emits list of \"assistant@3.10.1\""
+          "because": "the route stamp of one turn (GH #1304), out of the generation unchanged: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes, hop `turn_id`, `path`, `fallback` on a fallback stamp. The route cell raises it only when its knob `stamp_out` is \"1\", so a member that set no knob carries nothing. Nothing inside this member reads it -- the reader is a product outside -- so it LEAVES the level the way `stats` does. Derived from the emits list of \"assistant@3.10.2\""
         },
         {
           "route": "opened",
-          "because": "GH #1305: a conversation of one generation began, out unchanged: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, no text. Raised inside an assistant's talky only when its stamp knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.10.1\""
+          "because": "GH #1305: a conversation of one generation began, out unchanged: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, no text. Raised inside an assistant's talky only when its stamp knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.10.2\""
         },
         {
           "route": "closed",
-          "because": "GH #1305: a conversation of one generation ended, out unchanged right behind its `write`: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text. Raised only when the curator writer knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.10.1\""
+          "because": "GH #1305: a conversation of one generation ended, out unchanged right behind its `write`: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text. Raised only when the curator writer knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.10.2\""
         },
         {
           "route": "inner_silent",
-          "because": "GH #1305: an inner turn answered with silence -- nothing went to a channel; hop `inner_source`, `turn_id`, no text. Raised only when the dispatcher knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.10.1\""
+          "because": "GH #1305: an inner turn answered with silence -- nothing went to a channel; hop `inner_source`, `turn_id`, no text. Raised only when the dispatcher knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@3.10.2\""
         },
         {
           "route": "conversations",
@@ -327,7 +327,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -342,7 +343,8 @@
               "fw_phase",
               "store_origin",
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -388,7 +390,8 @@
             },
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -403,7 +406,8 @@
             "set_context": {
               "session_id": "has(context.session_id) ? context.session_id : ''",
               "audience_set": "has(context.audience_set) ? context.audience_set : ''",
-              "channel": "has(context.channel) ? context.channel : ''"
+              "channel": "has(context.channel) ? context.channel : ''",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"
             }
           }
         },
@@ -482,7 +486,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -493,7 +498,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -504,7 +510,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -515,7 +522,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -584,7 +592,8 @@
             },
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -595,7 +604,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -606,7 +616,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -617,7 +628,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -628,7 +640,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -682,7 +695,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -713,7 +727,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -724,7 +739,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -735,7 +751,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -746,7 +763,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -757,7 +775,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -768,7 +787,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -779,7 +799,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -790,7 +811,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -822,7 +844,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -876,7 +899,8 @@
             },
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -887,7 +911,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -898,7 +923,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -1368,7 +1394,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -1379,7 +1406,8 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
@@ -1390,23 +1418,33 @@
           "modifier": {
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         },
         {
           "from": ".",
           "to": "./memory-hive",
-          "condition": "has(hop.route) && hop.route == 'in_conversations'"
+          "condition": "has(hop.route) && hop.route == 'in_conversations'",
+          "modifier": {
+            "set_context": {
+              "conversations_asked": "'outside'"
+            }
+          }
         },
         {
           "from": "./memory-hive",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'conversations'",
+          "condition": "has(hop.route) && hop.route == 'conversations' && has(context.conversations_asked) && context.conversations_asked == 'outside'",
           "modifier": {
+            "set_hop": {
+              "route": "'conversations'"
+            },
             "delete_context": [
               "tool_answerer",
-              "has_file"
+              "has_file",
+              "conversations_asked"
             ]
           }
         }

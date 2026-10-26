@@ -132,6 +132,16 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             "cost_cached_in" => {
                 (params.cost_cached_in > 0.0).then(|| params.cost_cached_in.to_string())
             }
+            // GH #1318: shown only when the row has steps -- each as
+            // `<above_input>:<cost_in>/<cost_out>`.
+            "price_tiers" => (!params.price_tiers.is_empty()).then(|| {
+                let steps: Vec<String> = params
+                    .price_tiers
+                    .iter()
+                    .map(|t| format!("{}:{}/{}", t.above_input, t.cost_in, t.cost_out))
+                    .collect();
+                format!("[{}]", steps.join(","))
+            }),
             // GH #1085: shown only when the row states them.
             "chars_per_token" => {
                 (params.chars_per_token > 0.0).then(|| params.chars_per_token.to_string())

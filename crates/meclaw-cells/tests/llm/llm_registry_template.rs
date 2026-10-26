@@ -870,6 +870,8 @@ const PACKAGE_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1318: the price steps by prompt length.
+    "price_tiers",
     "chars_per_token",
     "tokens_per_image",
     "tool_choice_required",
@@ -3874,5 +3876,340 @@ fn the_quick_tier_is_the_fastest_timed_model_that_hits_its_tools() {
         quick,
         vec![fastest.as_str()],
         "the quick tier is the fastest timed row with at least 95 % tool hits"
+    );
+}
+
+// ─────────────────── GH #1318: price steps by prompt length are data
+//
+// A provider that prices a long prompt dearer than a short one (a second
+// step above 100k prompt tokens, say) used to be said in the row's `note`
+// prose only; every reader that books costs off the catalogue booked such a
+// prompt at the base step, too cheap. The steps are now a column.
+
+/// A price statement in prose: an amount with a currency unit, an "N in / M
+/// out" pair, or a cost column named with its number. Structure, not a list
+/// of model names -- whichever row a note belongs to, a price in it is a
+/// number that belongs in a column.
+fn price_statements(note: &str) -> Vec<String> {
+    let words: Vec<&str> = note.split_whitespace().collect();
+    let number = |w: &str| {
+        let t = w.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+        !t.is_empty() && t.chars().any(|c| c.is_ascii_digit()) && t.parse::<f64>().is_ok()
+    };
+    let unit = |w: &str| {
+        let t = w
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        ["cent", "cents", "usd", "dollar", "dollars", "eur"].contains(&t.as_str())
+    };
+    let mut hits = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let next = words.get(i + 1).copied().unwrap_or_default();
+        if number(w) && unit(next) {
+            hits.push(format!("{w} {next}"));
+        }
+        if w.starts_with('$') && number(&w[1..]) {
+            hits.push((*w).to_string());
+        }
+        // "10 in / 50 out"
+        if number(w)
+            && next == "in"
+            && words.get(i + 2) == Some(&"/")
+            && words.get(i + 3).is_some_and(|x| number(x))
+            && words.get(i + 4).is_some_and(|x| x.starts_with("out"))
+        {
+            hits.push(words[i..i + 5].join(" "));
+        }
+        // "cost_cached_in 1" -- a column named with its value.
+        let col = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        if col.starts_with("cost_") && number(next) {
+            hits.push(format!("{w} {next}"));
+        }
+    }
+    hits
+}
+
+/// GH #1318: the catalogue carries a model's price steps by prompt length as
+/// data. The store declares a `price_tiers` json column with an empty
+/// default and the seed's schema line names it; a stepped row lists its steps
+/// above the base one (`cost_in` / `cost_out` stay the base step, as before),
+/// each with the prompt size it starts ABOVE and its input and output price,
+/// ordered by that size and under the row's window. The rows whose note named
+/// a second step carry exactly those numbers, and no note states a price any
+/// more: a price in prose is a price no reader books.
+#[test]
+fn gh1318_a_catalogue_row_carries_its_price_steps_as_data() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let store = read_json(&root.join("store/config.json"));
+    assert_eq!(
+        store["params"]["schema"]["models"]["price_tiers"],
+        json!({"type": "json", "default": []}),
+        "the store column"
+    );
+    let (head, rows) = seed_rows(&root, "store/seed/models.jsonl");
+    assert_eq!(
+        head["schema"]["price_tiers"], "json",
+        "the seed's schema line"
+    );
+
+    let mut stepped = std::collections::BTreeMap::new();
+    for r in &rows {
+        let id = r["model_id"].as_str().unwrap_or_default().to_string();
+        let note = r["note"].as_str().unwrap_or_default();
+        assert_eq!(
+            price_statements(note),
+            Vec::<String>::new(),
+            "{id}: the note states a price -- it belongs in a column"
+        );
+        let Some(tiers) = r.get("price_tiers") else {
+            continue;
+        };
+        let tiers = tiers
+            .as_array()
+            .unwrap_or_else(|| panic!("{id}: price_tiers is a list"));
+        assert!(!tiers.is_empty(), "{id}: an empty list is no key at all");
+        let window = r["context_window"].as_u64().unwrap_or(0);
+        let mut last = 0u64;
+        for t in tiers {
+            let keys: std::collections::BTreeSet<&str> = t
+                .as_object()
+                .unwrap_or_else(|| panic!("{id}: a step is an object: {t}"))
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert!(
+                keys.is_subset(&["above_input", "cost_in", "cost_out", "cost_cached_in"].into()),
+                "{id}: a step names only its size and its prices: {t}"
+            );
+            let above = t["above_input"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{id}: above_input, a whole number: {t}"));
+            assert!(above > last, "{id}: the steps rise: {tiers:?}");
+            assert!(
+                above < window,
+                "{id}: a step under the window {window}: {t}"
+            );
+            last = above;
+            for k in ["cost_in", "cost_out"] {
+                assert!(
+                    t[k].as_f64().is_some_and(|v| v >= 0.0),
+                    "{id}: every step states {k}: {t}"
+                );
+            }
+        }
+        stepped.insert(id, Value::Array(tiers.clone()));
+    }
+    let steps = |rows: &[(u64, u64, u64)]| -> Value {
+        rows.iter()
+            .map(|(a, i, o)| json!({"above_input": a, "cost_in": i, "cost_out": o}))
+            .collect()
+    };
+    // The numbers the notes named until GH #1318, nothing new.
+    let want: std::collections::BTreeMap<String, Value> = [
+        (
+            "qwen/qwen3.7-flash",
+            steps(&[(32000, 10, 40), (256000, 20, 80)]),
+        ),
+        ("claude-haiku-5-5", steps(&[(100000, 50, 250)])),
+        ("anthropic/claude-haiku-5.5", steps(&[(100000, 50, 250)])),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    assert_eq!(stepped, want, "the stepped rows and their steps");
+}
+
+/// GH #1318 (review N4 M-1): `model_upsert` holds every price step under the
+/// window of the row it will stand in -- the stored row with the command over
+/// it, the way it holds the prompt block (GH #1085) -- like the catalogue lock
+/// above: a step at or over the window bills a prompt the model never takes.
+/// Refused as `invalid_model_field` with the field and the numbers; a row
+/// without a window (0 = not stated) holds no step to one.
+#[test]
+fn gh1318_the_hand_holds_every_price_step_under_the_window() {
+    let Some(hand) = registry_script("hand") else {
+        return;
+    };
+    let steps = |above: u64| {
+        json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250},
+                                     {"above_input": above, "cost_in": 60, "cost_out": 300}])
+    };
+    // The first page of the world bundle: the four tables, then the stored row.
+    let upsert_over = |model: Value, stored: Value| -> Vec<Value> {
+        let taken = hand_command(&hand, json!({"op": "model_upsert", "model": model}));
+        assert_eq!(
+            rejection(&taken),
+            None,
+            "the command itself is whole: {taken:?}"
+        );
+        let carry = first_carry(&taken);
+        hand_echo(
+            &hand,
+            "world",
+            carry,
+            vec![json!([]), json!([]), json!([]), json!([]), stored],
+        )
+    };
+    let stored = json!([{"model_id": "test/stepped", "status": "active",
+                         "context_window": 400000}]);
+    let said = |out: &[Value]| -> String {
+        out.iter()
+            .find(|m| m["header"]["outcome"] == "rejected")
+            .map(|m| m.to_string())
+            .unwrap_or_default()
+    };
+    for (model, stored, what) in [
+        (
+            json!({"model_id": "test/stepped", "price_tiers": steps(400000)}),
+            stored.clone(),
+            "a step at the stored window",
+        ),
+        (
+            json!({"model_id": "test/stepped", "price_tiers": steps(500000)}),
+            stored.clone(),
+            "a step over the stored window",
+        ),
+        (
+            json!({"model_id": "test/stepped", "price_tiers": steps(300000),
+                "context_window": 250000}),
+            json!([]),
+            "a step over the window the command states",
+        ),
+        (
+            json!({"model_id": "test/stepped", "context_window": 150000}),
+            json!([{"model_id": "test/stepped", "status": "active", "context_window": 400000,
+                 "price_tiers": steps(200000)}]),
+            "a window shrunk under the stored steps",
+        ),
+    ] {
+        let out = upsert_over(model, stored);
+        assert_eq!(
+            rejection(&out).as_deref(),
+            Some("invalid_model_field"),
+            "{what}: {out:?}"
+        );
+        let line = said(&out);
+        assert!(
+            line.contains("price_tiers") && line.contains("context_window"),
+            "{what}: the refusal names the field and the window: {line}"
+        );
+    }
+    for (model, stored, what) in [
+        (
+            json!({"model_id": "test/stepped", "price_tiers": steps(200000)}),
+            stored.clone(),
+            "steps under the stored window",
+        ),
+        (
+            json!({"model_id": "test/stepped", "price_tiers": steps(200000)}),
+            json!([]),
+            "a new row without a window",
+        ),
+    ] {
+        let out = upsert_over(model, stored);
+        assert_eq!(rejection(&out), None, "{what}: {out:?}");
+    }
+}
+
+/// GH #1318: `model_upsert` takes `price_tiers` and refuses a list that is not
+/// ordered or not complete by name (`invalid_model_field`), the way it refuses
+/// a field of the wrong type; a push of a stepped row carries the steps to the
+/// cell, a push of a row without steps resets the key.
+#[test]
+fn gh1318_the_hand_takes_ordered_complete_price_steps_and_pushes_them() {
+    let Some(hand) = registry_script("hand") else {
+        return;
+    };
+    let upsert = |tiers: Value| {
+        hand_command(
+            &hand,
+            json!({"op": "model_upsert",
+                   "model": {"model_id": "test/stepped", "price_tiers": tiers}}),
+        )
+    };
+    let good = json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250},
+                      {"above_input": 200000, "cost_in": 60, "cost_out": 300,
+                       "cost_cached_in": 6}]);
+    let taken = upsert(good.clone());
+    assert_eq!(rejection(&taken), None, "{taken:?}");
+    assert_eq!(
+        first_carry(&taken)["cmd"]["model"]["price_tiers"],
+        good,
+        "{taken:?}"
+    );
+    for bad in [
+        json!({"above_input": 100000, "cost_in": 50, "cost_out": 250}),
+        json!([{"above_input": 200000, "cost_in": 60, "cost_out": 300},
+               {"above_input": 100000, "cost_in": 50, "cost_out": 250}]),
+        json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250},
+               {"above_input": 100000, "cost_in": 60, "cost_out": 300}]),
+        json!([{"above_input": 100000, "cost_in": 50}]),
+        json!([{"cost_in": 50, "cost_out": 250}]),
+        json!([{"above_input": 0, "cost_in": 50, "cost_out": 250}]),
+        json!([{"above_input": 100000, "cost_in": -1, "cost_out": 250}]),
+        json!([{"above_input": 100000, "cost_in": "50", "cost_out": 250}]),
+        json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250, "note": "x"}]),
+    ] {
+        let refused = upsert(bad.clone());
+        assert_eq!(
+            rejection(&refused).as_deref(),
+            Some("invalid_model_field"),
+            "{bad}: {refused:?}"
+        );
+    }
+
+    const CELL: &str = "/g/assistant/brain";
+    let models = json!([
+        {"model_id": "test/flat", "status": "active", "provider": "openrouter",
+         "wire_dialect": "chat_completions", "base_url": "https://openrouter.ai/api/v1",
+         "cost_in": 10, "cost_out": 50, "context_window": 400000},
+        {"model_id": "test/stepped", "status": "explicit", "provider": "openrouter",
+         "wire_dialect": "chat_completions", "base_url": "https://openrouter.ai/api/v1",
+         "cost_in": 10, "cost_out": 50, "context_window": 400000,
+         "price_tiers": good}
+    ]);
+    let subscribers = json!([
+        {"cell_path": CELL, "tier": "", "pinned": 0, "start_model": "test/flat",
+         "package_hash": "", "model_id": "test/flat", "rank": "start",
+         "reason": "start_value", "since": "t", "protocol": ""}
+    ]);
+    let pushes_to = |model: &str| -> Vec<Value> {
+        let cmd = json!({"op": "override_set", "tier": "", "model_id": model, "reason": "",
+                         "scope": "target", "match": "/g", "id": "", "cell_path": "",
+                         "start_model": "", "pinned": null, "announce": false,
+                         "entries": [], "actor": "operator", "call_id": "c1"});
+        let results = vec![
+            models.clone(),
+            json!([]),
+            json!([]),
+            subscribers.clone(),
+            json!([]),
+            json!([{"cell_path": CELL}]),
+        ];
+        hand_echo(&hand, "world", json!({"cmd": cmd}), results)
+            .into_iter()
+            .filter(|m| m["header"]["route"] == "update" && m["header"]["subscriber"] == CELL)
+            .map(|m| m["params"].clone())
+            .collect()
+    };
+    let there = pushes_to("test/stepped");
+    let there = there
+        .iter()
+        .find(|p| p["model"] == "test/stepped")
+        .unwrap_or_else(|| panic!("the cell is moved onto the stepped row: {there:?}"));
+    assert_eq!(there["price_tiers"], good, "{there}");
+    let back = pushes_to("test/flat");
+    let back = back
+        .iter()
+        .find(|p| p["model"] == "test/flat")
+        .unwrap_or_else(|| panic!("the cell is moved back: {back:?}"));
+    assert!(back.get("price_tiers").is_none(), "{back}");
+    assert!(
+        back["$reset"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|k| k == "price_tiers")),
+        "a row without steps resets them: {back}"
     );
 }

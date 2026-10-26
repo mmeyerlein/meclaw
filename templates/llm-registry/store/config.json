@@ -42,6 +42,10 @@
           "type": "json",
           "default": 0
         },
+        "price_tiers": {
+          "type": "json",
+          "default": []
+        },
         "cache_mode": "text",
         "cache_ttl_s": "int",
         "cost_in": "int",

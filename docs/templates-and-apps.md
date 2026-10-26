@@ -49,6 +49,12 @@ in the tree and a fixed set of edge classes. `colony-view` is the one the librar
 committed mutation triggers a topology snapshot, a `code` cell turns it into one component
 tree, and the view leaves the hive towards a display.
 
+An app may carry an agent of its own: a `simple-agent@2` embedded in its hive, enrolled at the
+member's affinity, served by the member's access and llm-registry and named once by its
+`agent_id`. The builder's `install_app` recipe reads which lanes the app's rim requires and
+draws them in the same declaration that installs the app. An app tool can also be a `handoff`:
+its answer comes back to the conversation as a later turn instead of inside the round.
+
 A screen brings its own design language: the sheet and the vocabulary of components it is
 written against travel in the `display` template. An application names those components in
 its view without defining them, so a view that wants to look like the screen carries no sheet

@@ -1,4 +1,4 @@
-# `member@2.7.2`
+# `member@2.7.3`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and four edges.
@@ -176,6 +176,7 @@ sends.
 | `turn_write` | **both** (since #527): fanned onto the memory's `in_episode` *and* out on `turn_write` |
 | `error`, `build` | out, untranslated. Nothing here consumes them |
 | `stats` | out, untranslated (GH #926). The answer to a question an observer outside asked; nothing here consumes it |
+| `conversations` | out only for a question that came through this level's own `in_conversations` door (GH #1320): that edge stamps `context.conversations_asked`, the way back requires it, and every exit of the level deletes it, so a stamp that left on another lane (a `reject`) cannot ride the chain back in and let an inside answer out. The exit sets `hop.route` "conversations" itself, which is how the lane-door check sees it as the lane's exit. A reader inside this member (a counselor's role asking the memory) gets its answer on its own edge and nothing leaves the level -- where the asker sits is told by the door it used, never by its name |
 | `stamp` | out, untranslated (GH #1304). The route stamp of one turn, raised only when a surface's route knob `stamp_out` is "1"; its reader is a product outside, nothing here consumes it |
 | `opened`, `closed`, `inner_silent` | out, untranslated (GH #1305). The conversation events; their reader is an app outside, nothing here consumes them |
 | `pack_ack` | **consumed** since GH #877 — every receipt, into the record as `in_pack_ack` with the row it answers for on `context.pack_sub` (which the push stamped and the curator carried back), because a pack counts as delivered only when its receipt comes back clean and affinity is where a delivery is booked; above this level nobody consumes one. A receipt naming no row (a pack this member's affinity did not send) is dropped there with a line on stderr. Three travel per pack, one per rim of the generation (`talky`, `talky-chat`, `cogny`); each leaves its RIM on a v-lane (GH #561) and stops at `./assistants` |
@@ -889,7 +890,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.7.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.7.3` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1125,7 +1126,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.7.2"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.7.3"}]
 }}
 ```
 
@@ -1134,7 +1135,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.2"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

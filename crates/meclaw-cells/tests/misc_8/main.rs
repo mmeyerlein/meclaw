@@ -33,6 +33,7 @@ pub mod p6_bundle_dedup;
 pub mod p7_tier0_window;
 pub mod pre14_a3_stateless_amplification;
 pub mod q2_recall_query_guard;
+pub mod r39_1_the_turn_window_is_parked_by_the_hive;
 pub mod r3_axis_rendering;
 pub mod receptionist;
 pub mod session_keeper;

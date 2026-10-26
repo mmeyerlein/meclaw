@@ -16,6 +16,8 @@
 //! * The registry's push (`$reset` naming `wire_dialect` among the other
 //!   package keys) changes the model of an anthropic cell like that of a
 //!   decisions cell.
+//! * GH #1320 K-13: `hop.silence_ok` reaches this lane through the cell; an
+//!   answer of nothing is then an empty turn, not `empty_answer`.
 
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
@@ -538,4 +540,50 @@ async fn a_tool_round_under_a_changed_system_drops_its_thinking_and_answers() {
         "{second}"
     );
     assert_eq!(second_beta, "thinking-binding-controls-2026-08-01");
+}
+
+/// GH #1320 K-13 on this lane (re-check m1): `hop.silence_ok == "1"` reaches
+/// the Messages wire through the cell -- an answer of nothing is then one
+/// empty assistant turn with `stop`; without the knob the same answer stays
+/// the `empty_answer` error (#999 F2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_silence_ok_reaches_the_messages_lane() {
+    for (knob, silent) in [(true, true), (false, false)] {
+        let mock = MockOpenAI::start(vec![answer(
+            json!([{"type": "text", "text": " "}]),
+            "end_turn",
+        )])
+        .await;
+        let mut cell = LlmCell::new(params(&mock, json!({})), reqwest::Client::new());
+        let td = TempDir::new().unwrap();
+        let mut db = cell_db(&td);
+        let (out, mut rx) = sink();
+        let mut hop = meclaw_core::serde_json::Map::new();
+        if knob {
+            hop.insert("silence_ok".into(), json!("1"));
+        }
+        let msg = MessageBuilder::new(Path::new("/llm"))
+            .reply_to(Path::new("/observer"))
+            .hop(hop)
+            .body(Body::Inline(json!({"messages": [user("hi")]})))
+            .build();
+        cell.handle(msg, &out, &mut db).await;
+        assert_eq!(mock.recorded_requests().await.len(), 1);
+        let ems = drain(&mut rx);
+        assert_eq!(ems.len(), 1, "knob {knob}");
+        let content = &ems[0].content;
+        if silent {
+            assert_eq!(content["header"]["finish_reason"], "stop", "{content}");
+            assert_eq!(
+                content["messages"][0],
+                json!({"origin": "assistant", "type": "text", "text": ""}),
+                "{content}"
+            );
+        } else {
+            assert_eq!(
+                content["meta"]["error"]["kind"], "empty_answer",
+                "{content}"
+            );
+        }
+    }
 }

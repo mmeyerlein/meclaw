@@ -59,7 +59,8 @@ that exists before the mutation that puts something there.
 | `telegram-connector` | channel | One Telegram chat behind one proxy cell, with no persona and no answer of its own. |
 | `display` | channel | One screen on a mount of its own, which several agents write named views onto without knowing about each other. |
 | `freeswitch` | channel | A telephone as a channel. A `voice` cell terminates the media, a small state machine offers `call` and `hangup`. |
-| apps | member | A sealed hive in the member's `apps` container. It may observe the conversation, offer a tool and write to a screen, and it never stands in the way. |
+| `simple-agent` | member, or inside an app | An agent of the colony in one sealed hive: its own curator, memory and tools hive, tools only on enablement, and identity, grants and models from the level's affinity, access and llm-registry. The builder grows it in one block. |
+| apps | member | A sealed hive in the member's `apps` container. It may observe the conversation, offer a tool, write to a screen and carry an agent of its own, and it never stands in the way. |
 
 The shipped app is `colony-view`, which draws the colony's own topology onto a `display`.
 

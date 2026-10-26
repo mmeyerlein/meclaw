@@ -170,6 +170,27 @@ impl HopCache {
         }
     }
 
+    /// GH #1318: the prompt prices of the step the answer's prompt falls in.
+    /// A model priced by prompt length bills a prompt above a step at that
+    /// step's price; stamped at the base step, the curator weighed such a
+    /// window too cheap. `prompt` is the provider's count of the answer's
+    /// (first) call; unreported, the base step stays. A step without a cached
+    /// price stamps its input price as the cached one: no discount assumed,
+    /// no number made up. Stamped without one, `curate_mark` (curator
+    /// `policy`) skipped its `cost` mark in the whole band between its cost
+    /// aim and `input_soft` (review N4 I-1, qwen3.7-flash above 32k).
+    pub(crate) fn priced_for(mut self, params: &LlmParams, prompt: Option<u64>) -> Self {
+        let step = prompt.and_then(|p| params.price_tiers.iter().rev().find(|t| p > t.above_input));
+        if let Some(t) = step {
+            fn stated(c: f64) -> Option<f64> {
+                (c > 0.0 && c.is_finite()).then_some(c)
+            }
+            self.cost_in = stated(t.cost_in);
+            self.cost_cached_in = t.cost_cached_in.and_then(stated).or(self.cost_in);
+        }
+        self
+    }
+
     /// GH #999 (F5/F6): the request half of the stamp -- `dropped` and
     /// `unverified` -- for an ERROR answer, as `extra_hop` of
     /// [`emit_error_with_hop_for`]. A refused request is exactly where the
@@ -793,6 +814,53 @@ mod tests {
             HopCache::of(&params(json!({"context_window": 1000}))),
             cache(None, Some(1000)),
             "the window is stamped without a cache"
+        );
+    }
+
+    /// GH #1318: a model priced by prompt length is stamped at the step its
+    /// prompt falls in -- the step whose `above_input` the reported prompt
+    /// exceeds -- so the curator weighs a long window at the dearer price. A
+    /// step that names no cached price stamps its input price as the cached
+    /// one (review N4 I-1: stamped without one, `curate_mark` skipped its
+    /// `cost` mark above the step); an unreported prompt is the base step, as
+    /// before.
+    #[test]
+    fn a_stepped_price_is_stamped_at_the_step_of_the_prompt() {
+        let p = LlmParams::parse(&json!({
+            "provider": "openai", "model": "m", "api_key": "k",
+            "cost_in": 10, "cost_cached_in": 1,
+            "price_tiers": [{"above_input": 100000, "cost_in": 50, "cost_out": 250},
+                            {"above_input": 200000, "cost_in": 60, "cost_out": 300,
+                             "cost_cached_in": 6}]
+        }))
+        .unwrap();
+        let at = |prompt: Option<u64>| {
+            let c = HopCache::of(&p).priced_for(&p, prompt);
+            (c.cost_in, c.cost_cached_in)
+        };
+        assert_eq!(at(None), (Some(10.0), Some(1.0)), "unreported: base");
+        assert_eq!(
+            at(Some(100_000)),
+            (Some(10.0), Some(1.0)),
+            "up to the step: base"
+        );
+        assert_eq!(
+            at(Some(100_001)),
+            (Some(50.0), Some(50.0)),
+            "above it: the step, its input price for the cached part it names none for"
+        );
+        assert_eq!(
+            at(Some(200_001)),
+            (Some(60.0), Some(6.0)),
+            "the second step"
+        );
+        let flat = LlmParams::parse(&json!({"provider": "openai", "model": "m",
+                                            "api_key": "k", "cost_in": 10}))
+        .unwrap();
+        assert_eq!(
+            HopCache::of(&flat).priced_for(&flat, Some(900_000)),
+            HopCache::of(&flat),
+            "a row without steps is stamped as before"
         );
     }
 

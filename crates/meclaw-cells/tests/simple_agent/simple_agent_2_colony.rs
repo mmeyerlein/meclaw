@@ -28,7 +28,7 @@ use meclaw_colony::{ColonyMsg, MutationDoorOutcome};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path, Uuid};
 use meclaw_testing::mock_http::MockResponse;
-use mock_openai::canned_chat_completion;
+use mock_openai::{canned_chat_completion, canned_tool_calls};
 use simple_agent_loop::{
     AGENT_ID, ANTHROPIC_KEY, AUDIENCE, MODEL_CELLS, OPENROUTER_KEY, SUBSCRIBER, as_map, body_of,
     boot, colony_edges, copy_resolved, count_route, grant_of, next_on, read_json, repo, shipped,
@@ -1121,7 +1121,7 @@ fn sa2_builder_block_renders_one_agent_the_door_accepts() {
     let diff = &decl["diff"];
     let nodes = diff["add_nodes"].as_array().expect("add_nodes");
     assert_eq!(nodes.len(), 1, "one agent");
-    assert_eq!(nodes[0]["template"], "simple-agent@2.1.1");
+    assert_eq!(nodes[0]["template"], "simple-agent@2.2.0");
     assert_eq!(
         decl["ctx"]["model"], "example-provider/brain-model",
         "ctx.model"
@@ -1729,7 +1729,7 @@ async fn wait_sealed(h: &meclaw_testing::ColonyHandle) -> usize {
 fn embedding_app_wish() -> Value {
     let example = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
     let figure = read_json(&repo("templates/figure/config.json"));
-    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.0.1",
+    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.0.2",
            "screen": "display", "ctx": {"model": "example-provider/brain-model"},
            "declaration": {}, "credential": example["credential"],
            "override_params": {"world": {"figure_id": "fig", "world_id": "w", "role": "npc"}},
@@ -2306,4 +2306,283 @@ fn sa2_an_inside_callers_ack_takes_no_outside_road_of_the_member() {
             "an outside caller's {route} still goes home"
         );
     }
+}
+
+// ──────────────── consumers beside the agent, the embedder's key (GH #1319)
+
+/// [`deeper_contract`] plus a model cell `./closer` BESIDE the agent that
+/// spends a grant too -- orga's coordinator app holds `./closer` next to
+/// `./coordinator` (soul2me X2 report, finding B2), a counselor its `judge`.
+fn beside_contract() -> Value {
+    let mut c = deeper_contract();
+    for (side, route) in [("emits", "credential_request"), ("accepts", "in_sealed")] {
+        for lane in c[side].as_array_mut().into_iter().flatten() {
+            if lane["route"] == route
+                && let Some(at) = lane.get_mut("at").and_then(Value::as_array_mut)
+            {
+                at.push(json!("./closer"));
+            }
+        }
+    }
+    c
+}
+
+/// The fixture `nest` of [`nest_instantiated`] with that `./closer` beside the
+/// agent: an llm cell (the agent's brain's config), so its params are an llm's.
+fn beside_instantiated() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (td, nest) = nest_instantiated();
+    std::fs::create_dir_all(nest.join("closer")).expect("the closer's folder");
+    std::fs::copy(
+        nest.join("simple-agent/brain/config.json"),
+        nest.join("closer/config.json"),
+    )
+    .expect("the closer's config");
+    std::fs::write(
+        nest.join("config.json"),
+        json!({"cell": {"type": "hive"},
+               "params": {"ports": [], "contract": beside_contract()}})
+        .to_string(),
+    )
+    .expect("the nest's config");
+    (td, nest)
+}
+
+/// An `install_app` wish for the app `nest` grown from the fixture, its rim
+/// [`beside_contract`], with the example's credential and an app id.
+fn beside_wish() -> Value {
+    let mut p = embedding_app_wish();
+    p["app"] = json!("nest");
+    p["template"] = json!("nest@1.0.0");
+    p["contract"] = beside_contract();
+    p["app_id"] = json!("example-app nest");
+    if let Some(o) = p.as_object_mut() {
+        o.remove("override_params");
+    }
+    p
+}
+
+/// GH #1319 (K-10): with `app_id`, `install_app` of an app that embeds
+/// `simple-agent@2` names the app on a consumer BESIDE the agent under that
+/// consumer's own path (`closer`), never under the agent's prefix
+/// (`simple-agent/closer`, a cell the app does not have: the door refused the
+/// whole override with `schema`, soul2me X2 lab probe slot 3). A consumer
+/// whose app id the wish already names keeps it.
+#[test]
+fn sa2_install_app_names_the_app_beside_the_agent_on_its_own_path() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let answer = render_install(&beside_wish());
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    let overrides = app_overrides(&answer);
+    // The door's own check on every override key against the app's tree.
+    let (_td, nest) = beside_instantiated();
+    let registry = TemplatesRegistry::from_entries(Vec::new());
+    let parsed = parse_subtree(&nest, &registry).expect("the nest parses");
+    for (cell, params) in as_map(&overrides) {
+        let c = parsed
+            .cells
+            .iter()
+            .find(|x| x.rel_path == cell.as_str())
+            .unwrap_or_else(|| panic!("the override names no cell of the app: {cell}"));
+        check_override_params(c, Some(cell.as_str()), "nest", &params)
+            .unwrap_or_else(|why| panic!("{cell}: {why:?}"));
+    }
+    assert_eq!(overrides["closer"]["x_title"], "example-app nest");
+    assert_eq!(overrides["closer"]["http_referer"], "https://meclaw.ai");
+    assert_eq!(
+        overrides["simple-agent/brain"]["x_title"],
+        "example-app nest"
+    );
+
+    let mut wish = beside_wish();
+    wish["override_params"] = json!({"closer": {"x_title": "orga closer"}});
+    let overrides = app_overrides(&render_install(&wish));
+    assert_eq!(
+        overrides["closer"]["x_title"], "orga closer",
+        "the wish's own app id on the cell beside the agent stays: {overrides:#}"
+    );
+    assert!(
+        overrides.get("simple-agent/closer").is_none(),
+        "{overrides:#}"
+    );
+}
+
+/// The `cred_ref` of the grant row whose id ends in `consumer`.
+fn grant_ref(answer: &Value, consumer: &str) -> String {
+    let diff = &answer["manifest"][0]["diff"];
+    diff["seed_rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["table"] == "grants")
+        .flat_map(|t| t["rows"].as_array().cloned().unwrap_or_default())
+        .find(|r| {
+            r["grant_id"]
+                .as_str()
+                .is_some_and(|g| g.ends_with(consumer))
+        })
+        .and_then(|r| r["cred_ref"].as_str().map(str::to_string))
+        .unwrap_or_else(|| panic!("no grant for {consumer}: {diff:#}"))
+}
+
+/// GH #1319 (K-11): `install_app` of an app that embeds `simple-agent@2` seeds
+/// the embedder's grant with the credential's `embed_cred_ref` -- the vault
+/// name its handle is drawn from -- and every model cell's with `cred_ref`.
+/// Before, every row carried `cred_ref`: the embedder was sealed the
+/// provider's key under a handle that names the embedding key (soul2me X2
+/// report, finding B3). Without `embed_cred_ref` the embedder spends
+/// `cred_ref`, as before.
+#[test]
+fn sa2_install_app_seeds_the_embedders_grant_with_its_own_key() {
+    if !shipped() || !repo("templates/figure/config.json").is_file() {
+        return;
+    }
+    let mut wish = embedding_app_wish();
+    wish["credential"]["embed_cred_ref"] = json!("cred:openrouter-embed");
+    let answer = render_install(&wish);
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    let embed = "/fig-simple-agent-memory-hive-embed";
+    assert_eq!(grant_ref(&answer, embed), "cred:openrouter-embed");
+    assert_eq!(
+        grant_ref(&answer, "/fig-simple-agent-brain"),
+        "cred:openrouter"
+    );
+
+    let answer = render_install(&embedding_app_wish());
+    assert_eq!(grant_ref(&answer, embed), "cred:openrouter");
+
+    // The search cell's row comes from the same mechanism: with
+    // `search_cred_ref` it carries that name. Before K-11 it carried the
+    // provider's `cred_ref` under a handle drawn from the search key (N5
+    // review, M2).
+    let search = "/fig-simple-agent-tools-web_search";
+    let mut wish = embedding_app_wish();
+    wish["credential"]["search_cred_ref"] = json!("cred:brave-search");
+    let answer = render_install(&wish);
+    assert!(answer["header"]["error_code"].is_null(), "{answer}");
+    assert_eq!(grant_ref(&answer, search), "cred:brave-search");
+    assert_eq!(grant_ref(&answer, embed), "cred:openrouter");
+
+    // Without it the search cell stays anonymous, as before (OR-VG-5).
+    let answer = render_install(&embedding_app_wish());
+    let has_search_grant = answer["manifest"][0]["diff"]["seed_rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["table"] == "grants")
+        .flat_map(|t| t["rows"].as_array().cloned().unwrap_or_default())
+        .any(|r| r["grant_id"].as_str().is_some_and(|g| g.ends_with(search)));
+    assert!(!has_search_grant, "{answer:#}");
+}
+
+/// K-15 (GH #1321): a turn narrows the loop cap of ITSELF through the turn
+/// door (`hop.max_iter`); the collector's `max_iter` stays the default and the
+/// upper bound. The stub calls a tool on every brain call, so only the cap ends
+/// a turn: the narrowed turn ends after its own number of brain calls, the next
+/// turn of the same session runs to the param again (the knob rides in the
+/// round's own row, not in the session), a larger or unreadable value is the
+/// param, and so is a fraction (`2.7` is no whole number: review M-1, it used
+/// to be cut to 2). `max_iter` N counts tool re-entries, as the param does: N + 1 brain
+/// calls. Events only: the `iters` of each answer and the brain calls on the
+/// wire after quiescence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_a_turn_narrows_its_own_iteration_cap() {
+    if !shipped() {
+        return;
+    }
+    let calls = (1..=23)
+        .map(|i| {
+            canned_tool_calls(vec![(
+                format!("c-{i}").as_str(),
+                "weather",
+                r#"{"place":"Berlin"}"#,
+            )])
+        })
+        .collect();
+    let (_td, stubs, h, mut ports) = boot(
+        calls,
+        json!({"collector/assemble": {"max_iter": 4}, "tool_gate": {"tools_enabled": ["weather"]}}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    let mut got = Vec::new();
+    for (tid, knob) in [
+        ("t-1", json!({"max_iter": "2"})),
+        ("t-2", json!({})),
+        ("t-3", json!({"max_iter": "9"})),
+        ("t-4", json!({"max_iter": "many"})),
+        ("t-5", json!({"max_iter": 2.7})),
+    ] {
+        h.send(turn_with(tid, "Loop.", knob)).await;
+        let answer = next_on(&h, &mut ports, "answer", &mut seen).await;
+        let slot = body_of(&answer)["answer"].clone();
+        got.push((tid, slot["iters"].clone(), slot["partial"].clone()));
+    }
+    assert_eq!(
+        got,
+        vec![
+            ("t-1", json!(3), json!(true)),
+            ("t-2", json!(5), json!(true)),
+            ("t-3", json!(5), json!(true)),
+            ("t-4", json!(5), json!(true)),
+            ("t-5", json!(5), json!(true)),
+        ],
+        "the narrowed turn ends at its own cap, every other at the param"
+    );
+    h.quiesce().await;
+    assert_eq!(
+        stubs.brain.recorded_requests().await.len(),
+        23,
+        "no brain call past a cap"
+    );
+}
+
+/// K-15 (GH #1321, review M-2): the required-tools follow-up of a narrowed
+/// turn runs under the SAME narrowed cap, and the partial answer names that
+/// cap. The stub calls `weather` on every brain call, the turn requires
+/// `clock`: the turn (cap 1) spends 2 brain calls, the follow-up the door opens
+/// for the missing `clock` 2 more; under the param (4) the follow-up alone
+/// would spend 5. Events only: the answer and the brain calls after quiescence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sa2_a_narrowed_turns_follow_up_keeps_its_cap() {
+    if !shipped() {
+        return;
+    }
+    let calls = (1..=10)
+        .map(|i| {
+            canned_tool_calls(vec![(
+                format!("c-{i}").as_str(),
+                "weather",
+                r#"{"place":"Berlin"}"#,
+            )])
+        })
+        .collect();
+    let (_td, stubs, h, mut ports) = boot(
+        calls,
+        json!({"collector/assemble": {"max_iter": 4}, "tool_gate": {"tools_enabled": ["weather"]}}),
+    )
+    .await;
+    let mut seen = Vec::new();
+    h.send(turn_with(
+        "t-1",
+        "Loop.",
+        json!({"max_iter": "1", "required_tools": "[\"clock\"]"}),
+    ))
+    .await;
+    let answer = next_on(&h, &mut ports, "answer", &mut seen).await;
+    let slot = body_of(&answer)["answer"].clone();
+    assert_eq!(slot["partial"], json!(true), "{slot:#}");
+    assert_eq!(slot["missing_required"], json!(["clock"]), "{slot:#}");
+    let text = slot["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("(max_iter=1)"),
+        "the partial answer names the narrowed cap: {text}"
+    );
+    h.quiesce().await;
+    assert_eq!(
+        stubs.brain.recorded_requests().await.len(),
+        4,
+        "turn and follow-up each stop at the narrowed cap"
+    );
 }

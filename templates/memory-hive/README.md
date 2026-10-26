@@ -1,4 +1,4 @@
-# `memory-hive@3.18.0`
+# `memory-hive@3.19.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -116,9 +116,20 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   reads the conversation is the only party present in it. **Since 3.0.0 the window's producer is
   the CLOSE PASS** ([#300](https://github.com/mmeyerlein/meclaw/issues/300), ruling Q9 of
   2026-08-21): the batch prompt that used to render it went with the batch lane (#298), and the
-  pass that reads a session whole is the one party that can see an axis whole. An ordinary
-  per-turn annotation carries no window at all — a `replaces` on it matches an empty window and
-  is discarded, which is the safe direction and the shipped behaviour of the inline lane.
+  pass that reads a session whole is the one party that can see an axis whole. **Since
+  owner ruling R-39-1 (2026-10-26, GH #1322) the TURN has a window too, and Q9 is changed:** a
+  correction of the person ("not Anna, but Anne") works from the turn it is said in. `./recall`
+  parks the OPEN facts of the bundle it hands the speaking model as a `scratch` row of kind
+  `window`, in the close pass's shape, under `turn-window:<session_id>|<turn_id>` -- both read
+  off the context the edges stamped, so no body names a window -- and each of those fact lines
+  carries a short `id` (eight hex digits of the row id, longer only where two shown ids share
+  them). The inline block of the same round reads that row beside its own (`merge`), resolves a
+  short id to the statement it names, and closes through exactly the rails below. No model call
+  is added; a recall without a round parks nothing and renders no id, and so does an ask that
+  serves someone else (`recall_caller` `outside`, `objects` or `resident`): that model never read
+  the bundle. Both edges into the hive stamp `turn_id` off the HOP of the asking cell -- the
+  recall ask and the `memory` section's `in_remember` alike (member, simple-agent@2) -- so one
+  round id keys the window on both sides. A close pass never reads a turn's window.
   * **The window is the guard rail, and it is mechanical.** A `replaces` naming anything the
     window did not contain is discarded and logged; the window is parked in `scratch` under the
     round's own key and read back when the facts are written, so what is checked is what the
@@ -370,6 +381,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `in_query` | in → `./memory` | `set_context: {recall_query: "hop.recall_query", memory_tier: "hop.memory_tier", recall_as_of: "''", recall_window_from: "hop.recall_window_from", recall_window_to: "hop.recall_window_to"}` — the caller must send all five keys on EVERY hop, empty string = unset (see the trap below). **`recall_as_of` has no producer in the shipped composites**: `collector/assemble`'s `emits.hop` carries `recall_query`, `memory_tier`, `recall_window_from` and `recall_window_to` and no as-of key, so an edge reading `hop.recall_as_of` would fail to evaluate and the colony would skip the whole edge. Promote the constant empty string there — a point recall — unless your own caller has a source for the instant. The `phase: "recall"` hop that starts a fresh chain is stamped by the hive's OWN door edge now, not by the caller. **Three more keys are read and none is required**: `session_id` scopes the session read (the tier-0 leg answers with THAT session's episodes; a question naming none reads a session called `default`), `speaker` names who asks (a `member:` of the round, set by the caller's lane; without it the asker is the one member of a 1:1 `audience_now`, in a group nobody, and an ask of nobody lifts no muted topic), and `recall_caller` is a **reply-to token this hive never reads** -- whatever a caller puts there rides through untouched and comes back on `hop.recall_caller` of the `bundle` and of a `reject`, which is how one hive serves several askers and each of them gets ITS answer ([#532](https://github.com/mmeyerlein/meclaw/issues/532)). It has to change compartment on the way out, and this hive is the only place that can do it for every caller at once: on the hop it would not survive, because the `recall` cell forms its own hop and only context travels (GH #411), and a door guarded on context ALONE is condemned by `crates/meclaw-cells/tests/misc_2/gh173_shipped_hive_contracts.rs`. **Plus the asking round**: `audience_now` and `channel` are required, `channel_open_history` is optional (default closed); without the first two the question is refused rather than answered unfiltered |
 | `in_remember` | in → `./memory` | the same `audience_set` and `channel` as `in_episode` — this lane mints facts directly, so it is the one place a missing audience would produce an untagged row with no episode to refuse it first. Beyond that, nothing but the annotation itself: the door stamps `store_origin`/`mem_phase` inside. The form comes from [`inline-contract.md`](inline-contract.md), and **since 3.4.0 this hive hands the model-facing copy out itself**, on `sidecar[]` of `in_schemas` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)) — what arrives here is the `memory` SECTION of one ```` ```sidecar ```` block, cut out by the asker's splitter and carried on a message of its own. *That the model writes a ```` ```memory ```` fence of its own is retracted, not quietly reworded*: one fence with one top-level key per section is the frame now, the asking collector owns it, and this hive owns one key of it. *That the front model's composite CARRIES the contract text is retracted with it* (GH #525 put it there, #606 takes it back to the reader) — the collector composes what it was offered. The old `extraction` shape stays readable at the ingress on purpose, so the rewiring goes in two phases ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). The section has TWO parts (#299): `facts`, the delta of world state the turn carried, and `topic`, where the conversation stands — a `topic` with `movement: "start"` or `"end"` writes the topics row next to the facts, `continue` writes none, and a turn that carried nothing still sends `{"memory":{"nothing_new":true,"facts":[],"topic":{"movement":"continue"}}}` rather than nothing at all. The caller's `session_id` must be in the context (it is, in the `talky` composite): a block that names no episode is BOUND to the newest `user` turn of that session, and one that arrives without a session cannot be bound and is rejected |
 | `in_close_pass` | in → `./memory` | a session that just ended, to be read WHOLE once (GH #300, ruling Q9 of 2026-08-21). **Nothing travels in the body** — the lane names a session and the hive reads its own turns. The context is the same provenance every write lane of this hive demands and is not optional: `set_context: {session_id: …, audience_set: …, channel: …}`; the pass proposes writes, so a pass without them would mint sharpened rows nobody can filter afterwards. The shipped caller already has all three — `talky`'s `./session-keeper → ./collector` close edge promotes exactly this set. Wire `close_report` in the SAME mutation. The pass costs one strong-model call per session — see [What a close pass costs](#what-a-close-pass-costs-measured) |
+| `in_correction` | in → `./memory` | ONE fact or topic of a conversation that a third cell (the counselor) reports as wrong or new (R-39-1). The context is the provenance of every write lane, `set_context: {audience_set: …, channel: …}` — the round of the REPORTER, and the only round whose statements the check is shown. The body is one text turn whose `text` is a JSON object; see [A correction: one axis, at once](#a-correction-one-axis-at-once-gh-1323). Wire `correction_report` in the SAME mutation |
 | `in_export` | in → `./memory` | `hop.export_to` names the run's directory, relative to the fence this hive's store declares in `params.transfer.base_path`; without it the hive's own name. The store writes `<dir>/memory-hive/seed/<table>.jsonl` for every table of the walk and `export_final.json` last, and the hive says `export_done` (see [Transfer](#taking-a-memory-out-putting-it-into-another-243)). Wire `export_done` in the SAME mutation — `required_drains` enforces it, and an export nobody drains reads the whole store for nothing |
 | `in_import` | in → `./memory` | `hop.import_from` names the same run directory; nothing in the body and nothing in the context. The WHOLE directory is applied in one message and every file of it is parsed before the first row is written, so a document with one broken file writes nothing at all. Applying the same directory twice leaves the same state. A document whose declared schema disagrees with this store by a single column, in either direction, is refused on `reject` with nothing written |
 | `tool_call` | in → `./memory` | one `memory_recall` call a brain made (#552), split out by a dispatcher and carried here by the member the asker stands in. The body is the tool_call turn and nothing else; `hop.tool_call_id` is the correlation the asking round waits on, and the hive's own door promotes it to `context.memory_call_id`. **Plus the asking round**, exactly as on `in_query`: `audience_now` and `channel`, and `session_id` if the session leg is to be scoped. The tier is NOT on this lane — how deep a recall runs is `tool`'s own `params.tier`, because a model that could choose its own depth could ask for one the instance was tuned away from. Wire `tool_result` in the SAME mutation |
@@ -378,6 +390,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `model_refused` | out → the registry's road | a model push one of the four llm cells refused: its error, with `hop.refused_subscriber` (that cell's path) and `hop.refused_model`, instead of as a verdict inside the hive. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. Since 3.6.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `bundle` | out → your consumer | condition `hop.route == 'bundle'` on an edge FROM `./memory`. It carries `hop.recall_caller` back, off the `context.recall_caller` the question came in with and empty when it came with none — a caller with more than one asker routes the answer on it, and one with a single asker ignores it ([#532](https://github.com/mmeyerlein/meclaw/issues/532)) |
 | `close_report` | out → your drain | condition `hop.route == 'close_report'` on an edge FROM `./memory`. **Drain it.** It is the ONLY positive signal the close lane has — the pass writes through the inline ingress, which answers nobody, so without this drain a caller cannot tell a pass that ran and changed nothing from a pass that never ran at all. Eight numbers ride on the hop: `added`, `sharpened`, `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions` (the `pending` rows of this session the pass swept) and `truncated` (what the page bounds left behind). A pass that got no verdict leaves on `reject` instead, with `hop.reject_reason == 'closer_failed'` — nothing was written and the exception list was NOT swept |
+| `correction_report` | out → your drain | condition `hop.route == 'correction_report'` on an edge FROM `./memory`. **Drain it.** The receipt of one correction: `hop.result` `closed`, `added` or `refused`, `hop.reason` why, `hop.correction_ref` the report's own `ref` (at most 64 characters, any `|` removed), `hop.correction_key` the run. A store refusal inside a correction leaves on `reject` with `hop.phase == 'correct'` and the same `correction_key` and `correction_ref` |
 | `export_done` | out → your drain | condition `hop.route == 'export_done'` on an edge FROM `./memory`, PLAIN: this hive's store has written its whole seed set into `<fence>/<dir>/seed/`, marker and all, and says so itself ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). `hop.seed_dir` names the directory RELATIVE to the fence the store declares (`params.transfer.base_path`), `hop.export_hive` names the hive, `hop.export_of` how many tables travelled and `hop.rows_written` how many rows |
 | `dump` | out → your drain | condition `hop.route == 'dump'` on an edge FROM `./memory`, and make it a PLAIN one: an edge that also tests a second hop key evaluates to `false` under the `required_drains` probe and reads as no drain. Since #555 it carries ONE thing, and since [#261](https://github.com/mmeyerlein/meclaw/issues/261) exactly ONE message of it: the receipt of an applied import, for the whole directory rather than per part (`hop.export_of` counts the tables applied, `hop.rows_written` the rows that were new, `hop.export_final` is always `'1'` because a directory is applied whole or not at all) — the export writes its own files and reports on `export_done`, so the `dump_kind` key that told the two apart is gone with the distinction |
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
@@ -397,6 +410,8 @@ It is back in the vocabulary the seal left standing, and this hive declares elev
 {"accepts": "in_query",      "emits": "reject",       "because": "…"}
 {"accepts": "in_close_pass", "emits": "close_report", "because": "…"}
 {"accepts": "in_close_pass", "emits": "reject",       "because": "…"}
+{"accepts": "in_correction", "emits": "correction_report", "because": "…"}
+{"accepts": "in_correction", "emits": "reject",       "because": "…"}
 {"accepts": "in_export",     "emits": "export_done",  "because": "…"}
 {"accepts": "in_export",     "emits": "reject",       "because": "…"}
 {"accepts": "in_import",     "emits": "dump",         "because": "…"}
@@ -647,6 +662,49 @@ from the model: one call per round (almost always one per session), the round wh
 a strong model by ruling. Budget one
 such call per closed session and size `close_turn_rows` / `close_fact_rows` knowing
 that both bound what the prompt pays for.
+
+## A correction: one axis, at once ([#1323](https://github.com/mmeyerlein/meclaw/issues/1323))
+
+The close pass waits for the end of a session. A third cell that hears a fact go wrong — the
+counselor, reading along — does not have to: `in_correction` runs the close pass one axis wide,
+at once (ruling R-39-1, point 2). It uses the close pass's parts and none of its own:
+`./close-glue` reads the OPEN statements of the named predicate, keeps those of the named subject
+and of the reporter's own round (the equality rule of GH #933), builds prompt block and `shown`
+window with the same `open_axes()`, parks the window under the run's key and asks `./closer`
+with a prompt of its own. The write goes through the ordinary inline ingress with every guard it
+has — `expired_at is_null`, never across sources, the direction check of GH #71 — and the
+closure is named `correction:<key>`, so one run reverts with one `where`, like `extract:<batch>`.
+
+The body is ONE text turn whose `text` is a JSON object:
+
+```json
+{"subject": "member", "predicate": "lives_in", "quote": "I moved to Berlin last month.",
+ "claim": "Berlin", "kind": "fact", "turn": "<episode id>", "ref": "r1", "note": "…"}
+```
+
+`subject`, `predicate` and `quote` are required — `quote` is the conversation's own words the
+report rests on, and the model decides from it alone. `kind` is `fact` (default) or `topic`; a
+topic is checked like a fact on the named axis, the topic table is not touched. `turn` names the
+episode a NEW fact hangs on and is required for an `add`; it must exist and belong to the reporter's
+round, or the report is refused; a replacement hangs on the turn of the
+statement it ends and inherits its event time and its round. `ref` is echoed on the receipt, cut to 64 characters and without `|`.
+
+The model answers `replace` (a statement it was SHOWN), `add` or `refuse`. What leaves is one
+`correction_report` with `hop.result`:
+
+| `result` | `reason` | meaning |
+|---|---|---|
+| `closed` | `replace` | a shown statement is superseded; `hop.replaces` names it |
+| `added` | `add` | a new fact is written on the reported turn |
+| `refused` | `model_refused` | the model would not follow the report; `hop.why` is its sentence |
+| `refused` | `unseen` | the verdict named a statement outside the window; nothing is closed |
+| `refused` | `restated` | the claim is already standing on the axis |
+| `refused` | `model_failed`, `no_claim`, `no_turn`, `invalid_report`, `missing_audience`, `report_lost`, `window_lost` | nothing is written |
+
+Like `close_report`, the receipt counts what LEFT on the inline ingress, not what landed: the
+ingress may still refuse a closure on its direction or its source and says so in `scratch`. A
+correction speaks for one axis of a turn, never for the turn, so it takes no turn out of the
+extraction queue. The window is bounded by `correction_fact_rows` (default 64) on `./close-glue`.
 
 ## A conversation, read whole ([#1309](https://github.com/mmeyerlein/meclaw/issues/1309))
 
@@ -1339,7 +1397,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.18.0` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.19.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1745,7 +1803,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.7.2",
+{"add_nodes": [{"name": "alex", "template": "member@2.7.3",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

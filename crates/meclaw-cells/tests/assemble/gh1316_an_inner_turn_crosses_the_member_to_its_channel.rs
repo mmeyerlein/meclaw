@@ -45,9 +45,10 @@ use meclaw_cells::{
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, MESSAGE_DEFAULT_TTL, Message, MessageBuilder, Path};
+use meclaw_testing::mock_http::MockResponse;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use meclaw_testing::{ColonyHandle, NEVER_CRON, override_params_on_disk};
-use mock_openai::{MockOpenAI, canned_chat_completion};
+use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -417,6 +418,22 @@ async fn first_delivery(h: &ColonyHandle, to: &str) -> Option<Value> {
         .map(|row| meclaw_core::serde_json::from_str(&row.headers_json).unwrap_or(Value::Null))
 }
 
+/// Body of the last delivery into `to` (inline bodies only), read like
+/// [`first_delivery`].
+async fn body_of_delivery(h: &ColonyHandle, to: &str) -> Option<Value> {
+    h.quiesce().await;
+    let filter = meclaw_colony::api_dto::MessageLogFilter {
+        to_path_prefix: Some(to.to_string()),
+        ..Default::default()
+    };
+    h.read_log(filter)
+        .await
+        .into_iter()
+        .rfind(|row| row.to_path == to)
+        .and_then(|row| row.body_payload)
+        .map(|b| meclaw_core::serde_json::from_str(&b).unwrap_or(Value::Null))
+}
+
 struct Run {
     /// The answer at `/delivered`, if one arrived.
     delivered: Option<Message>,
@@ -647,4 +664,573 @@ fn gh1316_a_released_inner_turn_keeps_its_keys() {
         h["ctx_audience_set"], AUDIENCE,
         "the rest of the carry is unchanged"
     );
+}
+
+// ─────────────────────────── GH #1320: what a conversation tells, out of the member
+
+// WHY (GH #1320, measured in two labs one level up): on this same road
+// - an inner turn the model answered with silence (`" "`, GH #1305) died in
+//   the `llm` cell as `empty_answer` before the dispatcher could see it, so
+//   no `inner_silent` ever left (orga lab, trace 01a175b1-…);
+// - `opened` and `closed` of a talky surface were reported dead at the
+//   assistant's hive (`hive_no_route`, target `…/assistants/<name>`);
+// - the memory's answer to a reader INSIDE the member (`conversations`)
+//   left over the member's rim as well and died there (`hive_no_route`,
+//   sender `memory-hive/sessions`).
+// Every hop below is the shipped one; only the knobs that ship off are on.
+
+/// A reader inside the member (a role next to the assistants); its answer
+/// is drawn by the product, here by one test edge to a witness.
+const READER_INSIDE: &str = "counselor:review:1320";
+/// A reader outside the member, asking at the member's own door.
+const READER_OUTSIDE: &str = "app:outside:1320";
+
+/// The member's edges of the conversation events and of the conversations
+/// lane, verbatim off `templates/member`.
+fn member_event_edges() -> Vec<Value> {
+    let member = read_json(&repo("templates/member/config.json"));
+    member["params"]["graph"]["edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            let (f, t) = (
+                e["from"].as_str().unwrap_or(""),
+                e["to"].as_str().unwrap_or(""),
+            );
+            let cond = e["condition"].as_str().unwrap_or("");
+            (f == "./assistants" && t == "." && cond.contains("'opened'"))
+                || cond.contains("'in_conversations'")
+                || cond.contains("'conversations'")
+        })
+        .collect()
+}
+
+/// The road of #1316 with every conversation-event knob on, a keeper that
+/// ends a conversation on the next sweep, the member's event edges and one
+/// reader inside the member.
+fn build_events_tree(root: &std::path::Path, brain: &str, background: &str) {
+    build_tree(root, brain, background);
+    let m = root.join("main/m");
+    let talky = m.join("assistants/scribe/talky");
+    for cell in ["dispatcher", "session-keeper/stamp", "curator/writer"] {
+        override_params_on_disk(&talky.join(cell), &json!({"conversation_events": "1"}));
+    }
+    // A sweep ends every conversation that has been silent at all (the
+    // precedent of gh895); the night stays closed (quiet_keeper_night).
+    override_params_on_disk(&talky.join("session-keeper/close"), &json!({"idle_ms": 1}));
+    let mut cfg = read_json(&m.join("config.json"));
+    let edges = cfg["params"]["graph"]["edges"]
+        .as_array_mut()
+        .expect("the member's edges");
+    let extra = member_event_edges();
+    assert!(
+        extra.len() >= 3,
+        "the member's event edges were found: {extra:?}"
+    );
+    edges.extend(extra);
+    // The witness of the inside reader sits outside the tree (it must exist
+    // before the boot), drawn by an edge of THIS level like a role's would be.
+    edges.push(json!({"from": "./memory-hive", "to": "/delivered",
+                      "condition": "has(hop.route) && hop.route == 'conversations' && has(hop.reader) && hop.reader.startsWith('counselor:')"}));
+    write_json(&m.join("config.json"), &cfg);
+}
+
+struct EventsRun {
+    h: ColonyHandle,
+    delivered: mpsc::Receiver<Message>,
+    park: mpsc::Receiver<Message>,
+    _brain: MockOpenAI,
+    _background: MockOpenAI,
+    _td: tempfile::TempDir,
+}
+
+async fn boot_events(brain_says: &str) -> EventsRun {
+    boot_events_with(vec![canned_chat_completion(brain_says, "stop")]).await
+}
+
+/// [`boot_events`] with the brain's whole script, one answer per request.
+async fn boot_events_with(brain_script: Vec<MockResponse>) -> EventsRun {
+    let brain = MockOpenAI::start(brain_script).await;
+    let background =
+        MockOpenAI::start(vec![canned_chat_completion(BACKGROUND_REPLY, "stop")]).await;
+    let td = tempfile::TempDir::new().expect("tempdir");
+    build_events_tree(td.path(), &brain.base_url, &background.base_url);
+    let (h, delivered, park) = boot(&td).await;
+    EventsRun {
+        h,
+        delivered,
+        park,
+        _brain: brain,
+        _background: background,
+        _td: td,
+    }
+}
+
+fn hop_route(m: &Message) -> &str {
+    m.headers
+        .hop
+        .get("route")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+/// The first message on `rx` whose route is `route`; everything else seen
+/// on the way is kept in `seen`. `None` at the hang marker.
+async fn next_route(
+    rx: &mut mpsc::Receiver<Message>,
+    seen: &mut Vec<Message>,
+    route: &str,
+) -> Option<Message> {
+    if let Some(i) = seen.iter().position(|m| hop_route(m) == route) {
+        return Some(seen.remove(i));
+    }
+    let wait = async {
+        while let Some(m) = rx.recv().await {
+            if hop_route(&m) == route {
+                return Some(m);
+            }
+            seen.push(m);
+        }
+        None
+    };
+    tokio::time::timeout(DEADLINE, wait).await.ok().flatten()
+}
+
+/// Dead letters of the run that carry one of `routes`.
+async fn dead_on(h: &ColonyHandle, routes: &[&str]) -> Vec<String> {
+    h.drain_dead_letters()
+        .await
+        .iter()
+        .filter(|d| routes.contains(&hop_route(&d.message)))
+        .map(|d| {
+            format!(
+                "{} from {} to {} ({:?})",
+                hop_route(&d.message),
+                d.sender_path.as_str(),
+                d.original_target.as_str(),
+                d.reason
+            )
+        })
+        .collect()
+}
+
+/// K-13: an inner turn the model answers with silence is silence at the
+/// dispatcher -- `inner_silent` leaves the member, nothing reaches a channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_an_inner_turn_answered_with_silence_leaves_inner_silent() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut run = boot_events(" ").await;
+    run.h
+        .send(turn(
+            json!({"route": "in_turn", "kind": "inner", "inner_source": SOURCE,
+                   "deliver_channel_node": NODE, "turn_id": "orga-1320"}),
+            json!({"assistant": "scribe", "audience_set": AUDIENCE}),
+            "The walk is due in ten minutes.",
+        ))
+        .await;
+    let mut seen = Vec::new();
+    let silent = next_route(&mut run.park, &mut seen, "inner_silent").await;
+    let dead = dead_on(&run.h, &["inner_silent", "answer", "error"]).await;
+    let silent = silent.unwrap_or_else(|| {
+        panic!(
+            "inner_silent left the member; parked: {:?}; dead: {dead:?}; errors: {:?}",
+            seen.iter().map(hop_route).collect::<Vec<_>>(),
+            seen.iter()
+                .filter(|m| hop_route(m) == "error")
+                .map(|m| (&m.headers.hop, &m.body))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(silent.headers.hop["inner_source"], SOURCE);
+    assert_eq!(silent.headers.hop["turn_id"], "orga-1320");
+    // The knob that let the brain stay silent came from talky's edge.
+    let brain = format!("{M}/assistants/scribe/talky/brain");
+    let at_brain = first_delivery(&run.h, &brain)
+        .await
+        .unwrap_or_else(|| panic!("the inner turn reached the brain"));
+    assert_eq!(at_brain["hop"]["silence_ok"], "1", "{at_brain}");
+    run.h.quiesce().await;
+    assert!(
+        run.delivered.try_recv().is_err(),
+        "a silence sends nothing to a channel"
+    );
+    assert!(dead.is_empty(), "{dead:?}");
+    run.h.shutdown().await;
+}
+
+/// K-13, the other half (#999 F2 stands): an empty answer to a person's
+/// turn is still the brain's `empty_answer`, and no silence leaves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_an_empty_answer_to_a_person_stays_an_error() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut run = boot_events(" ").await;
+    run.h
+        .send(turn(
+            json!({"route": "in_turn", "turn_id": "p-1320"}),
+            json!({"assistant": "scribe", "audience_set": AUDIENCE, "channel": "tg:42",
+                   "channel_node": NODE}),
+            "How was the walk?",
+        ))
+        .await;
+    run.h.quiesce().await;
+    // Lock (K-13): a person's turn reaches the brain without the knob, so
+    // its message is the one it was before GH #1320.
+    let brain = format!("{M}/assistants/scribe/talky/brain");
+    let at_brain = first_delivery(&run.h, &brain)
+        .await
+        .unwrap_or_else(|| panic!("the person's turn reached the brain"));
+    assert!(at_brain["hop"].get("silence_ok").is_none(), "{at_brain}");
+    let errors = format!("{M}/assistants/scribe/talky/errors");
+    let at_errors = first_delivery(&run.h, &errors)
+        .await
+        .unwrap_or_else(|| panic!("the brain's empty answer went to talky's errors"));
+    assert_eq!(at_errors["hop"]["finish_reason"], "error", "{at_errors}");
+    assert_eq!(
+        at_errors["hop"]["error_code"], "provider_error",
+        "{at_errors}"
+    );
+    // The kind names the brain's empty answer, not any provider error
+    // (re-check m3).
+    let body = body_of_delivery(&run.h, &errors)
+        .await
+        .unwrap_or_else(|| panic!("the error carried a body"));
+    assert_eq!(body["meta"]["error"]["kind"], "empty_answer", "{body}");
+    let mut parked = Vec::new();
+    while let Ok(m) = run.park.try_recv() {
+        parked.push(m);
+    }
+    assert!(
+        !parked.iter().any(|m| hop_route(m) == "inner_silent"),
+        "a person's empty answer is no silence: {:?}",
+        parked.iter().map(hop_route).collect::<Vec<_>>()
+    );
+    run.h.shutdown().await;
+}
+
+/// K-12b: `opened` and `closed` of a talky surface nested in an assistant in
+/// the container of a member come out of the member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_opened_and_closed_leave_the_member() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut run = boot_events(REPLY).await;
+    run.h
+        .send(turn(
+            json!({"route": "in_turn", "turn_id": "p-1320"}),
+            json!({"assistant": "scribe", "audience_set": AUDIENCE, "channel": "tg:42",
+                   "channel_node": NODE}),
+            "How was the walk?",
+        ))
+        .await;
+    let mut seen = Vec::new();
+    let opened = next_route(&mut run.park, &mut seen, "opened").await;
+    assert!(
+        tokio::time::timeout(DEADLINE, run.delivered.recv())
+            .await
+            .ok()
+            .flatten()
+            .is_some(),
+        "the turn was answered"
+    );
+    run.h.quiesce().await;
+    run.h
+        .send(
+            MessageBuilder::new(Path::new(&format!("{M}/assistants/scribe/talky")))
+                .hop(as_map(&json!({"route": "in_sweep"})))
+                .context(Map::new())
+                .body(Body::Inline(json!({"messages": []})))
+                .ttl(400)
+                .build(),
+        )
+        .await;
+    let closed = next_route(&mut run.park, &mut seen, "closed").await;
+    let dead = dead_on(&run.h, &["opened", "closed"]).await;
+    let opened = opened.unwrap_or_else(|| panic!("opened left the member; dead: {dead:?}"));
+    assert_eq!(
+        opened.headers.hop["channel"], "tg:42",
+        "{:?}",
+        opened.headers.hop
+    );
+    let closed = closed.unwrap_or_else(|| panic!("closed left the member; dead: {dead:?}"));
+    assert_eq!(
+        closed.headers.hop["channel"], "tg:42",
+        "{:?}",
+        closed.headers.hop
+    );
+    assert!(dead.is_empty(), "{dead:?}");
+    run.h.shutdown().await;
+}
+
+fn ask_conversations(to: &str, reader: &str) -> Message {
+    MessageBuilder::new(Path::new(to))
+        .hop(as_map(&json!({"route": "in_conversations"})))
+        .context(Map::new())
+        .body(Body::Inline(json!({"messages": [], "reader": reader,
+                                  "audience_set": AUDIENCE})))
+        .ttl(MESSAGE_DEFAULT_TTL)
+        .build()
+}
+
+/// K-14: the memory's `conversations` leaves the member only for a reader
+/// outside it; the answer to a reader inside stays inside.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_conversations_leave_the_member_only_for_a_reader_outside() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut run = boot_events(REPLY).await;
+    // Inside: the reader's question reaches the memory from within the level.
+    run.h
+        .send(ask_conversations(
+            &format!("{M}/memory-hive"),
+            READER_INSIDE,
+        ))
+        .await;
+    let mut none = Vec::new();
+    let inside = next_route(&mut run.delivered, &mut none, "conversations")
+        .await
+        .unwrap_or_else(|| panic!("the inside reader got its answer"));
+    assert_eq!(inside.headers.hop["reader"], READER_INSIDE);
+    // Outside: the question comes in at the member's door.
+    run.h.send(ask_conversations(M, READER_OUTSIDE)).await;
+    let mut seen = Vec::new();
+    let outside = next_route(&mut run.park, &mut seen, "conversations")
+        .await
+        .unwrap_or_else(|| panic!("the outside reader got its answer"));
+    run.h.quiesce().await;
+    while let Ok(m) = run.park.try_recv() {
+        seen.push(m);
+    }
+    let dead = dead_on(&run.h, &["conversations"]).await;
+    let mut out_readers: Vec<String> = seen
+        .iter()
+        .chain(std::iter::once(&outside))
+        .filter(|m| hop_route(m) == "conversations")
+        .map(|m| m.headers.hop["reader"].as_str().unwrap_or("").to_string())
+        .collect();
+    out_readers.sort();
+    assert_eq!(
+        out_readers,
+        vec![READER_OUTSIDE.to_string()],
+        "only the outside reader's answer left the member"
+    );
+    assert!(dead.is_empty(), "{dead:?}");
+    run.h.shutdown().await;
+}
+
+/// The id of the brain's call in the tool round of an inner turn.
+const RECALL_CALL: &str = "call_1320";
+
+/// K-13 after a tool round (re-check I1): an inner turn whose brain first
+/// calls the member's memory and then says nothing is still silence. The
+/// round leaves talky and comes back through a door that does not set
+/// `inner_source` again; with the marker cleared on the way out, the second
+/// brain call went out as a person's turn and the silence died there as
+/// `empty_answer`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_an_inner_turn_silent_after_a_tool_round_leaves_inner_silent() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut run = boot_events_with(vec![
+        canned_tool_calls(vec![(
+            RECALL_CALL,
+            "memory_recall",
+            r#"{"query":"the walk"}"#,
+        )]),
+        canned_chat_completion(" ", "stop"),
+    ])
+    .await;
+    run.h
+        .send(turn(
+            json!({"route": "in_turn", "kind": "inner", "inner_source": SOURCE,
+                   "deliver_channel_node": NODE, "turn_id": "orga-1320-t"}),
+            json!({"assistant": "scribe", "audience_set": AUDIENCE}),
+            "The walk is due in ten minutes.",
+        ))
+        .await;
+    let mut seen = Vec::new();
+    let silent = next_route(&mut run.park, &mut seen, "inner_silent").await;
+    let dead = dead_on(&run.h, &["inner_silent", "answer", "error"]).await;
+    let asked = run._brain.recorded_requests().await.len();
+    let silent = silent.unwrap_or_else(|| {
+        panic!(
+            "inner_silent left the member after the tool round; brain asked {asked}x; \
+             parked: {:?}; dead: {dead:?}",
+            seen.iter().map(hop_route).collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(asked, 2, "the round went to the memory and back");
+    assert_eq!(silent.headers.hop["inner_source"], SOURCE);
+    // The brain's second call, after the round, still carried the knob.
+    let brain = format!("{M}/assistants/scribe/talky/brain");
+    let at_brain = first_delivery(&run.h, &brain)
+        .await
+        .unwrap_or_else(|| panic!("the inner turn reached the brain"));
+    assert_eq!(at_brain["hop"]["silence_ok"], "1", "{at_brain}");
+    run.h.quiesce().await;
+    assert!(
+        run.delivered.try_recv().is_err(),
+        "a silence sends nothing to a channel"
+    );
+    assert!(dead.is_empty(), "{dead:?}");
+    run.h.shutdown().await;
+}
+
+/// K-14 along a chain (re-check m5): the context an answer leaves the member
+/// with is the context the next message of its chain carries in. The stamp
+/// of an outside question must not be part of it -- a reader inside asking
+/// with that context would otherwise get its answer carried out as well.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1320_an_outside_question_leaves_no_stamp_on_its_chain() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut run = boot_events(REPLY).await;
+    run.h.send(ask_conversations(M, READER_OUTSIDE)).await;
+    let mut seen = Vec::new();
+    let outside = next_route(&mut run.park, &mut seen, "conversations")
+        .await
+        .unwrap_or_else(|| panic!("the outside reader got its answer"));
+    assert!(
+        !outside.headers.context.contains_key("conversations_asked"),
+        "the stamp left the member: {:?}",
+        outside.headers.context
+    );
+    // The chain goes on inside: the next question carries what left.
+    let mut next = ask_conversations(&format!("{M}/memory-hive"), READER_INSIDE);
+    next.headers.context = outside.headers.context.clone();
+    run.h.send(next).await;
+    let mut none = Vec::new();
+    let inside = next_route(&mut run.delivered, &mut none, "conversations")
+        .await
+        .unwrap_or_else(|| panic!("the inside reader got its answer"));
+    assert_eq!(inside.headers.hop["reader"], READER_INSIDE);
+    run.h.quiesce().await;
+    while let Ok(m) = run.park.try_recv() {
+        seen.push(m);
+    }
+    let left: Vec<&str> = seen
+        .iter()
+        .filter(|m| hop_route(m) == "conversations")
+        .map(|m| m.headers.hop["reader"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        left.is_empty(),
+        "the inside answer of the chain left the member: {left:?}"
+    );
+    run.h.shutdown().await;
+}
+
+/// talky's edges, verbatim off the shipped template.
+fn talky_edges() -> Vec<Value> {
+    read_json(&repo("templates/talky/config.json"))["params"]["graph"]["edges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The exits of talky that carry `inner_source` out: the round trips whose
+/// answer comes back through a door that does not set it again (the CARRIED
+/// row `talky/inner_source` of gh494). A pair (from, route).
+const INNER_SOURCE_ROUND_TRIPS: [(&str, &str); 4] = [
+    ("./curator", "recall"),
+    ("./curator", "consult"),
+    ("./curator", "research"),
+    ("./dispatcher", "tool"),
+];
+
+/// Lock (GH #1320, re-check C1/I1): `inner_source` leaves talky only on its
+/// round trips; every other exit deletes it, so the marker of an inner turn
+/// never rides on a chain past the turn.
+#[test]
+fn gh1320_inner_source_leaves_talky_only_on_its_round_trips() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let mut kept = Vec::new();
+    let mut leaks = Vec::new();
+    for e in talky_edges().iter().filter(|e| e["to"] == ".") {
+        let from = e["from"].as_str().unwrap_or("");
+        let cond = e["condition"].as_str().unwrap_or("");
+        let deletes = e["modifier"]["delete_context"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|k| k == "inner_source"));
+        let round = INNER_SOURCE_ROUND_TRIPS.iter().any(|(f, r)| {
+            *f == from
+                && cond.contains(&format!("hop.route == '{r}'"))
+                && !cond.starts_with("has(hop.refused_subscriber)")
+        });
+        match (round, deletes) {
+            (true, false) => kept.push(format!("{from} {cond}")),
+            (true, true) => leaks.push(format!("round trip clears it: {from} {cond}")),
+            (false, false) => leaks.push(format!("exit keeps it: {from} {cond}")),
+            (false, true) => {}
+        }
+    }
+    assert!(leaks.is_empty(), "{leaks:#?}");
+    // recall twice (with and without a gap ask), consult/research, tool.
+    assert_eq!(kept.len(), 4, "{kept:#?}");
+}
+
+/// Lock (re-check m4): the person's and the inner edge of each round
+/// (`./curator -> ./brain`, `./curator -> ./quick`) are the same edge but for
+/// the `inner_source` test in the condition and `set_hop.silence_ok` on the
+/// inner one -- a change to one has to reach the other.
+#[test]
+fn gh1320_the_person_and_inner_round_edges_differ_only_in_the_knob() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    const PERSON: &str = " && !(has(context.inner_source) && context.inner_source != '')";
+    const INNER: &str = " && has(context.inner_source) && context.inner_source != ''";
+    let edges = talky_edges();
+    for to in ["./brain", "./quick"] {
+        let pair: Vec<&Value> = edges
+            .iter()
+            .filter(|e| e["from"] == "./curator" && e["to"] == to)
+            .collect();
+        let person: Vec<&&Value> = pair
+            .iter()
+            .filter(|e| e["condition"].as_str().unwrap_or("").ends_with(PERSON))
+            .collect();
+        let inner: Vec<&&Value> = pair
+            .iter()
+            .filter(|e| e["condition"].as_str().unwrap_or("").ends_with(INNER))
+            .collect();
+        assert_eq!((person.len(), inner.len()), (1, 1), "{to}: {pair:#?}");
+        let (mut p, mut i) = ((*person[0]).clone(), (*inner[0]).clone());
+        assert!(p["modifier"].get("set_hop").is_none(), "{to}: {p}");
+        assert_eq!(
+            i["modifier"]["set_hop"],
+            json!({"silence_ok": "'1'"}),
+            "{to}"
+        );
+        i["modifier"]
+            .as_object_mut()
+            .expect("modifier")
+            .remove("set_hop");
+        let strip = |e: &mut Value, tail: &str| {
+            let c = e["condition"].as_str().unwrap_or("");
+            e["condition"] = Value::String(c.strip_suffix(tail).unwrap_or(c).to_string());
+        };
+        strip(&mut p, PERSON);
+        strip(&mut i, INNER);
+        assert_eq!(p, i, "{to}: the pair drifted apart");
+    }
 }

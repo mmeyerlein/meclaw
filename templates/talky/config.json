@@ -380,7 +380,7 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -396,9 +396,49 @@
         },
         {
           "from": "./curator",
-          "to": "./quick",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
           "modifier": {
+            "set_hop": {
+              "silence_ok": "'1'"
+            },
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "has(hop.interim) ? hop.interim : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
+          "modifier": {
+            "set_hop": {
+              "silence_ok": "'1'"
+            },
             "set_context": {
               "curator_call": "hop.curator_call",
               "turn_id": "hop.turn_id",
@@ -430,8 +470,7 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state",
-              "inner_source"
+              "route_state"
             ]
           }
         },
@@ -804,8 +843,7 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state",
-              "inner_source"
+              "route_state"
             ]
           }
         },
@@ -831,8 +869,7 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state",
-              "inner_source"
+              "route_state"
             ]
           }
         },
@@ -988,8 +1025,7 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state",
-              "inner_source"
+              "route_state"
             ]
           }
         },
