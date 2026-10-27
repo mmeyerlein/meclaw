@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.76.2] — 2026-10-27
+
+After a new session begins, the lines of an earlier session stand in the curator's window as past, behind a visible session boundary, and the curator's handover note reports only what happened and what was said.
+
+### Fixed
+
+- After a new session begins, the lines of an earlier session stand in the curator's window as past, behind a visible session boundary ([#1335](https://github.com/mmeyerlein/meclaw/issues/1335)). The window reads the wall over every session, and a handover cuts nothing until a rebuild covers the older rows; a turn of a new session shortly after the last one saw every line of that session raw and seamless before it, with no boundary and no start time, and the model answered an earlier line as if it had just been said. Nothing is hidden: once another session stands in the window, every user text of a session that ended before the running one began opens with the frame "[earlier session, since <start> -- from before this session, not said now]", every user text of a session that overlaps the running one (an open session of another channel) with the neutral "[other session, since <start>]", and the first user text of the running session with "[this session, since <start>]", the start being the earliest turn time of the session's rows the window still holds. The frames change text only and run last, after the ambient pairs move, so the request still begins with the person's words, every tool call stays right before its result and the person's turn stays the last message. A window of one session is unchanged. The handover note reports only what happened and what was said: it lists nothing that did not happen, assesses nothing about the person, raises no open questions about them, and "open" is only a promise not kept yet. The notes block opens the person's newest message again, as the curator README promises: a recall folded into the turn (when its pair would open the window) and the session boundary now follow the block instead of standing in front of it.
+- **Template versions (#1335):** third digit, `curator@1.16.3`; third digit for the pins that follow, `assistant@3.10.4`, `builder@1.30.6`, `builder-librarian@2.2.93`, `cogny@5.13.4`, `figure@2.0.5`, `meclaw-os@2.3.7`, `member@2.7.6`, `memory-hive@3.19.3`, `org@2.2.6`, `simple-agent@2.2.3`, `talky@6.11.5`.
+
 ## [0.76.1] — 2026-10-27
 
 The curator's handover note reports the past session instead of giving the next one orders, and the ambient recall of a round stands in front of the person's words, framed as memory from before the turn, so the person's turn is the last message before the answer.

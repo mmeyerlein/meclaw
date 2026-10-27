@@ -31,7 +31,7 @@ serves, or let the llm-registry push one.
 
 What the block draws:
 
-- the node `./agent` from `simple-agent@2.2.2`, `ctx.model` its brain's start value;
+- the node `./agent` from `simple-agent@2.2.3`, `ctx.model` its brain's start value;
 - per consumer cell the ask to `./access` and the sealed answer back by its grant, the grants
   and their birth events in `./access/store`;
 - the brief, proposal and identity-pack roads to `./affinity`, the subscriber of the

@@ -1901,9 +1901,19 @@ fn a_window_shows_an_earlier_session_only_to_a_round_it_was_present_for() {
         round_of(&["member:e", "member:a"]),
         "now e and a",
     );
-    assert_eq!(
-        texts(&call),
-        vec!["asked by e, a and b", "told e, a and b", "now e and a"]
+    // GH #1335: an earlier session stands framed as past, the running one
+    // opens with the boundary; the words stay.
+    let shown = texts(&call);
+    assert_eq!(shown.len(), 3, "{shown:?}");
+    assert!(
+        shown[0].starts_with("[earlier session, since ")
+            && shown[0].ends_with("not said now]\nasked by e, a and b"),
+        "{shown:?}"
+    );
+    assert_eq!(shown[1], "told e, a and b", "{shown:?}");
+    assert!(
+        shown[2].starts_with("[this session, since ") && shown[2].ends_with("]\nnow e and a"),
+        "{shown:?}"
     );
     assert_eq!(listed_messages(&h, &call), call.messages());
     // {e,a,b,c}: wider than every earlier round -- none of them, and not the
@@ -2882,8 +2892,12 @@ fn a_summary_is_made_of_what_the_round_may_see_and_carries_their_meet() {
     ] {
         let (brain, _) = win_step(&round_of(&members), "s9", &ledger);
         let shown = texts_of(&brain);
+        // GH #1335: the line of an earlier session carries its frame.
         assert_eq!(
-            shown.contains(&"under e and b".to_string()),
+            shown
+                .iter()
+                .any(|t| t.starts_with("[earlier session, since ")
+                    && t.ends_with("]\nunder e and b")),
             sees,
             "{members:?}: {shown:?}"
         );

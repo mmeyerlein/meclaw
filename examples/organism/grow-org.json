@@ -4,7 +4,7 @@
     "add_nodes": [
       {
         "name": "acme",
-        "template": "org@2.2.5"
+        "template": "org@2.2.6"
       }
     ],
     "add_edges": [
