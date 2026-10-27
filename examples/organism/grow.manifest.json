@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.3.4"
+            "template": "meclaw-os@2.3.5"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.2.3"
+            "template": "org@2.2.4"
           }
         ],
         "add_edges": [
@@ -161,7 +161,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.7.3",
+            "template": "member@2.7.4",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -1220,7 +1220,7 @@
         "add_nodes": [
           {
             "name": "telegram",
-            "template": "telegram-connector@2.2.5",
+            "template": "telegram-connector@2.2.6",
             "birth": "inactive"
           }
         ],

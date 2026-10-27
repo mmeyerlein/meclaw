@@ -1526,6 +1526,11 @@ const RAW_LOG_READS: &[(&str, usize, &str)] = &[
         "the page is the subject (`ReadMessages` through the inbox)",
     ),
     (
+        "meclaw-colony/tests/gh_2/gh47_the_teardown_behaves_exactly_as_before.rs",
+        1,
+        "the DLQ of a small stopped colony, read once and asserted short of its limit: a full page is red",
+    ),
+    (
         "meclaw-colony/tests/hardening/zh_teardown_refuses_seed_rows.rs",
         1,
         "one `error_code` of a stopped colony, compared whole against one entry: a fuller page is red",

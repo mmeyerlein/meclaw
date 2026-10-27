@@ -556,7 +556,7 @@ fn member_manifest(export_dir: &std::path::Path) -> Value {
         // member is named bare, and the path it lands at is unchanged.
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@2.7.3",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.7.4",
                            "override_params": over}],
             "add_edges": container_edges(),
         }

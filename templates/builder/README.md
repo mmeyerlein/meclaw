@@ -1,4 +1,4 @@
-# `builder@1.30.3`
+# `builder@1.30.4`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -721,6 +721,18 @@ seeded under it; a wish that names the block gets a handle of its own,
 `grant:<cred tail>@<subject>/<channel>-<kind>`, so two voice channels of one
 member never share a sealed box. `duplex` ships null, so a `duplex_cred_ref`
 without the block is refused as `app_declaration_invalid`, naming the field.
+
+A channel **hive** whose cells spend a key brings no broker of its own either
+([#1329](https://github.com/mmeyerlein/meclaw/issues/1329)): its cells obtain
+their credentials by grant from an access of the colony, and it declares the credential lane at its rim, `credential_request` and
+`in_sealed` at the asking cell's connect point. For such a line (`freeswitch`,
+table `SEALED_CHANNELS`) the declaration stands at the member and carries, with
+or without a `credential` wish, the grants of its media half in the member's
+`./access` (`grant:deepgram@template-voice/stt`, `grant:cartesia@template-voice/tts`,
+`grant:openai@template-freeswitch/duplex`, requester `agent:freeswitch/voice`),
+one ask v-lane from `./channels/<name>/voice` and one answer v-lane per grant.
+A `voice` block the wish names gets the row's handle and an empty `api_key`; a
+foreign handle is refused as `app_declaration_invalid`.
 
 ### A round is provenance, and provenance is not derived
 

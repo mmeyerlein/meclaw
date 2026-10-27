@@ -119,7 +119,7 @@ fn write(root: &std::path::Path, rel: &str, v: &Value) {
     std::fs::write(p, meclaw_core::serde_json::to_string_pretty(v).unwrap()).unwrap();
 }
 
-fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
+pub(crate) fn patch(root: &std::path::Path, rel: &str, f: impl FnOnce(&mut Value)) {
     let p = root.join(rel);
     let mut v = read_json(&p);
     f(&mut v);
@@ -294,7 +294,7 @@ fn main_config() -> Value {
 }
 
 /// The vault passphrase these tests arm on disk (GH #421).
-const VAULT_PASSPHRASE: &str = "a passphrase nobody guesses";
+pub(crate) const VAULT_PASSPHRASE: &str = "a passphrase nobody guesses";
 
 pub(crate) fn build_tree(td: &tempfile::TempDir, root_template: &std::path::Path) {
     let root = td.path();
@@ -384,14 +384,14 @@ pub(crate) fn send_json(cell: &str, v: &Value) -> Message {
     to(cell, &meclaw_core::serde_json::to_string(v).unwrap())
 }
 
-fn body_of(m: &Message) -> &Value {
+pub(crate) fn body_of(m: &Message) -> &Value {
     match &m.body {
         Body::Inline(v) => v,
         Body::Blob(_) => panic!("inline expected"),
     }
 }
 
-fn hop_of(m: &Message, key: &str) -> String {
+pub(crate) fn hop_of(m: &Message, key: &str) -> String {
     m.headers
         .hop
         .get(key)
@@ -547,7 +547,12 @@ pub(crate) async fn credential_grant_for(
 /// Re-check M10c M1 / OR-T10-27: the product function behind the flag
 /// (`user_channel::add`, off the worker like the CLI's `run_off_worker`), not a
 /// copy of its steps.
-async fn seed_vault_secret(td: &tempfile::TempDir, name: &str, value: &str, passphrase: &str) {
+pub(crate) async fn seed_vault_secret(
+    td: &tempfile::TempDir,
+    name: &str,
+    value: &str,
+    passphrase: &str,
+) {
     let root = td.path().to_path_buf();
     let (name, value, passphrase) = (name.to_string(), value.to_string(), passphrase.to_string());
     let stored = tokio::task::spawn_blocking(move || {

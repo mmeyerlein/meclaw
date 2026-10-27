@@ -1,4 +1,4 @@
-# `access@2.6.3`
+# `access@2.6.4`
 
 The capability broker: an agent may **ask in natural language**, what travels on the wire
 is a **handle**, and no secret ever travels with a request. Built out of existing cell
@@ -72,6 +72,30 @@ the caller, `now < expires_at`, `operation ∈ scope.actions`, the **newest** `g
 row is a live one (`granted` / `approved` / `invoked` rather than `revoked` / `expired`),
 and the constraints hold against `usage` (`max_invocations`, `rate_per_min`). Only then does
 one message leave for the connector.
+
+**One grant id, several consumers** ([#1332](https://github.com/mmeyerlein/meclaw/issues/1332)).
+`grants` has no key, and a grant is the row of the caller's `requester` under the asked id:
+`invoke` looks it up by `(grant_id, requester)`. Two consumers may therefore spend the same id
+in one access, each on its own row -- the builder seeds the web voice (`agent:voice/channel`)
+and the phone line (`agent:freeswitch/voice`) under the shipped handles
+`grant:deepgram@template-voice/stt` and `grant:cartesia@template-voice/tts`. A requester with no
+row under an id that exists is refused `requester_mismatch`; an id with no row at all,
+`grant_unknown`. What is per consumer and what is per id:
+
+- `expires_at`, `scope` and `constraints` are the consumer's row's. **The expiry is the
+  consumer's, too:** `invoke` checks it on the caller's own row, so the `expired` event `sweep`
+  writes for the id when one row runs out refuses no one, and the other consumers keep their
+  credential.
+- **The quota is the consumer's.** Every `usage` row names its `requester`, and the count reads
+  only the caller's rows: the constraints are its own row's, so another consumer's spends are
+  not its budget. Rows written before the column existed name nobody and count for no one.
+- **The revocation is the id's.** `grant_events` stays keyed by `grant_id`: a `revoked` row ends
+  the handle for every consumer of it, because the handle names one credential. Any other state
+  that is neither live nor `expired` refuses the same way.
+- **The answer names its requester.** Every `ack` carries `hop.requester` beside `hop.grant_id`,
+  so an answer edge guards on both (`... && hop.grant_id == '<id>' && has(hop.requester) &&
+  hop.requester == '<requester>'`); a guard on the id alone would hand each consumer the other's
+  box. The builder draws its channel answer edges that way.
 
 ## 4. `access.invoke` with `operation: vault.deliver`
 
@@ -820,7 +844,7 @@ path:
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "access", "template": "access@2.6.3",
+ "nodes": [{"name": "access", "template": "access@2.6.4",
             "override_params": {
               "policy": {"max_ttl_ms": 3600000, "policy_rows": 1000},
               "sweep":  {"sweep_rows": 500},

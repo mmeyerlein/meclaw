@@ -447,7 +447,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.2.3"}}));
+                   "template": "org@2.2.4"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -463,7 +463,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.2.3"}}));
+                   "template": "org@2.2.4"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -475,7 +475,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
     // live under, because a typo would otherwise silently buy an inference.
     let out = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os/orgs/acme/members/alex", "level": "channel",
-                   "name": "telegram", "template": "telegram-connector@2.2.5"}}));
+                   "name": "telegram", "template": "telegram-connector@2.2.6"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("recipe_params_incomplete")
@@ -629,7 +629,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@2.7.3", "door": true});
+                        "template": "member@2.7.4", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));

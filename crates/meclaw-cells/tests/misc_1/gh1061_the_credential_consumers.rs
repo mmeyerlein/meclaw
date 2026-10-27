@@ -449,7 +449,6 @@ const BROKERED: &[(&str, usize)] = &[
     ("coder-pipeline", 3),
     ("daily-digest", 1),
     ("egon", 2),
-    ("freeswitch", 2),
     ("meclaw-os", 2),
     ("research-assistant", 2),
     ("simple-agent@1.1.4", 1),
@@ -504,11 +503,13 @@ fn template_dirs() -> Vec<PathBuf> {
 /// GH #1061: a `voice` cell refuses a session without its key, and with a
 /// grant it waits for a box only a broker sends. A template that PLACES one
 /// (`freeswitch/voice`, a ref to `voice@…` that inherits its two handles)
-/// therefore ships the broker, the seeded grants and both edges -- or the
-/// cell asks into the void and every call is refused after the wait. The
-/// single-cell `voice` template itself cannot seed (its README shows the
-/// manifest that brings the broker), so the root of a template is not a
-/// placement.
+/// therefore either ships the broker, the seeded grants and both edges, or --
+/// since #1329, shipping no access of its own -- declares the credential lane at its
+/// rim (`credential_request` and `in_sealed` at the cell's connect point), so
+/// its consumer can draw both to an access of the colony. Otherwise the cell asks
+/// into the void and every call is refused after the wait. The single-cell
+/// `voice` template itself cannot seed (its README shows the manifest that
+/// brings the broker), so the root of a template is not a placement.
 #[test]
 fn gh1061_no_voice_cell_ships_a_grant_without_a_broker_edge() {
     if !shipped() {
@@ -532,10 +533,27 @@ fn gh1061_no_voice_cell_ships_a_grant_without_a_broker_edge() {
                 continue;
             }
             placed += 1;
+            let root = read(&dir.join("config.json"));
+            let point = format!("./{path}");
+            let declared = |list: &str, route: &str| {
+                root["params"]["contract"][list]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|l| {
+                        l["route"] == route
+                            && l["at"]
+                                .as_array()
+                                .is_some_and(|a| a.iter().any(|p| p == point.as_str()))
+                    })
+            };
             assert!(
-                dir.join("access/store/seed/grants.jsonl").is_file(),
+                dir.join("access/store/seed/grants.jsonl").is_file()
+                    || (declared("emits", "credential_request")
+                        && declared("accepts", "in_sealed")),
                 "templates/{name}: ./{path} spends {hs:?}, but the template ships no broker \
-                 (access/store/seed/grants.jsonl) -- the cell would ask into the void"
+                 (access/store/seed/grants.jsonl) and its rim declares no credential lane at \
+                 {point} (#1329) -- the cell would ask into the void"
             );
         }
         if placed > 0 && dir.join("access/store/seed/grants.jsonl").is_file() {

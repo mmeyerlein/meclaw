@@ -1,4 +1,4 @@
-# `simple-agent@2.2.0`
+# `simple-agent@2.2.1`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).

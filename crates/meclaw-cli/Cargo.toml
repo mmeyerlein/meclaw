@@ -21,10 +21,10 @@ uuid = { workspace = true }
 # crate was already this crate's dev-dependency with these exact features; the
 # command moves it across, it does not add a dependency to the workspace.
 reqwest = { workspace = true }
-meclaw-api = { path = "../meclaw-api", version = "0.75.0" }
-meclaw-cells = { path = "../meclaw-cells", version = "0.75.0" }
-meclaw-colony = { path = "../meclaw-colony", version = "0.75.0" }
-meclaw-core = { path = "../meclaw-core", version = "0.75.0" }
+meclaw-api = { path = "../meclaw-api", version = "0.76.0" }
+meclaw-cells = { path = "../meclaw-cells", version = "0.76.0" }
+meclaw-colony = { path = "../meclaw-colony", version = "0.76.0" }
+meclaw-core = { path = "../meclaw-core", version = "0.76.0" }
 
 [dev-dependencies]
 # Paused tokio clock for the time-logic test class (OR-TV-1/OR-TV-4); dev-only, never in a release build.

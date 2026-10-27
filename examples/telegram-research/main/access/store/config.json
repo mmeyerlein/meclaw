@@ -55,6 +55,10 @@
       "usage": {
         "id": "text",
         "grant_id": "text",
+        "requester": {
+          "type": "text",
+          "default": ""
+        },
         "at": "text",
         "operation": "text",
         "outcome": "text"

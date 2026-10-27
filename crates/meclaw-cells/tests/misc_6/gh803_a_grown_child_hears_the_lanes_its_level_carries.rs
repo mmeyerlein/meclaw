@@ -174,7 +174,7 @@ fn a_grown_channel_receives_the_advice_the_member_stamps() {
     assert_every_stamped_lane_arrives(
         "./channels",
         json!({"scope": "/os/orgs/acme/members/alex", "level": "channel",
-               "name": "telegram", "template": "telegram-connector@2.2.5",
+               "name": "telegram", "template": "telegram-connector@2.2.6",
                "assistant": "scribe", "bind_chat": "4711",
                "ctx": {"member_person": "alex"}}),
         "./telegram",
@@ -201,7 +201,7 @@ fn every_door_of_a_grown_child_names_the_child_it_is_for() {
         ),
         (
             json!({"scope": "/os/orgs/acme/members/alex", "level": "channel",
-                   "name": "telegram", "template": "telegram-connector@2.2.5",
+                   "name": "telegram", "template": "telegram-connector@2.2.6",
                    "assistant": "scribe", "bind_chat": "4711",
                    "ctx": {"member_person": "alex"}}),
             "./telegram",

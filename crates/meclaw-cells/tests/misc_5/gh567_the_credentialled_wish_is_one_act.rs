@@ -229,7 +229,8 @@ fn build_root(root: &std::path::Path) {
          TELEGRAM_BOT_TOKEN=test-token\n\
          TELEGRAM_BOT_TOKEN_2=test-token-2\n\
          TELEGRAM_ALLOWED_USER_ID=0\n\
-         EXAMPLE_CHAT_TOKEN=test-chat-token\n",
+         EXAMPLE_CHAT_TOKEN=test-chat-token\n\
+         FREESWITCH_XMLRPC_BASE_URL=http://127.0.0.1:8080/RPC2\n",
     )
     .unwrap();
 }
@@ -483,6 +484,116 @@ async fn the_same_wish_without_the_block_grows_the_same_generation() {
         matches!(outcome, MutationOutcome::Committed { .. }),
         "the level itself must commit — otherwise the credentialled case above \
          proves nothing about the road: {outcome:?}"
+    );
+    h.shutdown().await;
+}
+
+/// GH #1329 — the phone line grown by the recipe, through the shipped script.
+fn rendered_phone_line() -> Vec<Value> {
+    let params = json!({
+        "scope": MEMBER, "level": "channel", "name": "freeswitch",
+        "template": format!("freeswitch@{}", version_of("freeswitch")),
+        "assistant": "scribe", "bind_chat": "4711",
+        "ctx": {"member_person": "alex"},
+        // GH #665: the three params whose shipped values are shapes are
+        // `operator_set`; a line that sets none of them is refused at the door.
+        "override_params": {"signal": {
+            "callers": {"+4930000000": "alex"},
+            "voice_ws_url": "ws://127.0.0.1:7777/phone/ws",
+            "line_user_id": "alex"}}});
+    let out = emit_one(
+        &shipped_script(RECIPES),
+        &json!({
+            "target": "/os/builder/recipes",
+            "header": {"hop": {"route": "recipe"}, "context": {}},
+            "ttl": 64,
+            "messages": [{"origin": "tool", "type": "tool_result", "id": "",
+                          "text": json!({"recipe": "grow_level", "request": "…",
+                                         "params": params}).to_string()}],
+        }),
+    );
+    out["manifest"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no manifest: {out}"))
+        .clone()
+}
+
+/// GH #1329: since `freeswitch@3.0.0` the line brings no access of its own.
+/// The recipe seeds its three grants into the member's access and draws the
+/// two v-lanes to `./voice`, the connect point the hive declares at its rim --
+/// through the open `channels` container and into the sealed hive. The door
+/// has to commit that as one act, and the colony's own graph has to carry the
+/// lanes, or the media half asks into the void.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1329_a_recipe_grown_phone_line_commits_with_its_credential_road() {
+    if !shipped()
+        || !library_is_complete()
+        || !["freeswitch", "voice"]
+            .iter()
+            .all(|n| repo(&format!("templates/{n}/template.json")).is_file())
+    {
+        return; // GH #49
+    }
+    let td = tempfile::TempDir::new().unwrap();
+    build_root(td.path());
+    let h = boot(&td).await;
+    for file in PREFIX {
+        assert!(
+            matches!(
+                mutate(&h, read_json(&repo(file))).await,
+                MutationOutcome::Committed { .. }
+            ),
+            "{file}"
+        );
+    }
+    let decls = rendered_phone_line();
+    assert_eq!(decls.len(), 1, "one act: {decls:?}");
+    let outcome = mutate(&h, decls[0].clone()).await;
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "the line and its credential road refused as one declaration: {outcome:?}"
+    );
+
+    let (ack_tx, ack_rx) = oneshot::channel::<meclaw_colony::api_dto::ReadGraphReply>();
+    h.inbox_tx
+        .send(ColonyMsg::ReadGraph {
+            scope: Path::new("/"),
+            ack: ack_tx,
+        })
+        .await
+        .unwrap();
+    let edges = ack_rx.await.unwrap().edges;
+    let voice = format!("{MEMBER}/channels/freeswitch/voice");
+    let broker = format!("{MEMBER}/access");
+    assert!(
+        edges.iter().any(|e| e.from == voice
+            && e.to == broker
+            && e.lane.as_deref() == Some("credential_request")),
+        "no ask v-lane {voice} -> {broker} in the published graph"
+    );
+    for handle in [
+        "grant:deepgram@template-voice/stt",
+        "grant:cartesia@template-voice/tts",
+        "grant:openai@template-freeswitch/duplex",
+    ] {
+        assert!(
+            edges.iter().any(|e| e.from == broker
+                && e.to == voice
+                && e.lane.as_deref() == Some("in_sealed")
+                && e.condition
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(&format!("hop.grant_id == '{handle}'"))),
+            "no in_sealed v-lane {broker} -> {voice} addressed by {handle}"
+        );
+    }
+    assert!(
+        !edges.iter().any(|e| e
+            .from
+            .starts_with(&format!("{MEMBER}/channels/freeswitch/access"))
+            || e.to
+                .starts_with(&format!("{MEMBER}/channels/freeswitch/access"))),
+        "the line grew a broker of its own"
     );
     h.shutdown().await;
 }

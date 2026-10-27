@@ -12,6 +12,24 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.76.0] — 2026-10-27
+
+A channel template brings no access of its own any more: the telephone channel `freeswitch@3.0.0` drops its `./access` and obtains its credentials by grant from an access of the colony, so a colony keeps exactly the accesses it declares. A line grown from an earlier manifest is refused at birth until it is grown again from the new template. And one grant id now serves several consumers of one access, each under its own requester, so the phone line and the web voice spend the same shipped grants side by side.
+
+### Changed
+
+- A channel template brings no access of its own any more: its cells obtain their credentials by grant from an access of the colony ([#1329](https://github.com/mmeyerlein/meclaw/issues/1329)). The telephone channel `freeswitch` drops its `./access`, the broker's seed and the five edges to and from it, and declares the credential lane at its rim instead: `credential_request` out of `./voice` and `in_sealed` (required) back into it, both at that connect point. The grant ids stay the same, so the consumer seeds them into an access of the colony (the builder recipe uses the member's access) and draws the two v-lanes; a colony that grows the line by hand has to add them, or the mutation door refuses the birth with `hive_contract`. The builder's `grow_level` now does it for a line it grows (`SEALED_CHANNELS`): the three grants in the member's access, one ask v-lane and one answer v-lane per grant, in the one declaration.
+
+### Fixed
+
+- One grant id serves several consumers of one access, each with its own requester ([#1332](https://github.com/mmeyerlein/meclaw/issues/1332)). Since #1329 the builder seeds the web voice (`agent:voice/channel`) and the phone line (`agent:freeswitch/voice`) under the same shipped handles into the member's access, and `access/invoke` read the grant by its id alone, so the second consumer got the first one's row and was refused `requester_mismatch`: a phone line beside the web voice could not spend its credential. `invoke` now looks a grant up by `(grant_id, requester)`; a requester with no row under an existing id is still refused `requester_mismatch`. The quota and the expiry are per consumer (`usage` gains a `requester` column, default empty; usage rows from before this release name no requester and count for no consumer, so a `max_invocations` budget starts afresh), revocation stays per id while an `expired` event of the id refuses no one, and every `ack` names `hop.requester`, which the builder's channel answer edges now guard on, so each consumer gets only its own sealed box. No grant id and no vault entry changes.
+
+### Breaking
+
+- **`freeswitch@3.0.0` -- the telephone channel ships no access of its own** ([#1329](https://github.com/mmeyerlein/meclaw/issues/1329)). Its `./access` and the five edges to and from it are gone, and `in_sealed` at `./voice` is `required`, so a line grown from an earlier manifest is refused at birth with `hive_contract`. Migration: a line grown by hand draws the two credential lanes to the member's access -- `credential_request` from `./channels/<line>/voice` to `./access`, restamped `in_invoke` with `context.requester` `agent:freeswitch/voice`, and one `in_sealed` answer per grant back -- and seeds the three grants (`grant:deepgram@template-voice/stt`, `grant:cartesia@template-voice/tts`, `grant:openai@template-freeswitch/duplex`) there in the same declaration, as `templates/freeswitch/README.md` § *Wiring it into a member* shows; or it grows the line through the builder recipe, which does both. The grant ids and credential refs are unchanged, so the vault entries stay.
+- **Template versions (#1329):** first digit, `freeswitch@3.0.0`; third digit, `builder@1.30.4`, `builder-librarian@2.2.91`; third digit for the pins that follow, `meclaw-os@2.3.5`.
+- **Template versions (#1332):** third digit, `access@2.6.4`, `voice@2.6.7`; third digit for the pins that follow, `coder-pipeline@3.0.6`, `daily-digest@2.2.10`, `egon@2.2.6`, `figure@2.0.3`, `member@2.7.4`, `memory-hive@3.19.1`, `org@2.2.4`, `research-assistant@2.3.6`, `simple-agent@2.2.1`, `slack-agent@2.2.6`, `steward@2.2.6`, `summarizer@2.3.6`, `telegram-connector@2.2.6`.
+
 ## [0.75.0] — 2026-10-26
 
 `meclaw --validate --apply <manifest>` now refuses offline what a colony would refuse at birth: every manifest entry is staged through the mutation door's own staging path, so the params of every cell the manifest grows meet the same checks as at the door. And an app under the member's open `./apps` can draw a v-lane onto a connect point a sealed hive declares, such as a figure's curator: the rule that the target owes the connect point binds the delivered end only, and a swap re-anchors the sending end by the same rule.

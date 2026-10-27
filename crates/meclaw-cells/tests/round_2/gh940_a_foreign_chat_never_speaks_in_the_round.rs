@@ -59,12 +59,12 @@ const ROUND: &str = r#"["agent:scribe","member:alex"]"#;
 /// (`SELF_BOUND_CHANNELS` in `recipes`), at the versions the tree ships.
 const SELF_BOUND: [&str; 4] = [
     "chat-channel@1.0.2",
-    "voice@2.6.6",
+    "voice@2.6.7",
     "web@2.3.1",
     "terminal@1.0.2",
 ];
-const TELEGRAM: &str = "telegram-connector@2.2.5";
-const SLACK: &str = "slack-agent@2.2.5";
+const TELEGRAM: &str = "telegram-connector@2.2.6";
+const SLACK: &str = "slack-agent@2.2.6";
 
 // ══════════════════════════════════════════════════════════════ the renderer
 

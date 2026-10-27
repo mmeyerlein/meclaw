@@ -10,19 +10,28 @@
 //! `MutationDoor` message (`--apply`/HTTP) and a cell's emission to
 //! `/colony/mutations`.
 //!
-//! Determinism comes from the wedge of `gh47_the_teardown_behaves_exactly_as_before`:
-//! the colony parks in its route arm on a full mailbox, the `Shutdown` and the
-//! three knocks queue behind it in send order, and with the drain switched off
-//! (`shutdown_drain_timeout_ms: 0`) the `Shutdown` closes the inbox in the work
-//! item it is taken in, so the knocks are read only by the teardown's drain.
+//! Order comes from the colony's one inline wait, not from a full mailbox
+//! (GH #1330): since the mailbox overflow (GH #850, delivery via `try_send`)
+//! a full mailbox no longer stops the loop, so the old wedge let the colony
+//! take the `Shutdown` and close its inbox while the test was still knocking
+//! (`colony inbox closed` at the `MutationDoor` send, once in CI). Here a
+//! disconnect mutation peace-stops a registered cell and the colony blocks on
+//! its death ack; the colony's own signal (`with_death_ack_wait_signal`) says
+//! it is there. Only then are the `Shutdown` and the three knocks queued, in
+//! send order, and only then does the test hand over the death ack. With the
+//! drain switched off (`shutdown_drain_timeout_ms: 0`) the `Shutdown` closes
+//! the inbox in the work item it is taken in, so the knocks are read only by
+//! the teardown's drain.
 //! Every assertion is read after the colony task has ended (quiescence): the
 //! two answers, the dead letter of the emission, and the store's table, whose
 //! birth row proves the read looked at the right `cell.db`.
 
-use meclaw_colony::{CellFactory, ColonyMsg, MutationDoorOutcome, MutationOutcome};
+use meclaw_colony::{
+    CellFactory, ColonyMsg, MutationDoorOutcome, MutationOutcome, set_term_timeout_ms_for_test,
+};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Message, Path, Uuid};
-use meclaw_testing::deadline::HANG;
+use meclaw_testing::deadline::{HANG, HANG_MS};
 use meclaw_testing::factories::PersistCellFactory;
 use meclaw_testing::{ColonyHandle, MessageBuilder};
 use std::sync::Arc;
@@ -44,11 +53,24 @@ fn seed(rule_id: &str) -> Value {
     json!({"seed_rows": [{"target": NODE, "table": "policy", "rows": [{"rule_id": rule_id}]}]})
 }
 
-/// Register a cell whose mailbox holds one message and is never read, so the
-/// second delivery parks the colony inside its route arm (same construction as
-/// `gh47_the_teardown_behaves_exactly_as_before`).
-async fn register_never_draining(h: &ColonyHandle, path: Path) -> mpsc::Receiver<Message> {
-    let (sender, receiver) = mpsc::channel::<Message>(1);
+/// The colony, blocked inside a disconnect mutation on the death ack of
+/// `/parker`. Nothing in the inbox is read until `death_ack` is sent.
+struct Parked {
+    death_ack: oneshot::Sender<()>,
+    mutation: tokio::task::JoinHandle<MutationOutcome>,
+    _mailbox: mpsc::Receiver<Message>,
+}
+
+/// Park the colony in its inline death-ack wait (the only place the loop
+/// blocks on something a test holds). Two positive receipts say it is there:
+/// the peace-stop reached `/parker`, and the colony fired its test-only signal
+/// right before blocking. The term timeout is a hang marker here, never the
+/// way the park ends: the park mutation must come back `Committed`.
+async fn park_the_colony(h: &ColonyHandle, parked: &mut mpsc::Receiver<()>) -> Parked {
+    set_term_timeout_ms_for_test(HANG_MS);
+    let (sender, mailbox) = mpsc::channel::<Message>(8);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let (death_ack, death_ack_rx) = oneshot::channel::<()>();
     let (peace_tx, peace_rx) = oneshot::channel();
     let (_backstop_tx, backstop_rx) = oneshot::channel();
     let join = tokio::spawn(async move {
@@ -58,25 +80,71 @@ async fn register_never_draining(h: &ColonyHandle, path: Path) -> mpsc::Receiver
     let (ack, ack_rx) = oneshot::channel();
     h.inbox_tx
         .send(ColonyMsg::Register {
-            path,
+            path: Path::new("/parker"),
             sender,
             join,
             peace_rx,
             backstop_rx,
-            stop_tx: None,
-            death_ack_rx: None,
+            stop_tx: Some(stop_tx),
+            death_ack_rx: Some(death_ack_rx),
             respawn: Box::new(|| unreachable!("this cell never dies")),
             wake: None,
             restart_limit: None,
             cell_id: Uuid::now_v7(),
-            cell_type: "never-drains".into(),
+            cell_type: "parker".into(),
             active: true,
             ack,
         })
         .await
         .expect("colony inbox closed");
     ack_rx.await.expect("register ack");
-    receiver
+    h.add_edge(Uuid::now_v7(), Path::new("/parker"), Path::new("/anchor"))
+        .await;
+
+    let inbox_tx = h.inbox_tx.clone();
+    let mutation = tokio::spawn(async move {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Mutation {
+                payload: json!({"scope": "/", "diff": {"remove_edges": [
+                    {"match": {"from": "parker", "to": "anchor"}}
+                ]}}),
+                reply_to: None,
+                trace_id: Uuid::now_v7(),
+                parent_message_id: Uuid::now_v7(),
+                ack: ack_tx,
+            })
+            .await
+            .expect("colony inbox closed");
+        ack_rx.await.expect("park mutation ack")
+    });
+    tokio::time::timeout(HANG, stop_rx)
+        .await
+        .expect("the disconnect must peace-stop /parker")
+        .expect("the colony sends the stop, it does not drop it");
+    tokio::time::timeout(HANG, parked.recv())
+        .await
+        .expect("the colony must reach its inline death-ack wait")
+        .expect("the death-ack-wait signal channel is open");
+    Parked {
+        death_ack,
+        mutation,
+        _mailbox: mailbox,
+    }
+}
+
+/// Hand over the death ack: the park mutation completes and the loop reads
+/// the inbox again, in send order.
+async fn release(parked: Parked) {
+    parked.death_ack.send(()).expect("the colony still waits");
+    let outcome = tokio::time::timeout(HANG, parked.mutation)
+        .await
+        .expect("the park mutation must be answered")
+        .expect("the park mutation task");
+    assert!(
+        matches!(outcome, MutationOutcome::Committed { .. }),
+        "the park ends by the death ack, not by the term timeout: {outcome:?}"
+    );
 }
 
 /// Every `rule_id` in the store's `policy` table, read after the colony ended.
@@ -136,7 +204,10 @@ async fn the_teardown_refuses_every_mutation_door_and_no_row_lands() {
     let factory: Arc<dyn CellFactory> = Arc::new(PersistCellFactory {
         spawn_count: Arc::new(AtomicU32::new(0)),
     });
-    let h = ColonyHandle::new_with_factories_at(&td, vec![("store".to_string(), factory)]);
+    let (h, mut parked_rx) = ColonyHandle::new_with_factories_and_death_ack_signal_at(
+        &td,
+        vec![("store".to_string(), factory)],
+    );
 
     let templates_root = td.path().join("templates");
     let tpl = templates_root.join(NODE);
@@ -181,17 +252,11 @@ async fn the_teardown_refuses_every_mutation_door_and_no_row_lands() {
         "growing the store must commit: {grown:?}"
     );
 
-    // The wedge: the first delivery fills the single slot, the second parks
-    // the colony inside its route arm.
-    let mut held = register_never_draining(&h, Path::new("/wedged")).await;
-    h.send_from(Path::new("/"), MessageBuilder::new("/wedged").build())
-        .await;
-    h.add_hive_scope(Path::new("/barrier")).await;
-    h.send_from(Path::new("/"), MessageBuilder::new("/wedged").build())
-        .await;
+    let parked = park_the_colony(&h, &mut parked_rx).await;
 
-    // Queued behind the wedge, in this order: the shutdown, then the three
-    // knocks, each seeding the now RUNNING store.
+    // Queued while the colony is parked, in this order: the shutdown, then the
+    // three knocks, each seeding the now RUNNING store. The inbox is open —
+    // only the shutdown, once taken, closes it.
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     h.inbox_tx
         .send(ColonyMsg::Shutdown { ack: shutdown_tx })
@@ -220,21 +285,14 @@ async fn the_teardown_refuses_every_mutation_door_and_no_row_lands() {
         .await
         .expect("colony inbox closed");
     h.send_from(
-        Path::new("/wedged"),
+        Path::new("/parker"),
         MessageBuilder::new("/colony/mutations")
             .with_inline_content(json!({"messages": [], "scope": "/", "diff": seed("r3")}))
             .build(),
     )
     .await;
 
-    // Release the wedge: both deliveries come out, the parked one completes.
-    for _ in 0..2 {
-        let m = tokio::time::timeout(HANG, held.recv())
-            .await
-            .expect("the wedged mailbox must hand out its messages")
-            .expect("the wedged mailbox sender is alive");
-        assert_eq!(m.target.as_str(), "/wedged");
-    }
+    release(parked).await;
 
     tokio::time::timeout(HANG, shutdown_rx)
         .await
@@ -283,7 +341,7 @@ async fn the_teardown_refuses_every_mutation_door_and_no_row_lands() {
         .collect();
     assert_eq!(
         recorded,
-        vec![("/wedged".to_string(), "/colony/mutations".to_string())],
+        vec![("/parker".to_string(), "/colony/mutations".to_string())],
         "the emitted knock is dead-lettered with the drain's code"
     );
     h2.shutdown().await;

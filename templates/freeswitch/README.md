@@ -1,4 +1,4 @@
-# `freeswitch@2.4.8`
+# `freeswitch@3.0.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -36,13 +36,12 @@ the trunk, and `mod_audio_stream` connects to the media half as a WebSocket
 
 | path | type | from |
 |---|---|---|
-| the template root itself | `hive`, `ports: []` | the address. The two connect points are the one exception this template pronounces about itself |
+| the template root itself | `hive`, `ports: []` | the address. The connect points on `./dial` and `./voice` are the one exception this template pronounces about itself |
 | `voice` | `ref` | the `voice` template — the media half, with `audio_out_frame_ms: 20` and `emit_speak_end: true` ordered here |
 | `dial` | `code` | the offer: `call`, `hangup` and the three line tools, and the menu entry that makes them callable |
 | `signal` | `code` | the book: every lane becomes a store bundle, and the store's answer becomes a turn, a command at the switch, or a tool result |
 | `gateway` | `web_fetch` | the one command channel to `mod_xml_rpc` |
 | `calls` | `store` | the calls this channel has going |
-| `access` | `ref` | the `access` template — the broker the media half's two provider keys come from (#801) |
 
 ### The provider keys
 
@@ -50,25 +49,33 @@ The media half refs `voice`, so it inherits its two grant handles:
 `params.stt.credential_grant_id` is `grant:deepgram@template-voice/stt` and
 `params.tts.credential_grant_id` is `grant:cartesia@template-voice/tts`. A
 `voice` cell with a grant waits for a sealed box that only a broker sends, and
-refuses a session without its key. So this hive carries its own broker:
-`./access` ships both grants in its seed (requester `agent:freeswitch/voice`,
-credentials `cred:deepgram` and `cred:cartesia`), and the graph draws the
-`credential_request` edge from `./voice` to `./access` and one `in_sealed`
-edge back per handle. Deposit the two keys once into this broker's vault
-(`meclaw --root <root> --vault <instance>/access/vault --vault-add <credential>`,
-once per credential) and the next start of the hive asks for them.
-No key travels through `.env`.
+refuses a session without its key. Since 3.0.0 (#1329) this hive ships no
+access of its own: its cells obtain their credentials by grant from an access
+of the colony (the builder recipe seeds the three grants in the member's
+access). The rim
+declares the credential lane instead, both halves at the connect point
+`./voice`:
 
-A line that runs ONE duplex provider instead of the pair (`params.duplex` on
-`./voice`) spends a third key. `voice` ships no handle for it, because its
-`duplex` block is null, so this hive ships one: `./access` seeds
-`grant:openai@template-freeswitch/duplex` (requester `agent:freeswitch/voice`,
-credential `cred:openai`) and the graph draws its `in_sealed` edge. A wish that
-sets `voice.duplex` names that handle in `duplex.credential_grant_id` and leaves
-`duplex.api_key` empty; the key is deposited into the same vault as the other
-two (#1103). Without the deposit the broker refuses the round and the cell
-refuses every duplex session after its wait; it never reads a key from the
-environment.
+| lane | direction | what the consumer draws |
+|---|---|---|
+| `credential_request` | emits, `at: ["./voice"]` | one v-lane from `<line>/voice` to an access of the colony (the member's `./access` in the builder recipe), restamped `in_invoke`, with `context.requester` `agent:freeswitch/voice` on the edge |
+| `in_sealed` | accepts, `at: ["./voice"]`, required | one v-lane per grant back, guarded on the broker's `ack` of `vault.deliver` and on `hop.grant_id` |
+
+The consumer seeds the grants into that access before the line's first call
+(`seed_rows`), under the ids the media half names: requester
+`agent:freeswitch/voice`, capability `credential.read`, credentials
+`cred:deepgram` and `cred:cartesia`. A line that runs ONE duplex provider
+instead of the pair (`params.duplex` on `./voice`) spends a third key. `voice`
+ships no handle for it, because its `duplex` block is null, so the line names
+`grant:openai@template-freeswitch/duplex` (credential `cred:openai`) in
+`duplex.credential_grant_id` and leaves `duplex.api_key` empty (#1103). The
+builder's `grow_level` does all of it for a line it grows: the three grants,
+the ask, the three answers and the duplex handle in the one declaration. Deposit
+the keys once into the colony access's vault
+(`meclaw --root <root> --vault <access>/vault --vault-add <credential>`). A
+refusal of the broker (a missing vault entry, say) belongs to the access and its
+consumer; the media half learns of it only by its `credential_wait_ms` running
+out and refuses the session. No key travels through `.env`.
 
 ## What travels
 
@@ -258,11 +265,15 @@ is written empty, which also overwrites a speaker an earlier hop carried in.
 
 **A phone channel costs one node and two edges**, the same shape a `voice`
 channel costs — plus, if the assistant should be able to *place* calls, the two
-tool v-lanes and their way back.
+tool v-lanes and their way back, and always the credential lane of the media
+half: one ask v-lane to the member's `./access`, one answer v-lane per grant,
+and the three grants seeded there in the same declaration (`seed_rows`).
+`in_sealed` is `required`, so the mutation door refuses a line without it
+(`hive_contract`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@2.4.8",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.0.0",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -304,7 +315,52 @@ tool v-lanes and their way back.
     {"from": "./assistants/<gen>/talky", "to": "./channels/freeswitch/dial", "lane": "schemas",
      "condition": "has(hop.route) && hop.route == 'schemas'",
      "modifier": {"set_context": {"tool_caller": "'talky'", "assistant": "'<gen>'"},
-                  "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}}
+                  "delete_context": ["col_phase", "consult_class", "consult_id", "tool_answerer"]}},
+
+    {"from": "./channels/freeswitch/voice", "to": "./access", "lane": "credential_request",
+     "condition": "has(hop.route) && hop.route == 'credential_request'",
+     "modifier": {"set_hop": {"route": "'in_invoke'"},
+                  "set_context": {"requester": "'agent:freeswitch/voice'"}}},
+    {"from": "./access", "to": "./channels/freeswitch/voice", "lane": "in_sealed",
+     "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:deepgram@template-voice/stt' && has(hop.requester) && hop.requester == 'agent:freeswitch/voice'",
+     "modifier": {"set_hop": {"route": "'in_sealed'"}}},
+    {"from": "./access", "to": "./channels/freeswitch/voice", "lane": "in_sealed",
+     "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:cartesia@template-voice/tts' && has(hop.requester) && hop.requester == 'agent:freeswitch/voice'",
+     "modifier": {"set_hop": {"route": "'in_sealed'"}}},
+    {"from": "./access", "to": "./channels/freeswitch/voice", "lane": "in_sealed",
+     "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openai@template-freeswitch/duplex' && has(hop.requester) && hop.requester == 'agent:freeswitch/voice'",
+     "modifier": {"set_hop": {"route": "'in_sealed'"}}}
+  ],
+  "seed_rows": [
+    {"target": "./access/store", "table": "grants", "rows": [
+      {"grant_id": "grant:deepgram@template-voice/stt", "requester": "agent:freeswitch/voice",
+       "capability": "credential.read", "subject": "template:freeswitch",
+       "scope": {"actions": ["vault.deliver"]}, "cred_ref": "cred:deepgram",
+       "purpose": "let the call's recogniser authenticate at its provider",
+       "issued_at": "<now>", "expires_at": "2099-01-01T00:00:00.000000Z",
+       "rule_id": "template-credential-read", "constraints": {"rate_per_min": 60}},
+      {"grant_id": "grant:cartesia@template-voice/tts", "requester": "agent:freeswitch/voice",
+       "capability": "credential.read", "subject": "template:freeswitch",
+       "scope": {"actions": ["vault.deliver"]}, "cred_ref": "cred:cartesia",
+       "purpose": "let the call's synthesiser authenticate at its provider",
+       "issued_at": "<now>", "expires_at": "2099-01-01T00:00:00.000000Z",
+       "rule_id": "template-credential-read", "constraints": {"rate_per_min": 60}},
+      {"grant_id": "grant:openai@template-freeswitch/duplex", "requester": "agent:freeswitch/voice",
+       "capability": "credential.read", "subject": "template:freeswitch",
+       "scope": {"actions": ["vault.deliver"]}, "cred_ref": "cred:openai",
+       "purpose": "let the call's duplex model authenticate at its provider",
+       "issued_at": "<now>", "expires_at": "2099-01-01T00:00:00.000000Z",
+       "rule_id": "template-credential-read", "constraints": {"rate_per_min": 60}}]},
+    {"target": "./access/store", "table": "grant_events", "rows": [
+      {"id": "ev-freeswitch-voice-stt", "grant_id": "grant:deepgram@template-voice/stt", "event": "granted",
+       "at": "<now>", "actor": "operator", "reason_code": "",
+       "detail": {"why": "seeded with the channel"}},
+      {"id": "ev-freeswitch-voice-tts", "grant_id": "grant:cartesia@template-voice/tts", "event": "granted",
+       "at": "<now>", "actor": "operator", "reason_code": "",
+       "detail": {"why": "seeded with the channel"}},
+      {"id": "ev-freeswitch-voice-duplex", "grant_id": "grant:openai@template-freeswitch/duplex", "event": "granted",
+       "at": "<now>", "actor": "operator", "reason_code": "",
+       "detail": {"why": "seeded with the channel"}}]}
   ]}}
 ```
 
@@ -317,7 +373,12 @@ branch read a key that was not there. A CEL modifier that fails to evaluate
 nothing said why. The rule has no exception: **every** key read off `hop` or
 `context` inside a modifier is guarded, even the one that "obviously" exists.
 
-Read it in four groups.
+Read it in five groups; the fifth, **the credential half**, is the last four
+edges and `seed_rows`, and they are what the builder recipe draws for a line it
+grows (`SEALED_CHANNELS`): the media half asks the member's `./access` under
+the requester `agent:freeswitch/voice`, and each grant's sealed box comes back
+on its own answer edge. A vault filled for the broker this hive carried up to
+2.4.8 names the same entries.
 
 **The channel half** is the first two edges, and they are the `voice` channel's
 own two, word for word (`templates/voice/README.md` § *Wiring it into a member*):
@@ -1163,7 +1224,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@2.4.8`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.0.0`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1176,7 +1237,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@2.4.8"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.0.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

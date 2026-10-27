@@ -43,6 +43,14 @@
             "./dial"
           ],
           "because": "an assistant asking what this channel offers before it offers it to a model. Same connect point as the call itself, because the offer and the answer to it are one cell's business and the two must never be able to disagree"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./voice"
+          ],
+          "required": true,
+          "because": "the answer half of the credential lane (#1329): an access of the colony -- this hive ships none of its own -- hands the media half the sealed box of the grant it asked under (`grant:deepgram@template-voice/stt` for the recogniser, `grant:cartesia@template-voice/tts` for the synthesiser, `grant:openai@template-freeswitch/duplex` for one duplex provider): the broker's `ack` of `vault.deliver`, restamped `in_sealed` by the consumer's edge and guarded on `hop.grant_id`. Required: a line born without it refuses every session after its `credential_wait_ms`"
         }
       ],
       "emits": [
@@ -93,6 +101,13 @@
         {
           "route": "call_abandoned",
           "because": "a caller who was waiting hung up. Neither an acceptance nor a refusal, and spelling it as one of those would make a receipt lie: nobody decided anything, the person went away. `cause` carries the switch's own hangup cause"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./voice"
+          ],
+          "because": "the ask half of the credential lane (#1329): the media half mints an ephemeral key per ask and sends its grant handle out at its connect point. The consumer draws the edge from `./voice` to an access of the colony (the member's `./access` in the builder recipe), restamped `in_invoke` with `context.requester` stamped on the edge (`agent:freeswitch/voice`), and seeds the three grants there (`seed_rows`); a refusal of that access is the consumer's to route, never this hive's: the cell learns of it only by its wait running out"
         }
       ]
     },
@@ -166,67 +181,6 @@
           "from": "./signal",
           "to": "./voice",
           "condition": "has(hop.route) && hop.route == 'in_session'"
-        },
-        {
-          "from": "./voice",
-          "to": "./access",
-          "condition": "has(hop.route) && hop.route == 'credential_request'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_invoke'"
-            },
-            "set_context": {
-              "requester": "'agent:freeswitch/voice'"
-            }
-          }
-        },
-        {
-          "from": "./access",
-          "to": "./voice",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:deepgram@template-voice/stt'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          }
-        },
-        {
-          "from": "./access",
-          "to": "./voice",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:cartesia@template-voice/tts'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          }
-        },
-        {
-          "from": "./access",
-          "to": "./voice",
-          "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openai@template-freeswitch/duplex'",
-          "modifier": {
-            "set_hop": {
-              "route": "'in_sealed'"
-            }
-          }
-        },
-        {
-          "from": "./access",
-          "to": ".",
-          "condition": "has(hop.route) && hop.route == 'error'",
-          "modifier": {
-            "delete_context": [
-              "phone_call",
-              "phone_cause",
-              "phone_number",
-              "phone_op",
-              "phone_origin",
-              "phone_phase",
-              "phone_tool_call_id",
-              "phone_user",
-              "phone_verified"
-            ]
-          }
         },
         {
           "from": ".",
@@ -353,7 +307,7 @@
     "purpose": "A telephone as one channel of a person, over FreeSWITCH: the MEDIA half is a `voice` cell that carries the audio, the SIGNALLING half is the small state machine that knows who is on the line, why, and what state the line is in. Both live in this hive, because a call is one thing -- the socket the audio runs over and the number the call is with are two halves of the same conversation, and the id that binds them is the call's own UUID. THE HIVE IS THE ADDRESS: `params.ports` is empty, so no edge reaches an occupant except on a lane that names its own connect point.",
     "use_when": "Wherever a person should be reachable by telephone, or should be able to ring somebody up. FreeSWITCH stays the media edge in gateway mode: it does the SIP, it forks the audio into the media half over a WebSocket, and it tells this hive what happened over the front door. Nothing here speaks SIP, and nothing here holds a trunk.",
     "not_in_scope": "It is not a switch: it dials, it hangs up, and everything else about the call -- codecs, trunks, dialplans, voicemail -- belongs to FreeSWITCH and stays there. It does not authenticate a caller either: it maps a number to a sender id and refuses a number it has no entry for, which is a table and not a judgement. And it holds no persona: what is said into a call is a turn of the member's conversation, answered by the member's assistant.",
-    "contract_in": "Seven lanes. Five arrive at the hive path: `in_speak` (the answer to be spoken) and the four dialplan events `call_incoming`, `call_ringing`, `call_answered` and `call_ended`, which reach the front door as `POST /messages` addressed at this hive. Two of the four raise a turn -- `call_incoming`, and `call_answered` for a call this channel PLACED. `call_ringing` and `call_ended` only move the row, and since 1.0.1 so does a `call_answered` that follows a `call_incoming` of the same uuid (GH #614). Two lanes name their own connect point: `tool` and `schemas`, both on `./dial`, because a tool call is answered by the cell that is the tool.",
-    "contract_out": "Nine lanes, out of the hive path. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself. And four arbitration receipts, one per inbound call (GH #620): `call_accepted`, `call_queued`, `call_refused`, `call_abandoned`, each carrying `call_id`, `policy` and `capacity`. The installing manifest draws the edge that drains them, or they dead-letter as `no_route` -- the rule the `partial` lane already follows."
+    "contract_in": "Eight lanes. Five arrive at the hive path: `in_speak` (the answer to be spoken) and the four dialplan events `call_incoming`, `call_ringing`, `call_answered` and `call_ended`, which reach the front door as `POST /messages` addressed at this hive. Two of the four raise a turn -- `call_incoming`, and `call_answered` for a call this channel PLACED. `call_ringing` and `call_ended` only move the row, and since 1.0.1 so does a `call_answered` that follows a `call_incoming` of the same uuid (GH #614). Three lanes name their own connect point: `tool` and `schemas`, both on `./dial`, because a tool call is answered by the cell that is the tool, and `in_sealed` (required) on `./voice`, the sealed box an access of the colony sends the media half (#1329).",
+    "contract_out": "Nine lanes out of the hive path, and one at a connect point. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself. And four arbitration receipts, one per inbound call (GH #620): `call_accepted`, `call_queued`, `call_refused`, `call_abandoned`, each carrying `call_id`, `policy` and `capacity`. The installing manifest draws the edge that drains them, or they dead-letter as `no_route` -- the rule the `partial` lane already follows. `credential_request` leaves at `./voice` (#1329): the media half's ask for its provider key, which the consumer routes to an access of the colony -- this hive ships no access of its own."
   }
 }

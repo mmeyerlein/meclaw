@@ -49,7 +49,11 @@ overflows per cell and only dead-letters above a cap, and a topology that used t
 slow a producer sets the `colony.json` `mailbox_overflow_*` caps lower. The new dead-letter code it
 brings, `mailbox_full`, is additive like any other. So is `sender_out_of_scope` (GH #1231), the
 mutation refusal of a sender without an edge to `/colony/mutations` whose scope lies outside its own
-hive; the behaviour behind it is the breaking part, named in the changelog. meclaw
+hive; the behaviour behind it is the breaking part, named in the changelog. A required lane is the
+third kind: since `freeswitch@3.0.0` the telephone channel ships no access of its own and its
+`in_sealed` lane is required, so a line grown by hand draws the two credential lanes to the member's
+access and seeds the three grants there (`templates/freeswitch/README.md` § *Wiring it into a
+member*), or grows through the builder recipe, which does both. meclaw
 has no deprecation period and no compatibility flag, so the release note is where you find out.
 
 Nothing under `crates/` carries a SemVer guarantee. The Rust crates are internals and move

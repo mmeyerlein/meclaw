@@ -117,7 +117,7 @@ fn run_classify(args: Value) -> Value {
 fn wish(person: Option<&str>) -> Value {
     let mut params = json!({
         "scope": MEMBER_DIR, "level": "channel", "name": "telegram",
-        "template": "telegram-connector@2.2.5", "assistant": AGENT,
+        "template": "telegram-connector@2.2.6", "assistant": AGENT,
         "bind_chat": "4711"});
     if let Some(p) = person {
         params["ctx"] = json!({"member_person": p});

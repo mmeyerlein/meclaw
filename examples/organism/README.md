@@ -48,7 +48,7 @@ organism/
 │   ├── colony.json            byte-identical to seed/colony.json
 │   └── main/
 │       ├── config.json        byte-identical to seed/main/config.json
-│       └── os/config.json     type: "ref", template: "meclaw-os@2.3.4"
+│       └── os/config.json     type: "ref", template: "meclaw-os@2.3.5"
 ├── grow-os.json               1. the shell.        1 node,  0 edges
 ├── grow-org.json              2. an organisation.  1 node, 26 edges
 ├── grow-member.json           3. a person.         1 node, 26 edges
@@ -70,19 +70,19 @@ principle of GH #26: a tree is grown, not checked in.
 ## What grows
 
 ```
-/os                                 meclaw-os@2.3.4   the shell
-├── access                            → access@2.6.3        the capability broker
+/os                                 meclaw-os@2.3.5   the shell
+├── access                            → access@2.6.4        the capability broker
 ├── argus                             → argus@1.4.4         the control loop
 ├── llm-registry                      → llm-registry@2.13.0  the model registry
 └── orgs                              (empty container)
-    └── acme                       org@2.2.3        a namespace and a boundary
+    └── acme                       org@2.2.4        a namespace and a boundary
         └── members                  (empty container)
-            └── alex               member@2.7.3      one person
+            └── alex               member@2.7.4      one person
                 ├── affinity          → affinity@3.11.2      identity and meaning
                 ├── firewall          → firewall@2.5.3      the screen
-                ├── memory-hive       → memory-hive@3.19.0   what was said to them
+                ├── memory-hive       → memory-hive@3.19.1   what was said to them
                 ├── channels          (empty container)
-                │   └── telegram      telegram-connector@2.2.5   how alex is reached
+                │   └── telegram      telegram-connector@2.2.6   how alex is reached
                 └── assistants        (empty container)
                     └── scribe    assistant@3.10.2   one generation of an agent
                         ├── talky       → talky@6.11.3       the conversation surface
@@ -119,7 +119,7 @@ is a separate act.
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.3.4"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.3.5"}],
           "add_edges": []}}
 ```
 
@@ -148,7 +148,7 @@ names nobody still travels exactly as it did before there were two. The one stri
 `in_stats` (`has(context.org) && context.org == 'acme'`, since GH #926): it asks for one
 person's counts, so a question that names nobody reaches no organisation.
 
-`in_import` is the one lane `org@2.2.3` accepts that gets no edge, and that is the one
+`in_import` is the one lane `org@2.2.4` accepts that gets no edge, and that is the one
 subtraction in this set: a memory part on its way back into a running hive addresses the
 member it belongs to **at its own path**, so an edge from the container could never deliver
 one. Lane count is not edge count, and this is the direction where it costs a lane rather
@@ -168,7 +168,7 @@ of its own.
 
 ```json
 {"scope": "/os/orgs",
- "diff": {"add_nodes": [{"name": "acme", "template": "org@2.2.3"}],
+ "diff": {"add_nodes": [{"name": "acme", "template": "org@2.2.4"}],
           "add_edges": [{"from": ".", "to": "./acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn' && (!has(context.org) || context.org == 'acme')"},
                         {"from": "./acme", "to": ".",
@@ -359,7 +359,7 @@ Four edges:
   ([#803](https://github.com/mmeyerlein/meclaw/issues/803)).
 
 **The eleven edges between `channels` and its siblings are not among them** — they belong to
-`member@2.7.3` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
+`member@2.7.4` and were drawn once, when step 3 ran: `./channels → ./firewall` turns the raw
 `turn` into `in_turn`, `./assistants → ./channels` carries a finished answer back to the channel
 that asked, `./apps → ./channels` carries an app's `view` — and, since 1.8.0, its `withdraw` —
 the same way, `./channels → .` lets a
@@ -702,7 +702,7 @@ nothing until an operator turns on exactly what they mean.
 shall stand.
 
 ```json
-{"cell": {"type": "ref", "template": "meclaw-os@2.3.4"}}
+{"cell": {"type": "ref", "template": "meclaw-os@2.3.5"}}
 ```
 
 That is a **declaration, not a cell**. The FIRST `meclaw --root ./examples/organism/seed-ref`
@@ -771,6 +771,6 @@ curl -s -X POST http://127.0.0.1:7777/colony/mutations \
 - **No slot.** The substrate's slot governs an address that does **not** exist, and every
   container in this tree does exist — so the declaration would be silent, and the
   `params.ports` it needs would have *sealed* the level that declared it.
-- **No second vault.** `access@2.6.3` carries its own interior one (ruling Q20).
+- **No second vault.** `access@2.6.4` carries its own interior one (ruling Q20).
 - **No live migration.** This folder is a walkthrough for a colony that is grown from nothing.
   Running any of it against a deployed tree is a separate, operator-owned act.
