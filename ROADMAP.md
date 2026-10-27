@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.76.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.76.1, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.76.1: the curator's handover note reports the past session and never orders the next one; the ambient
+  recall stands before the person's words, framed as memory.
 - v0.76.0: a channel template brings no access of its own; `freeswitch@3.0.0` gets its credentials by
   grant from an access of the colony, and one grant id serves several consumers, each with its own requester.
 - v0.75.0: `--validate --apply` replays the params of every cell a manifest grows, and an app under `./apps`

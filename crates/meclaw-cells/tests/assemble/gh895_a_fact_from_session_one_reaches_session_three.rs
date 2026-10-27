@@ -954,6 +954,30 @@ fn recall_results_after(wire: &[Value], from: usize) -> Vec<String> {
         .collect()
 }
 
+/// Where the ambient evidence of the person's turn at `at` begins: GH #1333
+/// puts the round's `memory_recall` pair in front of the person's words, so
+/// the round opens at the assistant message that carries its synthetic calls,
+/// right after the tool results and calls standing before the turn.
+fn round_start(wire: &[Value], at: usize) -> usize {
+    let mut i = at;
+    while i > 0 {
+        let m = &wire[i - 1];
+        if m["role"] == "tool" {
+            i -= 1;
+        } else if m["role"] == "assistant"
+            && m["tool_calls"].as_array().is_some_and(|c| !c.is_empty())
+        {
+            i -= 1;
+            if wire[..i].last().is_none_or(|p| p["role"] != "tool") {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    i
+}
+
 fn last_person(wire: &[Value], text: &str) -> usize {
     wire.iter()
         .rposition(|m| m["role"] == "user" && content_of(m).contains(text))
@@ -1021,11 +1045,13 @@ async fn a_fact_crosses_two_sessions(surface: &str) {
     h.shutdown().await;
     let wire = wire_of(reqs.last().expect("the question's request"));
     let at = last_person(&wire, QUESTION);
-    let found = recall_results_after(&wire, at);
+    // GH #1333: the round's memory pair stands in front of the question, so
+    // the person's words are the last message before the answer.
+    let found = recall_results_after(&wire, round_start(&wire, at));
     assert!(
         found.iter().any(|r| r.contains(FACT_TOKEN)),
         "{surface}: the memory pair of session three does not carry the fact of session \
-         one. Recall results after the question: {found:#?}"
+         one. Recall results of the question's round: {found:#?}"
     );
     // The question the curator built, measured where it is used: the memory
     // hive's door has it with the enrichment in front of the person's words,

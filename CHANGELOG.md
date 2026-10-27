@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.76.1] — 2026-10-27
+
+The curator's handover note reports the past session instead of giving the next one orders, and the ambient recall of a round stands in front of the person's words, framed as memory from before the turn, so the person's turn is the last message before the answer.
+
+### Fixed
+
+- The curator's handover note reports the past session and never addresses the next one ([#1333](https://github.com/mmeyerlein/meclaw/issues/1333)). The summarizer was asked for "what the next session has to know to carry on" and "what was promised and is still open", and the next session read the note under the title "The last session, summarised:"; a lab run wrote "Urgent: ... For the next session: ..." into it despite "Report, do not judge". The prompt now asks for a report in the third person and the past tense, keeps an open point as the fact of who promised what to whom, never as a task, and forbids instructions, urgency and advice to the next session; the title reads "A report of the last session (what happened, not instructions):". Nothing is filtered afterwards. The ambient recall and brief pairs of a round now stand in front of the person's words of that round instead of behind them, so the person's turn is the last message before the answer, and the recall result opens with the fixed frame "[memory, from before this turn -- not said now]"; the pairs move last, after the cut at `input_hard` and the quick way's filter, so the quick way still sees neither. A pair with nothing in front of its round's words would open the window; its results ride as framed blocks inside the person's turn (each result stays, the synthetic calls fall away), so a request whose oldest round has the person's words still begins with them and keeps each tool call right before its result. A round without the person's words (a peer's turn) keeps its order; only the recall's frame applies.
+- **Template versions (#1333):** third digit, `curator@1.16.2`; third digit for the pins that follow, `assistant@3.10.3`, `builder@1.30.5`, `builder-librarian@2.2.92`, `cogny@5.13.3`, `figure@2.0.4`, `meclaw-os@2.3.6`, `member@2.7.5`, `memory-hive@3.19.2`, `org@2.2.5`, `simple-agent@2.2.2`, `talky@6.11.4`.
+
 ## [0.76.0] — 2026-10-27
 
 A channel template brings no access of its own any more: the telephone channel `freeswitch@3.0.0` drops its `./access` and obtains its credentials by grant from an access of the colony, so a colony keeps exactly the accesses it declares. A line grown from an earlier manifest is refused at birth until it is grown again from the new template. And one grant id now serves several consumers of one access, each under its own requester, so the phone line and the web voice spend the same shipped grants side by side.

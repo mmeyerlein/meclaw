@@ -30,6 +30,7 @@ pub mod gh1303_a_note_stands_right_before_the_newest_turn;
 pub mod gh1304_the_curator_hands_the_persons_last_turns;
 pub mod gh1305_conversation_events_and_inner_turns_in_the_curator;
 pub mod gh1306_answer_check_carries_its_sources;
+pub mod gh1333_the_curator_frames_the_past_as_past;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;

@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "simple-agent@2.2.1"
+    "template": "simple-agent@2.2.2"
   },
   "override_params": {
     "tool_gate": {
