@@ -1,4 +1,4 @@
-# `file-space@1.5.3`
+# `file-space@1.5.4`
 
 The files of one knowledge space, each a logical file hive under one address, over the space's one store ([#899](https://github.com/mmeyerlein/meclaw/issues/899), ADR-0047). Contract tables only; the prose follows with the program it belongs to. The hive is sealed (`params.ports: []`): every endpoint is the hive path. Cells by contract: `store` (store, `write_surface: internal`), `read`, `write`, `guard`, `ws`, `derive`, `embed`, `schemas`, `tools` (code), `summarizer` (llm). The child hive `./projection` ([`projection`](../projection/README.md)) lays a workspace out on a disk. A lane or route enters `config.json` with the cell that serves it (first: `in_read`, `in_ws`, `answer`).
 
@@ -202,6 +202,7 @@ The three projection tools ([#980](https://github.com/mmeyerlein/meclaw/issues/9
 | `read` | `near_scan_max` | 5000 | the most files one `near` compares |
 | `extract` | `extract_cmd`, `extract_max_pages`, `extract_timeout_ms` | `pdftotext`, 500, 30000 | the program that turns a PDF into pages (a name found in `/usr/bin:/bin`, the only `PATH` it runs with, or an absolute path), the most pages one `create` carries as `derived`, the time one extraction may take |
 | `embed` | `endpoint`, `model`, `dim` | the `memory-hive` embedding settings (`MEMORY_EMBED_*`) | one embedding model, one dimension and one binary form per member |
+| `embed` | `credential_wait_ms` | 60000 | how long a call waits for the sealed credential of a grant set through `override_params`; a call that runs out reaches `./derive` as a failed `embedded` (`embed_failed` on `ask`/`search`, a failed job on derive), never as a dead letter ([#1338](https://github.com/mmeyerlein/meclaw/issues/1338)) |
 | `schemas` | `projection_tools` | "0" | "1" puts `file_ws_exec`, `file_ws_export` and `file_ws_push` on the menu ([#980](https://github.com/mmeyerlein/meclaw/issues/980)); the owner sets it beside the projection's `base_path`, so no model sees a tool that always refuses |
 | `summarizer` | `model` | `${MODEL_FILE_SPACE}`, no default -- growth is refused without it (`env_var_missing`), as for the `MODEL_*` of `memory-hive` | the model that writes summaries and answers `ask`; the llm-registry may move it through `in_model` |
 | `summarizer` | `http_referer`, `x_title` | `${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}`, `${OPENROUTER_X_TITLE:-MeClaw}` | the app attribution (the form of `memory-hive` and `./embed`), sent as the `HTTP-Referer` / `X-Title` headers; a set renames the app through `override_params` |

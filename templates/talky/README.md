@@ -1,4 +1,4 @@
-# `talky@6.11.5`
+# `talky@6.11.6`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -74,7 +74,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.11.5` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.11.6` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -515,7 +515,12 @@ off, and off the stamp and the decide call are the bytes above.
   parks both with the route leg and carries the notes on every seam of the turn as
   `hop.turn_notes`; `./collector -> ./curator` lifts them into `context.turn_notes`, where the
   curator renders them right before the person's newest turn -- in that same turn, without a
-  round trip. A late stamp carries no note: the round is already on its way.
+  round trip. A late stamp carries no note: the round is already on its way. Only the `brain`
+  way shows turn notes (the quick role's `notes_share` is 0, and a consult or research turn is
+  first spoken to by the quick bridge), so a stamp with a note leaves on `notes_class` (`talk`
+  as shipped) whatever path the decider named, with the `p` of the choice that set it and
+  `hop.steered` naming the note (GH #1340). `notes_class` `""`, or a class `./route` does not
+  ask, keeps the decider's path.
 - `stamp_out` `"1"` sends the stamp out of the rim as well, on `stamp`, without the text and
   without the notes. `session_id`, `channel` and `audience_set` come from the context of the
   keeper's turn, so a reader knows the round. A turn without a round (no `audience_set`, or
@@ -825,7 +830,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.11.5",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.11.6",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1533,6 +1538,7 @@ below names the CELL the knob belongs to, because that is what an
 | `reasoning_effort` | param | `"medium"` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)); ships `medium` like every shipped `llm` cell ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). It reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
 | `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `late_ms`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `1500`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `choices`, `stamp_out`, `context_turns`, `context_budget_tokens` | param | `{}`; `"0"`; `0`; `1500` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `notes_class` | param | `"talk"` | route -- the class a stamp with a choice's note leaves on, since only the `brain` way shows turn notes (GH #1340); `""` keeps the decider's path. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `fold_tools` | param | `"1"` (collector default `"0"`, GH #1248, T5-11) | collector -- talky and talky-chat see their menu folded: one tool per name-prefix family with two or more members (`web{op, args}`, `history{op, args}`, `file{op, args}`), `help` answered from the collector's menu store; a lone tool (`consult_cogny`) stays as it is. The quick voice's `tool_scope` names these families (`allow` and `hint`, GH #1248). `"0"` on the ref marker's `override_params` (`collector/assemble`) is the way back (R-WM-6) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |
 | `async_tools` | param | `""` | dispatcher -- tools that answer on their own lane instead of inside the round, as a JSON array or one comma-separated string. Since `dispatcher@1.2.0` it is a param of THIS composite's own dispatcher (GH #138), so the surface's list and a sibling core's list are two statements and not one. It carried `remember` until `talky@4.1.0`; per-turn extraction is not a tool call any more (GH #379), so the list is empty unless the instance wires an async tool of its own |

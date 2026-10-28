@@ -23,6 +23,11 @@
 //!    as the regular `unknown_tool` error, naming the ops of `web`.
 //! 4. No dead letter in the run.
 //! 5. Only the inner `args` reach `web_search`: the stray `id` stays behind.
+//! 6. GH #1341: `web {args: {op: search, query}}` -- the op INSIDE `args`, the
+//!    form the quick voice wrote in a canary run (mimo-v2.6-flash) -- reaches
+//!    `web_search` as well, and only the remaining keys of `args` travel.
+//! 7. GH #1341: `web {args: {query}}` -- no op anywhere -- is answered in place
+//!    with an error that names the missing `op`, not with `unknown_tool`.
 //!
 //! The round runs twice: through the brain, and through the quick voice a
 //! `simple` turn takes (`./quick` -> `./splitter` -> `./dispatcher`, the way the
@@ -67,6 +72,12 @@ const SEARCH_ARGS: &str =
 const FETCH_CALL: &str = "call-1260-fetch";
 const LOOKUP_CALL: &str = "call-1260-lookup";
 const LOOKUP_ARGS: &str = r#"{"op":"lookup","args":{}}"#;
+/// GH #1341: the op inside `args`, as the canary's quick voice wrote it.
+const NESTED_CALL: &str = "call-1341-nested";
+const NESTED_ARGS: &str = r#"{"args":{"op":"search","query":"last train Leipzig Berlin"}}"#;
+/// GH #1341: a family call without any op.
+const BARE_CALL: &str = "call-1341-bare";
+const BARE_ARGS: &str = r#"{"args":{"query":"night train"}}"#;
 
 /// What the stub endpoint answers, to the search and the fetch alike: a hit
 /// whose words are this file's own, so a result that did not run is visible.
@@ -611,6 +622,8 @@ async fn one_round_of_folded_calls(way: Way) {
             (SEARCH_CALL, "web", SEARCH_ARGS),
             (FETCH_CALL, "web", fetch_args.as_str()),
             (LOOKUP_CALL, "web", LOOKUP_ARGS),
+            (NESTED_CALL, "web", NESTED_ARGS),
+            (BARE_CALL, "web", BARE_ARGS),
         ]),
         canned_chat_completion("The first train leaves at 05:12.", "stop"),
     ])
@@ -654,11 +667,31 @@ async fn one_round_of_folded_calls(way: Way) {
     // 4. Nothing lost.
     assert!(dead.is_empty(), "dead letters in the run: {dead:#?}");
 
+    // 6. GH #1341: the op inside `args` unfolds too.
+    let nested = tool_content(&reqs[1], NESTED_CALL);
+    assert!(
+        nested.contains(HIT_SNIPPET) && !nested.contains("unknown_tool"),
+        "`web {{args: {{op: search}}}}` reached web_search and its result came back: {nested}"
+    );
+
+    // 7. GH #1341: no op anywhere -- the error names the missing op.
+    let bare = tool_content(&reqs[1], BARE_CALL);
+    assert!(
+        bare.contains("`web` is a family and this call names no `op`")
+            && !bare.contains("unknown_tool"),
+        "a family call without an op is answered with the missing op: {bare}"
+    );
+
     // 5. The stray key stayed behind: `web_search` got the family's `args`, whole
-    // and alone.
+    // and alone -- and from the nested form the keys of `args` without its `op`.
+    let mut searched = searched;
+    searched.sort_by_key(|v| v.to_string());
     assert_eq!(
         searched,
-        vec![json!({"query": "first train Berlin Leipzig"})],
-        "only the inner args reach web_search"
+        vec![
+            json!({"query": "first train Berlin Leipzig"}),
+            json!({"query": "last train Leipzig Berlin"}),
+        ],
+        "only the inner args reach web_search, without an op"
     );
 }

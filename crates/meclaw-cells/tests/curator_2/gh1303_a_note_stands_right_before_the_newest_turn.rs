@@ -95,14 +95,17 @@ fn gh1303_a_note_sits_right_before_the_newest_turn() {
         c.messages()[..shown.len() - 1],
         plain.messages()[..bare.len() - 1]
     );
+    // GH #1337: behind the block the person's words carry their own frame,
+    // between their id and the words.
+    let id = format!("[#{}] ", short_id(&user("c")));
+    assert_eq!(last_text(&plain), format!("{id}c"), "{bare:?}");
     assert_eq!(
         last_text(&c),
         format!(
-            "{HEAD_PROBE}\n- Stay with the person's topic.\n\n{}",
-            last_text(&plain)
+            "{HEAD_PROBE}\n- Stay with the person's topic.\n\n{id}\
+             [the person, now -- their own words to you]\nc"
         )
     );
-    assert!(last_text(&plain).ends_with('c'), "{bare:?}");
 }
 
 #[test]

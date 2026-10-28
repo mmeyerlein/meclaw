@@ -1,6 +1,7 @@
 //! Test harness `misc_3` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod gh296_the_bundle_is_payload_not_plumbing;
 pub mod gh297_a_leg_may_come_back_short;
 pub mod gh298_nothing_is_a_value;
 pub mod gh298_per_turn_annotation;

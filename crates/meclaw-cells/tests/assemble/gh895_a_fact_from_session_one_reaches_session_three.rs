@@ -78,8 +78,10 @@ const AUDIENCE: &str = r#"["member:owner","agent:scribe"]"#;
 const FACT_SAID: &str = "My sister Hannah moved to Porto last spring.";
 /// What the memory pair of session three has to carry.
 const FACT_TOKEN: &str = "Porto";
-/// Session two names things -- the entities session three's question is
-/// enriched with (plan P § 1: the last three rounds of the wall).
+/// Session two names things, and session three opens with them -- the
+/// entities session three's question is enriched with (plan P § 1: the last
+/// three rounds of the wall; GH #1342: of the person's words in the running
+/// session only, so session two's alone enrich nothing).
 const OTHER_SAID: &str =
     "Can you recommend a book about sailing, something like Moby Dick or Treasure Island?";
 const OTHER_REPLY: &str = "Try The Cruel Sea by Nicholas Monsarrat.";
@@ -998,6 +1000,7 @@ async fn a_fact_crosses_two_sessions(surface: &str) {
     let brain = MockOpenAI::start(vec![
         canned_chat_completion(&remembering_reply(), "stop"),
         canned_chat_completion(OTHER_REPLY, "stop"),
+        canned_chat_completion(OTHER_REPLY, "stop"),
         canned_chat_completion("In Porto.", "stop"),
     ])
     .await;
@@ -1039,7 +1042,8 @@ async fn a_fact_crosses_two_sessions(surface: &str) {
     say(&h, &mut ports, &brain, surface, OTHER_SAID).await;
     end_session(&td, &h, surface, 2).await;
 
-    // Session three: the question.
+    // Session three: the person's words that enrich it, then the question.
+    say(&h, &mut ports, &brain, surface, OTHER_SAID).await;
     let reqs = say(&h, &mut ports, &brain, surface, QUESTION).await;
     let log = message_log(td.path());
     h.shutdown().await;

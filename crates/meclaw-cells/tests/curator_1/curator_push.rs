@@ -412,13 +412,13 @@ fn the_query_carries_topic_entities_and_refs() {
         "s1",
         "t1",
         "My sister Hannah moved to Porto on 2026-03-14.",
-        "Nice. Did \"Casa Azul\" work out for her?",
+        "Nice. Did \"Casa Verde\" work out for her?",
     );
     round(
         &mut h,
         "s1",
         "t2",
-        "yes, she loves it",
+        "yes, she loves \"Casa Azul\"",
         "Good to hear that Hannah is happy.",
     );
     // The topic the memory section of the first answer named, filed by
@@ -456,9 +456,14 @@ fn the_query_carries_topic_entities_and_refs() {
         .unwrap_or_else(|| panic!("no entities: {q}"))
         .split(", ")
         .collect();
-    // Newest round first; `Nice`, `Did` and `Good` open a sentence and name
-    // nothing, `My` too; `Hannah` and `Porto` twice are each once.
-    assert_eq!(named, ["Hannah", "Casa Azul", "Porto", "2026-03-14"], "{q}");
+    // The person's words only (GH #1342): the quote the person said is a
+    // name, newest round first; the model's quote "Casa Verde" names
+    // nothing; `My` opens a sentence and names nothing.
+    assert_eq!(named, ["Casa Azul", "Hannah", "Porto", "2026-03-14"], "{q}");
+    assert!(
+        !q.contains("Casa Verde"),
+        "a quote in the model's answer is no anchor: {q}"
+    );
     assert!(
         q.contains("refers to: My sister Hannah"),
         "a short id in the person's words is what it points at: {q}"
@@ -1091,7 +1096,8 @@ fn push_marks(h: &Hive) -> Vec<(String, Option<String>)> {
 /// back into a window -- so the entities in it come only from rows whose
 /// audience holds the round: {e,a} was present for what {e,a,b} said, not for
 /// what {e,b} said, and {e,a,b,c} was present for neither (GH #925, the
-/// affinity rule). A hidden row leaves no trace in the question.
+/// affinity rule). A hidden row leaves no trace in the question. All in one
+/// session: since GH #1342 only the running session's words anchor it.
 #[test]
 fn the_question_names_only_what_the_round_was_present_for() {
     if !push_shipped() {
@@ -1109,17 +1115,17 @@ fn the_question_names_only_what_the_round_was_present_for() {
     round_as(
         &mut h,
         &declared(EB),
-        "s2",
-        "t1",
+        "s1",
+        "t2",
         "I met Bea and Carlos in Lisbon.",
         "Lisbon in spring, lovely.",
     );
-    let q = query_of(&ask_as(&mut h, &declared(EA), "s3", "t1", "where again?")[0]);
+    let q = query_of(&ask_as(&mut h, &declared(EA), "s1", "t3", "where again?")[0]);
     assert_eq!(
         q, "[mentioned: Hannah, Porto] where again?",
         "{{e,a}} is asked with what {{e,a,b}} said and nothing {{e,b}} said"
     );
-    let q = query_of(&ask_as(&mut h, &declared(EABC), "s4", "t1", "where again?")[0]);
+    let q = query_of(&ask_as(&mut h, &declared(EABC), "s1", "t4", "where again?")[0]);
     assert_eq!(q, "where again?", "{{e,a,b,c}} was present for neither");
 }
 

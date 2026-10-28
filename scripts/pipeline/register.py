@@ -174,7 +174,11 @@ LIB_ROLES = ("build", "read", "none")
 TIMEOUT_DEFAULT = 10
 WHOLE_TREE = ("glob:**",)
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-MAIN_BRANCHES = ("main", "master")
+# `master` first, as `turnaround.DEFAULT_BRANCHES` and `locks` order them: a
+# core tree can carry a local `main` of the public export (its own history,
+# no merge base with a strand) beside `master`; `main` first refused every
+# strand there (28.10.). A satellite with only `main` still finds it.
+MAIN_BRANCHES = ("master", "main")
 PLACEHOLDERS = ("{root}", "{pipeline}", "{python}", "{workers}", "{slots}")
 _CLASS = re.compile(r"^[a-z_]+:")
 _PLACEHOLDER = re.compile(r"\{[a-z_]+\}")

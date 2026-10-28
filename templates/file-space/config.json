@@ -348,6 +348,16 @@
           "condition": "has(hop.route) && hop.route == 'embedded'"
         },
         {
+          "from": "./embed",
+          "to": "./derive",
+          "condition": "!has(hop.route) && has(hop.error_code) && hop.error_code == 'credential_pending'",
+          "modifier": {
+            "set_hop": {
+              "route": "'embedded'"
+            }
+          }
+        },
+        {
           "from": "./derive",
           "to": "./summarizer",
           "condition": "has(hop.route) && hop.route == 'summarize'",

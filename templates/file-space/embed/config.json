@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "code",
-    "message_timeout": 139000
+    "message_timeout": 205000
   },
   "params": {
     "runner": "python3",
@@ -17,6 +17,7 @@
     "max_concurrency": 2,
     "credential_grant_id": "",
     "credential_wait_max": 2,
+    "credential_wait_ms": 60000,
     "sandbox": {
       "trust": "restricted",
       "network": "allow",
@@ -69,7 +70,13 @@
         "type": "number",
         "secret": false,
         "default": 2,
-        "description": "GH #1061: how many calls park while the sealed credential is in flight -- and, once it is open, how many calls besides the 2 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((2 + 1) / 2) = 2 runs of external_timeout_ms (42 s, a run holds its ticket for all its attempts) and then runs its own, 2 x 42 + 42 = 126 s <= message_timeout 139 s. The default 16 would be 9 x 42 + 42 = 420 s, and calls that would only have waited die with message_timeout under sustained load. Raise it only together with message_timeout."
+        "description": "GH #1061: how many calls park while the sealed credential is in flight -- and, once it is open, how many calls besides the 2 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((2 + 1) / 2) = 2 runs of external_timeout_ms (42 s, a run holds its ticket for all its attempts) and then runs its own, 2 x 42 + 42 = 126 s, after a credential round of up to `credential_wait_ms` (60 s): 186 s <= message_timeout 205 s. The default 16 would be 9 x 42 + 42 = 420 s, and calls that would only have waited die with message_timeout under sustained load. Raise it only together with message_timeout."
+      },
+      "credential_wait_ms": {
+        "type": "number",
+        "secret": false,
+        "default": 60000,
+        "description": "GH #1338: how long one sealed credential round may take before every parked call gets its `credential_pending` receipt, which `./derive` takes on `embedded` as a failed request. The substrate default is 10 s; measured in a lab colony under load, the round took 11 s and the call was lost. A call waits for its credential INSIDE `handle()`, so `cell.message_timeout` covers it: 60 + 2 x 42 + 42 = 186 s, plus the margin of the timeout chain (docs/cell-types.md): 205 s."
       }
     },
     "multi_send_capable": true,

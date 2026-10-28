@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "memory-hive@3.19.3"
+    "template": "memory-hive@3.19.4"
   },
   "override_params": {
     "close-glue": {

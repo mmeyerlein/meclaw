@@ -1405,6 +1405,19 @@ class LiftedBans(Fixture):
         self.assertRegex(self.lifted_line(lines), r"^PRE lifted-bans \d+s GREEN$")
         self.assertIsNone(self.lifted_problem())
 
+    def test_a_tree_with_master_and_an_unrelated_main_grades_against_master(self):
+        # 28.10.: an export left a local `main` (the public tree, its own
+        # history) beside `master` in the core tree; `main` first found no
+        # merge base and refused every strand of the wave. `master` wins when
+        # both exist, as in `turnaround.DEFAULT_BRANCHES` and `locks`.
+        empty = git(self.root, "hash-object", "-w", "-t", "tree", "/dev/null")
+        orphan = git(self.root, "commit-tree", empty, "-m", "export")
+        git(self.root, "branch", "main", orphan)
+        self.strand_file({})
+        _doc, lines = self.run_pre(strand="S1")
+        self.assertRegex(self.lifted_line(lines), r"^PRE lifted-bans \d+s GREEN$")
+        self.assertIsNone(self.lifted_problem())
+
     def test_a_tree_without_main_or_master_is_refused_with_the_reason(self):
         # fail-closed as before: no main branch, no merge base, no pass
         self.rename_master("trunk")

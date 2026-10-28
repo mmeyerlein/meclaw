@@ -18,6 +18,7 @@ pub mod gh1260_a_required_scope_asks_for_the_call;
 pub mod gh1260_the_weather_tool_answers_from_its_endpoints;
 pub mod gh1266_the_night_keeps_its_contract_and_its_moment;
 pub mod gh1305_conversation_events_and_inner_turns_at_the_rims;
+pub mod gh1338_a_credential_pending_receipt_reaches_its_caller;
 pub mod gh135_happened_at_over_ubf;
 pub mod gh138_affinity_firewall_params;
 pub mod gh138_keeper_summarizer_dispatcher_params;
@@ -60,7 +61,6 @@ pub mod gh281_facts_and_utterances_are_two_sections;
 pub mod gh282_only_what_somebody_said_is_drained;
 pub mod gh291_the_shipped_memory_hive_instantiates;
 pub mod gh292_every_ctx_key_is_declared;
-pub mod gh296_the_bundle_is_payload_not_plumbing;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

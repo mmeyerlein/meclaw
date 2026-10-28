@@ -145,8 +145,8 @@ fn a_name_behind_a_salutation_beats_its_form() {
         &mut h,
         "s1",
         "t1",
-        "Gestern war ich mit Herrn Hartung beim Arzt.",
-        "Und gestern kam Frau Bader vorbei?",
+        "Gestern war ich mit Herrn Hartung beim Arzt, und dann kam Frau Bader vorbei.",
+        "Wie schön.",
     );
     let got = mentioned(&mut h, "t2");
     assert_names(&got, &["Hartung", "Bader"], &["Herrn", "Frau", "Arzt"]);
@@ -165,8 +165,8 @@ fn a_name_behind_an_article_is_kept() {
         &mut h,
         "s1",
         "t1",
-        "Mit der Irmgard geh ich nicht mehr ins Rosengarten.",
-        "Hat die Lotte schon angerufen?",
+        "Mit der Irmgard geh ich nicht mehr ins Rosengarten, und hat die Lotte schon angerufen?",
+        "Das tut mir leid.",
     );
     let got = mentioned(&mut h, "t2");
     assert_names(&got, &["Irmgard", "Rosengarten", "Lotte"], &["der", "die"]);
@@ -184,8 +184,8 @@ fn a_weekday_or_a_month_is_a_date_behind_an_article() {
         &mut h,
         "s1",
         "t1",
-        "Wir haben im Mai geheiratet.",
-        "Und jeden Sonntag gehst du zum Friedhof?",
+        "Wir haben im Mai geheiratet, und jeden Sonntag geh ich zum Friedhof.",
+        "Das ist schön.",
     );
     let got = mentioned(&mut h, "t2");
     assert_names(&got, &["Mai", "Sonntag"], &[]);

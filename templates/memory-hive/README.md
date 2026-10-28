@@ -1,4 +1,4 @@
-# `memory-hive@3.19.3`
+# `memory-hive@3.19.4`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -332,6 +332,8 @@ What it delivers today (packages P2–P5 = spec phases 1–4, plus P15 = tempora
   to `./writer`, which sends the item once more (`embed_again`, the item rides in
   `context.embed_item`). The second call opens a new round and runs as soon as the box arrives. A
   second receipt is not answered: the row stays `queued` for the night's backfill (GH #1292).
+  The receipt of a query call goes to `./recall` as its query vector, empty, so recall fuses the
+  other legs instead of waiting for one that never comes (GH #1338).
 
 The store query layer (P3) and the graph/vector legs (P4) carry the reads: predicates,
 `order_by`/`limit`, BM25 `search`, `traverse` and `similar` all run IN the store, so the code
@@ -1397,7 +1399,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.19.3` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.19.4` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1803,7 +1805,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.7.6",
+{"add_nodes": [{"name": "alex", "template": "member@2.7.7",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

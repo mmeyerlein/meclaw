@@ -119,8 +119,8 @@ fn a_noun_by_its_form_is_no_name() {
         &mut h,
         "s1",
         "t1",
-        "Ich brauche Entlastung, und gestern hat Dennis mir Gesellschaft geleistet.",
-        "Wie schön. Haben Tanten auch Zeit?",
+        "Ich brauche Entlastung, und gestern hat Dennis mir Gesellschaft geleistet. Haben Tanten auch Zeit?",
+        "Wie schön.",
     );
     let q = query(&mut h, "t2", "Was meinst du dazu?");
     let got = mentioned(&q);

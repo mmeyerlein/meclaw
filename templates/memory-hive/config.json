@@ -643,6 +643,16 @@
           }
         },
         {
+          "from": "./embed",
+          "to": "./recall",
+          "condition": "has(hop.error_code) && hop.error_code == 'credential_pending' && !has(hop.route) && context.mem_phase == 'embed-query'",
+          "modifier": {
+            "set_context": {
+              "mem_phase": "'t1-qvec'"
+            }
+          }
+        },
+        {
           "from": "./writer",
           "to": "./embed",
           "condition": "has(hop.route) && hop.route == 'embed_again'",

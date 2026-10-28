@@ -422,7 +422,10 @@ fn an_embedder_bounds_its_own_worst_case() {
             .unwrap_or(default_wait_max);
         // GH #1061: a run ahead holds its ticket for its whole operation (every
         // attempt), so the ticket wait counts in operation timeouts, not attempts.
-        let longest = (w + 1).div_ceil(mc) * ext + ext;
+        // GH #1338: a cell that ships its own credential round waits for it inside
+        // `handle()` before the ticket, so the round is part of the chain.
+        let round = p["credential_wait_ms"].as_u64().unwrap_or(0);
+        let longest = round + (w + 1).div_ceil(mc) * ext + ext;
         let msg = c["cell"]["message_timeout"].as_u64().unwrap_or(0);
         assert_eq!(
             msg,

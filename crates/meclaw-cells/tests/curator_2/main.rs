@@ -3,7 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
 pub mod gh1225_kr_seq_never_falls_below_the_ledger;
 pub mod gh1225_kr_the_set_sent_last_stands;
 pub mod gh1225_kr_two_turns_and_a_restart_never_share_an_episode_id;
@@ -31,6 +30,8 @@ pub mod gh1304_the_curator_hands_the_persons_last_turns;
 pub mod gh1305_conversation_events_and_inner_turns_in_the_curator;
 pub mod gh1306_answer_check_carries_its_sources;
 pub mod gh1333_the_curator_frames_the_past_as_past;
+pub mod gh1337_the_persons_words_get_a_frame_of_their_own;
+pub mod gh1342_the_ambient_question_asks_with_the_persons_words;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;
