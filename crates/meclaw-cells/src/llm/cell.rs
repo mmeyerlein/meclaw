@@ -2971,17 +2971,33 @@ impl LlmCell {
             // attribution params become HTTP request headers (body-params stay
             // in `request_json`).
             let attribution_headers = translate::build_attribution_headers(&self.params);
-            let (wire_result, wire_timings) = wire::call_openai_timed(
-                &self.http,
-                &url,
-                // Precedence and the empty-is-absent rule both live in
-                // `bearer()` (GH #271, GH #421).
-                self.bearer(),
-                &attribution_headers,
-                &request_json,
-                timeout,
-            )
-            .await;
+            // GH #1350: with a call budget the answer is streamed and the
+            // read stops at the first call over it (measured: 686 calls in
+            // 129 s, cut by the dispatcher only after the whole answer).
+            let (wire_result, wire_timings) = if self.params.tool_call_limit > 0 {
+                wire::call_openai_streamed_timed(
+                    &self.http,
+                    &url,
+                    self.bearer(),
+                    &attribution_headers,
+                    &request_json,
+                    timeout,
+                    self.params.tool_call_limit,
+                )
+                .await
+            } else {
+                wire::call_openai_timed(
+                    &self.http,
+                    &url,
+                    // Precedence and the empty-is-absent rule both live in
+                    // `bearer()` (GH #271, GH #421).
+                    self.bearer(),
+                    &attribution_headers,
+                    &request_json,
+                    timeout,
+                )
+                .await
+            };
             clock.wired(wire_timings);
             let response_json = match wire_result {
                 Ok(json) => json,

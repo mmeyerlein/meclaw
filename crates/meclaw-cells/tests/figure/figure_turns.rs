@@ -560,22 +560,31 @@ fn route_of(m: &Message) -> String {
         .to_string()
 }
 
-/// The next rim message on `route`; others on the way are kept. A run that
-/// never brings it fails at the hang mark with the road the messages took.
+/// Whether `m` LEAVES the figure on `route` (`figure_rim` out): the sink also
+/// sees the messages the test sends into it, on the same lane names.
+fn leaves_on(m: &Message, route: &str) -> bool {
+    route_of(m) == route && m.headers.hop.get("figure_rim").and_then(|v| v.as_str()) == Some("out")
+}
+
+/// The next rim message on `route`; others on the way are kept in `seen` and
+/// handed out first by a later call. Two rim messages of one turn are not
+/// ordered: a phone message leaves through the phone adapter (a code cell, a
+/// child process) while the round goes on, so the turn's `intent` may reach
+/// the sink before that `turn` (GH #1349). A run that never brings it fails at
+/// the hang mark with the road the messages took.
 async fn next_on(
     h: &ColonyHandle,
     ports: &mut Ports,
     route: &str,
     seen: &mut Vec<Message>,
 ) -> Message {
+    if let Some(i) = seen.iter().position(|m| leaves_on(m, route)) {
+        return seen.remove(i);
+    }
     let wait = async {
         loop {
             let m = ports.sink.recv().await.expect("the sink is open");
-            // Only what LEAVES the figure (`figure_rim` out): the sink also sees
-            // the messages the test sends into it, on the same lane names.
-            if route_of(&m) == route
-                && m.headers.hop.get("figure_rim").and_then(|v| v.as_str()) == Some("out")
-            {
+            if leaves_on(&m, route) {
                 return m;
             }
             seen.push(m);

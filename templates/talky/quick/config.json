@@ -21,6 +21,7 @@
       "enabled": false
     },
     "external_timeout_ms": 1241000,
+    "tool_call_limit": 16,
     "system_order": [
       "identity",
       "memory",
@@ -63,6 +64,12 @@
         "secret": false,
         "default": "medium",
         "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it. This cell additionally ships `reasoning: {\"enabled\": false}` (T4-09, R-EF-2): the quick answer starts without hidden deliberation, and that object outranks the shorthand."
+      },
+      "tool_call_limit": {
+        "type": "number",
+        "secret": false,
+        "default": 16,
+        "description": "GH #1350: the most tool calls one answer may carry -- the budget of `./dispatcher` (`max_calls`), held equal by a lock. Set, the cell streams the answer and stops at the first call over it with `provider_error` / `tool_call_limit`, so a runaway round ends there instead of after its whole answer, and the next turn does not wait behind it in this serial cell. 0 = no limit."
       },
       "external_timeout_ms_row": {
         "type": "string",

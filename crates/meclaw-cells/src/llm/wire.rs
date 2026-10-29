@@ -140,6 +140,16 @@ pub enum WireError {
     /// text/event-stream`. The chat wire parses ONE JSON body; before, a
     /// streamed answer surfaced as a `BodyParse` complaint without a kind.
     UnexpectedStream,
+    /// GH #1350: the answer opened more tool calls than `tool_call_limit`
+    /// allows. On a streamed answer the cell stopped reading at the first
+    /// call over the limit (`calls` = limit + 1); on a one-body answer
+    /// `calls` is the count the body carried.
+    ToolCallLimit {
+        /// The cell's `tool_call_limit`.
+        limit: u32,
+        /// The calls seen when the cell stopped.
+        calls: u32,
+    },
 }
 
 /// Map `WireError` to the UBF `error_code`-Enum value (cell-types Z.112).
@@ -160,6 +170,7 @@ pub(crate) fn wire_error_to_code(err: &WireError) -> &'static str {
         | WireError::Network(_)
         | WireError::BodyParse(_)
         | WireError::UnexpectedStream
+        | WireError::ToolCallLimit { .. }
         | WireError::Transient(_) => "provider_error",
         // GH #75: an error inside a 200 body is the error it says it is. The
         // lane is decided by the wrapped classification, so an in-body 429 and
@@ -409,6 +420,12 @@ pub(crate) fn wire_error_meta(err: &WireError) -> Option<serde_json::Map<String,
         WireError::UnexpectedStream => {
             m.insert("kind".into(), Value::String("unexpected_stream".into()));
         }
+        // GH #1350: the call budget, and how far the answer got.
+        WireError::ToolCallLimit { limit, calls } => {
+            m.insert("kind".into(), Value::String("tool_call_limit".into()));
+            m.insert("limit".into(), Value::from(*limit));
+            m.insert("calls".into(), Value::from(*calls));
+        }
         // GH #75: the wrapped classification decides the kind (so an in-body
         // 429 says `rate_limited` and an in-body quota signal keeps its P10
         // kind), and the provenance says the error came in a 200 body plus what
@@ -634,23 +651,318 @@ pub async fn call_openai_timed(
                     Err(e) => Err(WireError::BodyParse(e.to_string())),
                 }
             }
-            401 => Err(WireError::Unauthorized),
-            // GH #999 (F5): the body of a 400/404/422 is read now (it used to
-            // be dropped unread), because the provider's sentence is the only
-            // place that tells a refused PARAM from a missing model or a bad
-            // request. Without a needle the variant is the one of before.
-            404 | 400 | 422 => {
-                // The read runs inside `request_fut`, i.e. under the A-timeout
-                // below: a 404 whose body hangs is a `timeout` now, no longer
-                // an instant `model_not_found` -- an accepted edge, the size is
-                // as unbounded as `resp.json()` on the 2xx path.
-                let text = resp.text().await.unwrap_or_default();
-                Err(classify_rejection(status, &text))
-            }
-            429 => Err(WireError::RateLimited),
-            _ => Err(WireError::HttpStatus(status)),
+            _ => Err(chat_status_error(status, resp).await),
         };
         (outcome, ttfb)
+    };
+    let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
+        Ok(pair) => pair,
+        Err(_) => (Err(WireError::Timeout), None),
+    };
+    let timings = WireTimings {
+        ttfb_ms,
+        total_ms: ms_since(started),
+        attempts: 1,
+    };
+    (result, timings)
+}
+
+/// The classification of a non-2xx chat-completions reply, shared by the
+/// one-body and the streamed call (GH #1350).
+async fn chat_status_error(status: u16, resp: reqwest::Response) -> WireError {
+    match status {
+        401 => WireError::Unauthorized,
+        // GH #999 (F5): the body of a 400/404/422 is read now (it used to
+        // be dropped unread), because the provider's sentence is the only
+        // place that tells a refused PARAM from a missing model or a bad
+        // request. Without a needle the variant is the one of before.
+        404 | 400 | 422 => {
+            // The read runs inside the caller's A-timeout: a 404 whose body
+            // hangs is a `timeout`, no longer an instant `model_not_found` --
+            // an accepted edge, the size is as unbounded as `resp.json()` on
+            // the 2xx path.
+            let text = resp.text().await.unwrap_or_default();
+            classify_rejection(status, &text)
+        }
+        429 => WireError::RateLimited,
+        _ => WireError::HttpStatus(status),
+    }
+}
+
+/// GH #1350: the tool calls a one-body chat answer carries.
+fn tool_calls_in(json: &Value) -> usize {
+    json.pointer("/choices/0/message/tool_calls")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
+}
+
+/// GH #1350: a chat-completions answer read as a stream, put back together
+/// into the one body the parser reads (`choices[0].message` with `content`,
+/// `tool_calls`, the thinking trace keys, `finish_reason`, `usage`).
+#[derive(Default)]
+struct ChatStream {
+    id: Option<String>,
+    model: Option<String>,
+    content: Option<String>,
+    reasoning: Option<String>,
+    reasoning_content: Option<String>,
+    reasoning_details: Vec<Value>,
+    tool_calls: Vec<Value>,
+    finish_reason: Option<Value>,
+    usage: Option<Value>,
+    done: bool,
+}
+
+impl ChatStream {
+    /// Feed one `data:` payload. `Err` ends the read: an error the stream
+    /// carried, or the first tool call over `limit`.
+    fn feed(&mut self, data: &str, limit: u32) -> Result<(), WireError> {
+        if data == "[DONE]" {
+            self.done = true;
+            return Ok(());
+        }
+        let chunk: Value =
+            serde_json::from_str(data).map_err(|e| WireError::BodyParse(e.to_string()))?;
+        // A gateway reports a failure in mid-stream as a chunk with a top
+        // level `error`, the same shape as the in-body error (GH #75).
+        if let Some(e) = classify_in_body_error(&chunk) {
+            return Err(e);
+        }
+        if self.id.is_none() {
+            self.id = chunk.get("id").and_then(Value::as_str).map(str::to_string);
+        }
+        if self.model.is_none() {
+            self.model = chunk
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
+            self.usage = Some(u.clone());
+        }
+        let Some(choice) = chunk.pointer("/choices/0") else {
+            return Ok(());
+        };
+        if let Some(r) = choice.get("finish_reason").filter(|r| !r.is_null()) {
+            self.finish_reason = Some(r.clone());
+        }
+        let Some(delta) = choice.get("delta") else {
+            return Ok(());
+        };
+        let append = |slot: &mut Option<String>, key: &str| {
+            if let Some(t) = delta.get(key).and_then(Value::as_str) {
+                slot.get_or_insert_with(String::new).push_str(t);
+            }
+        };
+        append(&mut self.content, "content");
+        append(&mut self.reasoning, "reasoning");
+        append(&mut self.reasoning_content, "reasoning_content");
+        if let Some(d) = delta.get("reasoning_details").and_then(Value::as_array) {
+            self.reasoning_details.extend(d.iter().cloned());
+        }
+        for tc in delta
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            // A delta names its call by `index`; one without opens a new call
+            // when it carries an `id`, else it continues the last one.
+            let index = match tc.get("index").and_then(Value::as_u64) {
+                Some(i) => i as usize,
+                None if tc.get("id").is_some() || self.tool_calls.is_empty() => {
+                    self.tool_calls.len()
+                }
+                None => self.tool_calls.len() - 1,
+            };
+            if index >= limit as usize {
+                // The first call over the budget: stop here, the rest of the
+                // answer is never read (dropping the response closes it).
+                return Err(WireError::ToolCallLimit {
+                    limit,
+                    calls: (index + 1) as u32,
+                });
+            }
+            while self.tool_calls.len() <= index {
+                self.tool_calls.push(serde_json::json!({
+                    "id": "", "type": "function",
+                    "function": {"name": "", "arguments": ""}
+                }));
+            }
+            let call = &mut self.tool_calls[index];
+            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                call["id"] = Value::String(id.to_string());
+            }
+            if let Some(t) = tc.get("type").and_then(Value::as_str) {
+                call["type"] = Value::String(t.to_string());
+            }
+            for key in ["name", "arguments"] {
+                if let Some(part) = tc
+                    .pointer(&format!("/function/{key}"))
+                    .and_then(Value::as_str)
+                {
+                    let mut joined = call["function"][key].as_str().unwrap_or("").to_string();
+                    joined.push_str(part);
+                    call["function"][key] = Value::String(joined);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The one body of the answer.
+    fn into_body(self) -> Value {
+        let mut message = serde_json::Map::new();
+        message.insert("role".into(), Value::String("assistant".into()));
+        message.insert(
+            "content".into(),
+            self.content.map_or(Value::Null, Value::String),
+        );
+        if !self.tool_calls.is_empty() {
+            message.insert("tool_calls".into(), Value::Array(self.tool_calls));
+        }
+        if let Some(r) = self.reasoning {
+            message.insert("reasoning".into(), Value::String(r));
+        }
+        if let Some(r) = self.reasoning_content {
+            message.insert("reasoning_content".into(), Value::String(r));
+        }
+        if !self.reasoning_details.is_empty() {
+            message.insert(
+                "reasoning_details".into(),
+                Value::Array(self.reasoning_details),
+            );
+        }
+        let mut body = serde_json::json!({
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": Value::Object(message),
+                "finish_reason": self.finish_reason.unwrap_or(Value::Null),
+            }],
+        });
+        if let Some(id) = self.id {
+            body["id"] = Value::String(id);
+        }
+        if let Some(m) = self.model {
+            body["model"] = Value::String(m);
+        }
+        if let Some(u) = self.usage {
+            body["usage"] = u;
+        }
+        body
+    }
+}
+
+/// GH #1350: [`call_openai_timed`] for a cell with a `tool_call_limit`.
+///
+/// The request asks for a stream (`stream: true`, with the usage in the last
+/// chunk), and the answer is read chunk by chunk: the first tool call over
+/// `limit` ends the read with [`WireError::ToolCallLimit`], so a runaway
+/// round costs the time to its 17th call, not to its last token. A complete
+/// stream is put back together into the one body [`call_openai_timed`]
+/// returns, so the parser and everything after it see the answer of before.
+/// A server that ignores `stream` and answers one JSON body is read as one
+/// and its calls are counted against the same limit. Same headers, same
+/// classification, same A-timeout around the whole read.
+pub async fn call_openai_streamed_timed(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: Option<&str>,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+    limit: u32,
+) -> (Result<Value, WireError>, WireTimings) {
+    let started = tokio::time::Instant::now();
+    let mut body = body.clone();
+    if let Some(m) = body.as_object_mut() {
+        m.insert("stream".into(), Value::Bool(true));
+        m.insert(
+            "stream_options".into(),
+            serde_json::json!({"include_usage": true}),
+        );
+    }
+    let request_fut = async {
+        let mut req = client.post(url);
+        for (name, value) in extra_headers {
+            if name.eq_ignore_ascii_case("authorization") {
+                tracing::warn!("ignoring attempt to set Authorization via attribution header");
+                continue;
+            }
+            req = req.header(name.as_str(), value.as_str());
+        }
+        let mut resp = match apply_bearer(req, bearer).json(&body).send().await {
+            Ok(r) => r,
+            Err(e) => return (Err(WireError::Network(e.to_string())), None),
+        };
+        let ttfb = Some(ms_since(started));
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return (Err(chat_status_error(status, resp).await), ttfb);
+        }
+        let streamed = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| {
+                ct.trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("text/event-stream")
+            });
+        if !streamed {
+            let outcome = match resp.json::<Value>().await {
+                Ok(json) => match classify_in_body_error(&json) {
+                    Some(e) => Err(e),
+                    None => {
+                        let calls = tool_calls_in(&json);
+                        if calls > limit as usize {
+                            Err(WireError::ToolCallLimit {
+                                limit,
+                                calls: calls as u32,
+                            })
+                        } else {
+                            Ok(json)
+                        }
+                    }
+                },
+                Err(e) => Err(WireError::BodyParse(e.to_string())),
+            };
+            return (outcome, ttfb);
+        }
+        let mut stream = ChatStream::default();
+        let mut pending: Vec<u8> = Vec::new();
+        let mut seen_data = false;
+        loop {
+            let bytes = match resp.chunk().await {
+                Ok(Some(b)) => b,
+                Ok(None) => break,
+                Err(e) => return (Err(WireError::Network(e.to_string())), ttfb),
+            };
+            pending.extend_from_slice(&bytes);
+            // One SSE line at a time; a chat chunk is one `data:` line.
+            while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                let Some(data) = line.trim_end().strip_prefix("data:") else {
+                    continue;
+                };
+                seen_data = true;
+                if let Err(e) = stream.feed(data.trim(), limit) {
+                    return (Err(e), ttfb);
+                }
+            }
+            if stream.done {
+                break;
+            }
+        }
+        if !seen_data {
+            return (
+                Err(WireError::BodyParse("the stream carried no data".into())),
+                ttfb,
+            );
+        }
+        (Ok(stream.into_body()), ttfb)
     };
     let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
         Ok(pair) => pair,

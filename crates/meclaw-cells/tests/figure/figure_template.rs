@@ -204,7 +204,7 @@ fn figure_is_three_children_and_refs_simple_agent() {
     let agent = figure("simple-agent/config.json");
     assert_eq!(agent["cell"]["type"], "ref", "the agent is referenced");
     assert_eq!(
-        agent["cell"]["template"], "simple-agent@2.2.5",
+        agent["cell"]["template"], "simple-agent@2.2.6",
         "the agent is the colony's simple-agent@2, never a copy and never the frozen v1"
     );
     // GH #1276: `world` caches its queue, open turn and call book

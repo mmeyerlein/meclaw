@@ -464,6 +464,19 @@ pub struct LlmParams {
     /// [`LENGTH_CONTINUATIONS_MAX`]. Chat-completions wire only (OR-HK.KF1.2).
     #[serde(default)]
     pub length_continuations: u32,
+    /// GH #1350: the most tool calls one answer may carry, the budget of the
+    /// dispatcher that runs them; 0 (the default) = no limit and the request
+    /// of before, byte for byte. Set, the chat-completions wire streams the
+    /// answer and stops reading at the first call over the limit, so a
+    /// runaway round ends there instead of after its whole answer (measured:
+    /// 686 calls and 32768 output tokens over 129 s, while the dispatcher's
+    /// budget of 16 applied only once all of it had arrived). An answer read
+    /// as one JSON body (a server that ignores `stream`) is counted after it
+    /// arrived. Either way the turn is answered with `provider_error`,
+    /// `meta.error.kind` `tool_call_limit`. No effect on the Responses and
+    /// the Messages wire, where the dispatcher's budget stays the bound.
+    #[serde(default)]
+    pub tool_call_limit: u32,
     /// R-HK-15/16: the prompt size, in tokens, from which a rebuild of the
     /// window pays for this model -- the curator's soft bound. The cell does
     /// nothing with it but stamp it (`hop.input_soft`, only above 0). 0 (the
@@ -1410,6 +1423,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     // continuation budget after a `length` finish.
     "max_output",
     "length_continuations",
+    // GH #1350: the call budget the chat wire stops a streamed answer at.
+    "tool_call_limit",
     // R-HK-15/16: the input bounds and prompt prices of the model, package
     // keys (stamped; `input_hard` also refuses).
     "input_soft",

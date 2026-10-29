@@ -12,6 +12,16 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.76.5] — 2026-10-29
+
+A runaway tool round stops at the first call over the dispatcher's budget, so one fast answer can no longer hold the next turn behind it; and the figure's turn tests no longer hang on a loaded runner.
+
+### Fixed
+
+- A runaway tool round stops at the first call over the dispatcher's budget ([#1350](https://github.com/mmeyerlein/meclaw/issues/1350)). A fast model answered one turn with 686 tool calls and 32768 output tokens over 129 s; the dispatcher's limit of 16 applied only once the whole answer had arrived, and the next turn waited behind it in the serial cell. The `llm` cell takes a new param `tool_call_limit` (0 = off, the request of before): set, the chat-completions wire streams the answer and the cell stops reading at the first call over the limit with `provider_error`, `meta.error.kind` `tool_call_limit`; a one-body answer is counted against the same limit. `talky/quick` sets it to its dispatcher's budget.
+- Tests: the figure's turn tests hand out a rim message that arrived while they waited for another one ([#1349](https://github.com/mmeyerlein/meclaw/issues/1349)). Two rim messages of one turn are not ordered: a phone message leaves through the phone adapter, a child process, while the round goes on, so the turn's `intent` can reach the sink before the phone `turn`. The wait for `turn` set the early `intent` aside and the wait for `intent` never looked there, so `figure2_phone_is_still_a_human_channel` hung on a loaded runner. A wait now takes a matching message it set aside before it reads the sink again.
+- **Template versions (#1350):** second digit, `talky@6.12.0`; third digit, `builder-librarian@2.2.96`; third digit for the pins that follow, `assistant@3.10.7`, `builder@1.30.9`, `figure@2.0.8`, `meclaw-os@2.3.10`, `member@2.7.9`, `memory-hive@3.19.6`, `org@2.2.9`, `simple-agent@2.2.6`.
+
 ## [0.76.4] — 2026-10-29
 
 A short block id a model quotes as a footnote mark no longer reaches the person; every tool the quick scope allows stands on the menu the model gets; the quick window keeps the running round whole, so a tool call is never cut from its result; a chat connector's credential receipt is kept off the turn by its edge's condition, and the timeout chain counts every granted cell's credential round; and a strand of the development kit keeps its gate receipt over a commit of its report alone.
