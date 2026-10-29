@@ -21,6 +21,7 @@
       "enabled": false
     },
     "external_timeout_ms": 1241000,
+    "external_timeout_from_chain": true,
     "tool_call_limit": 16,
     "system_order": [
       "identity",
@@ -75,7 +76,7 @@
         "type": "string",
         "secret": false,
         "default": "openai/gpt-6-luna",
-        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from: the row it is born on, the start value of `./brain`, until the registry moves it to the row of the tier `quick`."
+        "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from: the row it is born on, the start value of `./brain`. After a registry push the cell derives `external_timeout_ms` from the pushed row (its `output_tps`, GH #1350) because it carries `external_timeout_from_chain`, held under this backstop, which keeps the value of the born row. An instance that names its own `external_timeout_ms` in `override_params` sets `external_timeout_from_chain: false` beside it, or the next push derives over it."
       }
     },
     "emits": {

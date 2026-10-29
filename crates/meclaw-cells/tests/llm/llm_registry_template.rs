@@ -878,6 +878,8 @@ const PACKAGE_KEYS: &[&str] = &[
     // GH #1273: the provider and the credential name travel with the model.
     "provider",
     "credential_ref",
+    // GH #1350 (I1): the row's output rate, the cell derives its timeout from.
+    "output_tps",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins

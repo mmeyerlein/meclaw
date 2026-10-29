@@ -637,7 +637,7 @@
         {
           "from": "./quick",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge'))"
         },
         {
           "from": "./brain",

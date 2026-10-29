@@ -149,7 +149,23 @@ pub enum WireError {
         limit: u32,
         /// The calls seen when the cell stopped.
         calls: u32,
+        /// What had arrived when the cell stopped (review M3).
+        received: Box<CutReceipt>,
     },
+}
+
+/// GH #1350 (review M3): what a cut answer had delivered when the cell
+/// stopped reading -- the input to its cost. A stream cut before its end has
+/// no usage chunk (it comes last), so the chunks and characters received
+/// are its only measure.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CutReceipt {
+    /// A usage block, when one arrived (a one-body answer always has it).
+    pub usage: Option<Value>,
+    /// `data:` chunks received.
+    pub chunks: u32,
+    /// Characters of text, thinking and call arguments received.
+    pub chars: u64,
 }
 
 /// Map `WireError` to the UBF `error_code`-Enum value (cell-types Z.112).
@@ -421,7 +437,7 @@ pub(crate) fn wire_error_meta(err: &WireError) -> Option<serde_json::Map<String,
             m.insert("kind".into(), Value::String("unexpected_stream".into()));
         }
         // GH #1350: the call budget, and how far the answer got.
-        WireError::ToolCallLimit { limit, calls } => {
+        WireError::ToolCallLimit { limit, calls, .. } => {
             m.insert("kind".into(), Value::String("tool_call_limit".into()));
             m.insert("limit".into(), Value::from(*limit));
             m.insert("calls".into(), Value::from(*calls));
@@ -711,6 +727,15 @@ struct ChatStream {
     finish_reason: Option<Value>,
     usage: Option<Value>,
     done: bool,
+    /// GH #1350 (review M1): the slot the last call opened at a provider
+    /// `index`. A server that streams every call at `index` 0 tells them
+    /// apart only by a new `id`.
+    by_index: std::collections::HashMap<u64, usize>,
+    /// GH #1350 (review M3): what arrived before a cut -- the `data:` chunks
+    /// and the characters of text, thinking and call arguments. The measure
+    /// of a cut answer when the provider names no cost of its own.
+    chunks: u32,
+    chars: u64,
 }
 
 impl ChatStream {
@@ -723,6 +748,7 @@ impl ChatStream {
         }
         let chunk: Value =
             serde_json::from_str(data).map_err(|e| WireError::BodyParse(e.to_string()))?;
+        self.chunks = self.chunks.saturating_add(1);
         // A gateway reports a failure in mid-stream as a chunk with a top
         // level `error`, the same shape as the in-body error (GH #75).
         if let Some(e) = classify_in_body_error(&chunk) {
@@ -749,14 +775,17 @@ impl ChatStream {
         let Some(delta) = choice.get("delta") else {
             return Ok(());
         };
-        let append = |slot: &mut Option<String>, key: &str| {
+        let mut chars = 0u64;
+        let mut append = |slot: &mut Option<String>, key: &str| {
             if let Some(t) = delta.get(key).and_then(Value::as_str) {
+                chars += t.chars().count() as u64;
                 slot.get_or_insert_with(String::new).push_str(t);
             }
         };
         append(&mut self.content, "content");
         append(&mut self.reasoning, "reasoning");
         append(&mut self.reasoning_content, "reasoning_content");
+        self.chars = self.chars.saturating_add(chars);
         if let Some(d) = delta.get("reasoning_details").and_then(Value::as_array) {
             self.reasoning_details.extend(d.iter().cloned());
         }
@@ -766,30 +795,52 @@ impl ChatStream {
             .into_iter()
             .flatten()
         {
-            // A delta names its call by `index`; one without opens a new call
-            // when it carries an `id`, else it continues the last one.
-            let index = match tc.get("index").and_then(Value::as_u64) {
-                Some(i) => i as usize,
-                None if tc.get("id").is_some() || self.tool_calls.is_empty() => {
-                    self.tool_calls.len()
-                }
-                None => self.tool_calls.len() - 1,
+            // A delta names its call by `index`. A new, non-empty `id` at an
+            // index whose call already has another id is a NEW call (review
+            // M1: a server that streams every call at index 0 would otherwise
+            // merge them into one malformed call and the limit would count
+            // one). A delta without `index` opens a new call when it carries
+            // an `id`, else it continues the last one.
+            let id = tc
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|i| !i.is_empty());
+            let slot = match tc.get("index").and_then(Value::as_u64) {
+                Some(i) => match self.by_index.get(&i) {
+                    Some(&s)
+                        if id.is_some_and(|id| {
+                            let have = self.tool_calls[s]["id"].as_str().unwrap_or("");
+                            !have.is_empty() && have != id
+                        }) =>
+                    {
+                        None
+                    }
+                    Some(&s) => Some(s),
+                    None => None,
+                },
+                None if id.is_some() || self.tool_calls.is_empty() => None,
+                None => Some(self.tool_calls.len() - 1),
             };
-            if index >= limit as usize {
-                // The first call over the budget: stop here, the rest of the
-                // answer is never read (dropping the response closes it).
-                return Err(WireError::ToolCallLimit {
-                    limit,
-                    calls: (index + 1) as u32,
-                });
+            let slot = match slot {
+                Some(s) => s,
+                None => {
+                    if self.tool_calls.len() >= limit as usize {
+                        // The first call over the budget: stop here, the
+                        // rest of the answer is never read (dropping the
+                        // response closes it).
+                        return Err(self.cut(limit));
+                    }
+                    self.tool_calls.push(serde_json::json!({
+                        "id": "", "type": "function",
+                        "function": {"name": "", "arguments": ""}
+                    }));
+                    self.tool_calls.len() - 1
+                }
+            };
+            if let Some(i) = tc.get("index").and_then(Value::as_u64) {
+                self.by_index.insert(i, slot);
             }
-            while self.tool_calls.len() <= index {
-                self.tool_calls.push(serde_json::json!({
-                    "id": "", "type": "function",
-                    "function": {"name": "", "arguments": ""}
-                }));
-            }
-            let call = &mut self.tool_calls[index];
+            let call = &mut self.tool_calls[slot];
             if let Some(id) = tc.get("id").and_then(Value::as_str) {
                 call["id"] = Value::String(id.to_string());
             }
@@ -801,6 +852,7 @@ impl ChatStream {
                     .pointer(&format!("/function/{key}"))
                     .and_then(Value::as_str)
                 {
+                    self.chars = self.chars.saturating_add(part.chars().count() as u64);
                     let mut joined = call["function"][key].as_str().unwrap_or("").to_string();
                     joined.push_str(part);
                     call["function"][key] = Value::String(joined);
@@ -808,6 +860,21 @@ impl ChatStream {
             }
         }
         Ok(())
+    }
+
+    /// GH #1350: the error of a cut at the first call over `limit`, with
+    /// what had arrived (review M3): a usage block if one came, and the
+    /// chunks and characters received.
+    fn cut(&self, limit: u32) -> WireError {
+        WireError::ToolCallLimit {
+            limit,
+            calls: (self.tool_calls.len() as u32).saturating_add(1),
+            received: Box::new(CutReceipt {
+                usage: self.usage.clone(),
+                chunks: self.chunks,
+                chars: self.chars,
+            }),
+        }
     }
 
     /// The one body of the answer.
@@ -920,6 +987,13 @@ pub async fn call_openai_streamed_timed(
                             Err(WireError::ToolCallLimit {
                                 limit,
                                 calls: calls as u32,
+                                // The whole body arrived: its usage is the
+                                // provider's own figure for the call.
+                                received: Box::new(CutReceipt {
+                                    usage: json.get("usage").filter(|u| !u.is_null()).cloned(),
+                                    chunks: 0,
+                                    chars: 0,
+                                }),
                             })
                         } else {
                             Ok(json)

@@ -9,7 +9,7 @@
 //!
 //! - `external_timeout_ms` = the completion budget (`max_tokens` when the cell
 //!   names one, never above the row's `max_output`; else `max_output`) over
-//!   the row's measured `output_tps`, plus [`FIRST_TOKEN_MS`], rounded up to
+//!   the row's measured `output_tps`, plus `FIRST_TOKEN_MS`, rounded up to
 //!   the second. A row without `output_tps` counts with the slowest row that
 //!   states one.
 //! - `cell.message_timeout` >= that x (1 + `length_continuations`) plus the
@@ -27,15 +27,15 @@
 
 use meclaw_cells::llm::params::{
     BACKSTOP_MARGIN_DIVISOR, BACKSTOP_MARGIN_FLOOR_MS, DEFAULT_MAX_TOKENS,
+    chain_external_timeout_ms,
 };
 use meclaw_core::serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The allowance for the first token on top of the output time: three times
-/// the measured 99th percentile of a short call (3.0 s, `openai/gpt-6-luna`,
-/// calls under 100 completion tokens), rounded up to ten seconds.
-const FIRST_TOKEN_MS: u64 = 10_000;
+// The allowance for the first token (`FIRST_TOKEN_MS`) and the operation
+// timeout link are the crate's own since GH #1350 (I1): the cell derives a
+// pushed row's timeout with the same function the templates are held to.
 
 /// Cells whose operation timeout is a DEADLINE, not an output time: an answer
 /// after it is worth nothing to the reader, so the output chain does not
@@ -136,7 +136,7 @@ fn ext_of(row: Row, floor_tps: u64, max_tokens: u64) -> u64 {
     } else {
         floor_tps
     };
-    ceil_s((budget * 1000).div_ceil(tps) + FIRST_TOKEN_MS)
+    chain_external_timeout_ms(budget, tps)
 }
 
 /// The least backstop over `longest` ms of legitimate handling, `calls` times.
@@ -269,6 +269,55 @@ fn every_shipped_llm_cell_follows_the_timeout_chain() {
     // the full tree more. A floor over the full tree is red in the export
     // tree (GH #1101).
     assert!(held >= 13, "the scan held only {held} llm cell(s)");
+}
+
+/// GH #1350 (review I1): only a cell whose timeout is an output time of this
+/// chain derives it anew from a registry push (`external_timeout_from_chain`).
+/// A deadline cell never does -- the chain would give `display/judge` up to
+/// 20 s for its 8 s verdict -- and `talky/quick`, the serial voice a model
+/// change speeds up or slows down, does.
+#[test]
+fn only_a_chain_cell_derives_its_timeout_from_a_push() {
+    let mut files = Vec::new();
+    configs(&repo("templates"), &mut files);
+    files.sort();
+    let mut opted = Vec::new();
+    let mut wrong = Vec::new();
+    for f in &files {
+        let Ok(doc) = meclaw_core::serde_json::from_str::<Value>(
+            &std::fs::read_to_string(f).unwrap_or_default(),
+        ) else {
+            continue;
+        };
+        if doc["cell"]["type"] != "llm" {
+            continue;
+        }
+        let rel = f
+            .strip_prefix(repo("templates"))
+            .unwrap_or(f)
+            .parent()
+            .unwrap_or(Path::new(""))
+            .display()
+            .to_string();
+        if doc["params"]["external_timeout_from_chain"] != Value::Bool(true) {
+            continue;
+        }
+        if DEADLINE_CELLS.contains(&rel.as_str()) {
+            wrong.push(format!(
+                "{rel}: a deadline cell derives its timeout from a push"
+            ));
+        }
+        opted.push(rel);
+    }
+    assert!(
+        wrong.is_empty(),
+        "a deadline is no output time:\n{}",
+        wrong.join("\n")
+    );
+    assert!(
+        opted.iter().any(|r| r == "talky/quick"),
+        "talky/quick derives its timeout from the served row: {opted:?}"
+    );
 }
 
 #[test]

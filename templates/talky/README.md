@@ -1,4 +1,4 @@
-# `talky@6.12.0`
+# `talky@6.12.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -74,7 +74,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.12.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.12.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -544,7 +544,7 @@ speaker after a speakable tool result, and the bridge of a `complex` or `researc
 `templates/curator/README.md` § *The curator decides the way*) -- and everything else to
 `./brain`. Its edges are the brain's, once more: `./curator -> ./quick` on `quick`
 (`restore_ttl`), `./quick -> ./splitter` on `stop`, `tool_calls` and `length`, the tap
-`./quick -> ./curator` on `in_llm`, `./quick -> ./errors` on an error and a refused push out to
+`./quick -> ./curator` on `in_llm`, `./quick -> ./errors` on an error of a call that is no curator call or is a bridge (the error of every other quick call goes to the brain with the curator's `escalate` mark, reason `no_answer`, GH #1352) and a refused push out to
 `.` as `model_refused`. A push of the model registry addressed to `.../quick` takes its own door
 (`. -> ./quick` on `in_model`); the brain's door lets it pass.
 
@@ -830,7 +830,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.12.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.12.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

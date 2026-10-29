@@ -10,6 +10,8 @@ pub mod gh1059_the_start_ask_is_the_rounds_ask;
 pub mod gh1092_a_denied_credential_round_is_answered_at_once;
 pub mod gh1252_a_foreign_box_leaves_the_round_alone;
 pub mod gh1350_a_runaway_llm_tool_round_stops_at_the_limit;
+pub mod gh1350_qt_a_cut_round_counts_its_calls_and_its_cost;
+pub mod gh1352_a_quick_round_cut_at_the_limit_still_answers;
 pub mod gh342_the_shipped_judge_tool_reaches_the_wire;
 pub mod gh372_an_async_only_round_still_answers;
 pub mod gh425_the_build_tool_closes_its_own_round;

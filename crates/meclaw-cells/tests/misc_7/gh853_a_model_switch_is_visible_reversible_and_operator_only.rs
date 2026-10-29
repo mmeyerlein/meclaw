@@ -463,6 +463,10 @@ fn the_package_keys_are_the_contract() {
             // contract change, made on purpose.
             "provider",
             "credential_ref",
+            // GH #1350 (I1): the row's output rate, the operation timeout of
+            // the served model derives from -- a contract change, made on
+            // purpose.
+            "output_tps",
         ]
     );
     // Every package key is a known, run-time-mutable param.

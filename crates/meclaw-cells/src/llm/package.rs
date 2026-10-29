@@ -158,6 +158,8 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
                 .contains_key("provider")
                 .then(|| params.provider.clone()),
             "credential_ref" => params.credential_ref.clone().filter(|r| !r.is_empty()),
+            // GH #1350 (I1): shown only when stated.
+            "output_tps" => (params.output_tps > 0).then(|| params.output_tps.to_string()),
             _ => None,
         };
         if let Some(v) = value {
@@ -208,6 +210,31 @@ pub(crate) fn cache_note(path: &str, params: &LlmParams) -> Option<String> {
                  wire carries no cache marks, only prompt_cache_key"
             )
         })
+}
+
+/// GH #1350 (review M2): the line that says `tool_call_limit` does not act
+/// on this wire. Only the chat-completions wire streams and counts; on the
+/// Messages and the Responses wire the dispatcher's budget stays the bound.
+/// Since a registry push can move a cell onto such a wire at run time, the
+/// guard would otherwise fall away in silence. A WARN, not a refusal: the
+/// model change is the operator's, and the round is still bounded downstream.
+/// Written beside the params line, on every restore and every update.
+pub(crate) fn tool_call_limit_note(path: &str, params: &LlmParams) -> Option<String> {
+    if params.tool_call_limit == 0 {
+        return None;
+    }
+    let wire = if params.is_anthropic() {
+        "messages"
+    } else if params.effective_wire_dialect() == WireDialect::Responses {
+        "responses"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "llm: params {path} tool_call_limit={} has no effect on the {wire} wire: only the \
+         chat_completions wire stops a round at the limit",
+        params.tool_call_limit
+    ))
 }
 
 /// A URL for a log line: userinfo, query and fragment dropped, the rest as
@@ -360,5 +387,36 @@ mod tests {
         assert!(cache_note("/a", &raw("breakpoints", "chat_completions")).is_none());
         assert!(cache_note("/a", &raw("implicit", "responses")).is_none());
         assert!(cache_note("/a", &raw("off", "responses")).is_none());
+    }
+
+    /// GH #1350 (review M2): a limit off the chat wire is said, once per
+    /// parse; on the chat wire and without a limit nothing is said.
+    #[test]
+    fn a_tool_call_limit_off_the_chat_wire_is_said() {
+        let p = |extra: Value| {
+            let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k",
+                                 "tool_call_limit": 16});
+            for (k, v) in extra.as_object().unwrap() {
+                raw[k] = v.clone();
+            }
+            LlmParams::parse(&raw).unwrap()
+        };
+        let note = tool_call_limit_note("/a", &p(json!({"wire_dialect": "responses"})))
+            .expect("a note on the responses wire");
+        assert!(note.contains("/a") && note.contains("responses"), "{note}");
+        let anthropic = p(json!({"provider": "anthropic", "wire_dialect": null,
+                                 "base_url": "https://api.anthropic.com"}));
+        assert!(
+            tool_call_limit_note("/a", &anthropic).is_some_and(|n| n.contains("messages")),
+            "a note on the messages wire"
+        );
+        assert!(tool_call_limit_note("/a", &p(json!({}))).is_none());
+        assert!(
+            tool_call_limit_note(
+                "/a",
+                &p(json!({"tool_call_limit": 0, "wire_dialect": "responses"}))
+            )
+            .is_none()
+        );
     }
 }

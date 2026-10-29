@@ -1,4 +1,4 @@
-# `assistant@3.10.7`
+# `assistant@3.10.8`
 
 One generation of one person's agent.
 **Four refs at three templates, no container at all,** and one hundred and six edges.
@@ -249,7 +249,7 @@ door `. -> <generation>` every growth recipe draws.
 | `closed` | a conversation of a talky surface ended, right behind its `write` (GH #1305): only when the surface's curator writer knob `conversation_events` is `"1"`; hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text |
 | `inner_silent` | an inner turn a talky surface answered with silence -- nothing went to the channel (GH #1305): hop `inner_source`, `turn_id`, no text; only when that surface's dispatcher knob `conversation_events` is `"1"` |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.12.0` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@6.12.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `answer_check` | the **sent answer** for the checker the member binds, since [#1255](https://github.com/mmeyerlein/meclaw/issues/1255): one message per section the splitter inside `./talky` or `./talky-chat` names in its knob `answer_check`, after the answer -- hop `{route, section, turn_id, section_written}`, body `{"messages": [], "section", "verify_answer"}`. Carried out of both surfaces unchanged, on the same terms as `sidecar` and never sorted with it: it holds the answer text, and a section on `sidecar` reaches every app of the member. Without the knob nothing travels; `./cogny` raises none |
 | `stamp` | the **route stamp** of every turn for a reader the member binds, since [#1304](https://github.com/mmeyerlein/meclaw/issues/1304): one message per turn when the route cell inside `./talky` or `./talky-chat` has its knob `stamp_out` `"1"` -- body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes. Carried out of both surfaces unchanged. Without the knob nothing travels; `./cogny` has no route cell |
 | `recall` | a memory read this turn needs. **One lane, two askers** since [#532](https://github.com/mmeyerlein/meclaw/issues/532): the surface and the reasoning core, each stamping `context.recall_caller` with its own name on the way out -- three since [#895](https://github.com/mmeyerlein/meclaw/issues/895), when the recipe drew the typed surface's road too |
@@ -802,7 +802,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.7",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.8",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

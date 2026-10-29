@@ -12,6 +12,18 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.76.6] — 2026-10-29
+
+A quick call that ends without an answer goes to the brain, so the person is answered; after a model change the `llm` cell waits as long as the model it now serves needs; and a round cut at `tool_call_limit` reports what it cost.
+
+### Fixed
+
+- A quick call that ends without an answer goes to the brain, so the person is answered ([#1352](https://github.com/mmeyerlein/meclaw/issues/1352)). Since `tool_call_limit` (#1350) a quick round that streamed a 17th call over the dispatcher's budget ended in `provider_error`; talky sent it to the error drain and the turn closed without a word to the person. Like a tool round without its call (#1260), a call the curator placed on `talky/quick` that ends in an error or a content filter, while its turn still runs, is now taken on as `<call>-esc` on `brain`, with one `escalate` mark (reason `no_answer`, its `finish` and `error` code); talky's `./quick -> ./errors` edge leaves such an error to that mark. A bridge's error still reaches `./errors`: its errand answers the turn.
+- After a model change by the `llm-registry`, the `llm` cell waits as long as the model it now serves needs ([#1350](https://github.com/mmeyerlein/meclaw/issues/1350)). The push reset `external_timeout_ms` to the value derived from the row the cell was born on (1 241 s for `talky/quick`, whatever row it served). The registry now pushes the row's `output_tps` (a new package key; an unmeasured row brings the slowest measured rate), and a cell that opts in with the new param `external_timeout_from_chain` derives the operation timeout by the timeout chain, held under its backstop with a warning when the backstop clears no longer call. `talky/quick` opts in; a cell whose timeout is a deadline, or names its own, keeps it.
+- A round cut at `tool_call_limit` reports what it cost and counts every call ([#1350](https://github.com/mmeyerlein/meclaw/issues/1350)). A usage block that arrived is stamped as `hop.cost` and the token counts on the error (`meta.error.usage: provider`); a cut stream has none and says `meta.error.usage: estimate` with the chunks and characters received, stating no figure of its own, while the figures of the calls a continued round had finished are booked. Calls a server streams at `index` 0 with new ids count as calls of their own; a length continuation is held to the same limit with the same error; a limit set on the Messages or Responses wire, where it does not act, is said in a warning line.
+- **Template versions (#1350):** second digit, `llm-registry@2.14.0`; third digit, `builder-librarian@2.2.97`, `talky@6.12.1`; third digit for the pins that follow, `assistant@3.10.8`, `builder@1.30.10`, `figure@2.0.9`, `meclaw-os@2.3.11`, `member@2.7.10`, `memory-hive@3.19.7`, `org@2.2.10`, `simple-agent@2.2.7`.
+- **Template versions (#1352):** third digit, `curator@1.16.6`; third digit for the pins that follow, `cogny@5.13.7`.
+
 ## [0.76.5] — 2026-10-29
 
 A runaway tool round stops at the first call over the dispatcher's budget, so one fast answer can no longer hold the next turn behind it; and the figure's turn tests no longer hang on a loaded runner.

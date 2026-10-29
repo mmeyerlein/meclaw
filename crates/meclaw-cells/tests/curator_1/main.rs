@@ -51,6 +51,7 @@ pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
 pub mod gh1225_kr_p_a_sweep_names_only_what_went;
 pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
 pub mod gh1225_kr_seq_never_falls_below_the_ledger;
+pub mod gh1225_kr_the_set_sent_last_stands;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

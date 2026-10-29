@@ -455,6 +455,27 @@ pub struct LlmParams {
     /// that names one never asks for more than that.
     #[serde(default)]
     pub max_output: u64,
+    /// GH #1350 (I1): the measured slow floor of the model's output rate,
+    /// tokens per second, as the registry pushes it from the catalogue row
+    /// (`output_tps`; a row without a measurement brings the slowest measured
+    /// row's rate). 0 (the default) = not stated. A package key. In a cell
+    /// that opts in ([`Self::external_timeout_from_chain`]), a params update
+    /// that carries it and names no `external_timeout_ms` of its own sets the
+    /// operation timeout by the timeout chain over the MERGED params
+    /// ([`LlmParams::chain_external_timeout_ms`]), so after a model change the
+    /// cell waits as long as the model it now runs needs -- before, the push
+    /// reset the timeout to the value derived from the row the cell was born
+    /// on (1 241 s for a fast model born on a slow row).
+    #[serde(default)]
+    pub output_tps: u64,
+    /// GH #1350 (review I1): the cell's operation timeout is an OUTPUT time
+    /// of the timeout chain, so a registry push with the served row's
+    /// `output_tps` derives it anew. Off (the default), a push leaves the
+    /// timeout as it was: a cell whose timeout is a deadline (a verdict later
+    /// than it is worth nothing) or names a value of its own keeps it. Not a
+    /// package key -- the cell's own declaration.
+    #[serde(default)]
+    pub external_timeout_from_chain: bool,
     /// GH #1037: how many continuation calls the cell makes when an answer
     /// stops on `length` without a tool call -- the cut text goes back as the
     /// assistant's turn with a request to go on, and the parts are joined
@@ -733,7 +754,53 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     // registry push moves the cell onto another provider.
     "provider",
     "credential_ref",
+    // GH #1350 (I1): the row's output rate, from which the operation
+    // timeout of the served model is derived.
+    "output_tps",
 ];
+
+/// GH #1097: the allowance for the first token on top of the output time in
+/// the timeout chain (`docs/cell-types.md` § timeout chain): three times the
+/// measured 99th percentile of a short call (3.0 s), rounded up to ten
+/// seconds. `gh1097_time_ceilings_follow_one_chain` holds the templates to the
+/// same constant.
+pub const FIRST_TOKEN_MS: u64 = 10_000;
+
+/// GH #1097 / GH #1350 (I1): the ONE statement of the operation-timeout link
+/// of the timeout chain -- `budget` output tokens at `tps` tokens per second,
+/// plus [`FIRST_TOKEN_MS`], rounded up to the second. `tps` 0 is read as 1
+/// (never a division by zero; the registry sends no 0).
+pub fn chain_external_timeout_ms(budget: u64, tps: u64) -> u64 {
+    let ms = budget
+        .saturating_mul(1000)
+        .div_ceil(tps.max(1))
+        .saturating_add(FIRST_TOKEN_MS);
+    ms.div_ceil(1000).saturating_mul(1000)
+}
+
+/// GH #1350 (I1): the longest operation timeout, to the second, that a
+/// backstop of `backstop_ms` still clears by the backstop rule with
+/// `length_continuations` continuations ([`effective_backstop_ms`]). A push
+/// cannot raise the backstop of a running task, and a run-time
+/// `external_timeout_ms` the backstop does not clear is refused
+/// (`docs/cell-types.md` § run-time guards), so a derived timeout is held
+/// under this instead of losing the whole model change.
+pub fn largest_cleared_external_ms(backstop_ms: u64, length_continuations: u32) -> u64 {
+    let calls = 1 + u64::from(length_continuations);
+    // margin = max(10 s, 10 %): solve both branches, take the one that holds.
+    let floor_branch = backstop_ms.saturating_sub(BACKSTOP_MARGIN_FLOOR_MS) / calls;
+    let relative_branch =
+        backstop_ms.saturating_mul(BACKSTOP_MARGIN_DIVISOR) / (calls * BACKSTOP_MARGIN_DIVISOR + 1);
+    let mut ms = floor_branch.min(relative_branch) / 1000 * 1000;
+    while ms > 0
+        && effective_backstop_ms(ms, length_continuations, Some(backstop_ms))
+            .1
+            .is_some()
+    {
+        ms -= 1000;
+    }
+    ms
+}
 
 /// GH #853: the absolute floor of the backstop margin, in ms.
 pub const BACKSTOP_MARGIN_FLOOR_MS: u64 = 10_000;
@@ -1149,11 +1216,6 @@ impl LlmParams {
         }
     }
 
-    /// The wire dialect this cell actually speaks: the explicit
-    /// `wire_dialect` param if set, else derived from `auth`.
-    ///
-    /// `parse` guarantees the derived value is consistent with `auth`, so this
-    /// is total and never panics.
     /// GH #1037: the completion budget a request carries. The cell's own cap
     /// when it names one, never above the model's listed `max_output` (a
     /// provider refuses a budget past the model's limit); without one, the
@@ -1168,6 +1230,21 @@ impl LlmParams {
         }
     }
 
+    /// GH #1350 (I1): the operation timeout the timeout chain gives these
+    /// params -- the request's output budget ([`Self::effective_max_tokens`])
+    /// at `output_tps`, plus the first token, to the second. `None` while no
+    /// rate is stated.
+    pub fn chain_external_timeout_ms(&self) -> Option<u64> {
+        (self.output_tps > 0).then(|| {
+            chain_external_timeout_ms(u64::from(self.effective_max_tokens()), self.output_tps)
+        })
+    }
+
+    /// The wire dialect this cell actually speaks: the explicit
+    /// `wire_dialect` param if set, else derived from `auth`.
+    ///
+    /// `parse` guarantees the derived value is consistent with `auth`, so this
+    /// is total and never panics.
     pub fn effective_wire_dialect(&self) -> WireDialect {
         match self.wire_dialect {
             Some(d) => d,
@@ -1425,6 +1502,9 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "length_continuations",
     // GH #1350: the call budget the chat wire stops a streamed answer at.
     "tool_call_limit",
+    "output_tps",
+    // GH #1350 (review I1): the cell derives its timeout from a pushed rate.
+    "external_timeout_from_chain",
     // R-HK-15/16: the input bounds and prompt prices of the model, package
     // keys (stamped; `input_hard` also refuses).
     "input_soft",
@@ -1533,6 +1613,53 @@ pub use crate::params_overlay::ParamUpdateError;
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;
+
+    /// GH #1350 (I1): the chain link the cell derives a pushed row's timeout
+    /// with is the one the templates are born with: 128 000 tokens at
+    /// 104 tok/s plus the first token is the 1 241 s of `talky/quick`.
+    #[test]
+    fn the_chain_link_is_the_one_the_templates_are_born_with() {
+        assert_eq!(chain_external_timeout_ms(128_000, 104), 1_241_000);
+        assert_eq!(chain_external_timeout_ms(1_000, 100), 20_000);
+        let p = LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k",
+                                         "max_output": 65_536, "max_tokens": 1_000,
+                                         "output_tps": 100}))
+        .unwrap();
+        // The cell's own cap is the budget, never the row's larger limit.
+        assert_eq!(p.chain_external_timeout_ms(), Some(20_000));
+        let none = LlmParams::parse(&json!({"provider": "openai", "model": "m",
+                                            "api_key": "k"}))
+        .unwrap();
+        assert_eq!(none.chain_external_timeout_ms(), None);
+    }
+
+    /// GH #1350 (I1): the cap under a backstop is the longest whole second
+    /// the backstop rule still clears, with and without continuations.
+    #[test]
+    fn the_largest_cleared_timeout_is_cleared_and_one_second_more_is_not() {
+        for (backstop, continuations) in [
+            (1_366_000, 0),
+            (60_000, 0),
+            (3_364_000, 0),
+            (500_000, 2),
+            (15_000, 0),
+        ] {
+            let cap = largest_cleared_external_ms(backstop, continuations);
+            assert_eq!(cap % 1000, 0);
+            assert!(
+                effective_backstop_ms(cap, continuations, Some(backstop))
+                    .1
+                    .is_none(),
+                "{backstop}/{continuations}: {cap} is cleared"
+            );
+            assert!(
+                effective_backstop_ms(cap + 1000, continuations, Some(backstop))
+                    .1
+                    .is_some(),
+                "{backstop}/{continuations}: {cap} + 1 s is not"
+            );
+        }
+    }
 
     /// GH #1318: the price steps of a model above its base step are a package
     /// key -- taken ordered and complete, refused by name otherwise.

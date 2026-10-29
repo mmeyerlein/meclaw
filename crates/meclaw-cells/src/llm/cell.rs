@@ -632,6 +632,13 @@ impl LlmCell {
         package::cache_note(path, &self.params)
     }
 
+    /// GH #1350 (review M2): the line beside the params line when
+    /// `tool_call_limit` is set on a wire it does not act on; `None` otherwise.
+    #[doc(hidden)]
+    pub fn tool_call_limit_note(&self, path: &str) -> Option<String> {
+        package::tool_call_limit_note(path, &self.params)
+    }
+
     /// GH #853: a params update on the run-time path — `$reset`, the merge over
     /// the START value, and the run-time guards. The detail never names a
     /// value; a credential key is told it needs a mutation.
@@ -639,6 +646,8 @@ impl LlmCell {
         &self,
         update: &meclaw_core::serde_json::Map<String, Value>,
     ) -> Result<crate::params_overlay::OverlayChange<LlmParams>, String> {
+        let derived = self.with_chain_timeout(update);
+        let update = derived.as_ref().unwrap_or(update);
         let change = crate::params_overlay::apply_update_over_start::<LlmParams>(
             &self.start,
             &self.overlay,
@@ -671,6 +680,66 @@ impl LlmCell {
             update,
         )?;
         Ok(change)
+    }
+
+    /// GH #1350 (I1): in a cell that opts in (`external_timeout_from_chain`),
+    /// an update that names the model's output rate (`output_tps`, pushed by
+    /// the registry with every package) and no `external_timeout_ms` of its
+    /// own gets the operation timeout of the
+    /// timeout chain over the params it would give -- the served model's
+    /// budget at the served model's rate, not the value derived from the row
+    /// the cell was born on. Held under the largest timeout this cell's
+    /// backstop still clears ([`crate::llm::params::largest_cleared_external_ms`]):
+    /// a running task keeps its backstop, and a timeout over it would refuse
+    /// the whole model change (`docs/cell-types.md` § run-time guards). The cap
+    /// is a WARN with both numbers. `None` = the update goes as sent.
+    fn with_chain_timeout(
+        &self,
+        update: &meclaw_core::serde_json::Map<String, Value>,
+    ) -> Option<meclaw_core::serde_json::Map<String, Value>> {
+        let rate = update.get("output_tps").and_then(Value::as_u64)?;
+        if rate == 0 || update.contains_key("external_timeout_ms") {
+            return None;
+        }
+        let merged = crate::params_overlay::apply_update_over_start::<LlmParams>(
+            &self.start,
+            &self.overlay,
+            update,
+        )
+        .ok()?
+        .merged;
+        // Review I1: only a cell whose timeout is an output time derives it.
+        // A deadline (`talky/decide` 3 s, `display/judge` 8 s) or a value the
+        // instance names keeps its timeout, and no line is written.
+        if !merged.external_timeout_from_chain {
+            return None;
+        }
+        let want = merged.chain_external_timeout_ms()?;
+        let ms = match self.message_timeout_ms {
+            Some(backstop) => {
+                let cap = crate::llm::params::largest_cleared_external_ms(
+                    backstop,
+                    merged.length_continuations,
+                );
+                if want > cap {
+                    tracing::warn!(
+                        target: package::PARAMS_LOG_TARGET,
+                        "llm: params external_timeout_ms {want} ms (timeout chain over \
+                         {} at output_tps {rate}) is held at {cap} ms: the backstop of \
+                         {backstop} ms clears no longer call (cell.message_timeout)",
+                        merged.model
+                    );
+                }
+                want.min(cap)
+            }
+            None => want,
+        };
+        let mut out = update.clone();
+        out.insert("external_timeout_ms".into(), Value::from(ms));
+        if let Some(Value::Array(reset)) = out.get_mut("$reset") {
+            reset.retain(|k| k.as_str() != Some("external_timeout_ms"));
+        }
+        Some(out)
     }
 
     /// GH #1273 (review L-4): the effective host the cell was born on -- its
@@ -1346,6 +1415,8 @@ impl LlmCell {
     /// thrown away because the rest could not be fetched. Every call is held
     /// to the message's backstop (`continuation::continuation_timeout`), so
     /// the backstop never drops an answer a continuation was still adding to.
+    /// GH #1350 (review M4/M2): a continuation cut at `tool_call_limit` ends
+    /// the round with that error and the answer of the calls before it.
     #[allow(clippy::too_many_arguments)]
     async fn continue_after_length(
         &self,
@@ -1357,7 +1428,8 @@ impl LlmCell {
         started_at_unix_ms: i64,
         mut answer: translate::TranslatedResponse,
         mut cut: Option<String>,
-    ) -> translate::TranslatedResponse {
+    ) -> Result<translate::TranslatedResponse, (wire::WireError, Box<translate::TranslatedResponse>)>
+    {
         let budget = self.params.effective_max_tokens();
         let max = self.params.length_continuations;
         let mut round = 0u32;
@@ -1408,15 +1480,34 @@ impl LlmCell {
                 );
                 break;
             }
-            let (res, _timings) = wire::call_openai_timed(
-                &self.http,
-                url,
-                self.bearer(),
-                headers,
-                &req,
-                call_timeout,
-            )
-            .await;
+            // GH #1350 (review M4): a continuation is one more call of the
+            // same round, so it is held to the same budget the same way --
+            // streamed and cut at the first call over the limit, answered
+            // with the same error (a continuation only starts on an answer
+            // without a call, so the whole budget is still open).
+            let (res, _timings) = if self.params.tool_call_limit > 0 {
+                wire::call_openai_streamed_timed(
+                    &self.http,
+                    url,
+                    self.bearer(),
+                    headers,
+                    &req,
+                    call_timeout,
+                    self.params.tool_call_limit,
+                )
+                .await
+            } else {
+                wire::call_openai_timed(&self.http, url, self.bearer(), headers, &req, call_timeout)
+                    .await
+            };
+            let res = match res {
+                // Review M2: the calls finished before the cut go with the
+                // error, so their cost is booked with it.
+                Err(e @ wire::WireError::ToolCallLimit { .. }) => {
+                    return Err((e, Box::new(answer)));
+                }
+                other => other,
+            };
             // GH #1260 (review M-1): a continuation is read like the first
             // answer -- a leaked call or analysis trace never joins the text.
             // GH #1260 (delta review H): a frame the cut left open (an `analysis` body)
@@ -1454,7 +1545,115 @@ impl LlmCell {
                 }
             }
         }
-        answer
+        Ok(answer)
+    }
+
+    /// GH #1350 (review M3): what a round cut at `tool_call_limit` cost, for
+    /// the error answer -- the curator books every call. The cut call's
+    /// usage block when one arrived (a one-body answer): `meta.error.usage`
+    /// `provider`. A stream cut before its end has none (the usage chunk
+    /// comes last): `estimate`, and the chunks and characters received are
+    /// its only measure -- never a figure passed off as the provider's, never
+    /// a 0. Review M2: `before` is the answer of the calls the round had
+    /// finished when a continuation was cut; their provider figures are
+    /// stamped (summed with the cut call's, when it has any), so a cut
+    /// continuation states what is known and still says `estimate` when the
+    /// cut call's own cost is not. `(hop, meta)`; `None` for any other error.
+    fn cut_usage(
+        err: &wire::WireError,
+        before: Option<&translate::TranslatedResponse>,
+    ) -> Option<(
+        meclaw_core::serde_json::Map<String, Value>,
+        meclaw_core::serde_json::Map<String, Value>,
+    )> {
+        let wire::WireError::ToolCallLimit { received, .. } = err else {
+            return None;
+        };
+        let mut meta = meclaw_core::serde_json::Map::new();
+        meta.insert("received_chunks".into(), Value::from(received.chunks));
+        meta.insert("received_chars".into(), Value::from(received.chars));
+        let usage = received.usage.as_ref();
+        let source = if usage.is_some() {
+            "provider"
+        } else {
+            "estimate"
+        };
+        meta.insert("usage".into(), Value::String(source.into()));
+        let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (None, None) => None,
+            _ => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+        let prompt = sum(
+            before.and_then(|b| b.tokens_prompt),
+            usage
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(Value::as_u64),
+        );
+        let completion = sum(
+            before.and_then(|b| b.tokens_completion),
+            usage
+                .and_then(|u| u.get("completion_tokens"))
+                .and_then(Value::as_u64),
+        );
+        let cost = match (before.and_then(|b| b.cost), translate::usage_cost(usage)) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+        };
+        let mut hop = meclaw_core::serde_json::Map::new();
+        if let Some(t) = prompt {
+            hop.insert("tokens_prompt".into(), Value::from(t));
+        }
+        if let Some(t) = completion {
+            hop.insert("tokens_completion".into(), Value::from(t));
+        }
+        if let Some(c) = cost.filter(|c| c.is_finite()) {
+            hop.insert("cost".into(), Value::from(c));
+        }
+        Some((hop, meta))
+    }
+
+    /// The error answer of a failed chat-wire call (Step 6 and, GH #1350
+    /// review M4, a continuation cut at the limit): the code, the fine kind
+    /// (GH #75), the request half of the hop (GH #999 F5/F6) and, for a cut
+    /// round, what it cost ([`Self::cut_usage`]; `before` = the calls the
+    /// round had finished before a cut continuation).
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_wire_error(
+        &self,
+        err: WireError,
+        before: Option<&translate::TranslatedResponse>,
+        sink: &OutputSink,
+        reply_target: Path,
+        input_messages: Vec<Value>,
+        started_at_unix_ms: i64,
+        clock: &latency::PhaseClock,
+    ) {
+        let code = wire::wire_error_to_code(&err);
+        let mut meta = wire::wire_error_meta(&err);
+        let mut hop = output::HopCache::request_hop(&self.params);
+        if let Some((usage, said)) = Self::cut_usage(&err, before) {
+            meta.get_or_insert_with(Default::default).extend(said);
+            if !usage.is_empty() {
+                hop.get_or_insert_with(Default::default).extend(usage);
+            }
+        }
+        output::emit_error_with_hop_for(
+            &self.params.provider,
+            sink,
+            reply_target,
+            code,
+            &format!("wire: {err:?}"),
+            "wire",
+            input_messages,
+            started_at_unix_ms,
+            (unix_ms_now() - started_at_unix_ms).max(0) as u64,
+            None,
+            None,
+            meta,
+            hop,
+        )
+        .await;
+        self.log_phases(clock, code);
     }
 
     /// The credential this cell presents ([`crate::credential::bearer`]).
@@ -2157,6 +2356,9 @@ impl LlmCell {
                                 self.params_line(msg.target.as_str())
                             );
                             if let Some(note) = self.cache_note(msg.target.as_str()) {
+                                tracing::warn!(target: package::PARAMS_LOG_TARGET, "{note}");
+                            }
+                            if let Some(note) = self.tool_call_limit_note(msg.target.as_str()) {
                                 tracing::warn!(target: package::PARAMS_LOG_TARGET, "{note}");
                             }
                         }
@@ -3002,29 +3204,16 @@ impl LlmCell {
             let response_json = match wire_result {
                 Ok(json) => json,
                 Err(err) => {
-                    let code = wire::wire_error_to_code(&err);
-                    output::emit_error_with_hop_for(
-                        &self.params.provider,
+                    self.emit_wire_error(
+                        err,
+                        None,
                         sink,
                         reply_target,
-                        code,
-                        &format!("wire: {err:?}"),
-                        "wire",
                         input_messages,
                         started_at_unix_ms,
-                        (unix_ms_now() - started_at_unix_ms).max(0) as u64,
-                        None,
-                        None,
-                        // GH #75: the fine kind travels with the failure on this
-                        // lane too. `None` for every pre-P10 variant, so the
-                        // legacy emitted body stays byte-identical.
-                        wire::wire_error_meta(&err),
-                        // GH #999 (F5/F6, lifts OR-LP.LR.1): a refused request
-                        // names what it left out and what it sent unchecked.
-                        output::HopCache::request_hop(&self.params),
+                        &clock,
                     )
                     .await;
-                    self.log_phases(&clock, code);
                     return;
                 }
             };
@@ -3071,7 +3260,7 @@ impl LlmCell {
             let first_prompt = translated.tokens_prompt;
             // Step 7b (GH #1037): a `length` finish is continued, never cut
             // in silence -- see `continuation.rs` for why the cell owns it.
-            let translated = self
+            let continued = self
                 .continue_after_length(
                     sink.sender_path().as_str(),
                     &url,
@@ -3083,6 +3272,22 @@ impl LlmCell {
                     cut,
                 )
                 .await;
+            let translated = match continued {
+                Ok(t) => t,
+                Err((err, before)) => {
+                    self.emit_wire_error(
+                        err,
+                        Some(before.as_ref()),
+                        sink,
+                        reply_target,
+                        input_messages,
+                        started_at_unix_ms,
+                        &clock,
+                    )
+                    .await;
+                    return;
+                }
+            };
 
             // Step 8: emit the assistant turn as an atomic UBF body (end).
             let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;

@@ -675,7 +675,7 @@ async fn one_turn(wired: bool) -> Run {
         json!({"manifest": [{
             "scope": "/members",
             "diff": {
-                "add_nodes": [{"name": MEMBER, "template": "member@2.7.9",
+                "add_nodes": [{"name": MEMBER, "template": "member@2.7.10",
                                "override_params": {
                                    "memory-hive/clock": quiet_night(),
                                    "affinity/clock": quiet_push()}}],
