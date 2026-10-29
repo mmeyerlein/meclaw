@@ -25,7 +25,7 @@ Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
 When Now is empty, the tree is between two waves: what the last one built is in
-v0.76.3, under [§ Shipped](#shipped), and the open findings wait in the tracker
+v0.76.4, under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.76.4: a quoted short id never reaches the person; every tool the quick scope allows is on the menu; the
+  quick window keeps the running round whole.
 - v0.76.3: a late credential receipt reaches its caller; a note is answered by the voice that shows it; the
   ambient memory question asks with the person's own words.
 - v0.76.2: the lines of an earlier session stand in the curator's window as past, behind a visible session

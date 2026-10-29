@@ -1,5 +1,5 @@
 {
-  "cell": { "type": "web_search", "message_timeout": 40000 },
+  "cell": { "type": "web_search", "message_timeout": 50000 },
   "params": {
     "endpoint": "${SEARCH_ENDPOINT:-http://127.0.0.1:8080/search}",
     "api_key": "",
@@ -33,7 +33,7 @@
         "type": "number",
         "secret": false,
         "default": 8,
-        "description": "GH #1061: how many calls park while the sealed key is in flight -- and, once it is open, how many calls besides the 8 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((8 + 1) / 8) = 2 searches of external_timeout_ms (15 s) and then runs its own, 2 x 15 + 15 = 45 s <= the colony's message_timeout_default_ms 60 s. Raise it only together with a message_timeout."
+        "description": "GH #1061: how many calls park while the sealed key is in flight -- and, once it is open, how many calls besides the 16 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((8 + 1) / 16) = 1 search of external_timeout_ms (15 s) and then runs its own, after the credential round of credential_wait_ms (the default 10 s, GH #1339): 10 + 15 + 15 = 40 s, plus the chain's margin = message_timeout 50 s. Raise it only together with message_timeout."
       }
     },
     "emits": {

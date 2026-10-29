@@ -9,7 +9,7 @@
         "add_nodes": [
           {
             "name": "agent",
-            "template": "simple-agent@2.2.4",
+            "template": "simple-agent@2.2.5",
             "override_params": {
               "brain": {
                 "credential_grant_id": "grant:openrouter@colony-example/ava/brain",

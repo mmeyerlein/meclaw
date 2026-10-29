@@ -1,4 +1,4 @@
-# `tools@1.7.0`
+# `tools@1.7.1`
 
 The tool surface of one assistant as **one node with one contract**: `tool_call` in,
 `tool_result` out.
@@ -256,7 +256,7 @@ they serve, and each is derived rather than chosen (`docs/cell-types.md`, the ti
 |---|---|---|---|
 | `bash` | 16 | 600000 | 660000 |
 | `web_fetch` | 16 | 30000 | 40000 |
-| `web_search` | 16 | 15000 | 40000 |
+| `web_search` | 16 | 15000 | 50000 |
 | `weather` | 16 | 15000 | 40000 |
 
 `max_concurrency` is the dispatcher's `max_calls` (16): a round fans out at most that many
@@ -268,8 +268,8 @@ with no reason given. `web_fetch` and `web_search` keep their operation timeouts
 request each, no catalogue number to derive from); `weather` takes `web_search`'s, and its two
 requests share it as one deadline. Every backstop is the chain's: the
 longest legitimate handling -- the operation timeout, for a granted cell (`web_search`) the
-worst sealed-ticket wait plus its call (GH #1061: `ceil((credential_wait_max + 1) / max_concurrency) ×
-T + T`, 30000) -- plus 10 s, at least 10 % -- before, none was declared and the colony
+credential round plus the worst sealed-ticket wait plus its call (GH #1061, GH #1339: `credential_wait_ms +
+ceil((credential_wait_max + 1) / max_concurrency) × T + T`, 10000 + 30000) -- plus 10 s, at least 10 % -- before, none was declared and the colony
 default of 60 s sat AT bash's 60 s. A template test holds all of it.
 
 `params.max_concurrency` is a queue and not a serialisation wherever the verdict is `yes`:

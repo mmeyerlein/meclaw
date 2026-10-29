@@ -1,4 +1,4 @@
-# `simple-agent@2.2.4`
+# `simple-agent@2.2.5`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
@@ -28,7 +28,7 @@ role is this agent plus the role's own code around it.
 | `curator` | ref | [`curator`](../curator/), role `talky` |
 | `brain` | `llm` | the thinking cell of a turn: `${ctx.model}`, `reasoning_effort` `medium` |
 | `strong` | `llm` | the second brain of a turn marked `stage: strong`; asked only when the door's `strong` param names it |
-| `splitter` | `code` | as in `cogny`: the sidecar block, sections `window`, `gap`, `memory` |
+| `splitter` | `code` | as in `cogny`: the sidecar block, sections `window`, `gap`, `memory`; a short id leaves the answer in every form, a footnote mark `[^<12 hex>]` and its definition line included ([#1345](https://github.com/mmeyerlein/meclaw/issues/1345)) |
 | `dispatcher` | ref | [`dispatcher`](../dispatcher/): no async or handoff tools |
 | `memory-hive` | ref | [`memory-hive`](../memory-hive/) |
 | `tools` | ref | [`tools`](../tools/): `bash`, `file`, `edit`, `web_fetch`, `web_search`, `weather` -- no `build_topology`/`apply_manifest` |

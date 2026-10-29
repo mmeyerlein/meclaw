@@ -4,8 +4,9 @@
 //! path (`talk`, `simple`, `complex`, `research`), and the collector carries it
 //! on the seam as `hop.path` (GH #1244); the parent edge lifts it into
 //! `context.path`. The curator is the one who decides (R-WP-1): a `simple`
-//! turn leaves on `quick` with the short window of the role `quick` (the last
-//! `keep_recent` 4 elements, no recall, the sidecar contract since GH #1260,
+//! turn leaves on `quick` with the short window of the role `quick` (the
+//! running round whole and the last `keep_recent` 4 elements before it,
+//! GH #1347, no recall, the sidecar contract since GH #1260,
 //! the tool scope allowing the class's tools at the ops stage and the stamp's
 //! other families at the hint stage), a `talk` turn on `brain` (GH #1260),
 //! `complex` leaves on `consult`, `research` on `research`, and a turn without
@@ -44,7 +45,7 @@ fn the_curator_branches_the_seam_by_the_path() {
     assert_eq!(
         keep,
         json!(4),
-        "the role quick keeps the last four elements"
+        "the role quick keeps four elements before the running round"
     );
     let (recall, _) = policy_scope(json!({}), "ROLES['quick']['recall_push']", Value::Null);
     assert_eq!(recall, json!(""), "the role quick pushes no recall");
@@ -77,9 +78,13 @@ fn the_curator_branches_the_seam_by_the_path() {
     );
     let q = &quick[0];
     let msgs = q.messages();
-    assert!(
-        !msgs.is_empty() && msgs.len() <= 4,
-        "the quick window holds at most four elements: {msgs:?}"
+    // GH #1347: `keep_recent` counts what lies before the running round --
+    // four elements of the earlier rounds, then the running round whole
+    // (here the person's turn alone).
+    assert_eq!(
+        msgs.len(),
+        5,
+        "the quick window holds four elements before the running round: {msgs:?}"
     );
     // The talky role shows short ids (`[#<id>] <text>`).
     assert!(

@@ -99,7 +99,9 @@ station would grade it anyway:
                     a doc comment in `writer.rs`, then a test comment in the
                     batch merge 17.10.). A placeholder (`<wave>`, `<S>`) or a
                     file no commit after the gate changes names none. Added
-                    lines only.
+                    lines only. The file name alone counts only in a file that
+                    also names that wave (`turnaround._wave_token`, GH #1343:
+                    a fixture of a test wave reads no live wave's report).
     wall-clock      an ADDED line of product code (`crates/*/src/**` without
                     meclaw-testing and test items, `templates/**` scripts and
                     every `script_inline`) that reads the wall clock directly
@@ -797,13 +799,15 @@ def _closed_waves(repo):
 
 
 def _post_gate_needles(repo, waves):
-    """`[(needle, whole, file, regex)]`: the needles `turnaround._needles` reads
-    for each file of `waves` a commit after the gate may change
+    """`[(needle, whole, file, regex, waves)]`: the needles `turnaround._needles`
+    reads for each file of `waves` a commit after the gate may change
     (`turnaround.allowlisted`), on disk -- one entry per needle, with the first
     such file it reads, the longest needle first (a finding names the most
-    specific one)."""
+    specific one). `waves`: for a file-name needle that counts only beside its
+    wave (`turnaround._wave_token`, GH #1343) the regex of every such wave's
+    token, else None -- the needle counts anywhere."""
     ta = _turnaround()
-    first = {}
+    first, tokens, plain = {}, {}, set()
     for wave in waves:
         top = os.path.join(repo, "plans", wave)
         for d, dirs, names in os.walk(top):
@@ -812,9 +816,19 @@ def _post_gate_needles(repo, waves):
                 rel = os.path.relpath(os.path.join(d, name), repo).replace(os.sep, "/")
                 # the wave's own globs: `NEUTRAL` alone is `welle-*` (GH #1294)
                 if ta.allowlisted(rel, wave):
+                    nt = ta._wave_token(rel)
                     for needle in ta._needles(rel):
                         first.setdefault(needle, rel)
-    return [(n, whole, rel, re.compile(ta._bounded(n, whole)))
+                        if nt and needle == (nt[0], False):
+                            tokens.setdefault(needle, set()).add(nt[1])
+                        else:
+                            plain.add(needle)
+
+    def gate(needle):
+        if needle in plain or needle not in tokens:
+            return None
+        return re.compile("|".join(ta._bounded(t) for t in sorted(tokens[needle])))
+    return [(n, whole, rel, re.compile(ta._bounded(n, whole)), gate((n, whole)))
             for (n, whole), rel in sorted(first.items(), key=lambda x: (-len(x[0][0]), x[0]))]
 
 
@@ -836,8 +850,9 @@ def check_wave_name(files, repo):
         for n, line in enumerate(text.splitlines(), 1):
             if added[path] is not None and n not in added[path]:
                 continue
-            hit = next(((needle, whole, rel) for needle, whole, rel, r in needles
-                        if needle in line and r.search(line)), None)
+            hit = next(((needle, whole, rel) for needle, whole, rel, r, w in needles
+                        if needle in line and r.search(line)
+                        and (w is None or w.search(text))), None)
             if hit is None:
                 continue
             needle, whole, rel = hit

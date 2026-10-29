@@ -1,4 +1,4 @@
-# `memory-hive@3.19.4`
+# `memory-hive@3.19.5`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1399,7 +1399,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.19.4` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.19.5` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1805,7 +1805,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.7.7",
+{"add_nodes": [{"name": "alex", "template": "member@2.7.8",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -2142,9 +2142,10 @@ The read lane bounds itself against the cell's own `external_timeout_ms` (`63000
 and silence hangs recall's fan-in forever — strictly worse than the degraded answer the retry
 exists to avoid. So the worst case has to fit: `(query_retries + 1) × query_timeout_ms +
 query_retries × query_retry_backoff_ms + 2000 ≤ external_timeout_ms`, and
-`cell.message_timeout` (`208000`) stays above that. Since GH #1097 both are that worst case and nothing
+`cell.message_timeout` (`219000`) stays above that. Since GH #1097 both are that worst case and nothing
 more: 62 250 ms rounded up to the second, and the worst ticket wait plus one run -- ceil((4 + 1) / 4) = 2
-runs ahead, each holding its ticket for a whole operation timeout, plus its own, 3 × 63 s -- plus the
+runs ahead, each holding its ticket for a whole operation timeout, plus its own, 3 × 63 s, after the
+credential round the cell waits for first (`credential_wait_ms`, the default 10 s, GH #1339) -- plus the
 backstop margin of the timeout chain (10 s, at least 10 %). Raise one of the four and raise the operation
 timeout with it — a test pins the arithmetic, so getting it wrong is a red test rather than a
 production hang.

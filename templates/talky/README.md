@@ -1,4 +1,4 @@
-# `talky@6.11.6`
+# `talky@6.11.7`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -68,13 +68,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.6.0"}}
+{"cell": {"type": "ref", "template": "collector@5.6.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.11.6` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.11.7` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -830,7 +830,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.11.6",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.11.7",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1126,7 +1126,10 @@ short block ids -- `[#<12 hex>]`, the bare `#<12 hex>` a history tool answers wi
 sixteen digits of an ambiguous id's `candidates`), the full sixty-four-digit block id of a
 `history_read` answer, and the window's forms of a released, shortened or expired block; a
 free-standing run counts only with a letter a-f in it, so a step number, a colour or an order
-number stays -- come out of the prose of every text turn and out of every
+number stays; since [#1345](https://github.com/mmeyerlein/meclaw/issues/1345) also a twelve-to-sixteen digit run with a letter a-f alone in
+square brackets behind at most one marker character -- the footnote mark `[^<12 hex>]` a model
+writes for a quoted id -- and a footnote definition line for one, as a whole line, while `[^1]`
+and a link text stay -- come out of the prose of every text turn and out of every
 string of a section that leaves the composite (a duplex voice speaks `fact`, `context` and
 `correction` aloud), because every answer the brain writes reaches its channel through this
 cell and an internal id never leaves the colony. The sections routed to the curator keep

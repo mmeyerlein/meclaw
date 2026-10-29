@@ -1503,6 +1503,45 @@ fn the_partial_answer_quotes_no_bare_short_block_id() {
     );
 }
 
+/// GH #1345: a model quotes a short id in a bracket of its own -- observed as a
+/// footnote mark `[^<12 hex>]` with a definition line `[^<12 hex>]: ...` -- and a
+/// tool result may carry the same form. The digest goes to a reader, so it loses
+/// the mark and the whole definition line, while an ordinary footnote `[^1]` stays.
+#[test]
+fn the_partial_answer_quotes_no_short_id_as_a_footnote() {
+    let mut rows = vec![leg_window_row(
+        serde_json::json!([{"role": "user", "text": "what did I say about Lisbon?"}]),
+    )];
+    rows.extend(named_round_pair(1, "c1", "history_outline", "nothing yet"));
+    rows.extend(named_round_pair(
+        2,
+        "c2",
+        "history_search",
+        "Lisbon in May[^0123456789ab] and June[^1]\n\n[^0123456789ab]: from the window\n[^1]: a note",
+    ));
+    let out = emit_with(
+        &[("max_iter", "2")],
+        reply_at(
+            "round-check",
+            "bundle",
+            4,
+            serde_json::Value::Array(rows),
+            2,
+        ),
+    );
+    assert_eq!(out[0]["header"]["partial"], "1", "{out:?}");
+    let texts = texts_of(&out[0]);
+    let last = texts.last().expect("a last turn");
+    assert!(
+        !last.contains("0123456789ab") && !last.contains("from the window"),
+        "a short id reached the reader: {last}"
+    );
+    assert!(
+        last.contains("Lisbon in May and June[^1] [^1]: a note"),
+        "the evidence and an ordinary footnote stay: {last}"
+    );
+}
+
 #[test]
 fn the_first_assembly_of_a_turn_is_never_the_capped_one() {
     // iter 0 against the default of 8: the cap is a bound on the ROUND, not a

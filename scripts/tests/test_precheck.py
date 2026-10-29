@@ -600,8 +600,9 @@ class WaveName(unittest.TestCase):
                 ("S = '%s/straenge/'\n" % self.WAVE, "%s/straenge" % self.WAVE),
                 ("R = 'plans/%s/berichte/S1.md'\n" % self.WAVE,
                  "plans/%s/berichte/S1.md" % self.WAVE),
-                ("N = 'S1.md'\n", "S1.md"),
-                ("J = 'S1.json'\n", "S1.json")):
+                # the file name counts beside its wave only (GH #1343)
+                ("N = 'S1.md'\nB = '%s/S1'\n" % self.WAVE, "S1.md"),
+                ("J = 'S1.json'\nB = '%s/S1'\n" % self.WAVE, "S1.json")):
             root = self.repo()
             paths = self.commit(root, {"scripts/x.py": line})
             found = self.found(root, paths)
@@ -625,7 +626,7 @@ class WaveName(unittest.TestCase):
                  "P = 'plans/%s/plan-parts/P1.md'\n", "N = 'S1.md'\n", "M = 'S1.mdx'\n",
                  "Q = 'recheck-S1'\n", "W = 'plans/<wave>/berichte'\n",
                  "U = 'welle-y-2026-01-01'\n", "X = 'plans/%s/berichte/S10.md'\n",
-                 "Y = '%s-old'\n")
+                 "Y = '%s-old'\n", "B = '%s/S1'; N = 'S1.md'\n")
         for line in lines:
             text = line.replace("%s", self.WAVE)
             root = self.repo()
@@ -651,7 +652,7 @@ class WaveName(unittest.TestCase):
             if readme is not None:
                 files["plans/README.md"] = readme
             root = self.repo(files)
-            paths = self.commit(root, {"scripts/x.py": "N = 'run.md'\n"})
+            paths = self.commit(root, {"scripts/x.py": "N = 'run.md'\nB = 'welle-c/run'\n"})
             self.assertEqual(want, levels(self.found(root, paths)), readme)
 
     def test_a_placeholder_and_an_unknown_wave_are_silent(self):

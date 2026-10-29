@@ -349,6 +349,7 @@ fn a_tool_round_runs_a_full_fan_out_in_one_wave() {
         "cogny's round window is a program run plus {ROUND_MARGIN_MS}"
     );
     let default_wait_max = meclaw_cells::credential::default_credential_wait_max() as u64;
+    let default_round = meclaw_cells::credential::default_credential_wait_ms();
     // GH #1260: `weather` is a tool of the same rounds and follows the same chain.
     for tool in ["bash", "web_fetch", "web_search", "weather"] {
         let c = config(&format!("tools/{tool}"));
@@ -364,11 +365,15 @@ fn a_tool_round_runs_a_full_fan_out_in_one_wave() {
             "tools/{tool}: a call of {ext} does not fit cogny's round of {round}"
         );
         // GH #1061: a granted cell waits for its ticket inside the backstop.
+        // GH #1339: and before that for its credential round, its own
+        // `credential_wait_ms` or the default -- a grant set through
+        // `override_params` waits the default round too.
         let longest = if p.get("credential_grant_id").is_some() {
             let w = p["credential_wait_max"]
                 .as_u64()
                 .unwrap_or(default_wait_max);
-            ext.max((w + 1).div_ceil(mc) * ext + ext)
+            let round = p["credential_wait_ms"].as_u64().unwrap_or(default_round);
+            round + ext.max((w + 1).div_ceil(mc) * ext + ext)
         } else {
             ext
         };
@@ -389,6 +394,7 @@ fn a_tool_round_runs_a_full_fan_out_in_one_wave() {
 #[test]
 fn an_embedder_bounds_its_own_worst_case() {
     let default_wait_max = meclaw_cells::credential::default_credential_wait_max() as u64;
+    let default_round = meclaw_cells::credential::default_credential_wait_ms();
     let mh = config("memory-hive/embed");
     let p = &mh["params"];
     let tries = p["query_retries"].as_u64().unwrap_or(1);
@@ -422,9 +428,17 @@ fn an_embedder_bounds_its_own_worst_case() {
             .unwrap_or(default_wait_max);
         // GH #1061: a run ahead holds its ticket for its whole operation (every
         // attempt), so the ticket wait counts in operation timeouts, not attempts.
-        // GH #1338: a cell that ships its own credential round waits for it inside
+        // GH #1338: a granted cell waits for its credential round inside
         // `handle()` before the ticket, so the round is part of the chain.
-        let round = p["credential_wait_ms"].as_u64().unwrap_or(0);
+        // GH #1339: every granted cell's round counts, its own
+        // `credential_wait_ms` or the default (`unwrap_or(0)` left out
+        // memory-hive/embed, which ships its grant empty for `override_params`
+        // and so waits the default 10 s: 199 s against a backstop of 208 s).
+        let round = if p.get("credential_grant_id").is_some() {
+            p["credential_wait_ms"].as_u64().unwrap_or(default_round)
+        } else {
+            0
+        };
         let longest = round + (w + 1).div_ceil(mc) * ext + ext;
         let msg = c["cell"]["message_timeout"].as_u64().unwrap_or(0);
         assert_eq!(

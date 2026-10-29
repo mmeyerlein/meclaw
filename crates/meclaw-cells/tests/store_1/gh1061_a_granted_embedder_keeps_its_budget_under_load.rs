@@ -11,8 +11,12 @@
 //! call inside that budget:
 //!
 //! ```text
-//! ceil((credential_wait_max + 1) / max_concurrency) × T + T  ≤  message_timeout
+//! R + ceil((credential_wait_max + 1) / max_concurrency) × T + T  ≤  message_timeout
 //! ```
+//!
+//! with `R` the credential round the call waits for inside `handle()` before
+//! its ticket: the cell's `credential_wait_ms`, or the default where it sets
+//! none (GH #1339, review M-4 of #1338).
 //!
 //! with `T` the time one call holds its run ticket and `message_timeout` the
 //! cell's own or, without one, the colony's `message_timeout_default_ms`. `T`
@@ -109,9 +113,10 @@ fn granted_cells<'a>(v: &'a Value, out: &mut Vec<&'a Value>) {
     }
 }
 
-/// The worst ticket wait plus one own call (the rule of the module note).
-fn worst_case_ms(wait_max: u64, mc: u64, op_ms: u64) -> u64 {
-    (wait_max + 1).div_ceil(mc) * op_ms + op_ms
+/// The credential round, the worst ticket wait and one own call (the rule of
+/// the module note).
+fn worst_case_ms(round_ms: u64, wait_max: u64, mc: u64, op_ms: u64) -> u64 {
+    round_ms + (wait_max + 1).div_ceil(mc) * op_ms + op_ms
 }
 
 /// Lock (a): every shipped granted `code` / `web_search` cell fits its worst
@@ -124,6 +129,7 @@ fn gh1061_every_shipped_granted_cell_fits_its_ticket_wait_into_its_message_timeo
     json_files(&root.join("templates"), &mut files);
 
     let default_wait_max = meclaw_cells::credential::default_credential_wait_max() as u64;
+    let default_round = meclaw_cells::credential::default_credential_wait_ms();
     let default_mt = meclaw_colony::ColonyConfig::default().message_timeout_default_ms;
 
     let mut found: Vec<String> = Vec::new();
@@ -165,12 +171,16 @@ fn gh1061_every_shipped_granted_cell_fits_its_ticket_wait_into_its_message_timeo
             };
             let declared = params["credential_wait_max"].as_u64();
             let wait_max = declared.unwrap_or(default_wait_max);
-            let worst = worst_case_ms(wait_max, mc, op_ms);
+            let round = params["credential_wait_ms"]
+                .as_u64()
+                .unwrap_or(default_round);
+            let worst = worst_case_ms(round, wait_max, mc, op_ms);
             if worst > mt_ms {
                 failures.push(format!(
-                    "{rel}: ceil((credential_wait_max {wait_max}{dflt} + 1) / max_concurrency {mc}) \
-                     × {op_name} {op_ms} + {op_ms} = {worst} ms > {mt_name} {mt_ms} ms — the last \
-                     call waiting for a run ticket dies with message_timeout under load",
+                    "{rel}: credential_wait_ms {round} + ceil((credential_wait_max {wait_max}{dflt} + 1) \
+                     / max_concurrency {mc}) × {op_name} {op_ms} + {op_ms} = {worst} ms > {mt_name} \
+                     {mt_ms} ms — the last call waiting for a run ticket dies with message_timeout \
+                     under load",
                     dflt = if declared.is_none() { " (default)" } else { "" },
                 ));
             }

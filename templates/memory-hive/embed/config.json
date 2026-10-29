@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "code",
-    "message_timeout": 208000
+    "message_timeout": 219000
   },
   "params": {
     "runner": "python3",
@@ -80,7 +80,7 @@
         "type": "number",
         "secret": false,
         "default": 4,
-        "description": "GH #1061: how many calls park while the sealed credential is in flight -- and, once it is open, how many calls besides the 4 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((4 + 1) / 4) = 2 runs of external_timeout_ms (63 s, a run holds its ticket for all its attempts) and then runs its own, 2 x 63 + 63 = 189 s <= message_timeout 208 s. The default 16 would be 5 x 63 + 63 = 378 s, and calls that would only have waited die with message_timeout under sustained load. Raise it only together with message_timeout."
+        "description": "GH #1061: how many calls park while the sealed credential is in flight -- and, once it is open, how many calls besides the 4 running ones may wait inside the cell for a run slot (the dispatcher bound is max_concurrency + credential_wait_max + 1). That wait counts against message_timeout, so the number is sized to it: the last waiter waits ceil((4 + 1) / 4) = 2 runs of external_timeout_ms (63 s, a run holds its ticket for all its attempts) and then runs its own, 2 x 63 + 63 = 189 s, after the credential round of credential_wait_ms (the default 10 s: the grant is set through override_params, GH #1339), 199 s <= message_timeout 219 s. The default 16 would be 5 x 63 + 63 = 378 s, and calls that would only have waited die with message_timeout under sustained load. Raise it only together with message_timeout."
       }
     },
     "multi_send_capable": true,

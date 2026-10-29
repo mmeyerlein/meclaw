@@ -1,4 +1,4 @@
-# `cogny@5.13.5`
+# `cogny@5.13.6`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.6.0"},
+{"cell": {"type": "ref", "template": "collector@5.6.1"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.16.4"},
+{"cell": {"type": "ref", "template": "curator@1.16.5"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.13.5` above it in its provenance chain.
+`cogny@5.13.6` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -374,7 +374,9 @@ at the rim. The level that holds a core draws `ask` to the asker's advice lane
 
 The question travels as the words the core wrote, never as a reference into its window:
 `./ask` takes a short block id the core quoted out of it (`[#<12 hex>]`, bare `#` and twelve to sixteen hex digits, the full sixty-four-digit block
-id, or the window's form of a released, shortened or expired block), because the asker
+id, the window's form of a released, shortened or expired block, or since
+[#1345](https://github.com/mmeyerlein/meclaw/issues/1345) an id in another bracket such as the
+footnote mark `[^<12 hex>]`, with its definition line), because the asker
 cannot read the core's wall and the question goes on to a person. The handoff leaves one
 departure row in the core's own collector, under the `ask_requester` call's id; nothing
 answers under that id (the reply comes back as an errand, not as an advice), so the row is
@@ -706,7 +708,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.13.5", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.13.6", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 

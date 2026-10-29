@@ -24,7 +24,11 @@ A path is gate-neutral when BOTH hold (fail-closed: anything else is code):
      `scripts/` and no Python file under `workshop/` names it (rule 8 python:
      the path, its wave directory -- `test_wave_retro` joins
      `REPO / "plans" / "<wave>"` -- or its file name unless every wave
-     carries it, `GENERIC_NAMES`).
+     carries it, `GENERIC_NAMES`; the file name of a file under
+     `plans/<wave>/` only in a file that also names the wave, its directory
+     or branch prefix `<wave>/`, `_wave_token`: the kit's tests build
+     `plans/<test wave>/berichte/S1.md` and read no live wave's S1 report,
+     GH #1343).
 
 RECEIPT REUSE (`code_equal_revs`)
 =================================
@@ -43,7 +47,10 @@ six rounds of reader-rule leaks B-N1..B-N4 around symlinks, attributes and
     deleted one re-gates (Koordinator-3 ruling on "100644 on both sides");
   * is named by no script or test of the tip or of master (`reuse_readers`:
     `git grep` over the committed files, rule 8 python plus
-    `crates/**`) -- a report `test_wave_retro` reads re-gates.
+    `crates/**`) -- a report `test_wave_retro` reads re-gates; a fixture
+    of another wave naming the same file name does not (GH #1343: the merge
+    refused a live wave's S1 over a report-only commit, read by
+    `test_pipeline_{merge,pre,turnaround}.py`).
 
 Only the paths of the diff count; other links of the tree do not.
 
@@ -215,6 +222,51 @@ def _bounded(needle, whole=False):
     return "(^|[^A-Za-z0-9_.-])" + lit + tail
 
 
+# GH #1343: the file name of a wave's post-gate file names that file only next
+# to its wave. The kit's tests build `plans/<test wave>/berichte/S1.md`
+# (`test_pipeline_{merge,pre,turnaround}.py`), crate comments name reports of
+# closed waves (`plans/<old wave>/berichte/<S>.md`); with the bare name as a
+# needle every one of them read every real `berichte/S1.md` -- on 28.10. the
+# merge refused a strand S1 of a live wave `receipt_not_branch_head` over a
+# commit of its report alone (GH #1343). A file the name hits reads the file only when it also
+# names the wave: its directory or the branch prefix `<wave>/` (`_wave_token`).
+WAVE_DATE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
+
+def _wave_token(path):
+    """`(name, token)` when the file-name needle of `path` (`_needles`) counts
+    only beside its wave -- `path` lies under `plans/<wave>/` outside
+    `receipts/` -- with `token` the wave's branch prefix (`<prefix>-<yyyy-mm-dd>`
+    -> `<prefix>`; matched at a path boundary it also hits the directory);
+    None otherwise."""
+    parts = path.split("/")
+    if len(parts) < 4 or parts[0] != "plans" or parts[2] == "receipts":
+        return None
+    name = parts[-1]
+    if (name, False) not in _needles(path):
+        return None
+    return name, WAVE_DATE.sub("", parts[1])
+
+
+def _grep_files(repo, needles, rev, specs):
+    """The files under `specs` (of commit `rev`, else tracked and untracked)
+    naming any of `needles` (`(needle, whole)`, `_bounded`), verbatim (`-z`)."""
+    if not needles:
+        return []
+    args = ["grep", "-l", "-z", "-E"] + ([] if rev else ["--untracked"])
+    for n, whole in sorted(needles):
+        args += ["-e", _bounded(n, whole)]
+    rc, raw = _git(repo, *(args + ([rev] if rev else []) + ["--"] + list(specs)))
+    if rc == 1:
+        return []
+    if rc != 0:
+        raise ValueError("git grep for readers failed (rc %d)" % rc)
+    got = [l for l in raw.decode("utf-8", "surrogateescape").split("\0") if l]
+    if rev:
+        got = [l[len(rev) + 1:] if l.startswith(rev + ":") else l for l in got]
+    return sorted(got)
+
+
 def python_readers(repo, path, rev=None, specs=PY_READERS):
     """Rule 8 python: the files under `PY_READERS` (tracked or untracked)
     that name `path` (`_needles`, each at a path boundary, `_bounded`); with
@@ -222,23 +274,36 @@ def python_readers(repo, path, rev=None, specs=PY_READERS):
     may be a list (the files naming any of them). A
     failing `git grep` raises -- `veto` turns that into a veto.
 
+    The file name of a file under `plans/<wave>/` counts only in a file that
+    also names the wave (`_wave_token`, GH #1343): one grep over every needle,
+    and only on a hit that no other needle explains, one grep per wave over
+    the hit files.
+
     Names come verbatim (`-z`): without it git quotes a name with non-ASCII,
     `"` or `\\` (`"HEAD:scripts/\\303\\244.py"`), the `rev:` prefix stayed on
     and the `:(literal)<hit>` grep of `offending`/`reuse_readers` matched
     nothing -- the reader fell through (re-check I-h1, wave validation 2)."""
-    args = ["grep", "-l", "-z", "-E"] + ([] if rev else ["--untracked"])
-    for n, whole in sorted({n for q in ([path] if isinstance(path, str) else path)
-                            for n in _needles(q)}):
-        args += ["-e", _bounded(n, whole)]
-    rc, raw = _git(repo, *(args + ([rev] if rev else []) + ["--"] + list(specs)))
-    if rc == 1:
-        return []
-    if rc != 0:
-        raise ValueError("git grep for readers of %s failed (rc %d)" % (path, rc))
-    got = [l for l in raw.decode("utf-8", "surrogateescape").split("\0") if l]
-    if rev:
-        got = [l[len(rev) + 1:] if l.startswith(rev + ":") else l for l in got]
-    return sorted(got)
+    paths = [path] if isinstance(path, str) else list(path)
+    every = {n for q in paths for n in _needles(q)}
+    by_wave, plain = {}, set()
+    for q in paths:
+        nt = _wave_token(q)
+        for n in _needles(q):
+            if nt and n == (nt[0], False):
+                by_wave.setdefault(nt[1], set()).add(n)
+            else:
+                plain.add(n)
+    hits = _grep_files(repo, every, rev, specs)
+    gated = set().union(*by_wave.values()) - plain if by_wave else set()
+    if not hits or not gated:
+        return hits
+    lit = lambda files: tuple(":(literal)" + f for f in files)  # noqa: E731
+    out = set(_grep_files(repo, plain, rev, lit(hits)))
+    for token, names in sorted(by_wave.items()):
+        rest = [f for f in hits if f not in out]
+        named = _grep_files(repo, names - plain, rev, lit(rest)) if rest else []
+        out.update(_grep_files(repo, {(token, False)}, rev, lit(named)) if named else [])
+    return sorted(out)
 
 
 def branch_wave(repo):

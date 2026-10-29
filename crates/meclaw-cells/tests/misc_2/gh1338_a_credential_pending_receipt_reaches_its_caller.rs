@@ -23,6 +23,10 @@
 //! The other locks hold the three templates the walk found: the receipt
 //! becomes exactly one result on the caller's existing lane, the wait is the
 //! longer one, and the backstop of the `code` cell still covers it.
+//!
+//! The connectors are the other half of the class (GH #1339): their receipt
+//! is no answer to a call, so the last lock walks every granted connector and
+//! holds that no edge hands it to a cell of the template as a new turn.
 
 use meclaw_colony::cel_eval::{
     apply_modifier, evaluate_condition, parse_condition, parse_modifier,
@@ -33,6 +37,8 @@ use meclaw_core::serde_json::{self, Map, Value, json};
 use std::path::PathBuf;
 
 /// The cell types that answer a call with a `credential_pending` receipt.
+/// A connector (`proxy`) sends one too, but it starts a turn and has no
+/// caller to answer: its receipt must reach no turn at all (Lock 5, GH #1339).
 const EMITTERS: &[&str] = &["llm", "code", "web_search", "mcp"];
 
 /// The wait the three repaired templates ship: a caller that waits a minute
@@ -515,4 +521,150 @@ fn a_memory_hive_embed_receipt_answers_recall() {
     );
     assert_eq!(write.len(), 1, "{write:?}");
     assert_eq!(write[0].0, "./writer");
+}
+
+/// The hop of the `credential_pending` receipt a connector (`proxy`) emits
+/// before its token or secret has arrived. Telegram and Slack answer the reply
+/// they cannot send through `proxy/emit.rs` `emit_inbound_error` (no `route`,
+/// `messages: []`); a webhook mount answers each POST with its refusal
+/// receipt (`proxy/webhook/emit.rs` `refused_receipt`, `route == 'receipt'`).
+fn connector_receipt_hop(platform: &str) -> Map<String, Value> {
+    let v = match platform {
+        "webhook" => json!({
+            "route": "receipt", "peer_event": "refused", "lane": "hook",
+            "boundary": "hook", "error_code": "credential_pending"
+        }),
+        _ => json!({"error_code": "credential_pending", "msg_type": "proxy_inbound_error"}),
+    };
+    v.as_object().cloned().expect("object")
+}
+
+/// `(template, cell, platform)` of every connector that can carry a grant
+/// (`params.bot_token_grant_id`, or `params.verify.secret_grant_id` of a
+/// webhook mount) and lives in a template with a graph.
+fn grant_connectors() -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut templates: Vec<_> = std::fs::read_dir(templates_dir())
+        .expect("templates/")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    templates.sort();
+    for t in templates {
+        let Some(tcfg) = read_json(&t.join("config.json")) else {
+            continue;
+        };
+        if tcfg["params"]["graph"]["edges"].as_array().is_none() {
+            continue;
+        }
+        let mut cells: Vec<_> = std::fs::read_dir(&t)
+            .expect("template dir")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        cells.sort();
+        for c in cells {
+            let Some(cfg) = read_json(&c.join("config.json")) else {
+                continue;
+            };
+            if cfg["cell"]["type"] != "proxy" {
+                continue;
+            }
+            let p = &cfg["params"];
+            let granted =
+                p["bot_token_grant_id"].is_string() || p["verify"]["secret_grant_id"].is_string();
+            if granted {
+                out.push((
+                    t.file_name().unwrap().to_string_lossy().into_owned(),
+                    c.file_name().unwrap().to_string_lossy().into_owned(),
+                    p["platform"].as_str().unwrap_or("telegram").to_string(),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Lock 5 (GH #1339, review M-3 of #1338): no connector hands its
+/// `credential_pending` receipt to a cell of its template. The receipt carries
+/// no text and no `route`, so the condition of an edge that forwards
+/// everything of the connector without a `route` (the inbound edge to the
+/// chat persona) would take it as a new turn. At run time the receipt never
+/// got there: it carries no `hop.chat_id`, the edge's `set_context.chat_id`
+/// modifier failed on it and the colony skipped the edge, so it ended as
+/// `no_route`. That held only by the modifier. The receipt has no caller to
+/// reach (the connector is the start of the turn), so the condition excludes
+/// it explicitly, and this lock judges conditions alone -- an edge without
+/// that modifier is held as well. Conditions that took it before #1339: `egon/proxy`, `slack-agent/proxy` and
+/// `research-assistant/proxy`, one edge each.
+#[test]
+fn no_connector_hands_its_credential_pending_receipt_to_a_turn() {
+    let connectors = grant_connectors();
+    let mut present = 0;
+    for known in [
+        ("egon", "proxy"),
+        ("slack-agent", "proxy"),
+        ("research-assistant", "proxy"),
+        ("daily-digest", "notifier"),
+    ] {
+        // GH #49: private templates are absent from the public clone.
+        if !templates_dir().join(known.0).exists() {
+            continue;
+        }
+        present += 1;
+        assert!(
+            connectors
+                .iter()
+                .any(|(t, c, _)| (t.as_str(), c.as_str()) == known),
+            "the walk must see {known:?}; it found {connectors:?}"
+        );
+    }
+    assert!(present > 0, "no known connector under templates/");
+    let mut loops = Vec::new();
+    for (t, c, platform) in &connectors {
+        let from = format!("./{c}");
+        let out: Vec<EdgeSpec> = edges(&template_config(t))
+            .into_iter()
+            .filter(|e| e.from == from)
+            .collect();
+        let conds: Vec<&str> = out.iter().filter_map(|e| e.condition.as_deref()).collect();
+        let hop = connector_receipt_hop(platform);
+        for e in &out {
+            if !e.to.starts_with("./") {
+                continue;
+            }
+            if candidate_contexts(&conds)
+                .iter()
+                .any(|ctx| takes(e, ctx, &hop))
+            {
+                loops.push(format!("{t}: {} -> {}", e.from, e.to));
+            }
+        }
+    }
+    assert!(
+        loops.is_empty(),
+        "a connector's credential_pending receipt becomes the input of a turn: {loops:?}"
+    );
+}
+
+/// The exclusion stays narrow: an ordinary inbound message of the channel
+/// still reaches the turn, on exactly one edge.
+#[test]
+fn a_chat_connector_still_hands_an_inbound_message_to_its_turn() {
+    for (t, to) in [
+        ("egon", "./persona"),
+        ("slack-agent", "./persona"),
+        ("research-assistant", "./prep"),
+    ] {
+        // GH #49: private templates are absent from the public clone.
+        if !templates_dir().join(t).exists() {
+            continue;
+        }
+        let out = route(t, "./proxy", json!({}), json!({"chat_id": 7}));
+        assert_eq!(out.len(), 1, "{t}: exactly one way in: {out:?}");
+        assert_eq!(out[0].0, to, "{t}: the inbound message reaches the turn");
+        assert_eq!(out[0].1.context["turn_origin"], "channel", "{t}");
+    }
 }

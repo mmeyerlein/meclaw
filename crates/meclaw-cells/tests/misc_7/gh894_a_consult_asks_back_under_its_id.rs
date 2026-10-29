@@ -984,15 +984,135 @@ fn a_short_id_in_any_of_its_forms_never_leaves_the_colony() {
     }
 }
 
-/// OR-KY-83: the id filter is ONE expression with six copies, one in every cell where
-/// a model's words leave toward a reader -- both surfaces' splitters, the digest of a
+const SIMPLE_AGENT_SPLITTER_CELL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../templates/simple-agent/splitter/config.json"
+);
+
+/// GH #1345: a model quotes a short id in a bracket of its own. Observed: with
+/// `short_ids` on, the curator puts `[#<12 hex>]` in front of a tool result, and the
+/// model wrote it back as a footnote mark `[^<12 hex>]` at the end of its answer --
+/// with a footnote definition line `[^<12 hex>]: ...` for it now and then. The cut is
+/// by form, not by a list: a twelve-to-sixteen digit hex run with at least one letter
+/// a-f, alone in square brackets behind at most one marker character, is an id wherever
+/// it stands, and a definition line for one goes as a whole. An ordinary footnote, a
+/// step number, a colour, an order number, a link text and a hash of another length
+/// leave byte for byte -- on the splitters of both surfaces and of simple-agent@2.
+#[test]
+fn an_answer_to_the_person_carries_no_short_id_in_any_bracket() {
+    for cell in [
+        SPLITTER_CELL,
+        COGNY_SPLITTER_CELL,
+        SIMPLE_AGENT_SPLITTER_CELL,
+    ] {
+        if !std::path::Path::new(cell).is_file() {
+            continue; // GH #49
+        }
+        let said = |text: &str| -> String {
+            let out = split_through(cell, json!([text_turn(text)]), "stop");
+            assert_eq!(out.len(), 1, "{cell}: {out:#?}");
+            out[0]["messages"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        for (text, want) in [
+            ("Lisbon it is.[^5e954f61f19f]", "Lisbon it is."),
+            (
+                "Lisbon it is [^5e954f61f19f].\n\n[^5e954f61f19f]: history_read(\"#5e954f61f19f\")",
+                "Lisbon it is.",
+            ),
+            (
+                "Lisbon it is.[^5e954f61f19f]\n\n[^5e954f61f19f]: Source: the weather tool.\n",
+                "Lisbon it is.\n",
+            ),
+            (
+                "May [^0123456789ab] and June [^abcdefabcdef].\n\n[^0123456789ab]: one\n[^abcdefabcdef]: two",
+                "May and June.",
+            ),
+            (
+                "A.[^abcdefabcdef]\n\n[^abcdefabcdef]: the window\n\nB.",
+                "A.\n\nB.",
+            ),
+            // Review of GH #1345, finding 3: a definition line with the next
+            // paragraph right under it goes with its own line break -- the
+            // paragraphs around it stay apart, they do not run into one.
+            (
+                "A.[^abcdefabcdef]\n\n[^abcdefabcdef]: the window\nB.",
+                "A.\n\nB.",
+            ),
+            (
+                "A.\n\n[^0123456789ab]: one\n[^abcdefabcdef]: two\nB.",
+                "A.\n\nB.",
+            ),
+            ("A.\n\n[^0123456789ab]: one\n\n[^abcdefabcdef]: two", "A."),
+            (
+                "Other marks too: [@abcdefabcdef] [*0123456789AB] [abcdef012345].",
+                "Other marks too:.",
+            ),
+            ("[^5e954f61f19f] Lisbon.", "Lisbon."),
+        ] {
+            assert_eq!(said(text), want, "{cell}");
+        }
+        for text in [
+            "A footnote of the text[^1] and one named[^note].\n\n[^1]: the first.\n[^note]: a note.",
+            "Step [3] of [5], colour [#fff] and [#1a2b3c], order [123456789012], invoice [^123456789012].",
+            "A link [abcdef012345](https://example.com/abcdef012345) stays.",
+            "Too long [^0123456789abcdef0], too short [^0123456789a], two marks [^^0123456789ab].",
+        ] {
+            assert_eq!(
+                said(text),
+                text,
+                "{cell}: prose that only looks like an id leaves byte for byte"
+            );
+        }
+    }
+}
+
+/// Review of GH #1345, finding 1: the definition-line arm opened with `\n*`, so a run of
+/// k line breaks was entered at every one of them and each entry ran to the run's end
+/// and back -- k squared steps (30 000 line breaks: 6 s per call, measured in the
+/// review; a model looping on empty lines up to `max_tokens` writes exactly that). The
+/// arm now enters a run at its first line break only. 150 000 line breaks around an id
+/// pass in one sweep; the hang mark is no verdict on speed -- the quadratic form needs
+/// minutes for them and only then trips it.
+#[tokio::test]
+async fn a_long_run_of_line_breaks_is_swept_once() {
+    let run = "\n".repeat(150_000);
+    let text = format!("A.{run}B [^5e954f61f19f].");
+    let want = format!("A.{run}B.");
+    // A thread of its own, not `spawn_blocking`: the runtime's drop waits for a blocking
+    // task, so a quadratic sweep would hold the red test until the runner kills it.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(split_through(
+            SPLITTER_CELL,
+            json!([text_turn(&text)]),
+            "stop",
+        ));
+    });
+    let out = meclaw_testing::deadline::hang("the splitter over 150 000 line breaks", rx)
+        .await
+        .expect("the splitter run");
+    assert_eq!(out.len(), 1, "{} emissions", out.len());
+    assert!(
+        out[0]["messages"][0]["text"] == json!(want),
+        "the run left changed or the id stayed"
+    );
+}
+
+/// OR-KY-83: the id filter is ONE expression with seven copies, one in every cell where
+/// a model's words leave toward a reader -- both surfaces' splitters, the splitter of
+/// simple-agent@2 (GH #1345: it carried a copy no lock held), the digest of a
 /// capped round, the core's question back, the enriched push a duplex voice speaks
 /// (there it is named `SPOKEN_ID`, beside a `SHORT_ID` that FINDS ids), and the
 /// handover block a renewed voice is given. A form one copy learns and another does not
-/// is an id that leaves by the other door; so the six compile to the same pattern,
-/// byte for byte, read off each script the way Python reads it.
+/// is an id that leaves by the other door; so the seven compile to the same pattern,
+/// byte for byte, read off each script the way Python reads it. The frozen
+/// simple-agent@1.1.4 keeps the pattern it shipped with and is not held here.
 const SHORT_ID_COPIES: &[(&str, &str)] = &[
     ("templates/talky/splitter/config.json", "SHORT_ID"),
+    ("templates/simple-agent/splitter/config.json", "SHORT_ID"),
     ("templates/cogny/splitter/config.json", "SHORT_ID"),
     ("templates/collector/assemble/config.json", "SHORT_ID"),
     ("templates/cogny/ask/config.json", "SHORT_ID"),

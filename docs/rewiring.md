@@ -453,7 +453,7 @@ Scope is `channels`, the hive that already exists.
     "add_nodes": [
       {"name": "telegram", "template": "telegram-connector@2.2.6",
        "override_params": {"bot_token_grant_id": "grant:telegram-bot@<subject>/channels-telegram"}},
-      {"name": "talky", "template": "talky@6.11.6"}
+      {"name": "talky", "template": "talky@6.11.7"}
     ]
   }
 }

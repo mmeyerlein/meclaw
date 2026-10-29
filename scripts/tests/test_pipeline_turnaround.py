@@ -33,6 +33,7 @@ from scripts.tests import test_pipeline_merge as tm  # noqa: E402
 REPO_ROOT = SCRIPTS.parent
 
 WAVE = tm.WAVE
+WAVE_PREFIX = WAVE.rsplit("-", 3)[0]   # the branch prefix of the wave
 LEDGER = "plans/%s/ledger.md" % WAVE
 REPORT = "plans/%s/berichte/S1.md" % WAVE
 NOTES = "plans/%s/berichte/zz-notes.md" % WAVE
@@ -612,11 +613,14 @@ class CodeTreeTest(Case):
         self.assertEqual(rc, 0, err)
 
     def test_m_n7_rule_8_python_matches_a_name_only_at_a_path_boundary(self):
+        # The file name counts beside its wave only (GH #1343): each file
+        # names the wave by its branch prefix `<wave>/` (`_wave_token`).
         target = "plans/%s/berichte/x.md" % WAVE
-        tm.write(self.f.root, "scripts/tests/test_c.py", "# see recheck-x.md and sx.md\n")
+        b = 'B = "%s/x"\n' % WAVE_PREFIX
+        tm.write(self.f.root, "scripts/tests/test_c.py", b + "# see recheck-x.md and sx.md\n")
         tm.write(self.f.root, "scripts/tests/test_p.py", 'P = "%s"\n' % target)
-        tm.write(self.f.root, "scripts/tests/test_n.py", 'P = BERICHTE / "x.md"\n')
-        tm.write(self.f.root, "scripts/tests/test_s.py", "P = 'berichte/x.md'\n")
+        tm.write(self.f.root, "scripts/tests/test_n.py", b + 'P = BERICHTE / "x.md"\n')
+        tm.write(self.f.root, "scripts/tests/test_s.py", b + "P = 'berichte/x.md'\n")
         got = turnaround.python_readers(self.f.root, target)
         self.assertNotIn("scripts/tests/test_c.py", got)
         for reader in ("scripts/tests/test_p.py", "scripts/tests/test_n.py",
@@ -627,8 +631,9 @@ class CodeTreeTest(Case):
         # `_bounded` escapes the needle: unescaped, `a+b.md` misses its own
         # reader and `a+b.md` as an ERE takes `aab.md` for it.
         target = "plans/%s/berichte/a+b.md" % WAVE
-        tm.write(self.f.root, "scripts/tests/test_r.py", 'P = "berichte/a+b.md"\n')
-        tm.write(self.f.root, "scripts/tests/test_q.py", 'P = "berichte/aab.md"\n')
+        b = 'B = "%s/x"\n' % WAVE_PREFIX   # beside its wave (GH #1343)
+        tm.write(self.f.root, "scripts/tests/test_r.py", b + 'P = "berichte/a+b.md"\n')
+        tm.write(self.f.root, "scripts/tests/test_q.py", b + 'P = "berichte/aab.md"\n')
         got = turnaround.python_readers(self.f.root, target)
         self.assertIn("scripts/tests/test_r.py", got)
         self.assertNotIn("scripts/tests/test_q.py", got)
@@ -674,7 +679,10 @@ class CodeTreeTest(Case):
             bad = turnaround.offending(paths, self.f.root)
         self.assertEqual(["plans/%s/berichte/r5.md" % WAVE], sorted(bad))
         self.assertIn("rule 8 python: scripts/tests/test_r5.py", bad[paths[5]])
-        self.assertEqual(1 + len(paths), len(greps))
+        # One grep over every file, the rest over the hit file alone -- GH
+        # #1343 adds the hit-only grep that tells a path from a bare name.
+        self.assertEqual(1, len([a for a in greps if not a[-1].startswith(":(literal)")]))
+        self.assertEqual(len(paths) + 3, len(greps))   # + the hit-only grep twice
         self.assertTrue(all(a[-1] == ":(literal)scripts/tests/test_r5.py" for a in greps[1:]))
         os.remove(os.path.join(self.f.root, "scripts/tests/test_r5.py"))
         greps.clear()
@@ -737,6 +745,43 @@ class CodeTreeTest(Case):
         why = turnaround.veto(REPORT, self.f.root)
         self.assertIsNotNone(why)
         self.assertIn("rule 8 python: scripts/tests/test_y.py", why)
+
+    # GH #1343: the kit's own tests build `plans/<test wave>/berichte/S1.md`
+    # (this module's REPORT, `os.path.join(wdir, "berichte", "S1.md")`); the
+    # bare file name made them readers of every real wave's S1 report -- the
+    # merge refused a live wave's S1 `receipt_not_branch_head` over a commit
+    # of its report alone.
+    FIXTURE = ('W = "welle-fixture-2026-01-01"\nR = "plans/%s/berichte/S1.md" % W\n'
+               'import os\nP = os.path.join("tmp", "berichte", "S1.md")\n')
+
+    def test_gh1343_a_strand_named_like_a_fixture_keeps_its_receipt(self):
+        self.f.master_commit({"scripts/tests/test_fixture.py": self.FIXTURE,
+                              "crates/x/tests/old.rs": "// plans/welle-old-2026-01-01/berichte/S1.md\n"})
+        s = self.strand()
+        self.stamp(s["wt"])
+        self.bump(s["wt"])
+        self.stamp(s["wt"])
+        rc, out, err = self.f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("MERGED S1", out)
+
+    def test_gh1343_a_fixture_of_another_wave_reads_no_report_of_this_one(self):
+        self.f.master_commit({"scripts/tests/test_fixture.py": self.FIXTURE})
+        self.assertEqual({}, turnaround.reuse_readers(self.f.root, [REPORT], (("HEAD", "m"),)))
+        self.assertEqual({}, turnaround.offending([REPORT], self.f.root, WAVE))
+
+    def test_gh1343_the_file_name_with_the_wave_named_is_still_a_reader(self):
+        # Fail-closed: a file naming the report's name AND the wave -- its
+        # directory or the branch prefix `<wave>/` -- reads it.
+        prefix = WAVE_PREFIX
+        for text in ('W = "%s"\nP = os.path.join("plans", W, "berichte", "S1.md")\n' % WAVE,
+                     'B = "%s/S1"\nP = os.path.join(d, "berichte", "S1.md")\n' % prefix):
+            with self.subTest(text=text):
+                self.f.master_commit({"scripts/tests/test_reader.py": text})
+                got = turnaround.reuse_readers(self.f.root, [REPORT], (("HEAD", "m"),))
+                self.assertEqual({REPORT: "read by scripts/tests/test_reader.py in m"}, got)
+                self.assertIn("rule 8 python: scripts/tests/test_reader.py",
+                              turnaround.offending([REPORT], self.f.root, WAVE).get(REPORT, ""))
 
     def test_h_test_wave_retro_reads_the_h2_and_h3_receipts(self):
         # The concrete reader of the re-check (B1), in this repository: the
