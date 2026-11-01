@@ -950,9 +950,12 @@ def release_count(doc, db=None):
                if isinstance(s, dict) and s.get("name") == COUNT_STATION), None)
     if st is None:
         raise CountError("the receipt has no station %s" % COUNT_STATION)
-    if st.get("verdict") not in ("GREEN", "CACHED"):
+    # A NOTE that carries load_flake is a green station (every triage step
+    # green, red only under the gate's full load); any other NOTE stays refused.
+    ran = st.get("verdict") == "GREEN" or (st.get("verdict") == "NOTE" and bool(st.get("load_flake")))
+    if not ran and st.get("verdict") != "CACHED":
         raise CountError("station %s is %s" % (COUNT_STATION, st.get("verdict")))
-    if not st.get("cache_from") and st.get("verdict") == "GREEN":
+    if not st.get("cache_from") and ran:
         t = st.get("tests") or {}
         if t.get("total") is None:
             raise CountError("station %s carries no test count" % COUNT_STATION)

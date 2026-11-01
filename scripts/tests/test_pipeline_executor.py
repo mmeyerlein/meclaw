@@ -2230,6 +2230,22 @@ class TestExecutorFailures(ExecutorCase):
         env = run._env(run.by_name["tests"])
         return {k: env.get(k) for k in executor.THREAD_KEYS}
 
+    def test_a_ci_part_of_the_owners_shell_never_narrows_a_gate(self):
+        # rt3 review M1: MECLAW_TIER_SHARD / MECLAW_SELFTEST_PART cut the public CI
+        # into jobs; set by hand in the shell they narrowed a strand gate silently to
+        # 1/n of `tests` or `gate-selftest`, verdict GREEN. The executor drops them
+        # like an override of MECLAW_SELFTEST_SHARDS and names the dropped value.
+        d = self.dispatch([station("tests", nextest={"profile": "default"}),
+                           station("gate-selftest", needs={"cpu": 2})])
+        run = executor._Run(d, io.StringIO(), io.StringIO(), None)
+        run.base_env = dict(run.base_env, MECLAW_TIER_SHARD="2/8", MECLAW_SELFTEST_PART="1/3")
+        for name in ("tests", "gate-selftest"):
+            env = run._env(run.by_name[name])
+            for var, raw in (("MECLAW_TIER_SHARD", "2/8"), ("MECLAW_SELFTEST_PART", "1/3")):
+                with self.subTest(station=name, var=var):
+                    self.assertIsNone(env.get(var))  # never the whole env in a failure
+                    self.assertEqual(raw, env.get(var + "_IGNORED"))
+
     def test_lane_class_runs_booked_width_not_egon_cap(self):
         # The gate's flags say `+nice` on a lane too (the prefix stays); the
         # class alone lifts the cap: a 12er lane books 12 jobs and 12 threads.

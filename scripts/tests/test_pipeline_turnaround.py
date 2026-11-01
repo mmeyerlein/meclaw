@@ -1627,6 +1627,21 @@ class ReleaseCountTest(unittest.TestCase):
             self.assertEqual(out, "")
             self.assertIn("never estimated", err)
 
+    def test_a_note_with_load_flake_counts_as_run(self):
+        # Release 0.77.1 (OR-RT-27): the gate counts a load-flake NOTE green, so does the count.
+        doc = _receipt({"total": 11841, "passed": 11840, "failed": 1})
+        doc["stations"][-1].update(verdict="NOTE", load_flake=[{"test": "c::t", "green": 2}])
+        rc, out, err = self.cli(doc)
+        self.assertEqual((rc, out), (0, "release-count: 11841 tests (release cccccccccccc)\n"), err)
+
+    def test_a_note_without_load_flake_stays_exit_2(self):
+        for extra in ({}, {"load_flake": []}, {"load_flake": None}):
+            doc = _receipt({"total": 5})
+            doc["stations"][-1].update(verdict="NOTE", **extra)
+            rc, out, err = self.cli(doc)
+            self.assertEqual((rc, out), (2, ""), extra)
+            self.assertIn("station tests is NOTE", err)
+
     def test_a_bad_total_or_an_unwritable_status_is_exit_2(self):
         # Review M1: ValueError/OSError ended as a traceback with exit 1.
         rc, out, err = self.cli(_receipt({"total": "many"}))

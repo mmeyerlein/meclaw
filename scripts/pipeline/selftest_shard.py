@@ -668,10 +668,18 @@ def main(argv):
         n = min(plan.selftest_shards(nproc, os.environ), nproc)
     except ValueError as exc:
         return usage(str(exc))
+    # The part is this run's alone (CI v0.77.1, run 41334566186): left in the
+    # environment it reached every shard, and each kit test that starts this
+    # runner, pre or strand.sh ran only part k of its own fixture. Read once,
+    # then gone from os.environ -- shard_env, run_single and every child copy it.
     try:
-        part = parse_part(os.environ.get(PART_ENV))
+        part = parse_part(os.environ.pop(PART_ENV, None))
     except ValueError as exc:
         return usage(str(exc))
+    ignored_part = os.environ.pop(PART_ENV + "_IGNORED", None)
+    if ignored_part is not None:
+        print("selftest_shard: override %s=%r ignored (a gate runs the whole station)"
+              % (PART_ENV, ignored_part))
     durations = load_durations(os.environ.get(DURATIONS_ENV) or DURATIONS)
     root = os.getcwd()
     # Before the plan: its discovery imports every heavy module, and an import

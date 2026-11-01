@@ -217,20 +217,26 @@ jobs:
   #      runs tests from different binaries at the same time. The measured
   #      sum of per-binary wall time was 404s, with the longest single binary
   #      at 30s -- i.e. the old run was mostly waiting.
-  #   2. Shards, so the run time is divided again across runners. Eight of
+  #   2. Shards, so the run time is divided again across runners. Ten of
   #      them, cut by measured run time per test binary
-  #      (`scripts/pipeline/nextest_shards.py`, `MECLAW_TIER_SHARD=k/8`):
+  #      (`scripts/pipeline/nextest_shards.py`, `MECLAW_TIER_SHARD=k/10`):
   #      nextest's own `--partition count:k/3` dealt out tests, not seconds,
   #      and its three shards ran 638 / 592 / 425 s of tests behind a ~5 min
   #      build each (longest job 16:49). The table holds 227 binaries and
   #      6159 s of test time; eight shards carry ~770 s each, ~210 s of wall
   #      time at four threads -- with build and setup ~9.4 min. A binary the
   #      table does not know runs in the lightest shard, so none is lost.
+  #      Measured on eight (CI of v0.77.1): 178-290 s of test wall, longest
+  #      job 10:48 -- a test with `threads-required = 2` holds two of the four
+  #      threads, so the table counts slot-seconds (6906 s); ten shards carry
+  #      683-756 each, <= 189 s of wall. Jobs at once: plan, gate, windows, deny,
+  #      3 selftest, 10 test = 17, plus release = 18 of the 20 a public
+  #      repository runs at once.
   #
   # Each shard builds its own test binaries rather than downloading a
   # `nextest archive` from a build job. That is deliberate: the build is
   # ~4-5 min and would sit in FRONT of every shard as a serial stage, plus the
-  # transfer of a multi-hundred-megabyte archive. Built per shard, the eight
+  # transfer of a multi-hundred-megabyte archive. Built per shard, the ten
   # builds run at the same time, and the dependency half of the build comes
   # out of the shared cache below -- no shard compiles a dependency twice.
   # It costs runner minutes, not wall clock, and runner minutes are free on
@@ -253,7 +259,7 @@ jobs:
       fail-fast: false
       matrix:
         # As many as SHARDS in scripts/pipeline/nextest_shards.py (lock test).
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -283,10 +289,10 @@ jobs:
       # should cost one round, not one defect. (The `ci` profile in
       # .config/nextest.toml sets `fail-fast = false` as well; the flag is
       # repeated here so that the property survives a profile edit.)
-      - name: test (shard ${{ matrix.shard }}/8)
+      - name: test (shard ${{ matrix.shard }}/10)
         env:
           MECLAW_TIER_PROFILE: ci
-          MECLAW_TIER_SHARD: ${{ matrix.shard }}/8
+          MECLAW_TIER_SHARD: ${{ matrix.shard }}/10
         run: >
           scripts/test-tier.sh t2
           --no-fail-fast

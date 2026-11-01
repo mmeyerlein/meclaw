@@ -466,6 +466,22 @@ class TestIsolation(ShardCase):
         self.assertNotIn(selftest_shard.LOG_DIR_ENV, env)
         self.assertEqual(path, env["PATH"])
 
+    def test_the_part_reaches_no_shard(self):
+        # CI v0.77.1 (run 41334566186): the selftest jobs ran with
+        # MECLAW_SELFTEST_PART=k/3, the shards inherited it, and every kit test
+        # that starts this runner (pre, strand.sh, this module) ran only part k
+        # of its fixture -- `shards=2 not found ... shards=1`. The part is the
+        # top run's, never a child's.
+        mod = self.module("s0", SPY_CASE % ([selftest_shard.PART_ENV],))
+        out = self.root / "spy"
+        out.mkdir()
+        res = self.run_runner(["unittest", mod], 1,
+                              extra={"SPY_OUT": str(out), selftest_shard.PART_ENV: "1/1"})
+        self.assertEqual(0, res.returncode, res.stdout)
+        self.assertIn("SHARD-PART 1/1", res.stdout)
+        seen = json.loads((out / (mod + ".json")).read_text())
+        self.assertIsNone(seen[selftest_shard.PART_ENV], res.stdout)
+
     def test_shards_share_no_tmpdir_and_no_state(self):
         names = sorted(set(["TMPDIR", "XDG_STATE_HOME"]) | set(selftest_shard.STATE_ENVS))
         mods = [self.module("s%d" % i, SPY_CASE % (names,)) for i in range(4)]

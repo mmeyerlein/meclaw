@@ -22,9 +22,9 @@ use meclaw_colony::{
 };
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, JsonValue, Message, MessageBuilder, OutputSink, Path, Uuid};
-use meclaw_testing::ColonyHandle;
 use meclaw_testing::factories::EchoCellFactory;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use meclaw_testing::{ColonyHandle, deadline};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -271,7 +271,8 @@ async fn disconnect_woken_stateful_drains_remainder_to_dlq() {
         gate: gate_slot.clone(),
     });
 
-    let h = ColonyHandle::new_with_factories_at(&td, echo_factories());
+    let (h, mut death_ack_wait_rx) =
+        ColonyHandle::new_with_factories_and_death_ack_signal_at(&td, echo_factories());
     // /sink BEFORE bootstrap (anti-cascade).
     let (sink_tx, _sink_rx) = mpsc::channel::<Message>(8);
     h.spawn(Path::new("/sink"), move || {
@@ -334,8 +335,8 @@ async fn disconnect_woken_stateful_drains_remainder_to_dlq() {
     let corr3 = Uuid::now_v7();
     h.send(probe("/sf", corr2)).await;
     h.send(probe("/sf", corr3)).await;
-    // Give the messages a beat to land in the cell's mailbox.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The colony routed msg2/msg3 into the mailbox (FIFO marker, no window).
+    h.sync().await;
 
     // Disconnect /sf (remove its last edge) CONCURRENTLY: the recompute fires
     // the peace-stop and then awaits death_ack. The cell is wedged in handle(),
@@ -356,8 +357,15 @@ async fn disconnect_woken_stateful_drains_remainder_to_dlq() {
             .unwrap();
         ack_rx.await.unwrap()
     });
-    // Release the gate so handle()#1 returns and the stop can complete.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Release the wedged handle() only once the colony has SENT the peace-stop
+    // (its death-ack-wait signal), never after a wall-clock window: the biased
+    // stop arm wins only over a stop that is already there when handle()#1
+    // returns. CI v0.77.1 (run 41334566186, 24 binaries in one shard) released
+    // the gate after 100 ms before the mutation reached the stop -- the cell
+    // read the remainder itself and the DLQ came back `[]`.
+    deadline::hang("the colony sent the peace-stop", death_ack_wait_rx.recv())
+        .await
+        .expect("death-ack-wait signal channel open");
     let _ = gate_tx.send(());
 
     let outcome = mutation.await.expect("mutation task");

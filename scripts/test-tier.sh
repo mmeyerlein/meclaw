@@ -307,10 +307,19 @@ run_nextest() {
     # the shard's filterset from `scripts/pipeline/nextest_shards.py`, cut by
     # measured run time. A second `-E` would not do: nextest ORs repeated
     # filtersets, and `all()` OR a shard is the whole suite again.
-    if [ -n "${MECLAW_TIER_SHARD:-}" ]; then
+    # Read once and unset: the shard is this run's, and a test that starts a
+    # kit script (or this one) must run its own whole selection (CI v0.77.1,
+    # run 41334566186: the job's part reached the kit tests of selftest).
+    local tier_shard="${MECLAW_TIER_SHARD:-}"
+    unset MECLAW_TIER_SHARD
+    if [ -n "${MECLAW_TIER_SHARD_IGNORED:-}" ]; then
+        echo "=== shard: MECLAW_TIER_SHARD=$MECLAW_TIER_SHARD_IGNORED ignored (a gate runs the whole tier)"
+        unset MECLAW_TIER_SHARD_IGNORED
+    fi
+    if [ -n "$tier_shard" ]; then
         local shard_expr
         shard_expr=$("${KIT_PY[@]}" "$root/scripts/pipeline/nextest_shards.py" \
-                     filter "$MECLAW_TIER_SHARD") || exit 2
+                     filter "$tier_shard") || exit 2
         filter="($filter) & ($shard_expr)"
     fi
     echo "=== nextest [profile=$profile]"
@@ -431,6 +440,7 @@ run_nextest() {
              "--binaries-metadata $reuse/binaries.json" \
              "--cargo-metadata $reuse/cargo-metadata.json -E $filter $*"
     elif [ -n "${MECLAW_TIER_DRY:-}" ]; then
+        echo "=== tier-env: child env MECLAW_TIER_SHARD=${MECLAW_TIER_SHARD-<unset>}"
         echo "=== tier-dry: cargo nextest run $(workspace_scope "$@")" \
              "$(meclaw_test_features "$root" "$@" | tr '\n' ' ')--profile $profile -E $filter $*"
     elif [ -n "${MECLAW_TIER_LIST:-}" ] && [ "$tier" = filter ]; then

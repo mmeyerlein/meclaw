@@ -382,6 +382,21 @@ def _book_selftest_shards(env, st):
         env[SELFTEST_SHARDS_ENV] = str(cpu)
 
 
+# The public CI cuts `tests` and `gate-selftest` into jobs with these two
+# (`.github/workflows/ci.yml`, run by `gate.sh ci`, never by this executor). Set
+# by hand in the owner's shell they narrowed a strand gate silently to 1/n of a
+# station, verdict GREEN (rt3 review M1): dropped like an override of
+# MECLAW_SELFTEST_SHARDS, the dropped value under `<name>_IGNORED`.
+CI_PART_ENVS = ("MECLAW_TIER_SHARD", "MECLAW_SELFTEST_PART")
+
+
+def _drop_ci_parts(env):
+    for name in CI_PART_ENVS:
+        raw = env.pop(name, None)
+        if raw is not None:
+            env[name + "_IGNORED"] = raw
+
+
 # The slots of the port register a colony station booked (GH #1161), handed over
 # like MECLAW_SELFTEST_SHARDS: `scenarios:memory` booked eight colonies and its
 # runner, given no slot, ran one case at a time (396 s on build03, 2026-10-09).
@@ -1746,6 +1761,7 @@ class _Run:
             os.makedirs(check, exist_ok=True)
             env["MECLAW_EXPORT_CHECK_TARGET"] = check
         _book_threads(env, st, egon=egon_capped(getattr(self, "d", None)))
+        _drop_ci_parts(env)
         if name == "gate-selftest":
             _book_selftest_shards(env, st)
         # Only a station that booked colonies gets slots; a value left in the lane's

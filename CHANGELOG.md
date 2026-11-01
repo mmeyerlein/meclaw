@@ -12,6 +12,20 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.77.2] — 2026-11-01
+
+A patch release that repairs the public CI after its move to a duration-balanced shard matrix: shard settings no longer leak into the self-tests, a lifecycle test no longer races its dead-letter check, and the suite is spread over ten shards. The published test count comes straight from the release gate.
+
+### Fixed
+
+- `pipeline.py release count` counts a release gate whose `tests` station is a load-flake NOTE ([#1385](https://github.com/mmeyerlein/meclaw/issues/1385)). The gate counts such a station green (every triage step green, red only under the gate's full load), but the count refused it and stopped the release after a green gate. A NOTE without `load_flake` is still refused.
+- The public CI's job split no longer leaks into the tests it runs ([#1386](https://github.com/mmeyerlein/meclaw/issues/1386)). `MECLAW_SELFTEST_PART` and `MECLAW_TIER_SHARD` act on the top run only: `selftest_shard.py` and `scripts/test-tier.sh` read them once and remove them from every child, so a kit test that starts the self-test runner, `pre` or `strand.sh` runs its whole fixture again (the self-test jobs of v0.77.1's CI were red on exactly that). A value set by hand in a shell no longer narrows a local gate either: the gate executor drops both and names the dropped value as `<name>_IGNORED`.
+- Three lifecycle tests of the remainder-to-DLQ path (`disconnect_long_running_drains_remainder_to_dlq`, `disconnect_stateless_drains_remainder_to_dlq`, `disconnect_woken_stateful_drains_remainder_to_dlq`) wait for events instead of 100 ms windows ([#1386](https://github.com/mmeyerlein/meclaw/issues/1386)). They released the wedged cell after a fixed sleep; under load the release came before the colony sent the peace-stop, the cell read its remainder itself and the DLQ stayed empty. They now release on the colony's death-ack-wait signal and wait for the mailbox state with the FIFO marker. No runtime change.
+
+### Changed
+
+- The public CI runs ten test shards instead of eight, cut by slot-seconds ([#1386](https://github.com/mmeyerlein/meclaw/issues/1386)). A test with `threads-required` holds more than one of a runner's four threads, so `nextest_shards.py durations` weighs each test case by its `threads-required` from `.config/nextest.toml` (the sum met every measured shard within 9 s, plain seconds missed one by 73 s) and keeps binaries the run did not name with `--union`. The longest shard drops from 290 s to an estimated 189 s of test time.
+
 ## [0.77.1] — 2026-11-01
 
 This patch release changes how MeClaw is released, not what it runs. The release cut now lands with a wave's last merge, so one full pass serves as both the integration and the release check, and the test count is read from that pass instead of being estimated. The release gate builds the exported tree's tests once and runs the kit checks beside them, and a single release command carries a release from that pass to the published site with one stop for approval. The public CI splits its test shards by measured duration and runs the gate self-test as separate jobs.

@@ -142,6 +142,54 @@ class TestDurationsFromJunit(unittest.TestCase):
             self.assertEqual({"a::x": 6.5, "b": 1.0}, json.loads(pathlib.Path(out).read_text()))
 
 
+    CONFIG = textwrap.dedent("""\
+        [[profile.ci.overrides]]
+        filter = 'binary_id(=a::x) & test(=t1)'
+        threads-required = 3
+
+        [[profile.default.overrides]]
+        filter = \'\'\'
+          (binary_id(=a::x) & (test(=t1) + test(=t2)))
+          + binary_id(=b)
+          + (binary_id(/regex/) & test(=t))
+        \'\'\'
+        threads-required = 2
+        """)
+
+    def test_a_test_that_reserves_slots_weighs_its_slots(self):
+        # CI v0.77.1: shard 3 ran 290 s of wall for 217 s of seconds / 4 -- its
+        # long-first tests hold two threads each. Slot-seconds met it (284 s).
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "nextest.toml")
+            pathlib.Path(cfg).write_text(self.CONFIG)
+            junit = os.path.join(d, "junit.xml")
+            pathlib.Path(junit).write_text(self.JUNIT % "a::x")
+            out = os.path.join(d, "table.json")
+            res = subprocess.run(lane.python_argv(TOOL, "durations", "--out", out,
+                                                  "--nextest-config", cfg, junit),
+                                 cwd=REPO, capture_output=True, text=True,
+                                 timeout=kit_time.HANG)
+            self.assertEqual(0, res.returncode, res.stderr)
+            # t1: ci first (3 slots), t2: default (2), b: the whole binary (2).
+            self.assertEqual({"a::x": 7.8, "b": 1.0},  # 1.25 x 3 + 2.0 x 2, at 0.1 s
+                             json.loads(pathlib.Path(out).read_text()))
+
+    def test_union_keeps_a_binary_the_run_did_not_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            junit = os.path.join(d, "junit.xml")
+            pathlib.Path(junit).write_text(self.JUNIT % "a::x")
+            old = os.path.join(d, "old.json")
+            pathlib.Path(old).write_text(json.dumps({"a::x": 99.0, "gone": 7.0}))
+            out = os.path.join(d, "table.json")
+            res = subprocess.run(lane.python_argv(TOOL, "durations", "--out", out, "--union", old,
+                                                  "--nextest-config", os.devnull, junit),
+                                 cwd=REPO, capture_output=True, text=True,
+                                 timeout=kit_time.HANG)
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertEqual({"a::x": 3.2, "b": 0.5, "gone": 7.0},
+                             json.loads(pathlib.Path(out).read_text()))
+
+
 class TestTheWorkflowMatchesTheTable(unittest.TestCase):
     """The matrix lengths of ci.yml are the shard counts of the kit (lock)."""
 
@@ -187,6 +235,10 @@ class TestTheTierAndsTheShard(unittest.TestCase):
         want = "(all()) & (%s)" % nextest_shards.filters(
             nextest_shards.load(nextest_shards.DURATIONS), n)[1]
         self.assertIn("=== filter: %s\n" % want, out.stdout)
+        # CI v0.77.1: a job's shard value reached every script a test starts;
+        # the tier reads it once and its nextest child (and every test in it)
+        # runs without it.
+        self.assertIn("=== tier-env: child env MECLAW_TIER_SHARD=<unset>\n", out.stdout)
         env["MECLAW_TIER_SHARD"] = "9/%d" % n if n < 9 else "x"
         out = subprocess.run([str(SCRIPTS / "test-tier.sh"), "t2"], cwd=REPO, env=env,
                              capture_output=True, text=True, timeout=2 * kit_time.HANG)
