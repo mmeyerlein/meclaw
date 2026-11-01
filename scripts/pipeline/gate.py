@@ -576,7 +576,7 @@ def _runs_here(o, repo, db, cargo):
     """Whether a (non-satellite) pass runs on this machine (`_run_local`): `--lane`,
     or a plan without a cargo station, without `--host` and without a held lane
     lease. I3 (ruling test-cc19, 16.10.): cargo-free kit plans (gate-selftest,
-    export-tree-tests --kit) with `--host build03` ran here beside the live Egon
+    export-tree-kit) with `--host build03` ran here beside the live Egon
     (~120 % load, a load-flake) -- with `--host` or a held lane lease they run on
     the lane (`_run_lane`, a lease as for a cargo plan)."""
     if o.lane:

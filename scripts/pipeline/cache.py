@@ -167,6 +167,11 @@ INPUTS = {
     "export-selftest": ["tree", "export_infra"],
     # The export index decides what is exported; only the whole tree is safe.
     "export-tree-tests": ["tree"],
+    # RT1: the kit half on its own. Like gate-selftest, it runs the kit's own
+    # tests (in the export tree) and `unkeyed_reads` holds it to the whole tree:
+    # CACHED on an unchanged tree (a second run on the same head), not on a
+    # Rust-only release.
+    "export-tree-kit": ["tree"],
 }
 
 _REASON_NO_PATH = frozenset({"always", "mode", "station", "floor"})

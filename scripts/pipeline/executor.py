@@ -246,7 +246,8 @@ NO_TESTS_SIGNATURE = "test-tier: RED -- no tests matched: "
 LISTED_PREFIX = "test-tier: LISTED "
 
 # scripts/gate.sh PRECHECK_STOP_ALSO: stations whose own cargo column is 0 and
-# that still cannot be judged without the build.
+# that still cannot be judged without the build. Not `export-tree-kit` (RT1): it
+# builds nothing and is judged without a build, like `gate-selftest`.
 PRECHECK_STOP_ALSO = frozenset({"scenarios:memory", "scenarios:builder", "export-audit",
                                 "persona-cases", "export-tree-tests"})
 # scripts/gate.sh missing_tool: station -> the tool it cannot run without (SKIP).

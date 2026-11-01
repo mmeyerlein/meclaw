@@ -2006,6 +2006,71 @@ def _cargo_free(rec):
                and schedule._needs(st)["cargo"] < 1 for st in stations)
 
 
+RELEASE_REFUSAL = "release_cut"
+
+
+def release_precheck(root, strands, rel):
+    """Refuse a `--release` that cannot be cut, before the lease (RT2): one
+    strand only (a bisected batch would cut twice) and `x.y.z` in form. What
+    the cut needs of the tree is judged on the candidate (`release_dry_run`)."""
+    if not rel:
+        return
+    if len(strands) != 1:
+        raise Refused(RELEASE_REFUSAL, "--release cuts after ONE strand, not a batch of %d"
+                      % len(strands))
+    try:
+        versions.release_check(rel["version"])
+    except versions.VersionError as exc:
+        raise Refused(RELEASE_REFUSAL, str(exc))
+
+
+def release_dry_run(cand, rel):
+    """The cut on the merge candidate `cand` without writing, before the merge
+    gate. Review I2 (RT2 fix round 1): the precheck read master, so a merge
+    bump over `--release` (strand kind `feature`) or an `[Unreleased]` only the
+    merge fills was judged on the wrong tree, and the cut refused after a GREEN
+    gate -- or a fit cut was refused."""
+    try:
+        cargo = os.path.join(cand, "Cargo.toml")
+        ws = None
+        if os.path.isfile(cargo):
+            with open(cargo, encoding="utf-8") as fh:
+                ws = versions.workspace_version(fh.read())
+        versions.release_check(rel["version"], ws)
+        try:
+            with open(os.path.join(cand, "CHANGELOG.md"), encoding="utf-8") as fh:
+                log = fh.read()
+        except OSError:
+            raise versions.VersionError("the candidate has no CHANGELOG.md")
+        versions.cut_changelog(log, rel["version"], rel.get("intro"), "0000-00-00")
+    except versions.VersionError as exc:
+        raise Refused(RELEASE_REFUSAL, str(exc))
+
+
+def release_cut_commit(cand, merged, rel, err):
+    """The cut commit on top of the merge commit `merged` in the candidate; returns
+    `(sha, date)`. Stages only the paths the cut wrote (review I2: `git add -u`
+    took every tracked change of the candidate, runner traces included).
+    Refuses when its diff leaves the release allowlist -- then it would need a
+    gate, and the cut never gets one (RT2 point 1)."""
+    try:
+        date, paths = versions.release_cut(cand, rel["version"], rel.get("intro"),
+                                           rel.get("today"))
+    except versions.VersionError as exc:
+        raise Refused(RELEASE_REFUSAL, str(exc))
+    git(cand, "add", "--", *paths, check=True)
+    git(cand, "commit", "-q", "-m",
+        "Release %s\n\nRelease cut at the merge point: workspace version %s, CHANGELOG "
+        "[Unreleased] -> [%s] %s %s.\n" % (rel["version"], rel["version"], rel["version"],
+                                             versions.CHANGELOG_DASH, date), check=True)
+    sha = out(cand, "rev-parse", "HEAD")
+    ok, bad = turnaround.release_record_equal(cand, merged, sha)
+    if not ok:
+        raise Refused(RELEASE_REFUSAL, "the cut leaves the release allowlist: %s"
+                      % turnaround.describe(bad))
+    return sha, date
+
+
 def land_plan_only(db, ctx, s, base):
     """GH #1167 (d): a plan-only branch -- merge commit, no versions, no gate.
     The candidate's own diff is checked again: gate-neutral or refused."""
@@ -2026,16 +2091,21 @@ def land_plan_only(db, ctx, s, base):
         git(cand, "commit", "-q", "-m", "Merge %s%s: plan-only, no gate (%d gate-neutral files)\n"
             % (s.name, " (%s)" % issues if issues else "", len(paths)), check=True)
         sha = out(cand, "rev-parse", "HEAD")
+        head = sha
+        if ctx.get("release"):
+            head, cut_date = release_cut_commit(cand, sha, ctx["release"], ctx["err"])
         steps.done()
         steps.at("ref-update")
         hold_tree(db, ctx["repo"], ctx["holder"])
-        fast_forward(root, base, sha)
+        fast_forward(root, base, head)
         steps.done()
     except Refused as exc:
         steps.fail()
         return [(s.name, "refused", exc.reason, exc.text)]
     finally:
         close_candidate(root, cand)
+    if head != sha:
+        ctx["out"].write("release-cut: %s %s %s\n" % (ctx["release"]["version"], head, cut_date))
     line = "MERGE-PLAN-ONLY %s %s %d files GREEN" % (s.name, sha[:9], len(paths))
     _set_merge(db, mid, state="merged", merge_sha=sha)
     _event(db, "merge_done", mid, s.name, base, merge_sha=sha, plan_only=True)
@@ -2091,6 +2161,8 @@ def land(db, ctx, strands, base, depth=0):
             return [(s.name, "refused", exc.reason, exc.text) for s in strands]
         gctx["rev"] = sha
     try:
+        if ctx.get("release"):
+            release_dry_run(cand, ctx["release"])
         gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx)
         for s in strands:
             _set_merge(db, mids[s.name], state="gating", versions=result["versions"],
@@ -2132,9 +2204,16 @@ def land(db, ctx, strands, base, depth=0):
                 return done + land(db, ctx, strands[half:], now, depth + 1)
             return [(s.name, "refused", reason, verdict["line"]) for s in strands]
         steps.done()
+        head, cut_date = sha, None
+        if ctx.get("release"):
+            # RT2: the cut commit after the GREEN gate, wholly in the release
+            # allowlist -- the release gate of the wave judges it, no merge gate.
+            steps.at("release-cut")
+            head, cut_date = release_cut_commit(cand, sha, ctx["release"], ctx["err"])
+            steps.done()
         steps.at("ref-update")
         hold_tree(db, repo, ctx["holder"])
-        fast_forward(root, base, sha)
+        fast_forward(root, base, head)
         steps.done()
     except Refused as exc:
         steps.fail()
@@ -2143,6 +2222,8 @@ def land(db, ctx, strands, base, depth=0):
         golden_give_back(db, gctx, ctx["err"])
         if cand:
             close_candidate(root, cand)
+    if cut_date:
+        ctx["out"].write("release-cut: %s %s %s\n" % (ctx["release"]["version"], head, cut_date))
     for s in strands:
         _set_merge(db, mids[s.name], state="merged", merge_sha=sha)
         _event(db, "merge_done", mids[s.name], s.name, base, merge_sha=sha,
@@ -2158,6 +2239,9 @@ def land(db, ctx, strands, base, depth=0):
             "summary": "MERGE %s %s %s GREEN" % (s.name, sha[:9], versions.version_line(result))}
         if goldens is not None:
             doc["goldens"] = goldens
+        if cut_date:
+            doc["release_cut"] = {"version": ctx["release"]["version"], "sha": head,
+                                  "date": cut_date}
         if resolved:
             doc["resolved"] = resolved
         merge_receipt(ctx, s.wdir, "merge-%s" % s.name, sha, doc)
@@ -2184,12 +2268,16 @@ def waited(db, repo, mids, fresh):
 
 
 def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, close=True,
-          db=None, out_=None, err=None, wait=False, clock=None):
+          db=None, out_=None, err=None, wait=False, clock=None, release=None, intro=None,
+          today=None):
     """`pipeline.py merge`: returns the exit code (0 merged, 1 refused, 3 queued).
 
     `wait` (`--wait`) blocks in the queue instead of exit 3 (`take_tree_waiting`).
     `clock` is the kit clock (`store.now`) of the queue row and the lease take:
-    the receipt's `wait_s` is the time between them (V2-A10)."""
+    the receipt's `wait_s` is the time between them (V2-A10).
+    `release` (`--release x.y.z`, RT2): after the GREEN gate the merge point
+    appends the release cut commit (`versions.release_cut`, `intro` the text of
+    `--intro`, `today` the injected clock of the tests) and fast-forwards to it."""
     out_, err = out_ or sys.stdout, err or sys.stderr
     clock = clock or store.now
     root = main_root(start or os.getcwd())
@@ -2212,6 +2300,8 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
             else:
                 mids[s.name] = _new_merge(db, repo, s.name, base, "queued", clock())
                 created.add(s.name)
+        rel = {"version": release, "intro": intro, "today": today} if release else None
+        release_precheck(root, strands, rel)
         def queued():
             for s in strands:
                 _event(db, "merge_queued", mids[s.name], s.name, base)
@@ -2276,7 +2366,8 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
         base = out(root, "rev-parse", "master")
         ctx = {"root": root, "repo": repo, "host": host, "mids": mids, "out": out_,
                "receipts": {}, "holder": holder, "err": err, "steps": steps, "wait": wait,
-               "wait_s": waited(db, repo, mids, created if not said else set())}
+               "wait_s": waited(db, repo, mids, created if not said else set()),
+               "release": rel}
         ready, plans_only, tips = [], [], {}
         steps.at("preconditions")
         for s in strands:
@@ -2567,9 +2658,20 @@ def _cmd_merge(args):
         print("merge: --no-pre needs --reason", file=sys.stderr)
         return 2
     try:
+        intro = None
+        if args.intro:
+            if not args.release:
+                print("merge: --intro needs --release", file=sys.stderr)
+                return 2
+            try:
+                with open(args.intro, encoding="utf-8") as fh:
+                    intro = fh.read()
+            except OSError as exc:
+                print("merge: --intro not readable: %s" % exc, file=sys.stderr)
+                return 2
         return merge(names, repo=args.repo, wave=args.wave, host=args.host, no_pre=no_pre,
                      close=not args.no_close, db=store.open(args.db) if args.db else None,
-                     wait=args.wait)
+                     wait=args.wait, release=args.release, intro=intro)
     except Refused as exc:
         print("merge: refused (%s): %s" % (exc.reason, exc.text), file=sys.stderr)
         return REFUSE_EXIT
@@ -2617,6 +2719,10 @@ def register(sub):
     p.add_argument("--wait", action="store_true",
                    help="queued: block until the tree lease is released (no exit 3); "
                         "MECLAW_ADMISSION_WAIT_SECS ends it")
+    p.add_argument("--release", metavar="X.Y.Z",
+                   help="the wave's last merge: append the release cut commit (RT2)")
+    p.add_argument("--intro", metavar="FILE",
+                   help="with --release: the intro paragraph of the released section")
     p.add_argument("--db")
     p.set_defaults(func=_cmd_merge)
     c = sub.add_parser("close", help="the issue's English close comment (GH #1107)")

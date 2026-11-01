@@ -74,6 +74,7 @@ WHAT USES IT
 import hashlib
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 
@@ -690,6 +691,349 @@ def merge_gate_base(repo, master, tip, receipt_doc):
     moved = "master unmoved" if base == master else "master moved %s..%s" % (base[:9], master[:9])
     return tip, "reuse: strand receipt %s covers the tip, %s" % (
         (receipt_doc.get("rev") or "?")[:9], moved)
+
+
+# --- the release record (RT2, GH #1385) ----------------------------------------------
+#
+# ONE rule for "this commit only records a release": the release cut the merge
+# point writes (`merge --release`, `versions.release_cut`), the test count
+# `pipeline.py release count --write` writes after the release gate, and the
+# battery lock (`release_matches_battery.py`) all change only these places.
+# Three readers spoke it before -- `release_matches_battery` (its own
+# `RECORD_FILES`/`RECORD_PREFIXES` and version patterns), the export
+# (`make_export --gate-receipt`, rev equality only) and nobody for the count,
+# which forced the count into the tree BEFORE the release gate or a second gate
+# run (wave live-2, rel-0770: three hand-computed counts in one release).
+#
+# `POST_GATE` above stays the strand list (berichte/, straenge/, ...). This is
+# a separate, named set: it holds a RELEASE receipt (mode `release`) only
+# (`release_record_equal`), never a strand receipt.
+#
+#   * records, added or modified, regular 100644 files only (no deletion, no
+#     rename, no symlink, no 100755): `RELEASE_RECORD_FILES` (CHANGELOG, the
+#     status test count) and a wave's own records `plans/<wave>/{berichte,
+#     straenge,receipts}/**` (`RELEASE_RECORD_WAVE`) -- a wave record a
+#     committed script or test names is a test input and no record
+#     (`reuse_readers`). ROADMAP.md (station `roadmap-anchors`) and every other
+#     `plans/**` path (export fixtures, goldens, corridor fixtures, scripts) are
+#     no record: review C1 of RT2 let `plans/export-fixtures/make_export.py`, a
+#     golden and a new 100755 file past the release gate under `plans/`.
+#     Release 0.77.0 wrote ROADMAP.md and the wave ledger after the battery
+#     (6946a6ab..064ec541c): that cut is refused now, fail closed on purpose;
+#   * version places, only when nothing but the version string moves:
+#     `Cargo.toml` / `crates/*/Cargo.toml` (`[workspace.package]`/`[package]`
+#     version, `meclaw-*` path pins), `Cargo.lock` (versions of `meclaw*`
+#     packages), `templates/**/template.json` (top-level `"version"`);
+#   * everything else, an added or deleted file outside the records and a mode
+#     change are foreign.
+#
+# The rule is ONE function, `release_offending`: the battery lock calls it, the
+# export calls it through `release_record_equal` (review I1: no copy).
+RELEASE_RECORD_FILES = frozenset(("CHANGELOG.md", "docs/status.en.md"))
+RELEASE_RECORD_WAVE = re.compile(r"^plans/([^/]+)/(?:berichte|straenge|receipts)/[^/].*$")
+RECORD_MODE = "100644"
+
+SEMVER = r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?"
+PACKAGE_VERSION = re.compile(r'^version = "%s"$' % SEMVER)
+MECLAW_PATH_DEP = re.compile(
+    r'^(meclaw-[a-z-]+ = \{ path = "\.\./meclaw-[a-z-]+", version = ")%s(".*)$' % SEMVER)
+LOCK_DEP_REF = re.compile(r'"(meclaw[a-z-]*) %s' % SEMVER)
+
+
+def is_wave_record(path):
+    m = RELEASE_RECORD_WAVE.match(path)
+    return bool(m) and not m.group(1).endswith("fixtures")
+
+
+def is_release_record(path):
+    return path in RELEASE_RECORD_FILES or is_wave_record(path)
+
+
+def norm_cargo_toml(text):
+    """The manifest with the bump's own places blanked."""
+    out, section = [], None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            section = s.strip("[]").strip()
+        if section in ("package", "workspace.package") and PACKAGE_VERSION.match(s):
+            out.append('version = "<bump>"')
+            continue
+        m = MECLAW_PATH_DEP.match(line)
+        out.append(m.group(1) + "<bump>" + m.group(2) if m else line)
+    return out
+
+
+def norm_cargo_lock(text):
+    """The lock with the versions of meclaw* packages blanked."""
+    out, name = [], None
+    for line in text.splitlines():
+        if line == "[[package]]":
+            name = None
+        elif line.startswith("name = "):
+            name = line[len("name = "):].strip('"')
+        elif name and name.startswith("meclaw") and PACKAGE_VERSION.match(line):
+            out.append('version = "<bump>"')
+            continue
+        out.append(LOCK_DEP_REF.sub(r'"\1 <bump>', line))
+    return out
+
+
+def norm_template_json(text):
+    import json
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return text
+    if isinstance(doc, dict):
+        doc["version"] = "<bump>"
+    return doc
+
+
+def release_normaliser(path):
+    """The normaliser of a version place, or None for any other file."""
+    if path == "Cargo.toml" or re.fullmatch(r"crates/[^/]+/Cargo\.toml", path):
+        return norm_cargo_toml
+    if path == "Cargo.lock":
+        return norm_cargo_lock
+    if path.startswith("templates/") and path.endswith("/template.json"):
+        return norm_template_json
+    return None
+
+
+def release_changes(repo, a, b):
+    """`[(status, old mode, new mode, path)]` of `a..b`, renames split (`-z`)."""
+    rc, raw = _git(repo, "diff", "--raw", "--no-renames", "--no-abbrev", "-z", a, b)
+    if rc != 0:
+        raise ValueError("git diff %s %s failed" % (a[:9], b[:9]))
+    parts = raw.decode("utf-8", "surrogateescape").split("\0")
+    out = []
+    for i in range(0, len(parts) - 1, 2):
+        meta, path = parts[i], parts[i + 1]
+        if not meta.startswith(":"):
+            break
+        old_mode, new_mode, _, _, status = meta[1:].split(" ")
+        out.append((status[0], old_mode, new_mode, path))
+    return out
+
+
+def _blob(repo, rev, path):
+    rc, raw = _git(repo, "show", "%s:%s" % (rev, path))
+    if rc != 0:
+        raise ValueError("git show %s:%s failed" % (rev[:9], path))
+    return raw.decode("utf-8", "replace")
+
+
+def release_foreign(repo, a, b, status, old_mode, new_mode, path):
+    """None when the change of `path` in `a..b` is one a release record may
+    make, else the reason (the rule above; the readers half is in
+    `release_offending`)."""
+    if is_release_record(path):
+        if status not in ("A", "M"):
+            return "record %s (only added or modified)" % ("deleted" if status == "D" else status)
+        if new_mode != RECORD_MODE or old_mode not in (RECORD_MODE, "000000"):
+            return "mode %s -> %s (a record is a regular 100644 file)" % (old_mode, new_mode)
+        return None
+    if status in ("A", "D"):
+        return "added" if status == "A" else "deleted"
+    if old_mode != new_mode:
+        return "mode %s -> %s" % (old_mode, new_mode)
+    norm = release_normaliser(path)
+    if norm is None:
+        return "not a version or CHANGELOG file"
+    if norm(_blob(repo, a, path)) != norm(_blob(repo, b, path)):
+        return "changes more than the version"
+    return None
+
+
+def release_offending(repo, a, b):
+    """`{path: why}` of the changes of `a..b` no release cut may make -- THE
+    rule, for the battery lock and the export alike. Raises ValueError on a
+    git error (callers fail closed)."""
+    bad, records = {}, []
+    for status, om, nm, path in release_changes(repo, a, b):
+        why = release_foreign(repo, a, b, status, om, nm, path)
+        if why:
+            bad[path] = why
+        elif is_wave_record(path):
+            records.append(path)
+    for path, why in reuse_tree(repo, b, records, "the release", present=True).items():
+        bad.setdefault(path, why)
+    rest = [p for p in records if p not in bad]
+    for path, why in reuse_readers(repo, rest, ((b, "the release"),)).items():
+        bad.setdefault(path, why)
+    return bad
+
+
+def release_record_equal(repo, a, b):
+    """`(ok, {path: why})` -- does a release receipt on `a` still cover `b`?
+    Only when `a` is an ancestor of `b` (a receipt never covers a sibling or an
+    older tree) and `release_offending(a, b)` is empty. Fail closed: a git
+    error is a refusal."""
+    if not a or not b:
+        return False, {"?": "no rev"}
+    if a == b:
+        return True, {}
+    if not is_ancestor(repo, a, b):
+        return False, {"?": "%s is not an ancestor of %s" % (a[:9], b[:9])}
+    try:
+        bad = release_offending(repo, a, b)
+    except ValueError as exc:
+        return False, {"?": str(exc)}
+    return not bad, bad
+
+
+# --- `pipeline.py release count` (RT2, OR-RT-6) ---------------------------------------
+#
+# The status page's test count is the run total of the nextest station `tests`
+# of the pass: rel-0766/rel-0770 took `11765 tests run` of the integration
+# receipt's `tests` station and added the `#[test]`s of the later diff by hand
+# (plans/live-2-2026-10-29/berichte/rel-0770.md). Read off the release receipt
+# instead, no estimate: a station served partly from the cache counts only the
+# parts it ran (relgate-0770 run 2: 2951 of 11841), so the cached parts are
+# resolved through the store (`cache_hit` -> the source run's `test_result`).
+COUNT_STATION = "tests"
+COUNT_EXIT = 2
+STATUS_FILE = "docs/status.en.md"
+# `The\n0.77.0 integration pass ran 11841 tests.` (the form up to 0.77.0) or
+# the form this command writes; the whitespace before the verb stays.
+STATUS_SENTENCE = re.compile(
+    r"(?P<v>\d+\.\d+\.\d+)(?P<ws>\s+)(?:integration pass|release gate) ran \d+ tests\.")
+
+
+class CountError(Exception):
+    pass
+
+
+def _station_total(db, run, station, part=None, depth=0):
+    """The tests of `station` in `run` (only `part`, if given), cached parts
+    followed to their source run; raises CountError when one cannot be read."""
+    from . import events as _events
+    if depth > 8:
+        raise CountError("cache chain of %s deeper than 8 runs" % run)
+    rows = _events.read_run(db, run)
+    if not rows:
+        raise CountError("run %s is not in the store" % run)
+    total, found = 0, False
+    for r in rows:
+        d = r.get("data") or {}
+        if d.get("station") != station:
+            continue
+        if r["event"] == "station_started":
+            total, found = 0, False     # the last round counts, as in the receipt
+        elif r["event"] == "test_result" and (part is None or d.get("part") == part):
+            t = d.get("tests") or {}
+            if t.get("total") is None:
+                raise CountError("run %s, %s part %s carries no test count"
+                                 % (run, station, d.get("part") or "?"))
+            total, found = total + int(t["total"]), True
+        elif r["event"] == "cache_hit" and (part is None or d.get("part") in (part, "")):
+            if not d.get("from_run"):
+                raise CountError("run %s: a cache hit of %s names no source run" % (run, station))
+            total += _station_total(db, d["from_run"], station, d.get("part") or part, depth + 1)
+            found = True
+    if not found:
+        raise CountError("run %s has no test result for %s%s"
+                         % (run, station, " part %s" % part if part else ""))
+    return total
+
+
+def release_count(doc, db=None):
+    """The test count of the release receipt `doc`; raises CountError."""
+    if not isinstance(doc, dict):
+        raise CountError("the receipt is no JSON object")
+    if doc.get("mode") != "release":
+        raise CountError("receipt of mode %s, not release" % (doc.get("mode") or "?"))
+    if doc.get("verdict") != "GREEN":
+        raise CountError("receipt verdict %s, not GREEN" % (doc.get("verdict") or "?"))
+    st = next((s for s in doc.get("stations") or []
+               if isinstance(s, dict) and s.get("name") == COUNT_STATION), None)
+    if st is None:
+        raise CountError("the receipt has no station %s" % COUNT_STATION)
+    if st.get("verdict") not in ("GREEN", "CACHED"):
+        raise CountError("station %s is %s" % (COUNT_STATION, st.get("verdict")))
+    if not st.get("cache_from") and st.get("verdict") == "GREEN":
+        t = st.get("tests") or {}
+        if t.get("total") is None:
+            raise CountError("station %s carries no test count" % COUNT_STATION)
+        return int(t["total"])
+    if db is None:
+        raise CountError("station %s is served from the cache (%s) -- the store is needed "
+                         "to count its cached parts (--db)" % (COUNT_STATION,
+                                                               st.get("cache_from")))
+    if not doc.get("run"):
+        raise CountError("the receipt names no run to resolve its cached parts")
+    return _station_total(db, doc["run"], COUNT_STATION)
+
+
+def write_status(repo, count):
+    """Set the count sentence of `docs/status.en.md` to the workspace version
+    of `repo` and `count`; returns the new sentence. Raises CountError."""
+    from . import versions as _versions
+    try:
+        with open(os.path.join(repo, "Cargo.toml"), encoding="utf-8") as fh:
+            version = _versions.workspace_version(fh.read())
+    except OSError as exc:
+        raise CountError("Cargo.toml not readable: %s" % exc)
+    if not version:
+        raise CountError("Cargo.toml has no workspace version")
+    path = os.path.join(repo, STATUS_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise CountError("%s not readable: %s" % (STATUS_FILE, exc))
+    hits = list(STATUS_SENTENCE.finditer(text))
+    if len(hits) != 1:
+        raise CountError("%s carries %d count sentences, expected one" % (STATUS_FILE, len(hits)))
+    m = hits[0]
+    new = "%s%srelease gate ran %d tests." % (version, m.group("ws"), count)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text[:m.start()] + new + text[m.end():])
+    return new
+
+
+def _cmd_release_count(args):
+    import json
+    try:
+        with open(args.receipt, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print("release-count: REFUSED -- receipt not readable: %s" % exc, file=sys.stderr)
+        return COUNT_EXIT
+    db = None
+    try:
+        st = next((s for s in (doc.get("stations") if isinstance(doc, dict) else None) or []
+                   if isinstance(s, dict) and s.get("name") == COUNT_STATION), {})
+        if st.get("cache_from") or st.get("verdict") == "CACHED":
+            from . import store as _store
+            db = _store.open(args.db) if args.db else _store.open()
+        count = release_count(doc, db)
+        line = "release-count: %d tests (release %s)" % (count, str(doc.get("rev") or "?")[:12])
+        if args.write:
+            write_status(args.write, count)
+            line += " -> %s" % STATUS_FILE
+    except (CountError, OSError, ValueError, sqlite3.Error) as exc:
+        # Review M1: a bad total, an unwritable status page or a broken store is
+        # exit 2 like every other gap, never a traceback.
+        print("release-count: REFUSED -- %s (never estimated)" % exc, file=sys.stderr)
+        return COUNT_EXIT
+    finally:
+        if db is not None:
+            db.close()
+    print(line)
+    return 0
+
+
+def register(sub):
+    p = sub.add_parser("release", help="release helpers (RT2): count")
+    rs = p.add_subparsers(dest="release_cmd", required=True)
+    c = rs.add_parser("count", help="the test count of a release receipt (exit 2: not provable)")
+    c.add_argument("--receipt", required=True, help="the release gate receipt (JSON)")
+    c.add_argument("--write", metavar="REPO",
+                   help="write the count sentence of docs/status.en.md in REPO")
+    c.add_argument("--db", help="the pipeline store (cached parts)")
+    c.set_defaults(func=_cmd_release_count)
 
 
 # --- pre checks (e) and (f) --------------------------------------------------------

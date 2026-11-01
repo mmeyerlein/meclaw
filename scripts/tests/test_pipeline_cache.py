@@ -554,6 +554,26 @@ class CacheTable(unittest.TestCase):
             k = self.keys(root, simple_plan([narrowed]))[("tests", part)]["key"]
             self.assertNotEqual(k_off, k)
 
+    def test_export_tree_kit_is_cachable_on_the_whole_tree_apart_from_the_tree_tests(self):
+        """RT1 (OR-RT.rt1.1): the kit half reads the export tree's kit, which the
+        export index decides -- keyed like gate-selftest on the whole tree, never
+        on a narrower set (`unkeyed_reads` holds every cargo-free station there).
+        CACHED on an unchanged tree; its entry is its own, not the tree tests'."""
+        self.assertEqual(["tree"], cache.INPUTS["export-tree-kit"])
+        self.assertNotIn("export-tree-kit", cache.NEVER)
+        root = fixture_tree(self)
+        ett = "plans/export-fixtures/export_tree_tests.py"
+        plan = simple_plan([plain_station("export-tree-kit", ["python3", ett, "--worktree", "--kit"]),
+                            plain_station("export-tree-tests", ["python3", ett, "--worktree"])],
+                           mode="release")
+        before = self.keys(root, plan)
+        kit, tt = before[("export-tree-kit", "")]["key"], before[("export-tree-tests", "")]["key"]
+        self.assertNotEqual(kit, tt)
+        self.assertEqual(kit, self.keys(root, plan)[("export-tree-kit", "")]["key"])
+        pathlib.Path(root, "crates", "zz_probe.rs").parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(root, "crates", "zz_probe.rs").write_text("// x\n", encoding="utf-8")
+        self.assertNotEqual(kit, self.keys(root, plan)[("export-tree-kit", "")]["key"])
+
     def test_cache_table_is_the_floor_and_decides_cacheability(self):
         root = fixture_tree(self)
         narrow = plain_station("gate-selftest", ["python3", "-m", "unittest"])

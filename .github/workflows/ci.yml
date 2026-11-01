@@ -61,9 +61,10 @@ jobs:
   # worth testing; a trigger hard-coded here is exactly the drift the single
   # resolver exists to end.
   #
-  # The one output is `tests=true|false`: whether this diff can reach a Rust
-  # test at all. A push that only moves documentation cannot, and then the
-  # three shards below do not start.
+  # Two outputs. `tests=true|false`: whether this diff can reach a Rust test
+  # at all. A push that only moves documentation cannot, and then the test
+  # shards below do not start. `selftest=true|false`: whether the plan holds
+  # the station `gate-selftest`, which runs as jobs of its own (`selftest`).
   #
   # `fetch-depth: 0` because the base of the diff is the push event's
   # `before`, and a shallow clone does not have that commit. An unknown or
@@ -74,6 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tests: ${{ steps.plan.outputs.tests }}
+      selftest: ${{ steps.plan.outputs.selftest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,9 +86,14 @@ jobs:
         # reads as "no tests needed" -- the whole suite skipped in silence.
         shell: bash
         run: |
-          scripts/gate.sh ci --plan-only --base "${{ github.event.before }}" \
-            | tee /dev/stderr \
-            | grep '^tests=' >> "$GITHUB_OUTPUT"
+          scripts/gate.sh ci --plan-only --base "${{ github.event.before }}" > "$RUNNER_TEMP/plan.tsv"
+          cat "$RUNNER_TEMP/plan.tsv" >&2
+          grep '^tests=' "$RUNNER_TEMP/plan.tsv" >> "$GITHUB_OUTPUT"
+          if awk -F'\t' '$1 == "gate-selftest" { f = 1 } END { exit !f }' "$RUNNER_TEMP/plan.tsv"; then
+            echo selftest=true >> "$GITHUB_OUTPUT"
+          else
+            echo selftest=false >> "$GITHUB_OUTPUT"
+          fi
 
   # ---------------------------------------------------------------------
   # Everything that is not the test suite: fmt, clippy, the unwrap/expect
@@ -94,7 +101,10 @@ jobs:
   # shell lint, the resolver's own self-test. One script decides which of
   # them this diff needs and runs them; each reports a `GATE <name> ...`
   # line. What a station is and when it fires is documented where it is
-  # decided, in `scripts/gate_plan.py` -- not here, and not twice.
+  # decided, in `scripts/gate_plan.py` -- not here, and not twice. One station
+  # runs elsewhere: `gate-selftest` was 554 s of this job's 15 min, so it has
+  # jobs of its own (`selftest` below) and this job reports it as SKIP
+  # `planned-for-selftest-jobs` (MECLAW_CI_SELFTEST_PARTS = their count).
   #
   # Fast fail is the point. fmt and clippy used to sit in front of the test
   # step in one long job, so a formatting slip cost the full suite before it
@@ -142,6 +152,8 @@ jobs:
   # ---------------------------------------------------------------------
   gate:
     runs-on: ubuntu-latest
+    env:
+      MECLAW_CI_SELFTEST_PARTS: 3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -162,6 +174,41 @@ jobs:
       - run: scripts/gate.sh ci
 
   # ---------------------------------------------------------------------
+  # `gate-selftest`, the kit's own Python tests, in three parts. In the gate
+  # job it ran 554 s of 906 s and alone kept that job at 15 min. Each part is
+  # `gate.sh ci --only gate-selftest` -- the same command, the same module
+  # list, from the same resolver as the station; `MECLAW_SELFTEST_PART=k/3`
+  # makes `scripts/pipeline/selftest_shard.py` run part k of one deterministic
+  # distribution (every module in exactly one part), in local shards as before.
+  # Expected ~185 s of tests per part.
+  #
+  # It runs when the plan holds the station. Only an explicit `false` skips:
+  # an empty output runs the parts, and `--only` refuses a station the plan
+  # does not hold (exit 2) -- red, never a quiet skip. Same checkout and ruff
+  # as the gate job: some of these tests read the full history and the tool.
+  # ---------------------------------------------------------------------
+  selftest:
+    runs-on: ubuntu-latest
+    needs: plan
+    if: needs.plan.outputs.selftest != 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: ruff (pinned)
+        run: |
+          pipx install "ruff==${{ env.RUFF_VERSION }}"
+          test "$(ruff --version)" = "ruff ${{ env.RUFF_VERSION }}"
+      - name: gate-selftest (part ${{ matrix.part }}/3)
+        env:
+          MECLAW_SELFTEST_PART: ${{ matrix.part }}/3
+        run: scripts/gate.sh ci --only gate-selftest
+
+  # ---------------------------------------------------------------------
   # The suite, cut into shards. Two changes over the old single `cargo test`
   # step, and they attack the two halves of the 10m43s it took:
   #
@@ -170,13 +217,20 @@ jobs:
   #      runs tests from different binaries at the same time. The measured
   #      sum of per-binary wall time was 404s, with the longest single binary
   #      at 30s -- i.e. the old run was mostly waiting.
-  #   2. `--partition count:N/3`, so the run time is divided again across
-  #      three runners.
+  #   2. Shards, so the run time is divided again across runners. Eight of
+  #      them, cut by measured run time per test binary
+  #      (`scripts/pipeline/nextest_shards.py`, `MECLAW_TIER_SHARD=k/8`):
+  #      nextest's own `--partition count:k/3` dealt out tests, not seconds,
+  #      and its three shards ran 638 / 592 / 425 s of tests behind a ~5 min
+  #      build each (longest job 16:49). The table holds 227 binaries and
+  #      6159 s of test time; eight shards carry ~770 s each, ~210 s of wall
+  #      time at four threads -- with build and setup ~9.4 min. A binary the
+  #      table does not know runs in the lightest shard, so none is lost.
   #
   # Each shard builds its own test binaries rather than downloading a
   # `nextest archive` from a build job. That is deliberate: the build is
-  # ~3m50s and would sit in FRONT of every shard as a serial stage, plus the
-  # transfer of a multi-hundred-megabyte archive. Built per shard, the three
+  # ~4-5 min and would sit in FRONT of every shard as a serial stage, plus the
+  # transfer of a multi-hundred-megabyte archive. Built per shard, the eight
   # builds run at the same time, and the dependency half of the build comes
   # out of the shared cache below -- no shard compiles a dependency twice.
   # It costs runner minutes, not wall clock, and runner minutes are free on
@@ -194,16 +248,17 @@ jobs:
     if: needs.plan.outputs.tests != 'false' || github.event_name != 'push'
     strategy:
       # Same reasoning as `--no-fail-fast` below, one level up: if shard 2
-      # fails, shards 1 and 3 must still report. A cancelled shard hides
+      # fails, the others must still report. A cancelled shard hides
       # every defect it was carrying.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        # As many as SHARDS in scripts/pipeline/nextest_shards.py (lock test).
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
-          # All three shards compile the identical dependency graph, so they
+          # All shards compile the identical dependency graph, so they
           # share one cache entry.
           shared-key: test
       - uses: taiki-e/install-action@v2
@@ -218,6 +273,7 @@ jobs:
       # normally wraps a run in the nice/ionice/flock/TMPDIR hygiene that a
       # shared build machine needs; it drops all of it when `CI` is set, which
       # Actions sets for every step. Extra arguments go through to nextest.
+      # `MECLAW_TIER_SHARD` narrows t2 to this shard (the tier AND the shard).
       #
       # `--no-fail-fast` because the default stops at the first failing test,
       # and this suite has 650+ binaries. A red run then reports one defect
@@ -227,13 +283,13 @@ jobs:
       # should cost one round, not one defect. (The `ci` profile in
       # .config/nextest.toml sets `fail-fast = false` as well; the flag is
       # repeated here so that the property survives a profile edit.)
-      - name: test (shard ${{ matrix.shard }}/3)
+      - name: test (shard ${{ matrix.shard }}/8)
         env:
           MECLAW_TIER_PROFILE: ci
+          MECLAW_TIER_SHARD: ${{ matrix.shard }}/8
         run: >
           scripts/test-tier.sh t2
           --no-fail-fast
-          --partition count:${{ matrix.shard }}/3
       # nextest does not run doctests -- it has no way to, they are rustdoc's.
       # `cargo test --doc` keeps them in the run; it is cheap here because the
       # libraries are already built by the step above (measured: ~2s for all

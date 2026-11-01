@@ -86,6 +86,7 @@ CLASSES (a path can carry several)
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
                   scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py,
                   scripts/stop_watch.py, scripts/release_matches_battery.py,
+                  scripts/release.py, scripts/release.sh,
                   scripts/check_required_pins.py,
                   .config/required-pins.toml (the strand kit, the receipt builder, the stop
                   watch of long runs and the required-pin check carry their tests in
@@ -346,35 +347,42 @@ STATIONS (S strand, I integration, R release, C ci)
     export-selftest export_infra; I/R always (seconds, pure Python). Two
                     commands: the drift fixtures and the lock of
                     `export-tree-tests` (`test_export_tree_tests.py`)
-    export-tree-tests  R always, right before `export-audit` (GH #1101); S gate_infra
-                    or make_export (the kit half only, see below).
+    export-tree-tests  R always (GH #1101), after `export-selftest`.
                     Builds the export tree of the gated tree dry (the index of
                     `make_export.py`), selects IN IT every integration test
                     that reads the shipped catalogue (`_is_catalogue_wide` or
                     `_names_the_shipped_root` -- this module's rules, no hand
-                    list) and runs them with nextest in a fresh target, one
-                    call per crate. cargo:1. A test green in the private tree
-                    and red in the export -- a count or a floor over the
-                    templates that ship (0.62.1) -- is RED here instead of in
-                    the public CI. Second command `--kit` (GH #1199): the
-                    export tree's own `gate.sh ci --only` over every station
-                    of its ci plan without cargo (gate-selftest and the other
-                    kit stations) -- a kit self-test that reads a file the
-                    export does not carry is RED here, not in the public CI.
-                    S on a diff at a kit input -- `gate_infra` (the kit and
-                    its tests, `scripts/tests/**` included) or `make_export.py`
-                    (what travels) -- the `--kit` command alone, cargo 0
-                    (GH #1199, release 0.64.2 run 4: four kit self-tests
-                    were green in the strand and merge gate and red in the
-                    export tree; the release was the first gate that ran
-                    them there; re-check RC-KX: a diff at gate_plan.py
-                    alone turns unchanged kit tests red there). Every
-                    command exports `--worktree`, HEAD plus the overlay:
-                    the tree the gate gates and the cache keys the station
-                    on (`--rev HEAD` judged the base of an uncommitted diff
-                    and the cache took that GREEN over for the commit).
-                    Never in C: plans/ does not travel, and the
-                    public tree IS the export tree
+                    list) and runs them with ONE nextest call over every
+                    crate in a fresh target (RT1: one call per crate built
+                    the core crates five times, release gate of 0.76.6), the red crates
+                    from its JUnit report. cargo:1. A test green in the
+                    private tree and red in the export -- a count or a floor
+                    over the templates that ship (0.62.1) -- is RED here
+                    instead of in the public CI. `--worktree`, HEAD plus the
+                    overlay: the tree the gate gates and the cache keys the
+                    station on (`--rev HEAD` judged the base of an
+                    uncommitted diff and the cache took that GREEN over for
+                    the commit). Never in S, I or C
+    export-tree-kit  R always; S gate_infra or make_export. The kit half
+                    (GH #1199), a station of its own since RT1 (772 s serial
+                    behind the tree tests in one station, release gate of 0.76.6):
+                    `export_tree_tests.py --worktree --kit`, the export
+                    tree's own `gate.sh ci --only` over every station of its
+                    ci plan without cargo (gate-selftest and the other kit
+                    stations) in the public runner's form -- a kit self-test
+                    that reads a file the export does not carry is RED here,
+                    not in the public CI. cargo 0, no `export` slot (its own
+                    /tmp tree): it runs beside `export-tree-tests`. S on a diff
+                    at a kit input -- `gate_infra` (the kit and its tests,
+                    `scripts/tests/**` included) or `make_export.py` (what
+                    travels) (GH #1199, release 0.64.2 run 4: four kit
+                    self-tests were green in the strand and merge gate and
+                    red in the export tree; the release was the first gate
+                    that ran them there; re-check RC-KX: a diff at
+                    gate_plan.py alone turns unchanged kit tests red there).
+                    Cached on the whole tree, like gate-selftest. Never in
+                    I or C: plans/ does not travel, and the public tree IS
+                    the export tree
     export-audit    I/R always, after the four stations whose receipt
                     verdicts it reads (`plan.AUDIT_READS`, GH #1162 -- no
                     longer last). TWO shapes, one station name:
@@ -418,7 +426,7 @@ STATIONS (S strand, I integration, R release, C ci)
                     resolver module rides only on a diff that holds what it
                     judges (an exported test, a template, make_export.py) and
                     no kit station that runs it, or on a diff at the hull,
-                    kit station or not: `export-tree-tests --kit` runs it in
+                    kit station or not: `export-tree-kit` runs it in
                     `kit_repo`, a one-commit repository WITH `.git`, blind to
                     a test that needs git (v2-r3-rest 704540706 reached
                     master green and was red in R15); a diff only R8 reads drops
@@ -771,6 +779,7 @@ CI_EXCLUDED = frozenset({
     "persona-receipt",   # workshop/evals/persona/
     "export-selftest",   # plans/export-fixtures/
     "export-tree-tests",  # plans/export-fixtures/
+    "export-tree-kit",   # plans/export-fixtures/
     "export-audit",      # plans/export-fixtures/
     "deny",              # the CI `deny` job runs the cargo-deny action itself
     "deny-advisories",   # ... and would double-run or skip here
@@ -789,7 +798,7 @@ STATION_ORDER = (
     "scenarios:memory", "scenarios:builder", "scenarios:display",
     "browser:display", "recall-harness",
     "deny-advisories", "crate-isolation", "persona-cases", "persona-receipt",
-    "export-selftest", "export-tree-tests", "export-audit",
+    "export-selftest", "export-tree-tests", "export-tree-kit", "export-audit",
 )
 
 
@@ -1139,7 +1148,7 @@ def _scripts_tests_imports(path, source=None):
 def resolver_hull():
     """`RESOLVER_MODULE` and every `scripts.tests` module it imports,
     transitively: the tests R15 runs in the export tree, which has no `.git`
-    (`export-tree-tests --kit` runs them in `kit_repo`, which has one). Read
+    (`export-tree-kit` runs them in `kit_repo`, which has one). Read
     from this tree once per process, never a list (v2-r3-r15plan)."""
     if not _RESOLVER_HULL:
         hull, todo = set(), [RESOLVER_MODULE]
@@ -1165,8 +1174,8 @@ def _feeds_the_strand_audit(path):
 
 def _feeds_the_kit_stations(path):
     """A kit input: `gate_infra` (the kit and its self-tests, which travel and
-    run in the public CI) or `make_export.py` (what travels). S runs the kit
-    half of `export-tree-tests` on it."""
+    run in the public CI) or `make_export.py` (what travels). S runs
+    `export-tree-kit` on it."""
     return path == MAKE_EXPORT or "gate_infra" in _classes_of_path(path)
 
 
@@ -1180,7 +1189,7 @@ STRAND_AUDIT = ("python3", MAKE_EXPORT, "--keep-going", "--skip-cargo", "--workt
 def strand_audit_cmd(files, kit):
     """The strand audit of `files`; `files=None` judges the whole tree.
 
-    `kit`: the same plan carries the kit half of `export-tree-tests`, which runs
+    `kit`: the same plan carries `export-tree-kit`, which runs
     the resolver module (`scripts.tests.test_gate_plan`) in the export tree.
     Only then does the audit drop it (`--no-public-resolver`, 90 of R15's 97 s).
     The module holds real-tree tests over the crates' test units and the
@@ -1393,6 +1402,8 @@ def _classes_of_path(path):
                  "scripts/stop_watch.py",
                  # live-2 bat-hash (#1358): the release lock against the battery candidate
                  "scripts/release_matches_battery.py",
+                 # release-tempo rt4 (#1387): the release chain, its test in gate-selftest
+                 "scripts/release.py", "scripts/release.sh",
                  "scripts/check_required_pins.py", REQUIRED_PINS,
                  ".config/nextest.toml", ".config/slow-debt.toml",
                  ".config/testing-bans.toml", ".config/testing-bans.baseline.json",
@@ -4587,6 +4598,7 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_pipeline_full_pass",
               "scripts.tests.test_pipeline_lanes_release",
               "scripts.tests.test_pipeline_selftest_shard",
+              "scripts.tests.test_pipeline_nextest_shards",
               "scripts.tests.test_meclaw_bin_owner",
               # GH #1199: the one mechanism for private-tree inputs
               "scripts.tests.test_private_tree",
@@ -4606,7 +4618,9 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_pipeline_merge_gate_parity",
               "scripts.tests.test_export_audit_scope",
               # live-2 bat-hash (#1358): the release lock against the battery candidate
-              "scripts.tests.test_release_matches_battery"]])
+              "scripts.tests.test_release_matches_battery",
+              # release-tempo rt4 (#1387): the release chain prepare/publish
+              "scripts.tests.test_release_script"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that
@@ -4894,19 +4908,20 @@ def plan(paths, mode, repo=None):
         out["export-tree-tests"] = station(
             "export-tree-tests", "catalogue tests in the export tree", True,
             # `--worktree` (RC-KX I1): the tree the cache keys the station on
-            [["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree"],
-             # GH #1199: the kit half -- the public CI's cargo-free stations
-             # (gate-selftest first of all) in the export tree, with its own
-             # gate.sh ci; 0.64.0's public CI was red there and nowhere else
-             ["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree", "--kit"]])
-    elif mode == "strand" and any(_feeds_the_kit_stations(p) for p in files):
+            [["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree"]])
+    if mode == "release" or (mode == "strand" and any(_feeds_the_kit_stations(p) for p in files)):
         # GH #1199 (release 0.64.2, run 4): four kit self-tests read a file the
         # export does not carry; the strand gate ran them only in the private
         # tree and the release found them red. A diff at a kit input runs the
         # cargo-free kit half where the public CI runs it -- over the working
         # tree the strand gate gates before the commit (RC-KX I1).
-        out["export-tree-tests"] = station(
-            "export-tree-tests", "kit stations in the export tree", False,
+        # GH #1199: the kit half -- the public CI's cargo-free stations
+        # (gate-selftest first of all) in the export tree, with its own gate.sh
+        # ci; 0.64.0's public CI was red there and nowhere else. RT1: a station
+        # of its own in both modes; in release it ran 772 s serial behind the
+        # cargo half in one station (release gate of 0.76.6), now beside it.
+        out["export-tree-kit"] = station(
+            "export-tree-kit", "kit stations in the export tree", False,
             [["python3", "plans/export-fixtures/export_tree_tests.py", "--worktree", "--kit"]])
 
     if ir:
@@ -4965,7 +4980,7 @@ def plan(paths, mode, repo=None):
         # whole tree). Profiled 16.10.: 162 s, of which R15 97 s and R2b-R2d 26 s.
         out["export-audit"] = station(
             "export-audit", "R1-R17 dry, no gate receipt", False,
-            [strand_audit_cmd(files, kit="export-tree-tests" in out)])
+            [strand_audit_cmd(files, kit="export-tree-kit" in out)])
 
     if ci:
         # One rule, not eight conditions spread through the builder above:
@@ -5120,7 +5135,8 @@ STATION_TRIGGERS = {
     "persona-cases": (("evals_persona",), IR_MODES),
     "persona-receipt": (("persona_source", "evals_persona"), IR_MODES),
     "export-selftest": (("export_infra",), IR_MODES),
-    "export-tree-tests": (("gate_infra", "make_export"), ("release",)),
+    "export-tree-tests": ((), ("release",)),
+    "export-tree-kit": (("gate_infra", "make_export"), ("release",)),
     "export-audit": (("export_test", "template", "template_root", "catalogue", "make_export",
                       "r8", "r15_hull"), IR_MODES),
 }

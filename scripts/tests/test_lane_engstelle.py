@@ -707,6 +707,8 @@ class EntryIsolation(unittest.TestCase):
         "scripts/cargo-target.sh": ["pipeline/kit_python.sh"],
         "scripts/gate.sh": ["pipeline/kit_python.sh"],
         "scripts/lane_sync.sh": ["pipeline/kit_python.sh"],
+        # release-tempo rt4 (#1387): the release chain's entry
+        "scripts/release.sh": ["pipeline/kit_python.sh"],
         "scripts/strand.sh": ["pipeline/kit_python.sh"],
         "scripts/test-tier.sh": ["pipeline/kit_python.sh", "cargo-target.sh"],
         "scripts/pipeline/coverage_host.sh": ["pipeline/kit_python.sh", "cargo-target.sh"],

@@ -32,6 +32,7 @@ MODULES = (
     "impact",   # impact --diff|--replay (W6)
     "coverage",  # coverage build|aggregate|stale|journal (W6)
     "register",  # register plan --repo <satellite> (W10)
+    "turnaround",  # release count --receipt (RT2, GH #1385)
 )
 
 

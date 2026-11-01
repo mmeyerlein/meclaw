@@ -64,9 +64,17 @@ STRAND, INTEGRATION = "strand", "integration"
 SCOPES = (STRAND, INTEGRATION)
 
 
+# The modes of a wave's full pass (RT2, OR-RT-5): a wave that releases runs ONE
+# full pass, `release` -- it plans every station `integration` plans, in the same
+# or a stronger form (`test_pipeline_full_pass.ReleaseIsSupersetTest`). A reader
+# that means "the wave's pass" takes both; one that means the planning mode
+# (narrowing, impact stages) keeps `integration` alone.
+WAVE_PASS_MODES = ("integration", "release")
+
+
 def scope_of(mode):
     """`integration` for an integration or a release (the full suite), else `strand`."""
-    return INTEGRATION if mode in ("integration", "release") else STRAND
+    return INTEGRATION if mode in WAVE_PASS_MODES else STRAND
 
 
 def wave_key(name):

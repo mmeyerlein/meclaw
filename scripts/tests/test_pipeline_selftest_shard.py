@@ -263,6 +263,53 @@ class TestDistribution(unittest.TestCase):
                         lines[-1])
 
 
+class TestPart(unittest.TestCase):
+    """The part mode (`MECLAW_SELFTEST_PART=<k>/<n>`): the public CI runs the
+    station as n jobs; the parts are disjoint and together every module."""
+
+    def test_the_parts_are_disjoint_and_together_every_unit(self):
+        mods = ["m%02d" % i for i in range(23)]
+        table = {m: float(i % 7 + 1) for i, m in enumerate(mods[:20])}
+        for weights in (None, table):
+            for n in (2, 3, 30):
+                parts = [selftest_shard.part_units(mods, k, n, weights) for k in range(1, n + 1)]
+                flat = [u for p in parts for u in p]
+                self.assertEqual(sorted(mods), sorted(flat), (n, weights is None))
+                self.assertEqual(len(flat), len(set(flat)), "a unit in two parts")
+
+    def test_a_malformed_part_is_a_usage_error(self):
+        self.assertIsNone(selftest_shard.parse_part(None))
+        self.assertEqual((2, 3), selftest_shard.parse_part("2/3"))
+        for bad in ("", "0/3", "4/3", "1/0", "a/b", "1"):
+            with self.assertRaisesRegex(ValueError, "MECLAW_SELFTEST_PART"):
+                selftest_shard.parse_part(bad)
+        env = dict(os.environ, **{selftest_shard.PART_ENV: "4/3"})
+        out = subprocess.run(lane.python_argv(RUNNER, "--plan-only", "unittest", "x"),
+                             cwd=REPO, env=env, capture_output=True, text=True,
+                             timeout=kit_time.HANG)
+        self.assertEqual(2, out.returncode, out.stdout + out.stderr)
+
+    def test_the_parts_of_the_real_station_name_every_module_once(self):
+        import gate_plan
+        st = {s.name: s for s in gate_plan.plan(["scripts/gate_plan.py"], "ci", repo=None)}
+        argv = st["gate-selftest"].cmds[0]
+        mods = argv[4:]
+        units = []
+        for k in (1, 2, 3):
+            env = dict(os.environ, **{plan.SELFTEST_SHARDS_ENV: "2",
+                                      selftest_shard.PART_ENV: "%d/3" % k})
+            out = subprocess.run(argv[:2] + [RUNNER, "--plan-only"] + argv[3:], cwd=REPO,
+                                 env=env, capture_output=True, text=True,
+                                 timeout=2 * kit_time.HANG)
+            self.assertEqual(0, out.returncode, out.stderr)
+            lines = out.stdout.splitlines()
+            self.assertIn("SHARD-PART %d/3 " % k, out.stdout)
+            units += [u for ln in lines if ln.startswith("SHARD ") for u in ln.split()[5:]]
+        self.assertEqual(len(units), len(set(units)), "a unit in two parts")
+        self.assertEqual(sorted(mods), sorted({selftest_shard.module_of(u) if u not in mods
+                                               else u for u in units}))
+
+
 ORDER_CASE = '''import os
 import unittest
 

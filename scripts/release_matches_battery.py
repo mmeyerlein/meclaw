@@ -22,32 +22,20 @@ this script never computes them (the lab binary and the rendered set are not in
 this tree).
 
 Check: `git diff <core_commit> <release>` (release defaults to HEAD), file by
-file, renames split into delete + add. A file passes when it is one of the
-places the release cut writes and the change stays inside what that place may
-change:
-
-- `CHANGELOG.md`, `ROADMAP.md`, `docs/status.en.md`, anything under `plans/`:
-  any change. These are the release-cut records the last release merges wrote
-  besides the bump (0.76.0, 0.76.4, 0.76.5, 0.76.6: CHANGELOG, ROADMAP, the
-  status test count, the release strand's report and strand file); none of them
-  reaches the binary or a rendered manifest.
-- `Cargo.toml` and `crates/*/Cargo.toml`: only the `version = "x.y.z"` line of
-  `[package]`/`[workspace.package]` and the version of a `meclaw-*` path
-  dependency (exactly what `scripts/bump_version.py` writes).
-- `Cargo.lock`: only the versions of `meclaw*` packages (the lock refresh of
-  the same script); a third-party version is a dependency change, not a bump.
-- `templates/**/template.json`: only the top-level `"version"` (the number the
-  merge point assigns, docs/development-rules.md § 4).
-
-Everything else, an added or deleted file outside the record places, and a
-file-mode change are foreign: one line `foreign: <path> (<reason>)` each.
+file, renames split into delete + add, judged by THE release-record rule
+`release_offending` in `scripts/pipeline/turnaround.py` (RT2, GH #1385; the
+export reads the same function). In short: `CHANGELOG.md`, `docs/status.en.md`
+and a wave's `plans/<wave>/{berichte,straenge,receipts}/**` (added or modified,
+100644, not named by a script or test) may change; the version places
+(`Cargo.toml`, `crates/*/Cargo.toml`, `Cargo.lock`, `templates/**/template.json`)
+only in their version strings. `ROADMAP.md` and every other `plans/**` path are
+foreign (review C1). Every foreign file is one line `foreign: <path> (<reason>)`.
 
 Exit: 0 clean, 1 foreign files, 2 unusable receipt or unknown commit.
 
 Usage: release_matches_battery.py <receipt.md> [--release <rev>] [--repo <path>]
 """
 import argparse
-import json
 import pathlib
 import re
 import subprocess
@@ -59,15 +47,11 @@ FIELD = re.compile(
     r"^\s*(?:[-*]\s+)?`?(core_commit|lab_binary_sha256|manifest_sha256)`?\s*:\s*(.+?)\s*$")
 SHA = re.compile(r"[0-9a-f]{7,40}")
 
-# Release-cut records: any change (see the docstring for the evidence).
-RECORD_FILES = {"CHANGELOG.md", "ROADMAP.md", "docs/status.en.md"}
-RECORD_PREFIXES = ("plans/",)
-
-SEMVER = r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?"
-PACKAGE_VERSION = re.compile(r'^version = "%s"$' % SEMVER)
-MECLAW_PATH_DEP = re.compile(
-    r'^(meclaw-[a-z-]+ = \{ path = "\.\./meclaw-[a-z-]+", version = ")%s(".*)$' % SEMVER)
-LOCK_DEP_REF = re.compile(r'"(meclaw[a-z-]*) %s' % SEMVER)
+# The release record rule lives ONCE in `scripts/pipeline/turnaround.py` (RT2,
+# GH #1385): this lock calls `turnaround.release_offending`, the export
+# (`make_export --gate-receipt`) calls it through `release_record_equal`.
+sys.path.insert(0, str(ROOT / "scripts"))
+from pipeline import turnaround  # noqa: E402
 
 
 class ReceiptError(Exception):
@@ -111,94 +95,6 @@ def commit_of(repo, rev):
     return res.stdout.decode().strip()
 
 
-def blob(repo, rev, path):
-    return git(repo, "show", "%s:%s" % (rev, path)).stdout.decode("utf-8", "replace")
-
-
-def norm_cargo_toml(text):
-    """The manifest with the bump's own places blanked."""
-    out, section = [], None
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("[") and s.endswith("]"):
-            section = s.strip("[]").strip()
-        if section in ("package", "workspace.package") and PACKAGE_VERSION.match(s):
-            out.append('version = "<bump>"')
-            continue
-        m = MECLAW_PATH_DEP.match(line)
-        out.append(m.group(1) + "<bump>" + m.group(2) if m else line)
-    return out
-
-
-def norm_cargo_lock(text):
-    """The lock with the versions of meclaw* packages blanked."""
-    out, name = [], None
-    for line in text.splitlines():
-        if line == "[[package]]":
-            name = None
-        elif line.startswith("name = "):
-            name = line[len("name = "):].strip('"')
-        elif name and name.startswith("meclaw") and PACKAGE_VERSION.match(line):
-            out.append('version = "<bump>"')
-            continue
-        out.append(LOCK_DEP_REF.sub(r'"\1 <bump>', line))
-    return out
-
-
-def norm_template_json(text):
-    try:
-        doc = json.loads(text)
-    except ValueError:
-        return text
-    if isinstance(doc, dict):
-        doc["version"] = "<bump>"
-    return doc
-
-
-def is_record(path):
-    return path in RECORD_FILES or path.startswith(RECORD_PREFIXES)
-
-
-def normaliser(path):
-    if path == "Cargo.toml" or re.fullmatch(r"crates/[^/]+/Cargo\.toml", path):
-        return norm_cargo_toml
-    if path == "Cargo.lock":
-        return norm_cargo_lock
-    if path.startswith("templates/") and path.endswith("/template.json"):
-        return norm_template_json
-    return None
-
-
-def changes(repo, core, release):
-    """(status, old mode, new mode, path) per changed file, renames split."""
-    raw = git(repo, "diff", "--raw", "--no-renames", "--no-abbrev", "-z", core, release).stdout
-    parts = raw.decode("utf-8", "surrogateescape").split("\0")
-    out = []
-    for i in range(0, len(parts) - 1, 2):
-        meta, path = parts[i], parts[i + 1]
-        if not meta.startswith(":"):
-            break
-        old_mode, new_mode, _, _, status = meta[1:].split(" ")
-        out.append((status[0], old_mode, new_mode, path))
-    return out
-
-
-def foreign_reason(repo, core, release, status, old_mode, new_mode, path):
-    """None when the change is one the release cut may make, else the reason."""
-    if is_record(path):
-        return None
-    if status in ("A", "D"):
-        return "added" if status == "A" else "deleted"
-    if old_mode != new_mode:
-        return "mode %s -> %s" % (old_mode, new_mode)
-    norm = normaliser(path)
-    if norm is None:
-        return "not a version or CHANGELOG file"
-    if norm(blob(repo, core, path)) != norm(blob(repo, release, path)):
-        return "changes more than the version"
-    return None
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("receipt", help="battery receipt (Markdown)")
@@ -209,11 +105,10 @@ def main(argv=None):
         core_ref, fields = read_receipt(args.receipt)
         core = commit_of(args.repo, core_ref)
         release = commit_of(args.repo, args.release)
-        found = []
-        for status, old_mode, new_mode, path in changes(args.repo, core, release):
-            reason = foreign_reason(args.repo, core, release, status, old_mode, new_mode, path)
-            if reason:
-                found.append((path, reason))
+        try:
+            found = sorted(turnaround.release_offending(args.repo, core, release).items())
+        except ValueError as exc:
+            raise ReceiptError(str(exc))
     except ReceiptError as exc:
         print("release_matches_battery: ERROR %s" % exc)
         return 2

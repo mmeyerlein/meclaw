@@ -593,5 +593,59 @@ class MergeWaveTest(MergeCase):
             self.assertEqual(given, seen.get("MECLAW_TESTING_RULES_RULING"), given)
 
 
+
+# --- RT2 (GH #1385, OR-RT-5): the release gate is the wave's pass ----------------------
+
+REPO_ROOT = SCRIPTS.parent
+# The terms a nextest filter selects by name: a release station that runs a
+# term-wise selection holds every term of the integration station's.
+_TERM = __import__("re").compile(r"binary(?:_id)?\([^)]*\)|test\(/[^)]*\)")
+
+
+class ReleaseIsSupersetTest(unittest.TestCase):
+    """OR-RT-5: a wave that releases runs ONE full pass, `release`. That holds only
+    while `release` plans every station `integration` plans on the same diff, in
+    the same or a stronger form -- checked on the two diff forms of a wave's last
+    merge, a Rust diff and a kit diff (`gate_plan.plan`, the real tree)."""
+
+    def _stronger(self, name, i, r):
+        if (i.scope, i.cmds) == (r.scope, r.cmds):
+            return None
+        flat_i = [" ".join(map(str, c)) for c in i.cmds]
+        flat_r = [" ".join(map(str, c)) for c in r.cmds]
+        if name == "export-audit":
+            # the dry audit (`--skip-cargo --rev HEAD`) vs the wet one
+            want = [c.replace(" --skip-cargo", "").replace(" --rev HEAD", "") for c in flat_i]
+            return None if want == flat_r else "export-audit is not the wet form"
+        if any("all()" in c for c in flat_r) and not any("all()" in c for c in flat_i):
+            return None     # the full suite (minus the scenario class) holds a selection
+        if len(flat_i) != len(flat_r):
+            return "%d commands vs %d" % (len(flat_i), len(flat_r))
+        for a, b in zip(flat_i, flat_r):
+            terms = set(_TERM.findall(a)) - set(_TERM.findall(b))
+            if terms or (not _TERM.findall(a) and a != b):
+                return "release lacks %s" % (sorted(terms)[:3] or a[:80])
+        return None
+
+    def test_release_plans_every_integration_station(self):
+        for form, paths in (("rust", ["crates/meclaw-cells/src/lib.rs"]),
+                            ("kit", ["scripts/pipeline/merge.py"])):
+            with self.subTest(form=form):
+                inte = {s.name: s for s in gate_plan.plan(paths, "integration",
+                                                          repo=str(REPO_ROOT))}
+                rel = {s.name: s for s in gate_plan.plan(paths, "release", repo=str(REPO_ROOT))}
+                self.assertTrue(inte)
+                self.assertEqual(sorted(set(inte) - set(rel)), [],
+                                 "release misses integration stations (%s)" % form)
+                weaker = {n: why for n in inte for why in [self._stronger(n, inte[n], rel[n])]
+                          if why}
+                self.assertEqual(weaker, {}, form)
+
+    def test_a_release_counts_as_the_wave_pass(self):
+        self.assertEqual(full_pass.WAVE_PASS_MODES, ("integration", "release"))
+        self.assertTrue(full_pass.planned_full({"mode": "release"}))
+        self.assertEqual(full_pass.scope_of("release"), full_pass.INTEGRATION)
+
+
 if __name__ == "__main__":
     unittest.main()

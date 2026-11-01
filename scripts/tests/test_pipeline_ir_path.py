@@ -194,7 +194,11 @@ class AuditOffTheCriticalPath(IRExecutorCase):
         release = ir_plan(self, "release")
         for name in ("export-tree-tests", "export-audit"):
             self.assertEqual(0, release[name]["needs"]["cargo"], "own target: " + name)
-            self.assertEqual(1, release[name]["needs"]["export"], name)
+        # RT1: the two work in separate directories (MECLAW_EXPORT_WORKDIR vs
+        # MECLAW_EXPORT_CHECK_TARGET); with `export` capacity 1 both booking it
+        # ran them one after the other
+        self.assertEqual(1, release["export-tree-tests"]["needs"]["export"])
+        self.assertEqual(0, release["export-audit"]["needs"]["export"])
         # The run: the audit ends before `tests`, `tests` goes red after it,
         # and the pass is RED all the same.
         sts = [ex_station("corpus", "true"),

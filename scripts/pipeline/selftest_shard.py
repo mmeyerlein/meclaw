@@ -56,6 +56,18 @@ nothing:
     SHARD <k>/<n> modules=<m> tests=<t> est=<secs>s <module> ...
     SHARD-PLAN shards=<n> modules=<m> tests=<t> units=<u>
 
+PART (the public CI)
+====================
+`MECLAW_SELFTEST_PART=<k>/<n>` runs part k of n of the station -- the public
+CI starts it as n jobs (`.github/workflows/ci.yml`, job `selftest`), because
+the station alone kept its `gate` job at 15 min (554 s of 906 s). The modules
+are first split into units as for `n * SELFTEST_SHARDS_DEFAULT` shards (a
+fixed count: every job must cut the same units, whatever its nproc), the units
+are distributed over the n parts as above, and part k runs in its local
+shards. Every unit lands in exactly one part; a part without a unit is GREEN
+with nothing to run. A malformed value is a usage error (exit 2). The plan
+prints `SHARD-PART <k>/<n> units=<part>/<all>` before `SHARD-PLAN`.
+
 ORDER
 =====
 The units of each shard run in a random order (TV-K4: a hidden order
@@ -127,6 +139,8 @@ DURATIONS_ENV = "MECLAW_SELFTEST_DURATIONS"
 # TV-K4 (tv-p1c): the order inside each shard is random; the seed is printed
 # (`SELFTEST-SEED <n>`) and this variable replays it.
 SEED_ENV = "MECLAW_SELFTEST_SEED"
+# PART (the public CI): this run is part k of n of the station.
+PART_ENV = "MECLAW_SELFTEST_PART"
 # The state every shard gets for itself (variable -> file name in its state dir).
 STATE_ENVS = {
     "MECLAW_PIPELINE_DB": "pipeline.db",
@@ -204,6 +218,22 @@ def distribute(modules, shards, durations=None):
         for i, m in enumerate(mods):
             out[i % shards].append(m)
     return out
+
+
+def parse_part(raw):
+    """`(k, n)` of `MECLAW_SELFTEST_PART`, None when unset; ValueError when malformed."""
+    if raw is None:
+        return None
+    m = re.fullmatch(r"(\d+)/(\d+)", raw.strip())
+    if not m or not 1 <= int(m.group(1)) <= int(m.group(2)):
+        raise ValueError("%s=%r is not <k>/<n> with 1 <= k <= n" % (PART_ENV, raw))
+    return int(m.group(1)), int(m.group(2))
+
+
+def part_units(units, k, n, weights=None):
+    """The units of part `k` of `n` (see PART): `distribute` over n parts."""
+    parts = distribute(units, n, weights)
+    return parts[k - 1] if k <= len(parts) else []
 
 
 def count_tests(module, root):
@@ -638,16 +668,30 @@ def main(argv):
         n = min(plan.selftest_shards(nproc, os.environ), nproc)
     except ValueError as exc:
         return usage(str(exc))
+    try:
+        part = parse_part(os.environ.get(PART_ENV))
+    except ValueError as exc:
+        return usage(str(exc))
     durations = load_durations(os.environ.get(DURATIONS_ENV) or DURATIONS)
     root = os.getcwd()
     # Before the plan: its discovery imports every heavy module, and an import
     # that writes the repository config is the suite's write (re-check tb-s2
     # h2 M-N1).
     snap = gitenv.snapshot(root)
+    split = part[1] * plan.SELFTEST_SHARDS_DEFAULT if part else n
     if len(modules) == len(ut_args):
-        units, weights, ntests = plan_units(modules, n, durations, root)
+        units, weights, ntests = plan_units(modules, split, durations, root)
     else:  # options (`-k` of the isolation): the modules as given, never split
         units, weights, ntests = sorted(set(modules)), durations, {}
+    all_units = units
+    if part:
+        units = part_units(units, part[0], part[1], weights if durations else durations)
+        print("SHARD-PART %d/%d units=%d/%d" % (part[0], part[1], len(units), len(all_units)),
+              flush=True)
+        if not units and not plan_only:
+            print("Ran 0 tests in 0.000s\n\nOK")
+            print("SELFTEST-VERDICT GREEN 0/0 shards; part %d/%d has no unit" % part)
+            return 0
     shards = distribute(units, min(n, len(units)), weights if durations else durations)
     if plan_only:
         total = 0
@@ -658,7 +702,8 @@ def main(argv):
             print("SHARD %d/%d modules=%d tests=%d est=%.0fs %s"
                   % (k, len(shards), len(mods), tests, est, " ".join(mods)))
         print("SHARD-PLAN shards=%d modules=%d tests=%d units=%d"
-              % (len(shards), len(set(modules)), total, len(units)))
+              % (len(shards), len({module_of(u) if u in ntests else u for u in units})
+                 if part else len(set(modules)), total, len(units)))
         return 0
     # The shards run in the kit's one Python (re-check tv-bn M7m M2): a test
     # that reaches the narrow point in its own process needs `-I`.
@@ -751,7 +796,7 @@ def main(argv):
         print("=== end of shard %d/%d ===" % (k, n))
     # The guard of pd-1155: a suite that wrote the repository config is RED --
     # after the recount, whose discovery imports the split modules once more.
-    counted = recount(units, ntests, root)
+    counted = recount(all_units, ntests, root)
     drift = "; ".join([d for d in [guard(snap)] if d] + counted)
     stale = imbalance([s for _rc, _text, s in results])
     if stale:
@@ -768,6 +813,7 @@ def main(argv):
                    for k, reason, text in red)
     tail += ("; seed %d" % seed) if red and shuffle else ""
     tail += "; %s" % drift if drift else ""
+    tail += "; part %d/%d" % part if part else ""
     print("SELFTEST-VERDICT %s %d/%d shards%s" % ("RED" if red or drift else "GREEN",
                                                  n - len(red), n, tail))
     sys.stdout.flush()

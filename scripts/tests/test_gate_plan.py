@@ -1605,14 +1605,17 @@ class Classify(unittest.TestCase):
         """GH #1101: a count over the templates that ship is judged where they ship."""
         st = gp.plan(["docs/x.md"], "release", repo=None)
         names = [s.name for s in st]
-        self.assertEqual(names[-2:], ["export-tree-tests", "export-audit"])
+        self.assertEqual(names[-3:], ["export-tree-tests", "export-tree-kit", "export-audit"])
         ett = by_name(st)["export-tree-tests"]
         self.assertTrue(ett.cargo)
         # GH #1199 (RC-KX I1): `--worktree`, the tree the cache key describes
         self.assertEqual(ett.cmds, [["python3", "plans/export-fixtures/export_tree_tests.py",
-                                     "--worktree"],
-                                    # GH #1199: and the public CI's kit stations there
-                                    ["python3", "plans/export-fixtures/export_tree_tests.py",
+                                     "--worktree"]])
+        # RT1: the kit half (GH #1199, the public CI's kit stations there) is a
+        # station of its own -- 772 s serial after the cargo half in the release gate of 0.76.6
+        kit = by_name(st)["export-tree-kit"]
+        self.assertFalse(kit.cargo)
+        self.assertEqual(kit.cmds, [["python3", "plans/export-fixtures/export_tree_tests.py",
                                      "--worktree", "--kit"]])
 
     def test_a_template_diff_plans_export_tree_tests_in_release_only_never_ci(self):
@@ -1621,7 +1624,9 @@ class Classify(unittest.TestCase):
         for mode in ("strand", "integration", "ci"):
             names = [s.name for s in gp.plan(["templates/x/config.json"], mode, repo=None)]
             self.assertNotIn("export-tree-tests", names, mode)
+            self.assertNotIn("export-tree-kit", names, mode)
         self.assertIn("export-tree-tests", gp.CI_EXCLUDED)
+        self.assertIn("export-tree-kit", gp.CI_EXCLUDED)
 
     def test_export_selftest_runs_the_lock_of_export_tree_tests(self):
         st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
@@ -2181,6 +2186,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_pipeline_full_pass",
             "scripts.tests.test_pipeline_lanes_release",
             "scripts.tests.test_pipeline_selftest_shard",
+            "scripts.tests.test_pipeline_nextest_shards",
             "scripts.tests.test_meclaw_bin_owner",
             "scripts.tests.test_private_tree",
             "scripts.tests.test_pipeline_ir_path",
@@ -2190,7 +2196,8 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_pipeline_progress",
             "scripts.tests.test_pipeline_merge_gate_parity",
             "scripts.tests.test_export_audit_scope",
-            "scripts.tests.test_release_matches_battery"]])
+            "scripts.tests.test_release_matches_battery",
+            "scripts.tests.test_release_script"]])
 
     def test_every_runner_test_module_is_in_gate_selftest(self):
         """GH #1162: the runner's own tests (`scripts/tests/test_pipeline_*.py`)
@@ -2318,6 +2325,11 @@ class Classify(unittest.TestCase):
         NAMED_ONLY["scripts/publish_docs.sh"] = (
             "test_lane_engstelle names it in NOT_KIT_PY and as a witness that its scan is not "
             "empty; it publishes the docs site, on no gate or lane path")
+    # not exported either (a release tool of this repository, R5 like the above)
+    if (REPO / "scripts/tag_release.sh").is_file():
+        NAMED_ONLY["scripts/tag_release.sh"] = (
+            "test_release_script writes a stub at its path in a throw-away repo and runs that; "
+            "the script itself is the owner's tag step of a release, on no gate or lane path")
 
     def test_every_script_a_test_reads_plans_that_test(self):
         """The class of #1180 (`flake_triage.py`) and of `wall_clock.py`
@@ -5768,7 +5780,7 @@ class KitExportTreeSelection(unittest.TestCase):
         the station in any mode names a revision."""
         for mode in ("strand", "release"):
             st = by_name(gp.plan(["scripts/tests/test_zz_probe.py"], mode, repo=None))
-            for cmd in st["export-tree-tests"].cmds:
+            for cmd in st["export-tree-kit"].cmds:
                 self.assertIn("--worktree", cmd, mode)
                 self.assertNotIn("--rev", cmd, mode)
 
@@ -5778,8 +5790,8 @@ class KitExportTreeSelection(unittest.TestCase):
         for path in ("scripts/gate_plan.py", "scripts/pipeline/cache.py", "scripts/strand.sh",
                      ".config/nextest.toml", gp.MAKE_EXPORT):
             st = by_name(gp.plan([path], "strand", repo=None))
-            self.assertIn("export-tree-tests", st, path)
-            self.assertEqual(st["export-tree-tests"].cmds, [self.KIT], path)
+            self.assertIn("export-tree-kit", st, path)
+            self.assertEqual(st["export-tree-kit"].cmds, [self.KIT], path)
 
     def test_integration_and_ci_do_not_plan_it(self):
         """OR-V2.v2-fix-kitexp.1: the integration pass follows merged strands
@@ -5787,29 +5799,31 @@ class KitExportTreeSelection(unittest.TestCase):
         the public CI IS the export tree."""
         paths = ["scripts/tests/test_zz_probe.py", "scripts/gate_plan.py", gp.MAKE_EXPORT]
         for mode in ("integration", "ci"):
-            self.assertNotIn("export-tree-tests", by_name(gp.plan(paths, mode, repo=None)), mode)
+            self.assertNotIn("export-tree-kit", by_name(gp.plan(paths, mode, repo=None)), mode)
 
     def test_a_kit_test_diff_plans_the_kit_half_in_the_export_tree(self):
         st = by_name(gp.plan(["scripts/tests/test_zz_probe.py"], "strand", repo=None))
-        self.assertIn("export-tree-tests", st)
-        self.assertEqual(st["export-tree-tests"].cmds, [self.KIT])
-        self.assertFalse(st["export-tree-tests"].cargo)
+        self.assertIn("export-tree-kit", st)
+        self.assertEqual(st["export-tree-kit"].cmds, [self.KIT])
+        self.assertFalse(st["export-tree-kit"].cargo)
+        # RT1: one name in both modes; the cargo half stays release-only
+        self.assertNotIn("export-tree-tests", st)
 
     def test_a_diff_without_a_kit_input_does_not_plan_it(self):
         for path in ("docs/x.md", "templates/x/config.json", "scripts/check_adr_anchors.py",
                      "plans/export-fixtures/test_drift_gate.py"):
-            self.assertNotIn("export-tree-tests",
+            self.assertNotIn("export-tree-kit",
                              by_name(gp.plan([path], "strand", repo=None)), path)
 
     def test_the_reason_names_the_kit_test(self):
         """`--explain`: the station names the path that planned it."""
         out = gp.to_json(["scripts/tests/test_zz_probe.py"], "strand", None, explain=True)
         rows = {r["name"]: r for r in out["stations"]}
-        self.assertEqual(rows["export-tree-tests"]["reason"],
+        self.assertEqual(rows["export-tree-kit"]["reason"],
                          ["gate_infra: scripts/tests/test_zz_probe.py"])
         out = gp.to_json([gp.MAKE_EXPORT], "strand", None, explain=True)
         rows = {r["name"]: r for r in out["stations"]}
-        self.assertEqual(rows["export-tree-tests"]["reason"], ["make_export: " + gp.MAKE_EXPORT])
+        self.assertEqual(rows["export-tree-kit"]["reason"], ["make_export: " + gp.MAKE_EXPORT])
 
 
 
@@ -5847,7 +5861,7 @@ class StrandExportAuditSelection(unittest.TestCase):
             judged = [] if path.startswith("templates/") else [path]
             # re-check I1: the resolver module drops out only beside the kit
             # station that runs it (make_export.py plans it, a test does not)
-            kit = ["--no-public-resolver"] if "export-tree-tests" in st else []
+            kit = ["--no-public-resolver"] if "export-tree-kit" in st else []
             self.assertEqual(path == gp.MAKE_EXPORT, bool(kit), path)
             # GH #1199 (v2-r3-rest): R8 dry over the diff's files under
             # R8_ROOTS (every trigger here is one); make_export.py hands itself
@@ -5997,7 +6011,7 @@ class StrandAuditOnTheResolverHull(unittest.TestCase):
         """The kit half runs in `kit_repo` with `.git` -- blind to this class."""
         path = "scripts/tests/test_gate_plan.py"
         st = by_name(gp.plan([path], "strand", repo=None))
-        self.assertIn("export-tree-tests", st)
+        self.assertIn("export-tree-kit", st)
         self.assertNotIn("--no-public-resolver", st["export-audit"].cmds[0])
         # a kit test outside the hull still plans no audit (StrandExportAuditSelection)
         self.assertNotIn("export-audit",

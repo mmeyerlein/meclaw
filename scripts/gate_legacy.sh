@@ -1437,6 +1437,14 @@ for i in ${st_names[@]+"${!st_names[@]}"}; do
         report "$name" "$scope" 0 SKIP "" "no-tests-station-in-ci"
         continue
     fi
+    # The public CI runs gate-selftest as a matrix of its own (job `selftest`,
+    # `MECLAW_SELFTEST_PART` of scripts/pipeline/selftest_shard.py): in one job
+    # it held `gate` at 15 min (554 s of 906 s). The gate job says so with
+    # MECLAW_CI_SELFTEST_PARTS=<n>; those jobs run `gate.sh ci --only gate-selftest`.
+    if [ "$mode" = ci ] && [ "$name" = "gate-selftest" ] && [ -n "${MECLAW_CI_SELFTEST_PARTS:-}" ]; then
+        report "$name" "$scope" 0 SKIP "" "planned-for-selftest-jobs"
+        continue
+    fi
 
     # A build host has no `.env`, no `node` and no `github-main` ref (A RUN ON
     # A BUILD HOST); the kit runs these stations on the owner's machine after

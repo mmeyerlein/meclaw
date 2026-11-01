@@ -123,17 +123,36 @@ class ReleaseMatchesBattery(unittest.TestCase):
         self.assertIn("08-freeswitch.json", res.stdout)
 
     def test_the_release_cut_records_are_allowed(self):
-        # The last four release merges (0.76.0, 0.76.4-0.76.6) wrote these besides
-        # the bump: ROADMAP, the status test count and the wave's own records.
+        # The release records (RT2 fix round 1, `turnaround.release_offending`):
+        # the status test count and a wave's berichte/straenge/receipts.
         files = self.bump()
         files.update({
-            "ROADMAP.md": "# Roadmap\n\n- 0.77.0\n",
             "docs/status.en.md": "Tests: 11700\n",
             "plans/live-2-2026-10-29/berichte/rel-0770.md": "# rel-0770\n",
+            "plans/live-2-2026-10-29/straenge/rel-0770.json": "{}\n",
+            "plans/live-2-2026-10-29/receipts/bat-r2b.md": "# bat\n",
         })
         self.release(files)
         res = self.run_check(self.receipt())
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    def test_roadmap_and_other_plans_paths_are_foreign(self):
+        # Review C1: ROADMAP.md (station roadmap-anchors), a wave ledger and the
+        # exporter under plans/ are no release record. 0.77.0 wrote ROADMAP.md
+        # and the ledger after the battery (6946a6ab..064ec541c): fail closed.
+        files = self.bump()
+        files.update({
+            "ROADMAP.md": "# Roadmap\n\n- 0.77.0\n",
+            "plans/live-2-2026-10-29/ledger.md": "# ledger\n",
+            "plans/export-fixtures/make_export.py": "print(2)\n",
+        })
+        self.release(files)
+        res = self.run_check(self.receipt())
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        for path in files:
+            if path in ("ROADMAP.md", "plans/live-2-2026-10-29/ledger.md",
+                        "plans/export-fixtures/make_export.py"):
+                self.assertIn("foreign: " + path, res.stdout)
 
     def test_a_foreign_file_in_the_diff_is_refused(self):
         files = self.bump()

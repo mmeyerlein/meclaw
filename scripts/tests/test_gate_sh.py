@@ -1255,6 +1255,23 @@ class TestCiMode(GateShTestCase):
         self.assertEqual("0", rows["tests"]["secs"])
         self.assertEqual(0, res.returncode)
 
+    def test_ci_leaves_the_selftest_to_its_jobs_only_when_told(self):
+        # The public CI runs gate-selftest as a matrix of its own (job
+        # `selftest`); the gate job says so with MECLAW_CI_SELFTEST_PARTS.
+        plan = "ok\tscope-ok\t0\ttrue\t\ngate-selftest\tunittest\t0\texit 1\t\n"
+        res = run_gate(self.repo, "ci", "--base", "0" * 40, plan=self.plan_file(plan),
+                       dry=False, extra_env={"MECLAW_CI_SELFTEST_PARTS": "3"})
+        rows = {r["name"]: r for r in gate_lines(res.stdout)}
+        self.assertEqual("SKIP", rows["gate-selftest"]["verdict"], res.stdout)
+        self.assertEqual("planned-for-selftest-jobs", rows["gate-selftest"]["reason"])
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        # Unset, and outside `ci`, the station runs (and is red here).
+        for mode, env in (("ci", {}), ("integration", {"MECLAW_CI_SELFTEST_PARTS": "3"})):
+            res = run_gate(self.repo, mode, "--base", "0" * 40, plan=self.plan_file(plan),
+                           dry=False, extra_env=env)
+            rows = {r["name"]: r for r in gate_lines(res.stdout)}
+            self.assertEqual("RED", rows["gate-selftest"]["verdict"], (mode, res.stdout))
+
     def test_ci_skips_the_slow_lock_with_the_tests(self):
         # The public CI of 0.62.0 went RED here: `ci` skipped `tests` but ran
         # `slow-tests`, which found no JUnit file (exit 2 = broken lock). The

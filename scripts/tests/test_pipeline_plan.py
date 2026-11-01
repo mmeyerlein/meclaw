@@ -106,11 +106,14 @@ class PlanShape(PlanCase):
             self.assertEqual(rows[name]["needs"]["cargo"], 0, name)
         # GH #1162: the release export stations build in a target of their own
         # (MECLAW_EXPORT_WORKDIR / MECLAW_EXPORT_CHECK_TARGET), not in the
-        # pass's: no share of its lock, a side width of cpu, one export at a time.
+        # pass's: no share of its lock, a side width of cpu. RT1: the export
+        # slot is the tree tests' alone -- the audit checks in a directory of
+        # its own and runs beside them.
         self.assertEqual(pl.OWN_TARGET, {"export-tree-tests", "export-audit"})
         for name in sorted(pl.OWN_TARGET):
             self.assertEqual({k: rows[name]["needs"][k] for k in ("cargo", "export", "cpu")},
-                             {"cargo": 0, "export": 1, "cpu": pl.EXPORT_CPU}, name)
+                             {"cargo": 0, "export": int(name == "export-tree-tests"),
+                              "cpu": pl.EXPORT_CPU}, name)
         self.assertEqual(pl.EXPORT_CPU, 8)
         dry = self.by_name(self.plan(["Cargo.lock"], "integration"))
         self.assertEqual(dry["export-audit"]["needs"]["cargo"], 0)
@@ -322,6 +325,18 @@ class PlanShape(PlanCase):
             if mode == "release":
                 self.assertIn("export-selftest", rows["export-tree-tests"]["after"])
                 self.assertEqual(rows["export-tree-tests"]["needs"]["export"], 1)
+                # RT1: the audit no longer waits for the export tree tests
+                # (233 s serial behind them in the release gate of 0.76.6), and the kit half
+                # runs beside the cargo half: no edge either way, no export slot
+                self.assertNotIn("export-tree-tests", audit["after"])
+                self.assertNotIn("export-tree-kit", audit["after"])
+                kit = rows["export-tree-kit"]
+                self.assertIn("export-selftest", kit["after"])
+                self.assertNotIn("export-tree-tests", kit["after"])
+                self.assertNotIn("export-tree-kit", rows["export-tree-tests"]["after"])
+                self.assertEqual({k: kit["needs"][k] for k in ("export", "cargo", "cpu")},
+                                 {"export": 0, "cargo": 0, "cpu": 4})
+                self.assertEqual(audit["needs"]["export"], 0)
             self.assertIn("corpus-committed", rows["corpus"]["after"])
             self.assertIn("precheck", rows["clippy"]["after"])
             self.assertEqual(rows["precheck"]["after"], [])

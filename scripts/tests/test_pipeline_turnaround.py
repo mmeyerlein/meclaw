@@ -1425,5 +1425,278 @@ class PartKeysTest(unittest.TestCase):
         self.assertEqual({}, cache.part_keys({}))
 
 
+
+# --- RT2 (GH #1385): the release record and `release count` ---------------------------
+
+RELEASE_TREE = {
+    "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n\n'
+                  '[workspace.package]\nversion = "0.2.0"\nedition = "2021"\n',
+    "crates/meclaw-x/Cargo.toml": '[package]\nname = "meclaw-x"\nversion.workspace = true\n\n'
+                                  '[dependencies]\n'
+                                  'meclaw-y = { path = "../meclaw-y", version = "0.2.0" }\n'
+                                  'tokio = { version = "1" }\n',
+    "docs/status.en.md": "# Status\n\nIt is young. The\n0.1.0 integration pass ran 10 tests. "
+                         "More.\n",
+    "scripts/x.py": "print(1)\n",
+    "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n",
+}
+
+
+class ReleaseRecordTest(unittest.TestCase):
+    """A release receipt on A covers B when A..B only records the release (RT2 point 3)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = os.path.join(os.path.realpath(self._tmp.name), "r")
+        os.makedirs(self.repo)
+        env = mock.patch.dict(os.environ, {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        tm.git(self.repo, "init", "-q", "-b", "master")
+        self.a = commit(self.repo, RELEASE_TREE, "a")
+
+    def test_a_status_only_commit_keeps_the_release_receipt(self):
+        b = commit(self.repo, {"docs/status.en.md": "# Status\n\nThe\n0.2.0 release gate ran "
+                                                    "12 tests.\n"})
+        self.assertEqual(turnaround.release_record_equal(self.repo, self.a, b), (True, {}))
+
+    def test_a_script_change_regates(self):
+        b = commit(self.repo, {"scripts/x.py": "print(2)\n"})
+        ok, bad = turnaround.release_record_equal(self.repo, self.a, b)
+        self.assertFalse(ok)
+        self.assertIn("scripts/x.py", bad)
+
+    def test_a_version_plus_a_dependency_regates(self):
+        toml = RELEASE_TREE["crates/meclaw-x/Cargo.toml"]
+        b = commit(self.repo, {
+            "Cargo.toml": RELEASE_TREE["Cargo.toml"].replace("0.2.0", "0.3.0"),
+            "crates/meclaw-x/Cargo.toml": toml.replace('"0.2.0"', '"0.3.0"')
+                                              .replace('version = "1"', 'version = "2"')})
+        ok, bad = turnaround.release_record_equal(self.repo, self.a, b)
+        self.assertFalse(ok)
+        self.assertEqual(bad, {"crates/meclaw-x/Cargo.toml": "changes more than the version"})
+
+    def test_a_pure_version_move_keeps_it_and_a_sibling_never(self):
+        toml = RELEASE_TREE["crates/meclaw-x/Cargo.toml"]
+        b = commit(self.repo, {
+            "Cargo.toml": RELEASE_TREE["Cargo.toml"].replace("0.2.0", "0.3.0"),
+            "crates/meclaw-x/Cargo.toml": toml.replace('"0.2.0"', '"0.3.0"')})
+        self.assertTrue(turnaround.release_record_equal(self.repo, self.a, b)[0])
+        # the receipt rev must be an ancestor: B does not cover A
+        self.assertFalse(turnaround.release_record_equal(self.repo, b, self.a)[0])
+
+    def test_the_battery_lock_reads_the_same_allowlist(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "rmb_rt2", str(SCRIPTS / "release_matches_battery.py"))
+        rmb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rmb)
+        self.assertIs(rmb.turnaround.release_offending, turnaround.release_offending)
+
+    def test_c1_code_and_test_inputs_under_plans_are_no_release_record(self):
+        # Review C1 (fix round 1): `plans/` as a whole and ROADMAP.md let the
+        # exporter, goldens and corridor/export fixtures past the release gate.
+        # Only CHANGELOG.md, docs/status.en.md and a wave's berichte/straenge/
+        # receipts, 100644, added or modified, are release records.
+        wave = "plans/rel-x-2026-11-01"
+        base = commit(self.repo, {
+            "ROADMAP.md": "# Roadmap\n",
+            "plans/export-fixtures/make_export.py": "print(1)\n",
+            "plans/composition-reference/golden/a.manifest": "{}\n",
+            "plans/p5.5-fixtures/german_scan.py": "print(1)\n",
+            wave + "/berichte/old.md": "# old\n"}, "c1 base")
+        probes = {
+            "plans/export-fixtures/make_export.py": "print(2)\n",
+            "plans/composition-reference/golden/a.manifest": '{"x": 1}\n',
+            "plans/p5.5-fixtures/german_scan.py": "print(2)\n",
+            "ROADMAP.md": "# Roadmap\n\n- 0.2.0\n",
+            wave + "/ledger.md": "# ledger\n"}
+        for path, text in probes.items():
+            with self.subTest(path=path):
+                tm.git(self.repo, "checkout", "-q", "--detach", base)
+                b = commit(self.repo, {path: text})
+                ok, bad = turnaround.release_record_equal(self.repo, base, b)
+                self.assertFalse(ok, path)
+                self.assertIn(path, bad)
+        # a new executable file inside a record path is refused, too
+        tm.git(self.repo, "checkout", "-q", "--detach", base)
+        tm.write(self.repo, wave + "/receipts/run.sh", "echo\n")
+        os.chmod(os.path.join(self.repo, wave, "receipts/run.sh"), 0o755)
+        b = commit(self.repo, {})
+        ok, bad = turnaround.release_record_equal(self.repo, base, b)
+        self.assertFalse(ok)
+        self.assertIn("mode", bad[wave + "/receipts/run.sh"])
+        # a deleted wave record is refused (no rule names a deletion)
+        tm.git(self.repo, "checkout", "-q", "--detach", base)
+        tm.git(self.repo, "rm", "-q", wave + "/berichte/old.md")
+        b = commit(self.repo, {})
+        self.assertFalse(turnaround.release_record_equal(self.repo, base, b)[0])
+        # the records themselves, added or modified, 100644: covered
+        tm.git(self.repo, "checkout", "-q", "--detach", base)
+        b = commit(self.repo, {wave + "/berichte/old.md": "# old\n\nmore\n",
+                               wave + "/berichte/rel.md": "# rel\n",
+                               wave + "/straenge/rel.json": "{}\n",
+                               wave + "/receipts/rel/receipt.json": "{}\n",
+                               "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n- x\n"})
+        self.assertEqual(turnaround.release_record_equal(self.repo, base, b), (True, {}))
+
+    def test_c1_a_wave_record_a_script_reads_is_no_release_record(self):
+        # A test that names a report reads it: the report is a test input then.
+        wave = "plans/rel-x-2026-11-01"
+        base = commit(self.repo, {
+            wave + "/berichte/rel-0770.md": "# rel\n",
+            "scripts/tests/test_y.py": "P = '%s/berichte/rel-0770.md'\n" % wave}, "reader")
+        b = commit(self.repo, {wave + "/berichte/rel-0770.md": "# rel\n\nchanged\n"})
+        ok, bad = turnaround.release_record_equal(self.repo, base, b)
+        self.assertFalse(ok)
+        self.assertIn("read by", bad[wave + "/berichte/rel-0770.md"])
+
+    def test_i1_both_readers_call_the_one_rule(self):
+        # Review I1: the battery lock and the export call `release_offending`
+        # itself, no copy of the rule.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "rmb_rt2_i1", str(SCRIPTS / "release_matches_battery.py"))
+        rmb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rmb)
+        self.assertFalse(hasattr(rmb, "foreign_reason"))
+        self.assertFalse(hasattr(rmb, "changes"))
+        b = commit(self.repo, {"scripts/x.py": "print(2)\n"})
+        receipt = os.path.join(self._tmp.name, "bat.md")
+        with open(receipt, "w", encoding="utf-8") as fh:
+            fh.write("core_commit: %s\n" % self.a)
+        seen = []
+        real = turnaround.release_offending
+
+        def spy(repo, a, b_):
+            seen.append(("call", a, b_))
+            return real(repo, a, b_)
+        with mock.patch.object(turnaround, "release_offending", spy), \
+                mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(rmb.main([receipt, "--repo", self.repo, "--release", b]), 1)
+            self.assertFalse(turnaround.release_record_equal(self.repo, self.a, b)[0])
+        self.assertEqual(seen, [("call", self.a, b)] * 2)
+
+    def test_post_gate_is_not_the_release_allowlist(self):
+        # The strand list stays the strand list; the release set is its own.
+        self.assertEqual(turnaround.POST_GATE,
+                         ("berichte/**", "straenge/**", "RESTLISTE.md", "recheck/**"))
+        self.assertIn("docs/status.en.md", turnaround.RELEASE_RECORD_FILES)
+
+
+def _receipt(tests=None, cache_from=None, mode="release", verdict="GREEN", station=True,
+             run="run-000000000002"):
+    st = {"name": "tests", "verdict": "GREEN", "tests": tests, "cache_from": cache_from}
+    return {"mode": mode, "verdict": verdict, "rev": "c" * 40, "run": run,
+            "stations": [{"name": "clippy", "verdict": "GREEN", "tests": None}]
+                        + ([st] if station else [])}
+
+
+class ReleaseCountTest(unittest.TestCase):
+    """`pipeline.py release count`: the count off the receipt, never estimated (OR-RT-6)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = os.path.realpath(self._tmp.name)
+
+    def cli(self, doc, *extra):
+        path = os.path.join(self.tmp, "receipt.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        out, err = io.StringIO(), io.StringIO()
+        from pipeline import cli
+        with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            rc = cli.main(["release", "count", "--receipt", path] + list(extra))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_the_count_is_the_run_total_of_the_tests_station(self):
+        rc, out, err = self.cli(_receipt({"total": 11841, "passed": 11841}))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "release-count: 11841 tests (release cccccccccccc)\n")
+
+    def test_missing_station_mode_or_count_is_exit_2(self):
+        for doc in (_receipt(station=False), _receipt({"total": 5}, mode="integration"),
+                    _receipt({"total": 5}, verdict="RED"), _receipt(None)):
+            rc, out, err = self.cli(doc)
+            self.assertEqual(rc, 2, doc)
+            self.assertEqual(out, "")
+            self.assertIn("never estimated", err)
+
+    def test_a_bad_total_or_an_unwritable_status_is_exit_2(self):
+        # Review M1: ValueError/OSError ended as a traceback with exit 1.
+        rc, out, err = self.cli(_receipt({"total": "many"}))
+        self.assertEqual((rc, out), (2, ""), err)
+        rc, out, err = self.cli(_receipt({"total": 5}), "--write",
+                                os.path.join(self.tmp, "no-such-repo"))
+        self.assertEqual((rc, out), (2, ""), err)
+        self.assertIn("never estimated", err)
+
+    def test_two_count_sentences_are_exit_2(self):
+        # Review M3: the status page must carry exactly one count sentence.
+        tm.write(self.tmp, "Cargo.toml", '[workspace.package]\nversion = "0.2.0"\n')
+        tm.write(self.tmp, "docs/status.en.md", "The\n0.1.0 integration pass ran 1 tests. "
+                                                "The 0.1.0 release gate ran 2 tests.\n")
+        rc, out, err = self.cli(_receipt({"total": 5}), "--write", self.tmp)
+        self.assertEqual((rc, out), (2, ""), err)
+        self.assertIn("2 count sentences", err)
+
+    def test_cached_parts_come_from_the_store_or_exit_2(self):
+        from pipeline import store
+        db = store.open(os.path.join(self.tmp, "p.db"))
+        self.addCleanup(store.close, db)
+        rows = [("run-000000000001", "station_started", {"station": "tests"}),
+                ("run-000000000001", "test_result",
+                 {"station": "tests", "part": "c::a", "verdict": "GREEN", "secs": 1,
+                  "tests": {"total": 100}}),
+                ("run-000000000001", "test_result",
+                 {"station": "tests", "part": "c::b", "verdict": "GREEN", "secs": 1,
+                  "tests": {"total": 7}}),
+                ("run-000000000002", "station_started", {"station": "tests"}),
+                ("run-000000000002", "cache_hit",
+                 {"station": "tests", "part": "c::a", "key": "k", "from_run": "run-000000000001"}),
+                ("run-000000000002", "test_result",
+                 {"station": "tests", "part": "c::b", "verdict": "GREEN", "secs": 1,
+                  "tests": {"total": 8}})]
+        for i, (run, event, data) in enumerate(rows):
+            db.execute("INSERT INTO journal (at, run, kind, event, data) VALUES (?,?,?,?,?)",
+                       ("2026-01-01T00:00:%02dZ" % i, run, "note", event,
+                        json.dumps(dict(data, run=run))))
+        doc = _receipt({"total": 8}, cache_from="run-000000000001")
+        self.assertEqual(turnaround.release_count(doc, db), 108)
+        rc, out, err = self.cli(doc, "--db", os.path.join(self.tmp, "p.db"))
+        self.assertEqual((rc, out), (0, "release-count: 108 tests (release cccccccccccc)\n"), err)
+        # no store: the cached part cannot be counted
+        with self.assertRaisesRegex(turnaround.CountError, r"the store is needed"):
+            turnaround.release_count(doc, None)
+        # a source run the store does not hold
+        # (the receipt's own run IS in the store, its cache hit names a run that is not)
+        db.execute("INSERT INTO journal (at, run, kind, event, data) VALUES (?,?,?,?,?)",
+                   ("2026-01-01T00:01:00Z", "run-0000000000fe", "note", "cache_hit",
+                    json.dumps({"station": "tests", "part": "c::a", "key": "k",
+                                "from_run": "run-0000000000ff", "run": "run-0000000000fe"})))
+        gone = _receipt({"total": 8}, cache_from="run-0000000000ff", run="run-0000000000fe")
+        with self.assertRaisesRegex(turnaround.CountError, r"run-0000000000ff is not in the store"):
+            turnaround.release_count(gone, db)
+
+    def test_write_sets_the_status_sentence_from_the_workspace_version(self):
+        repo = os.path.join(self.tmp, "repo")
+        for rel in ("Cargo.toml", "docs/status.en.md"):
+            tm.write(repo, rel, RELEASE_TREE[rel])
+        rc, out, err = self.cli(_receipt({"total": 42}), "--write", repo)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(tm.read(repo, "docs/status.en.md"),
+                         "# Status\n\nIt is young. The\n0.2.0 release gate ran 42 tests. More.\n")
+        # the sentence this command wrote is found again
+        self.assertEqual(self.cli(_receipt({"total": 43}), "--write", repo)[0], 0)
+        self.assertIn("ran 43 tests", tm.read(repo, "docs/status.en.md"))
+        tm.write(repo, "docs/status.en.md", "# Status\n\nNo count here.\n")
+        self.assertEqual(self.cli(_receipt({"total": 42}), "--write", repo)[0], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

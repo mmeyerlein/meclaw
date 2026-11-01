@@ -123,11 +123,21 @@ NEEDS = {
     # One Chromium test, the lane to itself (`alone`, GH #1191).
     "browser:alone": {"browser_chromium": 1, "colony": 1, "cpu": CPU_LANE},
     "export-tree-tests": {"export": 1, "cargo": 0, "cpu": EXPORT_CPU},
+    # RT1: the kit half of the export tree as a station of its own, beside the
+    # cargo half (release gate of 0.76.6: 772 s serial behind it in one station). It
+    # unpacks its own /tmp tree (no `export` slot), builds nothing (cargo 0),
+    # and runs pinned to the public runner's vCPU (`export_tree_tests.ci_runner`:
+    # taskset over CI_RUNNER_VCPU = 4) -- the threads it books are the ones it runs.
+    "export-tree-kit": {"export": 0, "cargo": 0, "cpu": 4},
     "gate-selftest": {"cpu": CPU_SHARDS},
 }
 # `export-audit` builds the export tree in release only; integration is a dry run.
+# RT1: the release audit books no `export` slot (capacity 1): it checks in
+# `<export root>/check` (MECLAW_EXPORT_CHECK_TARGET), the tree tests in
+# `<export root>/lane` (MECLAW_EXPORT_WORKDIR) -- separate directories, and the
+# shared slot ran the two one after the other.
 EXPORT_AUDIT_NEEDS = {
-    "release": {"export": 1, "cargo": 0, "cpu": EXPORT_CPU},
+    "release": {"export": 0, "cargo": 0, "cpu": EXPORT_CPU},
     "integration": {"export": 1, "cpu": 1},
 }
 # The stations whose verdicts `export-audit` reads from the gate receipt
@@ -138,10 +148,10 @@ EXPORT_AUDIT_NEEDS = {
 # is no gap: the audit reads only what it waits for, and the pass's own verdict
 # still sums every station.
 AUDIT_READS = ("corpus", "scenarios:builder", "recall-harness", "roadmap-anchors")
-# Kept from the old order at no cost: the audit's own selftest (seconds) and, in
-# release, the export tree tests ("right before export-audit", GH #1101; both
-# book `export` 1, so they run one after the other anyway).
-AUDIT_AFTER_ALSO = ("export-selftest", "export-tree-tests")
+# Kept from the old order: the audit's own selftest (seconds). RT1: no longer the
+# export tree tests -- the audit reads none of their verdict, and the edge put
+# it 233 s serial behind them (export-tree-tests 1633-2166 s, release gate of 0.76.6).
+AUDIT_AFTER_ALSO = ("export-selftest",)
 
 # Stations the resolver marks `cargo` that reuse the binaries of `build`
 # (nextest "reusing builds") and so never take the target lock themselves.
@@ -195,6 +205,7 @@ AFTER = {
     "slow-tests": ("tests",),
     "recall-harness": ("corpus",),
     "export-tree-tests": ("export-selftest",),
+    "export-tree-kit": ("export-selftest",),
     # never ahead of `build`: the tests wait for build, nobody waits for this
     "crate-isolation": ("build",),
 }
@@ -233,6 +244,8 @@ DEFAULT_TIMEOUT_MIN = {
     "scenarios:memory": 60, "scenarios:builder": 45, "scenarios:display": 20,
     "browser:display": 45, "recall-harness": 60, "persona-cases": 30,
     "export-tree-tests": 90, "export-audit": 60, "gate-selftest": 20,
+    # RT1: 772 s in the release gate of 0.76.6; a hang marker >= 3x that
+    "export-tree-kit": 40,
     "crate-isolation": 30,
     "build:browser": 30,
     "browser:alone": 15,

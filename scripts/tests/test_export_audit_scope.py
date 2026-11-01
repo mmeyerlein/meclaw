@@ -273,7 +273,7 @@ class TheStrandPlanNarrowsTheAudit(unittest.TestCase):
         for path in ("crates/meclaw-cells/tests/zz_probe_demo.rs",
                      self.TEST, "templates/operator/template.json"):
             st = {s.name: s for s in gp.plan([path], "strand", repo=None)}
-            self.assertNotIn("export-tree-tests", st, path)
+            self.assertNotIn("export-tree-kit", st, path)
             self.assertNotIn("--no-public-resolver", st["export-audit"].cmds[0], path)
 
     def test_the_switch_only_rides_on_a_kit_station_of_the_same_plan(self):
@@ -285,7 +285,7 @@ class TheStrandPlanNarrowsTheAudit(unittest.TestCase):
                  ["crates/meclaw-cells/tests/zz_probe_demo.rs", "docs/x.md"])
         for paths in diffs:
             st = {s.name: s for s in gp.plan(paths, "strand", repo=None)}
-            kit = [c for c in getattr(st.get("export-tree-tests"), "cmds", [])
+            kit = [c for c in getattr(st.get("export-tree-kit"), "cmds", [])
                    if "--kit" in c]
             self.assertEqual("--no-public-resolver" in st["export-audit"].cmds[0],
                              bool(kit), paths)

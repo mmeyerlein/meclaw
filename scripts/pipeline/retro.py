@@ -356,6 +356,21 @@ def cache_quota_by_mode(db, since, until):
     return {m: round(100 * cached[m] / total[m], 1) for m in sorted(total)}
 
 
+def cache_quota_wave_pass(db, since, until):
+    """Q16: CACHED over all stations of the wave's full passes, percent, or None.
+
+    RT2 (GH #1385, OR-RT-5): a wave that releases runs no integration pass any
+    more -- its `release` pass is the wave's pass (`full_pass.WAVE_PASS_MODES`),
+    so Q16 reads both modes; with integration passes alone it is the old value."""
+    from .full_pass import WAVE_PASS_MODES
+    cached = total = 0
+    for p in passes(db, since, until):
+        if p["mode"] in WAVE_PASS_MODES:
+            cached += p["counts"].get("cached", 0)
+            total += sum(p["counts"].values())
+    return round(100 * cached / total, 1) if total > 0 else None
+
+
 def parallelism(db, since, until):
     """Q17: p50 of critical_path_s / lane_seconds over the passes with lane seconds.
 
@@ -439,7 +454,7 @@ def quarter(db, since, until):
     peak = lane_hours_peak_lane_day(db, since, until)
     return {"Q14": None if peak is None else peak[0],
             "Q15": flake_share(db, since, until)[0],
-            "Q16": cache_quota_by_mode(db, since, until).get("integration"),
+            "Q16": cache_quota_wave_pass(db, since, until),
             "Q17": parallelism(db, since, until)}
 
 
@@ -482,9 +497,10 @@ def table(db, since, until):
         _row("Q15", "flake_share_of_red_passes", flake, "%",
              "red passes with a FLAKY flake_isolated or only known flaky failed tests",
              flake_reason),
-        _row("Q16", "cache_quota_integration", quota.get("integration"), "%",
-             "CACHED over all stations of the integration passes (pass_ended.stations)",
-             "no integration pass in the window"),
+        _row("Q16", "cache_quota_integration", cache_quota_wave_pass(db, since, until), "%",
+             "CACHED over all stations of the wave's full passes, integration and release "
+             "(pass_ended.stations, RT2)",
+             "no integration or release pass in the window"),
         _row(None, "cache_quota_by_mode", quota or None, "%",
              "the same per mode", "no pass with stations in the window"),
         _row("Q17", "critical_path_over_lane_s_p50", None if ratio is None

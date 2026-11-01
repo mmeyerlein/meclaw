@@ -47,6 +47,9 @@
 #                                 gate's proof that a remainder is empty.
 #
 #     MECLAW_TIER_PROFILE=<name>  nextest profile (default: default)
+#     MECLAW_TIER_SHARD=<k>/<n>   one shard of the public CI: the tier's filterset
+#                                 AND shard k of `scripts/pipeline/nextest_shards.py`
+#                                 (n must be its SHARDS, else exit 2)
 #     MECLAW_TEST_CPU_QUOTA=<n>   the quota mark (meclaw_testing::deadline::
 #                                 CPU_QUOTA_MARK_VAR), set by `lane_sync.sh`
 #                                 inside the CPU-quota scope only: the run
@@ -299,6 +302,16 @@ run_nextest() {
     # blocking selection; the pipeline runs it in its NOTE station `quarantine`.
     if [ -n "${MECLAW_TIER_EXCLUDE:-}" ]; then
         filter="($filter) - ($MECLAW_TIER_EXCLUDE)"
+    fi
+    # One shard of the public CI (`MECLAW_TIER_SHARD=<k>/<n>`): the tier AND
+    # the shard's filterset from `scripts/pipeline/nextest_shards.py`, cut by
+    # measured run time. A second `-E` would not do: nextest ORs repeated
+    # filtersets, and `all()` OR a shard is the whole suite again.
+    if [ -n "${MECLAW_TIER_SHARD:-}" ]; then
+        local shard_expr
+        shard_expr=$("${KIT_PY[@]}" "$root/scripts/pipeline/nextest_shards.py" \
+                     filter "$MECLAW_TIER_SHARD") || exit 2
+        filter="($filter) & ($shard_expr)"
     fi
     echo "=== nextest [profile=$profile]"
     echo "=== filter: $filter"

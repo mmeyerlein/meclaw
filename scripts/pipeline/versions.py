@@ -874,6 +874,91 @@ def add_changelog(tree, line):
     return True
 
 
+# --- the release cut (`merge --release`, RT2, GH #1385) -------------------------------
+#
+# The release strand (`rel-07xx`) wrote three things by hand -- the workspace
+# version, `[Unreleased]` -> `[x.y.z] — <date>`, the intro sentences -- and paid a
+# strand gate, a review and a merge gate for them (22-30 min per release, wave
+# release-tempo README § 2). The merge point of the wave's last strand writes them
+# as one commit after its gate; every path of it lies in the release allowlist
+# (`turnaround.release_record_equal`), so no gate judges it twice. The date comes
+# from the clock (`today`), never from a hand-typed string (rel-0770 typed it
+# three times, 30.10. / 31.10. / 01.11.).
+RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+CHANGELOG_DASH = "\u2014"
+
+
+def cut_changelog(text, version, intro=None, date=None):
+    """CHANGELOG.md `text` with `## [Unreleased]` cut to `## [version] — date`
+    below a new empty `## [Unreleased]`, `intro` as its first paragraph; raises
+    VersionError when the cut is not possible (no or two `[Unreleased]`, an empty
+    one, `version` already released)."""
+    lines = text.split("\n")
+    starts = [i for i, l in enumerate(lines) if l.strip() == "## [Unreleased]"]
+    if len(starts) != 1:
+        raise VersionError("CHANGELOG.md has %d `## [Unreleased]` headings, expected one"
+                           % len(starts))
+    if any(l.startswith("## [%s]" % version) for l in lines):
+        raise VersionError("CHANGELOG.md already has a section [%s]" % version)
+    start = starts[0]
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## [")),
+               len(lines))
+    body = lines[start + 1:end]
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    if not body:
+        raise VersionError("CHANGELOG.md `[Unreleased]` is empty -- nothing to release")
+    head = ["## [Unreleased]", "", "## [%s] %s %s" % (version, CHANGELOG_DASH, date), ""]
+    text_intro = (intro or "").strip("\n")
+    if text_intro.strip():
+        head += text_intro.split("\n") + [""]
+    rest = lines[end:]
+    return "\n".join(lines[:start] + head + body + ([""] + rest if rest else [""]))
+
+
+def release_check(version, workspace=None):
+    """Raise VersionError unless `version` is `x.y.z` and not below `workspace`."""
+    if not RELEASE_VERSION.match(str(version or "")):
+        raise VersionError("--release wants x.y.z, got %r" % (version,))
+    if workspace and _key(version) < _key(workspace):
+        raise VersionError("--release %s is below the workspace version %s" % (version, workspace))
+
+
+def release_cut(tree, version, intro=None, today=None):
+    """Write the cut into `tree` (workspace version when there is a Cargo.toml,
+    CHANGELOG.md); returns `(date, paths)`: the date written and the paths
+    written, relative to `tree` (the cut commit stages exactly these).
+    Raises VersionError."""
+    import datetime as _dt
+    date = (today or _dt.date.today()).isoformat()
+    paths = []
+    cargo = os.path.join(tree, "Cargo.toml")
+    if os.path.isfile(cargo):
+        with open(cargo, encoding="utf-8") as fh:
+            old = workspace_version(fh.read())
+        release_check(version, old)
+        if old != version:
+            _old, raised = set_workspace_version(tree, version)
+            paths.append("Cargo.toml")
+            if os.path.isfile(os.path.join(tree, "Cargo.lock")):
+                paths.append("Cargo.lock")
+            paths.extend(r["path"] for r in raised if r["path"] not in paths)
+    else:
+        release_check(version)
+    path = os.path.join(tree, "CHANGELOG.md")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise VersionError("CHANGELOG.md not readable: %s" % exc)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(cut_changelog(text, version, intro, date))
+    paths.append("CHANGELOG.md")
+    return date, paths
+
+
 # --- `pipeline pins --cascade` ----------------------------------------------------
 
 def cascade_proposal(tree):

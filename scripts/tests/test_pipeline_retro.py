@@ -239,6 +239,14 @@ class RetroNumberTests(StoreCase):
         self.assertEqual(got, {"integration": 60.0, "strand": 0.0})
         self.assertEqual(retro.quarter(self.db, at(0), at(60))["Q16"], 60.0)
 
+    def test_q16_counts_the_release_pass_of_a_wave(self):
+        # RT2 (GH #1385, OR-RT-5): a releasing wave's one full pass is `release`.
+        self.pass_("i1", "integration", at(0), at(10), stations={"green": 6, "cached": 4},
+                   cache_hits=4)
+        self.pass_("r1", "release", at(20), at(30), stations={"green": 10, "cached": 0})
+        self.pass_("s1", "strand", at(40), at(50), stations={"cached": 10})
+        self.assertEqual(retro.quarter(self.db, at(0), at(60))["Q16"], 20.0)
+
     def test_retro_parallelism_ratio(self):
         self.pass_("a", "strand", at(0), at(10), lane=1000, crit=300)
         self.pass_("b", "strand", at(20), at(30), lane=1000, crit=500)
