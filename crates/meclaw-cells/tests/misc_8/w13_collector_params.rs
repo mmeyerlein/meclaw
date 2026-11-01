@@ -77,6 +77,8 @@ const KNOBS: &[(&str, &str)] = &[
     // the names are affinity's slot vocabulary, asked about the counterpart of a
     // turn. Empty is the shipped default and asks nothing.
     ("brief_slots", "_list"),
+    // #1279 -- the hints of the round's person on every turn's brief (`"0"` shipped).
+    ("brief_hints", "_str"),
     // GH #1244 -- the folded menu: the switch (`"0"` shipped, the way back) and
     // the family names longer than a first name segment.
     ("fold_tools", "_str"),
@@ -90,6 +92,13 @@ const KNOBS: &[(&str, &str)] = &[
     // the stamped paths that do not wait for the memory leg.
     ("route_wait_ms", "_int"),
     ("route_no_recall", "_list"),
+    // #1275 -- the early curate before the route stamp (`"0"` shipped)
+    // and how a delegation is answered (`"fact"` shipped = the advise text of
+    // before; `"context"` = the delegation's own context).
+    ("quick_speculative", "_str"),
+    ("delegation_answer_mode", "_str"),
+    ("delegation_inherits_stamp", "_str"),
+    ("delegation_rule", "_str"),
 ];
 
 fn config() -> serde_json::Value {

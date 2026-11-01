@@ -49,6 +49,10 @@
           "because": "a resident's answer to a declared source of one of the presenter's own topics, restamped by the builder's `reads_residents` edge with `hop.resident`, `hop.resident_status` (the resident's own route), the `op_id` the read carried and `hop.resident_round` (the member's round the read was asked with). The source's paths pick its rows or value; the set's round is `resident_round` and never anything in the body, and an answer without it shows nothing"
         },
         {
+          "route": "in_verdict",
+          "because": "the turn's stamp from the talky (`stamp_out`, live-2 FU2), restamped `in_verdict` by the parent's edge: `{stamp: {turn_id, audience_set, screen: {topic, confidence, lead, further}, screen_form}}`, or a second stamp of the same `turn_id` with `screen_form` alone. Read only with `stage`'s `verdict_source: stamp` (display-hive.md § 9b.12): then it is the turn's verdict, no call to `./decide` is made, and a sure verdict opens the window under construction; with the shipped `selector` it is heard and answered with nothing. Never the turn's text"
+        },
+        {
           "route": "in_model",
           "because": "a model package for the decider, pushed by the colony's llm-registry: a PARAMS-ONLY body that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./decide`, the one llm cell of this hive, past `stage`, because a params body is not a request. Draw it only from the registry's `update` lane, restamped `in_model`; as shipped nothing is drawn and the decider runs on its start values. The door deletes the inner context of the hive on the way in (`show_origin`, `show_phase`, `show_id`), so a push can never pose as a turn's verdict; a refusal that does not name this decider (a push for another cell, or one without `subscriber`) reaches `stage` and leaves as `error` `decide_refused`, never as a `no_route` inside this hive"
         },
@@ -72,6 +76,10 @@
         {
           "route": "in_show",
           "because": "`{op: topics}` to every app with `shows`, `{op: data, topic, request, lead, also, turn_id, sets}` to the one app that owns the chosen topic (`hop.show_app`), `{op: refused, topic, reason}` to an app whose topic was refused"
+        },
+        {
+          "route": "screen_topics",
+          "because": "`{topics: [{name, purpose, candidates}]}` (`candidates` = `[{key, describe}]`, #1368): the table the decider is asked over -- the presenter's own topics and the apps' accepted ones, filtered as for the decider, `purpose` the manifest's `describe` -- once on boot and on every change of it, never per turn (live-2 GR). Its taker is the talky's curator, which needs the screen's topics for its stamp (live-2 FU2). Only with `stage`'s switch `screen_topics` on; shipped off, the lane is silent, so a parent that draws no edge for it sees nothing dead-letter"
         },
         {
           "route": "error",
@@ -99,7 +107,7 @@
         {
           "from": ".",
           "to": "./stage",
-          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'mutation_committed' || hop.route == 'show_topics' || hop.route == 'show_data' || hop.route == 'event' || hop.route == 'receipt' || hop.route == 'resident_answer')",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'mutation_committed' || hop.route == 'show_topics' || hop.route == 'show_data' || hop.route == 'event' || hop.route == 'receipt' || hop.route == 'resident_answer' || hop.route == 'in_verdict')",
           "modifier": {
             "delete_context": [
               "show_origin",
@@ -244,7 +252,7 @@
         {
           "from": "./stage",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error' || hop.route == 'resident_read')",
+          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error' || hop.route == 'resident_read' || hop.route == 'screen_topics')",
           "modifier": {
             "delete_context": [
               "show_origin",

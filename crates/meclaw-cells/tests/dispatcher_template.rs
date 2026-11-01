@@ -767,6 +767,94 @@ fn only_a_family_the_collector_folded_unfolds() {
     );
 }
 
+/// The measured double encoding (a lab battery, quick voice on a small model,
+/// anonymised): the folded family `ask` called with `args` as a JSON STRING
+/// holding the object instead of the object. Left folded, the call reached
+/// the tools hive as `ask`, came back an error three times, and the model told
+/// the person the connection kept failing.
+const DOUBLE_ENCODED_ASK: &str = r#"{"op":"keeper","args":"{\"question\":\"Please keep this: we married in 1985 in a harbour town.\"}"}"#;
+
+#[test]
+fn tool_args_double_encoded_decoded_once() {
+    // GH #1360 (bio-2): `args` that is a JSON string of an object is
+    // unpacked ONCE, the call unfolds as it would have with the object, and
+    // one stderr line names the repair (`args_double_decoded`).
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            "ask,web",
+            brain_doc(
+                "tool_calls",
+                vec![
+                    call_turn("c1", "ask", DOUBLE_ENCODED_ASK),
+                    call_turn(
+                        "c2",
+                        "web",
+                        r#"{"args":"{\"op\":\"search\",\"query\":\"tide\"}"}"#,
+                    ),
+                ],
+            ),
+        ),
+    );
+
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert_eq!(route_of(&out[1]), "tool", "{out:?}");
+    assert_eq!(hop_str(&out[1], "tool_name"), "ask_keeper", "{out:?}");
+    let args: Value =
+        meclaw_core::serde_json::from_str(turns_of(&out[1])[0]["text"].as_str().unwrap())
+            .expect("unfolded args are json");
+    assert_eq!(
+        args,
+        json!({"question": "Please keep this: we married in 1985 in a harbour town."}),
+        "the object inside the string travels, decoded once"
+    );
+    // The op inside a double-encoded `args` (GH #1341 form) unfolds too.
+    assert_eq!(hop_str(&out[2], "tool_name"), "web_search", "{out:?}");
+    let args: Value =
+        meclaw_core::serde_json::from_str(turns_of(&out[2])[0]["text"].as_str().unwrap())
+            .expect("unfolded args are json");
+    assert_eq!(args, json!({"query": "tide"}));
+    assert!(
+        stderr.contains("dispatcher: family call c1 (`ask`) args_double_decoded"),
+        "the repair is named on stderr: {stderr}"
+    );
+}
+
+#[test]
+fn tool_args_triple_encoded_is_error() {
+    // GH #1360: one level is a model's slip; a string inside a string inside
+    // the arguments is not repaired. The call takes the path of every call
+    // whose `args` are no object: it leaves under its folded name and its
+    // answerer refuses it -- no second decode, no repair line.
+    // `args` is a string whose content is a JSON string of the object:
+    // decoded once it is still a string, not an object.
+    let twice = meclaw_core::serde_json::to_string(r#"{"question":"x"}"#).unwrap();
+    let triple = json!({"op": "keeper", "args": twice}).to_string();
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            "ask",
+            brain_doc("tool_calls", vec![call_turn("c1", "ask", &triple)]),
+        ),
+    );
+
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(
+        hop_str(&out[1], "tool_name"),
+        "ask",
+        "not unfolded: {out:?}"
+    );
+    assert_eq!(
+        turns_of(&out[1])[0]["text"],
+        triple,
+        "arguments as they came"
+    );
+    assert!(
+        !stderr.contains("args_double_decoded"),
+        "no repair is claimed: {stderr}"
+    );
+}
+
 /// The shipped composites that fold their menu, read from the template tree
 /// so a third folding composite is checked without anyone adding it to a list.
 fn folding_composites() -> Vec<String> {

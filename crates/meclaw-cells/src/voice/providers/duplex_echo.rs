@@ -165,6 +165,9 @@ impl DuplexProvider for EchoDuplex {
                             }
                         }
                         Some(DuplexControl::Close) => break "close_requested",
+                        // The loopback opens no model, so it has nothing a
+                        // seed could open with.
+                        Some(DuplexControl::Seed { .. }) => {}
                         // The connection let the control channel go; the audio
                         // is the session and it is still open.
                         None => break "close_requested",

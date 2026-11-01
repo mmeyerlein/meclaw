@@ -1202,6 +1202,88 @@ body::after {
   50% { opacity: 0.45; }
 }
 
+/* The window under construction (live-2 GR, display-hive.md § 6.17, R-FU-1): it
+ * opens on the turn's stamp before its data, and says so through a pictogram and its
+ * frame -- never by greying: nothing here lowers the opacity of content, filters it or
+ * inks it grey. The pictogram is a few bricks drawn by the status dot itself, in the
+ * accent at full strength, and carries no text. */
+.display-status[data-kind="building"] .display-status-dot {
+  display: inline-block;
+  vertical-align: middle;
+  inline-size: 22px;
+  block-size: 16px;
+  border-radius: 2px;
+  background-color: transparent;
+  background-image:
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent));
+  background-size: 10px 4px, 10px 4px, 5px 4px, 10px 4px, 10px 4px;
+  background-position: 0 12px, 12px 12px, 0 6px, 7px 6px, 6px 0;
+  background-repeat: no-repeat;
+}
+
+.display-status[data-kind="building"] .display-status-text:empty { display: none; }
+
+/* The frame of the window: the stack that holds the window's content draws a ring over
+ * the pane's own edge (the pane is the nearest positioned box), so the duration of its
+ * settle can ride on the element that animates. It breathes while the content builds and
+ * fades once when it is done -- opacity only, on the compositor (GH #1209). */
+.display-stack[data-build]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-window);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.display-stack[data-build="building"]::after {
+  opacity: 1;
+  animation: display-build-pulse 1.6s var(--ease) infinite;
+}
+
+.display-stack[data-build="done"]::after {
+  animation: display-settle var(--settle-ms, 600ms) var(--ease) 1 both;
+}
+
+@keyframes display-build-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes display-settle {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* A skeleton: the block's head in full ink, its lines as accent bars of the block's
+ * width, as many as `--lines` says. Bars, not text: there is nothing to read yet. */
+.display-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+/* The head the skeleton already knows (the binding's literal title), as the lead it
+ * will be: full ink, so the window under construction reads as a frame, not a ghost. */
+.display-skeleton-title {
+  margin: 0;
+  color: var(--fg-primary);
+}
+
+.display-skeleton-lines {
+  display: block;
+  block-size: calc(var(--lines, 1) * 18px - 8px);
+  background-image: repeating-linear-gradient(
+    to bottom, var(--accent-soft) 0 10px, transparent 10px 18px);
+  border-radius: 4px;
+}
+
 /* display-card — the general card (GH #958): kicker, title, a value riding its
  * unit, a line, and any blocks under it. It wears the field of the content
  * blocks, so a card inside a pane reads like a list or a chart inside one. */
@@ -2981,6 +3063,9 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-os[data-phase="speaking"] .display-os-mark,
   .display-status .display-status-dot,
   .display-status[data-kind="working"]::after,
+  /* live-2 GR: the frame of a window under construction stands still, and a done
+   * window's frame does not fade -- it is simply at rest. */
+  .display-stack[data-build]::after,
   .display-step[data-step-state="running"] .display-step-mark { animation: none !important; }
   /* Urgent keeps breathing under reduced motion, only slower: it is the one
    * animation that carries meaning (ruling, 08.09.). A tile says it too. The

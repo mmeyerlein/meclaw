@@ -34,9 +34,10 @@
 use crate::voice::b64;
 use crate::voice::contract::{
     AppendKind, AudioFormat, BoxFuture, DuplexControl, DuplexError, DuplexEvent, DuplexProvider,
-    DuplexSession, ProviderTimeouts, Speaker,
+    DuplexSession, ProviderTimeouts, SeedMessage, Speaker,
 };
-use crate::voice::params::GptLiveParams;
+use crate::voice::g711::{self, Law};
+use crate::voice::params::{AudioWire, G711_SAMPLE_RATE, GptLiveParams};
 use futures_util::{SinkExt, StreamExt};
 use meclaw_colony::io_liveness::IoLivenessMark;
 use serde_json::{Value as JsonValue, json};
@@ -151,8 +152,15 @@ impl DuplexProvider for GptLiveDuplex {
     /// No `rates()` override: the session is STARTED at this rate, so it is the
     /// only one this instance serves, and a client asking for another is
     /// refused rather than converted (R-V2).
+    ///
+    /// A G.711 session (R-LS-3) declares L16 at 8000 to its client: the edge
+    /// streams L16 only (`mod_audio_stream`, OR-LV-5), and this adapter
+    /// compands each frame on its way to and from the model.
     fn format(&self) -> AudioFormat {
-        AudioFormat::pcm16_mono(self.params.sample_rate)
+        match self.params.audio_format {
+            AudioWire::Pcm16 => AudioFormat::pcm16_mono(self.params.sample_rate),
+            AudioWire::G711Ulaw | AudioWire::G711Alaw => AudioFormat::pcm16_mono(G711_SAMPLE_RATE),
+        }
     }
 
     fn run_session(
@@ -211,6 +219,11 @@ async fn run_session(
         events,
         mut control,
     } = session;
+    // The seed's deadline counts from the moment the session was asked for,
+    // not from the handshake: the handshake (median 505 ms) and the wait for
+    // the curator run side by side, and the caller waits for the longer one.
+    let seed_by = Instant::now() + Duration::from_millis(params.seed_wait_ms);
+    let law = params.audio_format.law();
 
     let url = session_url(&params.base_url);
     let mut request = url
@@ -238,10 +251,50 @@ async fn run_session(
     liveness.mark_success();
     let (mut write, mut read) = ws.split();
 
+    // The seed (D48): with `seed_wait_ms` set, the opening waits for it, and
+    // what else the session is told meanwhile is held, not lost.
+    let waited = if params.seed_wait_ms > 0 {
+        await_seed(&mut control, &mut audio_in, seed_by).await
+    } else {
+        SeedWait::default()
+    };
+    // Review K1: a call that ended while its session waited costs no
+    // session -- no `session.start`, no greeting, the socket just closes.
+    if waited.ended {
+        tracing::info!("gpt_live: the call ended while the session waited for its seed");
+        return Ok(());
+    }
+    let seed = match waited.seed.as_deref() {
+        Some(messages) => {
+            let trimmed = trim_seed(messages);
+            if trimmed.trimmed > 0 {
+                tracing::info!(
+                    seed_trimmed = trimmed.trimmed,
+                    budget_tokens = SEED_MAX_TOKENS,
+                    "gpt_live: seed_trimmed -- the oldest messages left the seed"
+                );
+            }
+            tracing::info!(
+                messages = trimmed.kept.len(),
+                est_tokens = trimmed.est_tokens,
+                "gpt_live: seed_used"
+            );
+            Some(trimmed.kept)
+        }
+        None if params.seed_wait_ms > 0 => {
+            tracing::info!(
+                seed_wait_ms = params.seed_wait_ms,
+                "gpt_live: seed_late -- the session starts without its seed"
+            );
+            None
+        }
+        None => None,
+    };
+
     let mut meter = SessionMeter::default();
     send_frame(
         &mut write,
-        session_start_frame(&params, format),
+        session_start_frame(&params, format, seed.as_deref()),
         timeouts.external,
         &mut meter,
     )
@@ -281,6 +334,31 @@ async fn run_session(
             &mut meter,
         )
         .await?;
+    }
+
+    // What arrived while the opening waited for its seed, in its order of
+    // arrival (review K2).
+    let mut early_end = None;
+    for held in waited.held {
+        let frame = match held {
+            Held::Audio(bytes) => audio_append_frame(law, &bytes),
+            Held::Control(DuplexControl::Append {
+                kind,
+                event_id,
+                delegation_id,
+                content,
+            }) => append_frame(kind, &event_id, delegation_id.as_deref(), &content),
+            Held::Control(DuplexControl::Mute) => json!({ "type": "session.input_audio.mute" }),
+            Held::Control(DuplexControl::Unmute) => {
+                json!({ "type": "session.input_audio.unmute" })
+            }
+            // A close ends the wait and is never held; a second seed is late.
+            Held::Control(DuplexControl::Close | DuplexControl::Seed { .. }) => continue,
+        };
+        if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
+            early_end = Some(Ending::SendFailed(e));
+            break;
+        }
     }
 
     let mut control_open = true;
@@ -330,6 +408,11 @@ async fn run_session(
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let ending = loop {
+        // A close, a departed caller or a failed send while the opening
+        // waited for its seed ends the session before the first select.
+        if let Some(ending) = early_end.take() {
+            break ending;
+        }
         tokio::select! {
             // `biased` so guidance and a close are acted on before the audio
             // already queued behind them — a mute that arrives late is a mute
@@ -362,6 +445,10 @@ async fn run_session(
                         Err(e) => break Ending::SendFailed(e),
                     }
                 }
+                // A seed is part of the opening, and the session has opened.
+                Some(DuplexControl::Seed { .. }) => {
+                    tracing::warn!("gpt_live: a seed after the start is dropped, it came late");
+                }
                 // The colony let go of the guidance channel. The audio is the
                 // session and it is still open, so this arm simply stops being
                 // polled — a closed receiver answers instantly and would spin.
@@ -371,11 +458,9 @@ async fn run_session(
             chunk = audio_in.recv() => match chunk {
                 Some(bytes) => {
                     // One item, one append. The connection checked the parity;
-                    // what arrives here goes on the wire as it is (R-L4).
-                    let frame = json!({
-                        "type": "session.input_audio.append",
-                        "audio": b64::encode(&bytes),
-                    });
+                    // what arrives here goes on the wire as it is (R-L4) --
+                    // companded first on a G.711 session, sample by sample.
+                    let frame = audio_append_frame(law, &bytes);
                     if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
                         break Ending::SendFailed(e);
                     }
@@ -497,7 +582,7 @@ async fn run_session(
                     }
                     Mapped::Audio(bytes) => {
                         meter.saw_output(Instant::now());
-                        if audio_out.send(bytes).await.is_err() {
+                        if audio_out.send(expand_out(law, bytes)).await.is_err() {
                             break Ending::ClientGone;
                         }
                     }
@@ -509,13 +594,14 @@ async fn run_session(
             }
         }
     };
-
     let grace = Duration::from_millis(params.close_grace_ms);
     let mut failure = None;
     let (reason, usage_seconds, report) = match ending {
         Ending::Finalise => {
-            let (reason, seconds) =
-                finalise(&mut read, &audio_out, &events, &liveness, &mut meter, grace).await;
+            let (reason, seconds) = finalise(
+                &mut read, &audio_out, &events, &liveness, &mut meter, grace, law,
+            )
+            .await;
             (reason, seconds, true)
         }
         Ending::Reported {
@@ -656,6 +742,7 @@ async fn finalise(
     liveness: &IoLivenessMark,
     meter: &mut SessionMeter,
     grace: Duration,
+    law: Option<Law>,
 ) -> (String, f64) {
     let deadline = tokio::time::Instant::now() + grace;
     loop {
@@ -690,7 +777,7 @@ async fn finalise(
             }
             Mapped::Audio(bytes) => {
                 meter.saw_output(Instant::now());
-                if audio_out.send(bytes).await.is_err() {
+                if audio_out.send(expand_out(law, bytes)).await.is_err() {
                     return ("client_gone".to_string(), meter.usage_seconds);
                 }
             }
@@ -908,20 +995,181 @@ fn classify_connect(error: WsError) -> DuplexError {
 /// `delegation.type: "client"` is the whole point of the arrangement (R-25-4):
 /// the model hands work back to this colony, where talky answers it. Without
 /// it, OpenAI would run a second agent of its own.
-fn session_start_frame(params: &GptLiveParams, format: AudioFormat) -> JsonValue {
-    json!({
+///
+/// The format's wire names are the guide's ("WebSocket audio formats":
+/// `audio/pcm` at 24000 or 16000, `audio/pcmu` and `audio/pcma` at 8000). A
+/// `seed` adds `session.input` in the shape the live-conversations guide
+/// gives: one `message` per entry with one text part, `input_text` for
+/// developer and user, `output_text` for assistant. Without a seed the frame
+/// is byte for byte the one it always was.
+pub fn session_start_frame(
+    params: &GptLiveParams,
+    format: AudioFormat,
+    seed: Option<&[SeedMessage]>,
+) -> JsonValue {
+    let wire = match params.audio_format {
+        AudioWire::Pcm16 => json!({ "type": "audio/pcm", "rate": format.sample_rate }),
+        AudioWire::G711Ulaw => json!({ "type": "audio/pcmu", "rate": G711_SAMPLE_RATE }),
+        AudioWire::G711Alaw => json!({ "type": "audio/pcma", "rate": G711_SAMPLE_RATE }),
+    };
+    let mut frame = json!({
         "type": "session.start",
         "event_id": "start",
         "session": {
             "model": params.model,
             "instructions": params.instructions,
             "audio": {
-                "format": { "type": "audio/pcm", "rate": format.sample_rate },
+                "format": wire,
                 "output": { "voice": params.voice },
             },
             "delegation": { "type": "client" },
         }
+    });
+    if let Some(messages) = seed.filter(|m| !m.is_empty())
+        && let Some(session) = frame.get_mut("session").and_then(|s| s.as_object_mut())
+    {
+        let input: Vec<JsonValue> = messages
+            .iter()
+            .map(|m| {
+                let part = if m.role == "assistant" {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                json!({
+                    "type": "message",
+                    "role": m.role,
+                    "content": [{ "type": part, "text": m.text }],
+                })
+            })
+            .collect();
+        session.insert("input".to_string(), JsonValue::Array(input));
+    }
+    frame
+}
+
+/// One frame of the caller's audio for the wire: PCM16 as it came, or one
+/// G.711 byte per sample on a G.711 session.
+fn audio_append_frame(law: Option<Law>, bytes: &[u8]) -> JsonValue {
+    let encoded = match law {
+        Some(law) => b64::encode(&g711::compress(law, bytes)),
+        None => b64::encode(bytes),
+    };
+    json!({
+        "type": "session.input_audio.append",
+        "audio": encoded,
     })
+}
+
+/// The model's audio for the client: G.711 expanded to PCM16, PCM16 as it is.
+fn expand_out(law: Option<Law>, bytes: Vec<u8>) -> Vec<u8> {
+    match law {
+        Some(law) => g711::expand(law, &bytes),
+        None => bytes,
+    }
+}
+
+/// The most messages a seed may carry (live-conversations guide: "up to 128
+/// messages and 8,192 combined tokens").
+pub const SEED_MAX_MESSAGES: usize = 128;
+/// The most tokens a seed may carry, by the cell's own estimate.
+pub const SEED_MAX_TOKENS: u64 = 8_192;
+
+/// A seed cut to the model's budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrimmedSeed {
+    /// What stays, oldest first.
+    pub kept: Vec<SeedMessage>,
+    /// How many messages left, oldest first.
+    pub trimmed: usize,
+    /// The estimate of what stays.
+    pub est_tokens: u64,
+}
+
+/// The cell's own token estimate of one text: characters / 4, rounded up —
+/// the rule the route uses (its Python is not callable from here), and the
+/// sender's own `est_tokens` is not trusted.
+pub fn est_tokens(text: &str) -> u64 {
+    (text.chars().count() as u64).div_ceil(4)
+}
+
+/// Cut a seed to [`SEED_MAX_MESSAGES`] and [`SEED_MAX_TOKENS`], oldest
+/// first: the latest turns are the ones a call continues from.
+pub fn trim_seed(messages: &[SeedMessage]) -> TrimmedSeed {
+    let mut start = messages.len().saturating_sub(SEED_MAX_MESSAGES);
+    let mut total: u64 = messages[start..].iter().map(|m| est_tokens(&m.text)).sum();
+    while total > SEED_MAX_TOKENS && start < messages.len() {
+        total -= est_tokens(&messages[start].text);
+        start += 1;
+    }
+    TrimmedSeed {
+        kept: messages[start..].to_vec(),
+        trimmed: start,
+        est_tokens: total,
+    }
+}
+
+/// What the opening of a seeded session collected while it waited.
+#[derive(Debug, Default)]
+pub struct SeedWait {
+    /// The seed, where one came in time.
+    pub seed: Option<Vec<SeedMessage>>,
+    /// Every other command and the caller's audio, in ONE list in their order
+    /// of arrival, for after the start (review K2: a mute, an unmute and the
+    /// audio between them replay in that order, not commands first).
+    pub held: Vec<Held>,
+    /// The call ended while the session waited -- a close, or a caller who
+    /// left: the session is not started at all (review K1).
+    pub ended: bool,
+}
+
+/// One thing a waiting opening held, as it arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Held {
+    /// A command for the session.
+    Control(DuplexControl),
+    /// A chunk of the caller's audio.
+    Audio(Vec<u8>),
+}
+
+/// Wait for the seed until `deadline` (a tokio timer, R-AG-1: one deadline,
+/// no poll), holding whatever else arrives. Ends at the seed, at the deadline,
+/// at a close, or when the caller leaves.
+pub async fn await_seed(
+    control: &mut mpsc::Receiver<DuplexControl>,
+    audio_in: &mut mpsc::Receiver<Vec<u8>>,
+    deadline: Instant,
+) -> SeedWait {
+    let mut out = SeedWait::default();
+    let mut control_open = true;
+    loop {
+        tokio::select! {
+            biased;
+
+            command = control.recv(), if control_open => match command {
+                Some(DuplexControl::Seed { messages }) => {
+                    out.seed = Some(messages);
+                    return out;
+                }
+                Some(DuplexControl::Close) => {
+                    out.ended = true;
+                    return out;
+                }
+                Some(other) => out.held.push(Held::Control(other)),
+                None => control_open = false,
+            },
+
+            chunk = audio_in.recv() => match chunk {
+                Some(bytes) => out.held.push(Held::Audio(bytes)),
+                None => {
+                    out.ended = true;
+                    return out;
+                }
+            },
+
+            () = tokio::time::sleep_until(deadline) => return out,
+        }
+    }
 }
 
 /// One piece of guidance, on the channel its kind names.
@@ -1107,6 +1355,163 @@ mod tests {
             panic!("a meter reading is a meter reading");
         };
         assert_eq!(usage_ratio, None, "the window reading is optional");
+    }
+
+    fn seed(role: &str, text: &str) -> SeedMessage {
+        SeedMessage {
+            role: role.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    /// D48 Test 2 (the clock half): no seed -- the opening waits EXACTLY
+    /// `seed_wait_ms`, on the paused clock, and then starts without one.
+    #[tokio::test(start_paused = true)]
+    async fn gpt_live_seed_wait_ends_exactly_at_the_deadline() {
+        let (_control_tx, mut control) = mpsc::channel::<DuplexControl>(4);
+        let (_audio_tx, mut audio) = mpsc::channel::<Vec<u8>>(4);
+        let began = Instant::now();
+        let waited = await_seed(&mut control, &mut audio, began + Duration::from_millis(400)).await;
+        assert_eq!(began.elapsed(), Duration::from_millis(400));
+        assert!(waited.seed.is_none());
+    }
+
+    /// D48 Test 1 (the clock half): a seed after 100 ms ends the wait at
+    /// 100 ms, and what came before it is held in order, not lost.
+    #[tokio::test(start_paused = true)]
+    async fn gpt_live_seed_ends_the_wait_when_it_comes() {
+        let (control_tx, mut control) = mpsc::channel::<DuplexControl>(4);
+        let (audio_tx, mut audio) = mpsc::channel::<Vec<u8>>(4);
+        let began = Instant::now();
+        tokio::spawn(async move {
+            audio_tx.send(vec![1, 2]).await.ok();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            control_tx.send(DuplexControl::Mute).await.ok();
+            tokio::time::sleep(Duration::from_millis(99)).await;
+            control_tx
+                .send(DuplexControl::Seed {
+                    messages: vec![seed("user", "hi")],
+                })
+                .await
+                .ok();
+            // Held open past the wait, so the end is the seed and not a
+            // closed channel.
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            drop(audio_tx);
+        });
+        let waited = await_seed(&mut control, &mut audio, began + Duration::from_millis(400)).await;
+        assert_eq!(began.elapsed(), Duration::from_millis(100));
+        assert_eq!(waited.seed, Some(vec![seed("user", "hi")]));
+        assert_eq!(
+            waited.held,
+            vec![Held::Audio(vec![1, 2]), Held::Control(DuplexControl::Mute)]
+        );
+    }
+
+    /// Review K2: what arrives while the opening waits is held in ONE list, in
+    /// its order of arrival across both channels -- mute, unmute, audio, mute
+    /// replays with the audio inside the open ear, not after the last mute.
+    #[tokio::test(start_paused = true)]
+    async fn gpt_live_seed_wait_holds_commands_and_audio_in_arrival_order() {
+        let (control_tx, mut control) = mpsc::channel::<DuplexControl>(4);
+        let (audio_tx, mut audio) = mpsc::channel::<Vec<u8>>(4);
+        let began = Instant::now();
+        tokio::spawn(async move {
+            let step = Duration::from_millis(1);
+            control_tx.send(DuplexControl::Mute).await.ok();
+            tokio::time::sleep(step).await;
+            control_tx.send(DuplexControl::Unmute).await.ok();
+            tokio::time::sleep(step).await;
+            audio_tx.send(vec![7, 7]).await.ok();
+            tokio::time::sleep(step).await;
+            control_tx.send(DuplexControl::Mute).await.ok();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            drop(audio_tx);
+        });
+        let waited = await_seed(&mut control, &mut audio, began + Duration::from_millis(400)).await;
+        assert_eq!(
+            waited.held,
+            vec![
+                Held::Control(DuplexControl::Mute),
+                Held::Control(DuplexControl::Unmute),
+                Held::Audio(vec![7, 7]),
+                Held::Control(DuplexControl::Mute),
+            ]
+        );
+        assert!(!waited.ended);
+    }
+
+    /// Review K1: a close or a caller who leaves ends the wait as an end, so
+    /// the session is never started for a call that is over.
+    #[tokio::test(start_paused = true)]
+    async fn gpt_live_seed_wait_ends_at_a_close_or_a_caller_who_left() {
+        let (control_tx, mut control) = mpsc::channel::<DuplexControl>(4);
+        let (_audio_tx, mut audio) = mpsc::channel::<Vec<u8>>(4);
+        control_tx.send(DuplexControl::Close).await.ok();
+        let waited = await_seed(
+            &mut control,
+            &mut audio,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+        assert!(waited.ended && waited.seed.is_none() && waited.held.is_empty());
+
+        let (_control_tx, mut control) = mpsc::channel::<DuplexControl>(4);
+        let (audio_tx, mut audio) = mpsc::channel::<Vec<u8>>(4);
+        drop(audio_tx);
+        let waited = await_seed(
+            &mut control,
+            &mut audio,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+        assert!(waited.ended);
+    }
+
+    /// Review K7: on a G.711 session an odd byte is no half sample (dropped,
+    /// the connection already refused the frame), and PCM16 silence goes out
+    /// as the law's silence code, one byte per sample.
+    #[test]
+    fn gpt_live_g711_odd_and_silent_frames() {
+        let wire = |law, bytes: &[u8]| {
+            let frame = audio_append_frame(Some(law), bytes);
+            b64::decode(frame["audio"].as_str().unwrap_or_default()).unwrap_or_default()
+        };
+        assert_eq!(wire(Law::Mu, &[0, 0, 0, 0, 9]), vec![0xFF, 0xFF]);
+        assert_eq!(wire(Law::A, &[0, 0, 0, 0]), vec![0xD5, 0xD5]);
+        assert!(wire(Law::Mu, &[]).is_empty());
+        assert!(
+            expand_out(Some(Law::Mu), vec![0xFF])
+                .iter()
+                .all(|b| *b == 0)
+        );
+    }
+
+    /// D48 Test 8: 9 000 estimated tokens -- the oldest leave until the seed
+    /// fits 8 192, and the count says how many.
+    #[test]
+    fn gpt_live_seed_trims_oldest_over_budget() {
+        // 9 messages of 4 000 chars = 1 000 tokens each.
+        let text = "x".repeat(4_000);
+        let messages: Vec<SeedMessage> = (0..9)
+            .map(|i| {
+                seed(
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    &format!("{i}{text}"),
+                )
+            })
+            .collect();
+        let cut = trim_seed(&messages);
+        assert_eq!(cut.trimmed, 1, "one message over budget, the oldest one");
+        assert_eq!(cut.kept, messages[1..].to_vec());
+        assert!(cut.est_tokens <= SEED_MAX_TOKENS);
+        // Over 128 messages the oldest go even under the token budget.
+        let many: Vec<SeedMessage> = (0..130).map(|i| seed("user", &i.to_string())).collect();
+        let cut = trim_seed(&many);
+        assert_eq!((cut.trimmed, cut.kept.len()), (2, SEED_MAX_MESSAGES));
+        assert_eq!(cut.kept[0].text, "2");
+        // Characters, not bytes: the estimate is the route's chars/4.
+        assert_eq!(est_tokens("\u{e9}\u{e8}\u{ea}\u{eb}"), 1);
     }
 
     /// A gap is counted between two chunks, never before the first one.

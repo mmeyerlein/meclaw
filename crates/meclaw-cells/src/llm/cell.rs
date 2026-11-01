@@ -259,7 +259,7 @@ async fn run_responses_lane(
     };
     // GH #1260: a call leaked as harmony tokens in the text is a call.
     translated
-        .and_then(|t| sanitize::recover_harmony_tool_calls(t, request_json))
+        .and_then(|t| sanitize::checked_tool_calls(t, request_json))
         .map_err(|e| LaneFailure::from_translate(&e, "parse"))
 }
 
@@ -312,7 +312,10 @@ async fn run_messages_lane(
     if let Some(e) = wire::classify_in_body_error(&json) {
         return Err(LaneFailure::from_wire(&e));
     }
+    // GH #1373: the names checked against the menu, as on the other wires
+    // (no harmony recovery here: the Messages wire carries no such text).
     let translated = translate_anthropic::parse_messages_response_with(&json, silence_ok)
+        .map(|t| sanitize::repair_tool_names(t, request_json))
         .map_err(|e| LaneFailure::from_translate(&e, "parse"))?;
     if !translated.thinking_dropped.is_empty() {
         // GH #1298 (review m4 of F2): a dropped block costs the model its
@@ -1522,7 +1525,7 @@ impl LlmCell {
                             sanitize::reopen(&mut t, head);
                         }
                         next_cut = sanitize::cut_frame(&t);
-                        sanitize::recover_harmony_tool_calls(t, &req)
+                        sanitize::checked_tool_calls(t, &req)
                     })
                     .map_err(|e| format!("{e:?}"))
             }) {
@@ -3227,7 +3230,7 @@ impl LlmCell {
             let parsed = translate::parse_openai_response_with(&response_json, silence_ok);
             let cut = parsed.as_ref().ok().and_then(sanitize::cut_frame);
             let translated =
-                match parsed.and_then(|t| sanitize::recover_harmony_tool_calls(t, &request_json)) {
+                match parsed.and_then(|t| sanitize::checked_tool_calls(t, &request_json)) {
                     Ok(t) => t,
                     Err(e) => {
                         let resp_model = response_json.get("model").and_then(|v| v.as_str());

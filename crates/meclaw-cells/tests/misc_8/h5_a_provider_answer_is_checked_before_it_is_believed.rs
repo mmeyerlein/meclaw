@@ -29,7 +29,7 @@ use crate::mock_openai; // harness_fold: mod mock_openai;
 #[allow(unused_imports)]
 use crate::h5; // harness_fold: mod h5;
 
-use h5::{Turn, completion, one_turn};
+use h5::{Turn, base_params, completion, one_turn, turn_with};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_testing::mock_http::MockResponse;
 
@@ -109,6 +109,143 @@ async fn h5_empty_arguments_string_is_an_empty_object() {
         meclaw_core::serde_json::from_str(turn["text"].as_str().expect("text")).unwrap();
     assert_eq!(function["name"], "echo", "{function}");
     assert_eq!(function["arguments"], "{}", "{function}");
+}
+
+/// GH #1360: `arguments` as a JSON string whose content is itself a JSON
+/// string of the object -- a small model's slip on the chat wire.
+fn double_encoded(object: &Value) -> Value {
+    Value::String(meclaw_core::serde_json::to_string(&object.to_string()).unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h5_tool_args_double_encoded_decoded_once() {
+    let args = json!({"question": "Please keep this: we married in 1985."});
+    let t = one_turn(
+        tool_call(json!({"id": "call_1", "type": "function",
+                         "function": {"name": "ask_keeper",
+                                      "arguments": double_encoded(&args)}})),
+        json!({}),
+    )
+    .await;
+    assert_eq!(t.hop["finish_reason"], "tool_calls", "{:?}", t.body);
+    let turn = &t.body["messages"][0];
+    let function: Value =
+        meclaw_core::serde_json::from_str(turn["text"].as_str().expect("text")).unwrap();
+    assert_eq!(function["name"], "ask_keeper", "{function}");
+    let decoded: Value =
+        meclaw_core::serde_json::from_str(function["arguments"].as_str().expect("a string"))
+            .expect("the arguments are one JSON object string now");
+    assert_eq!(decoded, args, "decoded exactly once: {function}");
+}
+
+/// GH #1279: the repair is said, not only done. The one WARN
+/// line names `args_double_decoded` and the call it repaired; the call id is
+/// this test's own, so a parallel test of the binary cannot answer for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h5_tool_args_double_decoded_is_logged() {
+    let log = meclaw_testing::log_recorder::global();
+    let args = json!({"question": "Where did we meet?"});
+    let t = one_turn(
+        tool_call(json!({"id": "call_fu2_pin", "type": "function",
+                         "function": {"name": "ask_keeper",
+                                      "arguments": double_encoded(&args)}})),
+        json!({}),
+    )
+    .await;
+    assert_eq!(t.hop["finish_reason"], "tool_calls", "{:?}", t.body);
+    let lines = log.lines(
+        tracing::Level::WARN,
+        &["args_double_decoded", "tool_call_id=call_fu2_pin"],
+    );
+    assert_eq!(lines.len(), 1, "one line names the repair: {lines:?}");
+
+    // A call whose arguments are the object string itself is no repair.
+    let t = one_turn(
+        tool_call(json!({"id": "call_fu2_plain", "type": "function",
+                         "function": {"name": "ask_keeper",
+                                      "arguments": args.to_string()}})),
+        json!({}),
+    )
+    .await;
+    assert_eq!(t.hop["finish_reason"], "tool_calls", "{:?}", t.body);
+    assert!(
+        log.lines(tracing::Level::WARN, &["tool_call_id=call_fu2_plain"])
+            .is_empty(),
+        "nothing to repair, nothing said"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h5_tool_args_triple_encoded_is_error() {
+    let twice = double_encoded(&json!({"question": "x"}));
+    let thrice = Value::String(meclaw_core::serde_json::to_string(&twice).unwrap());
+    let t = one_turn(
+        tool_call(json!({"id": "call_1", "type": "function",
+                         "function": {"name": "ask_keeper", "arguments": thrice}})),
+        json!({}),
+    )
+    .await;
+    assert_refused(&t, "malformed_tool_call", "three levels");
+}
+
+/// GH #1373 (BAT R1 C1): the provider returned `web_search"}` -- a rest of the
+/// arguments in the name -- for the declared `web_search`. Dispatched as it
+/// came, it cost a round against `unknown_tool` and a second search. The name
+/// is repaired once to the declared tool, and the WARN line says so, with this
+/// test's own call id (a parallel test of the binary cannot answer for it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h5_a_tool_name_with_an_argument_rest_is_repaired_and_logged() {
+    let log = meclaw_testing::log_recorder::global();
+    let declared = json!({"type": "function",
+                          "function": {"name": "web_search", "parameters": {}}});
+    let t = turn_with(
+        tool_call(json!({"id": "call_fxname_pin", "type": "function",
+                         "function": {"name": "web_search\"}",
+                                      "arguments": "{\"query\":\"weather\"}"}})),
+        base_params,
+        json!({"system": {"tools": {"web_search": {"text": declared.to_string()}}},
+               "messages": [{"origin": "user", "type": "text", "text": "hi"}]}),
+    )
+    .await;
+    assert_eq!(t.hop["finish_reason"], "tool_calls", "{:?}", t.body);
+    let function: Value =
+        meclaw_core::serde_json::from_str(t.body["messages"][0]["text"].as_str().expect("text"))
+            .unwrap();
+    assert_eq!(function["name"], "web_search", "{function}");
+    let lines = log.lines(
+        tracing::Level::WARN,
+        &["tool_name_repaired", "tool_call_id=call_fxname_pin"],
+    );
+    assert_eq!(lines.len(), 1, "one line names the repair: {lines:?}");
+}
+
+/// GH #1373 (review m2): a name that already is the declared tool is no
+/// repair -- it stays as it came and no `tool_name_repaired` line names its
+/// call id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h5_an_exactly_declared_tool_name_is_no_repair() {
+    let log = meclaw_testing::log_recorder::global();
+    let declared = json!({"type": "function",
+                          "function": {"name": "web_search", "parameters": {}}});
+    let t = turn_with(
+        tool_call(json!({"id": "call_fxname_exact", "type": "function",
+                         "function": {"name": "web_search",
+                                      "arguments": "{\"query\":\"weather\"}"}})),
+        base_params,
+        json!({"system": {"tools": {"web_search": {"text": declared.to_string()}}},
+               "messages": [{"origin": "user", "type": "text", "text": "hi"}]}),
+    )
+    .await;
+    assert_eq!(t.hop["finish_reason"], "tool_calls", "{:?}", t.body);
+    let function: Value =
+        meclaw_core::serde_json::from_str(t.body["messages"][0]["text"].as_str().expect("text"))
+            .unwrap();
+    assert_eq!(function["name"], "web_search", "{function}");
+    let lines = log.lines(
+        tracing::Level::WARN,
+        &["tool_name_repaired", "tool_call_id=call_fxname_exact"],
+    );
+    assert!(lines.is_empty(), "a declared name is no repair: {lines:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -284,10 +284,16 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // the core.
     // GH #1304: one hundred and six -- the route stamp, `stamp`, out of each
     // keeper.
+    // GH #1279: one hundred and twenty-two -- the live line's four doors
+    // (`in_delta`, `in_screen_topics`, `in_seed_ask`, `in_seed_line`) into each
+    // keeper and its four exits (`seed`, `live_feed`, `verdict`, `propose`) out
+    // of each keeper.
+    // live-2 (#1369): one hundred and twenty-six -- the `in_call_end` door into
+    // each keeper and the `call_facts` exit out of each keeper.
     assert_eq!(
         hp.graph.edges.len(),
-        106,
-        "one hundred and six edges, forty-two around each keeper. The number is asserted \
+        126,
+        "one hundred and twenty-six edges, fifty-two around each keeper. The number is asserted \
          so that an edge added on one side and forgotten on the other is loud"
     );
 }

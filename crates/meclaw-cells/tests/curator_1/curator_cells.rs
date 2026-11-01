@@ -695,6 +695,8 @@ fn curator_template_shape() {
             "in_curate",
             "in_slots",
             "in_llm",
+            // GH #1275: the quick voice's answer to a spec call, held.
+            "in_spec_llm",
             "in_pack",
             "in_close",
             "in_model",
@@ -716,7 +718,15 @@ fn curator_template_shape() {
             // member's broker over a v-lane.
             "in_sealed",
             // GH #1304: talky/route's question for the person's last turns.
-            "in_turns_ask"
+            "in_turns_ask",
+            // GH #1279: the screen topics, the seed question and line of a
+            // call, and the stamp of a delta.
+            "in_screen_topics",
+            "in_seed_ask",
+            "in_seed_line",
+            // #1369: the end of a call, answered by what it carried.
+            "in_call_end",
+            "in_delta_stamp"
         ]
     );
     assert_eq!(
@@ -725,6 +735,8 @@ fn curator_template_shape() {
             "brain",
             // GH #1247: the ways a stamped path leaves on besides the brain.
             "quick",
+            // GH #1275: a held spec answer the normal curate kept.
+            "spec_release",
             "consult",
             "research",
             "turn_write",
@@ -747,7 +759,14 @@ fn curator_template_shape() {
             // GH #1079: one per item of a section that failed its word-for-word check.
             "reject",
             // GH #1304: the answer to `in_turns_ask`.
-            "turns"
+            "turns",
+            // GH #1279: the seed of a call, the live feed of a duplex call
+            // and the proposal of a clarify pair.
+            "seed",
+            // #1369: what a call carried.
+            "call_facts",
+            "live_feed",
+            "propose"
         ]
     );
     let types: Vec<(&str, &str)> = vec![
@@ -887,12 +906,43 @@ fn the_shared_helpers_are_one_text() {
         script_of("policy"),
         script_of("writer"),
     );
+    // GH #1279: `./history` cuts the sidecar block off the assistant's turns of a
+    // judge context and a seed by the same rule.
+    let h = script_of("history");
     for name in ["block_span", "stripped_text"] {
         assert_eq!(def(&i, name), def(&p, name), "{name}: intake vs policy");
         assert_eq!(def(&i, name), def(&w, name), "{name}: intake vs writer");
+        assert_eq!(def(&i, name), def(&h, name), "{name}: intake vs history");
     }
     for name in ["canonical", "block_hash"] {
         assert_eq!(def(&i, name), def(&p, name), "{name}: intake vs policy");
+    }
+    // GH #1279: what a seed carries (`./history`) and what the live
+    // feed watches (`./policy`) are one set of facts by one rule -- the
+    // notes, the topic, the state and its digest. The function alone: its
+    // lines up to the first one back at the margin.
+    let body = |script: &str, name: &str| -> String {
+        let at = script
+            .find(&format!("\ndef {name}("))
+            .unwrap_or_else(|| panic!("no {name}"));
+        let mut lines = script[at + 1..].lines();
+        let mut out = vec![lines.next().unwrap_or("").to_string()];
+        for l in lines {
+            if !l.is_empty() && !l.starts_with(' ') {
+                break;
+            }
+            out.push(l.to_string());
+        }
+        out.join("\n").trim_end().to_string()
+    };
+    for name in [
+        "seed_notes",
+        "seed_fact_state",
+        "topic_of",
+        "topic_now",
+        "epoch_ms",
+    ] {
+        assert_eq!(body(&h, name), body(&p, name), "{name}: history vs policy");
     }
 }
 

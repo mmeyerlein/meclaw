@@ -8,10 +8,10 @@ use meclaw_cells::proxy::factory::ProxyCellFactory;
 use meclaw_colony::CellFactory;
 use meclaw_core::{Body, Message, MessageBuilder, Path, serde_json::json};
 use meclaw_testing::ColonyHandle;
+use meclaw_testing::deadline;
 use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -34,6 +34,18 @@ async fn phase_10c_demo_outbound_end_to_end() {
     );
     let r2 = MockResponse::ok_json(br#"{"ok":true,"result":[]}"#);
     let (addr, _mock_join, _cap) = start_mock_server_capturing(vec![r1, r2]).await;
+
+    // W2 (A1): /proxy emission to /sink needs a wired edge (identity gone).
+    // GH #1355: wire it BEFORE `spawn_cell` -- the factory starts the proxy's
+    // I/O task there, its first long poll emits at once, and an emission ahead
+    // of the edge dead-letters as no_route. The edge table needs no registry
+    // entry for /proxy.
+    h.add_edge(
+        meclaw_core::Uuid::now_v7(),
+        Path::new("/proxy"),
+        Path::new("/sink"),
+    )
+    .await;
 
     // 3. ProxyCell registrieren via Factory.
     let td = TempDir::new().unwrap();
@@ -62,19 +74,11 @@ async fn phase_10c_demo_outbound_end_to_end() {
         )
         .unwrap();
     h.register_spawned(Path::new("/proxy"), spawned).await;
-    // W2 (A1): /proxy emission to /sink now needs a wired edge (identity gone).
-    h.add_edge(
-        meclaw_core::Uuid::now_v7(),
-        Path::new("/proxy"),
-        Path::new("/sink"),
-    )
-    .await;
 
     // 4. Wait for the receipt (long poll → event → OriginSink → routing → /sink).
-    let m = tokio::time::timeout(Duration::from_secs(30), recv_rx.recv())
+    let m = deadline::hang("a user turn at /sink", recv_rx.recv())
         .await
-        .expect("no user turn at /sink")
-        .expect("recv");
+        .expect("the /sink channel stays open");
 
     // 5. Header (chat_id/user_id/platform/message_id) + UBF-Body (User-Turn).
     assert_eq!(
@@ -129,7 +133,7 @@ async fn phase_10c_demo_inbound_end_to_end() {
     // Mock Telegram: an empty getUpdates result (no user updates) + one 200 OK
     // for the inbound probe's sendMessage call. We do not know in which order
     // getUpdates and sendMessage arrive — so we queue N=4 empty getUpdates
-    // responses and one 200 OK; the mock picks FIFO; the test deadline is 3s.
+    // responses and one 200 OK; the mock picks FIFO and repeats the last one.
     let r_empty = || MockResponse::ok_json(br#"{"ok":true,"result":[]}"#);
     let r_ok = MockResponse::ok_json(br#"{"ok":true,"result":{}}"#);
     let (addr, _mock_join, cap) =
@@ -141,6 +145,18 @@ async fn phase_10c_demo_inbound_end_to_end() {
     h.spawn(Path::new("/sink"), move || {
         CaptureCell::new(recv_tx.clone())
     })
+    .await;
+
+    // W2 (A1): /proxy emission to /sink needs a wired edge (identity gone).
+    // GH #1355: wire it BEFORE `spawn_cell` -- the factory starts the proxy's
+    // I/O task there, its first long poll emits at once, and an emission ahead
+    // of the edge dead-letters as no_route. The edge table needs no registry
+    // entry for /proxy.
+    h.add_edge(
+        meclaw_core::Uuid::now_v7(),
+        Path::new("/proxy"),
+        Path::new("/sink"),
+    )
     .await;
 
     let td = TempDir::new().unwrap();
@@ -170,13 +186,6 @@ async fn phase_10c_demo_inbound_end_to_end() {
         )
         .unwrap();
     h.register_spawned(Path::new("/proxy"), spawned).await;
-    // W2 (A1): /proxy emission to /sink now needs a wired edge (identity gone).
-    h.add_edge(
-        meclaw_core::Uuid::now_v7(),
-        Path::new("/proxy"),
-        Path::new("/sink"),
-    )
-    .await;
 
     // Inbound probe: an assistant turn with chat_id in the `context` compartment
     // sent to /proxy (finding 1 — reply routing reads chat_id from the persistent
@@ -197,26 +206,19 @@ async fn phase_10c_demo_inbound_end_to_end() {
     )
     .await;
 
-    // Wait for the sendMessage POST — we poll the capture vec until a POST is in
-    // it (3s deadline).
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    let mut send_msg_seen = false;
-    while tokio::time::Instant::now() < deadline && !send_msg_seen {
-        let snap = cap.lock().await.clone();
-        if let Some(req) = snap
+    // Wait for the sendMessage POST at the mock (the capture vec under the hang mark).
+    let cap = &cap;
+    let req = meclaw_testing::wait::until_some("a sendMessage POST at the mock", || async move {
+        cap.lock()
+            .await
             .iter()
             .find(|r| r.method == "POST" && r.path.contains("sendMessage"))
-        {
-            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-            assert_eq!(body["chat_id"], 9999);
-            assert_eq!(body["text"], "antwort an telegram");
-            send_msg_seen = true;
-        } else {
-            drop(snap);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-    assert!(send_msg_seen, "no sendMessage received at the mock");
+            .cloned()
+    })
+    .await;
+    let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+    assert_eq!(body["chat_id"], 9999);
+    assert_eq!(body["text"], "antwort an telegram");
 
     h.shutdown().await;
 }

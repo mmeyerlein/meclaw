@@ -229,3 +229,86 @@ async fn a_fact_after_the_fallback_but_in_the_same_turn_is_still_said() {
     let said = appended(&live.controls_for(Duration::from_millis(1_000)).await);
     assert_eq!(said, vec!["The appointment is on Thursday.".to_string()]);
 }
+
+/// BAT R1e (C4): one delegated sentence, two `fact`s on its `delegation_id` --
+/// the delegation's own round and the turn's round, which copied the id from
+/// the window (05-P2: +23.28 s and +28.28 s). The model hears exactly one
+/// answer per delegation: the first. Absence is read against a marker append
+/// that follows the duplicate, never against a window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_fact_for_an_answered_delegation_is_not_said() {
+    let mut live = boot_fake(duplex_params(json!({"default_mode": "auto"}))).await;
+    let (_client, _hello) = live.connect("session=dd-1&mode=auto").await;
+    let session = live.session().await;
+    session
+        .say(DuplexEvent::DelegationCreated {
+            delegation_id: "dlg-twice".to_string(),
+            offset_ms: 0,
+        })
+        .await;
+    let _ = live.emission("delegation").await;
+    live.send(advise_msg(
+        "dd-1",
+        "fact",
+        "First answer.",
+        Some("dlg-twice"),
+    ))
+    .await;
+    live.send(advise_msg(
+        "dd-1",
+        "fact",
+        "Second answer.",
+        Some("dlg-twice"),
+    ))
+    .await;
+    live.send(advise_msg("dd-1", "fact", "Marker.", None)).await;
+    let mut said = Vec::new();
+    while said.last().map(String::as_str) != Some("Marker.") {
+        if let DuplexControl::Append { content, .. } = live.control().await {
+            said.push(content);
+        }
+    }
+    assert_eq!(
+        said,
+        vec!["First answer.".to_string(), "Marker.".to_string()],
+        "one answer per delegation_id reaches the model"
+    );
+}
+
+/// Fix-round M-4 (BAT R1e, C4): an `interrupt` carries a spoken `fact` (the
+/// commentary after the instruction), so it is an answer like one: an
+/// `interrupt` on an answered `delegation_id` is not said, neither half of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_for_an_answered_delegation_is_not_said() {
+    let mut live = boot_fake(duplex_params(json!({"default_mode": "auto"}))).await;
+    let (_client, _hello) = live.connect("session=dd-2&mode=auto").await;
+    let session = live.session().await;
+    session
+        .say(DuplexEvent::DelegationCreated {
+            delegation_id: "dlg-int".to_string(),
+            offset_ms: 0,
+        })
+        .await;
+    let _ = live.emission("delegation").await;
+    live.send(advise_msg("dd-2", "fact", "First answer.", Some("dlg-int")))
+        .await;
+    live.send(advise_msg(
+        "dd-2",
+        "interrupt",
+        "Second answer.",
+        Some("dlg-int"),
+    ))
+    .await;
+    live.send(advise_msg("dd-2", "fact", "Marker.", None)).await;
+    let mut said = Vec::new();
+    while said.last().map(String::as_str) != Some("Marker.") {
+        if let DuplexControl::Append { content, .. } = live.control().await {
+            said.push(content);
+        }
+    }
+    assert_eq!(
+        said,
+        vec!["First answer.".to_string(), "Marker.".to_string()],
+        "an interrupt is an answer: one per delegation_id reaches the model"
+    );
+}

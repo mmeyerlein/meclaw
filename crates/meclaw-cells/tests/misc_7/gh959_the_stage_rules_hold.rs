@@ -9,6 +9,13 @@
 //! (sure, unsure, `none`, error, unconfigured, timeout then late, invalid lead -> standard,
 //! no data -> withdraw, a killed child), and every emission against `contract.emits`. The
 //! driver also refuses a `config.json` whose `script_inline` drifted from `stage.py`.
+//! Since live-2 GR (#1357) the table `STAMP` holds the stamp way (display-hive.md
+//! § 9b.12-9b.14): the stamp's verdict opens a window under construction without a call,
+//! skeletons from the manifest, blocks in their place until done, done settles once, no
+//! data withdraws, the screen form maps to the rung, and the default selector way emits
+//! byte for byte what presenter 1.3.1 emitted (`selector_golden.json`). The table `TOPICS`
+//! holds the lane `screen_topics`: off by default, on it says the decider's topic table on
+//! boot and on every change, never per turn.
 //!
 //! SKIPs where the template does not travel (R2b, the guard of every tool-bound test).
 
@@ -52,6 +59,8 @@ fn the_stage_rules_hold() {
         "BINDING",
         "AUDIENCE",
         "TURNS",
+        "STAMP",
+        "TOPICS",
         "CONTRACT",
     ] {
         assert!(

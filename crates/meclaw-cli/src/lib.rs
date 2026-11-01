@@ -87,9 +87,9 @@ fn stderr_filter(
 ///      (GH #662). Under an init system this is the layer `journalctl -u` reads,
 ///      which is why it is plain lines and not a second JSON stream.
 ///
-/// Returns the `WorkerGuard` of the non-blocking writer — caller MUST keep it
-/// alive for the duration of the process (Drop flushes pending writes). `None`
-/// when there is no file to flush. Calling twice in the same process is an
+/// Returns the `WorkerGuard`s of the non-blocking writers — caller MUST keep
+/// them alive for the duration of the process (Drop flushes pending writes).
+/// Empty when no sink is on. Calling twice in the same process is an
 /// error (`set_global_default` may only be set once). Tests that need a fresh
 /// subscriber must run in separate processes (integration tests do; multiple
 /// `#[test]` fns in the same crate share state).
@@ -101,7 +101,7 @@ pub fn setup_subscriber(
     tokio_console_port: u16,
     stderr: LogSink,
     file: LogSink,
-) -> anyhow::Result<Option<WorkerGuard>> {
+) -> anyhow::Result<Vec<WorkerGuard>> {
     use tracing_subscriber::prelude::*;
 
     // U10: build the layer only on opt-in; check the port up front (a clear
@@ -114,7 +114,7 @@ pub fn setup_subscriber(
             .spawn()
     });
 
-    let mut guard = None;
+    let mut guards = Vec::new();
     let file_layer = match file {
         LogSink::Off => None,
         LogSink::Auto => {
@@ -128,7 +128,7 @@ pub fn setup_subscriber(
                 .append(true)
                 .open(log_path)?;
             let (non_blocking, worker) = tracing_appender::non_blocking(sink);
-            guard = Some(worker);
+            guards.push(worker);
             Some(
                 tracing_subscriber::fmt::layer()
                     .json()
@@ -140,17 +140,19 @@ pub fn setup_subscriber(
 
     let stderr_layer = match stderr {
         LogSink::Off => None,
-        LogSink::Auto => Some(
-            tracing_subscriber::fmt::layer()
-                .compact()
-                // The colour codes are for a human at a console. Whatever
-                // collects this stream instead -- a file, a journal -- would
-                // get every line prefixed with an escape sequence, and a
-                // `grep '^2026'` over it would find nothing.
-                .with_ansi(std::io::stderr().is_terminal())
-                .with_writer(std::io::stderr)
-                .with_filter(stderr_filter(level, filter)?),
-        ),
+        LogSink::Auto => {
+            // The colour codes are for a human at a console. Whatever
+            // collects this stream instead -- a file, a journal -- would
+            // get every line prefixed with an escape sequence, and a
+            // `grep '^2026'` over it would find nothing.
+            let (layer, stderr_guard) = stderr_layer(
+                std::io::stderr(),
+                std::io::stderr().is_terminal(),
+                stderr_filter(level, filter)?,
+            );
+            guards.extend(stderr_guard);
+            Some(layer)
+        }
     };
 
     tracing_subscriber::registry()
@@ -160,7 +162,41 @@ pub fn setup_subscriber(
         .try_init()
         .map_err(|e| anyhow::anyhow!("set_global_default failed: {e}"))?;
 
-    Ok(guard)
+    Ok(guards)
+}
+
+/// The compact stderr layer of [`setup_subscriber`], writing to `sink` from a
+/// thread of its own (GH #1372).
+///
+/// A synchronous sink wrote each line on the runtime worker that logged it,
+/// under the process-wide stderr lock. Under a lab or an init system stderr
+/// is a file or a pipe; one 300-byte append to a file on a disk under
+/// write-back load was measured at 491 ms (lab host, gate load). The worker
+/// that waited there held the colony task in its LIFO slot -- no other
+/// worker may steal it -- and the lock held every other worker that logged:
+/// `starved=colony_loop`, `witness=kept`, `cpu_denied=0` in 5 of 43 lab runs.
+/// `lossy(false)`: the operator's stream keeps every line; a logger waits
+/// only once the writer thread is a full buffer behind.
+fn stderr_layer<S, W>(
+    sink: W,
+    ansi: bool,
+    filter: tracing_subscriber::EnvFilter,
+) -> (impl tracing_subscriber::Layer<S>, Option<WorkerGuard>)
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    W: std::io::Write + Send + 'static,
+{
+    use tracing_subscriber::Layer as _;
+    let (writer, guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .lossy(false)
+        .thread_name("meclaw-stderr")
+        .finish(sink);
+    let layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(ansi)
+        .with_writer(writer)
+        .with_filter(filter);
+    (layer, Some(guard))
 }
 
 /// U10 (RULED A8, 2026-06-12): tokio-console is opt-in. Decides whether the
@@ -799,9 +835,7 @@ pub async fn run_with_hooks_tuned(
     //
     // The guard lives to the end of `run_with_hooks_tuned`, so every exit path —
     // `--validate`'s early return, a `?`, a panic unwind, SIGTERM's graceful
-    // shutdown — releases the root. The `std::process::exit` call below skips
-    // `Drop` by design; the lease it leaves is a stale one, which the next boot
-    // reclaims after verifying the holder is gone.
+    // shutdown, a failed boot template scan (GH #1372) — releases the root.
     let _root_lease = lease::acquire(&cli.root)?;
 
     let db_path = cli.root.join("colony.db");
@@ -841,8 +875,11 @@ pub async fn run_with_hooks_tuned(
     )
     .await
     {
-        eprintln!("boot template scan failed: {e:?}");
-        std::process::exit(1);
+        // GH #1372: an error, not `std::process::exit` -- the log guards of
+        // `entrypoint` live past `run` and flush on their `Drop`, and since the
+        // stderr sink writes from its own thread an exit here would drop the
+        // lines still in its buffer. `main` turns the error into exit code 1.
+        anyhow::bail!("boot template scan failed: {e:?}");
     }
 
     // GH #98 (Track-Ruling N1, 2026-08-13): a graceful shutdown instead of a
@@ -2006,6 +2043,72 @@ fn validate_apply_manifest(
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // ---- GH #1372: a log line never waits on its sink ----
+
+    /// A sink that takes a line only when the test opens its gate, the stand-in
+    /// for `daemon.log` on a disk under write-back load (one 300-byte append
+    /// measured at 491 ms on the lab host, GH #1372).
+    struct HeldSink {
+        entered: std::sync::mpsc::Sender<()>,
+        gate: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl std::io::Write for HeldSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.entered.send(());
+            // `Err` = the test dropped the gate: every later line passes.
+            let _ = self.gate.recv();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// GH #1372: the thread that logs returns while the stderr sink still
+    /// holds its line. A runtime worker that waited in that write held every
+    /// task in its LIFO slot -- the colony too, `starved=colony_loop` -- and
+    /// the process-wide stderr lock held every other worker that logged.
+    #[test]
+    fn gh1372_a_log_line_never_waits_on_its_sink() {
+        use tracing_subscriber::prelude::*;
+        let hang = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let emitter = std::thread::spawn(move || {
+            let (layer, guard) = stderr_layer(
+                HeldSink {
+                    entered: entered_tx,
+                    gate: gate_rx,
+                },
+                false,
+                tracing_subscriber::EnvFilter::new("info"),
+            );
+            let subscriber = tracing_subscriber::registry().with(layer);
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::warn!("gh1372 probe line");
+            });
+            let _ = returned_tx.send(());
+            let _ = release_rx.recv();
+            drop(guard);
+        });
+        entered_rx
+            .recv_timeout(hang)
+            .expect("HANG: the log line reaches its sink");
+        let returned = returned_rx.recv_timeout(hang);
+        drop(gate_tx);
+        let _ = release_tx.send(());
+        emitter
+            .join()
+            .expect("the logging thread ends without a panic");
+        returned.expect(
+            "HANG: the thread that logged did not return while the sink held its line -- \
+             the stderr layer writes on the caller's thread (GH #1372)",
+        );
+    }
 
     // ---- Boot profile K10: the one-shot shutdown waits for the drain and ----
     // ---- says so when it does not end cleanly                            ----

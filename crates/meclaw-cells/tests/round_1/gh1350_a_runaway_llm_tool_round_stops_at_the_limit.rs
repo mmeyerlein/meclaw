@@ -123,6 +123,13 @@ async fn stream_provider(
 /// One turn of a fresh cell with `raw_params` and a one-tool menu; the
 /// emitted body.
 async fn drive(raw_params: Value) -> Value {
+    let tool = json!({"type": "function", "function": {"name": "fetch", "parameters": {}}});
+    drive_with(raw_params, json!({"fetch": {"text": tool.to_string()}})).await
+}
+
+/// One turn of a fresh cell with `raw_params` and the menu `tools` (the
+/// `system.tools` tree); the emitted body.
+async fn drive_with(raw_params: Value, tools: Value) -> Value {
     let td = TempDir::new().unwrap();
     let params = LlmParams::parse(&raw_params).expect("params");
     let mut cell = LlmCell::new(params, reqwest::Client::new());
@@ -138,11 +145,10 @@ async fn drive(raw_params: Value) -> Value {
         meclaw_core::Headers::new(),
         None,
     );
-    let tool = json!({"type": "function", "function": {"name": "fetch", "parameters": {}}});
     let msg = MessageBuilder::new(Path::new("/llm"))
         .reply_to(Path::new("/observer"))
         .body(Body::Inline(json!({
-            "system": {"tools": {"fetch": {"text": tool.to_string()}}},
+            "system": {"tools": tools},
             "messages": [{"origin": "user", "type": "text", "text": "look it up"}]
         })))
         .build();
@@ -237,6 +243,108 @@ async fn the_limit_on_a_one_body_answer_is_the_same_error() {
     assert_eq!(out["header"]["error_code"], "provider_error", "{out}");
     assert_eq!(out["meta"]["error"]["kind"], "tool_call_limit", "{out}");
     assert_eq!(out["meta"]["error"]["calls"], 20, "{out}");
+}
+
+/// GH #1373 (lab l14, C1 did not take): the quick voice's menu is FOLDED
+/// (talky `fold_tools` "1"): the model sees `web {op, args}`, never
+/// `web_search`, and the dispatcher names the tool `web_` + `op`. A rest of the
+/// arguments then sits where the menu holds no name to check it against --
+/// in the unfolded name (`web_search"}`) or in the `op` (`search"}`) -- and the
+/// dispatcher named the tool `web_search"}` either way. The streamed round
+/// (`tool_call_limit`) as the quick voice runs it: both are repaired, each on
+/// its WARN line; a call that already names its op stays byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folded_call_with_an_argument_rest_is_repaired_on_the_streamed_wire() {
+    let log = meclaw_testing::log_recorder::global();
+    // The family declaration as the collector's fold writes it.
+    let web = json!({"type": "function", "function": {
+        "name": "web",
+        "description": "Operations on `web`: fetch, search; `help` gives their arguments.",
+        "parameters": {"type": "object", "properties": {
+            "op": {"type": "string", "enum": ["fetch", "search", "help"]},
+            "args": {"type": "object"}},
+            "required": ["op", "args"]}}});
+    let exact = "{\"op\":\"fetch\",\"args\":{\"url\":\"https://example.com\"}}";
+    let calls = [
+        (
+            "call_fxname_fold_name",
+            "web_search\"}",
+            "{\"query\":\"Leipzig\"}",
+        ),
+        (
+            "call_fxname_fold_op",
+            "web",
+            "{\"op\":\"search\\\"}\",\"args\":{\"query\":\"Leipzig\"}}",
+        ),
+        ("call_fxname_fold_exact", "web", exact),
+    ];
+    let mut frames = Vec::new();
+    for (i, (id, name, args)) in calls.iter().enumerate() {
+        frames.push(frame(&json!({
+            "id": "chatcmpl-s", "object": "chat.completion.chunk", "model": "fast-model",
+            "choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": i, "id": id, "type": "function",
+                "function": {"name": name, "arguments": ""}
+            }]}}]
+        })));
+        frames.push(frame(&json!({
+            "id": "chatcmpl-s", "object": "chat.completion.chunk", "model": "fast-model",
+            "choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": i, "function": {"arguments": args}
+            }]}}]
+        })));
+    }
+    frames.push(frame(&json!({
+        "id": "chatcmpl-s", "object": "chat.completion.chunk", "model": "fast-model",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+    })));
+    frames.push("data: [DONE]\n\n".to_string());
+    let (base, body, _stop) = stream_provider(frames, false).await;
+    let out = drive_with(params(&base, 16), json!({"web": {"text": web.to_string()}})).await;
+    let sent = body.await.expect("the provider read the request");
+    assert_eq!(
+        sent["stream"], true,
+        "the quick voice's round is streamed: {sent}"
+    );
+    assert_eq!(out["header"]["finish_reason"], "tool_calls", "{out}");
+    let functions: Vec<Value> = out["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter(|t| t["type"] == "tool_call")
+        .map(|t| meclaw_core::serde_json::from_str(t["text"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(functions.len(), 3, "{out}");
+    // The unfolded op name, with its arguments as they came.
+    assert_eq!(functions[0]["name"], "web_search", "{out}");
+    assert_eq!(
+        functions[0]["arguments"], "{\"query\":\"Leipzig\"}",
+        "{out}"
+    );
+    // The family call, its `op` repaired, everything else as it came.
+    assert_eq!(functions[1]["name"], "web", "{out}");
+    let args: Value =
+        meclaw_core::serde_json::from_str(functions[1]["arguments"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        args,
+        json!({"op": "search", "args": {"query": "Leipzig"}}),
+        "{out}"
+    );
+    // A call that names a declared op is no repair.
+    assert_eq!(functions[2]["name"], "web", "{out}");
+    assert_eq!(functions[2]["arguments"], exact, "{out}");
+    for id in ["call_fxname_fold_name", "call_fxname_fold_op"] {
+        let lines = log.lines(
+            tracing::Level::WARN,
+            &["tool_name_repaired", &format!("tool_call_id={id}")],
+        );
+        assert_eq!(lines.len(), 1, "{id}: one line names the repair: {lines:?}");
+    }
+    let lines = log.lines(
+        tracing::Level::WARN,
+        &["tool_name_repaired", "tool_call_id=call_fxname_fold_exact"],
+    );
+    assert!(lines.is_empty(), "a declared op is no repair: {lines:?}");
 }
 
 /// `rel` names the template file from the repository root, so the line that

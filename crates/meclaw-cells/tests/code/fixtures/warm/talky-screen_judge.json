@@ -1,0 +1,85 @@
+{
+  "source": "hand: the keeper's turn (in_turn -> turns_ask), the judge context (in_turns -> screen_model), the model's form (in_verdict -> stamp), with the judge switched on",
+  "overlay": {
+    "enabled": "1"
+  },
+  "probes": [
+    {
+      "hop": {
+        "route": "in_turn"
+      },
+      "context": {
+        "turn_id": "turn-1",
+        "audience_set": "[\"m-1\"]"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "Show me the weather."
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_turns",
+        "state": "Show me the weather."
+      },
+      "context": {
+        "turn_id": "turn-1",
+        "audience_set": "[\"m-1\"]"
+      },
+      "body": {
+        "messages": [],
+        "turns": [],
+        "judge": {
+          "turns": [
+            {
+              "turn_id": "turn-0",
+              "role": "user",
+              "text": "Good morning."
+            }
+          ],
+          "topic": "",
+          "hints": [],
+          "screen": {
+            "topics": [
+              {
+                "name": "weather",
+                "purpose": "the weather today and the next days"
+              }
+            ],
+            "state": []
+          },
+          "now": {
+            "iso": "2026-01-01T09:00:00+01:00",
+            "weekday": "Thursday",
+            "timezone": "Europe/Berlin"
+          },
+          "place": ""
+        }
+      }
+    },
+    {
+      "hop": {
+        "route": "in_verdict",
+        "finish_reason": "stop"
+      },
+      "context": {
+        "turn_id": "turn-1",
+        "audience_set": "[\"m-1\"]"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "{\"screen_form\": \"active\"}"
+          }
+        ]
+      }
+    }
+  ]
+}

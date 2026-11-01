@@ -331,6 +331,46 @@ pub(crate) fn keepalive_outlives_idle(p: &VoiceParams) -> Option<(u64, u64)> {
     }
 }
 
+/// The params one life of a `voice` cell runs on: birth ⊕ the `cell.db`
+/// overlay, re-parsed, together with the raw document they came from.
+///
+/// An endpoint moved by a params update must come back where it was moved to,
+/// or the crash of a cell would quietly undo an operator's move. A corrupt
+/// overlay is not worth a panic on the restart barrier — the birth params are
+/// a working endpoint, loudly.
+fn effective_params(
+    conn: &rusqlite::Connection,
+    birth: &JsonValue,
+    birth_parsed: &VoiceParams,
+    path: &Path,
+) -> (VoiceParams, JsonValue) {
+    let effective_raw = match crate::params_overlay::restore::<VoiceOverlay>(conn, birth) {
+        Ok(o) => meclaw_core::serde_json::to_value(&o).unwrap_or_else(|_| birth.clone()),
+        Err(e) => {
+            tracing::error!(
+                path = path.as_str(),
+                error = %e,
+                "voice: could not replay the params overlay — this endpoint \
+                 starts on its birth params"
+            );
+            birth.clone()
+        }
+    };
+    // GH #1059: granted literals blanked, exactly as at birth — no adapter
+    // of this life is ever built with a literal next to a grant.
+    let parsed = VoiceParams::parse(&effective_raw)
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                path = path.as_str(),
+                error = %e,
+                "voice: the replayed params did not parse — birth params it is"
+            );
+            birth_parsed.clone()
+        })
+        .without_granted_literals();
+    (parsed, effective_raw)
+}
+
 /// Build the closure that constructs a fresh `voice` cell-task.
 ///
 /// Params are parsed once, outside the closure, so a params error is a spawn
@@ -404,36 +444,9 @@ fn make_build(
         let (conn, _status) = open_or_create_cell_db_with_status(&cell_dir_cap.join("cell.db"))
             .expect("open cell.db");
 
-        // 2. Restore: effective params = birth ⊕ the `cell.db` overlay. An
-        //    endpoint moved by a params update must come back where it was
-        //    moved to, or the crash of a cell would quietly undo an operator's
-        //    move. A corrupt overlay is not worth a panic on the restart
-        //    barrier — the birth params are a working endpoint, loudly.
-        let effective_raw = match crate::params_overlay::restore::<VoiceOverlay>(&conn, &birth_cap)
-        {
-            Ok(o) => meclaw_core::serde_json::to_value(&o).unwrap_or_else(|_| birth_cap.clone()),
-            Err(e) => {
-                tracing::error!(
-                    path = path_cap.as_str(),
-                    error = %e,
-                    "voice: could not replay the params overlay — this endpoint \
-                     starts on its birth params"
-                );
-                birth_cap.clone()
-            }
-        };
-        // GH #1059: granted literals blanked, exactly as at birth — no adapter
-        // of this life is ever built with a literal next to a grant.
-        let parsed = VoiceParams::parse(&effective_raw)
-            .unwrap_or_else(|e| {
-                tracing::error!(
-                    path = path_cap.as_str(),
-                    error = %e,
-                    "voice: the replayed params did not parse — birth params it is"
-                );
-                birth_parsed_cap.clone()
-            })
-            .without_granted_literals();
+        // 2. Restore: effective params = birth ⊕ the `cell.db` overlay.
+        let (parsed, effective_raw) =
+            effective_params(&conn, &birth_cap, &birth_parsed_cap, &path_cap);
 
         // 3. Build the adapters for THIS life, from the effective params, so a
         //    moved timeout takes effect on the next respawn. The birth pair is
@@ -541,7 +554,18 @@ fn make_build(
         io.credential_backoff_max_ms = parsed.credential_backoff_max_ms;
         let (prewarm_ttl_ms, duck) = duplex_edge(&parsed);
         io.duplex_prewarm_ttl_ms = prewarm_ttl_ms;
+        io.duplex_seed_wait_ms = match &parsed.duplex {
+            Some(crate::voice::params::DuplexParams::GptLive(g)) => g.seed_wait_ms,
+            _ => 0,
+        };
+        // GH #1377: the loopback has no knob and a cascade no duplex session,
+        // so both keep the shipped `0`.
+        io.duplex_recover_max = match &parsed.duplex {
+            Some(crate::voice::params::DuplexParams::GptLive(g)) => g.recover_max,
+            _ => crate::voice::params::DEFAULT_RECOVER_MAX,
+        };
         io.duck = duck;
+        io.duplex_call_marks = parsed.call_marks.clone();
         // The path the mount registers under. The mount table refuses a name
         // another path holds and lets the holder replace its own entry, which
         // is what a respawn is.
@@ -648,10 +672,11 @@ mod tests {
     /// connection (OR-L.L2b.1).
     ///
     /// The wait it sizes is what carries the final `Closed { usage_seconds }`
-    /// to the handler, and after OR-L22 that log line is the only place a
-    /// session's cost is ever reported. A document that raises the provider's
+    /// to the handler, the number the `final` of the call's `usage` lane counts
+    /// for the session in charge (D48, DK). A document that raises the provider's
     /// own `close_grace_ms` above the shipped 15 s and finds the connection
-    /// still giving up at 15 s loses exactly that number, silently.
+    /// still giving up at 15 s loses exactly that number, and the `final` falls
+    /// back to the session's last meter reading.
     #[test]
     fn the_close_grace_comes_from_the_duplex_block() {
         let raised = VoiceParams::parse(&json!({
@@ -777,5 +802,52 @@ mod tests {
             effective.stt,
             crate::voice::params::SttParams::Echo
         ));
+    }
+
+    /// GH #1379: the params a life runs on are the birth params replayed
+    /// through the overlay, and a key the overlay does not carry is gone after
+    /// that round trip. Measured: a phone call of the live-2 battery set
+    /// `emit_usage: true` (birth `config.json` says so) and not one `usage`
+    /// emission left the cell, because `VoiceOverlay` carried neither it nor
+    /// the two call-mark keys. Every key a birth may name must survive.
+    #[test]
+    fn a_birth_key_survives_the_replay_a_life_runs_on() {
+        let birth = json!({
+            "mount": "phone",
+            "stt": {"provider": "echo"},
+            "emit_partials": true,
+            "emit_usage": true,
+            "call_marks_s": [60, 120],
+            "call_mark_every_s": 600
+        });
+        let birth_parsed = VoiceParams::parse(&birth).expect("birth params parse");
+        assert!(birth_parsed.emit_usage, "the birth parse has it");
+
+        let td = tempfile::tempdir().expect("tempdir");
+        let (conn, _status) = open_or_create_cell_db_with_status(&td.path().join("cell.db"))
+            .expect("a fresh cell.db");
+        let path = Path::new("/phone/voice");
+
+        let (effective, _) = effective_params(&conn, &birth, &birth_parsed, &path);
+        assert!(
+            effective.emit_usage,
+            "emit_usage was lost between birth and the life the cell runs"
+        );
+        assert_eq!(effective.call_marks.marks_s, vec![60, 120]);
+        assert_eq!(effective.call_marks.every_s, 600);
+
+        // Every top-level key of THIS birth is still there after the replay.
+        // That covers only the keys named here; the class (a `VoiceParams`
+        // field the overlay does not carry) is held by the exhaustive
+        // destructuring in `VoiceOverlay::parse`, a compile error.
+        let restored = crate::params_overlay::restore::<VoiceOverlay>(&conn, &birth)
+            .expect("the overlay replays");
+        let raw = meclaw_core::serde_json::to_value(&restored).expect("serialise");
+        for key in birth.as_object().expect("object").keys() {
+            assert!(
+                raw.get(key).is_some(),
+                "the replay dropped `{key}` -- VoiceOverlay must carry it"
+            );
+        }
     }
 }

@@ -44,7 +44,14 @@ use std::path::{Path, PathBuf};
 /// screen the member no longer sees, commit e8add4ead).
 /// `talky/decide` (GH #1247) is the same decisions road on every turn: its
 /// `./route` reads a verdict after `late_ms` as `talk`, so its 3 s is a deadline.
-const DEADLINE_CELLS: &[&str] = &["presenter/decide", "display/judge", "talky/decide"];
+/// `talky/screen_model` (#1279) judges the screen form beside the route stamp: a
+/// form later than the turn is about a screen the person no longer sees.
+const DEADLINE_CELLS: &[&str] = &[
+    "presenter/decide",
+    "display/judge",
+    "talky/decide",
+    "talky/screen_model",
+];
 
 /// The slowest measured decision of the decisions road (its measurement,
 /// eight in parallel, 2026-10-02, `E_parallel_8.max` 1006.8 ms; the live wire with 41

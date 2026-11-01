@@ -12,7 +12,11 @@
         },
         {
           "route": "in_advise",
-          "because": "one section of advice for a duplex session that is already running: a fact to be said, a context to be thought, a correction of the standing instruction. It enters at this hive's own rim and goes straight to the media half, because appending to an open session is a property of the media and the signalling half has nothing to add to it. It is deliberately NOT handed to `./signal` the way `in_speak` is: advice ends no synthesis, so there is no sentence for a pending `hangup` to wait for. A cascade instance refuses the lane by name (`wrong_engine`), which is the honest answer where there is no open channel to append to"
+          "because": "one section of advice for a duplex session that is already running: a fact to be said, a context to be thought, a correction of the standing instruction, an interrupt (a correction and a fact in one breath), or a renew that opens the call's next provider session. It enters at this hive's own rim and goes straight to the media half, because appending to an open session is a property of the media and the signalling half has nothing to add to it. It is deliberately NOT handed to `./signal` the way `in_speak` is: advice ends no synthesis, so there is no sentence for a pending `hangup` to wait for. A cascade instance refuses the lane by name (`wrong_engine`), which is the honest answer where there is no open channel to append to"
+        },
+        {
+          "route": "in_seed",
+          "because": "the seed of a duplex session that is opening (D48): the answer to `seed_ask`, the history the live model opens with, naming the session it answers on `hop.renewal_n`. It enters at this hive's own rim and goes straight to the media half, like `in_advise`, and for the same reason: it is a property of the media session, and the signalling half has nothing to add. It may arrive while the line still rings -- the session it seeds was opened at the ring and is parked for the media connection"
         },
         {
           "route": "call_incoming",
@@ -75,6 +79,18 @@
           "because": "the duplex half renewed its provider session within the same call before the provider's limit (GH #896, `params.duplex.renew_after_ms` of the media half). It leaves this hive for the same reason `delegation` does: what the new session has to know is the conversation, and whatever stands behind the member knows it -- the answer comes back on `in_advise` as a `context` section that carries `hop.renewal_n`. `hop` carries `renewal_n` and `renewed_at`, the body is empty. Duplex only"
         },
         {
+          "route": "seed_ask",
+          "because": "the duplex half opens a session of a call -- at the ring, at the media connection or as a renewal -- and waits up to `params.duplex.seed_wait_ms` of the media half for its seed (D48). It leaves this hive for the reason `renewed` does: what the session should open with is the conversation, and whatever stands behind the member knows it; the answer comes back on `in_seed`. `hop` carries `reason` (`start` or `renew`) and `renewal_n` (`0` = the call's first session), the body is empty; the answer gives `renewal_n` back on `hop.renewal_n` and reaches only the session that asked. Duplex with `seed_wait_ms` only"
+        },
+        {
+          "route": "usage",
+          "because": "what a duplex call used (D48), out of the media half where it sets `emit_usage`: `hop` carries `seconds` (the call's total over every provider session, renewals included) and `final`, the one emission at the end of the call also `complete`, the body is empty. It leaves this hive because pricing a call is not telephony: the member declares it as a port at `./channels` and the set that grows a live line draws the edge to whoever prices it. It crosses the rim on the edge that carries `delegation`, with the same keys stripped (#1369)"
+        },
+        {
+          "route": "call_mark",
+          "because": "a time mark of a duplex call (D48), out of the media half where it sets `call_marks_s` or `call_mark_every_s`: `hop` carries `elapsed_s`, the seconds since the call's connection opened, the body is empty. It leaves for the reason `usage` does: steering a long call is the member's business, which declares it as a port at `./channels` (#1369)"
+        },
+        {
           "route": "error",
           "because": "the failure of a leg of this channel: a caller nobody allowlisted -- whose leg this hive puts down in the same breath (GH #614), so the dialplan has its extension back instead of an answered call nobody speaks into -- a request this hive cannot read, or the media half's own error. It leaves rather than being logged, because a channel that kept its faults to itself is a telephone that stopped ringing for a reason nobody can find"
         },
@@ -121,7 +137,7 @@
         {
           "from": ".",
           "to": "./voice",
-          "condition": "has(hop.route) && hop.route == 'in_advise'"
+          "condition": "has(hop.route) && (hop.route == 'in_advise' || hop.route == 'in_seed')"
         },
         {
           "from": ".",
@@ -144,7 +160,7 @@
         {
           "from": "./voice",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation' || hop.route == 'renewed')",
+          "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'partial' || hop.route == 'spoken' || hop.route == 'error' || hop.route == 'delegation' || hop.route == 'renewed' || hop.route == 'seed_ask' || hop.route == 'usage' || hop.route == 'call_mark')",
           "modifier": {
             "delete_context": [
               "phone_origin",
@@ -163,6 +179,24 @@
           "from": "./voice",
           "to": "./signal",
           "condition": "has(hop.route) && hop.route == 'speak_end'",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_user",
+              "phone_verified",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
+        },
+        {
+          "from": "./voice",
+          "to": "./signal",
+          "condition": "has(hop.route) && hop.route == 'error' && has(hop.error_code) && hop.error_code == 'duplex_failed'",
           "modifier": {
             "delete_context": [
               "phone_origin",
@@ -308,6 +342,6 @@
     "use_when": "Wherever a person should be reachable by telephone, or should be able to ring somebody up. FreeSWITCH stays the media edge in gateway mode: it does the SIP, it forks the audio into the media half over a WebSocket, and it tells this hive what happened over the front door. Nothing here speaks SIP, and nothing here holds a trunk.",
     "not_in_scope": "It is not a switch: it dials, it hangs up, and everything else about the call -- codecs, trunks, dialplans, voicemail -- belongs to FreeSWITCH and stays there. It does not authenticate a caller either: it maps a number to a sender id and refuses a number it has no entry for, which is a table and not a judgement. And it holds no persona: what is said into a call is a turn of the member's conversation, answered by the member's assistant.",
     "contract_in": "Eight lanes. Five arrive at the hive path: `in_speak` (the answer to be spoken) and the four dialplan events `call_incoming`, `call_ringing`, `call_answered` and `call_ended`, which reach the front door as `POST /messages` addressed at this hive. Two of the four raise a turn -- `call_incoming`, and `call_answered` for a call this channel PLACED. `call_ringing` and `call_ended` only move the row, and since 1.0.1 so does a `call_answered` that follows a `call_incoming` of the same uuid (GH #614). Three lanes name their own connect point: `tool` and `schemas`, both on `./dial`, because a tool call is answered by the cell that is the tool, and `in_sealed` (required) on `./voice`, the sealed box an access of the colony sends the media half (#1329).",
-    "contract_out": "Nine lanes out of the hive path, and one at a connect point. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself. And four arbitration receipts, one per inbound call (GH #620): `call_accepted`, `call_queued`, `call_refused`, `call_abandoned`, each carrying `call_id`, `policy` and `capacity`. The installing manifest draws the edge that drains them, or they dead-letter as `no_route` -- the rule the `partial` lane already follows. `credential_request` leaves at `./voice` (#1329): the media half's ask for its provider key, which the consumer routes to an access of the colony -- this hive ships no access of its own."
+    "contract_out": "Nine lanes out of the hive path, and one at a connect point. `turn` -- what was said, or what happened to the line. `partial` -- an interim transcript, off unless ordered. `error` -- a caller nobody allowlisted, or a leg that failed. `tool_result` and `tool_schemas` -- the answer to `call`/`hangup` and the offer itself. And four arbitration receipts, one per inbound call (GH #620): `call_accepted`, `call_queued`, `call_refused`, `call_abandoned`, each carrying `call_id`, `policy` and `capacity`. The installing manifest draws the edge that drains them, or they dead-letter as `no_route` -- the rule the `partial` lane already follows. `credential_request` leaves at `./voice` (#1329): the media half's ask for its provider key, which the consumer routes to an access of the colony -- this hive ships no access of its own. A duplex media half adds what it alone produces, on the edge out of `./voice`: `spoken`, `delegation`, `renewed`, `seed_ask`, and since #1369 `usage` and `call_mark` -- each only where the media half's params order it, each drained by the set that grows the line."
   }
 }

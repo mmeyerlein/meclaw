@@ -1,4 +1,4 @@
-# `display@2.11.1`
+# `display@2.12.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -300,7 +300,13 @@ does not take is an `invalid_view` receipt whose detail reads `<component>.<prop
 <expected>`. Numbers may travel as digit text. `display-card` is the general card and the
 fallback block of a topic, `display-steps` holds `display-step` rows (`done`, `running`,
 `todo`, `failed`, `blocked`), and `display-status` with `kind: working` is the first answer
-of a window whose content is still on its way. `scripts/display_sync.py` writes every copy
+of a window whose content is still on its way. A window under construction (display-hive.md
+§ 6.17, § 9b.12) draws `display-status` with `kind: building` as a pictogram of a few bricks
+without text and one `display-skeleton` (`block`, `title`, `lines`) per block still on its
+way, its head in full ink and its lines as bars; its `display-stack` says `build: building`
+and draws the window's frame breathing, then `build: done` with `settle_ms` and lets the
+frame come to rest once. Nothing of it is greyed; under reduced motion frame and settle
+stand still. `scripts/display_sync.py` writes every copy
 of the catalogue and `--check` exits non-zero when one has drifted.
 
 **The map.** `display-map` shows a place: `lat` and `lon` in decimal degrees (as text,

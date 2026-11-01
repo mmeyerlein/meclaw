@@ -1,4 +1,4 @@
-# `freeswitch@3.0.0`
+# `freeswitch@3.1.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -82,7 +82,7 @@ out and refuses the session. No key travels through `.env`.
 | direction | what travels |
 |---|---|
 | in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.call_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
-| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it) or `correction` (rewrite the standing instruction). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
+| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it), `correction` (rewrite the standing instruction), `interrupt` (a correction and a fact in one breath) or `renew` (open the call's next provider session). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
 | in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid`, `number` and — since 2.0.0 — `user_id`, the member the switch put the caller through as. This is THE turn of an inbound call — a call with no `user_id` and no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
 | in, `call_ringing` | the switch is ringing a number this channel dialled. It moves the row and raises no turn |
 | in, `call_answered` | somebody picked up. `hop` carries `call_uuid`. A turn for a call this channel PLACED; for an inbound call it moves the row and raises no turn, because `call_incoming` already said it |
@@ -93,6 +93,9 @@ out and refuses the session. No key travels through `.env`.
 | out, `hop.route == 'spoken'` | what the assistant is saying, while it is still saying it. Duplex only, and on the same `emit_partials` as `partial` — the two are the two halves of one stream |
 | out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle; `hop` carries `delegation_id` and `offset_ms`. It leaves the hive because the work is not telephony, and the answer comes back on `in_advise` |
 | out, `hop.route == 'renewed'` | the duplex half renewed its provider session inside the same call, before the provider's limit (`renew_after_ms` in the media half's `duplex` block); `hop` carries `renewal_n` and `renewed_at`, the body is empty. It leaves the hive for the reason `delegation` does, and the handover for the new session comes back on `in_advise` as a `context` section carrying `hop.renewal_n` |
+| out, `hop.route == 'seed_ask'` | the duplex half opens a session of a call and waits `seed_wait_ms` for its seed (D48); `hop` carries `reason` (`start`/`renew`/`recover`) and `renewal_n`, the body is empty. The answer comes back on `in_seed` |
+| out, `hop.route == 'usage'` | what a duplex call used (D48, `emit_usage` on the media half): `hop` carries `seconds` (the call's total over every provider session) and `final`, the final one also `complete`; the body is empty. Crosses the rim on the `delegation` edge since #1369; the member declares it as a port at `./channels` |
+| out, `hop.route == 'call_mark'` | a time mark of a duplex call (D48, `call_marks_s` / `call_mark_every_s` on the media half): `hop` carries `elapsed_s`; the body is empty. Crosses the rim with `usage` since #1369; the member declares it as a port at `./channels` |
 | out, `hop.route == 'error'` | a caller with no entry in `callers` — whose leg is put down in the same breath — a request this hive cannot read, or the media half's own failure |
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
 | out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
@@ -100,6 +103,8 @@ out and refuses the session. No key travels through `.env`.
 **One lane travels only INSIDE this hive**, and it is the reason the media half
 carries an `override_params` at all: `speak_end`, from the `voice` cell to the
 signalling half, one per sentence the assistant spoke. Nothing outside sees it.
+(The media half's `error` `duplex_failed` also goes to the signalling half, but
+it leaves the hive at the rim as well — § *When the duplex session fails*.)
 What it buys is two things a telephone needs and a browser does not — a hang-up
 that waits for the sentence, and a barge-in that reaches the switch — and both
 are written out under *Hanging up* below.
@@ -243,7 +248,8 @@ carries the stamp beside `phone_user` as `context.phone_verified`, and the row
 keeps it (`verified_user`) for a caller who waits in the queue. Those `phone_*`
 keys are the store's answer and nothing else: every edge INTO the signalling half
 (the channel's own `in_speak` and the switch's events from outside, `speak_end`
-from the media half, `request` from the tool lane) deletes all of them, so a chain
+and the `error` `duplex_failed` from the media half, `request` from the tool
+lane) deletes all of them, so a chain
 that arrives carrying a forged `phone_verified` or `phone_origin` is read as what
 it is -- a message from outside -- and never as the store answering an arrival.
 When a call whose caller was named ends, the media half is told so with an empty
@@ -273,7 +279,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.0.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.0",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -391,7 +397,9 @@ fallback: the signalling half knows the caller, the media half does not.
 A media half with a `duplex` block emits `spoken`, `delegation` and `renewed`
 as well; its channel adds the three to the first edge's condition, as the
 `voice` channel's edge does -- a `renewed` the edge leaves out dies at the
-channel, and the renewed session goes on without its handover.
+channel, and the renewed session goes on without its handover. The same holds
+for `seed_ask`, `usage` and `call_mark` (D48): the hive lets them out of its
+rim, and the line's own container leg carries the ones its set drains.
 
 **`voice_session` is gone, and the call has a key of its own** (retracted in
 1.1.0, [#620](https://github.com/mmeyerlein/meclaw/issues/620)). Until 1.0.1 the
@@ -783,7 +791,7 @@ kills that leg itself rather than leaving it parked (see *Who is on the line*).
 
 ## What leaves for the switch
 
-Six commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
+Seven commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
 implements GET and nothing else (`docs/cell-types.md` § `web_fetch`), and
 `/webapi/<command>?<args>` is exactly a GET. The endpoint, its credentials and
 its host live in **one** provider lane, `${FREESWITCH_XMLRPC_BASE_URL}`, which is
@@ -801,12 +809,13 @@ GET <base>/webapi/uuid_break?<uuid>%20all
 GET <base>/webapi/uuid_audio_stream?<uuid>%20pause
 GET <base>/webapi/uuid_audio_stream?<uuid>%20resume
 GET <base>/webapi/uuid_broadcast?<uuid>%20<queue_hold_media>%20aleg
+GET <base>/webapi/uuid_transfer?<uuid>%20playback:<failure_media>,hangup:NORMAL_CLEARING%20inline
 GET <base>/webapi/db?insert/<db_realm>/<number>/<line_user_id>|<voice_ws_url>
 GET <base>/webapi/db?insert/<db_realm>/pin.<line_user_id>/<pin>
 GET <base>/webapi/db?delete/<db_realm>/pin.<line_user_id>
 ```
 
-Ten lines, six commands. `uuid_kill` appears twice because a refused call is
+Eleven lines, seven commands. `uuid_kill` appears twice because a refused call is
 ended with a CAUSE — `USER_BUSY` is what the caller hears as a busy signal, and
 a bare kill is a line that died for no reason they can name — `uuid_audio_stream`
 twice for the pause and the resume of a waiting caller, and `db` three times
@@ -912,6 +921,15 @@ call this template ever made. Two more things about that one line:
   starts streaming audio (in L16 format) to the websocket server", and `8k` and
   `16k` are the only two rates it takes.
 
+  **A G.711 model behind it (D48).** A duplex `gpt_live` media half can run
+  its model on the line's own G.711 (`params.duplex.audio_format`
+  `g711_ulaw` or `g711_alaw`, no `sample_rate`): the fork stays L16 at
+  `fork_sample_rate` `8000`, because L16 is all the module streams, and the
+  media half compands every frame to one G.711 byte per sample on its way to
+  the model and back to L16 on the way out. Companding is a table per sample;
+  nothing is resampled. A duplex `pcm16` block keeps its 16000 or 24000 and
+  needs `fork_sample_rate` `16000`.
+
   **Verified at the switch (2026-09-13):** `uuid_dump` reads the whole
   `api_on_answer` back through the XML-RPC GET, `&` included — the value
   arrives percent-encoded and the switch stores it as one string,
@@ -1001,6 +1019,34 @@ last chunk, on a cancel, on a provider failure, and on a connection that went
 away underneath it. There is no case in which it accepts a sentence and stays
 silent. **What is NOT here is a clock** — see *What is not here*.
 
+## When the duplex session fails
+
+**A failed duplex session is not silence** (GH #1374). When the provider
+session of a duplex call fails, the media half emits `error` with
+`hop.error_code` `duplex_failed` and closes its socket with 1011. Where the
+media half's `duplex` block sets `recover_max` (GH #1377), a session the
+provider ends mid-call is first replaced by a fresh one, and this edge fires
+only once those attempts are spent. A duplex
+`./voice` has no synthesiser of its own to say so, and the dialplan parks the
+leg after the stream started, so the caller heard nothing until they hung up.
+The hive hands exactly this error to `./signal` as well as to its rim, and
+`params.failure_media` of `./signal` decides what happens: empty — the default —
+nothing; set, one command at the switch for the call the error names
+(`hop.call_id`), `uuid_transfer <uuid> playback:<failure_media>,hangup:NORMAL_CLEARING inline`.
+The channel plays the media and then hangs up, in that order. It is one
+command and not a broadcast plus a kill, because `uuid_broadcast` returns the
+moment the media is queued and the gateway runs commands concurrently. The
+media is a `playback` source that ends — a recorded announcement,
+`file_string://a.wav!b.wav` for several — with no comma and no space in it,
+either of which would split the inline dialplan, and never a
+`local_stream://`, which does not end, so the `hangup` would never come. A
+value with any of these is refused when the error arrives: no command, and
+one line on stderr that names the reason. A call id outside `[0-9A-Za-z-]` is
+refused the same way (it comes from the media connection's `?session=`, and it
+goes into the command's arguments), and a `-ERR` the switch answers to the
+transfer is said on stderr, not dropped. The rim still receives the error as
+before, and the switch's `call_ended` books the end of the call.
+
 ## Params
 
 | knob | where | default | what it is |
@@ -1022,6 +1068,7 @@ silent. **What is NOT here is a clock** — see *What is not here*.
 | `second_call` | `signal` | `busy` | what an inbound call gets while the line is busy: `busy`, `queue` or `parallel` |
 | `capacity` | `signal` | `1` | how many calls may run at once. Read for every policy, so `busy` is `parallel` with `1` |
 | `queue_hold_media` | `signal` | `local_stream://moh` | what a waiting caller hears, as a `uuid_broadcast` source. A recorded announcement is a `file_string://…` |
+| `failure_media` | `signal` | `""` | what a caller hears when the duplex session of their call failed, before the leg is put down (GH #1374). A `playback` source that ends, no comma, no space; empty does nothing — § *When the duplex session fails* |
 | `greeting` | `signal` | `turn` | which half greets a caller: `turn` (the arrival turn, answered by the member) or `media` (the media half greets by itself, no arrival turn) — § *One greeting per call* |
 | `external_timeout_ms` | `gateway` | `60000` | must exceed `ring_timeout_ms`: the originate answer arrives when the ringing stops |
 
@@ -1224,7 +1271,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.0.0`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.0`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1237,7 +1284,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.0.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

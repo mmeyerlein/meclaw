@@ -1171,12 +1171,12 @@
       "name": "display-status",
       "role": "content",
       "layer": "content",
-      "describe": "A status line with a dot; kind working says that something is on its way.",
+      "describe": "A status line with a dot; kind working says that something is on its way, kind building is the pictogram of a window under construction (no text).",
       "props": {
         "kind": {
           "type": "text",
           "required": false,
-          "describe": "The state word (listening, speaking, thinking, offline, working)."
+          "describe": "The state word (listening, speaking, thinking, offline, working, building)."
         },
         "text": {
           "type": "text",
@@ -1193,6 +1193,40 @@
         }
       },
       "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-skeleton",
+      "role": "content",
+      "layer": "content",
+      "describe": "The rough form of a block still on its way, in a window under construction: the block's kind, its head and its lines, never a data value.",
+      "props": {
+        "block": {
+          "type": "text",
+          "required": true,
+          "describe": "The catalogue name of the block it stands for."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The block's head where its binding names one literally."
+        },
+        "lines": {
+          "type": "int",
+          "required": false,
+          "describe": "How many lines the block's structure shows (1 to 4)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-skeleton",
+        "props": {
+          "block": "display-list",
+          "title": "Items",
+          "lines": 3
+        }
+      },
+      "block": false,
       "editable": []
     },
     {
@@ -1378,6 +1412,16 @@
           "type": "text",
           "required": false,
           "describe": "The scene's aspect ratio."
+        },
+        "build": {
+          "type": "text",
+          "required": false,
+          "describe": "The construction state of a window's content (building, done): building draws the window's frame pulsing, done lets it come to rest once."
+        },
+        "settle_ms": {
+          "type": "int",
+          "required": false,
+          "describe": "How long the frame takes to come to rest once the window is done."
         }
       },
       "slots": "any",

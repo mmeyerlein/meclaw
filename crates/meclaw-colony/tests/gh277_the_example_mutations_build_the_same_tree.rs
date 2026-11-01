@@ -514,7 +514,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 93 -> 95 with GH #1248: every `talky` grew `quick`, the second
 /// model cell behind its curator (2 x 1). Measured red in the strand's run
 /// (95 against 93).
-const TEMPLATE_BORN_ROWS: usize = 95;
+///
+/// Moved 95 -> 99 with GH #1279: every `talky` grew
+/// `screen_judge` and `screen_model`, the second stamp's screen form (2 x 2).
+/// Measured red in the strand's run (99 against 95).
+const TEMPLATE_BORN_ROWS: usize = 99;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -910,7 +914,35 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// (`./curator -> ./brain`, `./curator -> ./quick`) split into a person's
 /// edge and an inner turn's edge that sets `hop.silence_ok`. Two talkies:
 /// 2 x 2.
-const EDGES: usize = 531;
+///
+/// Moved 531 -> 544 with (#1275, the speculative quick answer): every
+/// `talky` two edges more (`./quick -> ./curator` on `in_spec_llm`,
+/// `./curator -> ./splitter` on `spec_release`) and every `curator` three more
+/// (`. -> ./policy` on `in_spec_llm`, `./policy -> .` on `spec_release`,
+/// `./policy -> ./intake` on `spec_tap`). Two talkies and three curators:
+/// 2 x 2 + 3 x 3. Measured red in the strand's gate (544 against 531).
+///
+/// Moved 544 -> 592 with GH #1279: every `talky` eighteen edges
+/// more (86 -> 104 as `templates/talky/README.md` counts them: the doors of
+/// `in_delta`, `in_screen_topics`, `in_seed_ask` and `in_seed_line`, the exits
+/// `seed`, `live_feed` and `propose`, the delta's decide pair and its stamp to
+/// the curator, and the screen judge's legs) and every `curator` four more
+/// (`./history -> .` on `seed`, `. -> ./policy` on `in_delta_stamp`,
+/// `./policy -> .` on `live_feed` and on `propose`). Two talkies and three
+/// curators: 2 x 18 + 3 x 4. Measured red in the strand's run (592 against
+/// 544).
+///
+/// Moved 592 -> 594 with GH #1279: every `talky` one edge more,
+/// `./route -> .` on a `stamp_out` with `hop.verdict` (the rim exit `verdict`,
+/// 104 -> 105 in `templates/talky/README.md`). Two talkies: 2 x 1.
+///
+/// Moved 594 -> 601 with #1369 (what a call carried): every `talky` two edges
+/// more (`. -> ./curator` on `in_call_end`, `./curator -> .` on `call_facts`,
+/// 105 -> 107 in `templates/talky/README.md`) and every `curator` one more
+/// (`./history -> .` on `call_facts`; the door rides the `./history` edge that
+/// already carries `in_seed_ask`). Two talkies and three curators: 2 x 2 + 3 x 1.
+/// Measured red in the strand's run (601 against 594).
+const EDGES: usize = 601;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

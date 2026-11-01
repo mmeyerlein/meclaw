@@ -79,6 +79,12 @@ pub struct Dials {
     /// the shipped 3 s would fire first on a cold lane. A lock that holds the decider past
     /// the hang mark dials it higher.
     pub decide_timeout_ms: u64,
+    /// GH #1367: the stamp way as a colony draws it -- the stage on `verdict_source: stamp`,
+    /// the apps level fanning a turn out to `./presenter` (no `turn_id`, it is before the
+    /// session keeper), and a relay `/alex/keeper` standing in for the keeper and the talky:
+    /// what the test hands it leaves as the talky's `verdict` and reaches the presenter as
+    /// `in_verdict`. Off by default: every other lock keeps its wiring.
+    pub stamp_way: bool,
 }
 
 impl Default for Dials {
@@ -91,6 +97,7 @@ impl Default for Dials {
             observed_topics: Value::Null,
             window_requires_star_data: Value::Null,
             decide_timeout_ms: 25_000,
+            stamp_way: false,
         }
     }
 }
@@ -141,7 +148,13 @@ pub async fn boot(d: Dials) -> Stage {
             if !d.window_requires_star_data.is_null() {
                 v["params"]["window_requires_star_data"] = d.window_requires_star_data.clone();
             }
+            if d.stamp_way {
+                v["params"]["verdict_source"] = json!("stamp");
+            }
         });
+        if d.stamp_way {
+            grow_stamp_way(root);
+        }
         // The app level: the screen lanes renamed on the way out (what `screen` draws),
         // `in_show` out of the level (what `shows` would carry to the app).
         patch_json(&root.join("main/alex/apps/config.json"), |v| {
@@ -196,6 +209,52 @@ pub async fn boot(d: Dials) -> Stage {
         screen,
     }
 }
+
+/// GH #1367: the apps fan-out and the keeper relay of [`Dials::stamp_way`].
+fn grow_stamp_way(root: &std::path::Path) {
+    patch_json(&root.join("main/alex/apps/config.json"), |v| {
+        let edges = v["params"]["graph"]["edges"].as_array_mut().expect("edges");
+        edges.push(json!({"from": ".", "to": "./presenter",
+                          "condition": "has(hop.route) && hop.route == 'turn'"}));
+    });
+    let relay = root.join("main/alex/keeper/config.json");
+    std::fs::create_dir_all(relay.parent().expect("a parent")).expect("mkdir");
+    std::fs::write(
+        &relay,
+        json!({
+            "cell": {"type": "code"},
+            "params": {"runner": "python3", "script_inline": KEEPER,
+                       "external_timeout_ms": 10000},
+            "contract": {"version": "1.0.0", "settings": {}, "multi_send_capable": true,
+                         "emits": {"body": {"messages": {"type": "array", "required": false},
+                                            "stamp": {"type": "object", "required": false}}},
+                         "consumes": {"body": {"messages": {"type": "array", "required": false},
+                                               "stamp": {"type": "object", "required": false}}},
+                         "capabilities": ["shell:exec"]},
+            "description": {"purpose": "Test relay: the keeper's turn id and the talky's stamp.",
+                            "use_when": "Test fixture only.", "not_in_scope": "Not a template."}
+        })
+        .to_string(),
+    )
+    .expect("write the keeper relay");
+    patch_json(&root.join("main/alex/config.json"), |v| {
+        let edges = v["params"]["graph"]["edges"].as_array_mut().expect("edges");
+        edges.push(json!({"from": "./keeper", "to": "./apps/presenter",
+                          "condition": "has(hop.route) && hop.route == 'verdict'",
+                          "modifier": {"set_hop": {"route": "'in_verdict'"}}}));
+    });
+}
+
+/// The keeper relay: the stamp the test hands it leaves as the talky's `verdict`, under the
+/// stamp's own `turn_id` (the keeper's).
+const KEEPER: &str = r#"
+import sys, json
+doc = json.load(sys.stdin)
+st = (doc.get("body") or {}).get("stamp") or {}
+sys.stdout.write(json.dumps({
+    "header": {"route": "verdict", "turn_id": str(st.get("turn_id") or "")},
+    "messages": [], "stamp": st}))
+"#;
 
 /// The relay of an observed call: what the test hands it leaves as a surface's `tool`.
 const CALLER: &str = r#"
@@ -382,6 +441,56 @@ impl Stage {
                 json!({"turn_id": turn_id}),
                 json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
             ))
+            .await;
+    }
+
+    /// GH #1367: a turn as the apps level fans it out -- onto `/alex/apps`, without a
+    /// `turn_id` (the session keeper has not seen it yet). Returns once `stage` has it.
+    // no-settle: a send and its positive wait; returns nothing
+    pub async fn fanned_turn(&self, text: &str) {
+        self.c
+            .w
+            .send(to_path(
+                "/alex/apps",
+                json!({"route": "turn"}),
+                json!({}),
+                json!({"messages": [{"origin": "user", "type": "text", "text": text}]}),
+            ))
+            .await;
+        let to = format!("{PRESENTER}/stage");
+        self.c
+            .wait_until("the fanned-out turn reaches stage", || async {
+                let r = self.c.w.unsettled().because(Why::Watch);
+                r.log(Some(&to))
+                    .await
+                    .iter()
+                    .any(|r| hop_of(r)["route"] == "turn")
+            })
+            .await;
+    }
+
+    /// GH #1367: the talky's stamp of a turn under the keeper's `turn_id`, through the
+    /// relay `/alex/keeper` (`verdict` → `in_verdict`). Returns once `stage` has it.
+    // no-settle: a send and its positive wait; returns nothing
+    pub async fn keeper_stamp(&self, stamp: Value) {
+        self.c
+            .w
+            .send(to_path(
+                "/alex/keeper",
+                json!({"route": "stamp"}),
+                json!({}),
+                json!({"messages": [], "stamp": stamp}),
+            ))
+            .await;
+        let to = format!("{PRESENTER}/stage");
+        self.c
+            .wait_until("the keeper's stamp reaches stage", || async {
+                let r = self.c.w.unsettled().because(Why::Watch);
+                r.log(Some(&to))
+                    .await
+                    .iter()
+                    .any(|r| hop_of(r)["route"] == "in_verdict")
+            })
             .await;
     }
 

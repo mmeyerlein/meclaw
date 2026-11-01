@@ -57,7 +57,7 @@ PHASE_BOOT = "boot"
 PHASE_WRITE = "write"
 
 FALLBACKS = ("none", "unsure", "no_topic", "timeout", "error", "no_selector",
-             "invalid", "no_data", "foreign_round")
+             "invalid", "no_data", "foreign_round", "form_none")
 
 # The decider's call carries 1 + 2*N questions (`topic`, then `<t>.lead` and
 # `<t>.also` per topic); the decider takes at most DECIDER_QUESTIONS (E.2, the
@@ -88,6 +88,13 @@ DEFAULTS = {
     # R-HP-18: off, a window shows all of the member's data (`window_round`); on is the
     # way back to R-HP-9 (c), see `gate_round`.
     "window_requires_star_data": False,
+    # live-2 GR (display-hive.md § 9b.14): how long the frame of a window that is done
+    # takes to come to rest, a duration the sheet spends once (R-FU-1).
+    "settle_ms": 600,
+    # live-2 GR: off, the lane `screen_topics` stays silent -- a presenter whose parent
+    # draws no edge for it says nothing that would dead-letter. On, the topic table leaves
+    # on boot and on every change of it (`topic_table`).
+    "screen_topics": False,
 }
 
 PANE = "display-pane"
@@ -98,6 +105,24 @@ LAYER_CANVAS = "canvas"
 CONTEXT = "conversation"
 RELEVANCE = "0.8"
 TILE_CHARS = 24
+
+# live-2 GR (display-hive.md § 9b.12-9b.14, R-FU-1, R-FU-4): where the verdict comes from.
+# `selector` (shipped) is the one call of § 9b.1; `stamp` takes it from the talky's stamp
+# on `in_verdict` and asks nobody -- the turn's verdict is judged once, by the talky.
+SOURCE_SELECTOR = "selector"
+SOURCE_STAMP = "stamp"
+SKELETON = "display-skeleton"
+BUILDING = "building"
+# The screen forms of the stamp and the fixed map to a rung (R-FU-4). `urgent` is not in
+# it and cannot be put in it: urgent comes from apps and guards, never from a verdict.
+FORMS = ("active", "accompanying", "referring", "none")
+FORM_RUNGS = {"active": "focus", "accompanying": "relevant", "referring": "relevant",
+              "none": "none"}
+# The presenter writes no rung -- the curator does (§ 4.17-4.23). It writes the hint the
+# rung follows: `focus` leads its ladder by score, `relevant` keeps today's weight
+# (OR-LV.GR-1, display-hive.md § 9b.13).
+RUNG_RELEVANCE = {"focus": "1", "relevant": RELEVANCE}
+SKELETON_LINES = 3
 
 # A done turn is kept this long, so a late verdict can still be told from a stray one.
 KEEP_DONE_MS = 60000
@@ -996,14 +1021,16 @@ def shorten(text):
     return text if len(text) <= TILE_CHARS else text[:TILE_CHARS - 1] + "…"
 
 
-def window(topic, manifest, turn_id, blocks, hint, touched):
+def window(topic, manifest, turn_id, blocks, hint, touched, relevance=RELEVANCE,
+           inner=None, stack=None):
     """The view `show-<topic>`: a pane on the canvas, its tile, and either the working
     hint or the blocks placed so far. `touched` is said once, by the write that opens
     the window; a write that only adds a block leaves it out, and a key left out stands
-    (§ 4.8): a block is no new touch."""
+    (§ 4.8): a block is no new touch. The stamp way (`stamp_window`) hands its own
+    `inner` children, `stack` props and the `relevance` of its screen form."""
     vid = "show-" + topic
     props = {"pane_id": vid, "kicker": manifest["title"], "title": "",
-             "context": CONTEXT, "relevance": RELEVANCE, "topic": "show:" + topic,
+             "context": CONTEXT, "relevance": relevance, "topic": "show:" + topic,
              "layer": LAYER_CANVAS}
     if turn_id:
         props["turn_id"] = turn_id
@@ -1012,12 +1039,16 @@ def window(topic, manifest, turn_id, blocks, hint, touched):
     tile = {"component": TILE, "key": "tile",
             "props": {"glyph": str(manifest.get("glyph") or ""),
                       "line": shorten(manifest["title"]), "value": ""}}
-    if blocks:
+    if inner is not None:
+        inner = list(inner)
+    elif blocks:
         inner = list(blocks)
     else:
         inner = [{"component": STATUS, "key": vid + "-hint",
                   "props": {"kind": "working", "text": hint}}]
-    stack = {"component": STACK, "props": {"gap": "s"}, "key": vid + "-stack",
+    sprops = {"gap": "s"}
+    sprops.update(stack or {})
+    stack = {"component": STACK, "props": sprops, "key": vid + "-stack",
              "children": inner}
     return {"component": PANE, "props": props, "key": "show." + topic,
             "children": [tile, stack]}
@@ -1097,7 +1128,7 @@ def resolve(rec, manifest, cat):
 def journal_row(rec, at):
     def ms(v):
         return None if v is None else int(v)
-    return {"turn_id": rec["turn_id"], "topic": rec["topic"] or "",
+    row = {"turn_id": rec["turn_id"], "topic": rec["topic"] or "",
             "p": float(rec["p"] or 0.0), "lead": rec["lead"] or "",
             "also": rec["also"] or "", "fallback": rec["fallback"] or "",
             "late": 1 if rec["late"] else 0, "t_verdict_ms": ms(rec["t_verdict"]),
@@ -1105,6 +1136,12 @@ def journal_row(rec, at):
             "model": rec["model"] or "", "at": int(at),
             "missing": json.dumps(rec.get("missing") or []),
             "audience_set": json.dumps(rec["audience_set"]) if rec["audience_set"] is not None else ""}
+    if rec.get("source") == SOURCE_STAMP:
+        # display-hive.md § 9b.7 and § 1.6: the source and the three times of the window
+        # under construction. The selector way writes the row it always wrote.
+        row.update({"verdict_source": SOURCE_STAMP, "t_building_ms": ms(rec.get("t_building")),
+                    "t_form_ms": ms(rec.get("t_form")), "t_done_ms": ms(rec.get("t_done"))})
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -1282,6 +1319,39 @@ def text_of(body):
     return " ".join(s for s in said if s.strip()).strip()
 
 
+def topic_table(r, params):
+    """The table the decider is asked over (`all_topics`: the presenter's own, then the
+    apps' accepted ones), as `[{name, purpose, candidates}]` by name. `purpose` is the
+    manifest's `describe`, the words the decider reads for the topic too; `candidates` is
+    `[{key, describe}]` in the manifest's order, the options `questions` offers for the
+    lead -- the talky's `in_screen_topics` contract (`{name, purpose, candidates?:
+    [{key, describe}]}`, curator/history `screen_topics_of`, talky/route `screen_topics`).
+    Without them talky's route never asks a lead question (#1368). A topic without
+    candidates leaves the field out, as the contract's `candidates?` allows."""
+    known = all_topics(r, params)
+    table = []
+    for name in sorted(known):
+        m = known[name]["manifest"]
+        row = {"name": name, "purpose": m["describe"]}
+        cands = m.get("candidates")
+        if isinstance(cands, list) and cands:
+            row["candidates"] = [{"key": c["key"], "describe": c["describe"]} for c in cands]
+        table.append(row)
+    return table
+
+
+def say_topics(r, params, boot=False):
+    """`screen_topics {topics}` when the switch is on and the table changed since it was
+    last said -- or on boot, once, whatever it holds. Never per turn."""
+    if not knob(params, "screen_topics"):
+        return []
+    table = topic_table(r, params)
+    if not boot and r.get("topics_said") == table:
+        return []
+    r["topics_said"] = table
+    return [emission("screen_topics", {"topics": table})]
+
+
 def lane_topics():
     """Every committed mutation asks every app with `shows` for its topics (P.3)."""
     return [emission("in_show", {"messages": [], "op": "topics"})]
@@ -1303,7 +1373,7 @@ def lane_show_topics(body, hop, ctx, params):
         if v["owner"] == owner and at:
             v["show_at"] = at
     r["shows"] = known
-    out = [bundle(PHASE_WRITE, w_shows(owner, known))]
+    out = [bundle(PHASE_WRITE, w_shows(owner, known))] + say_topics(r, params)
     for topic, reason in refused:
         out.append(emission("in_show", {"messages": [], "op": "refused", "topic": topic,
                                         "reason": reason}, **app_head(owner, at)))
@@ -1336,10 +1406,20 @@ def lane_turn(body, hop, ctx, params, now):
     if not text or not topics:
         return []
     turn_id = str(hop.get("turn_id") or ctx.get("turn_id") or "")
-    if not turn_id:
+    stamped = verdict_source(params) == SOURCE_STAMP
+    keyless = not turn_id
+    if keyless and stamped:
+        # GH #1367: the turn comes through the apps fan-out before the session keeper, so
+        # it carries no `turn_id`; its stamp carries the keeper's. A stamp of the same
+        # round that still waits for its words takes these (both orders: `lane_verdict`).
+        rec = unjoined(r, as_round(ctx.get("audience_set")), params, now, words=False)
+        if rec is not None:
+            return words_for(r, rec, text, params, now)
+    if keyless:
         turn_id = "t-%d" % now
     if turn_id in r["pending"]:
-        return []
+        # The stamp came first (§ 9b.12): its window may stand, waiting for the words.
+        return words_for(r, r["pending"][turn_id], text, params, now) if stamped else []
     # `seq` orders turns of the same millisecond by their arrival (P review): one more
     # than any pending turn's, so it survives a restart with the pending rows.
     seq = 1 + max([0] + [int(p.get("seq") or 0) for p in r["pending"].values()])
@@ -1349,6 +1429,10 @@ def lane_turn(body, hop, ctx, params, now):
     # "the weather in <place>"); it never reaches the journal and leaves the pending row
     # when the turn is done.
     rec["text"] = text
+    if stamped:
+        rec["source"] = SOURCE_STAMP
+        if keyless:
+            rec["keyless"] = True
     r["pending"][turn_id] = rec
     gate = gate_round(rec["audience_set"], params.get("screen_audience"), params)
     rec["star_only"] = gate == "star"
@@ -1364,6 +1448,9 @@ def lane_turn(body, hop, ctx, params, now):
         return [bundle(PHASE_WRITE, prune(r, now) + finish(rec, "foreign_round", now))] + \
             clock_ops(r, now)
     legs = prune(r, now) + w_pending(rec)
+    if stamped:
+        # No call: the verdict is the turn's stamp; `budget_ms` waits for it.
+        return [bundle(PHASE_WRITE, legs)] + clock_ops(r, now)
     return [decide_call(text, topics, turn_id), bundle(PHASE_WRITE, legs)] + \
         clock_ops(r, now)
 
@@ -1475,6 +1562,35 @@ def lane_decision(body, hop, params, now):
     # replaces it (`feed`); withdrawn at the private verdict, it would cut off the third
     # party's own window, and its leaving would tell the screen that a member's turn of
     # this topic was just judged (XB-M review I-2).
+    return open_window(r, rec, v, topics, params, now)
+
+
+def data_asks(rec, show, manifest, params):
+    """What a sure verdict asks for its data: the owning app, or the declared sources of
+    one of the presenter's own topics."""
+    if show["owner"]:
+        return [emission("in_show", {"messages": [], "op": "data", "topic": rec["topic"],
+                                     "request": rec.get("text") or "",
+                                     "lead": rec["keys"][0], "also": rec["keys"][1:],
+                                     "turn_id": rec["turn_id"],
+                                     "sets": wanted_sets(manifest, rec["keys"]),
+                                     # OR-DP-82: the window's round rides with the question,
+                                     # so an app that picks between rows of different rounds
+                                     # picks only among rows this window may show (the
+                                     # member's part of a shared screen, R-HP-18).
+                                     "screen_audience": sorted(set(window_round(rec, params)))},
+                         **app_head(show["owner"], show.get("show_at") or ""))]
+    # The presenter's own topic (GH #963): no app to ask. A declared source is read
+    # now; an observed topic takes what was observed so far, and every later
+    # observation of its kind is fed on arrival (`refill`).
+    return source_reads(rec, manifest, params)
+
+
+def open_window(r, rec, v, topics, params, now):
+    """A sure verdict opens the topic's window and asks for its data -- the selector's
+    verdict (§ 9b.2) and the stamp's (§ 9b.12) alike."""
+    stamped = rec.get("source") == SOURCE_STAMP
+    tid = rec["turn_id"]
     older, stale = supersede(r, rec, now, close_older=not rec.get("star_only"))
     if stale:
         return [bundle(PHASE_WRITE, older + finish(rec, "no_data", now))] + clock_ops(r, now)
@@ -1487,24 +1603,19 @@ def lane_decision(body, hop, params, now):
     rec["data_deadline"] = now + int(wait)
     if not rec.get("star_only"):
         rec["t_window"] = now - rec["arrived"]
-    tree = window(v["topic"], manifest, tid, [], knob(params, "work_hint"), now)
-    if show["owner"]:
-        ask = [emission("in_show", {"messages": [], "op": "data", "topic": v["topic"],
-                                    "request": rec.get("text") or "",
-                                    "lead": rec["keys"][0], "also": rec["keys"][1:],
-                                    "turn_id": tid,
-                                    "sets": wanted_sets(manifest, rec["keys"]),
-                                    # OR-DP-82: the window's round rides with the question,
-                                    # so an app that picks between rows of different rounds
-                                    # picks only among rows this window may show (the
-                                    # member's part of a shared screen, R-HP-18).
-                                    "screen_audience": sorted(set(window_round(rec, params)))},
-                        **app_head(show["owner"], show.get("show_at") or ""))]
+        if stamped and rec.get("t_building") is None:
+            rec["t_building"] = rec["t_window"]
+    if stamped:
+        tree = stamp_window(rec, manifest, params, now)
+        # The words may not be there yet (the stamp came first, § 9b.12): the data are
+        # asked for once they are (`words_for`). An observed topic needs no words.
+        wants_words = bool(show["owner"]) or show.get("kind") == "source"
+        ask = data_asks(rec, show, manifest, params) if rec.get("text") or not wants_words \
+            else []
+        rec["asked"] = bool(ask) or not wants_words
     else:
-        # The presenter's own topic (GH #963): no app to ask. A declared source is read
-        # now; an observed topic takes what was observed so far, and every later
-        # observation of its kind is fed on arrival (`refill`).
-        ask = source_reads(rec, manifest, params)
+        tree = window(v["topic"], manifest, tid, [], knob(params, "work_hint"), now)
+        ask = data_asks(rec, show, manifest, params)
     # R-HP-9 (c): a shared screen gets no window on the verdict -- only `*` data open
     # one (`feed`).
     view = [a_view(v["topic"], tree)] if not rec.get("star_only") else []
@@ -1539,6 +1650,8 @@ def feed(r, rec, manifest, sets, params, now):
     """Data sets for a shown turn, from its app (`show_data`), a resident (`resident_answer`)
     or the presenter's own observations: gated by the window's round (`window_round`),
     then every block that can stand now is placed (P.6), the first one journaled."""
+    if rec.get("source") == SOURCE_STAMP:
+        return feed_stamp(r, rec, manifest, sets, params, now)
     tid = rec["turn_id"]
     screen = window_round(rec, params)
     for name, data in sets.items():
@@ -1584,7 +1697,7 @@ def feed(r, rec, manifest, sets, params, now):
     return out + clock_ops(r, now)
 
 
-def lane_tick(hop, now):
+def lane_tick(hop, now, params=None):
     r = ram()
     struck = str(hop.get("schedule_id") or "")
     out = []
@@ -1595,7 +1708,11 @@ def lane_tick(hop, now):
             legs += finish(rec, "timeout", now)
         elif rec["state"] == "showing" and \
                 rec["data_deadline"] is not None and now >= rec["data_deadline"]:
-            if rec["placed"]:
+            if rec["placed"] and rec.get("source") == SOURCE_STAMP:
+                # § 9b.14: the deadline with a block standing is done as well.
+                out.append(a_view(rec["topic"], stamp_done(rec, now, params or {})))
+                legs += w_journal(rec) + close(rec, now)
+            elif rec["placed"]:
                 # The blocks stay; the turn closes and its words leave (review I1).
                 legs += close(rec, now)
             else:
@@ -1605,6 +1722,390 @@ def lane_tick(hop, now):
     if legs:
         out.append(bundle(PHASE_WRITE, legs))
     return out + clock_ops(r, now, struck)
+
+
+# ---------------------------------------------------------------------------
+# live-2 GR (#1357): the verdict from the turn's stamp (display-hive.md § 9b.12-9b.14)
+#
+# With `verdict_source: stamp` the talky judged the turn once -- topic, candidates and the
+# screen form in its stamp (FU2) -- and the presenter asks nobody. A sure verdict opens the
+# window UNDER CONSTRUCTION at once (R-FU-1): the pictogram, then one skeleton per chosen
+# candidate from its manifest; blocks take their skeleton's place as their data come, and
+# until the window is done a set that comes again rebuilds what it binds. Done -- the lead
+# stands and nothing chosen waits -- takes the pictogram away and lets the frame settle
+# once; from there the window is frozen (§ 1.6).
+
+
+def verdict_source(params):
+    """`stamp` only when the installation says so; anything else is the selector."""
+    v = params.get("verdict_source")
+    return SOURCE_STAMP if isinstance(v, str) and v.strip().lower() == SOURCE_STAMP \
+        else SOURCE_SELECTOR
+
+
+def form_rung(form, params):
+    """The rung a screen form asks for: the fixed map (R-FU-4), where `form_rungs` may
+    only say `focus`, `relevant` or `none` for a known form -- never `urgent`."""
+    over = params.get("form_rungs")
+    if isinstance(over, str):
+        try:
+            over = json.loads(over)
+        except ValueError:
+            over = None
+    rung = over.get(form) if isinstance(over, dict) else None
+    if rung in ("focus", "relevant", "none"):
+        return rung
+    return FORM_RUNGS.get(form, "relevant")
+
+
+def stamp_of(body):
+    """The stamp as the talky sends it (`{stamp: {...}}`), or the body itself."""
+    st = body.get("stamp")
+    return st if isinstance(st, dict) else body
+
+
+def stamp_verdict(screen, known):
+    """The stamp's screen verdict in the selector's shape (`read_verdict`): a topic the
+    presenter does not know, or a candidate its topic does not carry, is no choice. The
+    stamp gives one confidence; `further` counts against `also_threshold` with it."""
+    v = {"topic": None, "p": 0.0, "lead": None, "lead_p": 0.0, "also": None, "also_p": 0.0,
+         "model": SOURCE_STAMP}
+    topic = screen.get("topic") if isinstance(screen.get("topic"), str) else None
+    p = screen.get("confidence")
+    p = float(p) if isinstance(p, (int, float)) and not isinstance(p, bool) else 0.0
+    v["p"] = p
+    if topic == NONE:
+        v["topic"] = NONE
+        return v
+    if topic not in known:
+        return v
+    v["topic"] = topic
+    keys = [c["key"] for c in known[topic]["manifest"]["candidates"]]
+    lead, also = screen.get("lead"), screen.get("further")
+    v["lead"] = lead if lead in keys else None
+    v["lead_p"] = p
+    v["also"] = also if also in keys else None
+    v["also_p"] = p
+    return v
+
+
+def skeleton(topic, cand):
+    """The rough form of one candidate (§ 2 *Skeleton*): its block kind, its head -- the
+    literal `title` of its binding, else empty -- and its structure as a count of lines:
+    a list of rows reads as SKELETON_LINES, a block of bound props as one line each.
+    Never a data value: nothing here is read from a set."""
+    bind = scalar_bind(cand.get("bind"))
+    title = bind.get("title")
+    head = title[1:] if isinstance(title, str) and title.startswith("=") else ""
+    if children_of(cand):
+        lines = SKELETON_LINES
+    else:
+        lines = max(1, min(SKELETON_LINES + 1,
+                           len([s for s in bind.values()
+                                if isinstance(s, str) and not s.startswith("=")])))
+    return {"component": SKELETON, "key": "show-%s-%s-skeleton" % (topic, cand["key"]),
+            "props": {"block": cand["block"], "title": head, "lines": lines}}
+
+
+def stamp_window(rec, manifest, params, touched):
+    """The window of the stamp way: under construction (the pictogram, then per chosen
+    candidate its block or its skeleton) or, once done, the blocks alone with the stack
+    saying `build: done` and `settle_ms`."""
+    topic = rec["topic"]
+    vid = "show-" + topic
+    cands = {c["key"]: c for c in manifest["candidates"]}
+    nodes = {k: n for k, n in rec.get("_nodes") or []}
+    done = rec.get("built") == "done"
+    inner = [] if done else [{"component": STATUS, "key": vid + "-" + BUILDING,
+                              "props": {"kind": BUILDING}}]
+    for i, k in enumerate(rec["keys"]):
+        node = nodes.get(manifest["standard"]) if i == 0 and rec["first"] == "standard" \
+            else nodes.get(k)
+        if node is not None:
+            inner.append(node)
+        elif not done and cands.get(k) is not None:
+            inner.append(skeleton(topic, cands[k]))
+    stack = {"build": "done", "settle_ms": knob(params, "settle_ms")} if done \
+        else {"build": BUILDING}
+    return window(topic, manifest, rec["turn_id"], [], "", touched,
+                  relevance=rec.get("relevance") or RELEVANCE, inner=inner, stack=stack)
+
+
+def stamp_done(rec, now, params):
+    """Mark the window done (§ 9b.14) and return its last tree."""
+    rec["built"] = "done"
+    rec["t_done"] = now - rec["arrived"]
+    show_manifest = rec.get("_manifest") or {}
+    return stamp_window(rec, show_manifest, params, None)
+
+
+def words_for(r, rec, text, params, now):
+    """The turn's words after its stamp: kept for the data request, which leaves now when
+    the window already stands and waited for them."""
+    if rec["state"] == "done" or rec.get("text"):
+        return []
+    rec["text"] = text
+    out = []
+    if rec["state"] == "showing" and not rec.get("asked"):
+        show = all_topics(r, params).get(rec["topic"])
+        if show is not None:
+            out = data_asks(rec, show, show["manifest"], params)
+            rec["asked"] = True
+    return out + [bundle(PHASE_WRITE, w_pending(rec))]
+
+
+def stamp_round(st, ctx):
+    """The round of a stamp: the stamp's own, else the edge's."""
+    rnd = st.get("audience_set") if st.get("audience_set") is not None \
+        else ctx.get("audience_set")
+    return as_round(rnd)
+
+
+def same_round(a, b, params):
+    """True when two records may be one turn: the same round in canonical spelling. A
+    round on one side only is no match (fail-closed); no round on either side matches only
+    on a screen without a round, which shows `*` data alone anyway."""
+    ka, kb = round_key(a), round_key(b)
+    if ka is None or kb is None:
+        return ka is None and kb is None and not as_round(params.get("screen_audience"))
+    return ka == kb
+
+
+def unjoined(r, rnd, params, now, words):
+    """GH #1367 -- the newest open record of the stamp way and of round `rnd`, younger than
+    `budget_ms`, that waits for its other half: `words=True` a turn that came without a
+    `turn_id` and has no stamp yet, `words=False` a stamp still without words. Measured in a
+    lab colony (stamp mode): the turn via the apps fan-out carried no `turn_id` (record
+    `t-<now>`), the stamp the keeper's (`keeper:<trace>:<ts>`); the ids never met, no
+    `in_show op: data` left, the window was withdrawn at `data_wait_ms`. Newest by arrival
+    order, as `turn_for` picks the turn of a call; never across rounds."""
+    budget = knob(params, "budget_ms")
+    best = None
+    for rec in r["pending"].values():
+        if rec.get("source") != SOURCE_STAMP or rec["state"] == "done" \
+                or now - rec["arrived"] > budget \
+                or not same_round(rec.get("audience_set"), rnd, params):
+            continue
+        if words:
+            fits = rec.get("keyless") and rec["state"] == "asking" and bool(rec.get("text"))
+        else:
+            fits = not rec.get("keyless") and not rec.get("text")
+        if fits and (best is None or (rec["arrived"], int(rec.get("seq") or 0)) >
+                     (best["arrived"], int(best.get("seq") or 0))):
+            best = rec
+    return best
+
+
+def rekey(r, rec, tid):
+    """Move an unkeyed turn's record to its stamp's `turn_id`; the old pending row leaves
+    (a restart must not find it still asking)."""
+    old = rec["turn_id"]
+    del r["pending"][old]
+    rec.pop("keyless", None)
+    rec["turn_id"] = tid
+    r["pending"][tid] = rec
+    return w_pending_gone(old)
+
+
+def stamp_turn(r, tid, st, ctx, params, now):
+    """A record for a stamp whose turn has not arrived (§ 9b.12): the round is the
+    stamp's, else the edge's; a round foreign to the screen opens nothing (GH #1027)."""
+    seq = 1 + max([0] + [int(p.get("seq") or 0) for p in r["pending"].values()])
+    rec = fresh_turn(tid, now, knob(params, "budget_ms"), stamp_round(st, ctx), seq)
+    rec["text"] = ""
+    rec["source"] = SOURCE_STAMP
+    r["pending"][tid] = rec
+    gate = gate_round(rec["audience_set"], params.get("screen_audience"), params)
+    rec["star_only"] = gate == "star"
+    return rec, gate == "foreign"
+
+
+def apply_form(r, rec, form, params, now):
+    """A screen form for a turn (§ 9b.13): noted while the verdict is out; on a window
+    under construction `active` lifts it, `none` withdraws it; on a done window nothing."""
+    if rec.get("form") is None:
+        rec["t_form"] = now - rec["arrived"]
+    rec["form"] = form
+    if rec["state"] != "showing" or rec.get("built") == "done":
+        return []
+    rung = form_rung(form, params)
+    if rung == "none":
+        out = [withdraw(rec["topic"])] if rec.get("t_window") is not None else []
+        return out + [bundle(PHASE_WRITE, finish(rec, "form_none", now))] + clock_ops(r, now)
+    relevance = RUNG_RELEVANCE[rung]
+    if relevance == (rec.get("relevance") or RELEVANCE):
+        # `relevant` keeps the window as it stands: no write, so no touch (§ 4.8).
+        return [bundle(PHASE_WRITE, w_pending(rec))]
+    rec["relevance"] = relevance
+    out = []
+    if rec.get("t_window") is not None:
+        # A change of an own prop is an app touch (§ 4.8 b): the lift is meant to be seen.
+        out.append(a_view(rec["topic"], stamp_window(rec, rec["_manifest"], params, None)))
+    return out + [bundle(PHASE_WRITE, w_pending(rec))]
+
+
+def stamp_open(r, rec, v, topics, params, now):
+    """Judge a stamp's verdict and open its window under construction."""
+    why = judge(v, topics, params)
+    if why:
+        return [bundle(PHASE_WRITE, finish(rec, why, now))] + clock_ops(r, now)
+    rec["topic"], rec["p"], rec["model"] = v["topic"], v["p"], v["model"]
+    rec["lead"], rec["also"] = v["lead"], v["also"]
+    rec["_manifest"] = topics[v["topic"]]["manifest"]
+    if rec.get("form") is not None:
+        rung = form_rung(rec["form"], params)
+        if rung == "none":
+            # A sure topic on a screen form `none`: no window, however sure (R-FU-4) --
+            # the form of this stamp or one kept from an earlier stamp of the turn (a
+            # form-only `none` before the verdict opened a window at 0.8, review K-G Minor 1).
+            return [bundle(PHASE_WRITE, finish(rec, "form_none", now))] + clock_ops(r, now)
+        rec["relevance"] = RUNG_RELEVANCE.get(rung, RELEVANCE)
+    return open_window(r, rec, v, topics, params, now)
+
+
+def restamp(r, rec, v, topics, params, now):
+    """A later stamp of the same turn while its window is under construction (§ 9b.12):
+    another topic withdraws the window and opens the new one; the same topic with other
+    candidates rebuilds its skeleton and asks for their data."""
+    if v["topic"] != rec["topic"]:
+        out = [withdraw(rec["topic"])] if rec.get("t_window") is not None else []
+        rec.update({"topic": None, "keys": [], "placed": [], "_nodes": [], "sets": {},
+                    "first": "open", "state": "asking", "owner": None, "data_deadline": None,
+                    "t_window": None, "asked": False})
+        return out + stamp_open(r, rec, v, topics, params, now)
+    manifest = rec["_manifest"]
+    keys = chosen(v, manifest, params)
+    if keys == rec["keys"]:
+        return []
+    rec["lead"], rec["also"], rec["p"] = v["lead"], v["also"], v["p"]
+    rec.update({"keys": keys, "placed": [], "_nodes": [], "first": "open"})
+    show = topics[rec["topic"]]
+    ask = data_asks(rec, show, manifest, params) if rec.get("text") else []
+    out = feed_stamp(r, rec, manifest, {}, params, now)
+    if not any(e["header"]["route"] == "view" for e in out):
+        out = [a_view(rec["topic"], stamp_window(rec, manifest, params, None))] + out
+    return ask + out
+
+
+def lane_verdict(body, hop, ctx, params, now):
+    """The talky's stamp of a turn (`in_verdict`, § 9b.12): `screen` is the verdict,
+    `screen_form` the form (the first stamp may carry both, a second one the form alone);
+    a stamp with neither carries no screen verdict -- a `clarify` turn -- and opens
+    nothing. Read from the message alone, never from another cell's state."""
+    r = ram()
+    st = stamp_of(body)
+    tid = str(st.get("turn_id") or hop.get("turn_id") or "")
+    topics = all_topics(r, params)
+    if not tid or not topics:
+        return []
+    screen = st.get("screen") if isinstance(st.get("screen"), dict) else None
+    form = st.get("screen_form") if st.get("screen_form") in FORMS else None
+    rec = r["pending"].get(tid)
+    moved = []
+    if rec is None:
+        # GH #1367: the turn may have come first without a `turn_id` (the apps fan-out);
+        # the newest such turn of the stamp's round becomes this stamp's record.
+        rec = unjoined(r, stamp_round(st, ctx), params, now, words=True)
+        if rec is not None:
+            moved = [bundle(PHASE_WRITE, rekey(r, rec, tid))]
+    if rec is None:
+        rec, foreign = stamp_turn(r, tid, st, ctx, params, now)
+        if foreign:
+            return [bundle(PHASE_WRITE, prune(r, now) + finish(rec, "foreign_round", now))] + \
+                clock_ops(r, now)
+    return moved + stamp_on(r, rec, screen, form, topics, params, now)
+
+
+def stamp_on(r, rec, screen, form, topics, params, now):
+    """A stamp applied to its record (`lane_verdict`)."""
+    if rec["state"] == "done":
+        if rec["fallback"] == "timeout" and not rec["late"] and screen is not None:
+            # A late verdict changes nothing on the screen; the journal says it came.
+            v = stamp_verdict(screen, topics)
+            rec["late"] = True
+            rec["topic"], rec["p"], rec["model"] = v["topic"], v["p"], v["model"]
+            return [bundle(PHASE_WRITE, w_pending(rec) + w_journal(rec))]
+        return []
+    if rec["state"] == "showing":
+        out = restamp(r, rec, stamp_verdict(screen, topics), topics, params, now) \
+            if screen is not None else []
+        if form is not None and rec["state"] == "showing":
+            out += apply_form(r, rec, form, params, now)
+        return out
+    # Asking: the verdict is out until this stamp.
+    if form is not None:
+        if rec.get("form") is None:
+            rec["t_form"] = now - rec["arrived"]
+        rec["form"] = form
+    if screen is None:
+        if form is not None:
+            return [bundle(PHASE_WRITE, w_pending(rec))]
+        rec["t_verdict"] = now - rec["arrived"]
+        return [bundle(PHASE_WRITE, finish(rec, "no_topic", now))] + clock_ops(r, now)
+    rec["t_verdict"] = now - rec["arrived"]
+    return stamp_open(r, rec, stamp_verdict(screen, topics), topics, params, now)
+
+
+def feed_stamp(r, rec, manifest, sets, params, now):
+    """`feed` of the stamp way: a set that comes again replaces the kept one and rebuilds
+    the blocks it binds while the window is not done (§ 9b.5); a block takes its
+    skeleton's place; done (§ 9b.14) writes the last tree, the journal and the close."""
+    if rec.get("built") == "done" or rec["state"] != "showing":
+        return []
+    rec["_manifest"] = manifest
+    screen = window_round(rec, params)
+    changed = set()
+    for name, data in sets.items():
+        kept = filter_set(data, screen)
+        if kept is None:
+            continue
+        if name in rec["sets"] and rec["sets"][name] != kept:
+            changed.add(name)
+        rec["sets"][name] = kept
+    cat = catalogue(params)
+    cands = {c["key"]: c for c in manifest["candidates"]}
+    rebuilt = False
+    nodes = [list(kn) for kn in rec.get("_nodes") or []]
+    for kn in nodes:
+        c = cands.get(kn[0])
+        if c is not None and c["set"] in changed:
+            node = place(rec["topic"], c, rec["sets"], cat)
+            if node is not None and node != kn[1]:
+                kn[1] = node
+                rebuilt = True
+    rec["_nodes"] = nodes
+    new, fallback = resolve(rec, manifest, cat)
+    if not new and not rebuilt:
+        if rec["placed"] and settled(rec, manifest):
+            tree = stamp_done(rec, now, params)
+            return [a_view(rec["topic"], tree),
+                    bundle(PHASE_WRITE, w_journal(rec) + close(rec, now))] + clock_ops(r, now)
+        return [bundle(PHASE_WRITE, w_pending(rec))]
+    opens = rec["t_window"] is None
+    older = []
+    if opens:
+        # R-HP-9 (c), as in `feed`: the first `*` block opens a shared screen's window.
+        older, stale = supersede(r, rec, now)
+        if stale:
+            return [bundle(PHASE_WRITE, finish(rec, "no_data", now))] + clock_ops(r, now)
+    first = bool(new) and not rec["placed"]
+    rec["placed"] += [k for k, _ in new]
+    rec["_nodes"] = rec["_nodes"] + [[k, n] for k, n in new]
+    if opens:
+        rec["t_window"] = now - rec["arrived"]
+        if rec.get("t_building") is None:
+            rec["t_building"] = rec["t_window"]
+    legs = older
+    if first:
+        rec["t_content"] = now - rec["arrived"]
+        rec["fallback"] = fallback or "none"
+    if rec["placed"] and settled(rec, manifest):
+        tree = stamp_done(rec, now, params)
+        legs += w_journal(rec) + close(rec, now)
+    else:
+        tree = stamp_window(rec, manifest, params, now if opens else None)
+        legs += (w_journal(rec) if first else []) + w_pending(rec)
+    return [a_view(rec["topic"], tree), bundle(PHASE_WRITE, legs)] + clock_ops(r, now)
 
 
 # ---------------------------------------------------------------------------
@@ -2014,7 +2515,7 @@ def registry_entry(presenter, requirement):
 # The store's answers
 
 
-def pass_store(body, hop, ctx):
+def pass_store(body, hop, ctx, params):
     phase = str(ctx.get("show_phase") or "?")
     failed = store_failed(body, hop)
     if phase != PHASE_BOOT:
@@ -2041,6 +2542,8 @@ def pass_store(body, hop, ctx):
                 r["work"].append(row)
                 r["seq"] = max(int(r["seq"]), int(row.get("seq") or 0))
     r["phase"] = "live"
+    if not failed:
+        out += say_topics(r, params, boot=True)
     queue, r["queue"] = r["queue"], []
     for doc in queue:
         out += handle(doc)
@@ -2064,9 +2567,11 @@ def handle(doc):
     r = ram()
 
     if origin == "store":
-        return pass_store(body, hop, ctx)
+        return pass_store(body, hop, ctx, params)
     if route == "mutation_committed":
-        return lane_topics()
+        # A reconfigure may change the table through the params alone (`observed_topics`,
+        # the declared sources): said here once the cell is live (review K-G Minor 4).
+        return lane_topics() + (say_topics(r, params) if r["phase"] == "live" else [])
     if route in ("event", "receipt"):
         return []
     if r["phase"] != "live":
@@ -2080,15 +2585,28 @@ def handle(doc):
         return []
     if "_at" in doc:
         now = int(doc["_at"])
+    # After the lane, so a lane that says the table itself (`show_topics`) is not said
+    # twice; a no-op unless the switch is on and the params changed the table.
+    out = live(body, params, hop, ctx, origin, route, now, r)
+    return out + say_topics(r, params)
+
+
+def live(body, params, hop, ctx, origin, route, now, r):
+    """The lanes of a live cell (`handle` past the boot)."""
     # The decider's answer: the edge back from `./decide` deletes the inner context
     # (no marker leaves the hive, gh494) and restamps the hop `in_decision` with the
     # turn's `show_id` -- a colony run read `context {}` on that hop and dropped every
     # verdict as routeless. Only that edge sets the route: the door from `.` passes a
     # fixed list of routes that does not include it.
+    stamped = verdict_source(params) == SOURCE_STAMP
     if origin == "decide" or route == "in_decision":
-        return lane_decision(body, hop, params, now)
+        # The stamp way makes no call, so no answer of the decider is one of its turns.
+        return [] if stamped else lane_decision(body, hop, params, now)
+    if route == "in_verdict":
+        # live-2 GR: the talky's stamp; the selector way (shipped) does not read it.
+        return lane_verdict(body, hop, ctx, params, now) if stamped else []
     if route == "in_tick":
-        return lane_tick(hop, now)
+        return lane_tick(hop, now, params)
     if route == "in_tick_error":
         # GH #1047: `stage` orders only `add` under a fresh id and `remove`, so
         # `schedule_not_found` answers a remove whose order already left the clock (it

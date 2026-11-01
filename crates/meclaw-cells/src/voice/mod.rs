@@ -24,11 +24,14 @@
 //! emits are both declared in the `hello` frame, and the client adapts.
 
 pub mod b64;
+pub mod call_marks;
+pub mod call_usage;
 pub mod cell;
 pub mod connection;
 pub mod contract;
 pub mod duck;
 pub mod factory;
+pub mod g711;
 pub mod io;
 pub mod link;
 pub mod live_turns;
@@ -44,8 +47,8 @@ pub mod wire;
 pub use cell::{LiveSessionState, VoiceEvent, VoiceReconfig};
 pub use contract::{
     AppendKind, AudioFormat, BoxFuture, DuplexControl, DuplexError, DuplexEvent, DuplexProvider,
-    DuplexSession, Encoding, ProviderTimeouts, Speaker, SttError, SttEvent, SttProvider, TtsError,
-    TtsProvider,
+    DuplexSession, Encoding, ProviderTimeouts, SeedMessage, Speaker, SttError, SttEvent,
+    SttProvider, TtsError, TtsProvider,
 };
 pub use factory::VoiceCellFactory;
 pub use io::VoiceIo;

@@ -276,6 +276,9 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         // GH #1248 (T4-09): the quick voice of each talky takes its grant.
         "assistants/scribe/talky/quick",
         "assistants/scribe/talky-chat/quick",
+        // GH #1279: the screen judge's model takes its grant like quick.
+        "assistants/scribe/talky/screen_model",
+        "assistants/scribe/talky-chat/screen_model",
         "assistants/scribe/cogny/brain",
         "assistants/scribe/cogny/curator/summarizer",
         "apps/presenter/decide",
@@ -898,7 +901,7 @@ fn gh1273_a_member_grown_from_a_derived_class_is_granted() {
     // Whatever else a renderer raises on the grow path is a refusal with an
     // error_code, never a traceback without an answer.
     let broken = with_screen(
-        "display@2.11.1",
+        "display@2.12.0",
         json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
                "template": "member", "credential": "not-an-object"}),
     );

@@ -27,6 +27,11 @@ definition is worse than none:
 - A trace with **one** hop has a duration of zero and is counted. It is not
   noise: it is an errand the colony finished inside one hop.
 
+`--ledger <curator ledger cell.db>` adds one line per turn that speculated (FU1, the curator's
+`quick_speculative`): the `quick_spec` mark's column -- how long after the spec call fired the
+turn was decided, and whether the held quick answer was kept or dropped, with the reason. The
+ledger is read read-only, like the log; it is the curator's own record, not a measurement here.
+
 Percentiles are nearest-rank on the sorted sample. With a handful of traces
 they are a shape, not a statistic, so `n` is printed next to every one of them.
 """
@@ -51,6 +56,27 @@ def leaf(path):
     return path.rsplit("/", 1)[-1]
 
 
+def quick_spec(ledger):
+    """The `quick_spec` marks of a curator ledger, oldest first: (turn, decided after ms,
+    verdict, reason). A mark that names no times decides after `None`."""
+    import json
+    con = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
+    rows = con.execute(
+        "select turn_id, value from marks where kind = 'quick_spec' order by seq"
+    ).fetchall()
+    con.close()
+    out = []
+    for turn, value in rows:
+        try:
+            v = json.loads(value or "{}")
+        except ValueError:
+            v = {}
+        fired, done = v.get("fired_ms"), v.get("done_ms")
+        after = done - fired if isinstance(fired, int) and isinstance(done, int) else None
+        out.append((turn, after, v.get("verdict", "?"), v.get("reason", "")))
+    return out
+
+
 def percentile(sorted_xs, q):
     if not sorted_xs:
         return None
@@ -66,6 +92,7 @@ def main():
     ap.add_argument("--breakdown", action="store_true",
                     help="also show which legs the time sits in")
     ap.add_argument("--top", type=int, default=8, help="legs to show in the breakdown")
+    ap.add_argument("--ledger", help="a curator ledger cell.db: add the quick_spec column (FU1)")
     args = ap.parse_args()
 
     db = pathlib.Path(args.root) / "colony.db"
@@ -120,6 +147,14 @@ def main():
         for leg, w in worst.most_common(args.top):
             print(f"      {w:4}s  (total {total[leg]:4}s)  {leg}")
         print()
+    if args.ledger:
+        specs = quick_spec(args.ledger)
+        kept = sum(1 for s in specs if s[2] == "kept")
+        print(f"quick_spec: n={len(specs)} kept={kept} dropped={len(specs) - kept}")
+        for turn, after, verdict, why in specs:
+            shown = "-" if after is None else f"{after}ms"
+            print(f"    {turn}  decided after {shown:>8}  {verdict:7}  {why}")
 
 
-main()
+if __name__ == "__main__":
+    main()

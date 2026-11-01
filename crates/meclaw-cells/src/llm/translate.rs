@@ -1323,6 +1323,21 @@ fn has_thinking_trace(message: &Value) -> bool {
     })
 }
 
+/// GH #1360 (bio-2): the object inside `arguments` that holds the JSON STRING
+/// of an object -- one level too many, a small model's slip on the chat wire.
+/// `Some(inner)` only for exactly one extra level; a string inside that string
+/// again is `None` and stays a `malformed_tool_call`.
+fn decoded_once(arguments: &str) -> Option<String> {
+    match meclaw_core::serde_json::from_str::<Value>(arguments) {
+        Ok(Value::String(inner))
+            if meclaw_core::serde_json::from_str::<Value>(&inner).is_ok_and(|v| v.is_object()) =>
+        {
+            Some(inner)
+        }
+        _ => None,
+    }
+}
+
 /// GH #999 (F1): one provider tool call as the UBF `tool_call` turn's text,
 /// or the reason it cannot be one. `arguments` must be a string holding a JSON
 /// object; the empty string is the empty object (common provider practice for
@@ -1347,6 +1362,7 @@ fn tool_call_text(i: usize, tc: &Value) -> Result<(String, String), TranslateErr
     {
         return Err(shape("missing or empty function.name"));
     }
+    let mut decoded: Option<String> = None;
     let empty = match function.get("arguments") {
         Some(Value::String(a)) if a.trim().is_empty() => true,
         Some(Value::String(a))
@@ -1354,12 +1370,28 @@ fn tool_call_text(i: usize, tc: &Value) -> Result<(String, String), TranslateErr
         {
             false
         }
-        Some(Value::String(_)) => return Err(shape("function.arguments is not a JSON object")),
+        Some(Value::String(a)) => match decoded_once(a) {
+            Some(inner) => {
+                decoded = Some(inner);
+                false
+            }
+            None => return Err(shape("function.arguments is not a JSON object")),
+        },
         Some(_) => return Err(shape("function.arguments is not a string")),
         None => return Err(shape("missing function.arguments")),
     };
     if empty {
         function.insert("arguments".into(), Value::String("{}".into()));
+    }
+    if let Some(inner) = decoded {
+        // The call id rides the line so the repair can be told apart per call
+        // (#1279, see #1360: the line was pinned by no test).
+        tracing::warn!(
+            tool_call = i,
+            tool_call_id = id,
+            "llm: args_double_decoded -- function.arguments held the JSON string of an object, unpacked once"
+        );
+        function.insert("arguments".into(), Value::String(inner));
     }
     let text = meclaw_core::serde_json::to_string(&Value::Object(function))
         .map_err(|e| TranslateError::ResponseShape(format!("tool_call.function serialize: {e}")))?;

@@ -477,10 +477,30 @@ class ReportTest(unittest.TestCase):
                           at="2026-10-07T10:00:00Z")
         store.item_create(db, "workpackage", "b", doc={"wave": "welle-y-2026-10-02"},
                           at="2026-10-07T11:00:00Z")
+        # GH #1372: a wave directory that does not exist is never made.
+        self.assertEqual(night.report_dir(db, repo=tmp), tmp / "nacht")
+        (tmp / "plans" / "welle-y-2026-10-02").mkdir(parents=True)
         self.assertEqual(night.report_dir(db, repo=tmp),
                          tmp / "plans" / "welle-y-2026-10-02" / "nacht")
         store.item_create(db, "workpackage", "c", doc={"wave": "../evil"},
                           at="2026-10-07T12:00:00Z")
+        self.assertEqual(night.report_dir(db, repo=tmp), tmp / "nacht")
+
+    def test_night_report_dir_finds_the_dated_wave_of_a_short_key(self):
+        """GH #1372: the store keys the wave `alpha-2`, the plan is
+        `plans/alpha-2-<date>`; the report goes there and never makes an
+        undated `plans/alpha-2/` (the strand kit takes that one first, GH #1294)."""
+        db, tmp = _store(self)
+        store.item_create(db, "workpackage", "a", doc={"wave": "alpha-2"},
+                          at="2026-10-30T10:00:00Z")
+        self.assertEqual(night.report_dir(db, repo=tmp), tmp / "nacht")
+        (tmp / "plans" / "alpha-2-2026-10-29").mkdir(parents=True)
+        (tmp / "plans" / "alpha-20-2026-11-30").mkdir()
+        self.assertEqual(night.report_dir(db, repo=tmp),
+                         tmp / "plans" / "alpha-2-2026-10-29" / "nacht")
+        self.assertFalse((tmp / "plans" / "alpha-2").exists())
+        # Two dated directories of the same short key: no guess.
+        (tmp / "plans" / "alpha-2-2026-11-02").mkdir()
         self.assertEqual(night.report_dir(db, repo=tmp), tmp / "nacht")
 
     def test_night_annotation_skipped_without_environment(self):

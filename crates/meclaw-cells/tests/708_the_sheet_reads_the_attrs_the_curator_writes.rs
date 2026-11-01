@@ -117,6 +117,10 @@ const ALLOWED: &[(&str, &str)] = &[
     ("data-kind", "a status or list component's kind"),
     ("data-ratio", "a media frame's aspect"),
     ("data-gap", "a stack's gap"),
+    (
+        "data-build",
+        "a window stack's construction: building | done (live-2 GR, § 6.17)",
+    ),
     ("data-tone", "a window's tone"),
     ("data-position", "an overlay's corner"),
     (

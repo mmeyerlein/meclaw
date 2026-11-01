@@ -126,9 +126,16 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
     // GH #1260 (OR-WG-2): the quick answer carries the sidecar block, and the
     // splitter sees it as it sees the brain's -- same condition, and its
     // sections leave on talky's own `sidecar` port.
+    // GH #1275: a held spec answer (`context.spec` "1") never does --
+    // the curator releases it on `spec_release` once the turn keeps it.
     assert_eq!(
-        q_split["condition"],
-        edge(&edges, "./brain", "./splitter", "'stop'")["condition"],
+        q_split["condition"].as_str().unwrap_or(""),
+        format!(
+            "{} && !(has(context.spec) && context.spec == '1')",
+            edge(&edges, "./brain", "./splitter", "'stop'")["condition"]
+                .as_str()
+                .unwrap_or("")
+        ),
         "the quick answer reaches the splitter like the brain's"
     );
     edge(&edges, "./splitter", ".", "hop.route == 'sidecar'");

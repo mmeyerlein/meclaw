@@ -12,6 +12,9 @@
 //! Hermetic by construction: every server here is a local listener, no name is
 //! ever resolved against the outside world, and the one target that is *named*
 //! (`169.254.169.254`) is refused before a connection to it is opened.
+//!
+//! GH #1375 rides along at the end: every url the cell writes — log line,
+//! `final_url`, error text — leaves it redacted.
 
 // harness_fold: #[path = "support_fitness.rs"]
 #[allow(unused_imports)]
@@ -281,4 +284,121 @@ async fn the_default_still_refuses_the_local_listener_these_tests_opt_into() {
         .call(json!({"url": format!("http://{addr}/")}), "c1")
         .await;
     assert_error(&em, "target_blocked");
+}
+
+// ───── GH #1375: URLs leave the cell redacted ─────
+
+/// The measured leak: the success log line named the requested url as
+/// written, a gateway password as userinfo included. The line keeps its shape
+/// and names the url redacted — userinfo and secret query values gone, the
+/// rest (here: the listener's port, the path, `page`) still there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1375_the_success_log_line_names_the_url_redacted() {
+    let log = meclaw_testing::log_recorder::global();
+    let addr = start_scripted_server(|_| ok_with("fetched"));
+    let mut r = local_rig(5);
+    let port = addr.port();
+
+    let em = r
+        .call(
+            json!({"url": format!(
+                "http://user-mock:pw-mock@{addr}/gh1375?Token=t-mock&page=1&api_key=k-mock"
+            )}),
+            "c1",
+        )
+        .await;
+    assert_normal_result(&em, "c1");
+
+    let lines = log.lines(tracing::Level::INFO, &["web_fetch ok", "/gh1375?"]);
+    assert_eq!(lines.len(), 1, "one success line: {lines:?}");
+    let line = &lines[0];
+    assert!(
+        line.contains(&format!(
+            "url=http://REDACTED@127.0.0.1:{port}/gh1375?Token=REDACTED&page=1&api_key=REDACTED"
+        )),
+        "{line}"
+    );
+    for secret in ["user-mock", "pw-mock", "t-mock", "k-mock"] {
+        assert!(!line.contains(secret), "{secret} in {line}");
+    }
+}
+
+/// `final_url` goes to the model. After a relative redirect it carries the
+/// userinfo of the url it came from (`Url::join` keeps it) plus whatever the
+/// `Location` added — both redacted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1375_final_url_is_redacted() {
+    let addr = start_scripted_server(|path| match path {
+        "/start" => redirect_to("/end?sig=s-mock&page=2&PASSWORD=p2-mock"),
+        _ => ok_with("arrived"),
+    });
+    let mut r = local_rig(5);
+
+    let em = r
+        .call(
+            json!({"url": format!("http://user-mock:pw-mock@{addr}/start")}),
+            "c1",
+        )
+        .await;
+
+    assert_normal_result(&em, "c1");
+    assert_eq!(text_of(&em), "arrived");
+    assert_eq!(
+        header_of(&em, "final_url"),
+        &json!(format!(
+            "http://REDACTED@{addr}/end?sig=REDACTED&page=2&PASSWORD=REDACTED"
+        ))
+    );
+}
+
+/// The error text goes to the model too: a refusal that names the url names
+/// it redacted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1375_an_error_text_names_the_url_redacted() {
+    let addr = start_scripted_server(|_| redirect_to("/loop?token=t-mock"));
+    let mut r = local_rig(1);
+
+    let em = r
+        .call(
+            json!({"url": format!("http://user-mock:pw-mock@{addr}/loop")}),
+            "c1",
+        )
+        .await;
+
+    assert_error(&em, "too_many_redirects");
+    let text = text_of(&em);
+    assert!(
+        text.contains(&format!("http://REDACTED@{addr}/loop?token=REDACTED")),
+        "{text}"
+    );
+    for secret in ["user-mock", "pw-mock", "t-mock"] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
+}
+
+/// A transport failure (connect refused) names the url too: reqwest's own
+/// text carried it with its userinfo, so the cell writes it redacted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1375_a_transport_failure_names_the_url_redacted() {
+    let dead = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = dead.local_addr().expect("local_addr");
+    drop(dead);
+    let mut r = local_rig(5);
+
+    let em = r
+        .call(
+            json!({"url": format!("http://user-mock:pw-mock@{addr}/x?token=t-mock#auth=a-mock")}),
+            "c1",
+        )
+        .await;
+
+    assert_error(&em, "io_error");
+    let text = text_of(&em);
+    assert!(
+        text.contains(&format!("http://REDACTED@{addr}/x?token=REDACTED")),
+        "{text}"
+    );
+    for secret in ["user-mock", "pw-mock", "t-mock", "a-mock"] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
 }

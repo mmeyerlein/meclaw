@@ -1,11 +1,20 @@
 //! Test harness `curator_1` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/assemble_cell.rs"]
+pub mod assemble_cell;
 pub mod curator_cells;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
 pub mod curator_policy;
 pub mod curator_push;
+#[path = "../support/duplex_cell.rs"]
+pub mod duplex_cell;
+pub mod fu1_the_quick_voice_speaks_before_the_stamp;
+pub mod fu2_h_the_judge_context_comes_from_the_wall;
+pub mod fu2_p1_a_clarify_turn_asks_and_the_quick_voice_has_its_prompt;
+pub mod fu2_p1_spec_rows_end_and_spec_cost_is_booked;
+pub mod fu2_p2_a_delta_is_not_decided_twice_and_the_voice_hears_what_changed;
 pub mod gh1038_the_curator_knows_what_its_window_costs;
 pub mod gh1040_the_curator_hands_the_package_to_memory;
 pub mod gh1044_the_tool_recall_is_sized_by_the_model_package;
@@ -49,9 +58,6 @@ pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
 pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
 pub mod gh1225_kr_p_a_sweep_names_only_what_went;
-pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
-pub mod gh1225_kr_seq_never_falls_below_the_ledger;
-pub mod gh1225_kr_the_set_sent_last_stands;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

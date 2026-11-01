@@ -1,0 +1,942 @@
+[
+ {
+  "header": {
+   "route": "in_show"
+  },
+  "messages": [],
+  "op": "topics"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "s-ins",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"owner_app\": \"/app\"}, \"rows\": [{\"at\": 1000000, \"manifest\": {\"candidates\": [{\"bind\": {\"body\": \"brief.body\", \"title\": \"brief.title\"}, \"block\": \"display-card\", \"describe\": \"a short summary\", \"key\": \"brief\", \"set\": \"brief\"}, {\"bind\": {\"title\": \"=Items\"}, \"block\": \"display-list\", \"children\": [{\"bind\": {\"k\": \"$.name\", \"v\": \"$.note\"}, \"block\": \"display-item\", \"each\": \"rows\"}], \"describe\": \"the items as a list\", \"key\": \"rows\", \"set\": \"rows\"}, {\"bind\": {\"title\": \"=Path\"}, \"block\": \"display-steps\", \"children\": [{\"bind\": {\"label\": \"$.label\"}, \"block\": \"display-step\", \"each\": \"steps\"}], \"describe\": \"the path as steps\", \"key\": \"steps\", \"set\": \"steps\"}, {\"bind\": {\"value\": \"slow.n\"}, \"block\": \"display-value\", \"describe\": \"a slow number\", \"key\": \"slow\", \"on_choice\": true, \"set\": \"slow\"}], \"describe\": \"a generic sample topic\", \"glyph\": \"S\", \"standard\": \"brief\", \"title\": \"Sample\", \"topic\": \"sample\"}, \"owner_app\": \"/app\", \"show_at\": \"./show\", \"topic\": \"sample\"}], \"table\": \"shows\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "decide": {
+   "questions": {
+    "sample.also": {
+     "instructions": "Which second block helps beside the first one, if any?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "none": "no second block",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "sample.lead": {
+     "instructions": "Which block shows best what the request asks about Sample?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "topic": {
+     "instructions": "Which of these would help on a screen beside the answer to this request?",
+     "kind": "choice",
+     "options": {
+      "none": "nothing on the screen helps with this request",
+      "sample": "Sample: a generic sample topic"
+     }
+    }
+   },
+   "state": "a sample"
+  },
+  "header": {
+   "route": "decide",
+   "show_id": "g1"
+  },
+  "messages": []
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g1",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g1\"}, \"row\": {\"at\": 1000000, \"turn_id\": \"g1\", \"value\": {\"also\": null, \"arrived\": 1000000, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1004000, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": null, \"missing\": [], \"model\": \"\", \"observed\": {}, \"owner\": null, \"p\": 0.0, \"placed\": [], \"seq\": 1, \"sets\": {}, \"star_only\": false, \"state\": \"asking\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"a sample\", \"topic\": null, \"turn_id\": \"g1\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "at": "1970-01-01T00:16:44.000Z",
+  "emit_body": {
+   "messages": []
+  },
+  "emit_to": ".",
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "add",
+  "schedule_id": "1797a496-4735-5a64-ab2c-574b38c1e4ce",
+  "schedule_name": "deadline"
+ },
+ {
+  "components": [],
+  "content": {
+   "children": [
+    {
+     "component": "display-tile",
+     "key": "tile",
+     "props": {
+      "glyph": "S",
+      "line": "Sample",
+      "value": ""
+     }
+    },
+    {
+     "children": [
+      {
+       "component": "display-status",
+       "key": "show-sample-hint",
+       "props": {
+        "kind": "working",
+        "text": "Working on it…"
+       }
+      }
+     ],
+     "component": "display-stack",
+     "key": "show-sample-stack",
+     "props": {
+      "gap": "s"
+     }
+    }
+   ],
+   "component": "display-pane",
+   "key": "show.sample",
+   "props": {
+    "context": "conversation",
+    "kicker": "Sample",
+    "layer": "canvas",
+    "pane_id": "show-sample",
+    "relevance": "0.8",
+    "title": "",
+    "topic": "show:sample",
+    "touched": "1000250",
+    "turn_id": "g1"
+   }
+  },
+  "header": {
+   "route": "view"
+  },
+  "kind": "component",
+  "messages": [],
+  "view_id": "show-sample"
+ },
+ {
+  "also": [
+   "steps"
+  ],
+  "header": {
+   "route": "in_show",
+   "show_app": "/app",
+   "show_at": "./show"
+  },
+  "lead": "rows",
+  "messages": [],
+  "op": "data",
+  "request": "a sample",
+  "screen_audience": [],
+  "sets": [
+   "brief",
+   "rows",
+   "steps"
+  ],
+  "topic": "sample",
+  "turn_id": "g1"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g1",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g1\"}, \"row\": {\"at\": 1000250, \"turn_id\": \"g1\", \"value\": {\"also\": \"steps\", \"arrived\": 1000000, \"audience_set\": null, \"data_deadline\": 1004250, \"deadline\": 1004000, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [\"rows\", \"steps\"], \"late\": false, \"lead\": \"rows\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [], \"seq\": 1, \"sets\": {}, \"star_only\": false, \"state\": \"showing\", \"t_content\": null, \"t_verdict\": 250, \"t_window\": 250, \"text\": \"a sample\", \"topic\": \"sample\", \"turn_id\": \"g1\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "remove",
+  "schedule_id": "1797a496-4735-5a64-ab2c-574b38c1e4ce"
+ },
+ {
+  "at": "1970-01-01T00:16:44.250Z",
+  "emit_body": {
+   "messages": []
+  },
+  "emit_to": ".",
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "add",
+  "schedule_id": "f3aec570-ad57-5f88-be40-0e157eccb204",
+  "schedule_name": "deadline"
+ },
+ {
+  "components": [],
+  "content": {
+   "children": [
+    {
+     "component": "display-tile",
+     "key": "tile",
+     "props": {
+      "glyph": "S",
+      "line": "Sample",
+      "value": ""
+     }
+    },
+    {
+     "children": [
+      {
+       "children": [
+        {
+         "component": "display-item",
+         "key": "show-sample-rows-0",
+         "props": {
+          "k": "a"
+         }
+        }
+       ],
+       "component": "display-list",
+       "key": "show-sample-rows",
+       "props": {
+        "title": "Items"
+       }
+      }
+     ],
+     "component": "display-stack",
+     "key": "show-sample-stack",
+     "props": {
+      "gap": "s"
+     }
+    }
+   ],
+   "component": "display-pane",
+   "key": "show.sample",
+   "props": {
+    "context": "conversation",
+    "kicker": "Sample",
+    "layer": "canvas",
+    "pane_id": "show-sample",
+    "relevance": "0.8",
+    "title": "",
+    "topic": "show:sample",
+    "turn_id": "g1"
+   }
+  },
+  "header": {
+   "route": "view"
+  },
+  "kind": "component",
+  "messages": [],
+  "view_id": "show-sample"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "j-ins-g1",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g1\"}, \"row\": {\"also\": \"steps\", \"at\": 1000350, \"audience_set\": \"\", \"fallback\": \"none\", \"late\": 0, \"lead\": \"rows\", \"missing\": \"[]\", \"model\": \"mock-decider\", \"p\": 0.9, \"t_content_ms\": 350, \"t_verdict_ms\": 250, \"t_window_ms\": 250, \"topic\": \"sample\", \"turn_id\": \"g1\"}, \"table\": \"journal\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "p-ins-g1",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g1\"}, \"row\": {\"at\": 1000350, \"turn_id\": \"g1\", \"value\": {\"_nodes\": [[\"rows\", {\"children\": [{\"component\": \"display-item\", \"key\": \"show-sample-rows-0\", \"props\": {\"k\": \"a\"}}], \"component\": \"display-list\", \"key\": \"show-sample-rows\", \"props\": {\"title\": \"Items\"}}]], \"also\": \"steps\", \"arrived\": 1000000, \"audience_set\": null, \"data_deadline\": 1004250, \"deadline\": 1004000, \"done_at\": null, \"fallback\": \"none\", \"first\": \"lead\", \"keys\": [\"rows\", \"steps\"], \"late\": false, \"lead\": \"rows\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [\"rows\"], \"seq\": 1, \"sets\": {\"rows\": {\"rows\": [{\"name\": \"a\"}]}}, \"star_only\": false, \"state\": \"showing\", \"t_content\": 350, \"t_verdict\": 250, \"t_window\": 250, \"text\": \"a sample\", \"topic\": \"sample\", \"turn_id\": \"g1\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "components": [],
+  "content": {
+   "children": [
+    {
+     "component": "display-tile",
+     "key": "tile",
+     "props": {
+      "glyph": "S",
+      "line": "Sample",
+      "value": ""
+     }
+    },
+    {
+     "children": [
+      {
+       "children": [
+        {
+         "component": "display-item",
+         "key": "show-sample-rows-0",
+         "props": {
+          "k": "a"
+         }
+        }
+       ],
+       "component": "display-list",
+       "key": "show-sample-rows",
+       "props": {
+        "title": "Items"
+       }
+      },
+      {
+       "children": [
+        {
+         "component": "display-step",
+         "key": "show-sample-steps-0",
+         "props": {
+          "label": "one"
+         }
+        }
+       ],
+       "component": "display-steps",
+       "key": "show-sample-steps",
+       "props": {
+        "title": "Path"
+       }
+      }
+     ],
+     "component": "display-stack",
+     "key": "show-sample-stack",
+     "props": {
+      "gap": "s"
+     }
+    }
+   ],
+   "component": "display-pane",
+   "key": "show.sample",
+   "props": {
+    "context": "conversation",
+    "kicker": "Sample",
+    "layer": "canvas",
+    "pane_id": "show-sample",
+    "relevance": "0.8",
+    "title": "",
+    "topic": "show:sample",
+    "turn_id": "g1"
+   }
+  },
+  "header": {
+   "route": "view"
+  },
+  "kind": "component",
+  "messages": [],
+  "view_id": "show-sample"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g1",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g1\"}, \"row\": {\"at\": 1000450, \"turn_id\": \"g1\", \"value\": {\"_nodes\": [], \"also\": \"steps\", \"arrived\": 1000000, \"audience_set\": null, \"data_deadline\": 1004250, \"deadline\": 1004000, \"done_at\": 1000450, \"fallback\": \"none\", \"first\": \"lead\", \"keys\": [\"rows\", \"steps\"], \"late\": false, \"lead\": \"rows\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [\"rows\", \"steps\"], \"seq\": 1, \"sets\": {}, \"star_only\": false, \"state\": \"done\", \"t_content\": 350, \"t_verdict\": 250, \"t_window\": 250, \"text\": \"\", \"topic\": \"sample\", \"turn_id\": \"g1\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "remove",
+  "schedule_id": "f3aec570-ad57-5f88-be40-0e157eccb204"
+ },
+ {
+  "decide": {
+   "questions": {
+    "sample.also": {
+     "instructions": "Which second block helps beside the first one, if any?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "none": "no second block",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "sample.lead": {
+     "instructions": "Which block shows best what the request asks about Sample?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "topic": {
+     "instructions": "Which of these would help on a screen beside the answer to this request?",
+     "kind": "choice",
+     "options": {
+      "none": "nothing on the screen helps with this request",
+      "sample": "Sample: a generic sample topic"
+     }
+    }
+   },
+   "state": "hmm"
+  },
+  "header": {
+   "route": "decide",
+   "show_id": "g2"
+  },
+  "messages": []
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g2",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g2\"}, \"row\": {\"at\": 1000460, \"turn_id\": \"g2\", \"value\": {\"also\": null, \"arrived\": 1000460, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1004460, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": null, \"missing\": [], \"model\": \"\", \"observed\": {}, \"owner\": null, \"p\": 0.0, \"placed\": [], \"seq\": 2, \"sets\": {}, \"star_only\": false, \"state\": \"asking\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"hmm\", \"topic\": null, \"turn_id\": \"g2\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "at": "1970-01-01T00:16:44.460Z",
+  "emit_body": {
+   "messages": []
+  },
+  "emit_to": ".",
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "add",
+  "schedule_id": "3a45d533-dcdd-5431-83d5-8a3fabc82ae4",
+  "schedule_name": "deadline"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g2",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g2\"}, \"row\": {\"at\": 1000460, \"turn_id\": \"g2\", \"value\": {\"_nodes\": [], \"also\": null, \"arrived\": 1000460, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1004460, \"done_at\": 1000460, \"fallback\": \"unsure\", \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": \"rows\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": null, \"p\": 0.3, \"placed\": [], \"seq\": 2, \"sets\": {}, \"star_only\": false, \"state\": \"done\", \"t_content\": null, \"t_verdict\": 0, \"t_window\": null, \"text\": \"\", \"topic\": \"sample\", \"turn_id\": \"g2\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "j-ins-g2",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g2\"}, \"row\": {\"also\": \"\", \"at\": 1000460, \"audience_set\": \"\", \"fallback\": \"unsure\", \"late\": 0, \"lead\": \"rows\", \"missing\": \"[]\", \"model\": \"mock-decider\", \"p\": 0.3, \"t_content_ms\": null, \"t_verdict_ms\": 0, \"t_window_ms\": null, \"topic\": \"sample\", \"turn_id\": \"g2\"}, \"table\": \"journal\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "remove",
+  "schedule_id": "3a45d533-dcdd-5431-83d5-8a3fabc82ae4"
+ },
+ {
+  "decide": {
+   "questions": {
+    "sample.also": {
+     "instructions": "Which second block helps beside the first one, if any?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "none": "no second block",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "sample.lead": {
+     "instructions": "Which block shows best what the request asks about Sample?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "topic": {
+     "instructions": "Which of these would help on a screen beside the answer to this request?",
+     "kind": "choice",
+     "options": {
+      "none": "nothing on the screen helps with this request",
+      "sample": "Sample: a generic sample topic"
+     }
+    }
+   },
+   "state": "late"
+  },
+  "header": {
+   "route": "decide",
+   "show_id": "g3"
+  },
+  "messages": []
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g3",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g3\"}, \"row\": {\"at\": 1000470, \"turn_id\": \"g3\", \"value\": {\"also\": null, \"arrived\": 1000470, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1004470, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": null, \"missing\": [], \"model\": \"\", \"observed\": {}, \"owner\": null, \"p\": 0.0, \"placed\": [], \"seq\": 3, \"sets\": {}, \"star_only\": false, \"state\": \"asking\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"late\", \"topic\": null, \"turn_id\": \"g3\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "at": "1970-01-01T00:16:44.470Z",
+  "emit_body": {
+   "messages": []
+  },
+  "emit_to": ".",
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "add",
+  "schedule_id": "f125db65-07d2-59e6-8e3d-23994be6d560",
+  "schedule_name": "deadline"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g3",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g3\"}, \"row\": {\"at\": 1004570, \"turn_id\": \"g3\", \"value\": {\"_nodes\": [], \"also\": null, \"arrived\": 1000470, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1004470, \"done_at\": 1004570, \"fallback\": \"timeout\", \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": null, \"missing\": [], \"model\": \"\", \"observed\": {}, \"owner\": null, \"p\": 0.0, \"placed\": [], \"seq\": 3, \"sets\": {}, \"star_only\": false, \"state\": \"done\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"\", \"topic\": null, \"turn_id\": \"g3\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "j-ins-g3",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g3\"}, \"row\": {\"also\": \"\", \"at\": 1004570, \"audience_set\": \"\", \"fallback\": \"timeout\", \"late\": 0, \"lead\": \"\", \"missing\": \"[]\", \"model\": \"\", \"p\": 0.0, \"t_content_ms\": null, \"t_verdict_ms\": null, \"t_window_ms\": null, \"topic\": \"\", \"turn_id\": \"g3\"}, \"table\": \"journal\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g3",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g3\"}, \"row\": {\"at\": 1004570, \"turn_id\": \"g3\", \"value\": {\"_nodes\": [], \"also\": null, \"arrived\": 1000470, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1004470, \"done_at\": 1004570, \"fallback\": \"timeout\", \"first\": \"open\", \"keys\": [], \"late\": true, \"lead\": null, \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": null, \"p\": 0.9, \"placed\": [], \"seq\": 3, \"sets\": {}, \"star_only\": false, \"state\": \"done\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"\", \"topic\": \"sample\", \"turn_id\": \"g3\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "j-ins-g3",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g3\"}, \"row\": {\"also\": \"\", \"at\": 1004570, \"audience_set\": \"\", \"fallback\": \"timeout\", \"late\": 1, \"lead\": \"\", \"missing\": \"[]\", \"model\": \"mock-decider\", \"p\": 0.9, \"t_content_ms\": null, \"t_verdict_ms\": null, \"t_window_ms\": null, \"topic\": \"sample\", \"turn_id\": \"g3\"}, \"table\": \"journal\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "decide": {
+   "questions": {
+    "sample.also": {
+     "instructions": "Which second block helps beside the first one, if any?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "none": "no second block",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "sample.lead": {
+     "instructions": "Which block shows best what the request asks about Sample?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "topic": {
+     "instructions": "Which of these would help on a screen beside the answer to this request?",
+     "kind": "choice",
+     "options": {
+      "none": "nothing on the screen helps with this request",
+      "sample": "Sample: a generic sample topic"
+     }
+    }
+   },
+   "state": "old"
+  },
+  "header": {
+   "route": "decide",
+   "show_id": "g4"
+  },
+  "messages": []
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g4",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g4\"}, \"row\": {\"at\": 1004580, \"turn_id\": \"g4\", \"value\": {\"also\": null, \"arrived\": 1004580, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1008580, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": null, \"missing\": [], \"model\": \"\", \"observed\": {}, \"owner\": null, \"p\": 0.0, \"placed\": [], \"seq\": 4, \"sets\": {}, \"star_only\": false, \"state\": \"asking\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"old\", \"topic\": null, \"turn_id\": \"g4\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "at": "1970-01-01T00:16:48.580Z",
+  "emit_body": {
+   "messages": []
+  },
+  "emit_to": ".",
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "add",
+  "schedule_id": "db98cb5e-f35a-560a-88be-b1efa6f3fcf9",
+  "schedule_name": "deadline"
+ },
+ {
+  "components": [],
+  "content": {
+   "children": [
+    {
+     "component": "display-tile",
+     "key": "tile",
+     "props": {
+      "glyph": "S",
+      "line": "Sample",
+      "value": ""
+     }
+    },
+    {
+     "children": [
+      {
+       "component": "display-status",
+       "key": "show-sample-hint",
+       "props": {
+        "kind": "working",
+        "text": "Working on it…"
+       }
+      }
+     ],
+     "component": "display-stack",
+     "key": "show-sample-stack",
+     "props": {
+      "gap": "s"
+     }
+    }
+   ],
+   "component": "display-pane",
+   "key": "show.sample",
+   "props": {
+    "context": "conversation",
+    "kicker": "Sample",
+    "layer": "canvas",
+    "pane_id": "show-sample",
+    "relevance": "0.8",
+    "title": "",
+    "topic": "show:sample",
+    "touched": "1004580",
+    "turn_id": "g4"
+   }
+  },
+  "header": {
+   "route": "view"
+  },
+  "kind": "component",
+  "messages": [],
+  "view_id": "show-sample"
+ },
+ {
+  "also": [],
+  "header": {
+   "route": "in_show",
+   "show_app": "/app",
+   "show_at": "./show"
+  },
+  "lead": "brief",
+  "messages": [],
+  "op": "data",
+  "request": "old",
+  "screen_audience": [],
+  "sets": [
+   "brief",
+   "rows",
+   "steps"
+  ],
+  "topic": "sample",
+  "turn_id": "g4"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g4",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g4\"}, \"row\": {\"at\": 1004580, \"turn_id\": \"g4\", \"value\": {\"also\": null, \"arrived\": 1004580, \"audience_set\": null, \"data_deadline\": 1008580, \"deadline\": 1008580, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [\"brief\"], \"late\": false, \"lead\": \"brief\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [], \"seq\": 4, \"sets\": {}, \"star_only\": false, \"state\": \"showing\", \"t_content\": null, \"t_verdict\": 0, \"t_window\": 0, \"text\": \"old\", \"topic\": \"sample\", \"turn_id\": \"g4\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "decide": {
+   "questions": {
+    "sample.also": {
+     "instructions": "Which second block helps beside the first one, if any?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "none": "no second block",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "sample.lead": {
+     "instructions": "Which block shows best what the request asks about Sample?",
+     "kind": "choice",
+     "options": {
+      "brief": "a short summary",
+      "rows": "the items as a list",
+      "slow": "a slow number",
+      "steps": "the path as steps"
+     }
+    },
+    "topic": {
+     "instructions": "Which of these would help on a screen beside the answer to this request?",
+     "kind": "choice",
+     "options": {
+      "none": "nothing on the screen helps with this request",
+      "sample": "Sample: a generic sample topic"
+     }
+    }
+   },
+   "state": "new"
+  },
+  "header": {
+   "route": "decide",
+   "show_id": "g5"
+  },
+  "messages": []
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g5",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g5\"}, \"row\": {\"at\": 1004590, \"turn_id\": \"g5\", \"value\": {\"also\": null, \"arrived\": 1004590, \"audience_set\": null, \"data_deadline\": null, \"deadline\": 1008590, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [], \"late\": false, \"lead\": null, \"missing\": [], \"model\": \"\", \"observed\": {}, \"owner\": null, \"p\": 0.0, \"placed\": [], \"seq\": 5, \"sets\": {}, \"star_only\": false, \"state\": \"asking\", \"t_content\": null, \"t_verdict\": null, \"t_window\": null, \"text\": \"new\", \"topic\": null, \"turn_id\": \"g5\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "components": [],
+  "content": {
+   "children": [
+    {
+     "component": "display-tile",
+     "key": "tile",
+     "props": {
+      "glyph": "S",
+      "line": "Sample",
+      "value": ""
+     }
+    },
+    {
+     "children": [
+      {
+       "component": "display-status",
+       "key": "show-sample-hint",
+       "props": {
+        "kind": "working",
+        "text": "Working on it…"
+       }
+      }
+     ],
+     "component": "display-stack",
+     "key": "show-sample-stack",
+     "props": {
+      "gap": "s"
+     }
+    }
+   ],
+   "component": "display-pane",
+   "key": "show.sample",
+   "props": {
+    "context": "conversation",
+    "kicker": "Sample",
+    "layer": "canvas",
+    "pane_id": "show-sample",
+    "relevance": "0.8",
+    "title": "",
+    "topic": "show:sample",
+    "touched": "1004590",
+    "turn_id": "g5"
+   }
+  },
+  "header": {
+   "route": "view"
+  },
+  "kind": "component",
+  "messages": [],
+  "view_id": "show-sample"
+ },
+ {
+  "also": [],
+  "header": {
+   "route": "in_show",
+   "show_app": "/app",
+   "show_at": "./show"
+  },
+  "lead": "slow",
+  "messages": [],
+  "op": "data",
+  "request": "new",
+  "screen_audience": [],
+  "sets": [
+   "brief",
+   "rows",
+   "steps",
+   "slow"
+  ],
+  "topic": "sample",
+  "turn_id": "g5"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g4",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g4\"}, \"row\": {\"at\": 1004590, \"turn_id\": \"g4\", \"value\": {\"_nodes\": [], \"also\": null, \"arrived\": 1004580, \"audience_set\": null, \"data_deadline\": 1008580, \"deadline\": 1008580, \"done_at\": 1004590, \"fallback\": \"no_data\", \"first\": \"open\", \"keys\": [\"brief\"], \"late\": false, \"lead\": \"brief\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [], \"seq\": 4, \"sets\": {}, \"star_only\": false, \"state\": \"done\", \"t_content\": null, \"t_verdict\": 0, \"t_window\": 0, \"text\": \"\", \"topic\": \"sample\", \"turn_id\": \"g4\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "j-ins-g4",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g4\"}, \"row\": {\"also\": \"\", \"at\": 1004590, \"audience_set\": \"\", \"fallback\": \"no_data\", \"late\": 0, \"lead\": \"brief\", \"missing\": \"[]\", \"model\": \"mock-decider\", \"p\": 0.9, \"t_content_ms\": null, \"t_verdict_ms\": 0, \"t_window_ms\": 0, \"topic\": \"sample\", \"turn_id\": \"g4\"}, \"table\": \"journal\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "p-ins-g5",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g5\"}, \"row\": {\"at\": 1004590, \"turn_id\": \"g5\", \"value\": {\"also\": null, \"arrived\": 1004590, \"audience_set\": null, \"data_deadline\": 1008590, \"deadline\": 1008590, \"done_at\": null, \"fallback\": null, \"first\": \"open\", \"keys\": [\"slow\"], \"late\": false, \"lead\": \"slow\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [], \"seq\": 5, \"sets\": {}, \"star_only\": false, \"state\": \"showing\", \"t_content\": null, \"t_verdict\": 0, \"t_window\": 0, \"text\": \"new\", \"topic\": \"sample\", \"turn_id\": \"g5\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   }
+  ]
+ },
+ {
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "remove",
+  "schedule_id": "db98cb5e-f35a-560a-88be-b1efa6f3fcf9"
+ },
+ {
+  "at": "1970-01-01T00:16:48.590Z",
+  "emit_body": {
+   "messages": []
+  },
+  "emit_to": ".",
+  "header": {
+   "route": "clock"
+  },
+  "messages": [],
+  "op": "add",
+  "schedule_id": "0d13d5c2-7cd6-58c7-a702-4793fc0fd37b",
+  "schedule_name": "deadline"
+ },
+ {
+  "header": {
+   "route": "withdraw"
+  },
+  "messages": [],
+  "view_id": "show-sample"
+ },
+ {
+  "header": {
+   "phase": "write",
+   "route": "store"
+  },
+  "messages": [
+   {
+    "id": "p-ins-g5",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g5\"}, \"row\": {\"at\": 1008690, \"turn_id\": \"g5\", \"value\": {\"_nodes\": [], \"also\": null, \"arrived\": 1004590, \"audience_set\": null, \"data_deadline\": 1008590, \"deadline\": 1008590, \"done_at\": 1008690, \"fallback\": \"no_data\", \"first\": \"open\", \"keys\": [\"slow\"], \"late\": false, \"lead\": \"slow\", \"missing\": [], \"model\": \"mock-decider\", \"observed\": {}, \"owner\": \"/app\", \"p\": 0.9, \"placed\": [], \"seq\": 5, \"sets\": {}, \"star_only\": false, \"state\": \"done\", \"t_content\": null, \"t_verdict\": 0, \"t_window\": 0, \"text\": \"\", \"topic\": \"sample\", \"turn_id\": \"g5\"}}, \"table\": \"pending\"}",
+    "type": "tool_call"
+   },
+   {
+    "id": "j-ins-g5",
+    "origin": "assistant",
+    "text": "{\"operation\": \"insert\", \"replace\": {\"turn_id\": \"g5\"}, \"row\": {\"also\": \"\", \"at\": 1008690, \"audience_set\": \"\", \"fallback\": \"no_data\", \"late\": 0, \"lead\": \"slow\", \"missing\": \"[]\", \"model\": \"mock-decider\", \"p\": 0.9, \"t_content_ms\": null, \"t_verdict_ms\": 0, \"t_window_ms\": 0, \"topic\": \"sample\", \"turn_id\": \"g5\"}, \"table\": \"journal\"}",
+    "type": "tool_call"
+   }
+  ]
+ }
+]

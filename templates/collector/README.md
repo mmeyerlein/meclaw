@@ -1,4 +1,4 @@
-# `collector@5.6.1`
+# `collector@5.7.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -79,7 +79,7 @@ message context.
 
 | lane | who sends it | what it does |
 |---|---|---|
-| `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory |
+| `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory; a turn without the person's words (empty `user`, an agent text) is held as a deferred `assistant` row and opens nothing (GH #1378) |
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round. Since `collector@4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)) in two stages when it carries a `consult_id`: the advice row is parked and the `depart` row the consult left behind is looked up by that id, and the round opens under a key that carries the member turn which asked (see "A late answer never invents an identity") |
 | `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
@@ -206,6 +206,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `curate` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
 | `brief_slots` | `[]` | slots to brief affinity about the counterpart of a turn; empty = no brief leg ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). Set (`["peer", "channel"]`), a turn whose context carries `counterpart` raises ONE `brief` at its opening and the fan-in waits for `leg-brief`; a turn without one parks the leg empty and waits for nothing. See "The brief leg" below. |
+| `brief_hints` | `"0"` | [#1279](https://github.com/mmeyerlein/meclaw/issues/1279): `"1"` asks the brief for affinity's slot `hints` on every turn -- how the person meant earlier requests -- about the counterpart (beside `brief_slots`), else about the round's ONE person (its one `audience_set` entry that is no `agent:`, the subject the curator proposes a clarify pair under), and the fan-in waits for `leg-brief`; a round with no single person parks the leg empty. The answer's `hints` list rides on `curate` as the slot `hints`; a brief of the hints alone renders no `affinity_brief` pair. See "The brief leg" below. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` and, since GH #892, `cogny` cut the block and switch it on; a composite without a splitter leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
@@ -216,6 +217,10 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `fold_families` | `["file_ws"]` | family names longer than the first name segment; every other tool folds by its first segment, so a new hive folds without an entry. |
 | `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. |
 | `route_no_recall` | `["simple"]` | the stamped paths whose turn does not wait for the memory leg; read only while `route_wait_ms` is above 0. |
+| `quick_speculative` | `"0"` | `"1"` or true sends one speculative `curate` of a turn before its route stamp (`hop.spec` `"1"`, empty path); read only while `route_wait_ms` is above 0. See "The speculative curate" below. |
+| `delegation_answer_mode` | `"fact"` | how the advise mode asks the brain to answer a delegation: `"fact"` the rule of before, `"context"` a `context` section under the delegation's id. See "The advise mode". |
+| `delegation_rule` | `""` | the rule of `delegation_answer_mode` `"context"` as text, replacing the built-in one word for word; `""` = the built-in rule. Ignored in `"fact"`. See "The advise mode". |
+| `delegation_inherits_stamp` | `"0"` | `"1"` or true lets a delegation round take the route stamp of the turn it belongs to; read only while `route_wait_ms` is above 0. See "A delegation round takes its turn's stamp". |
 
 Removed in `collector@5.0.0` (GH #889): `window_turns`, `window_bytes`, `turn_chars`, `tool_chars`,
 `round_bytes`, `memory_chars`, `context_window`, `curate_soft`, `curate_hard`, `keep_rounds`,
@@ -246,7 +251,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.6.1",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.7.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -482,7 +487,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.6.1`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.7.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -528,7 +533,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.6.1` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.7.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -630,6 +635,33 @@ talky's `choices`) adds two keys to the stamp: `choices` (one `{value, p, source
 as `hop.turn_notes`, a JSON array string, `""` without; the composite lifts them into `context.turn_notes` on its
 curate edge, so a note stands before the person's newest turn in the window of that same turn.
 
+**A delegation round takes its turn's stamp.** A round `in_delegation` opened is keyed by this cell, and
+no route cell stamps it. It belongs to the turn that was open when the model delegated (`hop.turn_id`, the
+label of its key), so with `delegation_inherits_stamp` `"1"` and while `route_wait_ms` is above 0 its opening reads that turn's route leg in the same
+turn-open bundle and parks it as the round's own leg-route, beside the window leg and in front of its
+read-back. The round's seam then carries the turn's path, needs and families, and the curator's `path_routes`
+apply to the delegation as to the turn (`simple` -> quick, `complex` -> consult). A turn whose round has
+already ended, or whose stamp is still out, has no leg to read: the round leaves with an empty path, as
+before. An advice round reads nothing. With the knob shipped (`"0"`) no delegation round reads a stamp:
+it leaves with an empty path and the brain answers it, as in 0.76.6.
+
+**The speculative curate** (`quick_speculative` `"1"`). A turn that waits for its stamp waits for a
+decision, not for anything the curate needs. With the knob on, the fan-in runs ahead: once every expected
+leg but the stamp and the memory stands, the cell sends ONE extra `curate` of the turn, built exactly like
+the seam (the window, the memory and brief pairs that are in), with `hop.spec` `"1"` and an empty path.
+The curator may start the quick call on it and keep or drop that answer when the stamp's seam arrives.
+
+- **Once per turn, elected by the store.** The cell inserts a `spec-fired` round row `if_absent` on
+  `(turn_id, role)` and reads the round back in the same bundle (phase `spec-fire`); only the reply whose
+  insert landed sends the curate. Two legs that find the turn ready at the same time send one.
+- **Only before the stamp.** A read that already holds the stamp, a window leg already fired or held, a
+  turn past `route_wait_ms`, and a round an event opened (`in_advice`, `in_delegation`) never speculate.
+- **The seam is unchanged.** The speculative curate carries no bookkeeping: no fired mark, no deferred-turn
+  drop, no speaker writes. The stamp's seam (or the end of `route_wait_ms`) fires exactly as without the
+  knob, with the path, and carries no `spec` key; the mark row falls with the round.
+
+`"0"` (shipped) changes nothing: no mark, no extra curate, the bytes of before.
+
 ### The advise mode (`system.instructions.mode`, since `collector@4.2.0`)
 
 A collector in front of a **duplex** voice session assembles for a brain that is not
@@ -642,7 +674,7 @@ So the seam carries one more slot of the collector's own, beside `system.consult
 
 | `context.engine` | `system.instructions.mode.text` |
 |---|---|
-| `duplex` | the advise charter: what the three sections are for, that a delegation is ALWAYS answered with a `fact`, that a `fact` adds to what was said rather than repeating it, and that the model greets the caller by itself |
+| `duplex` | the advise charter: what the three sections are for, how a delegation is answered (`delegation_answer_mode`, below), that what the brain adds never repeats what was said, and that the model greets the caller by itself |
 | anything else, or absent | `""` |
 
 **On `context.engine`, never on the channel.** A channel node says where a turn came *in*;
@@ -656,6 +688,16 @@ not touched: a slot that were only ever *set* would keep advising a brain for th
 its life after one duplex call. The family is `instructions` and the write carries no
 `$replace`, so the charter (`instructions.reply`, the curator's `in_pack` lane) and the block
 contract (`instructions.sidecar`, the menu lane) are untouched.
+
+**How a delegation is answered** is the knob `delegation_answer_mode`. `"fact"` (shipped) keeps the
+rule of before: ALWAYS a `fact`, even when the brain found nothing. `"context"` asks for the result as a
+`context` section that carries the delegation's `delegation_id`: the live model words it for the caller,
+where a `fact` is spoken word for word (measured 24/24 heard verbatim). A `fact` then stays for a
+short, finished status sentence while a delegation runs long, before the voice cell's
+`delegation_grace_ms` closes it. Only the delegation rule changes; the rest of the charter is the same text.
+A set gives `context` its own rule with `delegation_rule`: the text stands in the built-in rule's place word
+for word, and the collector never reads it (what a result section carries, how a dropped errand is said are the
+set's contract). `""` (shipped) is the built-in rule byte for byte; in `"fact"` the knob is ignored.
 
 ### The curator (wave 11)
 
@@ -838,6 +880,15 @@ The brief is the THIRD leg of a turn, built the way the memory leg is:
   bundle, so it waits for nothing -- there is no fallback subject (OR-AG-10). The leg has no
   deadline (OR-AG-12): like the memory leg it is a leg of the opening, not an event after the
   turn (`late_after_ms` is that pattern, and it is not this one).
+- **The person's hints ([#1279](https://github.com/mmeyerlein/meclaw/issues/1279)).** With
+  `brief_hints` `"1"` the request also names the slot `hints`, and a turn without a
+  counterpart asks about the round's one person for `hints` alone (the curator proposes
+  every clarify pair under that subject, so the read names the same one). The answer's
+  body list `hints` (`[{question, answer, class}]`, newest first) is parked with the leg and
+  leaves on `curate` as the slot `hints`, beside `hints_of` (the subject the brief was about;
+  the curator keeps the hints only for the round's own person) -- absent when the answer
+  carried none (a refusal, an error), so the curator keeps what it had. A brief of the hints alone is no evidence for
+  the model: its leg keeps no text and renders no pair.
 - **Answer and error both come home.** `in_briefing` parks affinity's answer as text; an
   `error` (`hop.brief_outcome == 'error'`, stamped by the member) parks the leg empty and
   the turn opens without a brief. A refusal ("nothing is disclosed to this audience") is an
@@ -1248,6 +1299,22 @@ minted in the same microsecond would otherwise stand in the order two random hex
 happen to compare in. An empty assistant text writes no row, and a turn with only a question
 is written exactly as it always was -- every chat surface and the half-duplex voice pipeline
 still answer on `in_answer`.
+
+A turn **without the person's words** opens no round (GH #1378). The duplex voice cell makes
+the model's own greeting a turn with an empty `user` half, so the memory keeps it; read as a
+question it was answered, spoken into the call and came back as the next turn without the
+caller. When an `in_turn` carries no text of the person (empty or missing `user`), no peer turn
+and no `consult_class`, but a text of the agent, that text is filed as one `assistant` row under
+the arrival's `turn_id`, **deferred**, and nothing else leaves: no turn-open, no recall, no
+`curate`. The next round of the session carries the row to the curator in front of the person's
+words, like any deferred row (GH #103). The rule reads the structure only, never the words.
+Every agent line without a later turn of its session waits for nothing: the session id is new
+with every call, so whatever the model says after the person's last closed turn (the answer to
+a goodbye, a greeting before a hang-up) never rides and never reaches the curator or the
+memory. The stale drop leaves deferred rows alone, so the hold cleans up behind itself: its
+insert and a `delete` of the held `assistant` rows older than the departure clock
+(`DEPART_AFTER_MS`, seven days) go to the store as one bundle (phase `line`). A refused bundle
+is said on stderr and loses that one line.
 
 ### `window` here is a context window, not a recall window
 

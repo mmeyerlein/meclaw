@@ -1,4 +1,4 @@
-# `member@2.7.10`
+# `member@2.8.0`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and four edges.
@@ -324,9 +324,9 @@ firewall's exit rather than the firewall itself: that exit stamps `in_turn`, and
 a handover that arrived as a turn would be answered as one. What screening it
 needs it already had, as the turn the delegation came out of.
 
-**The advice, going back down.** `./assistants -> ./channels` carries the three
+**The advice, going back down.** `./assistants -> ./channels` carries the five
 `sidecar` sections a front model may append for a channel — `fact`, `context`,
-`correction` — re-stamped to `in_advise`, guarded on `context.channel_node`
+`correction`, and since D48 `interrupt` and `renew` — re-stamped to `in_advise`, guarded on `context.channel_node`
 (1.9.0). The `sidecar` edge into `./apps` is unchanged and still fires on the
 same message: an app that offered one of those sections keeps getting it, and
 the channel gets it too.
@@ -814,7 +814,7 @@ live model carries two more again, and they are the last two rows here.)
 | down, to the channel | `answer` — what an assistant said | **this level** ships `./assistants -> ./channels`; the channel's mutation draws `./channels -> ./channels/<name>`, guarded on `context.channel_node == '<name>'` |
 | up, from the channel | `delegation` — a live model handed work back (1.9.0) | the channel's mutation draws it up with the rest; **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_delegation`; the generation's mutation draws the last leg into the child, guarded on its own name |
 | up, from the channel | `renewed` — a live model's session was renewed within the call (GH #896) | the same road as `delegation`: **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_renewed`, with `call_id` promoted onto context; the handover comes back as a `sidecar` section `context` and leaves on the advice edge below |
-| down, to the channel | `sidecar`, sections `fact`, `context`, `correction` (1.9.0) | **this level** ships `./assistants -> ./channels`, re-stamped to `in_advise`; the channel's mutation draws the last leg, guarded on its own node name |
+| down, to the channel | `sidecar`, sections `fact`, `context`, `correction` (1.9.0), `interrupt`, `renew` (D48) | **this level** ships `./assistants -> ./channels`, re-stamped to `in_advise`; the channel's mutation draws the last leg, guarded on its own node name |
 
 **The delegation edge goes round the firewall on purpose.** The firewall's exit
 stamps `in_turn`, so a handover that went through it would arrive as a turn —
@@ -890,7 +890,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.7.10` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.8.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1126,7 +1126,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.7.10"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.8.0"}]
 }}
 ```
 
@@ -1135,7 +1135,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.10.8"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.11.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1649,8 +1649,8 @@ Of the lanes the `assistant` level accepts, six cross this level:
 since #475 `in_export` and `in_import` (which enter at the same door and are
 forwarded the same way) and, since #926, `in_stats` (the same door, the same
 way). Since #951 `./objects` hands the assistants **`in_candidate`** as well, so that lane is supplied
-by a sibling now. Seven more — **`in_advice`**, **`in_sweep`**,
-**`in_round_sweep`**, **`in_pack`**, since #916 **`in_pin`**, since #949 **`in_read`** and, since #1303, **`in_note`** — are **not** lanes of
+by a sibling now. Eleven more — **`in_advice`**, **`in_sweep`**,
+**`in_round_sweep`**, **`in_pack`**, since #916 **`in_pin`**, since #949 **`in_read`**, since #1303 **`in_note`** and, since #1279, the live line's **`in_delta`**, **`in_screen_topics`**, **`in_seed_ask`** and **`in_seed_line`** — are **not** lanes of
 this member, and that is a decision rather than an omission (orchestrator ruling
 W7-R5).
 
@@ -1668,6 +1668,11 @@ sits **outside** the level and addresses **through** it. These five do not:
 | `in_pin` | an installed **app** of this member, a sibling of the container (#916). `install_app` draws the one edge, from the cell the app declared as `pins` straight to `<member>/assistants/<agent>`, so the declaration is the only way in: an app without `pins` has no edge, and this level has no door that any app could reach. |
 | `in_read` | an installed **app** of this member reading the ledger of its round (#949), wired from the cell the app declared as `reads` to the one brain `hop.organ` names; without a round the curator answers `missing_audience`. |
 | `in_note` | another hive's notes for the newest turn (#1303). Like `in_pin`, its producer addresses `<member>/assistants/<agent>` directly over an edge drawn for it, and the curator refuses a note without its `audience_set`; this level has no door, so no caller outside can put words right before a curator's newest turn. |
+| `in_delta` | the member's own voice channel, a sibling of the container (#1279): a call's partial. The set that grows a live line draws the one edge from `./channels/<voice>` to `<member>/assistants/<agent>`, the way it draws `seed_ask` and `in_seed` at `./channels`; this template wires no producer of it. |
+| `in_screen_topics` | the presenter the set installs (#1279), wired to `<member>/assistants/<agent>` only where a screen exists; a door here would let any caller outside rewrite the topics every judge reads. |
+| `in_seed_ask` | the voice channel's `seed_ask` (#1279), renamed on the set's edge from `./channels/<voice>` to `<member>/assistants/<agent>` — the same sibling road as `in_delta`. |
+| `in_call_end` | the voice channel's final `usage` (`final` true, #1369), renamed on the set's edge from `./channels/<voice>` to `<member>/assistants/<agent>` — the same sibling road as `in_seed_ask`; the generation answers `call_facts`. |
+| `in_seed_line` | a cell the set installs beside the voice channel (#1279), wired straight to `<member>/assistants/<agent>`; a door here would let any caller outside speak the last line of a seed. |
 
 They reach the assistant at its own address, `<member>/assistants/<agent>`, and
 they may: neither this level nor the assistant declares `params.ports`, so both
@@ -1676,6 +1681,8 @@ only for a *sealed* hive
 (`crates/meclaw-colony/src/mutation/port_boundary.rs`). Declaring them here would
 promise a road nobody drives on — the mirror image of the outward lanes that had
 no road at all.
+
+The live line's four exits (#1279) are the same road in the other direction: `seed` and `live_feed` go to the voice channel, `verdict` to the presenter and `propose` to `./affinity`, and the set draws each edge from `./assistants/<agent>`. This template draws none of them — an edge here from `./assistants` would fire beside the set's and deliver every message twice — and the test that checks every emitted lane names the four as bound by the set.
 
 The exception is pinned, not merely written down:
 `gh302_member_holds_the_memory.rs`

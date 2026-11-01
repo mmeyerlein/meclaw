@@ -6,6 +6,7 @@ pub mod duplex_cell;
 pub mod gh1016_nothing_is_said_after_the_call_ended;
 pub mod gh1055_a_ringing_call_finds_its_model_ready;
 pub mod gh1276_a_speaker_turn_passes_no_cold_code_cell;
+pub mod gh1377_a_provider_abort_is_recovered;
 pub mod gh728_a_late_answer_after_a_turn_change_is_not_spoken;
 pub mod gh896_a_duplex_call_is_renewed_at_its_limit;
 pub mod gh979_a_spoken_turn_names_the_verified_caller;
@@ -13,6 +14,7 @@ pub mod gh979_an_app_cannot_set_the_speaker;
 pub mod gh979_no_speaker_without_proof;
 pub mod gh979_objects_owner_tools_on_a_real_turn;
 pub mod gh979_speaker_stamp_from_bound_channel;
+pub mod gpt_live_seed_lanes;
 #[path = "../support/gh1276_runner_modes.rs"]
 pub mod runner_modes;
 #[path = "../support/speaker_road.rs"]
@@ -27,7 +29,11 @@ pub mod voice_duplex_a_speak_ends_when_the_model_goes_quiet;
 pub mod voice_duplex_a_stale_delegation_is_closed_once;
 pub mod voice_duplex_a_tick_closes_a_turn_on_a_silent_line;
 pub mod voice_duplex_a_waiting_fragment_beats_a_due_tick;
+pub mod voice_duplex_advise_interrupt_and_renew;
 pub mod voice_duplex_audio_passes_one_to_one;
+pub mod voice_duplex_gpt_live_usage;
+pub mod voice_duplex_held_advise_at_the_edges;
+pub mod voice_duplex_partial_stream;
 pub mod voice_duplex_the_clock_runs_on_the_model_timeline;
 pub mod voice_duplex_the_close_grace_is_the_operators_number;
 pub mod voice_duplex_the_delegation_carries_the_open_turn;

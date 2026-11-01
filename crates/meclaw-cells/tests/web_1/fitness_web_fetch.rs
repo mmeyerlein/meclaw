@@ -155,9 +155,11 @@ async fn missing_or_malformed_url_is_invalid_input() {
     {
         let em = r.call(json!({"url": bad}), &format!("c3{i}")).await;
         assert_error(&em, "invalid_input");
+        // GH #1375: an unparsable string cannot be split into secret and
+        // harmless parts, so the refusal names it redacted whole.
         assert!(
-            text_of(&em).contains(bad),
-            "the refusal quotes the url it could not parse: {:?}",
+            text_of(&em).contains("\"<url redacted>\" is not a valid URL"),
+            "the refusal says the url did not parse, without quoting it: {:?}",
             text_of(&em)
         );
     }

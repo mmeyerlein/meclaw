@@ -151,6 +151,7 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `talky/errors` | cold | rare | rarely called: the error drain of the composite; a warm child would stand 30 min after each call (GH #1294) |
 | `talky/route` | warm | turn | |
 | `talky/schemas` | cold | rare | rarely called: it answers the collector's menu ask, at boot and after each apply (the `mutation_committed` broadcast); a warm child would stand 30 min after each call (GH #1294) |
+| `talky/screen_judge` | warm | turn | |
 | `talky/splitter` | warm | turn | |
 | `terminal` | warm | after | |
 | `tools/build-apply` | warm | tool | |

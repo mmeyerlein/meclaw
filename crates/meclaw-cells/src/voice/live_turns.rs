@@ -81,6 +81,30 @@ struct OpenTurn {
     /// Whether the agent block that is running has already produced its one
     /// `BargeIn`. Cleared when a new block starts, never by a new turn.
     barged: bool,
+    /// Where the caller's last words before the answer ended (D48, LC2):
+    /// moved by a caller fragment outside a running block only. A backchannel
+    /// inside the answer is no "last words before it", and the run a barge-in
+    /// cuts off leaves with the turn it opens (review M3).
+    person_end_ms: Option<u64>,
+    /// Which agent fragment counts as the answer to `person_end_ms`.
+    awaiting: Awaiting,
+    /// When the first audible audio frame of that answer went out to the client, on
+    /// the call's clock ([`TurnInput::AudioOut`]); never before
+    /// `person_end_ms`.
+    first_audio_ms: Option<u64>,
+}
+
+/// Which agent fragment answers the caller's last words (review M3).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Awaiting {
+    /// None: nothing was said to answer, or the answer is in.
+    #[default]
+    Nothing,
+    /// The next agent fragment.
+    NextFragment,
+    /// The next agent BLOCK: after a barge-in the block that was interrupted
+    /// keeps trickling for seconds (S0: 4.4-11.0 s), and its tail is no answer.
+    NextBlock,
 }
 
 impl OpenTurn {
@@ -90,6 +114,8 @@ impl OpenTurn {
             user_last_end_ms: frag.end_ms,
             user_run_ms: frag.end_ms.saturating_sub(frag.start_ms),
             user_run_frags: 1,
+            person_end_ms: Some(frag.end_ms),
+            awaiting: Awaiting::NextFragment,
             user: vec![frag],
             ..Self::default()
         }
@@ -109,6 +135,8 @@ impl OpenTurn {
     ) -> Self {
         Self {
             user_last_end_ms: fragment_end(&run),
+            person_end_ms: Some(fragment_end(&run)),
+            awaiting: Awaiting::NextBlock,
             user_run_frags: run.len(),
             user: run,
             assistant: Vec::new(),
@@ -116,6 +144,7 @@ impl OpenTurn {
             agent_block_end_ms: block_end,
             user_run_ms: run_ms,
             barged: true,
+            first_audio_ms: None,
         }
     }
 
@@ -138,7 +167,13 @@ impl OpenTurn {
     }
 
     /// Take a user fragment into the open turn and grow the run it belongs to.
-    fn push_user(&mut self, frag: Frag) {
+    /// Outside a running block it is the caller's latest word to answer.
+    fn push_user(&mut self, frag: Frag, in_block: bool) {
+        if !in_block {
+            self.person_end_ms = Some(frag.end_ms);
+            self.awaiting = Awaiting::NextFragment;
+            self.first_audio_ms = None;
+        }
         self.user_run_ms += frag.end_ms.saturating_sub(frag.start_ms);
         self.user_run_frags += 1;
         self.user_last_end_ms = frag.end_ms;
@@ -172,14 +207,47 @@ impl OpenTurn {
         }
         self.user_run_ms = 0;
         self.user_run_frags = 0;
+        let answers = match self.awaiting {
+            Awaiting::Nothing => false,
+            Awaiting::NextFragment => true,
+            Awaiting::NextBlock => new_block,
+        };
+        if answers {
+            self.awaiting = Awaiting::Nothing;
+        }
         self.assistant.push(frag);
+    }
+
+    /// Audio went out to the client at `at_ms` on the call's clock. The first
+    /// frame after the caller's last words is the answer's first audio --
+    /// except after a barge-in, where the interrupted block keeps trickling
+    /// (S0: 4.4-11.0 s) and only audio after the new block's first
+    /// transcript fragment counts (`Awaiting::NextBlock`).
+    ///
+    /// Why audio and not the answer's transcript (BAT R1e, C3): a duplex
+    /// model stamps its answer's words where the caller's ended, on its own
+    /// 200 ms raster, so 12 of 15 telephone turns read a time to the first
+    /// word of exactly 0 ms.
+    fn audio_out(&mut self, at_ms: u64) {
+        let Some(person_end) = self.person_end_ms else {
+            return;
+        };
+        if self.first_audio_ms.is_none() && self.awaiting != Awaiting::NextBlock {
+            self.first_audio_ms = Some(at_ms.max(person_end));
+        }
     }
 
     /// Cut the current user run off the turn; what is left is the turn the
     /// barge-in closed.
     fn take_run(&mut self) -> Vec<Frag> {
         let at = self.user.len().saturating_sub(self.user_run_frags);
-        self.user.split_off(at)
+        let run = self.user.split_off(at);
+        // The anchor never names words that left with the run.
+        let left = fragment_end(&self.user);
+        if self.person_end_ms.is_some_and(|end| end > left) {
+            self.person_end_ms = (!self.user.is_empty()).then_some(left);
+        }
+        run
     }
 
     /// The turn as it goes on the wire.
@@ -189,6 +257,8 @@ impl OpenTurn {
             user: self.user_text(),
             assistant: self.assistant_text(),
             happened_at_ms: fragment_end(&self.user).max(fragment_end(&self.assistant)),
+            person_end_ms: self.person_end_ms,
+            first_audio_ms: self.first_audio_ms,
         }
     }
 }
@@ -241,6 +311,15 @@ pub enum TurnInput {
         /// offset the provider stamped, plus the time since it arrived.
         now_ms: u64,
     },
+    /// The connection sent the model's audio to the client, the first audible frame
+    /// since the last transcript fragment it passed on (BAT R1e, C3).
+    AudioOut {
+        /// When that frame went out, on the call's clock: the clock the
+        /// connection's tick reads (the last stamp a fragment set, plus the
+        /// monotonic time since it arrived), so on the same timeline as the
+        /// fragments' own stamps, to the millisecond.
+        at_ms: u64,
+    },
     /// The session is over; close what is open.
     Close,
 }
@@ -275,6 +354,17 @@ pub struct FinishedTurn {
     pub assistant: Option<String>,
     /// The `end_ms` of the turn's last fragment, on the model's clock.
     pub happened_at_ms: u64,
+    /// Where the caller's last words before the model's answer ended, on the
+    /// model's clock: a backchannel inside the answer does not move it, and a
+    /// barge-in's run belongs to the turn it opens. `None` for a turn the
+    /// caller said nothing to answer in (D48, LC2; review M3).
+    pub person_end_ms: Option<u64>,
+    /// When the first audible audio frame of the model's answer to those words went
+    /// out to the client, on the call's clock ([`TurnInput::AudioOut`]);
+    /// after a barge-in the first new block, not the tail of the interrupted
+    /// one. Never before `person_end_ms`. `None` where no answer audio went
+    /// out inside the turn.
+    pub first_audio_ms: Option<u64>,
 }
 
 /// Feed one input to the machine and read its verdict.
@@ -311,6 +401,12 @@ pub fn step(
             }
         }
         TurnInput::Tick { now_ms } => tick(state, now_ms, gap_ms),
+        TurnInput::AudioOut { at_ms } => {
+            if let Some(open) = state.open.as_mut() {
+                open.audio_out(at_ms);
+            }
+            Vec::new()
+        }
         TurnInput::Close => close(state).into_iter().collect(),
     }
 }
@@ -357,7 +453,7 @@ fn user_fragment(
     match state.open.as_mut() {
         None => state.open = Some(OpenTurn::with_user(frag)),
         Some(open) => {
-            open.push_user(frag);
+            open.push_user(frag, in_block);
             if in_block && open.user_run_ms > backchannel_max_ms && !open.barged {
                 barge = Some((
                     open.take_run(),

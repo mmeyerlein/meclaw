@@ -2519,6 +2519,75 @@ body::after {
   50% { opacity: 0.45; }
 }
 
+.display-status[data-kind="building"] .display-status-dot {
+  display: inline-block;
+  vertical-align: middle;
+  inline-size: 22px;
+  block-size: 16px;
+  border-radius: 2px;
+  background-color: transparent;
+  background-image:
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent));
+  background-size: 10px 4px, 10px 4px, 5px 4px, 10px 4px, 10px 4px;
+  background-position: 0 12px, 12px 12px, 0 6px, 7px 6px, 6px 0;
+  background-repeat: no-repeat;
+}
+
+.display-status[data-kind="building"] .display-status-text:empty { display: none; }
+
+.display-stack[data-build]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-window);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.display-stack[data-build="building"]::after {
+  opacity: 1;
+  animation: display-build-pulse 1.6s var(--ease) infinite;
+}
+
+.display-stack[data-build="done"]::after {
+  animation: display-settle var(--settle-ms, 600ms) var(--ease) 1 both;
+}
+
+@keyframes display-build-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes display-settle {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.display-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.display-skeleton-title {
+  margin: 0;
+  color: var(--fg-primary);
+}
+
+.display-skeleton-lines {
+  display: block;
+  block-size: calc(var(--lines, 1) * 18px - 8px);
+  background-image: repeating-linear-gradient(
+    to bottom, var(--accent-soft) 0 10px, transparent 10px 18px);
+  border-radius: 4px;
+}
+
 .display-card,
 .display-steps {
   display: flex;
@@ -3753,6 +3822,8 @@ body:has([data-exit="tv"])::after { display: none; }
   .display-os[data-phase="speaking"] .display-os-mark,
   .display-status .display-status-dot,
   .display-status[data-kind="working"]::after,
+
+  .display-stack[data-build]::after,
   .display-step[data-step-state="running"] .display-step-mark { animation: none !important; }
 
   :where(.display-pane, .display-panel)[data-rung="urgent"]::after {
@@ -5063,12 +5134,12 @@ CATALOG_JSON = r"""{
       "name": "display-status",
       "role": "content",
       "layer": "content",
-      "describe": "A status line with a dot; kind working says that something is on its way.",
+      "describe": "A status line with a dot; kind working says that something is on its way, kind building is the pictogram of a window under construction (no text).",
       "props": {
         "kind": {
           "type": "text",
           "required": false,
-          "describe": "The state word (listening, speaking, thinking, offline, working)."
+          "describe": "The state word (listening, speaking, thinking, offline, working, building)."
         },
         "text": {
           "type": "text",
@@ -5085,6 +5156,40 @@ CATALOG_JSON = r"""{
         }
       },
       "block": true,
+      "editable": []
+    },
+    {
+      "name": "display-skeleton",
+      "role": "content",
+      "layer": "content",
+      "describe": "The rough form of a block still on its way, in a window under construction: the block's kind, its head and its lines, never a data value.",
+      "props": {
+        "block": {
+          "type": "text",
+          "required": true,
+          "describe": "The catalogue name of the block it stands for."
+        },
+        "title": {
+          "type": "text",
+          "required": false,
+          "describe": "The block's head where its binding names one literally."
+        },
+        "lines": {
+          "type": "int",
+          "required": false,
+          "describe": "How many lines the block's structure shows (1 to 4)."
+        }
+      },
+      "slots": "none",
+      "example": {
+        "component": "display-skeleton",
+        "props": {
+          "block": "display-list",
+          "title": "Items",
+          "lines": 3
+        }
+      },
+      "block": false,
       "editable": []
     },
     {
@@ -5270,6 +5375,16 @@ CATALOG_JSON = r"""{
           "type": "text",
           "required": false,
           "describe": "The scene's aspect ratio."
+        },
+        "build": {
+          "type": "text",
+          "required": false,
+          "describe": "The construction state of a window's content (building, done): building draws the window's frame pulsing, done lets it come to rest once."
+        },
+        "settle_ms": {
+          "type": "int",
+          "required": false,
+          "describe": "How long the frame takes to come to rest once the window is done."
         }
       },
       "slots": "any",
@@ -6195,10 +6310,26 @@ CHART_TEMPLATE = (
 #
 # `ratio` is what tells the sheet which kind of screen: a scene with no ratio
 # takes its height from what is in it.
+#
+# `build` and `settle_ms` (live-2 GR, display-hive.md § 6.17, § 9b.14): the construction
+# state of a window's content. The stack draws the window's frame while it says
+# `building` and lets it settle once over `settle_ms` when it says `done`; the duration
+# rides on the element that animates, because a custom property never travels up the
+# tree to the pane. A stack that says neither renders as before.
 STACK_TEMPLATE = (
     '<div class="display-stack{{#if row}} display-stack--row{{/if}}'
     '{{#if scene}} display-scene{{/if}}" data-gap="{{gap}}"'
-    ' data-ratio="{{ratio}}">{{children}}</div>'
+    ' data-ratio="{{ratio}}"{{#if build}} data-build="{{build}}"{{/if}}'
+    '{{#if settle_ms}} style="--settle-ms: {{settle_ms}}ms"{{/if}}>{{children}}</div>'
+)
+
+# The rough form of a block still on its way (live-2 GR, display-hive.md § 2
+# *Skeleton*): head in full ink, the lines as quiet bars counted by `--lines`. Never a
+# data value -- the presenter fills it from the topic set alone.
+SKELETON_TEMPLATE = (
+    '<div class="display-skeleton" data-block="{{block}}" style="--lines: {{lines}}">'
+    '{{#if title}}<p class="display-skeleton-title display-lead">{{title}}</p>{{/if}}'
+    '<span class="display-skeleton-lines"></span></div>'
 )
 
 PROGRESS_TEMPLATE = (
@@ -8379,6 +8510,7 @@ TEMPLATES = {
     "display-browser": BROWSER_TEMPLATE,
     "display-document": DOCUMENT_TEMPLATE,
     "display-status": STATUS_TEMPLATE,
+    "display-skeleton": SKELETON_TEMPLATE,
     "display-action": ACTION_TEMPLATE,
     "display-choice": CHOICE_TEMPLATE,
     "display-option": OPTION_TEMPLATE,
@@ -10712,14 +10844,17 @@ def boot_tree(body):
 
 def undrawn_hints(r, now):
     """The ids of the work hints (`display-status`, kind `working`, display-hive.md
-    § 9b.2a) on the screen the state says that the display does not hold yet (GH #1169)."""
+    § 9b.2a) on the screen the state says that the display does not hold yet (GH #1169).
+    The construction pictogram (kind `building`, § 9b.12) is a first reaction of the same
+    kind and is owed to the display the same way."""
     state = r["state"]
     have = r["have"] if r["have"] is not None else {}
     default = str(state["settings"].get("default_screen") or "")
     want = objects_from_state(state, sorted_rows(r["rows"]), now, default, have)
     return [oid for oid, spec in want.items()
             if spec.get("component") == "display-status"
-            and (spec.get("props") or {}).get("kind") == "working" and oid not in have]
+            and (spec.get("props") or {}).get("kind") in ("working", "building")
+            and oid not in have]
 
 
 def pass_read(body):

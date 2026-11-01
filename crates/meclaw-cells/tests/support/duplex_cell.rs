@@ -805,6 +805,73 @@ pub async fn boot_edge(
         meclaw_cells::voice::params::DEFAULT_RENEW_AFTER_MS,
         meclaw_cells::voice::params::DEFAULT_RENEW_GRACE_MS,
         (prewarm_ttl_ms, duck),
+        0,
+        0,
+    )
+    .await
+}
+
+/// Boot a duplex cell that asks for its seed (D48): `seed_wait_ms` set, with
+/// the ring knob and the renewal of GH #896 beside it. The fake is the
+/// renewing one where `renew_after_ms` is set, the plain one otherwise.
+/// `seed_wait_ms` reaches the I/O half from `params.duplex` through the
+/// factory, which this fixture does not run.
+pub async fn boot_seeded(
+    raw: Value,
+    prewarm_ttl_ms: u64,
+    renew_after_ms: u64,
+    renew_grace_ms: u64,
+    seed_wait_ms: u64,
+) -> Live {
+    let renewing = renew_after_ms > 0;
+    let wired = wire_fake_full(false, false, RATE, 4096, renewing, 64);
+    boot_core(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        TICK_MS,
+        renew_after_ms,
+        renew_grace_ms,
+        (
+            prewarm_ttl_ms,
+            meclaw_cells::voice::duck::DuckParams::default(),
+        ),
+        seed_wait_ms,
+        0,
+    )
+    .await
+}
+
+/// Boot a duplex cell that recovers a call after its provider ended the
+/// session in charge (GH #1377): `recover_max` attempts per call, with the
+/// renewing fake -- whose [`FakeSession::stop`] plays the provider ending a
+/// session on its own -- and `seed_wait_ms` set, so every session that opens
+/// asks for its seed. `renew_after_ms` `0` renews only where an `in_advise`
+/// `renew` asks. Both reach the I/O half from `params.duplex` through the
+/// factory, which this fixture does not run.
+pub async fn boot_recovering(
+    raw: Value,
+    recover_max: u32,
+    renew_after_ms: u64,
+    seed_wait_ms: u64,
+) -> Live {
+    let wired = wire_fake_full(false, false, RATE, 4096, true, 64);
+    boot_core(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        TICK_MS,
+        renew_after_ms,
+        meclaw_cells::voice::params::DEFAULT_RENEW_GRACE_MS,
+        (0, meclaw_cells::voice::duck::DuckParams::default()),
+        seed_wait_ms,
+        recover_max,
     )
     .await
 }
@@ -832,6 +899,8 @@ async fn boot_full(
         renew_after_ms,
         renew_grace_ms,
         (0, meclaw_cells::voice::duck::DuckParams::default()),
+        0,
+        0,
     )
     .await
 }
@@ -848,6 +917,8 @@ async fn boot_core(
     renew_after_ms: u64,
     renew_grace_ms: u64,
     edge: (u64, meclaw_cells::voice::duck::DuckParams),
+    seed_wait_ms: u64,
+    recover_max: u32,
 ) -> Live {
     let params = VoiceParams::parse(&raw).expect("the fixture params parse");
     let surfaces = Arc::new(SurfaceRegistry::new());
@@ -873,6 +944,10 @@ async fn boot_core(
     io.duplex_renew_grace_ms = renew_grace_ms;
     io.duplex_prewarm_ttl_ms = edge.0;
     io.duck = edge.1;
+    io.duplex_seed_wait_ms = seed_wait_ms;
+    io.duplex_recover_max = recover_max;
+    // D48/DK: the call marks come from the params document, as in the factory.
+    io.duplex_call_marks = params.call_marks.clone();
     io.cell_path = Path::new("/voice");
     io.surfaces = Arc::clone(&surfaces);
 
@@ -1010,6 +1085,26 @@ pub struct LinkClient {
 }
 
 impl LinkClient {
+    /// The next binary (audio) frame on the link, skipping text frames.
+    /// Panics at the hang mark (TV-Z3).
+    pub async fn next_audio(&mut self) -> Vec<u8> {
+        let from_cell = &mut self.link.from_cell;
+        let found = tokio::time::timeout(deadline::scaled(deadline::HANG), async {
+            while let Some(frame) = from_cell.recv().await {
+                if let LinkFrame::Binary(b) = frame {
+                    return Some(b.to_vec());
+                }
+            }
+            None
+        })
+        .await;
+        match found {
+            Ok(Some(b)) => b,
+            Ok(None) => panic!("the link closed while waiting for an audio frame"),
+            Err(_) => panic!("HANG: no audio frame on the link"),
+        }
+    }
+
     /// The next text frame whose `type` is `ty`, skipping everything else.
     /// Panics at the hang mark (TV-Z3), naming the frame types that did come.
     pub async fn frame_of_type(&mut self, ty: &str) -> Value {

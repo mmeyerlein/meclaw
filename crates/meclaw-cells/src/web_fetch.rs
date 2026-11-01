@@ -55,6 +55,213 @@ pub(crate) const ERR_TOO_MANY_REDIRECTS: &str = "too_many_redirects";
 /// `error_code` for a `Location` this cell refuses to follow (GH #117).
 pub(crate) const ERR_INVALID_REDIRECT: &str = "invalid_redirect";
 
+// ───── GH #1375: a URL leaves the cell redacted ─────
+//
+// Measured in a lab run: the success log line carried the requested URL as
+// written, and a gateway URL with its password as userinfo (`user:pw@host`)
+// landed in clear in the daemon log. Every URL this cell writes — log line,
+// `final_url` header, error text — goes through [`redact_url`]; the request
+// itself is never touched.
+
+/// What a redacted secret reads as. URL-safe on purpose: a redacted URL still
+/// parses, so whoever reads it sees its shape.
+const REDACTED: &str = "REDACTED";
+
+/// What a URL reads as when it cannot be split into secret and harmless parts
+/// — the parser refuses it, or its redacted form still shows a secret to the
+/// parser (a tab inside a name) — so none of it is shown.
+const REDACTED_WHOLE: &str = "<url redacted>";
+
+/// The strong words of the name rule (review I3, OR-live-2.fx-redact.2): a
+/// name is secret when one of them is a word of it or appears anywhere in the
+/// name written together (`sessionid`, `authtoken`, `apitoken`). Long and
+/// specific enough that a hit inside another word is still a secret's name.
+const STRONG_SECRET_WORDS: &[&str] = &[
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "signature",
+    "credential",
+    "credentials",
+    "assertion",
+    "apikey",
+    "sessionid",
+];
+
+/// The weak words of the name rule: secret only as a WHOLE word of the name,
+/// because inside other words they are everywhere (`monkey`, `keyboard`,
+/// `signal`, `author`). `code` is deliberately not a word of either list: as a
+/// name it means a language, a product or a status far more often than an
+/// OAuth code.
+const WEAK_SECRET_WORDS: &[&str] = &["key", "sig", "pwd", "auth", "session"];
+
+/// The separators that split a name into words, beside camelCase boundaries.
+const NAME_SEPARATORS: &[char] = &['_', '-', '.'];
+
+/// Whether a parameter called `name` (as written, possibly percent-encoded)
+/// carries a secret. The rule is about the name's STRUCTURE, not a list of
+/// known names (review I3): percent-decoded, only the part behind the last
+/// `?` (a hash route `#/cb?token=…` makes `/cb?token` the name, re-check M4),
+/// split into words at camelCase boundaries and at `_`, `-`, `.` —
+/// `accessToken` is `access token`, `X-Amz-Signature` is `x amz signature`.
+fn is_secret_name(name: &str) -> bool {
+    let decoded = percent_decode(name);
+    let name = decoded.rsplit('?').next().unwrap_or_default();
+    let words = name_words(name);
+    let joined: String = words.concat();
+    STRONG_SECRET_WORDS
+        .iter()
+        .any(|strong| joined.contains(strong))
+        || words
+            .iter()
+            .any(|w| WEAK_SECRET_WORDS.contains(&w.as_str()))
+}
+
+/// `name` split at `_`, `-`, `.` and at camelCase boundaries (a lowercase
+/// letter or digit before an uppercase one; the last capital of an acronym
+/// before a lowercase one, `APIKey` is `api key`), each word lowercased.
+fn name_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for part in name.split(NAME_SEPARATORS) {
+        let chars: Vec<char> = part.chars().collect();
+        let mut word = String::new();
+        for (i, &c) in chars.iter().enumerate() {
+            let prev = i.checked_sub(1).map(|j| chars[j]);
+            let next = chars.get(i + 1);
+            let boundary = c.is_uppercase()
+                && prev.is_some_and(|p| {
+                    p.is_lowercase()
+                        || p.is_ascii_digit()
+                        || (p.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
+                });
+            if boundary && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            word.extend(c.to_lowercase());
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// `%XX` decoded (lossy for invalid UTF-8); a `%` without two hex digits stays.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether `pairs` (a query or a fragment, `&`-separated `name=value`) still
+/// carries a secret value — anything but empty or [`REDACTED`].
+fn shows_secret_value(pairs: &str) -> bool {
+    pairs.split('&').any(|pair| {
+        pair.split_once('=').is_some_and(|(name, value)| {
+            !value.is_empty() && value != REDACTED && is_secret_name(name)
+        })
+    })
+}
+
+/// `raw` for any output of this cell (GH #1375): userinfo (name and password)
+/// and the values of secret-named parameters in query and fragment replaced,
+/// every other byte as given. An unparsable URL is redacted whole.
+pub(crate) fn redact_url(raw: &str) -> String {
+    if reqwest::Url::parse(raw).is_err() {
+        return REDACTED_WHOLE.to_string();
+    }
+    let text = redact_raw(raw);
+    // The scan works on the string as written, so it never re-serialises; the
+    // parser is the judge of what the RESULT means (review I2). The WHATWG
+    // parser trims the ends and drops tab/CR/LF anywhere, so a string the scan
+    // read one way can mean another (`to<TAB>ken=…`, a trailing blank that
+    // empties a second `token`). Counting secrets on both sides could not see
+    // that; re-parsing the output and finding no secret left can.
+    let Ok(parsed) = reqwest::Url::parse(&text) else {
+        return REDACTED_WHOLE.to_string();
+    };
+    let userinfo_left = !matches!(parsed.username(), "" | REDACTED) || parsed.password().is_some();
+    if userinfo_left
+        || parsed.query().is_some_and(shows_secret_value)
+        || parsed.fragment().is_some_and(shows_secret_value)
+    {
+        return REDACTED_WHOLE.to_string();
+    }
+    text
+}
+
+/// Replace the secret values among `&`-separated `name=value` pairs, every
+/// other byte as written.
+fn redact_pairs(pairs: &str, text: &mut String) {
+    for (i, pair) in pairs.split('&').enumerate() {
+        if i > 0 {
+            text.push('&');
+        }
+        match pair.split_once('=') {
+            Some((name, value)) if !value.is_empty() && is_secret_name(name) => {
+                text.push_str(name);
+                text.push('=');
+                text.push_str(REDACTED);
+            }
+            _ => text.push_str(pair),
+        }
+    }
+}
+
+/// Replace userinfo and secret parameter values in `raw` as written.
+fn redact_raw(raw: &str) -> String {
+    let mut text = String::with_capacity(raw.len());
+    // `scheme:` then any run of slashes (the parser takes `\` as `/` for the
+    // special schemes), then the authority up to the first delimiter.
+    let (scheme, rest) = raw.split_at(raw.find(':').map_or(0, |i| i + 1));
+    let after = rest.trim_start_matches(['/', '\\']);
+    let (slashes, after) = rest.split_at(rest.len() - after.len());
+    let auth_end = after.find(['/', '\\', '?', '#']).unwrap_or(after.len());
+    let (authority, tail) = after.split_at(auth_end);
+    text.push_str(scheme);
+    text.push_str(slashes);
+    match authority.rfind('@') {
+        // An empty userinfo (`http://@h/`) hides nothing and stays as written
+        // (review M2).
+        Some(at) if at > 0 => {
+            text.push_str(REDACTED);
+            text.push_str(&authority[at..]);
+        }
+        _ => text.push_str(authority),
+    }
+    let (before_fragment, fragment) = tail.split_at(tail.find('#').unwrap_or(tail.len()));
+    let (path, query) =
+        before_fragment.split_at(before_fragment.find('?').unwrap_or(before_fragment.len()));
+    text.push_str(path);
+    if let Some(query) = query.strip_prefix('?') {
+        text.push('?');
+        redact_pairs(query, &mut text);
+    }
+    // The fragment never reaches the server, but it does reach every output
+    // (`Url::join` carries a `Location`'s fragment into `final_url`), and the
+    // OAuth redirect form puts `#access_token=…` there (review I1).
+    if let Some(fragment) = fragment.strip_prefix('#') {
+        text.push('#');
+        redact_pairs(fragment, &mut text);
+    }
+    text
+}
+
 #[derive(Debug)]
 pub(crate) struct WebFetchArgs {
     /// The url exactly as the caller wrote it (never re-serialised).
@@ -79,13 +286,14 @@ pub(crate) fn parse_web_fetch_args(args: &meclaw_core::JsonValue) -> Result<WebF
         return Err("args.url is empty".into());
     }
     let parsed = reqwest::Url::parse(url)
-        .map_err(|e| format!("args.url {url:?} is not a valid URL: {e}"))?;
+        .map_err(|e| format!("args.url {:?} is not a valid URL: {e}", redact_url(url)))?;
     // A URL this cell cannot speak is the same class of mistake as one that
     // does not parse: the call is wrong, not the network. Naming it here also
     // keeps `file://` from ever looking like a transport failure.
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!(
-            "args.url {url:?} uses scheme {:?}; web_fetch speaks http and https only",
+            "args.url {:?} uses scheme {:?}; web_fetch speaks http and https only",
+            redact_url(url),
             parsed.scheme()
         ));
     }
@@ -319,7 +527,8 @@ async fn screen_url(url: &reqwest::Url, allow_private_networks: bool) -> Result<
         // Unreachable through the gate (`parse_web_fetch_args` rejects a
         // host-less URL), but the screen does not lean on a caller's care.
         None => Err(ScreenFailure::Denied(format!(
-            "web_fetch refuses {url}: the URL names no host"
+            "web_fetch refuses {}: the URL names no host",
+            redact_url(url.as_str())
         ))),
     }
 }
@@ -428,12 +637,16 @@ pub(crate) struct FetchOutcome {
 fn next_hop(current: &reqwest::Url, location: &str) -> Result<reqwest::Url, FetchFailure> {
     let next = current.join(location).map_err(|e| {
         FetchFailure::InvalidRedirect(format!(
-            "web_fetch cannot follow the redirect from {current} to {location:?}: {e}"
+            "web_fetch cannot follow the redirect from {} to {:?}: {e}",
+            redact_url(current.as_str()),
+            redact_url(location)
         ))
     })?;
     if !matches!(next.scheme(), "http" | "https") {
         return Err(FetchFailure::InvalidRedirect(format!(
-            "web_fetch refuses the redirect from {current} to {next}: scheme {:?} is not http or https",
+            "web_fetch refuses the redirect from {} to {}: scheme {:?} is not http or https",
+            redact_url(current.as_str()),
+            redact_url(next.as_str()),
             next.scheme()
         )));
     }
@@ -444,10 +657,23 @@ fn next_hop(current: &reqwest::Url, location: &str) -> Result<reqwest::Url, Fetc
     // redirect and it only ever adds protection.
     if current.scheme() == "https" && next.scheme() == "http" {
         return Err(FetchFailure::InvalidRedirect(format!(
-            "web_fetch refuses the redirect from {current} to {next}: https must not be downgraded to http"
+            "web_fetch refuses the redirect from {} to {}: https must not be downgraded to http",
+            redact_url(current.as_str()),
+            redact_url(next.as_str())
         )));
     }
     Ok(next)
+}
+
+/// A transport error of reqwest as this cell's text (GH #1375): reqwest's own
+/// text names the url as given, userinfo included, so the url is taken out and
+/// the redacted one put in its place.
+fn transport_failure(e: reqwest::Error, url: &reqwest::Url) -> FetchFailure {
+    FetchFailure::Transport(format!(
+        "{} for url ({})",
+        e.without_url(),
+        redact_url(url.as_str())
+    ))
 }
 
 /// GET `target`, following up to `max_redirects` hops (GH #117).
@@ -474,7 +700,7 @@ async fn fetch_following_redirects(
             .get(current.clone())
             .send()
             .await
-            .map_err(|e| FetchFailure::Transport(e.to_string()))?;
+            .map_err(|e| transport_failure(e, &current))?;
         let status = resp.status();
 
         // A 3xx WITHOUT a Location is not a redirect, it is a document with a
@@ -492,7 +718,8 @@ async fn fetch_following_redirects(
         if let Some(location) = location {
             if redirects >= max_redirects {
                 return Err(FetchFailure::TooManyRedirects(format!(
-                    "web_fetch stopped at {current}: the redirect chain exceeds max_redirects = {max_redirects}"
+                    "web_fetch stopped at {}: the redirect chain exceeds max_redirects = {max_redirects}",
+                    redact_url(current.as_str())
                 )));
             }
             current = next_hop(&current, &location)?;
@@ -509,7 +736,7 @@ async fn fetch_following_redirects(
         let body = resp
             .bytes()
             .await
-            .map_err(|e| FetchFailure::Transport(e.to_string()))?
+            .map_err(|e| transport_failure(e, &current))?
             .to_vec();
         return Ok(FetchOutcome {
             status: status.as_u16(),
@@ -574,8 +801,8 @@ impl meclaw_colony::StatelessCell for WebFetchCell {
             };
 
             let client = self.client.clone();
-            // The caller's string is what the LOG says; the parsed form is what
-            // the deny and the redirect loop work on. reqwest parses the string
+            // The caller's string, redacted (GH #1375), is what the LOG says;
+            // the parsed form is what the deny and the redirect loop work on. reqwest parses the string
             // identically on its way to the wire, so the GH #110 "verbatim"
             // property is unchanged — only the carrier is.
             let requested = parsed.url.clone();
@@ -640,7 +867,7 @@ impl meclaw_colony::StatelessCell for WebFetchCell {
                     // a redirect the caller cannot judge.
                     if redirects > 0 {
                         header.insert("redirects".into(), Value::from(redirects as u64));
-                        header.insert("final_url".into(), Value::String(final_url.clone()));
+                        header.insert("final_url".into(), Value::String(redact_url(&final_url)));
                     }
                     let body_json = build_tool_result_body(text, id, header);
                     tracing::info!(
@@ -650,7 +877,7 @@ impl meclaw_colony::StatelessCell for WebFetchCell {
                         bytes = bytes_len,
                         truncated,
                         redirects,
-                        url = %requested,
+                        url = %redact_url(&requested),
                         "web_fetch ok"
                     );
                     let _ = sink
@@ -991,14 +1218,19 @@ mod tests {
     /// have to travel through reqwest to be discovered as one.
     #[test]
     fn parse_web_fetch_args_rejects_unparseable_urls_and_foreign_schemes() {
+        // GH #1375: a string that does not parse cannot be split into secret
+        // and harmless parts, so the error names it redacted whole.
         for bad in [
             "not-a-url",
             "http://",
             "://example.org",
             "ht tp://a.example",
-            "file:///etc/passwd",
-            "ftp://example.org/x",
         ] {
+            let err = parse_web_fetch_args(&json!({ "url": bad })).unwrap_err();
+            assert!(err.contains("is not a valid URL"), "{err}");
+            assert!(err.contains(REDACTED_WHOLE), "{err}");
+        }
+        for bad in ["file:///etc/passwd", "ftp://example.org/x"] {
             let err = parse_web_fetch_args(&json!({ "url": bad })).unwrap_err();
             assert!(err.contains(bad), "the error quotes the url: {err}");
         }
@@ -1015,6 +1247,199 @@ mod tests {
                 good,
                 "the url is passed through verbatim, never re-serialized"
             );
+        }
+    }
+
+    // ───── GH #1375: URLs leave the cell redacted ─────
+
+    /// Userinfo — name and password, or a name alone — is replaced; the rest
+    /// of the URL stays as written.
+    #[test]
+    fn gh1375_userinfo_is_redacted() {
+        assert_eq!(
+            redact_url("https://user-mock:pw-mock@gw.example:8443/p/q?page=2#top"),
+            "https://REDACTED@gw.example:8443/p/q?page=2#top"
+        );
+        assert_eq!(
+            redact_url("http://name-only-mock@gw.example/"),
+            "http://REDACTED@gw.example/"
+        );
+        let out = redact_url("https://user-mock:pw@mock@gw.example/");
+        assert_eq!(out, "https://REDACTED@gw.example/");
+    }
+
+    /// Every secret name, in any case, several in one query: the values go,
+    /// the names and every other parameter stay.
+    #[test]
+    fn gh1375_secret_query_values_are_redacted() {
+        assert_eq!(
+            redact_url("https://h.example/a?Token=t-mock&x=1&API_KEY=k-mock&Sig=s-mock&page=2"),
+            "https://h.example/a?Token=REDACTED&x=1&API_KEY=REDACTED&Sig=REDACTED&page=2"
+        );
+        for name in STRONG_SECRET_WORDS.iter().chain(WEAK_SECRET_WORDS) {
+            let upper = name.to_ascii_uppercase();
+            for n in [name.to_string(), upper] {
+                let out = redact_url(&format!("https://h.example/?{n}=v-mock&n=1"));
+                assert_eq!(out, format!("https://h.example/?{n}=REDACTED&n=1"));
+            }
+        }
+        // Both forms at once.
+        assert_eq!(
+            redact_url("http://u-mock:p-mock@h.example/x?passwd=v-mock&q=a"),
+            "http://REDACTED@h.example/x?passwd=REDACTED&q=a"
+        );
+    }
+
+    /// A URL without a secret comes back byte for byte — no re-serialisation
+    /// (which would lowercase the scheme and host, or touch the encoding).
+    #[test]
+    fn gh1375_a_url_without_a_secret_stays_byte_identical() {
+        for raw in [
+            "HTTP://Example.ORG/Foo%2fbar?a=1&b=&author=x&key=#frag",
+            "http://127.0.0.1:8080/foo?a=1#frag",
+            "https://example.org",
+            "http://[::1]:80/x?q=a@b",
+            "http://@h.example/",
+            "https://h.example/doc#section=2&monkey=1",
+            "https://h.example/doc#top",
+        ] {
+            assert_eq!(redact_url(raw), raw);
+        }
+    }
+
+    /// A string the parser refuses is redacted whole, and a secret the raw
+    /// scan cannot see (an encoded name) redacts the whole URL rather than
+    /// leak it.
+    #[test]
+    fn gh1375_what_cannot_be_split_is_redacted_whole() {
+        for raw in [
+            "ht tp://u-mock:pw-mock@h.example/",
+            "http://h.example/?to\tken=v-mock",
+            "http://h.example/#to\nken=v-mock",
+        ] {
+            let out = redact_url(raw);
+            assert_eq!(out, REDACTED_WHOLE, "{raw}");
+        }
+    }
+
+    /// The name rule (review I3): the names real redirect targets use
+    /// (`refresh_token`, `X-Amz-Signature`, …) fall under it, while a word
+    /// that merely contains a weak word (`monkey`, `keyboard`, `signal`,
+    /// `author`) does not; `code` stays on purpose.
+    #[test]
+    fn gh1375_secret_names_follow_the_name_rule() {
+        for name in [
+            "refresh_token",
+            "id_token",
+            "auth_token",
+            "private_token",
+            "X-Amz-Signature",
+            "X-Amz-Credential",
+            "X-Amz-Security-Token",
+            "client_secret",
+            "api_key",
+            "access_token",
+            "session",
+            "token.v2",
+            "%74oken",
+        ] {
+            assert_eq!(
+                redact_url(&format!("https://h.example/?{name}=v-mock&n=1")),
+                format!("https://h.example/?{name}=REDACTED&n=1"),
+                "{name}"
+            );
+        }
+        for name in [
+            "monkey",
+            "keyboard",
+            "turkey",
+            "authority",
+            "sessions",
+            "signal",
+            "author",
+            "code",
+            "page",
+            "zip_code",
+        ] {
+            let raw = format!("https://h.example/?{name}=v&n=1");
+            assert_eq!(redact_url(&raw), raw, "{name}");
+        }
+    }
+
+    /// The name rule is structural (OR-live-2.fx-redact.2): the name splits
+    /// into words at camelCase boundaries and at `_`, `-`, `.`; a strong word
+    /// anywhere in the joined name, or a weak word as a whole word, marks it.
+    #[test]
+    fn gh1375_secret_names_split_into_words() {
+        for name in [
+            "accessToken",
+            "refreshToken",
+            "authToken",
+            "sessionId",
+            "sessionid",
+            "clientSecret",
+            "client_assertion",
+            "X-Amz-Signature",
+            "authtoken",
+            "apitoken",
+            "APIKey",
+            "x%2DAmz%2DSignature",
+        ] {
+            assert_eq!(
+                redact_url(&format!("https://h.example/?{name}=v-mock&n=1")),
+                format!("https://h.example/?{name}=REDACTED&n=1"),
+                "{name}"
+            );
+        }
+    }
+
+    /// A hash route (`#/path?a=b`) carries its parameters behind a `?`: they
+    /// are redacted by the same rule (re-check M4).
+    #[test]
+    fn gh1375_hash_route_parameters_are_redacted() {
+        assert_eq!(
+            redact_url("https://app.example/#/cb?token=v-mock&state=1"),
+            "https://app.example/#/cb?token=REDACTED&state=1"
+        );
+        assert_eq!(
+            redact_url("https://app.example/#/cb?key=v-mock&page=2"),
+            "https://app.example/#/cb?key=REDACTED&page=2"
+        );
+        let raw = "https://app.example/#/cb?page=2&code=c";
+        assert_eq!(redact_url(raw), raw);
+    }
+
+    /// Parameters in the fragment (`#access_token=…`, the OAuth redirect
+    /// form) are redacted by the same rule as the query (review I1).
+    #[test]
+    fn gh1375_fragment_parameters_are_redacted() {
+        assert_eq!(
+            redact_url("https://app.example/cb?x=1#access_token=v-mock&state=1"),
+            "https://app.example/cb?x=1#access_token=REDACTED&state=1"
+        );
+        assert_eq!(
+            redact_url("https://app.example/cb#Token=v-mock"),
+            "https://app.example/cb#Token=REDACTED"
+        );
+    }
+
+    /// The judge re-parses the RESULT (review I2): a second, trimmed-empty
+    /// `token` beside an encoded one must not let the first one through.
+    #[test]
+    fn gh1375_a_trimmed_duplicate_does_not_hide_a_secret() {
+        for raw in [
+            "http://h.example/?%74oken=v-mock&token= ",
+            "http://h.example/?%74oken=v-mock&token=\t",
+            "http://h.example/?token=v-mock&%74oken= ",
+        ] {
+            let out = redact_url(raw);
+            assert!(!out.contains("v-mock"), "{raw:?} -> {out}");
+            if out != REDACTED_WHOLE {
+                let parsed = reqwest::Url::parse(&out).expect("redacted url parses");
+                for (k, v) in parsed.query_pairs() {
+                    assert!(v.is_empty() || v == REDACTED, "{k}={v} in {out}");
+                }
+            }
         }
     }
 

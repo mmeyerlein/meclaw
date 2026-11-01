@@ -14,6 +14,9 @@
     "audio_out_frame_ms": 20,
     "speak_plain": true,
     "release_grace_ms": 2500,
+    "emit_usage": false,
+    "call_marks_s": [],
+    "call_mark_every_s": 0,
     "stt": {
       "provider": "deepgram",
       "api_key": "",
@@ -69,6 +72,24 @@
         "default": false,
         "description": "Whether the END of a synthesis leaves the cell as its own lane. OFF here, for the same reason emit_partials is: the emission goes to this cell's own path and the out-edges decide, so without an edge that drains it every synthesis dead-letters with no_route. Whoever waits for the sentence to finish orders it -- a telephony hive that must not cut the line while the assistant is still speaking sets true via override_params, in the same breath as the edge that carries the lane. The client's own speak_end frame is a separate path and travels either way."
       },
+      "emit_usage": {
+        "type": "boolean",
+        "secret": false,
+        "default": false,
+        "description": "Whether a DUPLEX call reports what it used on the `usage` lane (D48): hop `seconds` is the call's total so far over every session it ran on, renewals included -- at each meter reading of the model, when a session the call renewed away from closes, and once with `final` true at the end of the call, whatever ended it: every session counts with what it closed with, or with its last meter reading where its close never arrived, and that `final` then says `complete` false. OFF here, for the reason emit_partials is: without an edge that drains it every reading dead-letters. No price is computed in the cell; the price belongs to whoever reads the lane. Settled at birth; a cascade emits nothing."
+      },
+      "call_marks_s": {
+        "type": "array",
+        "secret": false,
+        "default": [],
+        "description": "Time marks of a DUPLEX call, in seconds since its connection opened, strictly ascending and positive (D48): each one leaves on the `call_mark` lane with hop `elapsed_s`. Empty (the default) together with call_mark_every_s 0 is off. One timer per call, armed for the next mark only after the last fired; it ends with the call, so a call that is over fires none. A telephone line that steers long calls sets [900, 1800] with call_mark_every_s 600. Settled at birth."
+      },
+      "call_mark_every_s": {
+        "type": "number",
+        "secret": false,
+        "default": 0,
+        "description": "After the last of call_marks_s (from the call's start when the list is empty), one more `call_mark` every this many seconds; 0 (the default) stops after the list. Settled at birth."
+      },
       "external_timeout_ms": {
         "type": "number",
         "secret": false,
@@ -119,7 +140,7 @@
         "type": "object",
         "secret": true,
         "default": null,
-        "description": "The duplex lane: ONE provider that hears and speaks on one socket, instead of the stt/tts pair. Exclusive with them -- a document that names this block and either of the other two is refused, and an instantiation that switches an instance over sets \"stt\": null and \"tts\": null beside it, because override_params merges and cannot remove a key. 'provider' picks the adapter: 'gpt_live' (a hosted live model) or 'echo' (the loopback, which needs no credential and knows only 'sample_rate'). The gpt_live block takes 'credential_grant_id' (the grant the vault delivers its key under, GH #1059; 'api_key' is deprecated, removed in 0.63.0: name a grant in duplex.credential_grant_id instead (#801)), 'base_url', 'model', 'voice', 'sample_rate' (16000 or 24000 -- 8000 is refused by the vendor and the cell never resamples), 'instructions' (required and not empty: it is who the model is for this session, and it cannot be changed while the session runs), 'greeting' (said once after the session opens, so the model speaks first; empty means it waits for the caller), 'turn_gap_ms' and 'backchannel_max_ms' (how turns are cut on the MODEL's timeline, and how long an interjection may be before it stops being a backchannel), 'spoken_quiet_ms' and 'spoken_cap_ms' (how long the model may be silent before a spoken section counts as over -- a live model announces no end of speech, and whoever waits for the sentence to finish before hanging up needs one), 'close_grace_ms', 'tick_ms' (how often the cell's own clock feeds the turn machine -- a duplex turn is cut on the MODEL's timeline, so on a line where nobody speaks nothing arrives to say that time passed, and `session.usage.updated` does not fill that gap: measured, it never arrived inside 45 s on a session that heard only silence; the promise that a turn closes between one and two gaps after the caller fell quiet holds while this is at most 'turn_gap_ms', and a zero is refused), 'keepalive_ms' (how often the session asks its own socket whether it is still there: the adapter sends a WebSocket ping and only the pong carrying ITS payload resets 'provider_idle_timeout_ms', so the idle deadline means a dead socket and not a caller who paused -- a ping somebody else sends still counts for nothing, because a proxy pinging a dead upstream would otherwise hold a call open for as long as it likes; keep it a FRACTION of 'provider_idle_timeout_ms' -- the shipped 8000 puts the third ping at 24 s inside the shipped 30 000 ms deadline, so two pongs may go missing before a call is given up, while a keepalive as long as the deadline never resets it at all and the spawn says so in a warning; a zero is refused), the two that sit on that same tick, 'delegation_grace_ms' and 'delegation_fallback' (a delegation this colony has not answered within the grace is closed by the cell with ONE commentary append on its own delegation_id carrying the fallback sentence -- measured, an unanswered delegation leaves the caller with one holding sentence and then 55 to 58 s of silence, and no timeout arrives from the provider inside a minute; the sentence is an instruction and not a script, because a live model paraphrases what it is given), and the renewal pair, 'renew_after_ms' and 'renew_grace_ms' (a live model ends a session at a limit of its own, so the cell opens the call's NEXT session this many milliseconds after a session took charge -- 0, the default, never renews, and a host sets it below the provider's limit -- announces it on the `renewed` lane and hands the new session the handover block the colony answers with -- an `in_advise` `context` carrying `hop.renewal_n` -- at once, before it hears the caller; the call itself goes over at the next quiet moment of the line (no spoken section open, 'spoken_quiet_ms' without the model's audio or a transcript), at the latest 'spoken_cap_ms' after the block, and without a block 'renew_grace_ms' (5000) after the start; a zero grace is refused. 'renew_after_ms' counts from a takeover and the provider's limit from a session's start, which lies up to the connect time plus 'renew_grace_ms' and 'spoken_cap_ms' before it: a host leaves room for both. A renewal is not a reconnect: a session that drops its socket still ends the call). Carries the credential, so the whole block is immutable on the runtime params surface, exactly like stt and tts: rotation means .env plus a restart, and tuning means a respawn. NULL here -- the shipped instance is a cascade."
+        "description": "The duplex lane: ONE provider that hears and speaks on one socket, instead of the stt/tts pair. Exclusive with them -- a document that names this block and either of the other two is refused, and an instantiation that switches an instance over sets \"stt\": null and \"tts\": null beside it, because override_params merges and cannot remove a key. 'provider' picks the adapter: 'gpt_live' (a hosted live model) or 'echo' (the loopback, which needs no credential and knows only 'sample_rate'). The gpt_live block takes 'credential_grant_id' (the grant the vault delivers its key under, GH #1059; 'api_key' is deprecated, removed in 0.63.0: name a grant in duplex.credential_grant_id instead (#801)), 'base_url', 'model', 'voice', 'sample_rate' (16000 or 24000 for 'audio_format' pcm16; 8000 is refused there and the cell never resamples), 'audio_format' ('pcm16' by default, or 'g711_ulaw' / 'g711_alaw' for a telephone line: the model runs G.711 at 8 kHz while the client keeps L16 at 8000, companded per frame, never resampled; a G.711 block that also names 'sample_rate' is refused as audio_format_rate_conflict), 'seed_wait_ms' (0 = off: how long an opening session waits for its seed on `in_seed` after emitting `seed_ask`, then starts without one), 'delta_min_chars' and 'delta_min_ms' (both 0 = unthrottled: the `partial` lane is the caller's speculative stream, cumulative and stamped with the turn_id of the turn that closes it; with values a new emission leaves on an incoming transcript delta only once the text grew by that many characters AND that much time passed since the last one, no timer, and the last state always leaves right before the `turn`), 'emit_spoken' (unset follows emit_partials; false stops the `spoken` lane only, for a line that wants the caller's deltas and has no edge for `spoken`), 'instructions' (required and not empty: it is who the model is for this session, and it cannot be changed while the session runs), 'greeting' (said once after the session opens, so the model speaks first; empty means it waits for the caller), 'turn_gap_ms' and 'backchannel_max_ms' (how turns are cut on the MODEL's timeline, and how long an interjection may be before it stops being a backchannel), 'spoken_quiet_ms' and 'spoken_cap_ms' (how long the model may be silent before a spoken section counts as over -- a live model announces no end of speech, and whoever waits for the sentence to finish before hanging up needs one), 'close_grace_ms', 'tick_ms' (how often the cell's own clock feeds the turn machine -- a duplex turn is cut on the MODEL's timeline, so on a line where nobody speaks nothing arrives to say that time passed, and `session.usage.updated` does not fill that gap: measured, it never arrived inside 45 s on a session that heard only silence; the promise that a turn closes between one and two gaps after the caller fell quiet holds while this is at most 'turn_gap_ms', and a zero is refused), 'keepalive_ms' (how often the session asks its own socket whether it is still there: the adapter sends a WebSocket ping and only the pong carrying ITS payload resets 'provider_idle_timeout_ms', so the idle deadline means a dead socket and not a caller who paused -- a ping somebody else sends still counts for nothing, because a proxy pinging a dead upstream would otherwise hold a call open for as long as it likes; keep it a FRACTION of 'provider_idle_timeout_ms' -- the shipped 8000 puts the third ping at 24 s inside the shipped 30 000 ms deadline, so two pongs may go missing before a call is given up, while a keepalive as long as the deadline never resets it at all and the spawn says so in a warning; a zero is refused), the two that sit on that same tick, 'delegation_grace_ms' and 'delegation_fallback' (a delegation this colony has not answered within the grace is closed by the cell with ONE commentary append on its own delegation_id carrying the fallback sentence -- measured, an unanswered delegation leaves the caller with one holding sentence and then 55 to 58 s of silence, and no timeout arrives from the provider inside a minute; the sentence is an instruction and not a script, because a live model paraphrases what it is given), and the renewal pair, 'renew_after_ms' and 'renew_grace_ms' (a live model ends a session at a limit of its own, so the cell opens the call's NEXT session this many milliseconds after a session took charge -- 0, the default, never renews, and a host sets it below the provider's limit -- announces it on the `renewed` lane and hands the new session the handover block the colony answers with -- an `in_advise` `context` carrying `hop.renewal_n` -- at once, before it hears the caller; the call itself goes over at the next quiet moment of the line (no spoken section open, 'spoken_quiet_ms' without the model's audio or a transcript), at the latest 'spoken_cap_ms' after the block, and without a block 'renew_grace_ms' (5000) after the start; a zero grace is refused. 'renew_after_ms' counts from a takeover and the provider's limit from a session's start, which lies up to the connect time plus 'renew_grace_ms' and 'spoken_cap_ms' before it: a host leaves room for both. A renewal is not a reconnect: a session that drops its socket still ends the call). Carries the credential, so the whole block is immutable on the runtime params surface, exactly like stt and tts: rotation means .env plus a restart, and tuning means a respawn. NULL here -- the shipped instance is a cascade."
       },
       "tts": {
         "type": "object",
@@ -159,7 +180,10 @@
             "error",
             "delegation",
             "renewed",
-            "credential_request"
+            "seed_ask",
+            "credential_request",
+            "usage",
+            "call_mark"
           ],
           "required": false
         },
@@ -200,10 +224,12 @@
           "values": [
             "done",
             "cancelled",
-            "failed"
+            "failed",
+            "start",
+            "renew"
           ],
           "required": false,
-          "description": "Why the synthesis ended. Only on `speak_end`. `cancelled` and `failed` are the ones a telephony hive has to act on: both leave a half sentence in whatever the far edge was already handed, and that buffer sits over there rather than here."
+          "description": "Why the synthesis ended. Only on `speak_end`. `cancelled` and `failed` are the ones a telephony hive has to act on: both leave a half sentence in whatever the far edge was already handed, and that buffer sits over there rather than here. On `seed_ask` (D48) it says why the duplex session asks for its seed: `start` for the call's first session (at the ring or at the media connection), `renew` for a renewal of it."
         },
         "platform": {
           "type": "string",
@@ -240,6 +266,16 @@
           "required": false,
           "description": "Who is speaking in a `spoken` emission. Only on that lane, and only ever the assistant: the caller's side of the same stream is the `partial` lane, which is older and keeps its name."
         },
+        "t_person_end_ms": {
+          "type": "number",
+          "required": false,
+          "description": "On a duplex `turn`: where the caller's last words before the model's answer ended, in milliseconds of the session's own clock (D48); a backchannel inside the answer does not move it, a barge-in's run belongs to the next turn. Missing in a turn the caller said nothing to answer in."
+        },
+        "t_first_audio_ms": {
+          "type": "number",
+          "required": false,
+          "description": "On a duplex `turn`: when the first audible audio frame of the model's answer after the caller's last words went out to the client, in milliseconds of the call's clock (D48) -- the 'time to the first word' beside t_person_end_ms. The sent audio above the barge-in level, not the answer's transcript and not the silence before it; never before t_person_end_ms, after a barge-in the first new block. Missing where no audible answer audio went out inside the turn."
+        },
         "happened_at": {
           "type": "number",
           "required": false,
@@ -263,7 +299,27 @@
         "renewal_n": {
           "type": "number",
           "required": false,
-          "description": "Which renewal of the call's duplex session this is, counting from 1. Only on the `renewed` lane: the provider session was renewed inside the SAME call -- same connection, same call_id, the caller's audio never cut -- because a live model ends a session at a limit of its own. Whoever answers the lane sends the handover back as an `in_advise` `context` that carries `hop.renewal_n`; it reaches the new session before the caller's audio does, and the call goes over at the next quiet moment of the line -- without a block after `renew_grace_ms`."
+          "description": "Which renewal of the call's duplex session this is, counting from 1. On `seed_ask` too, where `0` is the call's first session: the `in_seed` answer gives it back on `hop.renewal_n` and reaches only that session (D48). On the `renewed` lane: the provider session was renewed inside the SAME call -- same connection, same call_id, the caller's audio never cut -- because a live model ends a session at a limit of its own. Whoever answers the lane sends the handover back as an `in_advise` `context` that carries `hop.renewal_n`; it reaches the new session before the caller's audio does, and the call goes over at the next quiet moment of the line -- without a block after `renew_grace_ms`."
+        },
+        "seconds": {
+          "type": "number",
+          "required": false,
+          "description": "On `usage` (D48): the call's usage so far in seconds, summed over every provider session of the call, renewals included."
+        },
+        "final": {
+          "type": "boolean",
+          "required": false,
+          "description": "On `usage`: true on the one emission at the end of the call, false on every running reading."
+        },
+        "complete": {
+          "type": "boolean",
+          "required": false,
+          "description": "On the `final` `usage` only: true where every provider session of the call that reported a reading also closed; false where a session's last meter reading stands in for a close that never arrived (a session still retiring at the hang-up, one let go by the next takeover, a renewal that ended before it took over, a session in charge whose verdict timed out), or where a session that opened was lost without any number (a failed renewal after its start, an early session a connection at another format threw away), so the total may be short."
+        },
+        "elapsed_s": {
+          "type": "number",
+          "required": false,
+          "description": "On `call_mark` (D48): the mark that fell due, in seconds since the call's connection opened."
         },
         "renewed_at": {
           "type": "number",
@@ -290,18 +346,28 @@
         "sealed": {
           "type": "object",
           "required": false
+        },
+        "est_tokens": {
+          "type": "number",
+          "required": false,
+          "description": "The sender's own token estimate of an `in_seed` (D48). Read by nobody: the cell estimates the seed itself (characters / 4) and trims the oldest messages over 8,192."
         }
       },
       "hop": {
         "section": {
           "type": "string",
           "required": false,
-          "description": "Which KIND of advice an `in_advise` carries, and therefore which channel of the duplex provider it is appended to. Three names and no more: a `fact` is said out loud, a `context` is thought, a `correction` rewrites the standing instruction. No `values` list stands here because a consumed key declares a type and a requirement and nothing else -- the cell is what refuses, with `bad_section` for a name outside the three and for a section that arrived without words in it and `wrong_engine` where the session is a cascade and has no channel to append to at all."
+          "description": "Which KIND of advice an `in_advise` carries, and therefore which channel of the duplex provider it is appended to. Five names and no more: a `fact` is said out loud, a `context` is thought, a `correction` rewrites the standing instruction, an `interrupt` is a `correction` followed at once by a `fact` with the same words and delegation (the guard stepping in, D48), and a `renew` needs no words and opens the call's next provider session, which asks for its seed again -- a renewal whose seed is still to come absorbs it, one asked after that seed opens the next renewal right after the takeover. No `values` list stands here because a consumed key declares a type and a requirement and nothing else -- the cell is what refuses, with `bad_section` for a name outside the five and for a section that arrived without words in it and `wrong_engine` where the session is a cascade and has no channel to append to at all."
+        },
+        "at_turn_end": {
+          "type": "string",
+          "required": false,
+          "description": "On any `in_advise` section (D48): \"1\" holds the section until the caller's next turn closes and sends it then, before anything new is said. Several held `renew` at the same boundary are one renewal. A held answer keeps its delegation open, so the fallback still falls; what is still held when the call ends is a `session_ended` dead letter."
         },
         "renewal_n": {
           "type": "number",
           "required": false,
-          "description": "Marks an `in_advise` `context` as the handover of a renewal: the answer to the `renewed` lane, carrying what the new session has to know about the conversation so far, and naming the renewal it answers. A block for the renewal that waits goes to THAT session at once, ahead of any audio of the caller, and makes it due to take over at the next quiet moment of the line; a block for the session in charge -- the rest of a split block, or one after a takeover without it -- is an ordinary `context` to it; a block for a renewal that failed is dropped, because the session in charge was in the conversation all along."
+          "description": "Required on `in_seed` (D48): the `renewal_n` of the `seed_ask` it answers, `0` for the call's first session; refused as `missing_renewal_n` without it, dropped and logged when that session is no longer opening. On `in_advise` it marks a `context` as the handover of a renewal: the answer to the `renewed` lane, carrying what the new session has to know about the conversation so far, and naming the renewal it answers. A block for the renewal that waits goes to THAT session at once, ahead of any audio of the caller, and makes it due to take over at the next quiet moment of the line; a block for the session in charge -- the rest of a split block, or one after a takeover without it -- is an ordinary `context` to it; a block for a renewal that failed is dropped, because the session in charge was in the conversation all along."
         },
         "user_id": {
           "type": "string",
@@ -311,7 +377,7 @@
         "route": {
           "type": "string",
           "required": false,
-          "description": "`call_ringing` and `call_ended`, the two facts of the line a telephony hive hands here as well as to its signalling half (GH #1055): a ring opens the call's duplex session early where `duplex.prewarm_ttl_ms` asks, an end closes one nobody connected to. Neither is answered -- no lane, no refusal, no dead letter -- and a cell without the knob ignores both."
+          "description": "`call_ringing` and `call_ended`, the two facts of the line a telephony hive hands here as well as to its signalling half (GH #1055): a ring opens the call's duplex session early where `duplex.prewarm_ttl_ms` asks, an end closes one nobody connected to. Neither is answered -- no lane, no refusal, no dead letter -- and a cell without the knob ignores both. `in_seed` (D48) is the answer to the `seed_ask` lane: `messages[]` of `{role, text}` (developer, user, assistant), the history a duplex session opens with; the call is named on `context.call_id`, and it may still be ringing."
         },
         "call_uuid": {
           "type": "string",
@@ -346,8 +412,8 @@
     "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints the id at birth and every emission carries it twice: as session_id, and as call_id -- the name a channel addresses it by.",
     "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per mount. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
     "not_in_scope": "No telephony, no SIP, no room: the client brings the audio and takes it back. No resampling either -- the rate a provider declares is the rate on the wire, and a client that sends something else is refused rather than converted. No persona, no memory, no answer of its own: this is the surface, and whatever stands behind it answers.",
-    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation. Since 2.1.0 a DUPLEX session adds three lanes to the same three shapes and stamps hop.engine 'duplex' on every one of them, which is how an edge tells the two engines apart -- a cascade stamps no engine at all. 'spoken' is shape (b) for the assistant's side of the stream, with hop.speaker 'assistant', and rides on the same emit_partials. 'delegation' is shape (a) with delegation_id and offset_ms: the provider says it has handed work to the client, and the body carries the user text of the open turn so that whatever answers knows what was asked. 'turn' gains happened_at and usage_ratio there, because a duplex turn is cut on the MODEL's clock and the only number a topology can act on -- how full the context window is -- has no lane of its own. A duplex session whose duplex block sets renew_after_ms adds 'renewed': empty messages[], hop carries route, session_id, call_id, platform, mode, engine, renewal_n (counting from 1) and renewed_at (epoch milliseconds) -- the provider session was renewed inside the same call, and the receiver answers with an in_advise 'context' that carries hop.renewal_n. A `turn` or `delegation` of a session the `in_session` lane named also carries `user_id` and, under the name of a proof, `verified_user`; every other emission, and every session nobody named, carries none (GH #979).",
-    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session. Since 2.1.0 there is a second inbound lane, in_advise, and it exists only for a duplex session: hop.section says whether the text is a fact, a context or a correction, context.delegation_id names the delegation it answers where it answers one, and the text is body.payload, which IS the section value the sidecar splitter writes there, read before the last message and body.text -- those two stay for a sender that writes one of them instead. Where the payload is an object the sentence is found by name: the section's own key, then text, then the first string in sorted key order. A section that carries no words in any of the three is refused as bad_section rather than dropped. It is not a turn and it is not spoken as one -- it is appended to the running session, so nothing is cut and nobody is interrupted. The `in_session` lane carries no text: `hop.call_id` (or `hop.session_id`) names a session and `hop.user_id` the sender somebody verified for it, which this cell then stamps on the `turn` and `delegation` lanes of that session (GH #979). Only an edge the installing level draws can reach it -- in the telephone hive, the signalling half.",
+    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation. Since 2.1.0 a DUPLEX session adds three lanes to the same three shapes and stamps hop.engine 'duplex' on every one of them, which is how an edge tells the two engines apart -- a cascade stamps no engine at all. 'spoken' is shape (b) for the assistant's side of the stream, with hop.speaker 'assistant', and rides on the same emit_partials. 'delegation' is shape (a) with delegation_id and offset_ms: the provider says it has handed work to the client, and the body carries the user text of the open turn so that whatever answers knows what was asked. 'turn' gains happened_at and usage_ratio there, because a duplex turn is cut on the MODEL's clock and the only number a topology can act on -- how full the context window is -- has no lane of its own. A duplex session whose duplex block sets renew_after_ms adds 'renewed': empty messages[], hop carries route, session_id, call_id, platform, mode, engine, renewal_n (counting from 1) and renewed_at (epoch milliseconds) -- the provider session was renewed inside the same call, and the receiver answers with an in_advise 'context' that carries hop.renewal_n. A duplex cell that sets emit_usage adds 'usage' (empty messages[], hop seconds and final, the final one also complete), one that sets call_marks_s or call_mark_every_s adds 'call_mark' (empty messages[], hop elapsed_s); both carry route, session_id, call_id, platform, mode and engine (D48). A `turn` or `delegation` of a session the `in_session` lane named also carries `user_id` and, under the name of a proof, `verified_user`; every other emission, and every session nobody named, carries none (GH #979).",
+    "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session. Since 2.1.0 there is a second inbound lane, in_advise, and it exists only for a duplex session: hop.section names one of five sections -- a fact, a context, a correction, an interrupt or a renew (consumes.hop.section says what each does), context.delegation_id names the delegation it answers where it answers one, and the text is body.payload, which IS the section value the sidecar splitter writes there, read before the last message and body.text -- those two stay for a sender that writes one of them instead. Where the payload is an object the sentence is found by name: the section's own key, then text, then the first string in sorted key order. A section other than renew that carries no words in any of the three is refused as bad_section rather than dropped. It is not a turn and it is not spoken as one -- it is appended to the running session, so nothing is cut and nobody is interrupted. The `in_session` lane carries no text: `hop.call_id` (or `hop.session_id`) names a session and `hop.user_id` the sender somebody verified for it, which this cell then stamps on the `turn` and `delegation` lanes of that session (GH #979). Only an edge the installing level draws can reach it -- in the telephone hive, the signalling half.",
     "examples": [
       "A finished utterance -> emit body { messages: [{ origin: 'user', type: 'text', text: 'what time is it' }] }, hop { route: 'turn', session_id: '0190...', call_id: '0190...', turn_id: '0190...#1', platform: 'voice', mode: 'auto' }",
       "An assistant turn arriving with context.call_id -> synthesised into that connection; the client hears speak frames and a speak_end"

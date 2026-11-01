@@ -85,7 +85,8 @@ CLASSES (a path can carry several)
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
                   scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py,
-                  scripts/stop_watch.py, scripts/check_required_pins.py,
+                  scripts/stop_watch.py, scripts/release_matches_battery.py,
+                  scripts/check_required_pins.py,
                   .config/required-pins.toml (the strand kit, the receipt builder, the stop
                   watch of long runs and the required-pin check carry their tests in
                   `gate-selftest`), scripts/cargo-target.sh, scripts/lane_sync.sh,
@@ -1390,6 +1391,8 @@ def _classes_of_path(path):
                  "scripts/flake_triage.py", "scripts/testing_bans.py",
                  "scripts/wall_clock.py",
                  "scripts/stop_watch.py",
+                 # live-2 bat-hash (#1358): the release lock against the battery candidate
+                 "scripts/release_matches_battery.py",
                  "scripts/check_required_pins.py", REQUIRED_PINS,
                  ".config/nextest.toml", ".config/slow-debt.toml",
                  ".config/testing-bans.toml", ".config/testing-bans.baseline.json",
@@ -4601,7 +4604,9 @@ def plan(paths, mode, repo=None):
               # GH #1199 (v2-r3-mergegate): merge/strand plan parity and the
               # strand export audit narrowed to its diff
               "scripts.tests.test_pipeline_merge_gate_parity",
-              "scripts.tests.test_export_audit_scope"]])
+              "scripts.tests.test_export_audit_scope",
+              # live-2 bat-hash (#1358): the release lock against the battery candidate
+              "scripts.tests.test_release_matches_battery"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that

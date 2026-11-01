@@ -1,5 +1,5 @@
 {
-  "about": "sha256 of json.dumps(component.define arguments, sort_keys=True) per component, as compose.py defined them before the catalogue (GH #958); the embedded sheet (KIT_CSS) in a template is replaced by the marker <KIT_CSS> first -- the sheet's own equality is gh669's lock, and a sheet change must not move this golden. GH #1028 adds `canvas_rank` (an int, the window's place on the canvas) to display-view-custom and display-view-prose: their two hashes moved on purpose",
+  "about": "sha256 of json.dumps(component.define arguments, sort_keys=True) per component, as compose.py defined them before the catalogue (GH #958); the embedded sheet (KIT_CSS) in a template is replaced by the marker <KIT_CSS> first -- the sheet's own equality is gh669's lock, and a sheet change must not move this golden. GH #1028 adds `canvas_rank` (an int, the window's place on the canvas) to display-view-custom and display-view-prose: their two hashes moved on purpose. live-2 GR (#1357) adds `build` and `settle_ms` to display-stack (a window under construction, display-hive.md § 6.17): its hash moved on purpose, and a stack that says neither renders byte for byte as before",
   "components": {
     "display-shell": "93d2399123794ea46236b8ce0e67c09570d52bf30c1f392f4b2f6aa6e675c337",
     "display-region": "92e781b734ff4530dcc1d8e5cb69ea87851078ab9a5625ca4e69f0886e2eb1ee",
@@ -32,7 +32,7 @@
     "display-option": "9a91a2b64bbd232e69aab8b03f9d8eb68e7982bef1a439e51459557cdb746d46",
     "display-input": "df96e0224980ed818c31b41b7991a4ca281b1c605db8876a391ee41990f26468",
     "display-chart": "52efa6c9f5c27dc62d99641ee35be455d811b5b644ce0c0a99abf9021b9503ca",
-    "display-stack": "4752ae077ace53d1a610813dcd144b16a5106796fad0713ba022c639fd803fcf",
+    "display-stack": "e50d97d720957acbc84a595852408ea0d376703666581d45abc4bb57dedb160e",
     "display-progress": "d12f4bdbc291d8f36b80798a5dfc2fe35439f4de7410f3565e456f9151f442c8",
     "display-dock": "ae940dcc1a3b875fe3afaf7713500ab0443a0cb3be3c143ae197aa1525de04f8",
     "display-seat": "2bc16905ec6afc261d846fd592160525b1dfb23b453c18ea710ddc42bee80f6c",

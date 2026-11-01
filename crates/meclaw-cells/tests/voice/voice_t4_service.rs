@@ -581,11 +581,16 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::ClientTooSlow { .. } => "ClientTooSlow",
         VoiceEvent::Live { .. } => "Live",
         VoiceEvent::LiveTick { .. } => "LiveTick",
+        VoiceEvent::LiveAudioOut { .. } => "LiveAudioOut",
         VoiceEvent::DuplexFailed { .. } => "DuplexFailed",
         VoiceEvent::Renewed { .. } => "Renewed",
         // GH #1059: the I/O half's credential clock (a vaulted slot only;
         // nothing in this file vaults one). Exhaustive on purpose.
         VoiceEvent::CredentialRoundExpired { .. } => "CredentialRoundExpired",
+        VoiceEvent::SeedAsk { .. } => "SeedAsk",
+        VoiceEvent::SeedUnheld { .. } => "SeedUnheld",
+        VoiceEvent::CallMark { .. } => "CallMark",
+        VoiceEvent::CallUsage { .. } => "CallUsage",
     }
 }
 
@@ -2320,6 +2325,37 @@ async fn a_rate_the_recogniser_cannot_serve_is_refused_before_the_upgrade() {
             .is_err(),
         "and the websocket handshake does not come up either"
     );
+}
+
+/// GH #1373 (BAT R1c C1b): a refused upgrade is said on a `WARN` line with the
+/// detail the client got -- on a telephone bridge the `400` lands in the log of
+/// another host. The asked rate is this test's own, so a parallel test of the
+/// binary cannot answer for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_upgrade_is_said_on_a_warn_line() {
+    let log = meclaw_testing::log_recorder::global();
+    let ran_at = Arc::new(AtomicUsize::new(0));
+    let live = start(
+        Arc::new(MultiRateStt::new(vec![16_000, 8_000], ran_at)),
+        None,
+        Mode::Auto,
+    )
+    .await;
+
+    let res = reqwest::get(format!("{}/ws?sample_rate=11023", live.base))
+        .await
+        .expect("GET /ws");
+    assert_eq!(res.status(), 400);
+    let lines = log.lines(
+        tracing::Level::WARN,
+        &[
+            "voice: upgrade refused",
+            "door=socket",
+            "status=400",
+            "sample_rate 11023",
+        ],
+    );
+    assert_eq!(lines.len(), 1, "one line names the refusal: {lines:?}");
 }
 
 /// The two directions are negotiated separately: what a client sends has to be

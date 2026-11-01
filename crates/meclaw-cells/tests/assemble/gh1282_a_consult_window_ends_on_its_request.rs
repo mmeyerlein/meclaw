@@ -338,14 +338,23 @@ fn only_text_after_the_last_question_is_the_answer_half() {
 fn an_arrival_without_a_question_files_no_answer_half() {
     // Nothing the person said, so nothing follows it: the answer half is the
     // agent text AFTER the person's last turn, and there is none (review of
-    // GH #1282, M2 -- the scan used to keep the last assistant text).
-    let rows = turn_rows(&assemble(
+    // GH #1282, M2 -- the scan used to keep the last assistant text). Since
+    // GH #1378 such an arrival opens no round at all: the agent's text is held
+    // as its own line (`gh1378_a_turn_without_the_persons_words_opens_no_round`),
+    // so every `cstore` emission is read, not only a turn-open.
+    let out = assemble(
         &[],
         plain_arrival(json!([
             {"origin": "assistant", "type": "text", "text": "Sunny."}
         ])),
-    ));
-    assert!(rows.iter().all(|(id, _)| id != "c-open-pair"), "{rows:?}");
+    );
+    let rows: Vec<String> = out
+        .iter()
+        .filter(|m| m["header"]["route"].as_str() == Some("cstore"))
+        .flat_map(calls_of)
+        .map(|(id, _)| id)
+        .collect();
+    assert!(rows.iter().all(|id| id != "c-open-pair"), "{rows:?}");
 }
 
 /// The surface's window is its RENDERED curator window (curator/policy

@@ -63,13 +63,15 @@ fn the_catalogue_has_an_input_line() {
     let all = probe();
     assert_eq!(
         all.len(),
-        43,
+        44,
         // Thirty-nine since GH #958 put `display-card`, `display-steps` and
         // `display-step` in the catalogue, forty-one since GH #964 put
         // `display-map` and the tile the screen writes into it, forty-three
         // since GH #961 put `display-field` and `display-mark`: five the screen
-        // owns, four windows, thirty-four contents (counted in `catalog.json`).
-        "five the screen owns, four windows, thirty-four contents"
+        // owns, four windows, thirty-four contents (counted in `catalog.json`),
+        // forty-four since live-2 GR (#1357) put `display-skeleton`: thirty-five
+        // contents.
+        "five the screen owns, four windows, thirty-five contents"
     );
     let input = one(&all, "display-input");
     assert_eq!(input["layer"], "content", "{input}");

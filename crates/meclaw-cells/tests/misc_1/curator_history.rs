@@ -1803,13 +1803,16 @@ fn the_hive_takes_the_call_and_hands_back_the_result() {
     assert_eq!(
         out["modifier"]["delete_context"],
         // GH #1305: `cur_close` (the facts of a close, writer to `closed`) is the
-        // hive's bookkeeping too.
+        // hive's bookkeeping too. GH #1275: the parent's call keys
+        // `curator_call` and `interim`, which the spec tap sets inside the hive.
         json!([
             "cur_origin",
             "cur_phase",
             "cur_call",
             "cur_reason",
-            "cur_close"
+            "cur_close",
+            "curator_call",
+            "interim"
         ]),
         "the hive's own bookkeeping never leaves it"
     );

@@ -203,3 +203,146 @@ fn a_renewal_reaches_the_curator_and_its_handover_reaches_the_call() {
     let h = one("freeswitch", ".", "./voice", &h.context, &h.hop);
     assert_eq!(h.hop["route"], "in_advise");
 }
+
+/// The lanes a member declares at `./channels` as ports (`emits` with `at`).
+fn member_ports_at_channels() -> Vec<String> {
+    let p = repo("templates/member/config.json");
+    let v: Value = sj::from_str(&std::fs::read_to_string(&p).expect("member config"))
+        .expect("member config is JSON");
+    v["params"]["contract"]["emits"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            e["at"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|x| x == "./channels"))
+        })
+        .filter_map(|e| e["route"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The routes a template's contract declares under `emits`.
+fn emits_of(template: &str) -> Vec<String> {
+    let p = repo(&format!("templates/{template}/config.json"));
+    let v: Value =
+        sj::from_str(&std::fs::read_to_string(&p).expect("config")).expect("config is JSON");
+    v["params"]["contract"]["emits"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| e["route"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// live-2 fx-call (#1369): a duplex call's `usage` and `call_mark` leave the
+/// media half (templates/voice/config.json, `emit_usage`, `call_marks_s`) and
+/// the member declares both as ports at `./channels` -- but the freeswitch rim
+/// edge `./voice -> .` let neither through, so both died inside the hive as
+/// `hive_no_route` and the satz had nothing to draw. Walked with the colony's
+/// own CEL: the voice emission crosses the rim on the SAME edge that carries
+/// `delegation` (same `delete_context`), the hive declares both lanes, and the
+/// member declares them at the container the satz binds the line to. The
+/// container leg itself (`./channels/<line> -> ./channels`) is the satz's, as
+/// for `seed_ask` (templates/member/README.md).
+#[test]
+fn usage_and_call_mark_cross_the_freeswitch_rim_to_the_member_port() {
+    if !shipped() {
+        eprintln!("the templates of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let ctx = obj(json!({"session_id": "call-9", "call_id": "call-9",
+                         "phone_call": "call-9", "phone_origin": "signal"}));
+    let delegation = obj(json!({"route": "delegation", "session_id": "call-9",
+                                "call_id": "call-9", "engine": "duplex",
+                                "delegation_id": "d-1", "offset_ms": 0}));
+    let reference = one("freeswitch", "./voice", ".", &ctx, &delegation);
+    for hop in [
+        json!({"route": "usage", "session_id": "call-9", "call_id": "call-9",
+               "platform": "voice", "mode": "auto", "engine": "duplex",
+               "seconds": 312, "final": true, "complete": true}),
+        json!({"route": "call_mark", "session_id": "call-9", "call_id": "call-9",
+               "platform": "voice", "mode": "auto", "engine": "duplex",
+               "elapsed_s": 900}),
+    ] {
+        let hop = obj(hop);
+        let route = hop["route"].as_str().unwrap().to_string();
+        let h = one("freeswitch", "./voice", ".", &ctx, &hop);
+        assert_eq!(h.hop, hop, "{route}: the hop crosses the rim untouched");
+        assert_eq!(
+            h.context, reference.context,
+            "{route}: the rim strips the hive's own keys exactly as on `delegation`"
+        );
+        assert!(
+            emits_of("freeswitch").contains(&route),
+            "{route}: the freeswitch contract declares the lane it lets out"
+        );
+        assert!(
+            member_ports_at_channels().contains(&route),
+            "{route}: the member declares it as a port at ./channels"
+        );
+    }
+}
+
+/// live-2 fx-call (#1369): the end of a call reaches the curator and its
+/// `call_facts` come back out of the generation. Up: the member hands the
+/// final `usage` to the generation as `in_call_end` (the satz's edge) ->
+/// the assistant's `. -> ./talky` -> talky's `. -> ./curator` -> the curator's
+/// `. -> ./history`. Down: `./history -> .` (`call_facts`, `context.call_id`
+/// set) -> talky's `./curator -> .` -> the assistant's `./talky -> .`. Drawn
+/// exactly like `in_seed_ask` / `seed`, the chat twin included.
+#[test]
+fn the_call_end_reaches_the_curator_and_its_facts_leave_the_generation() {
+    if !shipped() {
+        eprintln!("the templates of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let ctx = obj(json!({"session_id": "call-9", "call_id": "call-9",
+                         "channel_node": "phone", "audience_set": ROUND}));
+    let hop = obj(json!({"route": "in_call_end", "session_id": "call-9",
+                         "call_id": "call-9", "final": true, "seconds": 312}));
+    let h = one("assistant", ".", "./talky", &ctx, &hop);
+    assert!(
+        carried("assistant", ".", "./talky-chat", &ctx, &hop).is_empty(),
+        "one surface takes it, guarded on the channel like `in_seed_ask`"
+    );
+    let h = one("talky", ".", "./curator", &h.context, &h.hop);
+    let h = one("curator", ".", "./history", &h.context, &h.hop);
+    assert_eq!(h.hop["route"], "in_call_end");
+    assert_eq!(h.hop["call_id"], "call-9");
+
+    let back = obj(json!({"route": "call_facts", "call_id": "call-9",
+                          "session_id": "call-9"}));
+    let mut bctx = h.context.clone();
+    bctx.insert("cur_origin".into(), json!("curator-history"));
+    let h = one("curator", "./history", ".", &bctx, &back);
+    assert!(
+        !h.context.contains_key("cur_origin"),
+        "the hive's own keys stay inside"
+    );
+    assert_eq!(
+        h.context.get("call_id").and_then(Value::as_str),
+        Some("call-9")
+    );
+    let h = one("talky", "./curator", ".", &h.context, &h.hop);
+    let h = one("assistant", "./talky", ".", &h.context, &h.hop);
+    assert_eq!(h.hop["route"], "call_facts");
+    for (t, lanes) in [
+        ("curator", ("in_call_end", "call_facts")),
+        ("talky", ("in_call_end", "call_facts")),
+        ("assistant", ("in_call_end", "call_facts")),
+    ] {
+        assert!(
+            emits_of(t).contains(&lanes.1.to_string()),
+            "{t} declares {}",
+            lanes.1
+        );
+    }
+    // The chat twin: the same lane, the other surface.
+    let mut chat = ctx.clone();
+    chat.insert("channel_node".into(), json!("chat"));
+    one("assistant", ".", "./talky-chat", &chat, &hop);
+    one("assistant", "./talky-chat", ".", &h.context, &back);
+}

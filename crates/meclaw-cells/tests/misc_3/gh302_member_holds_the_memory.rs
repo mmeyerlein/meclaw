@@ -959,6 +959,15 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
             );
             continue;
         }
+        if let Some((_, why)) = SET_BOUND_EXITS.iter().find(|(l, _)| *l == route) {
+            assert!(
+                !consumed_inside && !leaves,
+                "`{route}` is bound by the set that grows a live line, at \
+                 `./assistants/<agent>`; an edge of this template on it would deliver it \
+                 twice ({why})"
+            );
+            continue;
+        }
         assert!(
             consumed_inside || leaves,
             "an assistant emits `{route}` and this member neither consumes it nor lets it out: \
@@ -1126,7 +1135,7 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
 /// so the assistant no longer accepts the lane and there is nothing left to
 /// subtract. `in_candidate` stood here until GH #951: the member's own `./objects`
 /// hands the assistants its briefs on that lane, so a sibling supplies it now.
-const NOT_CARRIED: [(&str, &str); 7] = [
+const NOT_CARRIED: [(&str, &str); 12] = [
     (
         "in_advice",
         "answered inside the assistant by ./cogny; the other producer is a SECOND agent, \
@@ -1171,6 +1180,56 @@ const NOT_CARRIED: [(&str, &str); 7] = [
          note is fail-closed on its `audience_set`; a door at this level would let any caller \
          outside put words right before every curator's newest turn",
     ),
+    (
+        "in_delta",
+        "a voice call's partial (GH #1279). Its producer is the member's own voice channel, a \
+         sibling of the container, and the set that grows a live line draws the one edge from \
+         `./channels/<voice>` straight to `<member>/assistants/<agent>`, the way it draws \
+         `seed_ask` and `in_seed` at `./channels`; this template wires no producer of it",
+    ),
+    (
+        "in_screen_topics",
+        "the screen's topics (GH #1279). Its producer is the presenter the set installs, and \
+         the set draws the edge to `<member>/assistants/<agent>` only where a screen exists; \
+         a door at this level would let any caller outside rewrite the topics every judge \
+         reads",
+    ),
+    (
+        "in_seed_ask",
+        "the voice channel's ask for the seed of a live session (GH #1279), the channel's \
+         `seed_ask` renamed on the set's edge from `./channels/<voice>` to \
+         `<member>/assistants/<agent>` -- the same sibling-to-sibling road as `in_delta`",
+    ),
+    (
+        "in_seed_line",
+        "one line for the next seed of a live session (GH #1279). Its producer is a cell the \
+         set installs beside the voice channel, wired straight to \
+         `<member>/assistants/<agent>`; a door at this level would let any caller outside \
+         speak the last line of a seed",
+    ),
+    (
+        "in_call_end",
+        "the end of a voice call (#1369), the channel's final `usage` renamed on the set's \
+         edge from `./channels/<voice>` to `<member>/assistants/<agent>` -- the same \
+         sibling-to-sibling road as `in_seed_ask`",
+    ),
+];
+
+/// The exits of the live line (GH #1279) whose holders stand inside this member
+/// but are wired by the set that grows the line rather than by this template:
+/// `seed` and `live_feed` go to the voice channel, `verdict` to the presenter,
+/// `propose` to `./affinity`. The set draws each edge from
+/// `./assistants/<agent>`, the way it draws `seed_ask` and `in_seed` at
+/// `./channels`; an edge here from `./assistants` would fire beside it and
+/// deliver every message twice. An assertion, not a mute: an edge of this
+/// template on the lane fails the test.
+const SET_BOUND_EXITS: [(&str, &str); 5] = [
+    ("seed", "the voice channel's `in_seed`"),
+    ("live_feed", "the voice channel's feed of a running session"),
+    ("verdict", "the presenter's `in_verdict`"),
+    ("propose", "affinity's `in_propose`"),
+    // #1369: what a call carried, to whoever the set names as its reader.
+    ("call_facts", "the reader of what a call carried"),
 ];
 
 /// A lane the assistant raises whose holder inside this member lands in a later

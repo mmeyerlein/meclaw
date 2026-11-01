@@ -290,6 +290,7 @@ warm_cells! {
     simple_agent_tool_gate: "simple-agent/tool_gate",
     slack_agent_persona: "slack-agent/persona",
     summarizer_prep: "summarizer/prep",
+    talky_screen_judge: "talky/screen_judge",
     tools_build_apply: "tools/build-apply",
     tools_build_draft: "tools/build-draft",
     tools_unknown: "tools/unknown",

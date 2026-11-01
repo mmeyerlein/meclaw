@@ -166,8 +166,9 @@ struct Edge {
 /// The cells of the shipped hive, `schemas` included since GH #892, `push`
 /// since GH #895, `handover` since GH #896 (`./policy` hands the first
 /// call of every new session through it) and `stats` since GH #926 (the
-/// ledger's counts on `in_stats`).
-pub const CELLS: [&str; 10] = [
+/// ledger's counts on `in_stats`), `history` since GH #1279 (the judge
+/// context, the seed of a live call and its seed lines).
+pub const CELLS: [&str; 11] = [
     "intake",
     "policy",
     "writer",
@@ -178,6 +179,7 @@ pub const CELLS: [&str; 10] = [
     "push",
     "handover",
     "stats",
+    "history",
 ];
 
 /// The curator hive in one process: its cells, its edges, its ledger.
@@ -208,6 +210,12 @@ pub struct Hive {
     /// M-1, a claim taken over while a refused bundle is on its way back).
     /// Taken when it strikes, before `refuse_phase` is looked at.
     pub sql_at_phase: Option<(String, String)>,
+    /// GH #1371: before the store answers the next ledger message whose
+    /// `cur_phase` is this, the lane message runs to rest on its own: another
+    /// delivery of the hive that comes in and finishes between two steps of
+    /// a chain (a turn's normal curate while its spec curate is in
+    /// `./handover`). Taken when it strikes; set with [`Hive::lane_at_phase`].
+    lane_at: Option<(String, Msg)>,
     /// GH #1225: the cells of [`RESIDENT_CELLS`] run as the colony runs them,
     /// `runner_mode: resident` -- one child per hive whose globals live from
     /// message to message (`_MEM` of `./intake`), never the thread's warm
@@ -330,6 +338,7 @@ impl Hive {
             ledger_may_refuse: false,
             refuse_phase: None,
             sql_at_phase: None,
+            lane_at: None,
             check_emits: false,
             emit_violations: Vec::new(),
         }
@@ -627,6 +636,15 @@ impl Hive {
                 match to.as_str() {
                     "." => self.out.push(m),
                     "./ledger" => {
+                        let phase = m.context.get("cur_phase").and_then(Value::as_str);
+                        if self
+                            .lane_at
+                            .as_ref()
+                            .is_some_and(|(at, _)| Some(at.as_str()) == phase)
+                            && let Some((_, lane)) = self.lane_at.take()
+                        {
+                            self.pump(".", lane);
+                        }
                         let sender = from.trim_start_matches("./").to_string();
                         for c in m.messages().iter().filter(|c| c["type"] == "tool_call") {
                             let args = sj::from_str(c["text"].as_str().unwrap_or(""))
@@ -653,6 +671,20 @@ impl Hive {
     pub fn lane(&mut self, route: &str, context: Value, hop: Value, body: Value) {
         let msg = Self::lane_msg(route, context, hop, body);
         self.pump(".", msg);
+    }
+
+    /// GH #1371: a message on lane `route` that arrives right before the
+    /// store answers the next ledger message of `phase` and runs to rest
+    /// there (see `lane_at`).
+    pub fn lane_at_phase(
+        &mut self,
+        phase: &str,
+        route: &str,
+        context: Value,
+        hop: Value,
+        body: Value,
+    ) {
+        self.lane_at = Some((phase.to_string(), Self::lane_msg(route, context, hop, body)));
     }
 
     /// Several messages arriving on the hive path at once, `(route, context,

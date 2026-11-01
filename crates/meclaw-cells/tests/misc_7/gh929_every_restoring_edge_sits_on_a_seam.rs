@@ -193,6 +193,17 @@ const SEAMS: &[Row] = &[
         row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
         "< 12 && has(context.inner_source)",
     ),
+    // GH #1275: a kept speculative quick answer is the quick call's answer,
+    // released by the curator onto the splitter -- the quick voice's round
+    // once more, bounded by the same iteration counter.
+    row(
+        TALKY,
+        "./curator",
+        "./splitter",
+        "spec_release",
+        None,
+        Seam::Round,
+    ),
     // A close job enters the curator (GH #940, ADR-0002 E8): since a turn of
     // another round seals its channel's generation, a `close` can leave the
     // turn's own chain mid-turn -- the night's leaves a fresh root. The edge

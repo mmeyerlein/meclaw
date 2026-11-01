@@ -415,3 +415,38 @@ async fn gh1055_a_second_ring_of_the_same_call_opens_no_second_session() {
         "the connected call rings again"
     );
 }
+
+/// D48, DK (review re-check Re-k4): the early session a connection at another
+/// format throws away was opened and billed while the line rang, and its
+/// close goes with it. The call's `final` usage says it may be short.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_early_session_thrown_away_leaves_the_final_usage_incomplete() {
+    let raw = duplex_cell::duplex_params(json!({"default_mode": "auto", "emit_usage": true}));
+    let mut live = duplex_cell::boot_edge(raw, 15_000, off()).await;
+
+    live.send(line_fact("call_ringing", "call-u1")).await;
+    let _early = live.session().await;
+    let (client, _hello) = live
+        .connect("session=call-u1&sample_rate=8000&mode=auto")
+        .await;
+    let fresh = live.session().await;
+    fresh
+        .say(meclaw_cells::voice::contract::DuplexEvent::Closed {
+            reason: "close_requested".to_string(),
+            usage_seconds: 3.0,
+        })
+        .await;
+    drop(client);
+    let e = loop {
+        let e = live.emission("usage").await;
+        if duplex_cell::header(&e, "final") == Some(&json!(true)) {
+            break e;
+        }
+    };
+    assert_eq!(duplex_cell::header(&e, "seconds"), Some(&json!(3.0)), "{e}");
+    assert_eq!(
+        duplex_cell::header(&e, "complete"),
+        Some(&json!(false)),
+        "the early session's close is lost with it: {e}"
+    );
+}

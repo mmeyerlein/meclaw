@@ -3,6 +3,9 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
+pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
+pub mod gh1225_kr_seq_never_falls_below_the_ledger;
+pub mod gh1225_kr_the_set_sent_last_stands;
 pub mod gh1225_kr_two_turns_and_a_restart_never_share_an_episode_id;
 pub mod gh1225_without_a_package_the_curator_still_rebuilds;
 pub mod gh1247_a_complex_turn_goes_straight_to_cogny;

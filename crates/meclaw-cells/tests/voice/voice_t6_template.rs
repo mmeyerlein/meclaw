@@ -381,11 +381,16 @@ fn the_call_key_is_declared_and_the_session_key_is_still_read() {
             "error",
             "delegation",
             "renewed",
-            "credential_request"
+            "seed_ask",
+            "credential_request",
+            "usage",
+            "call_mark"
         ]),
-        "the eight lanes this cell names for itself -- `spoken` and `delegation` \
+        "the eleven lanes this cell names for itself -- `spoken` and `delegation` \
          are the duplex provider's two, added in 2.1.0, `renewed` its third \
-         (GH #896), `credential_request` the ask for its sealed keys (GH #1059), \
+         (GH #896), `seed_ask` its fourth (the opening's seed, GH #1359), \
+         `credential_request` the ask for its sealed keys (GH #1059), \
+         `usage` and `call_mark` a call's usage and time marks (D48), \
          and they are on the SAME enum because a lane is a lane whichever \
          engine produced it"
     );
@@ -415,7 +420,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.6.7"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.7.0"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()

@@ -2189,7 +2189,8 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_stop_watch",
             "scripts.tests.test_pipeline_progress",
             "scripts.tests.test_pipeline_merge_gate_parity",
-            "scripts.tests.test_export_audit_scope"]])
+            "scripts.tests.test_export_audit_scope",
+            "scripts.tests.test_release_matches_battery"]])
 
     def test_every_runner_test_module_is_in_gate_selftest(self):
         """GH #1162: the runner's own tests (`scripts/tests/test_pipeline_*.py`)

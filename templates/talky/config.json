@@ -64,6 +64,26 @@
           "because": "notes of another hive for this brain's window (GH #1303): `{notes: [{id, source, text, scope, until?, priority?}]}`, handed unchanged to `./curator` on its own `in_note` door, which keeps them in its ledger and shows the live ones as one block opening the newest message of the person (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
         },
         {
+          "route": "in_delta",
+          "because": "GH #1279: a partial of a voice call (the voice channel's lane `partial`), the cumulative text so far as the turn's `messages`, `hop.turn_id` = `<session_id>#<n>` (the voice cell's id of the turn the partial belongs to). It goes to `./route` as `in_turn` with `context.delta` \"1\" and `context.turn_id` = `hop.turn_id`: the wall is read as for a turn (the curator answers a delta from the round's newest rows, a partial has no generation yet; #1369), then one decide call, and the stamp goes to `./curator` as `in_delta_stamp` with `text_norm` -- never to the collector and never out of this rim. Nothing answers it; whether the curator uses it is its knob `delta_speculation` (off as shipped)"
+        },
+        {
+          "route": "in_screen_topics",
+          "because": "GH #1279: the screen's topics, `{topics: [{name, purpose, candidates?: [{key, describe}]}]}`, as the presenter sends them on `screen_topics` (on a table change and at boot). Handed unchanged to `./curator` on its own `in_screen_topics` door, which keeps the list and puts it into the judge context; `./route` asks the screen question over it (`judge_context`). No static topic list in this template. Nothing answers it"
+        },
+        {
+          "route": "in_seed_ask",
+          "because": "GH #1279: the voice channel asks for the seed of a live session -- `hop.call_id`, `hop.session_id`, `hop.reason`, `hop.renewal_n`. The edge that draws it MUST promote `context.audience_set` and `context.call_id`. Handed unchanged to `./curator` on its own door, which answers it with exactly one `seed`"
+        },
+        {
+          "route": "in_call_end",
+          "because": "live-2 (#1369): the end of a voice call -- the set draws the voice cell's final `usage` (`final` true) here, `hop.call_id`, `hop.session_id`. The edge that draws it MUST promote `context.audience_set` and `context.call_id`. Handed unchanged to `./curator` on its own door, which answers it with exactly one `call_facts`"
+        },
+        {
+          "route": "in_seed_line",
+          "because": "GH #1279: one line for the next seed of a session, `{session_id|call_id, kind: wind_down|hint, text}`. Handed unchanged to `./curator`, which holds it per call and kind (a new one replaces only its own kind) and puts every held line as the LAST lines of the next `seed` of that call (`hint` before `wind_down`), then drops them. Nothing answers it"
+        },
+        {
           "route": "in_candidate",
           "because": "a set of push candidates of another hive for this brain's curator (GH #949): `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?}`, handed unchanged to `./curator` on its own `in_candidate` door, which stores each candidate in its ledger and offers it to the memory push of a later turn whose round it covers -- with triggers only when the person's words name one (`templates/curator/README.md`). `context.audience_set` travels with it untouched: it is the round the candidates are stored for, and a candidate never reaches a wider one. It is answered on `candidate_ack` only when `hop.ack` is \"1\""
         },
@@ -73,7 +93,7 @@
         },
         {
           "route": "in_model",
-          "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`"
+          "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`. GH #1279: a package whose `hop.subscriber` ends on `/screen_model` takes the screen judge's own door into `./screen_model`; the brain's door lets it pass"
         },
         {
           "route": "in_menu",
@@ -95,7 +115,8 @@
             "./brain",
             "./quick",
             "./curator/summarizer",
-            "./decide"
+            "./decide",
+            "./screen_model"
           ],
           "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on the cell that asked (`./brain` or `./curator/summarizer`) and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds. A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
@@ -143,7 +164,27 @@
         },
         {
           "route": "stamp",
-          "because": "the route stamp of every turn for a reader outside (GH #1304): raised by `./route` only when its knob `stamp_out` is \"1\", one message per turn -- body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, never the turn's text and never the turn notes, hop `turn_id`, `path` and (on a fallback stamp) `fallback`. `audience_set` says which round the turn belongs to. Nothing travels while the knob is \"0\" (shipped); set it only where a parent draws the edge, or every turn dead-letters one message"
+          "because": "the route stamp of every turn for a reader outside (GH #1304): raised by `./route` only when its knob `stamp_out` is \"1\", one message per turn -- body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, never the turn's text and never the turn notes, hop `turn_id`, `path` and (on a fallback stamp) `fallback`. `audience_set` says which round the turn belongs to. Nothing travels while the knob is \"0\" (shipped); set it only where a parent draws the edge, or every turn dead-letters one message. GH #1279: with `./route`'s `judge_context` \"1\" the stamp also carries `screen {topic, confidence, lead, further}` when the decider named a topic, and `screen_form` when the product asks a choice of that name; with `./screen_judge`'s `enabled` \"1\" a SECOND message of the same turn, `{stamp: {turn_id, audience_set, screen_form}}` with `hop.turn_id`, follows ONLY on `verdict`, never on this route -- the route stamp never waits for it. The presenter is bound to `verdict`, not to this route: a set that draws `stamp` to `in_verdict` loses the second stamp"
+        },
+        {
+          "route": "verdict",
+          "because": "GH #1279: the stamp for the presenter's `in_verdict` -- the rim copy of a route stamp that carries `screen` or `screen_form`, and with `./route`'s `judge_context` \"1\" of every route stamp (clarify, topic `none`, an unsure topic: the presenter closes such a turn as `no_topic`) -- `./route` marks it `hop.verdict` \"1\", the same stamp still leaves on `stamp` as well, without that hop key, and the screen judge's second stamp of a turn, `{stamp: {turn_id, audience_set, screen_form}}`, which leaves ONLY here. Hop `turn_id`. The set draws it to the presenter's `in_verdict`; with `stamp_out` and `screen_judge.enabled` off nothing leaves here"
+        },
+        {
+          "route": "seed",
+          "because": "GH #1279: the answer to one `in_seed_ask` -- `{messages: [{role, text}], est_tokens, judge}` with `hop.renewal_n` back and `context.call_id` kept, or `messages: []` with `hop.refused` `no_round`. The set draws it to the voice channel's `in_seed`"
+        },
+        {
+          "route": "call_facts",
+          "because": "live-2 (#1369): the answer to one `in_call_end` -- `{messages: [], call_id, session_id, seed_used, facts: [{source, id, text}], delegations: [{turn_id, text}]}` with `hop.call_id` and `hop.session_id` back and `context.call_id` kept, or `seed_used` false and empty lists with `hop.refused` `no_round`/`no_call` or `hop.degraded` `store`. The set draws it to whoever reads what a call carried"
+        },
+        {
+          "route": "live_feed",
+          "because": "GH #1279: the curator's feed of a duplex session after a closed turn, when the facts the next seed carries moved: `hop.section` = its knob `live_feed_section` (`renew` with `hop.at_turn_end` \"1\", the voice cell's next turn boundary), `context.call_id` kept; only with its knob `live_feed` on. The set draws it to the voice channel's `in_advise`"
+        },
+        {
+          "route": "propose",
+          "because": "GH #1279: the curator's proposal out of a `clarify` question and its answer, in the form of `templates/affinity/README.md` § in_propose. The set draws it to affinity's `in_propose`"
         },
         {
           "route": "recall",
@@ -191,7 +232,8 @@
             "./brain",
             "./quick",
             "./curator/summarizer",
-            "./decide"
+            "./decide",
+            "./screen_model"
           ],
           "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1). A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
@@ -297,7 +339,7 @@
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick')))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/screen_model')))"
         },
         {
           "from": ".",
@@ -389,7 +431,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "''"
+              "interim": "''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
             },
             "restore_ttl": true
           }
@@ -409,7 +452,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "''"
+              "interim": "''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
             },
             "restore_ttl": true
           }
@@ -426,7 +470,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''"
+              "interim": "has(hop.interim) ? hop.interim : ''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
             },
             "restore_ttl": true
           }
@@ -446,7 +491,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''"
+              "interim": "has(hop.interim) ? hop.interim : ''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
             },
             "restore_ttl": true
           }
@@ -470,7 +516,10 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state"
+              "route_state",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -525,7 +574,27 @@
         {
           "from": "./quick",
           "to": "./splitter",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length') && !(has(context.spec) && context.spec == '1')"
+        },
+        {
+          "from": "./curator",
+          "to": "./splitter",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'spec_release' && has(hop.iter) && int(hop.iter) < 12",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "interim": "''",
+              "spec": "''"
+            },
+            "delete_hop": [
+              "route"
+            ],
+            "restore_ttl": true
+          }
         },
         {
           "from": "./brain",
@@ -540,10 +609,20 @@
         {
           "from": "./quick",
           "to": "./curator",
-          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.spec) && context.spec == '1')",
           "modifier": {
             "set_hop": {
               "route": "'in_llm'"
+            }
+          }
+        },
+        {
+          "from": "./quick",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber) && has(context.spec) && context.spec == '1'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_spec_llm'"
             }
           }
         },
@@ -569,7 +648,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -590,7 +672,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -637,7 +722,7 @@
         {
           "from": "./quick",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge'))"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge')) && !(has(context.spec) && context.spec == '1')"
         },
         {
           "from": "./brain",
@@ -659,7 +744,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -683,7 +771,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -734,7 +825,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -755,7 +849,10 @@
               "tools_hinted",
               "inner_source",
               "route_state",
-              "turn_notes"
+              "turn_notes",
+              "spec",
+              "delta",
+              "judge_for"
             ],
             "set_hop": {
               "route": "'inner_silent'",
@@ -781,7 +878,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -802,7 +902,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -843,7 +946,10 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state"
+              "route_state",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -869,7 +975,10 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state"
+              "route_state",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -890,7 +999,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -911,7 +1023,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -933,7 +1048,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -954,7 +1072,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -978,7 +1099,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -999,7 +1123,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1025,7 +1152,10 @@
               "tools_folded",
               "tools_hinted",
               "turn_notes",
-              "route_state"
+              "route_state",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1046,7 +1176,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1077,7 +1210,10 @@
               "tools_hinted",
               "inner_source",
               "route_state",
-              "turn_notes"
+              "turn_notes",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1098,7 +1234,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1119,7 +1258,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1180,7 +1322,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1201,7 +1346,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1222,7 +1370,10 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1235,6 +1386,11 @@
           "from": ".",
           "to": "./decide",
           "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/decide')"
+        },
+        {
+          "from": ".",
+          "to": "./screen_model",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/screen_model')"
         },
         {
           "from": "./session-keeper",
@@ -1250,9 +1406,22 @@
           }
         },
         {
+          "from": "./session-keeper",
+          "to": "./screen_judge",
+          "condition": "has(hop.route) && hop.route == 'turn'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "set_context": {
+              "session_id": "hop.session_id"
+            }
+          }
+        },
+        {
           "from": "./route",
           "to": "./decide",
-          "condition": "has(hop.route) && hop.route == 'decide'",
+          "condition": "has(hop.route) && hop.route == 'decide' && !has(hop.state)",
           "modifier": {
             "set_context": {
               "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''"
@@ -1262,7 +1431,7 @@
         {
           "from": "./decide",
           "to": "./route",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !(has(context.delta) && context.delta == '1')",
           "modifier": {
             "set_hop": {
               "route": "'in_decision'",
@@ -1270,6 +1439,33 @@
             },
             "delete_context": [
               "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./route",
+          "to": "./decide",
+          "condition": "has(hop.route) && hop.route == 'decide' && has(hop.state)",
+          "modifier": {
+            "set_context": {
+              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
+              "route_state": "hop.state"
+            }
+          }
+        },
+        {
+          "from": "./decide",
+          "to": "./route",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && has(context.delta) && context.delta == '1'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_decision'",
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
+              "state": "has(context.route_state) ? context.route_state : ''"
+            },
+            "delete_context": [
+              "route_asked_at",
+              "route_state"
             ]
           }
         },
@@ -1293,7 +1489,37 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./screen_model",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         },
@@ -1304,6 +1530,16 @@
           "modifier": {
             "set_hop": {
               "route": "'in_route'"
+            }
+          }
+        },
+        {
+          "from": "./route",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'delta_stamp'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_delta_stamp'"
             }
           }
         },
@@ -1324,7 +1560,7 @@
         {
           "from": "./curator",
           "to": "./route",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turns'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turns' && !(has(context.judge_for) && context.judge_for == 'screen_judge')",
           "modifier": {
             "set_hop": {
               "route": "'in_turns'",
@@ -1338,12 +1574,86 @@
           }
         },
         {
+          "from": "./screen_judge",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'turns_ask'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turns_ask'"
+            },
+            "set_context": {
+              "judge_for": "'screen_judge'",
+              "route_state": "has(hop.state) ? hop.state : ''"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./screen_judge",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turns' && has(context.judge_for) && context.judge_for == 'screen_judge'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turns'",
+              "state": "has(context.route_state) ? context.route_state : ''"
+            },
+            "delete_context": [
+              "route_state",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./screen_judge",
+          "to": "./screen_model",
+          "condition": "has(hop.route) && hop.route == 'screen_model'"
+        },
+        {
+          "from": "./screen_model",
+          "to": "./screen_judge",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_verdict'"
+            }
+          }
+        },
+        {
           "from": "./route",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'stamp_out'",
           "modifier": {
             "set_hop": {
               "route": "'stamp'"
+            },
+            "delete_hop": [
+              "verdict"
+            ],
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./route",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stamp_out' && has(hop.verdict)",
+          "modifier": {
+            "set_hop": {
+              "route": "'verdict'"
             },
             "delete_context": [
               "tool_answerer",
@@ -1357,7 +1667,164 @@
               "tools_hinted",
               "turn_notes",
               "route_state",
-              "inner_source"
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./screen_judge",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'verdict'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./route",
+          "condition": "has(hop.route) && hop.route == 'in_delta'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_turn'"
+            },
+            "set_context": {
+              "delta": "'1'",
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"
+            }
+          }
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_screen_topics'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_seed_ask'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_call_end'"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_seed_line'"
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'seed'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'call_facts'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'live_feed'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'propose'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
             ]
           }
         }

@@ -218,6 +218,22 @@ fn word(n: usize) -> &'static str {
         // of round, the boundary unchanged.
         (37, "thirty-seven"),
         (84, "eighty-four"),
+        // GH #1275: a speculative quick answer's lane into the curator
+        // and a kept one's release to the splitter -- eighty-six, thirty-nine
+        // of round, the boundary unchanged.
+        (86, "eighty-six"),
+        // GH #1279: a partial's decide pair and stamp, the screen judge's
+        // five edges of round, five doors and five exits -- one hundred and
+        // four, forty-seven of round, the boundary fifty-seven.
+        (104, "one hundred and four"),
+        // GH #1279: the rim exit `verdict` out of `./route` -- one
+        // hundred and five, the boundary fifty-eight, thirty-three leaving.
+        (33, "thirty-three"),
+        (105, "one hundred and five"),
+        // live-2 (#1369): the end of a call's door `in_call_end` into
+        // `./curator` and its answer `call_facts` out -- one hundred and seven,
+        // the boundary sixty, twenty-six doors, thirty-four leaving.
+        (107, "one hundred and seven"),
     ]
     .into_iter()
     .collect();

@@ -453,6 +453,20 @@ pub(crate) fn admit(
     })
 }
 
+/// A door that turned a client away says so on a `WARN` line (GH #1373, BAT R1c
+/// C1b): the client reads the `400` in its own connect error, but on a
+/// telephone bridge that is a log of another host -- seventeen refused calls
+/// stood there only as "connection error". The line names the door, the status
+/// and the detail the client got; never the session token.
+fn refused(door: &'static str, status: StatusCode, detail: &str) {
+    tracing::warn!(
+        door,
+        status = status.as_u16(),
+        detail = detail.trim_end(),
+        "voice: upgrade refused"
+    );
+}
+
 /// The second door: whoever holds a socket asks this to open a link on it.
 ///
 /// Same admission, same connection code as the socket door — what differs is
@@ -476,9 +490,12 @@ impl LinkOpener for VoiceLinkOpener {
                 req.sample_rate,
                 req.encoding.as_deref(),
             )
-            .map_err(|(status, detail)| LinkRefused {
-                status: status.as_u16(),
-                detail,
+            .map_err(|(status, detail)| {
+                refused("link", status, &detail);
+                LinkRefused {
+                    status: status.as_u16(),
+                    detail,
+                }
             })?;
             let (conn_id, to_conn_tx, to_conn_rx) = new_connection_slot();
             let (to_cell_tx, to_cell_rx) = mpsc::channel(LINK_QUEUE);
@@ -521,7 +538,10 @@ async fn ws_upgrade(
         q.encoding.as_deref(),
     ) {
         Ok(admitted) => admitted,
-        Err((status, detail)) => return (status, detail).into_response(),
+        Err((status, detail)) => {
+            refused("socket", status, &detail);
+            return (status, detail).into_response();
+        }
     };
     let Some(up) = upgrade else {
         return (

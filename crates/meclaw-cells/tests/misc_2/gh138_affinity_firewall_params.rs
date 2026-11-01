@@ -87,6 +87,8 @@ const SCRIPTED: &[Scripted] = &[
             ("list_people", "_int", "LIST_PEOPLE"),
             // GH #1225 (R-IG-1): the cap of `who.name`, cut with a mark.
             ("name_cap", "_int", "NAME_CAP"),
+            // #1279: how many clarify proposals the `hints` slot reads.
+            ("hint_rows", "_int", "HINT_ROWS"),
         ],
     },
     Scripted {
@@ -395,12 +397,13 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 14,
+        total, 15,
         "the scripted half of this migration is nine knobs plus the cap of the \
          `identity_short` slot (GH #935) and the two bounds of the `list` op \
          (GH #965), less the screen's size cap, which ships unset since GH #1085, \
          plus the screen's fallback window (GH #1085, OR-IG-8), plus the first \
-         resend wait of `push` (GH #1096), plus the cap of `who.name` (GH #1225); \
+         resend wait of `push` (GH #1096), plus the cap of `who.name` (GH #1225), \
+         plus the read bound of the `hints` slot (#1279); \
          the clock has no script"
     );
 }

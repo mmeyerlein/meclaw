@@ -1,4 +1,4 @@
-# `dispatcher@1.6.1`
+# `dispatcher@1.6.2`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -46,7 +46,13 @@ messages a graph can route.
   query}}`. A call under a folded name that names no op at either level has no answerer
   (the family shadows a single tool of its name) and is answered in place as
   `malformed_tool_call`, the text naming the missing `op`, instead of reaching the tools
-  hive as `F` and coming back `unknown_tool`.
+  hive as `F` and coming back `unknown_tool`. Since
+  [#1360](https://github.com/mmeyerlein/meclaw/issues/1360) `args` given as a JSON
+  **string** holding the object (`F{op, args: "{\"question\": …}"}`, a small model's slip
+  measured three times in a row) is unpacked once before the rules above, named on one
+  stderr line (`dispatcher: family call <id> … args_double_decoded`); a string that
+  holds a string again is not unpacked and the call takes the path of every call whose
+  `args` are no object.
 - **Only a folded family unfolds.** The shape alone proves nothing: a tool outside the fold
   may take an `op` and an `args` object of its own. The collector names the families of its
   folded menu on every `curate` seam (`hop.tools_folded`), the composite's curate edge lifts

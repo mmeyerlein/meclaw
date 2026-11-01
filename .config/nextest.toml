@@ -367,7 +367,7 @@ filter = 'binary_id(=meclaw-cells::gh959_a_sure_verdict_opens_the_window_and_fil
 test-group = "colony-boot"
 
 [[profile.default.overrides]]
-filter = 'binary_id(=meclaw-cells::gh965_the_member_residents_show_on_the_screen) + binary_id(=meclaw-cells::gh966_a_refusal_of_the_decider_reaches_the_stage) + binary_id(=meclaw-cells::gh966_a_set_of_other_rounds_is_no_set) + binary_id(=meclaw-cells::gh976_the_last_result_shows_only_to_its_round) + binary_id(=meclaw-cells::gh977_a_partial_verdict_keeps_the_sure_topic) + binary_id(=meclaw-cells::gh983_a_missing_resident_is_left_out)'
+filter = 'binary_id(=meclaw-cells::gh965_the_member_residents_show_on_the_screen) + binary_id(=meclaw-cells::gh966_a_refusal_of_the_decider_reaches_the_stage) + binary_id(=meclaw-cells::gh966_a_set_of_other_rounds_is_no_set) + binary_id(=meclaw-cells::gh976_the_last_result_shows_only_to_its_round) + binary_id(=meclaw-cells::gh977_a_partial_verdict_keeps_the_sure_topic) + binary_id(=meclaw-cells::gh983_a_missing_resident_is_left_out) + binary_id(=meclaw-cells::gh1367_a_keeper_stamp_meets_the_fanned_out_turn)'
 test-group = "colony-boot"
 
 # A display-colony test folded into the `display` harness (GH #1210): folded

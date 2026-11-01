@@ -436,9 +436,22 @@ def wave_of(db):
 
 
 def report_dir(db, repo=REPO):
+    """`plans/<wave>/nacht/` when that wave directory exists, else the one dated
+    `plans/<wave>-*/` of the same wave, else the store's folder (GH #1372).
+
+    The store keys a wave by its short name (`<wave>`), the plan directory is dated
+    (`plans/<wave>-<date>`). Writing `plans/<wave>/` made an undated directory that
+    the strand kit takes before the dated one (GH #1294) -- every gate receipt and
+    report of a `<wave>/<S>` branch went there and the merge refused. A report
+    never creates a wave directory."""
     wave = wave_of(db)
     if wave:
-        return repo / "plans" / wave / "nacht"
+        plans = repo / "plans"
+        if (plans / wave).is_dir():
+            return plans / wave / "nacht"
+        dated = sorted(d for d in plans.glob(wave + "-*") if d.is_dir())
+        if len(dated) == 1:
+            return dated[0] / "nacht"
     path = db_path(db)
     return (path.parent if path else _store.default_path().parent) / "nacht"
 

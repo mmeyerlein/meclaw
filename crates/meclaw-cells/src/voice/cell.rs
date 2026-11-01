@@ -9,7 +9,7 @@
 
 use crate::credential::CredentialSlots;
 use crate::voice::connection::APPEND_MAX_CHARS;
-use crate::voice::contract::{AppendKind, DuplexEvent, Speaker, SttEvent};
+use crate::voice::contract::{AppendKind, DuplexEvent, SeedMessage, Speaker, SttEvent};
 use crate::voice::io::{VoiceIo, run_io};
 use crate::voice::live_turns::{self, TurnAction, TurnInput, TurnState};
 use crate::voice::params::{CredentialSlot, VoiceOverlay, VoiceParams};
@@ -163,12 +163,26 @@ pub enum VoiceEvent {
         /// deadlines this feeds are measured in seconds.
         now_ms: u64,
     },
+    /// The connection sent the model's audio to the client: the first audible
+    /// frame since the last transcript fragment it passed on (BAT R1e, C3;
+    /// silence does not count, fix-round C-1). The
+    /// turn machine reads the answer's `t_first_audio_ms` from it.
+    LiveAudioOut {
+        /// The session whose audio this is.
+        session_id: String,
+        /// When the frame went out, on the clock [`VoiceEvent::LiveTick`]
+        /// carries.
+        at_ms: u64,
+    },
     /// The duplex provider of this connection gave up, and with it the call.
     ///
     /// **There is no reconnect** (OR-L20): the session IS the conversation, and
     /// a fresh socket would be a fresh conversation with no memory of this one.
     /// So this reaches the error lane as `duplex_failed` and the client reads a
-    /// close.
+    /// close. The one exception is a renewal in place of the dead session
+    /// where `params.duplex.recover_max` asks for it (GH #1377): it opens on a
+    /// fresh seed, and once the attempts are spent the next end of the session
+    /// in charge is this, also where the provider ended it in good order.
     DuplexFailed {
         /// The session whose provider is gone.
         session_id: String,
@@ -194,6 +208,50 @@ pub enum VoiceEvent {
         /// When the renewed session started, in milliseconds since the Unix
         /// epoch.
         renewed_at_ms: u64,
+    },
+    /// A duplex session of this call is opening and waits for its seed (D48):
+    /// the handler answers with the `seed_ask` lane, and the colony's answer to
+    /// THAT comes back on `in_seed`. Only where `seed_wait_ms` is set.
+    SeedAsk {
+        /// The call whose session opens.
+        session_id: String,
+        /// Why it opens: the call's first session, or a renewal of it.
+        reason: SeedReason,
+        /// Which session of the call asks: `0` for the first, else the
+        /// `renewal_n` it will carry on `renewed` (review M1). The answer
+        /// gives it back on `hop.renewal_n` and reaches only that session.
+        renewal_n: u32,
+    },
+    /// A time mark of this call fell due (`params.call_marks_s` /
+    /// `call_mark_every_s`, D48): the handler emits it on the `call_mark`
+    /// lane. The connection's own timer, so a call that is over fires none.
+    CallMark {
+        /// The call.
+        session_id: String,
+        /// The mark, in seconds since the call's connection opened.
+        elapsed_s: u64,
+    },
+    /// What the call used so far, over every provider session it ran on
+    /// (D48, DK): the connection's ledger, which sees every session -- the
+    /// one in charge, the one retiring, a renewal before it takes over. The
+    /// handler emits it on the `usage` lane where `params.emit_usage` asks.
+    CallUsage {
+        /// The call.
+        session_id: String,
+        /// The call's total, in seconds.
+        seconds: f64,
+        /// Whether this is the one total of the ended call (`final`).
+        last: bool,
+        /// Whether every session that counts closed; `false` where a last
+        /// meter reading stands in for a close that never arrived.
+        complete: bool,
+    },
+    /// An `in_seed` named a call no session holds -- neither parked at the
+    /// ring nor held by a connection (review K5). The handler says so on the
+    /// error lane as `unknown_session`.
+    SeedUnheld {
+        /// The call the seed named.
+        session_id: String,
     },
     /// A binary frame of wrong length arrived. The I/O half **dropped the
     /// frame and kept the connection** (R-V6'): a client that mis-frames one
@@ -225,6 +283,30 @@ pub enum VoiceEvent {
     },
 }
 
+/// Why a duplex session asks for its seed (D48), as the `seed_ask` lane says
+/// it in `hop.reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedReason {
+    /// The call's first session.
+    Start,
+    /// A renewal of the call's session (GH #896).
+    Renew,
+    /// A session that takes the place of one the provider ended mid-call
+    /// (GH #1377, `params.duplex.recover_max`).
+    Recover,
+}
+
+impl SeedReason {
+    /// The word on the lane.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SeedReason::Start => "start",
+            SeedReason::Renew => "renew",
+            SeedReason::Recover => "recover",
+        }
+    }
+}
+
 impl VoiceEvent {
     /// Tell the I/O half that the session of a `Connected` is taken (GH #836).
     ///
@@ -248,6 +330,14 @@ impl VoiceEvent {
 /// What the handler tells the I/O half.
 #[derive(Debug)]
 pub enum VoiceReconfig {
+    /// Open the next provider session of this duplex call now, the way a due
+    /// `renew_after_ms` does (D48, `in_advise` section `renew`): it asks for
+    /// its seed again and takes over at the first quiet moment. A renewal that
+    /// is already opening absorbs it -- one renewal per boundary.
+    Renew {
+        /// The session whose provider session is renewed.
+        session_id: String,
+    },
     /// Send a text frame to one session's client.
     ToClient {
         /// The session to address.
@@ -309,6 +399,16 @@ pub enum VoiceReconfig {
         /// [`crate::voice::io::ToConnection::Advise`].
         takeover: Option<u32>,
     },
+    /// Hand the seed of a call to the duplex session that is opening (D48).
+    Seed {
+        /// The call.
+        session_id: String,
+        /// The session of the call the seed answers (`seed_ask`'s
+        /// `renewal_n`, `0` for the first).
+        renewal_n: u32,
+        /// The messages, oldest first.
+        messages: Vec<crate::voice::contract::SeedMessage>,
+    },
     /// Open the duplex session of a call whose line still rings, so the
     /// media connection that names it finds the model ready (GH #1055).
     Prewarm {
@@ -345,8 +445,10 @@ pub enum VoiceReconfig {
 /// a cascade session has a hold, a boundary phase, a release grace and a speak
 /// queue, and a duplex session has none of the four. What it has instead is a
 /// turn machine that runs off the model's clock, the delegations the model
-/// opened, and the last meter reading — which rides out on the `turn` lane
-/// rather than on a `session` lane of its own (OR-L22).
+/// opened, and the last meter reading — whose `usage_ratio` rides out on the
+/// `turn` lane rather than on a `session` lane of its own (OR-L22). What the
+/// call used goes out on the `usage` lane, the one exception to OR-L22; its
+/// ledger is the connection's (`call_usage`, D48), which sees every session.
 #[derive(Debug)]
 pub struct LiveSessionState {
     /// Turn formation on the model's timeline (R-25-9).
@@ -386,10 +488,104 @@ pub struct LiveSessionState {
     /// `advise` tell the two apart, and it is short by construction: at most
     /// [`CLOSED_DELEGATIONS_KEPT`] entries, the oldest dropped first.
     pub closed_delegations: Vec<OpenDelegation>,
+    /// Delegations a spoken answer has already been said for (BAT R1e, C4).
+    ///
+    /// One delegated sentence can be answered twice: the delegation's own
+    /// round and the turn's round of the same words, which copies the
+    /// `delegation_id` from the window (05-P2: two `fact`s, +23.28 s and
+    /// +28.28 s). The model gets exactly one answer per delegation, the
+    /// first; this list is how a second one is recognised. Bounded like
+    /// [`Self::closed_delegations`], by [`CLOSED_DELEGATIONS_KEPT`].
+    pub answered_delegations: Vec<String>,
     /// How many times the provider session of this call has been renewed —
     /// the `renewal_n` of the last `renewed` emission, `0` before the first
     /// (GH #896).
     pub renewals: u32,
+    /// When the last `partial` lane emission of the caller's side left, on
+    /// the monotonic clock; `None` before the first one of the open turn
+    /// (D48, LC2: the throttle of `delta_min_chars` / `delta_min_ms`).
+    pub partial_sent_at: Option<tokio::time::Instant>,
+    /// How many characters that emission carried.
+    pub partial_sent_chars: usize,
+    /// The newest caller text the throttle held back, sent before the `turn`
+    /// that closes it so the last state always leaves.
+    pub partial_held: Option<String>,
+    /// Advice held for the end of the caller's next turn (`hop.at_turn_end`,
+    /// OR-LV-9), in the order it came; at most [`HELD_ADVISE_KEPT`].
+    pub held_advise: Vec<HeldAdvise>,
+    /// Whether the session is closing (`DuplexEvent::Closed`): the turn it
+    /// closes releases nothing into it; what is held goes to the colony as a
+    /// `session_ended` dead letter at the disconnect (review M4, GH #1016).
+    pub closing: bool,
+}
+
+/// How many held pieces of advice a session keeps (review K5). A held list
+/// waits for the caller's next turn, and a caller on hold or muted says
+/// nothing for as long as that lasts; a turn boundary carries a handful.
+pub const HELD_ADVISE_KEPT: usize = 16;
+
+/// One piece of advice held until the caller's turn closes (D48, LC2).
+#[derive(Debug, Clone)]
+pub enum HeldAdvise {
+    /// An append, with the arguments `push_advise` takes.
+    Push {
+        /// The message it came in, on the first append a message makes
+        /// (an `interrupt` makes two): what a call that ends first hands to
+        /// the colony as a `session_ended` dead letter (review M4).
+        message: Option<Box<Message>>,
+        /// Whether the section is a spoken one (an `interrupt` counts, it
+        /// carries a spoken `fact`), which is what makes an answer to a
+        /// delegation the fallback closed a straggler (GH #728) and a second
+        /// answer to an answered one a duplicate (BAT R1e, C4).
+        section_spoken: bool,
+        /// The append channel.
+        kind: AppendKind,
+        /// The delegation it answers, where it answers one.
+        delegation_id: Option<String>,
+        /// The words.
+        text: String,
+        /// Whether it opens a spoken section.
+        spoken: bool,
+        /// The renewal it hands over to, where it is a handover.
+        takeover: Option<u32>,
+    },
+    /// A renewal of the provider session; held at most once per boundary.
+    Renew,
+}
+
+/// Hold one piece of advice for the caller's turn, dropping the oldest past
+/// [`HELD_ADVISE_KEPT`] with a warning (review K5). Returns what it dropped:
+/// the caller dead-letters a dropped message, so nothing vanishes (GH #1016,
+/// review kv-2 A-k1).
+#[must_use]
+fn hold(
+    path: &Path,
+    session_id: &str,
+    state: &mut LiveSessionState,
+    advice: HeldAdvise,
+) -> Vec<HeldAdvise> {
+    state.held_advise.push(advice);
+    let mut excess = state.held_advise.len().saturating_sub(HELD_ADVISE_KEPT);
+    // The second push of an `interrupt` carries no message of its own: it
+    // goes with the first, never stays behind as half an instruction.
+    while excess > 0
+        && matches!(
+            state.held_advise.get(excess),
+            Some(HeldAdvise::Push { message: None, .. })
+        )
+    {
+        excess += 1;
+    }
+    let dropped: Vec<HeldAdvise> = state.held_advise.drain(..excess).collect();
+    for d in &dropped {
+        tracing::warn!(
+            path = path.as_str(),
+            %session_id,
+            advice = ?d,
+            "voice: too much advice held for the caller's turn -- the oldest is dropped"
+        );
+    }
+    dropped
 }
 
 /// How many fallback-closed delegations a session remembers (GH #728). A call
@@ -434,7 +630,13 @@ impl LiveSessionState {
             mode,
             closed_turns: 0,
             closed_delegations: Vec::new(),
+            answered_delegations: Vec::new(),
             renewals: 0,
+            partial_sent_at: None,
+            partial_sent_chars: 0,
+            partial_held: None,
+            held_advise: Vec::new(),
+            closing: false,
         }
     }
 
@@ -527,6 +729,21 @@ pub struct VoiceCell {
     barge_in: bool,
     /// Whether interim transcripts reach the `partial` lane.
     emit_partials: bool,
+    /// Whether a duplex call reports its usage on the `usage` lane
+    /// (`params.emit_usage`, D48). Settled at birth.
+    emit_usage: bool,
+    /// The call-time marks this life was born with (`call_marks_s`,
+    /// `call_mark_every_s`). The I/O half rings them; the handler keeps them
+    /// only so its overlay view -- the merge base of a params update -- says
+    /// what the cell runs on (GH #1379).
+    call_marks: crate::voice::call_marks::CallMarks,
+    /// The throttle of the caller's `partial` lane in duplex mode
+    /// (`params.duplex.delta_min_chars` / `delta_min_ms`, D48); `(0, 0)`
+    /// sends every delta. Settled at birth like the whole duplex block.
+    duplex_delta_min: (usize, u64),
+    /// Whether the model's transcript reaches the `spoken` lane
+    /// (`params.duplex.emit_spoken`); `None` follows `emit_partials`.
+    duplex_emit_spoken: Option<bool>,
     /// Whether the end of a synthesis reaches the `speak_end` lane.
     emit_speak_end: bool,
     /// Operation-timeout for I/O this cell initiates.
@@ -632,6 +849,10 @@ impl VoiceCell {
             default_mode: params.default_mode,
             barge_in: params.barge_in,
             emit_partials: params.emit_partials,
+            emit_usage: params.emit_usage,
+            call_marks: params.call_marks.clone(),
+            duplex_delta_min: duplex_delta_min(params),
+            duplex_emit_spoken: duplex_emit_spoken(params),
             emit_speak_end: params.emit_speak_end,
             external_timeout_ms: params.external_timeout_ms,
             provider_idle_timeout_ms: params.provider_idle_timeout_ms,
@@ -772,6 +993,9 @@ impl VoiceCell {
             tts: self.tts_raw.clone(),
             duplex: self.duplex_raw.clone(),
             credential_backoff_max_ms: self.credential_backoff_max_ms,
+            emit_usage: self.emit_usage,
+            call_marks_s: self.call_marks.marks_s.clone(),
+            call_mark_every_s: self.call_marks.every_s,
         }
     }
 
@@ -1006,6 +1230,117 @@ impl VoiceCell {
         let _ = self.to_io.send(cmd).await;
     }
 
+    /// The `in_seed` lane (D48): the colony's answer to `seed_ask`.
+    ///
+    /// The call is named like an `in_advise` names it (`context.call_id`, then
+    /// `context.session_id`, then `hop.call_id`). No live-session check: the
+    /// session this seed opens may still be ringing, parked for its media
+    /// connection (GH #1055); a seed for a call nobody holds goes nowhere and
+    /// says so in the log. Each message is `{role, text}` (`origin` is read
+    /// where `role` is missing, the universal body's key); a role the live
+    /// model does not take (developer, user, assistant) is left out. The
+    /// sender's `est_tokens` is not read: the adapter counts for itself.
+    async fn take_seed(&self, msg: &Message, body: &Value, reply_target: Path, sink: &OutputSink) {
+        let named = |map: &Map<String, Value>, key: &str| {
+            map.get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let session_id = named(&msg.headers.context, "call_id")
+            .or_else(|| named(&msg.headers.context, "session_id"))
+            .or_else(|| named(&msg.headers.hop, "call_id"));
+        let Some(session_id) = session_id else {
+            self.refuse(
+                sink,
+                reply_target,
+                "missing_session",
+                "in_seed names the call on context.call_id (or context.session_id, hop.call_id)",
+                None,
+            )
+            .await;
+            return;
+        };
+        if !self.duplex {
+            self.refuse(
+                sink,
+                reply_target,
+                "wrong_engine",
+                "in_seed needs a duplex session; this cell runs a cascade",
+                Some(&session_id),
+            )
+            .await;
+            return;
+        }
+        // Which session the seed answers (review M1): the `renewal_n` of its
+        // `seed_ask`, given back. Without it a late answer to one session
+        // would open the next with the wrong conversation.
+        let renewal_n = msg
+            .headers
+            .hop
+            .get("renewal_n")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            })
+            .and_then(|n| u32::try_from(n).ok());
+        let Some(renewal_n) = renewal_n else {
+            self.refuse(
+                sink,
+                reply_target,
+                "missing_renewal_n",
+                "in_seed gives back the renewal_n of its seed_ask on hop.renewal_n (0 = start)",
+                Some(&session_id),
+            )
+            .await;
+            return;
+        };
+        let mut dropped = 0usize;
+        let messages: Vec<SeedMessage> = body
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        let role = m
+                            .get("role")
+                            .or_else(|| m.get("origin"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let text = m.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+                        if !matches!(role, "developer" | "user" | "assistant")
+                            || text.trim().is_empty()
+                        {
+                            dropped += 1;
+                            return None;
+                        }
+                        Some(SeedMessage {
+                            role: role.to_string(),
+                            text: text.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if dropped > 0 {
+            tracing::warn!(
+                path = self.path.as_str(),
+                %session_id, dropped,
+                "voice: seed messages without a role the live model takes, or without text, \
+                 were left out"
+            );
+        }
+        let _ = self
+            .to_io
+            .send(VoiceReconfig::Seed {
+                session_id,
+                renewal_n,
+                messages,
+            })
+            .await;
+    }
+
     /// The `in_session` lane (GH #979): who is speaking in one session.
     ///
     /// Sent by the signalling half of a telephone, which knows the caller the
@@ -1212,7 +1547,10 @@ impl VoiceCell {
                 //
                 // What the meter still buys: `usage_ratio`, which rides out on
                 // the `turn` lane because there is no session lane (OR-L22),
-                // and the log line at the end of the call.
+                // the call's running total on the `usage` lane (D48, DK, the
+                // one exception to OR-L22; summed by the connection, which
+                // sees every session, `VoiceEvent::CallUsage`), and the log
+                // line at the end of the call.
                 tracing::trace!(
                     path = self.path.as_str(),
                     %session_id, seconds,
@@ -1251,14 +1589,20 @@ impl VoiceCell {
             } => {
                 let actions = match self.live_sessions.get_mut(session_id) {
                     Some(state) => {
+                        state.closing = true;
                         live_turns::step(&mut state.turns, TurnInput::Close, gap, backchannel)
                     }
                     None => Vec::new(),
                 };
                 self.run_live_actions(session_id, actions, sink).await;
-                // There is no `session` lane (OR-L22): what a call cost is a
-                // line in this cell's log and, for the telephone, the
-                // `call_ended` the hive writes.
+                // OR-L22 holds -- there is no `session` lane -- with ONE
+                // exception since D48/DK: the `usage` lane, because a call
+                // renewed at every fact turn spans many sessions and its
+                // cost is their sum, which no single `Closed` carries. The
+                // connection counts this close in the call's ledger and sends
+                // the `final` once, at the end of the call
+                // (`VoiceEvent::CallUsage`), not here: a session in charge
+                // that never closes still ends a call.
                 tracing::info!(
                     path = self.path.as_str(),
                     %session_id, %reason, usage_seconds,
@@ -1266,6 +1610,30 @@ impl VoiceCell {
                 );
             }
         }
+    }
+
+    /// One `usage` emission of a duplex call (D48, DK), where
+    /// `params.emit_usage` asks for it: `seconds` is the call's total so far,
+    /// over every session it ran on; `final` marks the one at the end of the
+    /// call, and only that one carries `complete`.
+    async fn emit_usage(
+        &self,
+        session_id: &str,
+        seconds: f64,
+        last: bool,
+        complete: bool,
+        sink: &OriginSink,
+    ) {
+        if !self.emit_usage {
+            return;
+        }
+        let hop = if last {
+            json!({"seconds": seconds, "final": true, "complete": complete})
+        } else {
+            json!({"seconds": seconds, "final": false})
+        };
+        let content = self.live_body("usage", session_id, hop, json!([]));
+        self.emit(sink, content).await;
     }
 
     /// One tick of the session's own clock (R-L7, R-L9).
@@ -1361,8 +1729,28 @@ impl VoiceCell {
             match action {
                 TurnAction::Emit(turn) => {
                     let turn_id = format!("{session_id}#{}", turn.index);
-                    if let Some(state) = self.live_sessions.get_mut(session_id) {
+                    // The last state of the caller's stream leaves before the
+                    // turn that closes it (D48, LC2): a throttled `partial`
+                    // the curator never saw would leave it speculating on an
+                    // older sentence than the one the turn carries.
+                    let held = self.live_sessions.get_mut(session_id).and_then(|state| {
                         state.closed_turns = turn.index.saturating_add(1);
+                        state.partial_sent_at = None;
+                        state.partial_sent_chars = 0;
+                        state.partial_held.take()
+                    });
+                    // The turn's own text, not the held one: after a
+                    // barge-in the held text already carries the run that
+                    // went to the next turn (review K2).
+                    if held.is_some() && self.emit_partials {
+                        let text = turn.user.clone();
+                        let content = self.live_body(
+                            "partial",
+                            session_id,
+                            json!({"eager": false, "turn_id": turn_id}),
+                            json!([{"origin": "user", "type": "text", "text": text}]),
+                        );
+                        self.emit(sink, content).await;
                     }
                     self.to_client(
                         session_id,
@@ -1385,6 +1773,25 @@ impl VoiceCell {
                     {
                         obj.insert("usage_ratio".into(), json!(ratio));
                     }
+                    // When the caller stopped and the model's first answer
+                    // audio went out, on the call's clock (D48, LC2: "time to
+                    // the first word" for the counselor and the battery; the
+                    // audio since BAT R1e, C3).
+                    if let Some(obj) = extra.as_object_mut() {
+                        if let Some(ms) = turn.person_end_ms {
+                            obj.insert("t_person_end_ms".into(), json!(ms));
+                        }
+                        if let Some(ms) = turn.first_audio_ms {
+                            obj.insert("t_first_audio_ms".into(), json!(ms));
+                        }
+                    }
+                    // A turn the caller spoke in releases what is held -- not
+                    // the one a closing session closes (review M4).
+                    let person_turn = !turn.user.is_empty()
+                        && self
+                            .live_sessions
+                            .get(session_id)
+                            .is_some_and(|s| !s.closing);
                     // Both voices in one episode: the caller's words and, where
                     // the model answered inside the same turn, its own.
                     let mut messages =
@@ -1396,6 +1803,9 @@ impl VoiceCell {
                     }
                     let content = self.live_body("turn", session_id, extra, Value::Array(messages));
                     self.emit(sink, content).await;
+                    if person_turn {
+                        self.release_held_advise(session_id).await;
+                    }
                 }
                 TurnAction::Partial { speaker, text } => {
                     // The client frame always travels; the LANE is the ordered
@@ -1424,7 +1834,14 @@ impl VoiceCell {
                         ),
                     };
                     self.to_client(session_id, frame).await;
-                    if !self.emit_partials {
+                    let lane_on = match speaker {
+                        Speaker::User => self.emit_partials,
+                        Speaker::Assistant => self.duplex_emit_spoken.unwrap_or(self.emit_partials),
+                    };
+                    if !lane_on {
+                        continue;
+                    }
+                    if speaker == Speaker::User && !self.partial_due(session_id, &text) {
                         continue;
                     }
                     let mut extra = json!({"eager": false, "turn_id": turn_id});
@@ -1460,6 +1877,92 @@ impl VoiceCell {
         }
     }
 
+    /// Whether the caller's text may leave on the `partial` lane now, under
+    /// `delta_min_chars` / `delta_min_ms` (D48, LC2). Event-driven, one check
+    /// per incoming delta and no timer (R-AG-1): a held text waits for the
+    /// next delta or for the `turn` that closes it. Marks the send where it
+    /// says yes.
+    fn partial_due(&mut self, session_id: &str, text: &str) -> bool {
+        let (min_chars, min_ms) = self.duplex_delta_min;
+        if min_chars == 0 && min_ms == 0 {
+            return true;
+        }
+        let Some(state) = self.live_sessions.get_mut(session_id) else {
+            return true;
+        };
+        let now = tokio::time::Instant::now();
+        let chars = text.chars().count();
+        let due = partial_throttle_due(
+            state
+                .partial_sent_at
+                .map(|at| (at, state.partial_sent_chars)),
+            now,
+            chars,
+            (min_chars, min_ms),
+        );
+        if due {
+            state.partial_sent_at = Some(now);
+            state.partial_sent_chars = chars;
+            state.partial_held = None;
+        } else {
+            state.partial_held = Some(text.to_string());
+        }
+        due
+    }
+
+    /// Hand over what `hop.at_turn_end` held, now that the caller's turn has
+    /// closed (OR-LV-9), in the order it came; a renewal at most once.
+    async fn release_held_advise(&mut self, session_id: &str) {
+        let held = match self.live_sessions.get_mut(session_id) {
+            Some(state) => std::mem::take(&mut state.held_advise),
+            None => return,
+        };
+        // Whether the push before was sent: the second half of an `interrupt`
+        // (the push without a message of its own) follows its first half.
+        let mut previous_sent = true;
+        for advice in held {
+            match advice {
+                HeldAdvise::Push {
+                    message,
+                    kind,
+                    delegation_id,
+                    text,
+                    spoken,
+                    takeover,
+                    section_spoken,
+                } => {
+                    // The delegation's bookkeeping happens HERE, when it is
+                    // sent: held, it stayed open, so its fallback could still
+                    // fall (review M2). The two halves of ONE `interrupt` are
+                    // ONE answer and are settled once, on the first: settled
+                    // each, the spoken half read as a second answer to its
+                    // own delegation and was dropped (delta re-check N-1).
+                    // `hold` never splits the pair, so the halves stay
+                    // adjacent.
+                    let send = if message.is_none() {
+                        previous_sent
+                    } else {
+                        self.settle_delegation(session_id, delegation_id.as_deref(), section_spoken)
+                    };
+                    previous_sent = send;
+                    if !send {
+                        continue;
+                    }
+                    self.push_advise(session_id, kind, delegation_id, &text, spoken, takeover)
+                        .await;
+                }
+                HeldAdvise::Renew => {
+                    let _ = self
+                        .to_io
+                        .send(VoiceReconfig::Renew {
+                            session_id: session_id.to_string(),
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
     /// The `in_advise` lane (contract § 1.5).
     ///
     /// Guidance, not speech: the model takes a section up in its own words and
@@ -1470,13 +1973,19 @@ impl VoiceCell {
     /// behaves for the rest of the session.
     async fn advise(&mut self, msg: &Message, body: &Value, reply_target: Path, sink: &OutputSink) {
         let section = msg.headers.hop.get("section").and_then(|v| v.as_str());
+        // `interrupt` (D48, OR-LV-7) is a `correction` followed by a `fact`
+        // with the same words: the model changes course AND says so. `renew`
+        // carries no words at all; its kind is never read.
         let (kind, spoken) = match section {
             Some("fact") => (AppendKind::Commentary, true),
             Some("context") => (AppendKind::Thinking, false),
-            Some("correction") => (AppendKind::Instructions, false),
+            Some("correction") | Some("interrupt") | Some("renew") => {
+                (AppendKind::Instructions, false)
+            }
             other => {
                 let detail = format!(
-                    "hop.section must be one of fact, context, correction; got {}",
+                    "hop.section must be one of fact, context, correction, interrupt, renew; \
+                     got {}",
                     other.unwrap_or("nothing")
                 );
                 self.refuse(sink, reply_target, "bad_section", &detail, None)
@@ -1528,6 +2037,35 @@ impl VoiceCell {
             .await;
             return;
         }
+        // `hop.at_turn_end` (OR-LV-9): held until the caller's next turn
+        // closes, then sent before the model hears anything new.
+        let at_turn_end = msg.headers.hop.get("at_turn_end").is_some_and(|v| match v {
+            Value::Bool(b) => *b,
+            Value::Number(n) => n.as_u64() == Some(1),
+            Value::String(s) => matches!(s.trim(), "1" | "true"),
+            _ => false,
+        });
+        // `renew` (OR-LV-6): a fresh provider session that asks for its seed
+        // again — how facts reach a live model at a turn boundary. Several
+        // held for one boundary are one renewal, and the connection lets a
+        // renewal that is already opening absorb another.
+        if section == Some("renew") {
+            if at_turn_end {
+                if let Some(state) = self.live_sessions.get_mut(&session_id)
+                    && !state
+                        .held_advise
+                        .iter()
+                        .any(|h| matches!(h, HeldAdvise::Renew))
+                {
+                    // A held `renew` carries no message: nothing to hand on.
+                    let _ = hold(&self.path, &session_id, state, HeldAdvise::Renew);
+                }
+            } else {
+                let _ = self.to_io.send(VoiceReconfig::Renew { session_id }).await;
+            }
+            return;
+        }
+        let interrupt = section == Some("interrupt");
         // WHERE THE WORDS ARE. Three slots, and the FIRST is the one the
         // producer actually writes: measured against the twin on 2026-09-21
         // (GH #797), thirteen delegations were answered and not one was spoken,
@@ -1547,7 +2085,11 @@ impl VoiceCell {
         // assistant turn or a bare `text` writes no payload at all, so nothing
         // that worked before this reads differently. A slot that carries no
         // words is passed over rather than taken as the answer.
-        let section_name = section_name_of(kind);
+        let section_name = if interrupt {
+            "interrupt"
+        } else {
+            section_name_of(kind)
+        };
         let text = [
             body.get("payload")
                 .and_then(|p| section_text(p, section_name)),
@@ -1595,35 +2137,13 @@ impl VoiceCell {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        // A STRAGGLER OF THE SIDECAR (GH #728, OR-T13). A `fact` for a
-        // delegation the deadline already closed with the fallback sentence,
-        // arriving after another turn has closed since the delegation opened, is
-        // an answer to a question the caller has left behind: the header the
-        // splitter builds carries no `late`, so the cell's own bookkeeping is
-        // what decides. Dropped without a refusal -- nobody did anything wrong,
-        // and an error line would put a non-event on the screen.
-        if spoken
-            && let Some(id) = delegation_id.as_ref()
-            && let Some(state) = self.live_sessions.get(&session_id)
-            && state
-                .closed_delegations
-                .iter()
-                .any(|c| c.id == *id && state.closed_turns > c.opened_turn)
-        {
-            tracing::info!(
-                path = self.path.as_str(),
-                %session_id, delegation_id = %id,
-                "voice: a fact for a delegation the fallback closed arrived after the turn \
-                 changed — not spoken"
-            );
+        // Held advice settles its delegation when it is sent (review M2):
+        // see `release_held_advise`. An `interrupt` carries a spoken `fact`
+        // (the commentary below), so it answers its delegation like one
+        // (fix-round M-4): exactly one spoken answer per `delegation_id`.
+        let answers = spoken || interrupt;
+        if !at_turn_end && !self.settle_delegation(&session_id, delegation_id.as_deref(), answers) {
             return;
-        }
-        // A delegation this colony has now answered is no longer open. Without
-        // this the list would only ever grow, for the whole length of a call.
-        if let Some(id) = delegation_id.as_ref()
-            && let Some(state) = self.live_sessions.get_mut(&session_id)
-        {
-            state.open_delegations.retain(|open| open.id != *id);
         }
         // THE HANDOVER OF A RENEWAL (GH #896). A `context` that carries
         // `hop.renewal_n` is the colony's answer to the `renewed` lane: what
@@ -1645,8 +2165,104 @@ impl VoiceCell {
         } else {
             None
         };
-        self.push_advise(&session_id, kind, delegation_id, &text, spoken, takeover)
+        let mut pushes = vec![(kind, spoken)];
+        if interrupt {
+            pushes.push((AppendKind::Commentary, true));
+        }
+        let section_spoken = answers;
+        let mut message = Some(Box::new(msg.clone()));
+        for (kind, spoken) in pushes {
+            if at_turn_end && let Some(state) = self.live_sessions.get_mut(&session_id) {
+                let advice = HeldAdvise::Push {
+                    message: message.take(),
+                    section_spoken,
+                    kind,
+                    delegation_id: delegation_id.clone(),
+                    text: text.clone(),
+                    spoken,
+                    takeover,
+                };
+                for dropped in hold(&self.path, &session_id, state, advice) {
+                    if let HeldAdvise::Push {
+                        message: Some(m), ..
+                    } = dropped
+                    {
+                        self.dead_letter_late(&m, &session_id).await;
+                    }
+                }
+                continue;
+            }
+            self.push_advise(
+                &session_id,
+                kind,
+                delegation_id.clone(),
+                &text,
+                spoken,
+                takeover,
+            )
             .await;
+        }
+    }
+
+    /// Settle the delegation an answer names as it is SENT; `false` where it
+    /// is a straggler and is not to be said.
+    ///
+    /// A STRAGGLER OF THE SIDECAR (GH #728, OR-T13). A `fact` for a
+    /// delegation the deadline already closed with the fallback sentence,
+    /// arriving after another turn has closed since the delegation opened, is
+    /// an answer to a question the caller has left behind: the header the
+    /// splitter builds carries no `late`, so the cell's own bookkeeping is
+    /// what decides. Dropped without a refusal -- nobody did anything wrong,
+    /// and an error line would put a non-event on the screen. Otherwise the
+    /// delegation this colony has now answered is no longer open; without
+    /// this the list would only ever grow, for the whole length of a call.
+    /// Held advice runs this at its release, not on arrival (review M2): a
+    /// delegation taken off the list while its answer waits for the caller's
+    /// turn would never hear its fallback.
+    fn settle_delegation(
+        &mut self,
+        session_id: &str,
+        delegation_id: Option<&str>,
+        spoken: bool,
+    ) -> bool {
+        let Some(id) = delegation_id else {
+            return true;
+        };
+        let Some(state) = self.live_sessions.get_mut(session_id) else {
+            return true;
+        };
+        if spoken
+            && state
+                .closed_delegations
+                .iter()
+                .any(|c| c.id == id && state.closed_turns > c.opened_turn)
+        {
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, delegation_id = %id,
+                "voice: a fact for a delegation the fallback closed arrived after the turn \
+                 changed — not spoken"
+            );
+            return false;
+        }
+        if spoken {
+            if state.answered_delegations.iter().any(|a| a == id) {
+                tracing::warn!(
+                    path = self.path.as_str(),
+                    %session_id, delegation_id = %id,
+                    "voice: a second answer for a delegation already answered -- not spoken"
+                );
+                return false;
+            }
+            state.answered_delegations.push(id.to_string());
+            let excess = state
+                .answered_delegations
+                .len()
+                .saturating_sub(CLOSED_DELEGATIONS_KEPT);
+            state.answered_delegations.drain(..excess);
+        }
+        state.open_delegations.retain(|open| open.id != id);
+        true
     }
 
     /// Whether an answer is a straggler for a turn this call has left (GH #728).
@@ -2130,6 +2746,46 @@ fn duplex_gap_ms(params: &VoiceParams) -> u64 {
     }
 }
 
+/// Whether a caller's text of `chars` characters may leave on the `partial`
+/// lane at `now`, given the last emission of the open turn (`sent`: when, and
+/// how many characters) and the throttle (`min_chars`, `min_ms`). The first
+/// emission of a turn always leaves; after it, BOTH steps have to be reached
+/// (D48, LC2: 12 characters / 250 ms on a telephone line).
+fn partial_throttle_due(
+    sent: Option<(tokio::time::Instant, usize)>,
+    now: tokio::time::Instant,
+    chars: usize,
+    (min_chars, min_ms): (usize, u64),
+) -> bool {
+    match sent {
+        None => true,
+        Some((at, sent_chars)) => {
+            chars.saturating_sub(sent_chars) >= min_chars
+                && now.saturating_duration_since(at) >= Duration::from_millis(min_ms)
+        }
+    }
+}
+
+/// The throttle of the caller's `partial` lane (D48); `(0, 0)` where there
+/// is no `gpt_live` block, which sends every delta as before.
+fn duplex_delta_min(params: &VoiceParams) -> (usize, u64) {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => (
+            usize::try_from(p.delta_min_chars).unwrap_or(usize::MAX),
+            p.delta_min_ms,
+        ),
+        _ => (0, 0),
+    }
+}
+
+/// Whether the `spoken` lane runs apart from `emit_partials` (D48).
+fn duplex_emit_spoken(params: &VoiceParams) -> Option<bool> {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.emit_spoken,
+        _ => None,
+    }
+}
+
 /// The same for the backchannel ceiling (OR-L18).
 fn duplex_backchannel_ms(params: &VoiceParams) -> u64 {
     match &params.duplex {
@@ -2411,6 +3067,12 @@ impl LongRunningCell for VoiceCell {
                 return;
             }
 
+            // The seed lane (D48): the history a duplex session opens with.
+            if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_seed") {
+                self.take_seed(&msg, body, reply_target, sink).await;
+                return;
+            }
+
             // The sender lane (GH #979): no text to speak, a name to keep.
             if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_session") {
                 self.take_sender(&msg, reply_target, sink).await;
@@ -2661,7 +3323,26 @@ impl LongRunningCell for VoiceCell {
                 }
                 VoiceEvent::Disconnected { session_id } => {
                     self.sessions.remove(&session_id);
-                    self.live_sessions.remove(&session_id);
+                    // What `hop.at_turn_end` still held is the colony's, as a
+                    // `session_ended` dead letter (review M4, GH #1016):
+                    // nothing vanishes and nothing is said into a call that is
+                    // over.
+                    if let Some(state) = self.live_sessions.remove(&session_id) {
+                        for advice in state.held_advise {
+                            match advice {
+                                HeldAdvise::Push {
+                                    message: Some(message),
+                                    ..
+                                } => self.dead_letter_late(&message, &session_id).await,
+                                HeldAdvise::Push { .. } => {}
+                                HeldAdvise::Renew => tracing::info!(
+                                    path = self.path.as_str(),
+                                    %session_id,
+                                    "voice: a held renewal for a call that is over -- dropped"
+                                ),
+                            }
+                        }
+                    }
                     // GH #1016: the call is over, so the door to it closes.
                     // What still arrives for it is a late answer.
                     self.close_door(&session_id);
@@ -2747,6 +3428,19 @@ impl LongRunningCell for VoiceCell {
                     )
                     .await;
                 }
+                VoiceEvent::LiveAudioOut { session_id, at_ms } => {
+                    let gap = self.duplex_turn_gap_ms;
+                    let backchannel = self.duplex_backchannel_max_ms;
+                    if let Some(state) = self.live_sessions.get_mut(&session_id) {
+                        // Never an action: the mark only lands in the open turn.
+                        let _ = live_turns::step(
+                            &mut state.turns,
+                            TurnInput::AudioOut { at_ms },
+                            gap,
+                            backchannel,
+                        );
+                    }
+                }
                 VoiceEvent::LiveTick { session_id, now_ms } => {
                     self.on_live_tick(&session_id, now_ms, sink).await;
                 }
@@ -2760,6 +3454,67 @@ impl LongRunningCell for VoiceCell {
                 } => {
                     self.on_renewed(&session_id, renewal_n, renewed_at_ms, sink)
                         .await;
+                }
+                VoiceEvent::SeedAsk {
+                    session_id,
+                    reason,
+                    renewal_n,
+                } => {
+                    // No words, no session check: the call may still be
+                    // ringing (GH #1055), and the ask is what lets the colony
+                    // answer before the model opens (D48).
+                    let content = self.live_body(
+                        "seed_ask",
+                        &session_id,
+                        json!({"reason": reason.as_str(), "renewal_n": renewal_n}),
+                        json!([]),
+                    );
+                    self.emit(sink, content).await;
+                }
+                VoiceEvent::CallMark {
+                    session_id,
+                    elapsed_s,
+                } => {
+                    // D48, DK: the connection's timer, so only a live call
+                    // gets here -- and not one whose session already closed:
+                    // between that `Closed` and the end of its events the
+                    // loop still runs, and a mark then would follow the
+                    // call's last turn (review B-k1).
+                    if self
+                        .live_sessions
+                        .get(&session_id)
+                        .is_none_or(|state| state.closing)
+                    {
+                        return;
+                    }
+                    let content = self.live_body(
+                        "call_mark",
+                        &session_id,
+                        json!({"elapsed_s": elapsed_s}),
+                        json!([]),
+                    );
+                    self.emit(sink, content).await;
+                }
+                VoiceEvent::CallUsage {
+                    session_id,
+                    seconds,
+                    last,
+                    complete,
+                } => {
+                    self.emit_usage(&session_id, seconds, last, complete, sink)
+                        .await;
+                }
+                VoiceEvent::SeedUnheld { session_id } => {
+                    // Review K5: a curator that names the wrong call hears
+                    // it, the way an `in_advise` for nobody is answered.
+                    self.emit_error(
+                        sink,
+                        "unknown_session",
+                        "in_seed: no session of this call is parked or held",
+                        Some(&session_id),
+                        None,
+                    )
+                    .await;
                 }
                 VoiceEvent::DuplexFailed { session_id, detail } => {
                     // The one duplex path that IS built here: a provider that
@@ -2809,6 +3564,80 @@ impl LongRunningCell for VoiceCell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn held_push(message: Option<Box<Message>>, text: &str) -> HeldAdvise {
+        HeldAdvise::Push {
+            message,
+            section_spoken: true,
+            kind: AppendKind::Commentary,
+            delegation_id: None,
+            text: text.to_string(),
+            spoken: true,
+            takeover: None,
+        }
+    }
+
+    /// Review kv-2 A-k1: past [`HELD_ADVISE_KEPT`] the oldest advice goes as a
+    /// whole -- an `interrupt` is two pushes and one message, and its second
+    /// half never stays behind without the first -- and `hold` hands the
+    /// dropped message back for the dead letter.
+    #[test]
+    fn an_overfull_hold_drops_a_whole_interrupt_and_returns_its_message() {
+        let mut state = LiveSessionState::new(Mode::Auto);
+        let msg = Box::new(
+            meclaw_core::MessageBuilder::new(Path::new("/advise"))
+                .body(Body::Inline(json!({"messages": []})))
+                .build(),
+        );
+        let path = &Path::new("/voice");
+        let mut dropped = hold(
+            path,
+            "call-1",
+            &mut state,
+            held_push(Some(msg.clone()), "a"),
+        );
+        dropped.extend(hold(path, "call-1", &mut state, held_push(None, "a2")));
+        for n in 0..HELD_ADVISE_KEPT - 2 {
+            dropped.extend(hold(path, "call-1", &mut state, HeldAdvise::Renew));
+            assert!(dropped.is_empty(), "nothing dropped at {n}");
+        }
+        dropped.extend(hold(path, "call-1", &mut state, HeldAdvise::Renew));
+        assert_eq!(dropped.len(), 2, "both halves of the interrupt go");
+        assert!(matches!(&dropped[0], HeldAdvise::Push { message: Some(m), .. } if m.id == msg.id));
+        assert!(
+            !state
+                .held_advise
+                .iter()
+                .any(|h| matches!(h, HeldAdvise::Push { .. })),
+            "no orphaned half stays held"
+        );
+    }
+
+    /// D48 / LC2: the throttle of the `partial` lane needs both steps, the
+    /// characters AND the time, and lets the first emission of a turn out.
+    #[tokio::test(start_paused = true)]
+    async fn partial_throttle_needs_both_steps() {
+        let t0 = tokio::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let knobs = (12, 250);
+        assert!(partial_throttle_due(None, t0, 4, knobs), "the first leaves");
+        assert!(
+            !partial_throttle_due(Some((t0, 4)), ms(300), 12, knobs),
+            "8 chars"
+        );
+        assert!(
+            !partial_throttle_due(Some((t0, 4)), ms(249), 40, knobs),
+            "249 ms"
+        );
+        assert!(
+            partial_throttle_due(Some((t0, 4)), ms(250), 16, knobs),
+            "both reached"
+        );
+        assert!(
+            partial_throttle_due(Some((t0, 4)), t0, 5, (0, 0)),
+            "unthrottled: every delta"
+        );
+    }
     use crate::voice::contract::ProviderTimeouts;
     use crate::voice::params::VoiceParams;
     use crate::voice::providers::build_stt;

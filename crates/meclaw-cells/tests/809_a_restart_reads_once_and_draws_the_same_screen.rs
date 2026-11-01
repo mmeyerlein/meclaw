@@ -2065,7 +2065,7 @@ const WAITS_ON: [&str; 7] = [
 /// so in the pin, so a new exception is a change of both (re-check tv-bn M7b4 B-M1). One
 /// that hands back a value hands it back as `Unsettled<…>`, unless it is a settling wait
 /// or an event (re-check tv-bn M7b5 A-M2).
-const NO_SETTLE: [(&str, &str); 16] = [
+const NO_SETTLE: [(&str, &str); 18] = [
     (
         "Colony::drawn_after",
         "polls for the write's positive events; hands back the tree read at rest (a settling wait)",
@@ -2097,6 +2097,14 @@ const NO_SETTLE: [(&str, &str); 16] = [
     (
         "Stage::decided_on",
         "a wait for a positive event under a held request; returns nothing",
+    ),
+    (
+        "Stage::fanned_turn",
+        "a send and its positive wait; returns nothing",
+    ),
+    (
+        "Stage::keeper_stamp",
+        "a send and its positive wait; returns nothing",
     ),
     (
         "Stage::trail",

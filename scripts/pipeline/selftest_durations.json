@@ -99,6 +99,7 @@
  "scripts.tests.test_precheck_testing_bans": 1.8,
  "scripts.tests.test_precheck_wall_clock": 0.3,
  "scripts.tests.test_private_tree": 0.1,
+ "scripts.tests.test_release_matches_battery": 0.4,
  "scripts.tests.test_replay_871": 0.1,
  "scripts.tests.test_required_pins": 0.8,
  "scripts.tests.test_roadmap_anchors": 0.1,

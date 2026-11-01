@@ -454,6 +454,24 @@ pub enum DuplexControl {
     Unmute,
     /// End the session in an orderly way.
     Close,
+    /// The history the session opens with (D48, R-LS-7): the colony's answer
+    /// to a `seed_ask`. A provider that seeds reads it only BEFORE its
+    /// session starts — it is part of the opening, not guidance — and a seed
+    /// that arrives after the start is dropped with a log line. A provider
+    /// that does not seed ignores it.
+    Seed {
+        /// The messages, oldest first.
+        messages: Vec<SeedMessage>,
+    },
+}
+
+/// One message of a session's seed history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedMessage {
+    /// `developer`, `user` or `assistant` — the three the live model takes.
+    pub role: String,
+    /// The text of the message.
+    pub text: String,
 }
 
 /// Duplex failures. Never carries a credential.

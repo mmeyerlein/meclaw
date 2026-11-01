@@ -378,7 +378,9 @@ fn read_harmony(
                             shown(to)
                         )));
                     };
-                    if !menu.contains(&name) {
+                    // GH #1373: a rest of the arguments in the name is
+                    // repaired by `repair_tool_names` after the recovery.
+                    if declared(name, menu).is_none() {
                         return Err(malformed(format!(
                             "call to `{}`, which the menu did not carry",
                             shown(name)
@@ -494,6 +496,205 @@ pub(crate) fn recover_harmony_tool_calls(
     calls.extend(texts);
     t.assistant_turn = calls;
     Ok(t)
+}
+
+/// The declared tool `name` stands for: the menu entry it equals, else the one
+/// it equals once trailing JSON punctuation (`"`, `}`, `]`, `,`) and
+/// whitespace are cut off (GH #1373), else `None`. The one rule every wire
+/// of the cell checks a returned name with.
+fn declared<'m>(name: &str, menu: &[&'m str]) -> Option<&'m str> {
+    let cut =
+        name.trim_end_matches(|c: char| matches!(c, '"' | '}' | ']' | ',') || c.is_whitespace());
+    menu.iter()
+        .find(|m| **m == name)
+        .or_else(|| menu.iter().find(|m| **m == cut))
+        .copied()
+}
+
+/// The schema of the menu entry `name`, in every wire shape: Chat
+/// `function.parameters`, Responses `parameters`, Messages `input_schema`.
+fn entry_schema<'r>(request: &'r Value, name: &str) -> Option<&'r Value> {
+    request
+        .get("tools")
+        .and_then(|v| v.as_array())?
+        .iter()
+        .map(|t| t.get("function").unwrap_or(t))
+        .find(|f| f.get("name").and_then(|n| n.as_str()) == Some(name))
+        .and_then(|f| f.get("parameters").or_else(|| f.get("input_schema")))
+}
+
+/// The `op` values the menu entry `name` declares
+/// (`properties.op.enum`) -- the ops of a family the collector folded
+/// (`web {op, args}`); empty for every other entry.
+fn declared_ops<'r>(request: &'r Value, name: &str) -> Vec<&'r str> {
+    entry_schema(request, name)
+        .and_then(|s| s.pointer("/properties/op/enum"))
+        .and_then(|v| v.as_array())
+        .map(|ops| ops.iter().filter_map(|o| o.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// GH #1373 (BAT R1 C1): every `tool_call` turn's name checked against the
+/// menu the request sent.
+///
+/// Measured: quick (a fast model on the chat wire) returned `web_search"}`
+/// for the declared `web_search`, three times in two runs. Dispatched as it
+/// came, the call reached the tools hive's `unknown_tool`, and the model
+/// searched again: a second round, +0.8 to 9 s. A name that [`declared`]
+/// maps to a different menu entry is rewritten to it once and said on a
+/// `WARN` line (`tool_name_repaired`, with the call id). Every other name
+/// stays as it came -- the tool side answers it `unknown_tool` within the
+/// round, and the model reads that -- and a request without a menu changes
+/// nothing at all. Only the `name` of a repaired call moves.
+///
+/// GH #1373 (lab l14): the quick voice's menu is FOLDED -- one entry per
+/// family, `web {op, args}` with `op` an enum -- and the dispatcher names the
+/// tool `F_op`. A rest there sits where the plain menu holds nothing to check
+/// it against: in the unfolded name (`web_search"}`, no menu entry) or in the
+/// `op` (`search"}`). So the names of a family's ops (`F_op` for each value
+/// of its `op` enum) are declared names too, and the `op` of a call to such
+/// an entry -- beside `args`, else inside it, where the dispatcher reads it
+/// -- is checked by the same rule against the enum; a repaired `op` rewrites
+/// the call's `arguments`, nothing else.
+pub(crate) fn repair_tool_names(mut t: TranslatedResponse, request: &Value) -> TranslatedResponse {
+    let menu = menu_names(request);
+    if menu.is_empty() {
+        return t;
+    }
+    let op_names: Vec<String> = menu
+        .iter()
+        .flat_map(|f| {
+            declared_ops(request, f)
+                .into_iter()
+                .map(move |op| format!("{f}_{op}"))
+        })
+        .collect();
+    let names: Vec<&str> = menu
+        .iter()
+        .copied()
+        .chain(op_names.iter().map(String::as_str))
+        .collect();
+    for turn in &mut t.assistant_turn {
+        if turn.get("type").and_then(|v| v.as_str()) != Some("tool_call") {
+            continue;
+        }
+        let Some(mut function) = turn
+            .get("text")
+            .and_then(|v| v.as_str())
+            .and_then(|s| meclaw_core::serde_json::from_str::<Value>(s).ok())
+        else {
+            continue;
+        };
+        let Some(name) = function.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let name = name.to_string();
+        let id = turn
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut moved = false;
+        if let Some(to) = declared(&name, &names).filter(|to| *to != name) {
+            tracing::warn!(
+                tool_call_id = id.as_str(),
+                from = %shown(&name),
+                to = to,
+                "llm: tool_name_repaired -- the returned name carried a rest of its arguments"
+            );
+            function["name"] = Value::String(to.to_string());
+            moved = true;
+        }
+        let ops = function
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|n| declared_ops(request, n))
+            .unwrap_or_default();
+        if let Some(args) = repair_op(&function, &ops, &id) {
+            function["arguments"] = Value::String(args);
+            moved = true;
+        }
+        if moved {
+            turn["text"] = Value::String(function.to_string());
+        }
+    }
+    t
+}
+
+/// The `arguments` of a family call whose `op` [`declared`] maps to a
+/// different value of the family's `ops` (said on the `tool_name_repaired`
+/// line), `None` when nothing moves.
+///
+/// GH #1373 (delta review m2): the slot repaired is the one the dispatcher
+/// reads (`templates/dispatcher` `unfold`): a non-blank string `op` beside
+/// `args`; else the non-blank string `op` inside `args` (GH #1341), where an
+/// `args` that is a JSON string of an object is unpacked once (GH #1360) and
+/// written back as a string. A blank `op` beside `args` left the repair out
+/// although the dispatcher read the inner one.
+fn repair_op(function: &Value, ops: &[&str], id: &str) -> Option<String> {
+    if ops.is_empty() {
+        return None;
+    }
+    let mut args = function
+        .get("arguments")
+        .and_then(|v| v.as_str())
+        .and_then(|s| meclaw_core::serde_json::from_str::<Value>(s).ok())?;
+    if let Some(to) = usable_op(&args).and_then(|op| repaired_op(op, ops, id)) {
+        args["op"] = Value::String(to);
+        return Some(args.to_string());
+    }
+    if usable_op(&args).is_some() {
+        return None;
+    }
+    let (mut inner, encoded) = match args.get("args")? {
+        Value::String(s) => (
+            meclaw_core::serde_json::from_str::<Value>(s)
+                .ok()
+                .filter(Value::is_object)?,
+            true,
+        ),
+        v @ Value::Object(_) => (v.clone(), false),
+        _ => return None,
+    };
+    let to = usable_op(&inner).and_then(|op| repaired_op(op, ops, id))?;
+    inner["op"] = Value::String(to);
+    args["args"] = if encoded {
+        Value::String(inner.to_string())
+    } else {
+        inner
+    };
+    Some(args.to_string())
+}
+
+/// The `op` of `v` when the dispatcher would read it: a string that is not
+/// blank.
+fn usable_op(v: &Value) -> Option<&str> {
+    v.get("op")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// The value of `ops` that [`declared`] maps a different `op` to, said on
+/// the `tool_name_repaired` line; `None` for an exact or undeclared `op`.
+fn repaired_op(op: &str, ops: &[&str], id: &str) -> Option<String> {
+    let to = declared(op, ops).filter(|to| *to != op)?;
+    tracing::warn!(
+        tool_call_id = id,
+        from = %shown(op),
+        to = to,
+        "llm: tool_name_repaired -- the returned op carried a rest of its arguments"
+    );
+    Some(to.to_string())
+}
+
+/// What the Chat and the Responses wire hand on: the harmony recovery
+/// ([`recover_harmony_tool_calls`]), then every name checked against the menu
+/// ([`repair_tool_names`]).
+pub(crate) fn checked_tool_calls(
+    t: TranslatedResponse,
+    request: &Value,
+) -> Result<TranslatedResponse, TranslateError> {
+    recover_harmony_tool_calls(t, request).map(|t| repair_tool_names(t, request))
 }
 
 /// The header that reopens the harmony message a `length` cut left open in
@@ -995,5 +1196,143 @@ mod tests {
         }
         let stopped = parse_openai_response(&chat_answer(analysis)).unwrap();
         assert_eq!(super::cut_frame(&stopped), None);
+    }
+
+    // -- GH #1373: a returned name is checked against the declared menu ------
+
+    /// One wire tool call per `(id, name)`, arguments `{"q":"x"}`.
+    fn calls_answer(calls: &[(&str, &str)]) -> crate::llm::translate::TranslatedResponse {
+        let tool_calls: Vec<Value> = calls
+            .iter()
+            .map(|(id, name)| {
+                json!({"id": id, "type": "function",
+                       "function": {"name": name, "arguments": "{\"q\":\"x\"}"}})
+            })
+            .collect();
+        parse_openai_response(&json!({
+            "id": "gen-1373", "model": "m",
+            "choices": [{"finish_reason": "tool_calls",
+                         "message": {"role": "assistant", "content": null,
+                                     "tool_calls": tool_calls}}],
+        }))
+        .unwrap()
+    }
+
+    fn checked(
+        calls: &[(&str, &str)],
+        request: &Value,
+    ) -> crate::llm::translate::TranslatedResponse {
+        super::checked_tool_calls(calls_answer(calls), request).unwrap()
+    }
+
+    #[test]
+    fn gh1373_a_name_with_an_argument_rest_is_repaired_to_the_declared_tool() {
+        // Measured (BAT R1 C1, quick on the chat wire): `web_search"}`.
+        for raw in [
+            "web_search\"}",
+            "web_search\"]",
+            "web_search\",",
+            "web_search \"}\n",
+        ] {
+            let t = checked(&[("call_1", raw)], &chat_request());
+            let f = tool_call_function(&t.assistant_turn[0]);
+            assert_eq!(f["name"], "web_search", "{raw}");
+            assert_eq!(
+                f["arguments"], "{\"q\":\"x\"}",
+                "{raw}: arguments untouched"
+            );
+            assert_eq!(t.assistant_turn[0]["id"], "call_1");
+        }
+    }
+
+    #[test]
+    fn gh1373_the_responses_menu_shape_repairs_too() {
+        let request = json!({"tools": [{"type": "function", "name": "web_search"}]});
+        let t = checked(&[("c", "web_search\"}")], &request);
+        assert_eq!(
+            tool_call_function(&t.assistant_turn[0])["name"],
+            "web_search"
+        );
+    }
+
+    #[test]
+    fn gh1373_a_folded_family_is_declared_under_its_family_name() {
+        // A folded menu carries the family `ask`, never `ask_keeper`.
+        let request = json!({"tools": [{"type": "function", "function": {"name": "ask"}}]});
+        let t = checked(&[("c", "ask\"}")], &request);
+        assert_eq!(tool_call_function(&t.assistant_turn[0])["name"], "ask");
+    }
+
+    #[test]
+    fn gh1373_an_undeclared_name_or_no_menu_leaves_the_answer_byte_identical() {
+        // Not repairable: another word, a rest in front, a rest that is no
+        // JSON punctuation, a prefix of a declared name.
+        for raw in [
+            "delete_everything",
+            "\"web_search",
+            "web_search)",
+            "web_sear\"}",
+        ] {
+            let before = calls_answer(&[("c", raw)]);
+            let after = super::checked_tool_calls(before.clone(), &chat_request()).unwrap();
+            assert_eq!(after, before, "{raw}");
+        }
+        // No menu in the request: nothing is checked at all.
+        let before = calls_answer(&[("c", "web_search\"}")]);
+        let after = super::checked_tool_calls(before.clone(), &json!({"model": "m"})).unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn gh1373_a_leaked_harmony_call_with_an_argument_rest_is_repaired_too() {
+        let raw = LEAKED_HANDOFF.replace("functions.handoff ", "functions.handoff\"} ");
+        let t = super::checked_tool_calls(
+            parse_openai_response(&chat_answer(&raw)).unwrap(),
+            &chat_request(),
+        )
+        .unwrap();
+        assert_eq!(tool_call_function(&t.assistant_turn[0])["name"], "handoff");
+    }
+
+    /// One call to the folded `web {op, args}` family with these `arguments`,
+    /// checked against the menu the collector folds (`op` enum).
+    fn checked_web_call(arguments: &str) -> Value {
+        let request = json!({"tools": [{"type": "function", "function": {
+            "name": "web",
+            "parameters": {"type": "object", "properties": {
+                "op": {"type": "string", "enum": ["fetch", "search", "help"]},
+                "args": {"type": "object"}}}}}]});
+        let answer = parse_openai_response(&json!({
+            "id": "gen-1373", "model": "m",
+            "choices": [{"finish_reason": "tool_calls",
+                         "message": {"role": "assistant", "content": null,
+                                     "tool_calls": [{"id": "c", "type": "function",
+                                       "function": {"name": "web", "arguments": arguments}}]}}],
+        }))
+        .unwrap();
+        let t = super::checked_tool_calls(answer, &request).unwrap();
+        let f = tool_call_function(&t.assistant_turn[0]);
+        meclaw_core::serde_json::from_str(f["arguments"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn gh1373_a_blank_op_beside_args_repairs_the_op_inside_args() {
+        // The dispatcher reads `op` in `args` when the one beside it is
+        // blank (GH #1341), so that is the slot repaired.
+        let args = checked_web_call(r#"{"op":" ","args":{"op":"search\"}","query":"x"}}"#);
+        assert_eq!(args["args"]["op"], "search");
+        assert_eq!(args["args"]["query"], "x");
+        assert_eq!(args["op"], " ", "the blank op is not the dispatcher's slot");
+    }
+
+    #[test]
+    fn gh1373_args_as_a_string_repairs_its_op_and_stays_a_string() {
+        // GH #1360: the dispatcher unpacks a string `args` once and reads
+        // its `op`; the repair keeps the encoding the model chose.
+        let args = checked_web_call(r#"{"args":"{\"op\":\"search\\\"}\",\"query\":\"x\"}"}"#);
+        let inner = args["args"].as_str().expect("args stays a JSON string");
+        let inner: Value = meclaw_core::serde_json::from_str(inner).unwrap();
+        assert_eq!(inner["op"], "search");
+        assert_eq!(inner["query"], "x");
     }
 }

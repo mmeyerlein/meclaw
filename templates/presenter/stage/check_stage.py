@@ -1693,6 +1693,626 @@ def t_clock(s, t):
             [sid for op, sid in clock(out) if op == "remove"], [first[0][1]])
 
 
+# ---------------------------------------------------------------------------
+# live-2 GR (#1357): the verdict from the turn's stamp (display-hive.md § 9b.12-9b.14)
+
+GOLDEN = os.path.join(HERE, "selector_golden.json")
+
+
+def selector_script(s, **params):
+    """Every emission of a fixed run of the selector way, in order: topics, a sure
+    verdict with data in two parts, an unsure turn, a timeout with a late verdict, a
+    newer turn that replaces an older one, a withdraw at the data deadline, and a stray
+    `in_verdict` (the default ignores it). Pinned against `selector_golden.json`, written
+    from the stage of presenter 1.3.1 before the stamp way existed: the default stays
+    byte-identical (`selector_source_is_byte_identical`)."""
+    c = Cell(s, **params)
+    seen = []
+
+    def go(*a, **k):
+        seen.extend(copy.deepcopy(c.run(*a, **k)))
+
+    go({"route": "mutation_committed"})
+    go({"route": "show_topics", "show_app": "/app", "show_at": "./show"}, {"topics": [sample()]})
+    go({"route": "turn", "turn_id": "g1"}, {"messages": [{"type": "text", "text": "a sample"}]})
+    c.tick(250)
+    go({"route": "in_decision", "show_id": "g1"}, verdict("sample", 0.9, "rows", "steps", 0.6),
+       ctx=DEC_CTX)
+    c.tick(100)
+    go({"route": "show_data", "show_app": "/app"},
+       {"topic": "sample", "turn_id": "g1", "sets": ROWS})
+    c.tick(100)
+    go({"route": "show_data", "show_app": "/app"},
+       {"topic": "sample", "turn_id": "g1", "sets": STEPS})
+    c.tick(10)
+    go({"route": "turn", "turn_id": "g2"}, {"messages": [{"type": "text", "text": "hmm"}]})
+    go({"route": "in_decision", "show_id": "g2"}, verdict("sample", 0.3, "rows"), ctx=DEC_CTX)
+    c.tick(10)
+    go({"route": "turn", "turn_id": "g3"}, {"messages": [{"type": "text", "text": "late"}]})
+    c.tick(4100)
+    go({"route": "in_tick"})
+    go({"route": "in_decision", "show_id": "g3"}, verdict("sample", 0.9, "brief"), ctx=DEC_CTX)
+    c.tick(10)
+    go({"route": "turn", "turn_id": "g4"}, {"messages": [{"type": "text", "text": "old"}]})
+    go({"route": "in_decision", "show_id": "g4"}, verdict("sample", 0.9, "brief"), ctx=DEC_CTX)
+    c.tick(10)
+    go({"route": "turn", "turn_id": "g5"}, {"messages": [{"type": "text", "text": "new"}]})
+    go({"route": "in_decision", "show_id": "g5"}, verdict("sample", 0.9, "slow"), ctx=DEC_CTX)
+    go({"route": "in_verdict", "turn_id": "g5"},
+       {"stamp": {"turn_id": "g5", "screen": {"topic": "sample", "confidence": 0.9,
+                                              "lead": "rows", "further": "none"}}})
+    c.tick(4100)
+    go({"route": "in_tick"})
+    return seen
+
+
+def golden_text(emissions):
+    return json.dumps(emissions, sort_keys=True, indent=1, ensure_ascii=False) + "\n"
+
+
+def stamp(tid, topic="sample", p=0.9, lead="rows", further="none", form=None, screen=True):
+    """The body of the talky's stamp (FU2): `screen` and, without a screen judge,
+    `screen_form` in the first stamp; never the turn's text."""
+    st = {"turn_id": tid, "session_id": "s1", "channel": "chat", "path": "simple",
+          "intent": "show", "choices": {}, "duration": 240}
+    if screen:
+        st["screen"] = {"topic": topic, "confidence": p, "lead": lead, "further": further}
+    if form is not None:
+        st["screen_form"] = form
+    return {"stamp": st}
+
+
+def form_only(tid, form):
+    """The second stamp of a turn when a screen judge runs: the form alone."""
+    return {"stamp": {"turn_id": tid, "screen_form": form}}
+
+
+def staged(s, **params):
+    c = Cell(s, verdict_source="stamp", **params)
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [sample()]})
+    return c
+
+
+def said(c, tid, text="show me a sample"):
+    return c.run({"route": "turn", "turn_id": tid}, {"messages": [{"type": "text", "text": text}]})
+
+
+def judged(c, tid, body, ctx=None):
+    return c.run({"route": "in_verdict", "turn_id": tid}, body, ctx=ctx)
+
+
+def views(out):
+    return [e for e in out if e["header"]["route"] == "view"]
+
+
+def stack_of(view):
+    return view["content"]["children"][1]
+
+
+def kids(view):
+    return [(n["component"], n.get("key")) for n in stack_of(view)["children"]]
+
+
+def t_stamp(s, t):
+    # Test 1: the stamp's sure verdict opens a window under construction, no selector call
+    c = staged(s)
+    out = said(c, "s1")
+    t.check("stamp_verdict_opens_building_window_without_selector_call: the turn asks nobody",
+            routes(out), [])
+    c.tick(240)
+    out = judged(c, "s1", stamp("s1", further="steps"))
+    t.check("stamp_verdict_opens_building_window_without_selector_call: view and data",
+            routes(out), ["view", "in_show"])
+    t.check("stamp_verdict_opens_building_window_without_selector_call: no decide anywhere",
+            [e for e in SEEN if e["header"]["route"] == "decide"
+             and e.get("show_id") == "s1"], [])
+    v = views(out)[0]
+    first = stack_of(v)["children"][0]
+    t.check("stamp_verdict_opens_building_window_without_selector_call: pictogram first, no text",
+            (first["component"], first["props"]), ("display-status", {"kind": "building"}))
+    t.check("stamp_verdict_opens_building_window_without_selector_call: the stack builds",
+            stack_of(v)["props"].get("build"), "building")
+    t.check("stamp_verdict_opens_building_window_without_selector_call: touched once",
+            "touched" in v["content"]["props"], True)
+    ask = [e for e in out if e["header"]["route"] == "in_show"][0]
+    t.check("stamp_verdict_opens_building_window_without_selector_call: the request is the turn",
+            (ask["request"], ask["lead"], ask["also"]), ("show me a sample", "rows", ["steps"]))
+
+    # Test 2: the skeleton of every chosen candidate, from the manifest, no data
+    sk = [n for n in stack_of(v)["children"] if n["component"] == "display-skeleton"]
+    t.check("building_window_shows_skeleton_of_lead_candidate: lead then further",
+            [(n["key"], n["props"]) for n in sk],
+            [("show-sample-rows-skeleton", {"block": "display-list", "title": "Items", "lines": 3}),
+             ("show-sample-steps-skeleton", {"block": "display-steps", "title": "Path", "lines": 3})])
+
+    # Test 3: blocks replace skeletons in place; a set that comes again rebuilds until done
+    out = data(c, "s1", ROWS)
+    v = views(out)[0]
+    t.check("blocks_replace_skeleton_until_done_then_frozen: the block takes the skeleton's place",
+            kids(v), [("display-status", "show-sample-building"),
+                      ("display-list", "show-sample-rows"),
+                      ("display-skeleton", "show-sample-steps-skeleton")])
+    t.check("blocks_replace_skeleton_until_done_then_frozen: still building",
+            stack_of(v)["props"].get("build"), "building")
+    t.check("blocks_replace_skeleton_until_done_then_frozen: a block is no touch",
+            "touched" in v["content"]["props"], False)
+    again = {"rows": {"audience_set": ["*"], "rows": [{"name": "b"}]}}
+    out = data(c, "s1", again)
+    rows = [n for n in stack_of(views(out)[0])["children"] if n["key"] == "show-sample-rows"]
+    t.check("blocks_replace_skeleton_until_done_then_frozen: rebuilt before done",
+            [k["props"]["k"] for k in rows[0]["children"]], ["b"])
+    c.tick(100)
+    out = data(c, "s1", STEPS)
+    v = views(out)[0]
+    t.check("blocks_replace_skeleton_until_done_then_frozen: done",
+            kids(v), [("display-list", "show-sample-rows"), ("display-steps", "show-sample-steps")])
+    t.check("blocks_replace_skeleton_until_done_then_frozen: frozen after done",
+            routes(data(c, "s1", ROWS)), [])
+
+    # Test 4: done takes the pictogram away and settles once
+    t.check("done_removes_pictogram_and_settles_once: the stack settles",
+            {k: stack_of(v)["props"].get(k) for k in ("build", "settle_ms")},
+            {"build": "done", "settle_ms": 600})
+    j = journal_of(out)
+    t.check("done_removes_pictogram_and_settles_once: the journal row of done",
+            [(r["verdict_source"], r["fallback"]) for r in j], [("stamp", "none")])
+    r = j[-1]
+    t.check("done_removes_pictogram_and_settles_once: three times in order",
+            0 <= r["t_building_ms"] <= r["t_content_ms"] <= r["t_done_ms"], True)
+    t.check("done_removes_pictogram_and_settles_once: no form, no form time",
+            r["t_form_ms"], None)
+    t.check("done_removes_pictogram_and_settles_once: the turn closed", c.pending("s1")["state"],
+            "done")
+    t.check("done_removes_pictogram_and_settles_once: a form after done changes nothing",
+            routes(judged(c, "s1", form_only("s1", "active"))), [])
+    c3 = staged(s, settle_ms=900)
+    said(c3, "s3")
+    judged(c3, "s3", stamp("s3"))
+    out = data(c3, "s3", ROWS)
+    t.check("done_removes_pictogram_and_settles_once: settle_ms is a param",
+            stack_of(views(out)[0])["props"].get("settle_ms"), 900)
+
+    c4 = staged(s)
+    said(c4, "s4")
+    judged(c4, "s4", stamp("s4", further="steps"))
+    data(c4, "s4", ROWS)
+    c4.tick(4000)
+    out = c4.run({"route": "in_tick"})
+    v = views(out)
+    t.check("done_removes_pictogram_and_settles_once: the deadline with a block is done",
+            ([kids(x) for x in v], [stack_of(x)["props"].get("build") for x in v]),
+            ([[("display-list", "show-sample-rows")]], ["done"]))
+    t.check("done_removes_pictogram_and_settles_once: done at the deadline journals t_done",
+            [r["t_done_ms"] for r in journal_of(out)], [4000])
+    # (one cell at a time: a new Cell resets the module's RAM)
+    c2 = staged(s)
+    said(c2, "s2")
+    out = judged(c2, "s2", stamp("s2", lead="brief"))
+    t.check("building_window_shows_skeleton_of_lead_candidate: a card has no literal head",
+            [n["props"] for n in stack_of(views(out)[0])["children"][1:]],
+            [{"block": "display-card", "title": "", "lines": 2}])
+
+    # Test 5: no data within data_wait_ms withdraws the window under construction
+    c = staged(s)
+    said(c, "w1")
+    judged(c, "w1", stamp("w1"))
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("no_data_within_wait_withdraws_building_window: withdrawn", routes(out), ["withdraw"])
+    t.check("no_data_within_wait_withdraws_building_window: journal",
+            [(r["fallback"], r["verdict_source"]) for r in journal_of(out)], [("no_data", "stamp")])
+
+    # Test 6: the screen form sets the rung through the relevance hint
+    for form, want in (("active", "1"), ("accompanying", "0.8"), ("referring", "0.8")):
+        c = staged(s)
+        said(c, "f1")
+        out = judged(c, "f1", stamp("f1", form=form))
+        t.check("form_maps_to_rung: %s" % form,
+                [x["content"]["props"]["relevance"] for x in views(out)], [want])
+    c = staged(s)
+    said(c, "f2")
+    out = judged(c, "f2", stamp("f2", form="none", p=0.99))
+    t.check("form_maps_to_rung: none opens no window, however sure",
+            routes(out), [])
+    t.check("form_maps_to_rung: none journals form_none",
+            [r["fallback"] for r in journal_of(out)], ["form_none"])
+    # Review K-G Minor 1: the form `none` alone first, the screen verdict after it --
+    # the kept form rules the verdict as if both came in one stamp (R-FU-4).
+    c = staged(s)
+    said(c, "f2b")
+    judged(c, "f2b", form_only("f2b", "none"))
+    out = judged(c, "f2b", stamp("f2b", p=0.99))
+    t.check("form_maps_to_rung: a kept none opens no window, however sure",
+            routes(out), [])
+    t.check("form_maps_to_rung: a kept none journals form_none",
+            [r["fallback"] for r in journal_of(out)], ["form_none"])
+    c = staged(s)
+    said(c, "f3")
+    judged(c, "f3", stamp("f3"))
+    c.tick(300)
+    out = judged(c, "f3", form_only("f3", "referring"))
+    t.check("form_maps_to_rung: a late relevant keeps the window as it stands (no touch)",
+            routes(out), [])
+    out = judged(c, "f3", form_only("f3", "active"))
+    v = views(out)
+    t.check("late_form_lifts_rung_before_done: lifted", [x["content"]["props"]["relevance"] for x in v],
+            ["1"])
+    t.check("late_form_lifts_rung_before_done: still building",
+            stack_of(v[0])["props"].get("build"), "building")
+    rec = c.pending("f3")
+    t.check("late_form_lifts_rung_before_done: the form time is the first form's",
+            rec.get("t_form"), 300)
+    c = staged(s)
+    said(c, "f4")
+    judged(c, "f4", stamp("f4"))
+    out = judged(c, "f4", form_only("f4", "none"))
+    t.check("late_form_lifts_rung_before_done: a late none withdraws", routes(out), ["withdraw"])
+    t.check("late_form_lifts_rung_before_done: a late none journals form_none",
+            [r["fallback"] for r in journal_of(out)], ["form_none"])
+
+    # Review focus 5: a stamp without a screen verdict (`clarify`) opens nothing
+    c = staged(s)
+    said(c, "k1")
+    out = judged(c, "k1", stamp("k1", screen=False))
+    t.check("clarify: no window", [x for x in routes(out)], [])
+    t.check("clarify: journal no_topic", [r["fallback"] for r in journal_of(out)], ["no_topic"])
+
+    # The stamp before the turn: the window opens at once, the data once the words are there
+    c = staged(s)
+    out = judged(c, "e1", stamp("e1"))
+    t.check("stamp first: the window opens, nothing asked yet", routes(out), ["view"])
+    out = said(c, "e1", "the sample of today")
+    asks = [e for e in out if e["header"]["route"] == "in_show"]
+    t.check("stamp first: the words bring the data request",
+            [(a["request"], a["lead"]) for a in asks], [("the sample of today", "rows")])
+
+    # Review focus 2: a follow-up verdict of the same turn rebuilds until done
+    other = sample(topic="other", title="Other", describe="another topic")
+    c = staged(s)
+    c.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample(), other]})
+    said(c, "u1")
+    judged(c, "u1", stamp("u1"))
+    out = judged(c, "u1", stamp("u1", topic="other", lead="brief"))
+    t.check("follow-up: another topic withdraws and opens",
+            [(e["header"]["route"], e.get("view_id")) for e in out
+             if e["header"]["route"] in ("view", "withdraw")],
+            [("withdraw", "show-sample"), ("view", "show-other")])
+    out = judged(c, "u1", stamp("u1", topic="other", lead="rows"))
+    t.check("follow-up: the same topic rebuilds its skeleton",
+            [n[1] for n in kids(views(out)[0])],
+            ["show-other-building", "show-other-rows-skeleton"])
+    out = c.run({"route": "show_data", "show_app": "/app"},
+                {"topic": "other", "turn_id": "u1", "sets": ROWS})
+    t.check("follow-up: done", stack_of(views(out)[0])["props"].get("build"), "done")
+    t.check("follow-up: frozen after done", routes(judged(c, "u1", stamp("u1"))), [])
+
+    # Unsure, unknown topic or candidate: as with the selector
+    c = staged(s)
+    said(c, "n1")
+    out = judged(c, "n1", stamp("n1", p=0.4))
+    t.check("unsure stamp: nothing", ([x for x in routes(out)],
+                                       [r["fallback"] for r in journal_of(out)]), ([], ["unsure"]))
+    said(c, "n2")
+    out = judged(c, "n2", stamp("n2", topic="made-up"))
+    t.check("unknown topic: unsure", [r["fallback"] for r in journal_of(out)], ["unsure"])
+    said(c, "n3")
+    out = judged(c, "n3", stamp("n3", lead="nope"))
+    t.check("unknown lead: the standard is built", [n[1] for n in kids(views(out)[0])],
+            ["show-sample-building", "show-sample-brief-skeleton"])
+    # A turn the stamp never reaches ends at budget_ms as `timeout`
+    said(c, "n4")
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("no stamp: timeout", [r["fallback"] for r in journal_of(out)
+                                  if r["turn_id"] == "n4"], ["timeout"])
+
+    # The selector way ignores a stamp, and the stamp way ignores the decider's answer
+    c = Cell(s)
+    c.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample()]})
+    said(c, "x1")
+    t.check("selector ignores in_verdict", routes(judged(c, "x1", stamp("x1"))), [])
+    c = staged(s)
+    said(c, "x2")
+    t.check("stamp ignores in_decision",
+            routes(c.run({"route": "in_decision", "show_id": "x2"},
+                         verdict("sample", 0.9, "rows"), ctx=DEC_CTX)), [])
+
+    # Test 7: the default is byte-identical to presenter 1.3.1
+    with open(GOLDEN, encoding="utf-8") as f:
+        pinned = f.read()
+    t.check("selector_source_is_byte_identical: default",
+            golden_text(selector_script(s)) == pinned, True)
+    t.check("selector_source_is_byte_identical: named",
+            golden_text(selector_script(s, verdict_source="selector")) == pinned, True)
+
+
+KEEPER = "keeper:01a18cc2:2026-10-30T12:22:23.516841Z"
+
+
+def unkeyed(c, text="show me a sample", ctx=None):
+    """The turn as the apps fan-out hands it on: before the session keeper, no `turn_id`."""
+    return c.run({"route": "turn"}, {"messages": [{"type": "text", "text": text}]}, ctx=ctx)
+
+
+def asks(out):
+    return [e for e in out if e["header"]["route"] == "in_show" and e.get("op") == "data"]
+
+
+def t_join(s, t):
+    """GH #1367: a turn without `turn_id` (the apps fan-out) and its stamp with the keeper's
+    `turn_id` meet presenter-locally -- both orders, the same round only, a matching
+    `turn_id` first."""
+    # (1) the turn first, then the stamp with the keeper's turn_id
+    c = staged(s)
+    unkeyed(c)
+    c.tick(240)
+    out = judged(c, KEEPER, stamp(KEEPER))
+    got = asks(out)
+    t.check("turn then keeper stamp: in_show op:data", len(got), 1)
+    t.check("turn then keeper stamp: the request is the turn's words, the id the stamp's",
+            [(a["request"], a["turn_id"]) for a in got], [("show me a sample", KEEPER)])
+    t.check("turn then keeper stamp: one record, keyed by the stamp",
+            sorted(s.ram()["pending"]), [KEEPER])
+    gone = [e for e in out if e["header"]["route"] == "store" and "p-gone-t-" in json.dumps(e)]
+    t.check("turn then keeper stamp: the unkeyed pending row leaves", len(gone), 1)
+
+    # (2) the stamp first, then the turn without turn_id
+    c = staged(s)
+    out = judged(c, KEEPER, stamp(KEEPER))
+    t.check("stamp then unkeyed turn: the window waits for the words", asks(out), [])
+    c.tick(30)
+    out = unkeyed(c)
+    got = asks(out)
+    t.check("stamp then unkeyed turn: in_show op:data",
+            [(a["request"], a["turn_id"]) for a in got], [("show me a sample", KEEPER)])
+    t.check("stamp then unkeyed turn: no second record", sorted(s.ram()["pending"]), [KEEPER])
+    t.check("stamp then unkeyed turn: the keyed turn after it asks nothing more",
+            asks(said(c, KEEPER)), [])
+
+    # (3) a foreign round never joins, in either order
+    mine, other = ["member:a"], ["member:a", "person:g"]
+    c = staged(s, screen_audience=mine)
+    unkeyed(c, ctx={"audience_set": json.dumps(mine)})
+    out = judged(c, KEEPER, stamp(KEEPER), ctx={"audience_set": json.dumps(other)})
+    t.check("foreign round: the stamp takes no turn of another round", asks(out), [])
+    t.check("foreign round: two records", len(s.ram()["pending"]), 2)
+    c = staged(s, screen_audience=mine)
+    judged(c, KEEPER, stamp(KEEPER), ctx={"audience_set": json.dumps(other)})
+    out = unkeyed(c, ctx={"audience_set": json.dumps(mine)})
+    t.check("foreign round: the turn joins no stamp of another round", asks(out), [])
+    # A round on one side only is no match (fail-closed).
+    c = staged(s, screen_audience=mine)
+    unkeyed(c, ctx={"audience_set": json.dumps(mine)})
+    out = judged(c, KEEPER, stamp(KEEPER), ctx={})
+    t.check("missing round: no join", asks(out), [])
+    # The same round joins on a screen with a round.
+    c = staged(s, screen_audience=mine)
+    unkeyed(c, ctx={"audience_set": json.dumps(mine)})
+    out = judged(c, KEEPER, stamp(KEEPER), ctx={"audience_set": json.dumps(mine)})
+    t.check("same round: joins", [a["turn_id"] for a in asks(out)], [KEEPER])
+
+    # A matching turn_id wins: a keyed turn is never re-keyed to another stamp.
+    c = staged(s)
+    said(c, "z9")
+    out = judged(c, KEEPER, stamp(KEEPER))
+    t.check("keyed turn: another stamp does not take it", asks(out), [])
+    t.check("keyed turn: it keeps its id and words, the stamp its own record",
+            (c.pending("z9")["text"], c.pending(KEEPER)["text"]), ("show me a sample", ""))
+    # The newest unkeyed turn of the round is taken.
+    c = staged(s)
+    unkeyed(c, text="old words")
+    c.tick(5)
+    unkeyed(c, text="new words")
+    out = judged(c, KEEPER, stamp(KEEPER))
+    t.check("newest: the newest unkeyed turn", [a["request"] for a in asks(out)], ["new words"])
+    # Beyond budget_ms nothing is taken.
+    c = staged(s)
+    unkeyed(c)
+    c.tick(4001)
+    out = judged(c, KEEPER, stamp(KEEPER))
+    t.check("budget: a turn older than budget_ms is not taken", asks(out), [])
+    c = staged(s)
+    judged(c, KEEPER, stamp(KEEPER))
+    c.tick(4001)
+    t.check("budget: a stamp older than budget_ms takes no words", asks(unkeyed(c)), [])
+    # The selector way keeps its way: an unkeyed turn asks the decider as before.
+    c = Cell(s)
+    c.run({"route": "show_topics", "show_app": "/app"}, {"topics": [sample()]})
+    t.check("selector: an unkeyed turn asks the decider", routes(unkeyed(c)), ["decide"])
+
+
+def topic_outs(out):
+    return [e for e in out if e["header"]["route"] == "screen_topics"]
+
+
+def t_topics(s, t):
+    """live-2 GR: the lane `screen_topics` -- the table the decider is asked over, as
+    `{topics: [{name, purpose, candidates}]}` (#1368), on boot and on every change, never per turn; off by
+    default (param `screen_topics`), so a presenter without a taker says nothing."""
+    # Off (shipped): neither boot nor an accepted topic nor a turn says the table.
+    c = Cell(s)
+    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                {"topics": [sample()]})
+    out += c.run({"route": "turn", "turn_id": "o1"},
+                 {"messages": [{"type": "text", "text": "show me a sample"}]})
+    t.check("off: no screen_topics", topic_outs(out), [])
+
+    # On: the boot says the table once, before the event that woke the cell.
+    c = Cell(s, screen_topics=True, observed_topics=["work"])
+    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                {"topics": [sample()]})
+    said_ = topic_outs(out)
+    t.check("on: boot and the accepted topic each say the table", len(said_), 2)
+    work = {"name": "work", "purpose": s.BUILTIN["work"]["describe"],
+            "candidates": [{"key": "steps",
+                            "describe": "the steps taken so far, each with its state"},
+                           {"key": "files", "describe": "the files touched so far"},
+                           {"key": "tests", "describe": "whether the last test run passed"}]}
+    t.check("boot: the presenter's own topics",
+            said_[0].get("topics") if said_ else None, [work])
+    t.check("change: own and app topics, by name",
+            said_[1].get("topics") if len(said_) > 1 else None,
+            [SAMPLE_ROW, work])
+    if said_:
+        t.check("the lane carries no address", sorted(said_[0]["header"]),
+                ["route"])
+        t.check("the body is the table alone", sorted(said_[0]), ["header", "messages",
+                                                                   "topics"])
+    # The same topics again: no change, nothing said.
+    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                {"topics": [sample()]})
+    t.check("unchanged: nothing said", topic_outs(out), [])
+    # A turn is no change of the table.
+    out = c.run({"route": "turn", "turn_id": "o2"},
+                {"messages": [{"type": "text", "text": "show me a sample"}]})
+    t.check("a turn says no table", topic_outs(out), [])
+    # A refused topic is not in the table (filtered as for the decider): a reserved name
+    # and a malformed one leave the table as it was.
+    out = c.run({"route": "show_topics", "show_app": "/other", "show_at": "./show"},
+                {"topics": [sample(topic="work"), sample(topic="bad", describe=" ")]})
+    t.check("refused topics: nothing said", topic_outs(out), [])
+    # A second app's topic joins; a changed purpose is a change.
+    out = c.run({"route": "show_topics", "show_app": "/other", "show_at": "./show"},
+                {"topics": [sample(topic="extra", describe="another topic")]})
+    got = topic_outs(out)
+    t.check("a second app joins", [x["name"] for x in got[0]["topics"]] if got else None,
+            ["extra", "sample", "work"])
+    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                {"topics": [sample(describe="a new purpose")]})
+    got = topic_outs(out)
+    t.check("a changed purpose is said",
+            [x["purpose"] for x in got[0]["topics"] if x["name"] == "sample"] if got else None,
+            ["a new purpose"])
+    # The app takes its topics back: the table shrinks and is said.
+    out = c.run({"route": "show_topics", "show_app": "/other", "show_at": "./show"},
+                {"topics": []})
+    got = topic_outs(out)
+    t.check("a withdrawn topic leaves the table",
+            [x["name"] for x in got[0]["topics"]] if got else None, ["sample", "work"])
+    # A boot with app rows in the store says them too; a stamp-way cell the same.
+    c = Cell(s, screen_topics=True, verdict_source="stamp")
+    c.store["shows"] = [{"topic": "sample", "owner_app": "/app", "show_at": "./show",
+                         "manifest": json.dumps(sample()), "at": 1}]
+    out = c.run({"route": "turn", "turn_id": "b1"},
+                {"messages": [{"type": "text", "text": "show me a sample"}]})
+    got = topic_outs(out)
+    t.check("boot with stored rows says them",
+            got[0]["topics"] if got else None, [SAMPLE_ROW])
+    # Review K-G Minor 4: the table changes through the params alone (`observed_topics`
+    # on a reconfigure): the next event says it -- the committed mutation first.
+    c = Cell(s, screen_topics=True, observed_topics=["work"])
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [sample()]})
+    c.params["observed_topics"] = []
+    out = c.run({"route": "mutation_committed"})
+    got = topic_outs(out)
+    t.check("a params change is said on the committed mutation",
+            [x["name"] for x in got[0]["topics"]] if got else None, ["sample"])
+    out = c.run({"route": "mutation_committed"})
+    t.check("a params change is said once", topic_outs(out), [])
+    c.params["observed_topics"] = ["work"]
+    out = c.run({"route": "turn", "turn_id": "p1"},
+                {"messages": [{"type": "text", "text": "show me a sample"}]})
+    got = topic_outs(out)
+    t.check("a params change is said on any event",
+            [x["name"] for x in got[0]["topics"]] if got else None, ["sample", "work"])
+    c = Cell(s, observed_topics=["work"])
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [sample()]})
+    c.params["observed_topics"] = []
+    out = c.run({"route": "mutation_committed"})
+    t.check("off: a params change says nothing", topic_outs(out), [])
+    # Not a boolean true: off (the switch is read strictly, like every other).
+    c = Cell(s, screen_topics="yes")
+    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                {"topics": [sample()]})
+    t.check("a non-boolean switch is off", topic_outs(out), [])
+
+
+# The sample topic as the table says it (#1368): every candidate with its key and its
+# `describe`, in the manifest's order -- nothing else of the manifest.
+SAMPLE_ROW = {"name": "sample", "purpose": "a generic sample topic",
+              "candidates": [{"key": "brief", "describe": "a short summary"},
+                             {"key": "rows", "describe": "the items as a list"},
+                             {"key": "steps", "describe": "the path as steps"},
+                             {"key": "slow", "describe": "a slow number"}]}
+
+# The readers of the lane on the taker's side (#1368): the presenter's `screen_topics`
+# reaches the talky's `in_screen_topics`, whose curator keeps the list (`./history`,
+# `screen_topics_of`) and whose `./route` asks the lead question over it
+# (`screen_topics`). The lock runs those two functions out of their own templates, so
+# the field names are read there and never typed a second time here.
+TEMPLATES = os.path.dirname(os.path.dirname(HERE))
+READERS = [("curator/history", "screen_topics_of"), ("talky/route", "screen_topics")]
+
+
+def reader(where, fn):
+    """`fn` of the cell `where`, run apart from the cell: its literal module-level
+    constants and the function itself, nothing that reads stdin or the params. None when the template is not there."""
+    import ast
+    path = os.path.join(TEMPLATES, where, "config.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        code = json.load(f)["params"]["script_inline"]
+    tree = ast.parse(code)
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name == fn)
+            or (isinstance(n, ast.Assign) and all(isinstance(x, ast.Name) and x.id.isupper()
+                                                  for x in n.targets)
+                and not any(isinstance(x, (ast.Name, ast.Call)) for x in ast.walk(n.value)))]
+    ns = {"json": json}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), path, "exec"), ns)
+    return ns.get(fn)
+
+
+def t_topics_wire(s, t):
+    """#1368: the lane `screen_topics` holds the talky's contract field for field -- what the
+    presenter says, the curator keeps whole (nothing cut) and talky's route reads with every
+    candidate; so the lead question can be asked. A topic without candidates leaves the field
+    out (`candidates?`) and is still kept."""
+    keep, ask = (reader(w, f) for w, f in READERS)
+    t.check("the curator's reader is there", keep is not None, True)
+    t.check("talky's route reader is there", ask is not None, True)
+    if keep is None or ask is None:
+        return
+    c = Cell(s, screen_topics=True, observed_topics=["work"])
+    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                {"topics": [sample()]})
+    got = topic_outs(out)
+    table = got[-1]["topics"] if got else []
+    t.check("the table holds both topics", [x["name"] for x in table], ["sample", "work"])
+    t.check("the sample topic says its candidates", table[:1], [SAMPLE_ROW])
+    kept, cut = keep(table)
+    t.check("the curator keeps the table as said, field for field", kept, table)
+    t.check("the curator cuts nothing", cut, False)
+    asked = ask({"screen": {"topics": kept}})
+    for row in table:
+        t.check("talky's route reads %s with every candidate" % row["name"],
+                asked.get(row["name"]),
+                {"purpose": row["purpose"],
+                 "candidates": {x["key"]: x["describe"] for x in row["candidates"]}})
+    # A topic without candidates (a manifest the presenter holds without them): the row
+    # leaves the field out, and both readers keep it.
+    bare = {"shows": {"bare": {"owner": "/app", "at": 1,
+                               "manifest": {"topic": "bare", "describe": "a bare topic"}}}}
+    rows_ = s.topic_table(bare, {"catalog": CATALOG})
+    t.check("no candidates: name and purpose alone", rows_,
+            [{"name": "bare", "purpose": "a bare topic"}])
+    kept, cut = keep(rows_)
+    t.check("no candidates: the curator keeps it", (kept, cut), (rows_, False))
+    t.check("no candidates: talky's route reads it",
+            ask({"screen": {"topics": kept}}).get("bare"),
+            {"purpose": "a bare topic", "candidates": {}})
+
+
+def write_golden():
+    s = load()
+    with open(GOLDEN, "w", encoding="utf-8") as f:
+        f.write(golden_text(selector_script(s)))
+
+
 TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_threshold),
           ("BINDING", t_binding), ("AUDIENCE", t_audience), ("TURNS", t_turns),
           ("PARTIAL", t_partial),
@@ -1700,6 +2320,8 @@ TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_
           ("OBSERVE", t_observe), ("SEARCH", t_search), ("WORK", t_work),
           ("SOURCE", t_source), ("REGISTRY", t_registry), ("DATAROUND", t_data_round),
           ("FOLLOWUP", t_followup), ("RESULTS", t_results),
+          ("STAMP", t_stamp), ("JOIN", t_join), ("TOPICS", t_topics),
+          ("TOPICSWIRE", t_topics_wire),
           ("CONTRACT", t_contract), ("FOREIGN", t_foreign_round),
           ("STARONLY", t_star_only), ("CLOCK", t_clock)]
 
@@ -1708,6 +2330,11 @@ def main(argv):
     if "--sync" in argv:
         sync()
         print("synced %s" % os.path.relpath(CONFIG))
+        return 0
+    if "--write-golden" in argv:
+        # Only ever from the stage whose selector way is the pinned one (presenter 1.3.1).
+        write_golden()
+        print("wrote %s" % os.path.relpath(GOLDEN))
         return 0
     s = load()
     ok = n = 0

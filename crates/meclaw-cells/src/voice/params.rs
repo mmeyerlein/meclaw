@@ -223,6 +223,20 @@ pub const DEFAULT_RENEW_AFTER_MS: u64 = 0;
 /// later.
 pub const DEFAULT_RENEW_GRACE_MS: u64 = 5000;
 
+/// How many times a duplex call is recovered after its provider ended the
+/// session in charge mid-call, with a fresh session and a fresh seed; `0`
+/// recovers nothing (GH #1377).
+///
+/// Off by default, so a call on the shipped params ends with the session as
+/// it always did. Measured on the phone (BAT R2): a live model ends a session
+/// with `reason=content` 4 to 11 s after a sentence its moderation reads as a
+/// crisis, and the caller talked on into a dead line. A host that sets this
+/// gets a renewal in place of the dead session (the mechanics of GH #896,
+/// `seed_ask` with `reason: recover`), and once the attempts are spent
+/// `duplex_failed` on the error lane, which the telephony edge answers with
+/// its failure announcement and a hang-up.
+pub const DEFAULT_RECOVER_MAX: u32 = 0;
+
 /// The rate a duplex session runs at unless a param says otherwise.
 ///
 /// 16 kHz because that is what the telephony edge already forks and plays
@@ -254,6 +268,9 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "tts",
     "duplex",
     "credential_backoff_max_ms",
+    "emit_usage",
+    "call_marks_s",
+    "call_mark_every_s",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -356,6 +373,21 @@ pub struct VoiceParams {
     /// [`crate::credential_rounds::default_credential_backoff_max_ms`]).
     /// Immutable: the I/O half's clocks read it once per life.
     pub credential_backoff_max_ms: u64,
+    /// Whether a duplex call reports what it has used on the `usage` lane
+    /// (D48, DK): a running total at every meter reading of the model and
+    /// whenever a session the call renewed away from closes, and one `final`
+    /// emission when the call's last session closes -- the sum of the
+    /// `usage_seconds` every session of the call reported, renewals included.
+    ///
+    /// **Off by default**, the rule of `emit_partials` (R-V8'): without an
+    /// edge that drains it every reading would dead-letter. No price is
+    /// computed here; the price belongs to whoever reads the lane.
+    /// Settled at birth.
+    pub emit_usage: bool,
+    /// When a duplex call is marked on the `call_mark` lane
+    /// (`call_marks_s`, `call_mark_every_s`; D48, DK). Off by default.
+    /// Settled at birth.
+    pub call_marks: crate::voice::call_marks::CallMarks,
 }
 
 /// GH #1059: the three provider slots of a voice cell that can spend a
@@ -498,8 +530,13 @@ pub struct GptLiveParams {
     /// [`crate::voice::providers::gpt_live::DEFAULT_VOICE`].
     #[serde(default = "GptLiveParams::default_voice")]
     pub voice: String,
-    /// The rate BOTH directions run at; 16000 or 24000 (OR-L16).
-    #[serde(default = "GptLiveParams::default_sample_rate")]
+    /// The rate BOTH directions run at; 16000 or 24000 (OR-L16). `null`
+    /// reads as not named (review K6): the way an instance whose base names a
+    /// rate reaches G.711 through `override_params`.
+    #[serde(
+        default = "GptLiveParams::default_sample_rate",
+        deserialize_with = "GptLiveParams::rate_or_default"
+    )]
     pub sample_rate: u32,
     /// The front-end instructions the session is opened with. Immutable for
     /// the life of the session, and refused empty: a live model with nothing
@@ -558,6 +595,11 @@ pub struct GptLiveParams {
     /// default [`DEFAULT_RENEW_GRACE_MS`] (GH #896).
     #[serde(default = "GptLiveParams::default_renew_grace_ms")]
     pub renew_grace_ms: u64,
+    /// How many times a call is recovered after the provider ended its
+    /// session mid-call; default [`DEFAULT_RECOVER_MAX`], which recovers
+    /// nothing (GH #1377).
+    #[serde(default)]
+    pub recover_max: u32,
     /// How long a session opened while the line rings waits for its media
     /// connection, in milliseconds; `0` (the default) never opens one early
     /// (GH #1055). A `call_ringing` lane with `hop.call_uuid` opens it, the
@@ -582,7 +624,67 @@ pub struct GptLiveParams {
     /// the line handing the model's voice back.
     #[serde(default = "GptLiveParams::default_barge_echo_margin_db")]
     pub barge_echo_margin_db: f64,
+    /// What the session carries on the wire to the model (R-LS-3: per
+    /// instance, never global). `pcm16` (the default) runs at `sample_rate`
+    /// as it always did; `g711_ulaw` and `g711_alaw` run the model at 8 kHz
+    /// G.711 while the client keeps sending and hearing L16 at 8000 — the
+    /// adapter compands every frame and never resamples (R-LS-9, OR-LV-5). A
+    /// G.711 block that also names `sample_rate` is refused
+    /// (`audio_format_rate_conflict`): the law fixes the rate.
+    #[serde(default)]
+    pub audio_format: AudioWire,
+    /// How long a session that opens waits for its seed on `in_seed` before it
+    /// starts without one, in milliseconds (D48, R-LS-7). `0` (the default)
+    /// asks for no seed and waits for nothing: the `session.start` is the one
+    /// it always was, and no `seed_ask` lane is emitted.
+    #[serde(default)]
+    pub seed_wait_ms: u64,
+    /// How many characters the caller's transcript must have grown by before
+    /// the next `partial` lane emission (D48: the speculative stream a curator
+    /// reads while the caller speaks). `0` (the default) together with
+    /// `delta_min_ms` `0` sends one emission per delta, as it always did. The
+    /// last state before a turn closes always leaves, right before the `turn`.
+    #[serde(default)]
+    pub delta_min_chars: u64,
+    /// How long after the last `partial` lane emission the next one may
+    /// leave, in milliseconds; read together with `delta_min_chars` (both
+    /// have to be reached). `0` is the default.
+    #[serde(default)]
+    pub delta_min_ms: u64,
+    /// Whether the model's own transcript reaches the `spoken` lane. Not set
+    /// (the default) follows `emit_partials`, as it always did; `false` stops
+    /// the model's side of the stream and nothing else (a telephone line that
+    /// wants the caller's deltas has no edge for `spoken`).
+    #[serde(default)]
+    pub emit_spoken: Option<bool>,
 }
+
+/// The audio format a `gpt_live` session runs on the wire (R-LS-3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioWire {
+    /// Mono PCM16 at `sample_rate` (16000 or 24000); the default.
+    #[default]
+    Pcm16,
+    /// G.711 μ-law at 8000 Hz (`audio/pcmu`).
+    G711Ulaw,
+    /// G.711 A-law at 8000 Hz (`audio/pcma`).
+    G711Alaw,
+}
+
+impl AudioWire {
+    /// The companding law, where the format is G.711.
+    pub fn law(self) -> Option<crate::voice::g711::Law> {
+        match self {
+            AudioWire::Pcm16 => None,
+            AudioWire::G711Ulaw => Some(crate::voice::g711::Law::Mu),
+            AudioWire::G711Alaw => Some(crate::voice::g711::Law::A),
+        }
+    }
+}
+
+/// The one rate G.711 runs at, on the wire and towards the client.
+pub const G711_SAMPLE_RATE: u32 = 8000;
 
 impl GptLiveParams {
     fn default_base_url() -> String {
@@ -596,6 +698,10 @@ impl GptLiveParams {
     }
     fn default_sample_rate() -> u32 {
         DEFAULT_DUPLEX_SAMPLE_RATE
+    }
+    fn rate_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+        let rate: Option<u32> = serde::Deserialize::deserialize(d)?;
+        Ok(rate.unwrap_or(DEFAULT_DUPLEX_SAMPLE_RATE))
     }
     fn default_turn_gap_ms() -> u64 {
         DEFAULT_TURN_GAP_MS
@@ -1192,6 +1298,9 @@ impl VoiceParams {
             }
         };
 
+        let emit_usage = read_bool(obj, "emit_usage", false)?;
+        let call_marks = read_call_marks(obj)?;
+
         for key in obj.keys() {
             if !KNOWN_PARAMS_KEYS.contains(&key.as_str()) {
                 return Err(format!("{key}: unknown params key for a voice cell"));
@@ -1216,9 +1325,18 @@ impl VoiceParams {
             tts_credential,
             duplex_credential,
             credential_backoff_max_ms,
+            emit_usage,
+            call_marks,
         };
         parsed.check_secrets()?;
-        parsed.check_provider_values()?;
+        // Whether the duplex block NAMED a rate: the parsed struct cannot say,
+        // it carries the default either way, and a G.711 block that names one
+        // is a contradiction rather than a choice (`audio_format_rate_conflict`).
+        let raw_names_duplex_rate = obj
+            .get("duplex")
+            .and_then(|d| d.get("sample_rate"))
+            .is_some_and(|r| !r.is_null());
+        parsed.check_provider_values(raw_names_duplex_rate)?;
         Ok(parsed)
     }
 
@@ -1227,7 +1345,7 @@ impl VoiceParams {
     /// A `turn_detection` the provider does not know is not a slower session,
     /// it is a session that never ends a turn — so it is refused here, where
     /// the message can name the three values, rather than at the socket.
-    fn check_provider_values(&self) -> Result<(), String> {
+    fn check_provider_values(&self, raw_names_duplex_rate: bool) -> Result<(), String> {
         if let SttParams::Openai(p) = &self.stt
             && !matches!(
                 p.turn_detection.as_str(),
@@ -1295,7 +1413,13 @@ impl VoiceParams {
             if p.instructions.trim().is_empty() {
                 return Err("duplex.instructions: must not be empty".to_string());
             }
-            if !DUPLEX_SAMPLE_RATES.contains(&p.sample_rate) {
+            if p.audio_format != AudioWire::Pcm16 {
+                if raw_names_duplex_rate {
+                    return Err("duplex.sample_rate: audio_format_rate_conflict -- a G.711 \
+                         audio_format runs at 8000 by definition; drop sample_rate"
+                        .to_string());
+                }
+            } else if !DUPLEX_SAMPLE_RATES.contains(&p.sample_rate) {
                 return Err(format!(
                     "duplex.sample_rate: must be one of {} or {}, got {}",
                     DUPLEX_SAMPLE_RATES[0], DUPLEX_SAMPLE_RATES[1], p.sample_rate
@@ -1502,6 +1626,46 @@ fn read_release_grace_ms(
     }
 }
 
+/// Read `call_marks_s` (a list of positive seconds, strictly ascending) and
+/// `call_mark_every_s` (seconds, `0` = none after the list). Both absent is
+/// off. An unsorted list is refused rather than sorted: a list an operator
+/// wrote out of order is a list whose intent nobody can tell.
+fn read_call_marks(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+) -> Result<crate::voice::call_marks::CallMarks, String> {
+    let marks_s = match obj.get("call_marks_s") {
+        None | Some(JsonValue::Null) => Vec::new(),
+        Some(JsonValue::Array(items)) => {
+            let mut out: Vec<u64> = Vec::with_capacity(items.len());
+            for v in items {
+                let n = v.as_u64().filter(|n| *n > 0).ok_or_else(|| {
+                    format!(
+                        "call_marks_s: every mark must be a positive integer (seconds), got {v}"
+                    )
+                })?;
+                if out.last().is_some_and(|last| *last >= n) {
+                    return Err(format!(
+                        "call_marks_s: marks must be strictly ascending, got {n} after {}",
+                        out.last().copied().unwrap_or_default()
+                    ));
+                }
+                out.push(n);
+            }
+            out
+        }
+        Some(v) => {
+            return Err(format!("call_marks_s: must be a list of seconds, got {v}"));
+        }
+    };
+    let every_s = match obj.get("call_mark_every_s") {
+        None | Some(JsonValue::Null) => 0,
+        Some(v) => v.as_u64().ok_or_else(|| {
+            format!("call_mark_every_s: must be a non-negative integer (seconds), got {v}")
+        })?,
+    };
+    Ok(crate::voice::call_marks::CallMarks { marks_s, every_s })
+}
+
 /// Read an optional positive integer with a default.
 fn read_positive_u64(
     obj: &meclaw_core::serde_json::Map<String, JsonValue>,
@@ -1628,6 +1792,19 @@ pub struct VoiceOverlay {
     /// themselves sit inside `stt`/`tts`/`duplex` and are settled at birth with
     /// those blocks.
     pub credential_backoff_max_ms: u64,
+    /// Whether a duplex call reports what it used (D48). Carried so a replay
+    /// keeps it: every life runs on the birth params replayed through this
+    /// struct, and a key it does not carry is gone after that round trip --
+    /// measured (GH #1379), a phone call born with `emit_usage: true` never
+    /// left a `usage` emission. Refused by an update ([`OverlayParams::IMMUTABLE_KEYS`]):
+    /// settled at birth.
+    pub emit_usage: bool,
+    /// The call-time marks (`call_marks_s`), carried and refused by an update
+    /// for the reason `emit_usage` is (GH #1379).
+    pub call_marks_s: Vec<u64>,
+    /// The repeating call-time mark (`call_mark_every_s`), carried and refused
+    /// by an update for the reason `emit_usage` is (GH #1379).
+    pub call_mark_every_s: u64,
 }
 
 impl OverlayParams for VoiceOverlay {
@@ -1647,33 +1824,78 @@ impl OverlayParams for VoiceOverlay {
         "credential_backoff_max_ms",
     ];
 
-    /// Only the credential rounds' ceiling (GH #1059), which the I/O half reads
-    /// once per life. Nothing else is refused here for being the key it is;
-    /// the provider blocks — grants included — are out of reach because they
+    /// The credential rounds' ceiling (GH #1059) and the three D48 call
+    /// settings (`emit_usage`, `call_marks_s`, `call_mark_every_s`, GH #1379),
+    /// all read once per life. Nothing else is refused here for being the key
+    /// it is; the provider blocks — grants included — are out of reach because they
     /// are not *known* keys, which is a different sentence and a better one —
     /// an update naming `stt` gets `unknown param 'stt'` rather than an
     /// invitation to wonder which half of it might have been accepted.
-    const IMMUTABLE_KEYS: &'static [&'static str] = &["credential_backoff_max_ms"];
+    const IMMUTABLE_KEYS: &'static [&'static str] = &[
+        "credential_backoff_max_ms",
+        "emit_usage",
+        "call_marks_s",
+        "call_mark_every_s",
+    ];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         // Through the same parser as everything else (parser invariant).
-        let p = VoiceParams::parse(raw)?;
+        //
+        // Exhaustive on purpose, no `..`: every life replays the birth params
+        // through this struct (`factory.rs` `effective_params`), so a
+        // `VoiceParams` field the overlay does not carry is silently gone
+        // after the first round trip. dk (#1362) added `emit_usage` and the
+        // call marks to `VoiceParams` only, and a phone call born with
+        // `emit_usage: true` never reported usage (GH #1379). A new field is
+        // now a compile error right here, where someone has to decide how it
+        // travels.
+        let VoiceParams {
+            mount,
+            default_mode,
+            barge_in,
+            emit_partials,
+            emit_speak_end,
+            external_timeout_ms,
+            provider_idle_timeout_ms,
+            audio_out_frame_ms,
+            speak_plain,
+            release_grace_ms,
+            // The provider blocks travel raw (below), credentials included:
+            // `split_credential` takes the grant from inside the raw block,
+            // so the parsed forms and the three credentials are not carried.
+            stt: _,
+            tts: _,
+            duplex: _,
+            stt_credential: _,
+            tts_credential: _,
+            duplex_credential: _,
+            credential_backoff_max_ms,
+            emit_usage,
+            call_marks:
+                crate::voice::call_marks::CallMarks {
+                    marks_s: call_marks_s,
+                    every_s: call_mark_every_s,
+                },
+        } = VoiceParams::parse(raw)?;
         let obj = raw.as_object().ok_or("params: must be object")?;
         Ok(Self {
-            mount: p.mount,
-            default_mode: p.default_mode,
-            barge_in: p.barge_in,
-            emit_partials: p.emit_partials,
-            emit_speak_end: p.emit_speak_end,
-            external_timeout_ms: p.external_timeout_ms,
-            provider_idle_timeout_ms: p.provider_idle_timeout_ms,
-            audio_out_frame_ms: p.audio_out_frame_ms,
-            speak_plain: p.speak_plain,
-            release_grace_ms: p.release_grace_ms,
+            mount,
+            default_mode,
+            barge_in,
+            emit_partials,
+            emit_speak_end,
+            external_timeout_ms,
+            provider_idle_timeout_ms,
+            audio_out_frame_ms,
+            speak_plain,
+            release_grace_ms,
             stt: obj.get("stt").cloned().unwrap_or(JsonValue::Null),
             tts: obj.get("tts").cloned(),
             duplex: obj.get("duplex").filter(|v| !v.is_null()).cloned(),
-            credential_backoff_max_ms: p.credential_backoff_max_ms,
+            credential_backoff_max_ms,
+            emit_usage,
+            call_marks_s,
+            call_mark_every_s,
         })
     }
 }
@@ -1758,6 +1980,38 @@ mod tests {
                 ),
                 "{key} = {value}"
             );
+        }
+    }
+
+    /// D48/DK: usage and call marks are off unless named; marks parse as a
+    /// strictly ascending list of positive seconds plus an interval.
+    #[test]
+    fn usage_and_call_marks_parse_and_default_off() {
+        let off = VoiceParams::parse(&json!({"mount": "voice", "stt": {"provider": "echo"}}))
+            .expect("parse");
+        assert!(!off.emit_usage);
+        assert!(off.call_marks.is_off());
+
+        let on = VoiceParams::parse(&json!({
+            "mount": "voice", "stt": {"provider": "echo"},
+            "emit_usage": true, "call_marks_s": [900, 1800], "call_mark_every_s": 600,
+        }))
+        .expect("parse");
+        assert!(on.emit_usage);
+        assert_eq!(on.call_marks.marks_s, vec![900, 1800]);
+        assert_eq!(on.call_marks.every_s, 600);
+
+        for bad in [
+            json!([1800, 900]),
+            json!([0]),
+            json!([900, 900]),
+            json!("900"),
+        ] {
+            let err = VoiceParams::parse(&json!({
+                "mount": "voice", "stt": {"provider": "echo"}, "call_marks_s": bad,
+            }))
+            .expect_err("refused");
+            assert!(err.starts_with("call_marks_s:"), "{err}");
         }
     }
 
@@ -1918,6 +2172,45 @@ mod tests {
         };
         assert_eq!(g.renew_after_ms, 3_300_000);
         assert_eq!(g.renew_grace_ms, 8000);
+    }
+
+    /// GH #1377: a call is recovered after a provider abort only where a host
+    /// asked for it; the shipped block recovers nothing, and a set knob is read.
+    #[test]
+    fn recovery_is_off_unless_a_host_sets_it() {
+        assert_eq!(DEFAULT_RECOVER_MAX, 0, "recovery ships off");
+        let shipped = json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+        });
+        let p = VoiceParams::parse(&shipped).expect("a gpt_live block parses");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.recover_max, DEFAULT_RECOVER_MAX);
+        let set = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "recover_max": 2
+            }
+        });
+        let p = VoiceParams::parse(&set).expect("the knob parses");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.recover_max, 2);
+        let wrong = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "recover_max": -1
+            }
+        });
+        assert!(
+            VoiceParams::parse(&wrong).is_err(),
+            "a count is not negative"
+        );
     }
 
     /// A string is not a number of milliseconds, here as for the sibling knobs;
@@ -2353,6 +2646,42 @@ mod tests {
         let (merged, overlay) = apply_update(&current, &update).expect("an accepted update");
         assert!(!merged.speak_plain);
         assert_eq!(overlay, vec![("speak_plain".to_string(), json!(false))]);
+    }
+
+    #[test]
+    fn overlay_refuses_the_keys_settled_at_birth_as_immutable() {
+        // GH #1379: the three D48 call settings joined the credential rounds'
+        // ceiling in `IMMUTABLE_KEYS`; before, an update naming one got
+        // `Unknown`. Both doors refuse: a plain update and a `$reset`.
+        use crate::params_overlay::{ParamUpdateError, apply_update, apply_update_over_start};
+        let current = <VoiceOverlay as OverlayParams>::parse(&minimal()).expect("parses");
+        for (key, value) in [
+            ("emit_usage", json!(true)),
+            ("call_marks_s", json!([60])),
+            ("call_mark_every_s", json!(60)),
+            ("credential_backoff_max_ms", json!(1000)),
+        ] {
+            let mut update = meclaw_core::serde_json::Map::new();
+            update.insert(key.into(), value);
+            let err = apply_update(&current, &update).expect_err("settled at birth");
+            assert!(
+                matches!(err, ParamUpdateError::Immutable(ref k) if k == key),
+                "update {key}: got {err:?}"
+            );
+
+            let mut reset = meclaw_core::serde_json::Map::new();
+            reset.insert("$reset".into(), json!([key]));
+            let err = apply_update_over_start::<VoiceOverlay>(
+                &minimal(),
+                &meclaw_core::serde_json::Map::new(),
+                &reset,
+            )
+            .expect_err("a reset is an update too");
+            assert!(
+                matches!(err, ParamUpdateError::Immutable(ref k) if k == key),
+                "$reset {key}: got {err:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-# `presenter@1.3.1`
+# `presenter@1.4.0`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -9,7 +9,8 @@ the screen stays as it is and the answer stays text.
 
 ```text
 presenter/          hive, an app (tag `app`): screen out [view, withdraw], back [event, receipt],
-                    listens [turn, mutation_committed]
+                    listens [turn, mutation_committed], in [in_verdict] (the turn's stamp),
+                    out [screen_topics] (the topic table, off by default)
   stage             code, resident, max_concurrency 1 -- the one decision maker
   decide            llm, provider "decisions" -- one call per turn, one `decision` back
   store             store -- tables shows, pending, journal, work
@@ -103,6 +104,10 @@ after `data_wait_ms` the view is withdrawn.
 | `observed_topics` | `["search", "work"]` | the presenter's own observed topics offered to the decider |
 | `test_patterns` | a list of common test commands | substrings that make a bash command a test run |
 | `builtin_topics` | the residents' topics | the presenter's own topics with declared sources |
+| `verdict_source` | `selector` | where a turn's verdict comes from: `selector` is the one call above; `stamp` takes it from the talky's stamp on `in_verdict` and makes no call (see below); anything else is `selector` |
+| `form_rungs` | `{active: focus, accompanying: relevant, referring: relevant, none: none}` | the stamp's screen form to a rung; a value other than `focus`, `relevant` or `none` keeps the shipped entry, `urgent` cannot be named |
+| `settle_ms` | 600 | how long the frame of a window that is done takes to come to rest, once |
+| `screen_topics` | `false` | on, the topic table leaves on the lane `screen_topics` (see below); off, the lane is silent |
 
 The built-in topics `digest` and `research` (GH #976) show the last result of the daily
 digest (standard `last`, a `display-card`; variant `recent`, a list) and of the research
@@ -201,21 +206,82 @@ in `decide`'s `base_url_allow`, which ships empty (the template names no provide
 lists that endpoint there (`override_params`) or sets `PRESENTER_DECIDE_BASE_URL` to it; any
 other endpoint is refused (`model_refused`) and the registry records the refusal.
 
+## The verdict from the stamp
+
+With `verdict_source: stamp` the talky has judged the turn already, and the presenter asks
+nobody. Its stamp arrives on `in_verdict` -- the parent's edge restamps the talky's
+`stamp` exit -- as `{stamp: {turn_id, audience_set, screen: {topic, confidence, lead,
+further}, screen_form}}`; with a screen judge the form comes as a second stamp of the same
+`turn_id` with `screen_form` alone. The verdict is read like the decider's: an unknown topic
+or candidate is no choice, `confidence` counts against the topic's threshold, and `further`
+stands beside the lead when that confidence reaches `also_threshold`. A turn the stamp never
+reaches ends at `budget_ms` as `timeout`; a stamp without `screen` (a `clarify` turn) opens
+nothing and journals `no_topic`.
+
+A stamp and its turn are one turn when they share a `turn_id`. In a colony the turn often
+has none -- the apps level fans it out before the session keeper gives it one, while the
+stamp carries the keeper's -- so the presenter joins them by the same rule as a tool call:
+a stamp whose `turn_id` no record carries takes the newest open turn of the same round that
+came without a `turn_id`, has no stamp yet and is younger than `budget_ms`, and keys it by
+the stamp's `turn_id`; a turn without a `turn_id` gives its words to the newest open stamp of
+the same round that still waits for them. The same round means the same members; a round on
+one side only never joins, no round on either side only on a screen without a round. A turn
+with a `turn_id` is never taken by another stamp.
+
+A sure verdict opens the window **under construction** at once: the first child of its
+`display-stack` is `display-status kind building` (a pictogram, no text), then one
+`display-skeleton` per chosen candidate (`block`, the literal `title` of its binding, and
+`lines` -- 3 for a list, else one per bound prop), all from the manifest, never a data
+value; the stack says `build: building`. The data request leaves as above, once the turn's
+words are there (the stamp may come first). Blocks take their skeleton's place; until the
+window is done, a set that comes again rebuilds the blocks bound to it. **Done** is the lead
+(or the standard) standing with nothing chosen still waiting, or `data_wait_ms` passing
+with a block standing: the pictogram and the skeletons leave in one write, the stack says
+`build: done` and `settle_ms`, and the turn closes. A done window is frozen. No placeable
+block within `data_wait_ms` withdraws it.
+
+The screen form sets the window's `relevance` -- the presenter writes no rung, the curator
+does: `active` -> `focus` -> `1`, `accompanying`/`referring` -> `relevant` -> `0.8`,
+`none` -> no window (`form_none`). Until a form comes the window stands at `relevant`; a
+later `active` lifts it (an own-prop change, an app touch) and a later `none` withdraws it,
+both only before done. A later stamp of the same turn with another topic withdraws the
+window and opens the new one; with other candidates it rebuilds the skeleton. Without
+`verdict_source: stamp` an `in_verdict` is heard and answered with nothing.
+
+## The topic table on `screen_topics`
+
+With `screen_topics: true` the presenter says which topics a screen can show: the table the
+decider is asked over -- its own topics, then the apps' accepted ones, filtered exactly as for
+the decider -- leaves `stage` and the hive as `screen_topics {topics: [{name, purpose,
+candidates}]}`, sorted by name, `purpose` being the manifest's `describe` and `candidates`
+the topic's candidates as `[{key, describe}]` in the manifest's order (#1368) -- the
+talky's `in_screen_topics` contract, which asks its lead question over them. A topic
+without candidates leaves the field out. It leaves once on boot and again
+whenever the table changes (an app's topics accepted, changed or withdrawn), never per turn;
+a refused topic is no change. Its taker is the talky's curator, which needs the screen's
+topics for its stamp; the parent draws that edge. Shipped off, the lane is silent, so a
+parent without an edge for it sees nothing dead-letter, and the selector way emits what it
+emitted before. The lane is not in `template.json`'s `app` block: that block is the
+builder's closed vocabulary (`APP_KEYS`), and the builder draws no edge for it.
+
 ## The journal
 
 One row per turn: `turn_id, topic, p, lead, also, fallback, late, t_verdict_ms,
 t_window_ms, t_content_ms, model, at, audience_set, missing`. `fallback` is one of `none` (the lead
 stands, or the one block of a topic with one candidate), `unsure`, `no_topic`, `timeout`, `error`, `no_selector`, `invalid` (the standard
-stands instead of the lead), `no_data` (withdrawn, or never opened) and `foreign_round` (no member of the screen's round is
+stands instead of the lead), `no_data` (withdrawn, or never opened), `foreign_round` (no member of the screen's round is
 in the turn's round, or the turn has none: the decider is not asked and nothing opens -- a
 window alone would tell the screen what someone else asked; a screen without a round skips this
-check). A member's turn on a screen a third party shares is asked as usual and its window
+check), and `form_none` (the stamp's screen form said `none`). A member's turn on a screen a third party shares is asked as usual and its window
 shows all of the member's data (R-HP-18); with
 `window_requires_star_data` on, its window opens with the first block bound from `*` data (the
 window time is then the time to that block), and without such data it journals `no_data`
 with nothing shown. The three times count from the turn's
 arrival at `stage`: to the verdict, to the emission of the window, to the first block. The
-row never carries the turn's text. `missing` is the JSON list of question keys the decider
+row never carries the turn's text. On the stamp way the row adds `verdict_source` (`stamp`; the store's default for every other
+row is `selector`), `t_building_ms` (to the window under construction), `t_form_ms` (to the
+first screen form, empty without one) and `t_done_ms` (to done), and is written again at
+done. `missing` is the JSON list of question keys the decider
 left unanswered (`[]` for a whole verdict): a missing `topic` is an `error` (nothing opens), a
 missing `<topic>.lead` lets the standard lead (`invalid`), a missing `<topic>.also` places no
 also, and another topic's missing questions change nothing.

@@ -96,7 +96,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
-use crate::voice::cell::VoiceEvent;
+use crate::voice::call_usage::{CallUsage, UsageSlot};
+use crate::voice::cell::{SeedReason, VoiceEvent};
 use crate::voice::contract::{
     AppendKind, AudioFormat, DuplexControl, DuplexError, DuplexEvent, DuplexProvider,
     DuplexSession, Speaker, SttError, SttEvent, TtsError,
@@ -564,6 +565,14 @@ pub async fn run_connection(
                             "voice: an append reached a cascade connection, which has \
                              no channel for one"
                         );
+                    }
+                    // A seed opens a duplex session, a renewal renews one; a
+                    // cascade has none.
+                    Some(ToConnection::Renew) => {
+                        tracing::debug!(%session_id, "voice: a renewal reached a cascade connection");
+                    }
+                    Some(ToConnection::Seed { .. }) => {
+                        tracing::debug!(%session_id, "voice: a seed reached a cascade connection");
                     }
                     Some(ToConnection::CancelSpeak) => {
                         speak_deadline = None;
@@ -1205,6 +1214,22 @@ pub(crate) struct Prewarmed {
 }
 
 impl Prewarmed {
+    /// Hand the parked session its seed (D48): it waits for it before its
+    /// `session.start`, while the line still rings. Never waits: a full
+    /// control channel is a session that is not reading, and its own
+    /// deadline starts it without the seed.
+    pub(crate) fn seed(&self, messages: Vec<crate::voice::contract::SeedMessage>) {
+        if self
+            .run
+            .control_tx
+            .try_send(DuplexControl::Seed { messages })
+            .is_err()
+        {
+            // Review K8: never silent -- the session starts without it.
+            tracing::warn!("voice: the parked session is not reading, its seed was dropped");
+        }
+    }
+
     /// The connection takes the run: the pump sends what it kept, ahead of
     /// everything the model says from here on.
     fn adopt(self) -> DuplexRun {
@@ -1225,6 +1250,17 @@ const PARK_FEED_FRAME: Duration = Duration::from_millis(20);
 /// Milliseconds of `bytes` of PCM16 mono at `rate`.
 fn pcm_ms(bytes: usize, rate: u32) -> u64 {
     (bytes as u64 / 2) * 1_000 / u64::from(rate.max(1))
+}
+
+/// Where in a chunk of model audio the first audible window starts, in ms --
+/// `None` while the first-audio mark is not armed or the chunk is silence
+/// (BAT R1e, fix-round C-1): `t_first_audio_ms` is the first word, not the
+/// first of the silent chunks a live model streams before it.
+fn audible_offset_ms(armed: bool, chunk: &[u8], rate: u32, level: f64) -> Option<u64> {
+    if !armed {
+        return None;
+    }
+    crate::voice::duck::first_audible(chunk, rate, level).map(|at| pcm_ms(at, rate))
 }
 
 /// The pump between a parked session and the connection that will adopt it
@@ -1383,6 +1419,29 @@ fn pcm_ms_bytes(d: Duration, rate: u32) -> usize {
     (u64::from(rate) * d.as_millis() as u64 / 1_000) as usize * 2
 }
 
+/// Ask the colony for the seed of a session that is opening (D48), where the
+/// cell waits for one (`seed_wait_ms`). The ask leaves the moment the session
+/// is asked for — at the ring, at the media connection, at a renewal — so the
+/// curator's answer and the provider's handshake run side by side.
+/// `renewal_n` names the asking session (`0` = the call's first, review M1).
+async fn ask_seed(
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    reason: SeedReason,
+    renewal_n: u32,
+) {
+    if shared.duplex_seed_wait_ms == 0 {
+        return;
+    }
+    shared
+        .emit(VoiceEvent::SeedAsk {
+            session_id: session_id.to_string(),
+            reason,
+            renewal_n,
+        })
+        .await;
+}
+
 /// Open the duplex session of a ringing call and park it for its media
 /// connection (GH #1055).
 ///
@@ -1429,6 +1488,10 @@ pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) {
         return;
     };
     tracing::info!(%session_id, ttl_ms = ttl, "voice: duplex session opened while the line rings");
+    // The seed is asked for at the ring, not at the media (GH #1055 opened
+    // the session early so the caller hears no handshake; the seed rides the
+    // same head start).
+    ask_seed(shared, session_id, SeedReason::Start, 0).await;
     let shared = Arc::clone(shared);
     let session_id = session_id.to_string();
     tokio::spawn(async move {
@@ -1647,6 +1710,16 @@ struct Renewal {
     /// without one takes the block, should it still come, as an ordinary
     /// append once it is in charge.
     briefed: bool,
+    /// Whether its seed (D48, `seed_ask {reason: renew}`) has been answered.
+    /// Until then, and only while it has not `started` either, an asked
+    /// `renew` joins it -- the seed still to come carries the conversation as
+    /// it stands; after the seed, or after a start without one (the session
+    /// drops a later seed, `seed_late`), an asked `renew` is a new boundary
+    /// no session knows (review M1, review kv-2 A-1).
+    seeded: bool,
+    /// Its entry in the call's usage ledger (D48, DK): it is billed from its
+    /// first reading, whether or not it ever takes over.
+    usage_slot: UsageSlot,
 }
 
 impl Renewal {
@@ -1693,6 +1766,11 @@ struct Retiring {
     renewal_n: u32,
     /// When the connection stops waiting for it.
     until: Instant,
+    /// Its entry in the call's usage ledger (D48, DK).
+    usage_slot: UsageSlot,
+    /// A renewal that never took over (GH #1377, review M-2): it never spoke
+    /// on the line, so only its usage and verdict count, never its words.
+    silent: bool,
 }
 
 /// The audio the retiring session still produces, and the framer that cuts
@@ -1827,6 +1905,24 @@ struct Lineup {
     announced: u32,
     /// Which delegation handles belong to which session.
     delegations: Delegations,
+    /// An asked `renew` that came after the open renewal's seed was answered
+    /// (review M1): the next renewal opens as soon as this one took over (or
+    /// failed), with a seed asked for then.
+    renew_again: bool,
+    /// What the call used, one entry per provider session (D48, DK). Here
+    /// because the connection is the one place that sees every session: the
+    /// one in charge, the one retiring, a renewal before it takes over, and
+    /// what is left of them when the call ends (review B-1).
+    usage: CallUsage,
+    /// The ledger entry of the session in charge (`run`).
+    in_charge_slot: UsageSlot,
+    /// Whether the session in charge took the place of one the provider
+    /// ended mid-call (GH #1377): its seed, asked for under `in_charge_n`,
+    /// reaches it. Cleared by the next takeover.
+    recovered: bool,
+    /// The `renewal_n` of a recovery that has not started yet: its start is
+    /// the `renewed` lane, as a renewal's is (GH #896).
+    recovering: Option<u32>,
 }
 
 impl Lineup {
@@ -1866,9 +1962,11 @@ impl Lineup {
             mut run,
             renewal_n,
             audio_open,
+            usage_slot,
             ..
         } = renewal;
         run.clock_base_ms = base_ms;
+        let old_slot = std::mem::replace(&mut self.in_charge_slot, usage_slot);
         let old = std::mem::replace(&mut self.run, run);
         let old_audio_open = std::mem::replace(&mut self.audio_open, audio_open);
         let mut old_framer = std::mem::replace(&mut self.framer, fresh);
@@ -1886,7 +1984,15 @@ impl Lineup {
         // Two renewals inside one `close_grace_ms` is a host that renews far
         // more often than any provider limit asks for. The older one has had
         // the grace it is going to get.
-        if let Some(prev) = self.retiring.take() {
+        if let Some(mut prev) = self.retiring.take() {
+            // What it said on its way out is already in its channel: a close
+            // that is there still counts as its number, else its last meter
+            // reading stands in (D48, DK, review B-1 d). With `renew_again`
+            // (review M1) a takeover right after the last one is the ordinary
+            // course of a call renewed at every fact turn.
+            while let Ok(event) = prev.events_rx.try_recv() {
+                self.usage.observe(prev.usage_slot, &event);
+            }
             tracing::info!(
                 %session_id, renewal_n = prev.renewal_n,
                 "voice: a retiring duplex session had not finished when the next renewal \
@@ -1903,6 +2009,8 @@ impl Lineup {
             clock_base_ms,
             renewal_n,
             until: Instant::now() + close_grace,
+            usage_slot: old_slot,
+            silent: false,
         });
         if old_audio_open {
             self.retiring_audio = Some(RetiringAudio {
@@ -1916,8 +2024,95 @@ impl Lineup {
         self.takeover_by = None;
         self.due_since = None;
         self.in_charge_n = renewal_n;
-        self.renew_at = renew_deadline(renew_after);
+        self.recovered = false;
+        self.recovering = None;
+        self.renew_at = self.next_renew_at(renew_after);
         leftover
+    }
+
+    /// Put `fresh` in charge of the call at once, in place of a session the
+    /// provider ended mid-call (GH #1377).
+    ///
+    /// Not a takeover: there is nobody to wait for a quiet moment with, the
+    /// session in charge is gone. A renewal that was opening was opened to
+    /// take over from that session and asked its seed before the abort, so it
+    /// retires (its close still counts, D48/DK) and the recovery opens on a
+    /// seed asked for now. Nothing in here awaits.
+    ///
+    /// Returns the dead session's verdict and the frames of what it had
+    /// already said, for the caller to send.
+    #[allow(clippy::too_many_arguments)]
+    fn recover(
+        &mut self,
+        mut fresh: DuplexRun,
+        recovery_n: u32,
+        base_ms: u64,
+        framer: Framer,
+        close_grace: Duration,
+        renew_after: Duration,
+        session_id: &str,
+    ) -> (oneshot::Receiver<Result<(), DuplexError>>, Vec<Vec<u8>>) {
+        fresh.clock_base_ms = base_ms;
+        if let Some(opening) = self.renewal.take() {
+            let Renewal {
+                run,
+                renewal_n,
+                usage_slot,
+                ..
+            } = opening;
+            let DuplexRun {
+                audio_tx,
+                control_tx,
+                events_rx,
+                done_rx,
+                clock_base_ms,
+                ..
+            } = run;
+            drop(audio_tx);
+            drop(control_tx);
+            if let Some(mut prev) = self.retiring.take() {
+                while let Ok(event) = prev.events_rx.try_recv() {
+                    self.usage.observe(prev.usage_slot, &event);
+                }
+            }
+            tracing::info!(
+                %session_id, renewal_n,
+                "voice: a renewal was opening when the session in charge ended -- it retires"
+            );
+            self.retiring = Some(Retiring {
+                events_rx,
+                events_open: true,
+                done_rx,
+                clock_base_ms,
+                renewal_n,
+                until: Instant::now() + close_grace,
+                usage_slot,
+                silent: true,
+            });
+        }
+        let mut dead = std::mem::replace(&mut self.run, fresh);
+        self.in_charge_slot = self.usage.session();
+        let mut old_framer = std::mem::replace(&mut self.framer, framer);
+        let mut leftover = Vec::new();
+        while let Ok(chunk) = dead.audio_out_rx.try_recv() {
+            leftover.extend(old_framer.push(chunk));
+        }
+        leftover.extend(old_framer.flush());
+        self.audio_open = true;
+        self.delegations.renewed();
+        self.takeover_by = None;
+        self.due_since = None;
+        self.in_charge_n = recovery_n;
+        // Its number is taken now, not at its start: a renewal due before
+        // that must not be given the same one.
+        self.announced = recovery_n;
+        self.recovered = true;
+        self.recovering = Some(recovery_n);
+        // A `renew` asked while the renewal was opening is answered by the
+        // recovery's seed, which carries the call as it stands (review M-1).
+        self.renew_again = false;
+        self.renew_at = renew_deadline(renew_after);
+        (dead.done_rx, leftover)
     }
 
     /// Something was said on the line (the field `last_speech`).
@@ -1958,20 +2153,96 @@ impl Lineup {
         self.renewal = None;
         self.takeover_by = None;
         self.due_since = None;
-        self.renew_at = renew_deadline(renew_after);
+        self.renew_at = self.next_renew_at(renew_after);
+    }
+
+    /// When the next renewal opens once the open one has taken over or is
+    /// gone: at once where an asked `renew` waits for it (`renew_again`),
+    /// else `renew_after` from now.
+    fn next_renew_at(&mut self, renew_after: Duration) -> Option<Instant> {
+        if std::mem::take(&mut self.renew_again) {
+            Some(Instant::now())
+        } else {
+            renew_deadline(renew_after)
+        }
+    }
+}
+
+/// What an asked `renew` (D48, `in_advise`) does to the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenewAsked {
+    /// No renewal is opening: one opens now.
+    OpenNow,
+    /// The opening renewal's seed is still to come, it has not started, and
+    /// the seed will carry the conversation as it stands: the ask joins it.
+    Joins,
+    /// The opening renewal's seed was answered, or it started without one,
+    /// before this turn's facts: the next renewal opens as soon as it took
+    /// over (review M1, review kv-2 A-1).
+    AfterTakeover,
+}
+
+/// What [`renew_asked`] needs to know of the renewal that is opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpeningRenewal {
+    /// Whether its seed was answered.
+    seeded: bool,
+    /// Whether it said `Started`.
+    started: bool,
+}
+
+/// Decide an asked `renew` from the renewal that is opening (`None` = none is
+/// opening).
+fn renew_asked(opening: Option<OpeningRenewal>) -> RenewAsked {
+    match opening {
+        None => RenewAsked::OpenNow,
+        Some(r) if r.seeded || r.started => RenewAsked::AfterTakeover,
+        Some(_) => RenewAsked::Joins,
     }
 }
 
 /// Tell the colony that a renewal ended before it took over (GH #896): its
 /// verdict, on the warning lane and in this cell's log. The session in charge
 /// is untouched; the caller hears nothing of it.
-async fn report_failed_renewal(shared: &Arc<VoiceIoShared>, session_id: &str, failed: Renewal) {
+///
+/// What it said before its verdict still counts for the call (D48, DK, review
+/// re-check Re-1): three ways let a failed renewal go -- the end of its
+/// events, a handover block that finds it dead, a takeover moment that finds
+/// it gone -- and only the first had read its events to the end, so a
+/// renewal's `Closed` (before a takeover usually its only number, GH #798)
+/// was lost on the other two and the final said `complete: true`. Its events
+/// are read here, once, after the verdict, when the provider has said all it
+/// will. One that opened and never closed leaves the total open.
+async fn report_failed_renewal(
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    failed: Renewal,
+    usage: &mut CallUsage,
+) {
     let renewal_n = failed.renewal_n;
-    let why = match tokio::time::timeout(shared.external_timeout, failed.run.done_rx).await {
+    let slot = failed.usage_slot;
+    let mut opened = failed.started;
+    let DuplexRun {
+        mut events_rx,
+        done_rx,
+        ..
+    } = failed.run;
+    let why = match tokio::time::timeout(shared.external_timeout, done_rx).await {
         Ok(Ok(Ok(()))) => "the provider ended it".to_string(),
         Ok(Ok(Err(e))) => e.to_string(),
         Ok(Err(_)) | Err(_) => "the renewal ended without a verdict".to_string(),
     };
+    let mut moved = false;
+    while let Ok(event) = events_rx.try_recv() {
+        opened |= matches!(event, DuplexEvent::Started { .. });
+        moved |= usage.observe(slot, &event);
+    }
+    if opened {
+        moved |= usage.unclosed(slot);
+    }
+    if moved {
+        report_usage(shared, session_id, usage, false).await;
+    }
     tracing::warn!(
         %session_id, renewal_n, reason = %why,
         "voice: the renewed duplex session ended before it took over"
@@ -2044,9 +2315,10 @@ async fn next_retiring_audio(audio: &mut Option<RetiringAudio>) -> Option<Vec<u8
 /// Its last words are passed on — a transcript, the answer to an append, a
 /// delegation it still opened — because they belong in the turn the caller is
 /// in. Its close is NOT: `Closed` would close that turn in the handler while
-/// the call goes on, so it becomes a line in this cell's log with what the
-/// session cost. The rest — its start, its meter, its ear, a warning about an
-/// item it no longer carries — is nobody's business any more.
+/// the call goes on, so it becomes a line in this cell's log; what the session
+/// cost is counted in the call's usage ledger before this is asked (D48, DK).
+/// The rest — its start, its meter, its ear, a warning about an item it no
+/// longer carries — is nobody's business any more.
 fn retiring_event(
     event: DuplexEvent,
     base_ms: u64,
@@ -2084,6 +2356,25 @@ fn retiring_event(
             None
         }
     }
+}
+
+/// Hand the handler the call's usage (D48, DK): the running total while the
+/// call goes on, and once, at its end, the `final` one with whether every
+/// session that counts closed ([`CallUsage::complete`]).
+async fn report_usage(
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    usage: &CallUsage,
+    last: bool,
+) {
+    shared
+        .emit(VoiceEvent::CallUsage {
+            session_id: session_id.to_string(),
+            seconds: usage.total(),
+            last,
+            complete: usage.complete(),
+        })
+        .await;
 }
 
 /// Drive one duplex connection until it ends (contract § 1.3).
@@ -2165,6 +2456,7 @@ async fn run_duplex(
     // a session opened on the first buffer would greet nobody. Unless the
     // line rang first (GH #1055): then the session was opened while it rang,
     // and this connection adopts it with whatever it has said so far.
+    let mut usage = CallUsage::default();
     let first = match shared.take_prewarm(&session_id, None).await {
         Some(early) if early.format == input => {
             tracing::info!(%session_id, "voice: the media connection adopts the early session");
@@ -2175,9 +2467,18 @@ async fn run_duplex(
                 %session_id,
                 "voice: the early session runs at another format, a fresh one is opened"
             );
+            // It was opened while the line rang and billed, and its close goes
+            // with the pump it is dropped with: the call's total says it may
+            // be short (D48, DK, review re-check Re-k4).
+            let early = usage.session();
+            usage.unclosed(early);
+            ask_seed(&shared, &session_id, SeedReason::Start, 0).await;
             DuplexRun::start(&shared, &provider, input)
         }
-        None => DuplexRun::start(&shared, &provider, input),
+        None => {
+            ask_seed(&shared, &session_id, SeedReason::Start, 0).await;
+            DuplexRun::start(&shared, &provider, input)
+        }
     };
     // Ducking the model while the caller talks over it (GH #1055); off
     // unless `params.duplex.barge_duck_ms` asks.
@@ -2197,6 +2498,7 @@ async fn run_duplex(
     let renew_grace = Duration::from_millis(shared.duplex_renew_grace_ms);
     let close_grace = Duration::from_millis(shared.close_grace_ms);
     let frame_ms = audio_out_frame_ms(&shared);
+    let in_charge_slot = usage.session();
     let mut lineup = Lineup {
         run: first,
         audio_open: true,
@@ -2211,6 +2513,11 @@ async fn run_duplex(
         in_charge_n: 0,
         announced: 0,
         delegations: Delegations::default(),
+        renew_again: false,
+        usage,
+        in_charge_slot,
+        recovered: false,
+        recovering: None,
     };
 
     let mut spoken: Option<Spoken> = None;
@@ -2237,8 +2544,23 @@ async fn run_duplex(
     // are moved onto it ([`shift_event`]) rather than starting it again.
     let opened = Instant::now();
     let mut model_clock: Option<(u64, Instant)> = None;
+    // Whether the next AUDIBLE audio sent to the client is the first since a
+    // transcript fragment went to the handler (BAT R1e, C3): its time on
+    // `model_clock` is what a turn's `t_first_audio_ms` is read from. One
+    // `LiveAudioOut` per fragment at most, never one per frame. Audible, not
+    // sent: a live model streams its silence too, in 100 ms chunks
+    // ([`park_pump`], GH #798), so the first chunk after a fragment is mostly
+    // silence one chunk later and the mark read the provider's cadence
+    // (fix-round C-1). The level is the gate's and the park pump's.
+    let mut audio_mark_armed = false;
+    let audible_rate = input.sample_rate;
+    let audible_level = crate::voice::duck::linear(shared.duck.level_dbfs);
     let mut ticker = tokio::time::interval(Duration::from_millis(shared.duplex_tick_ms.max(1)));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The call's time marks (D48, DK): one timer, in this loop, so it ends
+    // with the call -- a call that is over cannot fire a mark.
+    let mut call_marks =
+        crate::voice::call_marks::CallMarkClock::new(shared.duplex_call_marks.clone(), opened);
     let mut closing: Option<u16> = None;
     let mut half_gone = shared.shutdown();
     let mut bad_frames: u32 = 0;
@@ -2248,6 +2570,16 @@ async fn run_duplex(
     // line is a `duplex_failed` and a `1011`, the same provider ending after
     // the caller hung up is the ordinary end of a call.
     let mut provider_ended = false;
+    // GH #1377: how often this call may still replace a session the provider
+    // ended mid-call (`params.duplex.recover_max`, `0` = never, the call ends
+    // with the session as it always did), and the provider's word for the last
+    // end of the session in charge -- the cause the `duplex_failed` names once
+    // the attempts are spent. Measured on the phone (BAT R2): `reason=content`
+    // 4 to 11 s after a sentence the model's moderation reads as a crisis,
+    // with an ordinary verdict, so the caller talked on into a dead line.
+    let recover_max = shared.duplex_recover_max;
+    let mut recoveries: u32 = 0;
+    let mut last_close: Option<String> = None;
 
     loop {
         // When a due renewal takes over (GH #896, review I-2), read before the
@@ -2357,7 +2689,7 @@ async fn run_duplex(
                             };
                             if !sent {
                                 if let Some(failed) = lineup.renewal.take() {
-                                    report_failed_renewal(&shared, &session_id, failed).await;
+                                    report_failed_renewal(&shared, &session_id, failed, &mut lineup.usage).await;
                                 }
                                 lineup.renewal_gone(renew_after);
                                 continue;
@@ -2432,6 +2764,92 @@ async fn run_duplex(
                             );
                         }
                     }
+                    // The seed of a session that is opening (D48), to the
+                    // session that asked for it and to no other (review M1):
+                    // `renewal_n` 0 is the call's first session while it is
+                    // still in charge, any other number the open renewal of
+                    // that number (a session that has started drops it
+                    // itself, with a warning). A late answer -- to a session
+                    // that took over or was replaced -- is dropped loud: opening a newer session on it would open it with
+                    // an older conversation than its own answer carries.
+                    // A renewal asked for by the colony (D48, `in_advise`
+                    // `renew`): due now, on the same arm a due
+                    // `renew_after_ms` takes. A renewal whose seed is still
+                    // to come and which has not started absorbs it -- that
+                    // seed carries the conversation as it stands. One whose
+                    // seed was answered, or which started without it (and so
+                    // drops a later seed), does not: the asked renewal opens
+                    // right after it took over, or else a fact of the turn in
+                    // between never reaches a session (review M1, kv-2 A-1).
+                    // The session in charge
+                    // keeps the call (and its open delegations) until the
+                    // handover.
+                    Some(ToConnection::Renew) => {
+                        if shared.duplex_seed_wait_ms == 0 {
+                            tracing::warn!(
+                                %session_id,
+                                "voice: a renewal was asked for without `seed_wait_ms` -- the \
+                                 new session opens on its instructions alone (review K3)"
+                            );
+                        }
+                        let opening = lineup.renewal.as_ref().map(|r| {
+                            (
+                                r.renewal_n,
+                                OpeningRenewal {
+                                    seeded: r.seeded,
+                                    started: r.started,
+                                },
+                            )
+                        });
+                        match renew_asked(opening.map(|(_, o)| o)) {
+                            RenewAsked::OpenNow => lineup.renew_at = Some(Instant::now()),
+                            RenewAsked::AfterTakeover => {
+                                lineup.renew_again = true;
+                                tracing::debug!(
+                                    %session_id, renewal_n = ?opening.map(|o| o.0),
+                                    "voice: a renewal was asked for after the opening one's \
+                                     seed -- the next one opens after its takeover"
+                                );
+                            }
+                            RenewAsked::Joins => tracing::debug!(
+                                %session_id, renewal_n = ?opening.map(|o| o.0),
+                                "voice: a renewal is opening, its seed still to come -- the \
+                                 asked one joins it"
+                            ),
+                        }
+                    }
+                    Some(ToConnection::Seed { renewal_n, messages }) => {
+                        let target = match lineup.renewal.as_mut() {
+                            Some(r) if r.renewal_n == renewal_n => {
+                                r.seeded = true;
+                                Some(r.run.control_tx.clone())
+                            }
+                            // The call's first session while it leads, or a
+                            // recovery that took its place (GH #1377).
+                            _ if renewal_n == lineup.in_charge_n
+                                && (renewal_n == 0 || lineup.recovered) =>
+                            {
+                                Some(lineup.run.control_tx.clone())
+                            }
+                            _ => None,
+                        };
+                        match target {
+                            Some(target) => {
+                                if target.send(DuplexControl::Seed { messages }).await.is_err() {
+                                    tracing::debug!(
+                                        %session_id,
+                                        "voice: the duplex session is gone, the seed was dropped"
+                                    );
+                                }
+                            }
+                            None => tracing::warn!(
+                                %session_id, renewal_n,
+                                in_charge_n = lineup.in_charge_n,
+                                open_renewal = ?lineup.renewal.as_ref().map(|r| r.renewal_n),
+                                "voice: a seed for a session that is not opening, dropped"
+                            ),
+                        }
+                    }
                     // A synthesis order on a duplex connection is a wiring
                     // fault: the handler sends `Advise` on this engine
                     // (OR-L6). Loud, and answered — the handler counts on
@@ -2489,17 +2907,58 @@ async fn run_duplex(
                         // An event is a completed provider round trip (issue #7).
                         shared.liveness.mark_success();
                         let event = shift_event(event, lineup.run.clock_base_ms);
+                        // A meter reading moves the call's running total; a
+                        // close is counted and goes out in the `final` (D48).
+                        let metered = lineup.usage.observe(lineup.in_charge_slot, &event)
+                            && matches!(event, DuplexEvent::Usage { .. });
+                        // GH #1377: a recovery's start is the `renewed` lane,
+                        // as a renewal's is -- the colony's handover answers it.
+                        if matches!(event, DuplexEvent::Started { .. })
+                            && let Some(renewal_n) = lineup.recovering.take()
+                        {
+                            tracing::info!(
+                                %session_id, renewal_n,
+                                "voice: the recovered duplex session started"
+                            );
+                            shared.emit(VoiceEvent::Renewed {
+                                session_id: session_id.clone(),
+                                renewal_n,
+                                renewed_at_ms: epoch_ms(),
+                            }).await;
+                            continue;
+                        }
+                        // Inside this loop nothing of the connection's own ends
+                        // the session in charge -- a takeover moves it out of
+                        // `run` first, a hang-up leaves the loop -- so its close
+                        // is the provider's. While an attempt is left it is no
+                        // end of the call and stays out of the handler, as a
+                        // retiring session's close does; it is counted above.
+                        if let DuplexEvent::Closed { reason, .. } = &event {
+                            last_close = Some(reason.clone());
+                            if recoveries < recover_max {
+                                tracing::info!(
+                                    %session_id, %reason,
+                                    "voice: the provider closed the duplex session in charge \
+                                     mid-call"
+                                );
+                                continue;
+                            }
+                        }
                         if let DuplexEvent::DelegationCreated { delegation_id, .. } = &event {
                             lineup.delegations.opened(delegation_id);
                         }
                         if matches!(event, DuplexEvent::Transcript { .. }) {
                             lineup.heard();
+                            audio_mark_armed = true;
                         }
                         observe(&event, &mut model_clock, &mut spoken, quiet);
                         shared.emit(VoiceEvent::Live {
                             session_id: session_id.clone(),
                             event,
                         }).await;
+                        if metered {
+                            report_usage(&shared, &session_id, &lineup.usage, false).await;
+                        }
                     }
                     // The provider is done, one way or another. Its verdict is
                     // waiting below; there is no retry and no reconnect
@@ -2507,6 +2966,57 @@ async fn run_duplex(
                     // step in either (OR-KY-G7): it was opened to take over
                     // from a session that is RUNNING, and the one that just
                     // ended took the conversation with it.
+                    //
+                    // GH #1377: unless `recover_max` asks otherwise. Then a
+                    // fresh session of the same call takes the dead one's
+                    // place at once -- a renewal (GH #896) that asks for its
+                    // seed with `reason: recover`, so it opens on the
+                    // conversation as it stands -- at most `recover_max`
+                    // times; the end after that is the call's.
+                    None if recoveries < recover_max => {
+                        recoveries += 1;
+                        let recovery_n = lineup
+                            .announced
+                            .max(lineup.in_charge_n)
+                            .max(lineup.renewal.as_ref().map_or(0, |r| r.renewal_n))
+                            .saturating_add(1);
+                        ask_seed(&shared, &session_id, SeedReason::Recover, recovery_n).await;
+                        let run = DuplexRun::start_renewed(&shared, &provider, input);
+                        if ear_shut {
+                            let _ = run.control_tx.send(DuplexControl::Mute).await;
+                        }
+                        let base = clock_now_ms(model_clock, opened);
+                        let (done_rx, leftover) = lineup.recover(
+                            run,
+                            recovery_n,
+                            base,
+                            Framer::new(output, frame_ms),
+                            close_grace,
+                            renew_after,
+                            &session_id,
+                        );
+                        // Its events are over, so the provider's task is too:
+                        // the verdict is there or a moment away. Bounded all
+                        // the same (rule 12).
+                        let cause = match tokio::time::timeout(close_grace, done_rx).await {
+                            Ok(Ok(Ok(()))) => last_close
+                                .take()
+                                .unwrap_or_else(|| "closed".to_string()),
+                            Ok(Ok(Err(e))) => e.to_string(),
+                            Ok(Err(_)) | Err(_) => {
+                                "the duplex task ended without a verdict".to_string()
+                            }
+                        };
+                        tracing::warn!(
+                            %session_id, %cause, renewal_n = recovery_n,
+                            attempt = recoveries, recover_max,
+                            "voice: the provider ended the duplex session mid-call -- \
+                             recovering with a fresh session"
+                        );
+                        if send_audio(&mut sink, leftover).await.is_err() {
+                            break;
+                        }
+                    }
                     None => {
                         provider_ended = true;
                         break;
@@ -2523,15 +3033,24 @@ async fn run_duplex(
                 match tick {
                     RetiringTick::Event(event) => {
                         shared.liveness.mark_success();
-                        let (base, renewal_n) = lineup
+                        let (base, renewal_n, slot) = lineup
                             .retiring
                             .as_ref()
-                            .map_or((0, 0), |r| (r.clock_base_ms, r.renewal_n));
-                        if let Some(event) = retiring_event(
+                            .map_or((0, 0, None), |r| {
+                                (r.clock_base_ms, r.renewal_n, Some(r.usage_slot))
+                            });
+                        let silent = lineup.retiring.as_ref().is_some_and(|r| r.silent);
+                        if let Some(slot) = slot
+                            && lineup.usage.observe(slot, &event)
+                        {
+                            report_usage(&shared, &session_id, &lineup.usage, false).await;
+                        }
+                        if !silent && let Some(event) = retiring_event(
                             event, base, renewal_n, &session_id, &mut lineup.delegations,
                         ) {
                             if matches!(event, DuplexEvent::Transcript { .. }) {
                                 lineup.heard();
+                                audio_mark_armed = true;
                             }
                             observe(&event, &mut model_clock, &mut spoken, quiet);
                             shared.emit(VoiceEvent::Live {
@@ -2551,7 +3070,11 @@ async fn run_duplex(
                             // channel, and it is read before the session is
                             // let go.
                             while let Ok(event) = r.events_rx.try_recv() {
-                                if let Some(event) = retiring_event(
+                                if lineup.usage.observe(r.usage_slot, &event) {
+                                    report_usage(&shared, &session_id, &lineup.usage, false)
+                                        .await;
+                                }
+                                if !r.silent && let Some(event) = retiring_event(
                                     event, r.clock_base_ms, r.renewal_n, &session_id,
                                     &mut lineup.delegations,
                                 ) {
@@ -2653,7 +3176,7 @@ async fn run_duplex(
                     // Gone before it could take over (review I-3): the
                     // session in charge stays in charge.
                     Some(failed) if failed.started => {
-                        report_failed_renewal(&shared, &session_id, failed).await;
+                        report_failed_renewal(&shared, &session_id, failed, &mut lineup.usage).await;
                         lineup.renewal_gone(renew_after);
                     }
                     other => {
@@ -2680,6 +3203,16 @@ async fn run_duplex(
             // and the waiting fragment opens a second turn with the rest of the
             // sentence in it. A deadline that fires one tick later is a
             // deadline that fired; a turn cut in half is a turn lost.
+            // Below the events for the reason the tick is: a mark that is a
+            // poll late is still the mark it was.
+            () = call_marks.due() => {
+                let elapsed_s = call_marks.fire();
+                shared.emit(VoiceEvent::CallMark {
+                    session_id: session_id.clone(),
+                    elapsed_s,
+                }).await;
+            }
+
             _ = ticker.tick() => {
                 let now_ms = clock_now_ms(model_clock, opened);
                 shared.emit(VoiceEvent::LiveTick {
@@ -2824,6 +3357,16 @@ async fn run_duplex(
                     }
                     RenewalTick::Event(Some(other)) => {
                         shared.liveness.mark_success();
+                        // Its meter and its close count for the call before it
+                        // takes over: a renewal that fails here was billed all
+                        // the same (D48, DK, review B-1 f). One ledger entry
+                        // per session, so one that takes over counts on and
+                        // is not counted twice.
+                        if let Some(slot) = lineup.renewal.as_ref().map(|r| r.usage_slot)
+                            && lineup.usage.observe(slot, &other)
+                        {
+                            report_usage(&shared, &session_id, &lineup.usage, false).await;
+                        }
                         tracing::debug!(
                             %session_id, event = ?other,
                             "voice: the renewed duplex session said something before it took \
@@ -2836,7 +3379,7 @@ async fn run_duplex(
                     // `renew_after_ms` from now.
                     RenewalTick::Event(None) => {
                         let Some(failed) = lineup.renewal.take() else { continue };
-                        report_failed_renewal(&shared, &session_id, failed).await;
+                        report_failed_renewal(&shared, &session_id, failed, &mut lineup.usage).await;
                         lineup.renewal_gone(renew_after);
                     }
                     // Nothing it says is heard before it takes over: two
@@ -2863,11 +3406,15 @@ async fn run_duplex(
             // yet.
             () = sleep_until_opt(lineup.renew_at) => {
                 lineup.renew_at = None;
+                // A seeded renewal asks again (D48): the new session opens
+                // on the conversation as it stands NOW. The old one keeps
+                // talking meanwhile, so the wait is no hole on the line.
+                let renewal_n = lineup.announced.saturating_add(1);
+                ask_seed(&shared, &session_id, SeedReason::Renew, renewal_n).await;
                 let run = DuplexRun::start_renewed(&shared, &provider, input);
                 if ear_shut {
                     let _ = run.control_tx.send(DuplexControl::Mute).await;
                 }
-                let renewal_n = lineup.announced.saturating_add(1);
                 tracing::info!(
                     %session_id, renewal_n,
                     "voice: renewing the duplex session inside the call"
@@ -2878,6 +3425,8 @@ async fn run_duplex(
                     started: false,
                     audio_open: true,
                     briefed: false,
+                    seeded: false,
+                    usage_slot: lineup.usage.session(),
                 });
             }
 
@@ -2913,6 +3462,14 @@ async fn run_duplex(
                     Some(mut bytes) => {
                         shared.liveness.mark_success();
                         lineup.heard();
+                        // Its transcripts arm the mark too (review M-3): the
+                        // answer the retiring session speaks is the turn's.
+                        let audible = audible_offset_ms(
+                            audio_mark_armed,
+                            &bytes,
+                            audible_rate,
+                            audible_level,
+                        );
                         duck.model(&mut bytes);
                         let frames = match lineup.retiring_audio.as_mut() {
                             Some(a) => a.framer.push(bytes),
@@ -2920,6 +3477,13 @@ async fn run_duplex(
                         };
                         if send_audio(&mut sink, frames).await.is_err() {
                             break;
+                        }
+                        if let Some(offset) = audible {
+                            audio_mark_armed = false;
+                            shared.emit(VoiceEvent::LiveAudioOut {
+                                session_id: session_id.clone(),
+                                at_ms: clock_now_ms(model_clock, opened) + offset,
+                            }).await;
                         }
                     }
                     None => {
@@ -2941,6 +3505,14 @@ async fn run_duplex(
                     Some(mut bytes) => {
                         shared.liveness.mark_success();
                         lineup.heard();
+                        // Heard before the duck: ducked speech is still the
+                        // answer the model gave (fix-round C-1).
+                        let audible = audible_offset_ms(
+                            audio_mark_armed,
+                            &bytes,
+                            audible_rate,
+                            audible_level,
+                        );
                         // Read for its level, then silenced while the caller
                         // talks over it (GH #1055).
                         duck.model(&mut bytes);
@@ -2956,8 +3528,22 @@ async fn run_duplex(
                             );
                             drop(tail);
                         }
-                        if send_audio(&mut sink, lineup.framer.push(bytes)).await.is_err() {
+                        let frames = lineup.framer.push(bytes);
+                        if send_audio(&mut sink, frames).await.is_err() {
                             break;
+                        }
+                        // Read after the frames are on the sink, on the clock
+                        // the tick reads: the time the caller's side got them,
+                        // to the millisecond, not the model's 200 ms raster,
+                        // plus the silence that leads the chunk. A chunk shorter
+                        // than the framer's rest goes out with the next one,
+                        // at most one frame (20 ms) after this mark.
+                        if let Some(offset) = audible {
+                            audio_mark_armed = false;
+                            shared.emit(VoiceEvent::LiveAudioOut {
+                                session_id: session_id.clone(),
+                                at_ms: clock_now_ms(model_clock, opened) + offset,
+                            }).await;
                         }
                     }
                     // The model's audio is over; whether the SESSION is over is
@@ -2974,11 +3560,26 @@ async fn run_duplex(
     let Lineup {
         mut run,
         mut framer,
-        renewal,
-        retiring,
+        mut renewal,
+        mut retiring,
         retiring_audio,
+        mut usage,
+        in_charge_slot,
         ..
     } = lineup;
+    // What they already said counts before they go (D48, DK, review B-1 e): a
+    // close in the channel is their number, else their last meter reading
+    // stands in and the call's `final` says it is not complete.
+    if let Some(r) = renewal.as_mut() {
+        while let Ok(event) = r.run.events_rx.try_recv() {
+            usage.observe(r.usage_slot, &event);
+        }
+    }
+    if let Some(r) = retiring.as_mut() {
+        while let Ok(event) = r.events_rx.try_recv() {
+            usage.observe(r.usage_slot, &event);
+        }
+    }
     drop(renewal);
     drop(retiring);
     if let Some(mut a) = retiring_audio {
@@ -3006,8 +3607,8 @@ async fn run_duplex(
     // The wait is the operator's `params.duplex.close_grace_ms`, carried on the
     // shared half by the factory (OR-L.L2b.1). It is the connection's backstop
     // AROUND the provider's own wait, so the two have to be the same number: a
-    // shorter one cuts off the final `Closed { usage_seconds }`, and after
-    // OR-L22 that is the only place a session's cost is ever reported.
+    // shorter one cuts off the final `Closed { usage_seconds }`, the last
+    // session's share of the call's `usage` total (D48, DK).
     let verdict = duplex_verdict(
         &shared,
         &session_id,
@@ -3015,14 +3616,42 @@ async fn run_duplex(
         run.done_rx,
         run.clock_base_ms,
         close_grace,
+        (&mut usage, in_charge_slot),
     )
     .await;
     if provider_ended {
         match verdict {
+            // GH #1377: where the call may be recovered, a session that ends
+            // after the last attempt fails the call even in good order: the
+            // caller is still on the line, and the error lane is what the
+            // telephony edge answers with its announcement and a hang-up.
+            Ok(()) if recover_max > 0 => {
+                let cause = last_close.unwrap_or_else(|| "closed".to_string());
+                tracing::warn!(
+                    %session_id, %cause, recoveries, recover_max,
+                    "voice: the duplex session ended mid-call with no recovery left"
+                );
+                shared
+                    .emit(VoiceEvent::DuplexFailed {
+                        session_id: session_id.clone(),
+                        detail: format!(
+                            "the provider ended the duplex session mid-call ({cause}); \
+                             {recoveries} of recover_max {recover_max} recoveries spent"
+                        ),
+                    })
+                    .await;
+                closing = Some(1011);
+            }
             Ok(()) => closing = Some(1000),
             Err(e) => {
                 // No retry, no reconnect (OR-L20): the handler turns this into
-                // `error duplex_failed` and the client reads a close.
+                // `error duplex_failed` and the client reads a close. GH #1373
+                // (BAT R1d C2): the failure is also said on a `WARN` line --
+                // eight refused starts (401) stood only in an error body.
+                tracing::warn!(
+                    %session_id, error = %e,
+                    "voice: the duplex session failed"
+                );
                 shared
                     .emit(VoiceEvent::DuplexFailed {
                         session_id: session_id.clone(),
@@ -3043,6 +3672,10 @@ async fn run_duplex(
     if let Some(code) = closing {
         sink.close(code, "").await;
     }
+    // The call is over: its one `final` usage, whatever ended it (D48, DK,
+    // review B-1) -- before `unregister`, whose `Disconnected` is the
+    // handler's last word of the call.
+    report_usage(&shared, &session_id, &usage, true).await;
     unregister(&shared, &session_id, conn_id).await;
 }
 
@@ -3074,10 +3707,13 @@ async fn duplex_text(sink: &mut Sink, text: &str) -> Result<Option<ClientFrame>,
 ///
 /// The final `Closed { reason, usage_seconds }` travels on the EVENT channel,
 /// not on the verdict, so a connection that dropped the receiver in order to
-/// wait would lose the only reading a session's cost is ever reported in
-/// (OR-L22: there is no `session` lane; the number rides out on `turn` and in
-/// the cell's own log). Its stamps are moved onto the call's timeline like
-/// every other event of the session (`clock_base_ms`, GH #896).
+/// wait would lose its close, the one reading that is a session's own final
+/// cost -- without it the ledger has only the last meter to stand in
+/// (OR-L22: there is no `session` lane; the number rides out on `turn`, in
+/// the cell's own log and, since D48/DK, in the call's usage ledger, which
+/// the `final` of the `usage` lane reads). Its stamps are moved onto the
+/// call's timeline like every other event of the session (`clock_base_ms`,
+/// GH #896).
 async fn duplex_verdict(
     shared: &Arc<VoiceIoShared>,
     session_id: &str,
@@ -3085,6 +3721,7 @@ async fn duplex_verdict(
     done_rx: oneshot::Receiver<Result<(), DuplexError>>,
     clock_base_ms: u64,
     limit: Duration,
+    (usage, slot): (&mut CallUsage, UsageSlot),
 ) -> Result<(), DuplexError> {
     let mut done = done_rx;
     let deadline = Instant::now() + limit;
@@ -3099,6 +3736,7 @@ async fn duplex_verdict(
                 // handler cannot learn the session ended before it learns what
                 // it cost.
                 while let Ok(event) = events_rx.try_recv() {
+                    usage.observe(slot, &event);
                     shared.emit(VoiceEvent::Live {
                         session_id: session_id.to_string(),
                         event: shift_event(event, clock_base_ms),
@@ -3115,6 +3753,7 @@ async fn duplex_verdict(
             event = events_rx.recv(), if events_open => {
                 match event {
                     Some(event) => {
+                        usage.observe(slot, &event);
                         shared.emit(VoiceEvent::Live {
                             session_id: session_id.to_string(),
                             event: shift_event(event, clock_base_ms),
@@ -3378,6 +4017,30 @@ mod tests {
             640,
             "the rate comes from the declared output format, never from a constant"
         );
+    }
+
+    /// Review M1: an asked `renew` joins an opening renewal only while that
+    /// one's seed is still to come; after the seed it is one more renewal.
+    #[test]
+    fn an_asked_renew_joins_only_an_unseeded_renewal() {
+        let opening = |seeded, started| Some(OpeningRenewal { seeded, started });
+        assert_eq!(renew_asked(None), RenewAsked::OpenNow);
+        assert_eq!(renew_asked(opening(false, false)), RenewAsked::Joins);
+        assert_eq!(renew_asked(opening(true, false)), RenewAsked::AfterTakeover);
+        assert_eq!(renew_asked(opening(true, true)), RenewAsked::AfterTakeover);
+    }
+
+    /// Review kv-2 A-1: a renewal that started without its seed (the curator
+    /// slower than `seed_wait_ms`) drops a seed that comes later, so it can
+    /// carry no later fact: an asked `renew` after its start is one more
+    /// renewal, opened after the takeover, never absorbed.
+    #[test]
+    fn an_asked_renew_after_an_unseeded_start_opens_one_more_renewal() {
+        let started_unseeded = Some(OpeningRenewal {
+            seeded: false,
+            started: true,
+        });
+        assert_eq!(renew_asked(started_unseeded), RenewAsked::AfterTakeover);
     }
 
     /// A rate whose 20 ms is not a whole number of samples rounds DOWN to one:

@@ -123,6 +123,17 @@ pub enum ToConnection {
         /// the renewal it names failed (review M-8).
         takeover: Option<u32>,
     },
+    /// Open the next session of this duplex call now (D48, `in_advise`
+    /// section `renew`), unless one is already opening.
+    Renew,
+    /// The seed of this connection's duplex session (D48): to the session
+    /// that is opening, which waits for it before its start.
+    Seed {
+        /// The session of the call it answers (`0` = the first).
+        renewal_n: u32,
+        /// The messages, oldest first.
+        messages: Vec<crate::voice::contract::SeedMessage>,
+    },
 }
 
 /// One live connection, as the registry holds it.
@@ -176,9 +187,11 @@ pub struct VoiceIoShared {
     ///
     /// Read by the CONNECTION for the same reason the two deadlines above are:
     /// it is the half that holds the run. The wait is what carries the final
-    /// `Closed { usage_seconds }` to the handler, and after OR-L22 that log line
-    /// is the only place a session's cost is ever reported — so an operator who
-    /// raises the number must raise this wait with it, not run into a constant.
+    /// `Closed { usage_seconds }` to the handler -- the number the `final` of
+    /// the call's `usage` lane counts for the session in charge (D48, DK; a
+    /// session cut off here counts with its last meter reading and makes that
+    /// `final` say `complete: false`) -- so an operator who raises the number
+    /// must raise this wait with it, not run into a constant.
     pub close_grace_ms: u64,
     /// How often a duplex connection hands the turn machine the time, in
     /// milliseconds (`params.duplex.tick_ms`, R-L7).
@@ -201,10 +214,25 @@ pub struct VoiceIoShared {
     /// block before it takes over without one, in milliseconds
     /// (`params.duplex.renew_grace_ms`, GH #896).
     pub duplex_renew_grace_ms: u64,
+    /// How many times a duplex call is recovered after its provider ended the
+    /// session in charge mid-call (`params.duplex.recover_max`, GH #1377);
+    /// `0` recovers nothing.
+    pub duplex_recover_max: u32,
     /// How long a duplex session opened while the line rings waits for its
     /// media connection, in milliseconds (`params.duplex.prewarm_ttl_ms`,
     /// GH #1055); `0` never opens one early.
     pub duplex_prewarm_ttl_ms: u64,
+    /// How long a duplex session that opens waits for its seed, in
+    /// milliseconds (`params.duplex.seed_wait_ms`, D48); `0` asks for none.
+    ///
+    /// The connection reads it to know whether to emit `seed_ask` when it
+    /// opens a session; the wait itself is the provider's.
+    pub duplex_seed_wait_ms: u64,
+    /// When a duplex call is marked on the `call_mark` lane
+    /// (`params.call_marks_s` / `call_mark_every_s`, D48). Here because the
+    /// connection owns the call's clock: one timer per call, in its own loop,
+    /// so the timer ends with the call.
+    pub duplex_call_marks: crate::voice::call_marks::CallMarks,
     /// Ducking the model while the caller talks over it
     /// (`params.duplex.barge_*`, GH #1055); off unless the params ask.
     pub duck: crate::voice::duck::DuckParams,
@@ -329,6 +357,49 @@ impl VoiceIoShared {
         } else {
             None
         }
+    }
+
+    /// Hand the seed of `session_id` to its session (D48): to the early one
+    /// parked while the line rings -- always the call's first, `renewal_n`
+    /// `0` -- else to the connection that holds it, which routes it by
+    /// `renewal_n` (review M1). A call nobody holds is told to the handler,
+    /// which answers `unknown_session` (review K5).
+    pub(crate) async fn seed(
+        &self,
+        session_id: &str,
+        renewal_n: u32,
+        messages: Vec<crate::voice::contract::SeedMessage>,
+    ) {
+        let held = {
+            let registry = self.sessions.lock().await;
+            if let Some((_, early)) = registry.prewarm.get(session_id) {
+                if renewal_n == 0 {
+                    early.seed(messages);
+                } else {
+                    tracing::warn!(
+                        %session_id, renewal_n,
+                        "voice: a seed for a renewal reached a session parked at the ring, dropped"
+                    );
+                }
+                return;
+            }
+            registry.live.contains_key(session_id)
+        };
+        if !held {
+            self.emit(VoiceEvent::SeedUnheld {
+                session_id: session_id.to_string(),
+            })
+            .await;
+            return;
+        }
+        self.send_to(
+            session_id,
+            ToConnection::Seed {
+                renewal_n,
+                messages,
+            },
+        )
+        .await;
     }
 
     /// Take over `session_id` for `conn_id`.
@@ -494,7 +565,10 @@ impl VoiceIoShared {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_seed_wait_ms: 0,
+            duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
             external_timeout,
@@ -579,8 +653,14 @@ pub struct VoiceIo {
     /// How long a renewed session waits for its handover block, in
     /// milliseconds. See [`VoiceIoShared::duplex_renew_grace_ms`].
     pub duplex_renew_grace_ms: u64,
+    /// See [`VoiceIoShared::duplex_recover_max`] (GH #1377).
+    pub duplex_recover_max: u32,
     /// See [`VoiceIoShared::duplex_prewarm_ttl_ms`] (GH #1055).
     pub duplex_prewarm_ttl_ms: u64,
+    /// See [`VoiceIoShared::duplex_seed_wait_ms`] (D48).
+    pub duplex_seed_wait_ms: u64,
+    /// See [`VoiceIoShared::duplex_call_marks`] (D48).
+    pub duplex_call_marks: crate::voice::call_marks::CallMarks,
     /// See [`VoiceIoShared::duck`] (GH #1055).
     pub duck: crate::voice::duck::DuckParams,
     /// The mode a connection starts in without a `?mode=`.
@@ -688,7 +768,10 @@ impl VoiceIo {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_seed_wait_ms: 0,
+            duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             audio_out_frame_ms: crate::voice::params::DEFAULT_AUDIO_OUT_FRAME_MS,
             speak_plain: crate::voice::params::DEFAULT_SPEAK_PLAIN,
@@ -742,7 +825,10 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         duplex_tick_ms: io.duplex_tick_ms,
         duplex_renew_after_ms: io.duplex_renew_after_ms,
         duplex_renew_grace_ms: io.duplex_renew_grace_ms,
+        duplex_recover_max: io.duplex_recover_max,
         duplex_prewarm_ttl_ms: io.duplex_prewarm_ttl_ms,
+        duplex_seed_wait_ms: io.duplex_seed_wait_ms,
+        duplex_call_marks: io.duplex_call_marks,
         duck: io.duck,
         default_mode: io.default_mode,
         external_timeout: io.external_timeout,
@@ -940,6 +1026,16 @@ async fn serve_until_the_handler_goes(
                         },
                     )
                     .await;
+            }
+            Some(VoiceReconfig::Seed {
+                session_id,
+                renewal_n,
+                messages,
+            }) => {
+                shared.seed(&session_id, renewal_n, messages).await;
+            }
+            Some(VoiceReconfig::Renew { session_id }) => {
+                shared.send_to(&session_id, ToConnection::Renew).await;
             }
             Some(VoiceReconfig::CancelSpeak { session_id }) => {
                 shared.send_to(&session_id, ToConnection::CancelSpeak).await;
@@ -1689,7 +1785,10 @@ mod tests {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_seed_wait_ms: 0,
+            duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
             external_timeout: marker(),
@@ -1791,7 +1890,10 @@ mod tests {
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
+            duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_seed_wait_ms: 0,
+            duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
             external_timeout: marker(),

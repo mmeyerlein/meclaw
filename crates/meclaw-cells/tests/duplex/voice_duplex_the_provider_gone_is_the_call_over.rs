@@ -55,3 +55,23 @@ async fn a_provider_that_gives_up_ends_the_call_once() {
         "no retry and no reconnect: the session was the conversation"
     );
 }
+
+/// GH #1373 (BAT R1d C2): a duplex session that fails is said on a `WARN` line
+/// with the session id -- the error lane alone left eight refused starts
+/// invisible in the colony log. The session id is this test's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_duplex_session_is_said_on_a_warn_line() {
+    let log = meclaw_testing::log_recorder::global();
+    let mut live = boot_failing(duplex_params(json!({"default_mode": "auto"}))).await;
+    let (_client, _hello) = live.connect("session=gone-warn-1373&mode=auto").await;
+    let error = live.emission("error").await;
+    assert_eq!(header(&error, "error_code"), Some(&json!("duplex_failed")));
+    let lines = log.lines(
+        tracing::Level::WARN,
+        &[
+            "voice: the duplex session failed",
+            "session_id=gone-warn-1373",
+        ],
+    );
+    assert_eq!(lines.len(), 1, "one line names the failure: {lines:?}");
+}
