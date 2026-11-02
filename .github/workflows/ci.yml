@@ -203,6 +203,15 @@ jobs:
         run: |
           pipx install "ruff==${{ env.RUFF_VERSION }}"
           test "$(ruff --version)" = "ruff ${{ env.RUFF_VERSION }}"
+      # The pinned toolchain of rust-toolchain.toml, installed before the
+      # selftests (GH #1394). The lane-fingerprint probes run with
+      # RUSTUP_AUTO_INSTALL=0 (GH #1224), so a missing pin stays missing and
+      # their tests go red with "toolchain not installed"; the test jobs get
+      # it through cargo, this job runs no cargo. No channel here: rustup reads
+      # the file, the pin keeps one home. `rustup show` would install it too,
+      # but rustup deprecates that; no self-update, the runner's rustup stays.
+      - name: rust toolchain (pinned)
+        run: rustup toolchain install --no-self-update
       - name: gate-selftest (part ${{ matrix.part }}/3)
         env:
           MECLAW_SELFTEST_PART: ${{ matrix.part }}/3

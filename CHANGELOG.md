@@ -12,6 +12,14 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.78.1] — 2026-11-02
+
+A patch release that repairs the public CI's kit self-test job: the job now installs the toolchain `rust-toolchain.toml` pins before the kit tests run, so the lane-fingerprint probes, which never install a toolchain themselves (GH #1224), find it on the hosted runner. 0.78.0 is tagged and carries its assets, but its CI was red on exactly that job, so it got no release notes, no discussion and no website update; this release carries them. What 0.78.0 brought: a failed speculative quick call is answered again, by the brain, so every turn gets exactly one answer and never silence ([#1382](https://github.com/mmeyerlein/meclaw/issues/1382), a regression of 0.77.0); `strand.sh candidate <rev>` builds a candidate on every build lane and proves the binaries equal before a lab or a battery uses one; the release check holds the templates tree the battery measured against the release commit; the public CI frees its runner's disk before a test shard builds, so a shard no longer dies of a full disk as `test (10)` did for 0.77.2; `release.sh prepare` sends the release gate to a named lane or the widest one; and the comment a merge leaves on an issue names only the paths the public export ships. 0.77.1 and 0.77.2 changed only how meclaw is released and were never rolled out on their own; they ship with this release as well.
+
+### Fixed
+
+- CI: the `selftest` job installs the toolchain pinned in `rust-toolchain.toml` before its first `gate.sh ci` call. The lane-fingerprint probes run with `RUSTUP_AUTO_INSTALL=0` (#1224), so without the step part 1 of the selftests failed with "toolchain not installed" in CI of v0.78.0 (#1394).
+
 ## [0.78.0] — 2026-11-02
 
 A failed speculative quick call is answered again: when the early verdict runs beside the fast model and the speculative call ends in an error or a timeout, the turn falls back to the brain, so every turn gets exactly one answer and never silence ([#1382](https://github.com/mmeyerlein/meclaw/issues/1382), a regression of 0.77.0). Around that fix the release path is tightened: `strand.sh candidate <rev>` builds a candidate on every build lane and proves the binaries equal before a lab or a battery uses one; the release check holds the templates tree the battery measured against the release commit; the public CI frees its runner's disk before a test shard builds, so a shard no longer dies of a full disk as `test (10)` did for 0.77.2; `release.sh prepare` sends the release gate to a named lane or the widest one; and the comment a merge leaves on an issue names only the paths the public export ships, with the branch under its neutral kit name. 0.77.1 and 0.77.2 changed only how meclaw is released and were never rolled out on their own; they ship with this release.

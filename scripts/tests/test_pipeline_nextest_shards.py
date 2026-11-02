@@ -281,6 +281,54 @@ class TestTheTestJobFreesTheDiskFirst(unittest.TestCase):
         self.assertEqual("always()", after[0].get("if"), "a red build reports its disk as well")
 
 
+class TestTheSelftestJobInstallsTheToolchain(unittest.TestCase):
+    """GH #1394: the `selftest` job installs the pinned toolchain before its
+    first `gate.sh ci` call (lock).
+
+    CI of v0.78.0: part 1 red, deterministic -- 12 tests of
+    test_lane_fingerprint failed with `rustc --version: toolchain not
+    installed`. The fingerprint probes run with RUSTUP_AUTO_INSTALL=0 (#1224),
+    so they never install the pin of rust-toolchain.toml. Two other modules of
+    part 1 (test_precheck via the rustfmt proxy, test_harness_fold) do install
+    it as a side effect, in 0.77.2 and 0.78.0 alike: a race of a 40-60 s
+    download against the probes, which 0.77.2 happened to win. The test jobs
+    get the toolchain through cargo; this job runs no cargo, so it installs it
+    itself, first."""
+
+    TOOLCHAIN = "rust toolchain (pinned)"
+
+    def setUp(self):
+        try:
+            import yaml
+        except ImportError:  # no PyYAML for this interpreter
+            self.skipTest("PyYAML is not importable")
+        self.job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["selftest"]
+        self.steps = self.job["steps"]
+
+    def _index(self, pred, what):
+        hits = [i for i, s in enumerate(self.steps) if pred(s)]
+        self.assertTrue(hits, "no step in job selftest: %s" % what)
+        return hits[0]
+
+    def test_the_selftest_job_installs_the_toolchain_before_the_first_selftest_call(self):
+        install = self._index(lambda s: s.get("name") == self.TOOLCHAIN, self.TOOLCHAIN)
+        checkout = self._index(
+            lambda s: str(s.get("uses", "")).startswith("actions/checkout"), "checkout")
+        gate = self._index(lambda s: "scripts/gate.sh ci" in str(s.get("run", "")), "gate.sh ci")
+        # After the checkout (rust-toolchain.toml is the pin it reads), before the gate.
+        self.assertLess(checkout, install)
+        self.assertLess(install, gate)
+        step = self.steps[install]
+        # The pin has one home: the step names no channel, rustup reads the file
+        # (and leaves the runner's own rustup as it is).
+        self.assertEqual("rustup toolchain install --no-self-update",
+                         str(step.get("run", "")).strip())
+        self.assertNotIn("RUSTUP_AUTO_INSTALL", str(step.get("env") or {}))
+        # Every part of the one matrix runs it: no condition on the step.
+        self.assertNotIn("if", step)
+        self.assertEqual([1, 2, 3], self.job["strategy"]["matrix"]["part"])
+
+
 class TestTheTierAndsTheShard(unittest.TestCase):
     def test_t2_with_a_shard_runs_the_shards_filter_and_only_it(self):
         n = nextest_shards.SHARDS
