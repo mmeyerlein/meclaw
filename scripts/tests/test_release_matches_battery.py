@@ -1,6 +1,8 @@
 """`scripts/release_matches_battery.py`: a release commit may differ from the
 commit the battery measured (`core_commit` in the battery receipt) only in
-version and CHANGELOG places (wave live-2, OR-LV-12, GH #1358).
+version and CHANGELOG places (wave live-2, OR-LV-12, GH #1358), and its
+`templates` tree must be the one the battery measured (`templates_tree`, G8a,
+GH #1390).
 
 Every case builds a throw-away git repository in a temporary directory: a base
 commit that stands for the measured candidate, then a release commit on top.
@@ -84,6 +86,9 @@ class ReleaseMatchesBattery(unittest.TestCase):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "release")
 
+    def tree(self, rev):
+        return git(self.repo, "rev-parse", rev + ":templates")
+
     def receipt(self, body=None):
         path = self.root / "receipt.md"
         if body is None:
@@ -92,7 +97,8 @@ class ReleaseMatchesBattery(unittest.TestCase):
                 "core_commit: %s\n"
                 "lab_binary_sha256: %s\n"
                 "manifest_sha256: %s manifests/soul2me-colony-0.45-rc/08-freeswitch.json\n"
-                % (self.core, "a" * 64, "b" * 64))
+                "templates_tree: %s\n"
+                % (self.core, "a" * 64, "b" * 64, self.tree(self.core)))
         path.write_text(body)
         return path
 
@@ -109,8 +115,6 @@ class ReleaseMatchesBattery(unittest.TestCase):
             "Cargo.lock": BASE["Cargo.lock"].replace('"0.76.6"', '"0.77.0"'),
             "CHANGELOG.md": BASE["CHANGELOG.md"].replace(
                 "## [Unreleased]\n", "## [Unreleased]\n\n## [0.77.0] - 2026-10-30\n"),
-            "templates/voice/template.json":
-                BASE["templates/voice/template.json"].replace('"2.7.0"', '"2.7.1"'),
         }
 
     def test_a_version_and_changelog_release_is_clean(self):
@@ -171,8 +175,8 @@ class ReleaseMatchesBattery(unittest.TestCase):
         files["Cargo.toml"] = files["Cargo.toml"].replace('"2021"', '"2024"')
         files["crates/meclaw-cells/Cargo.toml"] = files["crates/meclaw-cells/Cargo.toml"].replace(
             'version = "1"', 'version = "1.40"')
-        files["templates/voice/template.json"] = files["templates/voice/template.json"].replace(
-            '"description": "voice"', '"description": "voice, faster"')
+        files["templates/voice/template.json"] = BASE["templates/voice/template.json"].replace(
+            '"2.7.0"', '"2.7.1"').replace('"description": "voice"', '"description": "voice, faster"')
         self.release(files)
         res = self.run_check(self.receipt())
         self.assertNotEqual(0, res.returncode, res.stdout)
@@ -209,9 +213,10 @@ class ReleaseMatchesBattery(unittest.TestCase):
         first = self.core
         self.release({"crates/meclaw-cells/src/lib.rs": "pub fn answer() -> u32 { 43 }\n"})
         self.core = git(self.repo, "rev-parse", "HEAD")
-        body = ("## Round 1\n\ncore_commit: %s\nlab_binary_sha256: %s\n\n"
+        body = ("## Round 1\n\ncore_commit: %s\nlab_binary_sha256: %s\ntemplates_tree: %s\n\n"
                 "## Round 2\n\n- core_commit: `%s`\n- lab_binary_sha256: `%s`\n"
-                % (first, "a" * 64, self.core, "c" * 64))
+                "- `templates_tree`: `%s`\n"
+                % (first, "a" * 64, self.tree(first), self.core, "c" * 64, self.tree(self.core)))
         self.release(self.bump())
         res = self.run_check(self.receipt(body))
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
@@ -225,6 +230,53 @@ class ReleaseMatchesBattery(unittest.TestCase):
         self.assertNotEqual(0, self.run_check(self.receipt()).returncode)
         res = self.run_check(self.receipt(), "--release", clean)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+    # G8a (GH #1390): template content without a version bump is invisible to
+    # the manifests, so the release must carry the templates tree the battery
+    # measured, hash for hash.
+    def test_a_release_with_the_measured_templates_tree_is_clean(self):
+        self.release(self.bump())
+        res = self.run_check(self.receipt())
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("templates_tree: " + self.tree(self.core), res.stdout)
+        self.assertEqual(self.tree(self.core), self.tree("HEAD"))
+
+    def test_a_template_change_without_a_bump_is_caught(self):
+        measured = self.tree(self.core)
+        files = self.bump()
+        files["templates/voice/config.json"] = '{\n  "sample_rate": 8000\n}\n'
+        self.release(files)
+        released = self.tree("HEAD")
+        self.assertIn('"2.7.0"', (self.repo / "templates/voice/template.json").read_text())
+        res = self.run_check(self.receipt())
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertIn("templates tree differs (%s != %s)" % (released, measured), res.stdout)
+
+    def test_the_templates_tree_is_checked_even_when_the_diff_is_clean(self):
+        # The lab measured templates the core commit does not hold (the G8 case
+        # live-2 replaced by hand): no foreign file, still not the measured tree.
+        self.release({"templates/voice/config.json": '{\n  "sample_rate": 8000\n}\n'})
+        measured = self.tree("HEAD")
+        git(self.repo, "revert", "--no-edit", "HEAD")
+        self.release(self.bump())
+        body = "core_commit: %s\ntemplates_tree: %s\n" % (self.core, measured)
+        res = self.run_check(self.receipt(body))
+        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("foreign:", res.stdout)
+        self.assertIn("templates tree differs (%s != %s)" % (self.tree("HEAD"), measured), res.stdout)
+
+    def test_a_receipt_without_templates_tree_is_refused(self):
+        self.release(self.bump())
+        body = "core_commit: %s\nlab_binary_sha256: %s\n" % (self.core, "a" * 64)
+        res = self.run_check(self.receipt(body))
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("receipt without templates_tree", res.stdout)
+        # The field belongs to the last candidate: round 1's line does not count for round 2.
+        body = ("core_commit: %s\ntemplates_tree: %s\n\ncore_commit: %s\n"
+                % (self.core, self.tree(self.core), self.core))
+        res = self.run_check(self.receipt(body))
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("receipt without templates_tree", res.stdout)
 
 
 if __name__ == "__main__":

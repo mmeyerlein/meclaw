@@ -28,6 +28,10 @@
 #          the candidate gate takes a lane under the lease -- no token take first)
 #     scripts/strand.sh revert <merge-sha|name> --reason <text> [--wave <dir>] [--host <lane>]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
+#     scripts/strand.sh candidate <rev> [--lanes a,b,...] [--wave <W>] [--wait-admission]
+#         (build <rev> on every lane under a lease <wave>/candidate:<n> each, in its
+#          own kb-target, sha256 equal -> ~/kb/bin/meclaw-<rev12>; exit 0 EQUAL,
+#          7 UNEQUAL, 6 copy/--version wrong, 5 aborted, 3 queued; GH #1389)
 #     scripts/strand.sh lanes status [<lane>]
 #     scripts/strand.sh lanes idle-off [--after <h>] [--lane <name>]
 #     scripts/strand.sh lanes release <lane> --run <run> [--by <who>]
@@ -1835,6 +1839,32 @@ cmd_token_store() {
     MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" lanes ${args[@]+"${args[@]}"}
 }
 
+# `candidate <rev> ...`: `pipeline.py candidate` (GH #1389). The wave names the
+# leases and the receipt directory (`plans/<W>/receipts/candidate-<rev12>.json`
+# in the MAIN tree, beside the gate archive: an untracked receipt in a strand
+# worktree changes its tree hash and voids its pre stamp -- d53-1 c2 fix round 1);
+# it comes from `--wave`, the branch or section Live, as for `gate`.
+cmd_candidate() {
+    local args=() wave_in="" rev="" root wave top
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --wave)  need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
+            --lanes) need_value "$1" "$#"; args+=(--lanes "$2"); shift 2 ;;
+            --wait-admission) args+=(--wait-admission); shift ;;
+            -h|--help) sed -n '/^#     scripts\/strand.sh candidate/,/GH #1389)/p' "$0"; return 0 ;;
+            -*) die "candidate: unknown option $1" ;;
+            *)  [ -z "$rev" ] || die "candidate: one <rev>, got '$rev' and '$1'"
+                rev="$1"; shift ;;
+        esac
+    done
+    [ -n "$rev" ] || die "candidate: name the commit (strand.sh candidate <rev>)"
+    root=$(main_root) || exit 2
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || top="$root"
+    wave=$(wave_dir "$root/plans" "$wave_in") || exit 2
+    MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" candidate "$rev" --wave "$wave" \
+        --receipts "$root/plans/$wave/receipts" --repo "$top" ${args[@]+"${args[@]}"}
+}
+
 # `lanes status [<lane>]`: `pipeline.py lanes status` (one line per lane of
 # the host file, or of the one named; the store learns which lanes answer).
 # The free space of a lane comes from here, over the host file's target --
@@ -2072,9 +2102,10 @@ case "$sub" in
     merge)  cmd_merge "$@" ;;
     revert) cmd_revert "$@" ;;
     token)  cmd_token "$@" ;;
+    candidate) cmd_candidate "$@" ;;
     lanes)  cmd_lanes "$@" ;;
     bench)  cmd_bench "$@" ;;
     wave)   cmd_wave "$@" ;;
-    *) die "unknown subcommand: $sub (expected new|pre|gate|test|report|close|merge|revert|token|lanes|bench|wave)" ;;
+    *) die "unknown subcommand: $sub (expected new|pre|gate|test|report|close|merge|revert|token|candidate|lanes|bench|wave)" ;;
 esac
 }; exit $?

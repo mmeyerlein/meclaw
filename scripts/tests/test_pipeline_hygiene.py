@@ -371,14 +371,14 @@ class TestCheck(HygieneTestBase):
         # W2 re-check: the alert `Lane stray target older than 24 h` fired at
         # the first sample of a fresh stray -- the metric counts what the
         # finding counts (> 24 h), so one sample of it is already the alarm.
-        old = self.mkdir_aged("kb-target/debug", 2 * 86400)
+        old = self.mkdir_aged("old-target/debug", 2 * 86400)
         os.makedirs(os.path.join(old, "deps"))
         os.utime(old, (time.time() - 2 * 86400,) * 2)
         self.mkdir_aged("zm4-measure/debug", 600)
         self.assertEqual(1, hygiene.status(self.ctx)["stray_targets"])
 
     def test_stray_target_is_finding_after_24h(self):
-        old = self.mkdir_aged("kb-target/debug", 2 * 86400)
+        old = self.mkdir_aged("old-target/debug", 2 * 86400)
         os.makedirs(os.path.join(old, "deps"))
         os.utime(old, (time.time() - 2 * 86400,) * 2)
         self.mkdir_aged("zm4-measure/debug", 600)
@@ -387,12 +387,28 @@ class TestCheck(HygieneTestBase):
         data = hygiene.check(self.ctx)
         strays = [n for n in data["notes"] if n.startswith("stray-target")]
         self.assertEqual(len(strays), 2)
-        self.assertTrue(any("kb-target" in n for n in strays))
+        self.assertTrue(any("old-target" in n for n in strays))
         self.assertTrue(any("zm4-measure" in n and n.endswith("?")
                             for n in strays))
         self.assertEqual(len(data["findings"]), 1)
-        self.assertIn("kb-target", data["findings"][0])
+        self.assertIn("old-target", data["findings"][0])
         self.assertEqual(self.events("hygiene_checked")[0]["kind"], "finding")
+
+    def test_the_candidate_target_is_never_a_stray(self):
+        """OR-d53-1.c2.6: `kb-target` is the official target of `strand.sh
+        candidate` (GH #1389) -- warm by design, so the next candidate builds
+        in minutes, and old because candidates are rare. It is no stray note
+        and no finding past 24 h; any other dir outside the layout still is."""
+        # deps first, then the dir aged again (making deps touched it)
+        self.mkdir_aged("kb-target/debug/deps", 3 * 86400)
+        self.mkdir_aged("kb-target/debug", 3 * 86400)
+        self.mkdir_aged("old-target/debug", 3 * 86400)
+        data = hygiene.check(self.ctx)
+        strays = [n for n in data["notes"] if n.startswith("stray-target")]
+        self.assertEqual([n for n in strays if "kb-target" in n], [])
+        self.assertEqual(len(data["findings"]), 1)
+        self.assertIn("old-target", data["findings"][0])
+        self.assertEqual(1, hygiene.status(self.ctx)["stray_targets"])
 
     def test_pool_units_are_never_zombies(self):
         self.set_units([
@@ -1118,7 +1134,7 @@ class TestWorkspacesStore(HygieneTestBase):
             with open(os.path.join(deps, "foo-%s" % h), "wb") as fh:
                 fh.write(b"x" * 10)
         self.mkdir_aged("ws/run-888888888888", 10)
-        self.mkdir_aged("kb-target/debug", 2 * 86400)  # past 24 h: counts (W2 re-check)
+        self.mkdir_aged("old-target/debug", 2 * 86400)  # past 24 h: counts (W2 re-check)
         rc = hygiene.main(["status", "--root", self.root], ctx=self.ctx)
         self.assertEqual(rc, 0)
         line = json.loads(self.out.getvalue())
@@ -1527,6 +1543,12 @@ class TestCli(HygieneTestBase):
         pin keeps the two the same."""
         from scripts.pipeline import lane
         self.assertEqual(lane.PYTHON, hygiene.PYTHON)
+
+    def test_the_candidate_target_is_the_lanes_one(self):
+        """hygiene.py runs alone on a host and names the candidate target
+        itself (OR-d53-1.c2.6); this pin keeps it lane.CANDIDATE_TARGET."""
+        from scripts.pipeline import lane
+        self.assertEqual(lane.CANDIDATE_TARGET, hygiene.CANDIDATE_TARGET)
 
     def test_a_hygiene_copy_alone_arms_its_bench_timer(self):
         """Re-check tv-bn M7o M1: `lane_sync.sh hygiene --kit` puts hygiene.py

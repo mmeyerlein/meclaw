@@ -721,6 +721,36 @@ class TestUnittestEntry(StrandShTestCase):
         self.assertRegex(res.stdout, r"(?m)\] 2/4 \(skipped 1\) \d+s RED$")
 
 
+class TestCandidateVerb(StrandShTestCase):
+    """GH #1389: `candidate` hands its receipt directory to `pipeline.py
+    candidate` -- in the MAIN tree, beside the gate archive, never in the
+    strand worktree: an untracked receipt there changed the tree hash and voided
+    the pre stamp of the strand that ran the proof (d53-1 c2, fix round 1)."""
+
+    FAKE = (
+        "import json, os, sys\n"
+        "print(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd()}))\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(0, run_strand(self.repo, "new", "kit", "--issue", "1389").returncode)
+        self.tree = self.worktree("kit")
+        # untracked, beside the kit the test calls: the verb's argv, nothing run
+        (self.repo / "scripts" / "pipeline.py").write_text(self.FAKE)
+
+    def test_the_receipt_goes_to_the_main_tree_not_the_strand_tree(self):
+        res = run_strand(self.repo, "-C", str(self.tree), "candidate", "HEAD",
+                         "--lanes", "a,b", cwd=self.repo)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        argv = json.loads(res.stdout.strip().splitlines()[-1])["argv"]
+        got = {argv[i]: argv[i + 1] for i in range(len(argv) - 1)
+               if argv[i].startswith("--")}
+        self.assertEqual(os.path.realpath(self.repo / "plans" / WAVE_DIR / "receipts"),
+                         os.path.realpath(got["--receipts"]))
+        self.assertEqual(os.path.realpath(self.tree), os.path.realpath(got["--repo"]))
+
+
 class TestPipelineChdirOption(StrandShTestCase):
     """GH #1199 (b): `scripts/pipeline.py -C <dir> <command>` -- the same
     option in front of the pipeline core, which reads its tree from the cwd

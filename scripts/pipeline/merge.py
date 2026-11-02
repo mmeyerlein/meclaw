@@ -2523,8 +2523,93 @@ def came_with(root, parents, branch, err=None):
         return False
 
 
+# GH #1393: the export script, the one source of what the export ships.
+MAKE_EXPORT = os.path.join("plans", "export-fixtures", "make_export.py")
+# The rules `public_paths` reads from it; one missing is a broken script.
+EXPORT_RULES = ("ROOT_FILES", "TREE_DIRS", "PUBLIC_TEMPLATE_PREFIXES", "BLOCKLIST",
+                "DOCS_MAP", "is_forbidden")
+
+
+class _NoRules(Exception):
+    """An export script that is there but cannot be read (fix round 1, I1)."""
+
+
+def _export_rules(root):
+    """`make_export.py` of `root` as a module, or None when it is not there.
+    Importing it has no side effects (its main hangs on `__name__`). One that
+    does not import or lacks a rule raises `_NoRules`: the review measured a
+    syntax error crash `strand.sh merge` after the merge had landed (fix
+    round 1, I1), so the caller turns it into "no file list"."""
+    path = os.path.join(root, MAKE_EXPORT)
+    if not os.path.isfile(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_merge_make_export", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001 -- any failure of a foreign script
+        raise _NoRules("%s does not import: %s: %s" % (MAKE_EXPORT, type(exc).__name__, exc))
+    missing = [name for name in EXPORT_RULES if not hasattr(module, name)]
+    if missing:
+        raise _NoRules("%s lacks %s" % (MAKE_EXPORT, ", ".join(missing)))
+    return module
+
+
+def _never_travels():
+    """The private trees where the export script is not there (the public
+    tree, a test fixture): the export's FORBIDDEN_PREFIX as `precheck`
+    already borrows it -- no second copy here (fix round 1, M2)."""
+    from . import pre
+    return pre.precheck.NEVER_TRAVELS
+
+
+def public_paths(root, paths, err=None):
+    """The paths of `paths` the public export ships (GH #1393: the close
+    comment lands on a public issue). Never a private tree (`plans/**` and
+    its siblings), never a path `.gitignore` names; where the export script
+    is there, also only what it ships -- its root files, its tree
+    directories and public templates minus the blocklist, the targets of
+    the docs map (named by their target). Fail-closed: an export script
+    that cannot be read, or a `git check-ignore` without an answer, names
+    nothing (one line on `err`), never a crash after a landed merge."""
+    err = err or sys.stderr
+    if not paths:
+        return []
+    res = subprocess.run(["git", "-C", root, "check-ignore", "--no-index", "--stdin"],
+                         input="\n".join(paths) + "\n", capture_output=True, text=True)
+    # 0: some ignored, 1: none; anything else (128: no repository, a broken
+    # index) is no answer -- fix round 1, M3.
+    if res.returncode not in (0, 1):
+        err.write("close: no file list -- git check-ignore exited rc %d: %s\n"
+                  % (res.returncode, res.stderr.strip()))
+        return []
+    ignored = set(res.stdout.split())
+    try:
+        rules = _export_rules(root)
+        private = rules.is_forbidden if rules is not None else _never_travels().match
+        kept = []
+        for path in paths:
+            if path in ignored or private(path):
+                continue
+            if rules is not None:
+                if path in rules.DOCS_MAP:
+                    path = rules.DOCS_MAP[path]
+                elif path in rules.BLOCKLIST or not (
+                        path in rules.ROOT_FILES or path.split("/", 1)[0] in rules.TREE_DIRS
+                        or path.startswith(rules.PUBLIC_TEMPLATE_PREFIXES)):
+                    continue
+            if path not in kept:
+                kept.append(path)
+        return kept
+    except Exception as exc:  # noqa: BLE001 -- a rule of the script that misbehaves
+        err.write("close: no file list -- %s\n" % exc)
+        return []
+
+
 def close_info(root, report, archive, name):
-    """The English close comment and the issues; raises `Refused`."""
+    """The English close comment and the issues; raises `Refused`. The
+    comment names only public paths (`public_paths`, GH #1393); a merge of
+    private paths alone comments without a file list."""
     head, _ = head_block(report)
     if head is None:
         raise Refused("no_report", "%s has no header block" % report)
@@ -2551,8 +2636,13 @@ def close_info(root, report, archive, name):
         raise Refused("foreign_commits", "the head block lists %d commit(s) reachable from "
                       "master before the branch point (%s) -- run strand.sh report again"
                       % (len(foreign), ", ".join(foreign[:5])))
-    changed = [p for p in out(root, "diff", "--name-only", "%s...%s" % (point, tip)).split() if p]
-    lines = ["Built on `%s` from %s." % (branch, point[:8]), "",
+    changed = public_paths(root, [p for p in out(
+        root, "diff", "--name-only", "%s...%s" % (point, tip)).split() if p])
+    # GH #1393: the branch only under the kit's neutral name `<wave>/<strand>`
+    wave = os.path.dirname(os.path.dirname(os.path.abspath(report)))
+    built = ("Built on `%s` from %s." % (branch, point[:8])
+             if branch == default_branch(wave, name) else "Built from %s." % point[:8])
+    lines = [built, "",
              "Gate: `%s`" % line, "Commits: %s" % ", ".join(commits)]
     if changed:
         lines.append("Changed: %s" % ", ".join("`%s`" % c for c in changed))

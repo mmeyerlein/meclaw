@@ -13,6 +13,8 @@ No network, no real GitHub, no real host.
 
 Run: `scripts/strand.sh test --unittest scripts.tests.test_release_script`.
 """
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -195,6 +197,8 @@ class World:
             "RELEASE_STUB_ROOT": str(self.root), "RELEASE_STUB_WDIR": WDIR,
             "RELEASE_STUB_SITE": str(self.site),
             "MECLAW_WORKTREE_ROOT": str(tmp / "wellen"),
+            # no host file: without --host the gate goes as before, no lane is probed
+            "MECLAW_LANES_FILE": str(tmp / "no-lanes"),
             "GIT_AUTHOR_NAME": "kit", "GIT_AUTHOR_EMAIL": "kit@example.invalid",
             "GIT_COMMITTER_NAME": "kit", "GIT_COMMITTER_EMAIL": "kit@example.invalid",
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -310,6 +314,55 @@ class ReleaseScript(unittest.TestCase):
         notes = pathlib.Path(data["notes"]).read_text()
         self.assertTrue(notes.startswith("A new thing ships."), notes)
         self.assertNotIn("0.0.1", notes)
+
+    def gate_argv(self, w):
+        gates = [c for c in w.calls() if c[0] == "strand.sh"]
+        self.assertEqual(len(gates), 1, w.calls())
+        return gates[0]
+
+    def test_prepare_passes_the_host_to_the_release_gate(self):
+        # GH #1392: the release gate is bound by capacity (d43: 39.7-41.7 min on
+        # 24 vCPU, about 51 on 12); `--host` names the lane, the admission keeps it
+        w = World(self.tmp)
+        rc, out = w.run("prepare", "--host", "build04")
+        self.assertEqual(rc, 0, out)
+        argv = self.gate_argv(w)
+        self.assertEqual(argv[argv.index("--host") + 1], "build04", argv)
+        data = release.State(w.root / "plans" / WDIR / f"release-{VERSION}.state").data()
+        self.assertEqual(data["lane"], "build04")
+        tail = out[out.index("RELEASE-REQUEST"):].strip().splitlines()
+        self.assertEqual(len(tail), 4, out)
+        self.assertIn("lane=build04", tail[2])
+
+    def test_without_a_host_the_widest_reachable_lane_is_chosen(self):
+        from pipeline import lane as lane_mod
+        lanes = [lane_mod.Lane(name=n, ssh="u@%s.invalid" % n, cls=c) for n, c in
+                 (("build02", "lane"), ("build09", "lane"), ("build01", "lane"),
+                  ("build05", "lane"), ("mm-os01", "egon"))]
+        fake = mock.Mock()
+        fake.load_lanes.return_value = lanes
+        # build09 is the widest but does not answer; build01/build05 tie at 24
+        # (the name decides); the owner's machine is never a release lane
+        fake.status.side_effect = lambda ln: ("unreachable  state off" if ln.name == "build09"
+                                              else "reachable  fs ext4 free 200G state idle")
+        width = {"build02": 12, "build09": 48, "build01": 24, "build05": 24, "mm-os01": 64}
+        fake.fingerprint.side_effect = lambda ln: {"vcpu": width[ln.name]}
+        w = World(self.tmp)
+        args = ["prepare", VERSION, "--wave", WAVE, "--repo", str(w.root), "--config",
+                str(w.config), "--strand", STRAND]
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, w.env, clear=True), \
+                mock.patch.object(release, "lane_module", return_value=fake), \
+                contextlib.redirect_stdout(out):
+            rc = release.main(args)
+        out = out.getvalue()
+        self.assertEqual(rc, 0, out)
+        argv = self.gate_argv(w)
+        self.assertEqual(argv[argv.index("--host") + 1], "build01", argv)
+        self.assertNotIn("build09", [c.args[0].name for c in fake.fingerprint.call_args_list])
+        data = release.State(w.root / "plans" / WDIR / f"release-{VERSION}.state").data()
+        self.assertEqual(data["lane"], "build01")
+        self.assertIn("lane=build01", out[out.index("RELEASE-REQUEST"):])
 
     def test_prepare_refuses_a_master_without_the_cut(self):
         w = World(self.tmp, version="0.0.1")

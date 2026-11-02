@@ -1,4 +1,4 @@
-# `talky@6.13.0`
+# `talky@6.13.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -76,7 +76,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.13.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.13.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -622,7 +622,9 @@ brain call never carries one); a quick answer with `context.spec` "1" takes only
 curator holds it and decides at the normal curate of the turn; a kept answer comes back as
 `spec_release` on `./curator -> ./splitter` (the call's context set from the hop, `interim` and
 `spec` empty) and goes on like any quick answer. The decision table is in
-`templates/curator/README.md` § *Speculation*. Every edge out to `.` deletes `context.spec`.
+`templates/curator/README.md` § *Speculation*: a failed spec answer (error or timeout) lets
+the turn's stored quick call go, and when that one fails too, the turn goes to the brain once,
+also when it fails late (#1382). Every edge out to `.` deletes `context.spec`.
 
 **Born on the brain's start value, moved by a tier.** `./quick` carries `${ctx.model}` like
 `./brain`, so a fresh composite speaks quick turns on the brain's model; the model registry moves
@@ -932,7 +934,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.13.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.13.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

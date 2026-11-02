@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One command from the release gate to the website, with one halt.
 
-    scripts/release.sh prepare <x.y.z> --wave <wave> --strand <relgate> [--decide K=V]... [--issue N]
+    scripts/release.sh prepare <x.y.z> --wave <wave> --strand <relgate> [--host <lane>] [--decide K=V]... [--issue N]
     scripts/release.sh publish <x.y.z> --wave <wave> [--title <text>]
     common: [--repo <main tree>] [--config <toml>] [--reason <text>] [--dry-run]
 
@@ -32,6 +32,17 @@ coordinator before anything goes public:
            deploy as a file list, `publish_docs.sh`, a live check and the
            website push. Ends with one line `RELEASE x.y.z tag=... ci=...
            release=... website=...`.
+
+THE GATE'S LANE
+===============
+The release gate is bound by capacity: 39.7-41.7 min on a lane with 24
+vCPU, about 51 min on one with 12 (GH #1392). `--host <lane>` goes to
+`strand.sh gate release` as given. Without it, prepare picks the reachable
+build lane (`lanes status`: `reachable`) with the most vCPU in its
+fingerprint (`vcpu`), a tie by name; the owner's machine (`class=egon`) is
+never picked, and with no reachable lane (or no host file) the gate gets no
+`--host` and the admission picks as before. The lane lands in the state and
+in the release request. One gate, one lane: no parallel gate here.
 
 THE STATE FILE IS THE STOP WATCH
 ================================
@@ -193,6 +204,37 @@ def read(cmd):
 
 def git(repo, *args):
     return read(["git", "-C", repo, *args])
+
+
+def lane_module():
+    """The kit's lane module (host file, `lanes status`, fingerprint); a seam for the tests."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from pipeline import lane
+    return lane
+
+
+def widest_lane(mod):
+    """The reachable build lane with the most vCPU, a tie by name; None without one.
+
+    The release gate took 39.7-41.7 min on 24 vCPU and about 51 on 12 (GH
+    #1392). The owner's machine (`class=egon`) runs the live colonies and is
+    never a release lane; a lane that does not answer `lanes status` or its
+    fingerprint is left out, not waited for."""
+    best = None
+    for ln in mod.load_lanes():
+        if ln.cls == "egon":
+            continue
+        if mod.status(ln).split()[:1] != ["reachable"]:
+            continue
+        try:
+            vcpu = int((mod.fingerprint(ln) or {}).get("vcpu") or 0)
+        except Exception:  # noqa: BLE001 -- no answer is no candidate
+            continue
+        if vcpu and (best is None or (-vcpu, ln.name) < (-best[0], best[1])):
+            best = (vcpu, ln.name)
+    return best
 
 
 def changelog_section(text, version):
@@ -385,9 +427,23 @@ class Release:
         run([sys.executable, self.wt() / "plans/p5.5-fixtures/german_scan.py", "-C", self.wt(),
              "--strings", "--strict"], what="german_scan --strings --strict")
 
+    def gate_lane(self):
+        """`--host` as given, else the widest reachable lane, else None (the admission picks)."""
+        if self.a.host:
+            return self.a.host
+        best = widest_lane(lane_module())
+        if best is None:
+            print("release: no reachable build lane, the admission picks", flush=True)
+            return None
+        print(f"release: gate lane {best[1]} ({best[0]} vCPU, the widest reachable)", flush=True)
+        return best[1]
+
     def step_gate(self):
+        host = self.gate_lane()
         cmd = [self.wt() / "scripts/strand.sh", "-C", self.wt(), "gate", "release",
                "--strand", self.a.strand, "--wave", self.a.wave, "--wait-admission"]
+        if host:
+            cmd += ["--host", host]
         for d in self.a.decide or []:
             cmd += ["--decide", d]
         _, out = run(cmd, check_rc=False, what="gate release")
@@ -402,7 +458,8 @@ class Release:
         head = git(self.wt(), "rev-parse", "HEAD")
         if rec.get("verdict") != "GREEN" or rec.get("mode") != "release" or rec.get("rev") != head:
             raise Red(f"gate release: receipt {receipt} is not a green release receipt on {head[:12]}")
-        return {"gate": summary[-1], "receipt": str(receipt.resolve())}
+        return {"gate": summary[-1], "receipt": str(receipt.resolve()),
+                "lane": rec.get("lane") or host or "-"}
 
     def step_count(self):
         _, out = run([self.wt() / "scripts/pipeline.py", "release", "count",
@@ -667,7 +724,7 @@ class Release:
         print(f"RELEASE-REQUEST {self.v} wave={self.a.wave}")
         print(f"master={d['master'][:12]} release-head={d['release_head'][:12]} "
               f"export={d['export'][:12]} parent={d['parent'][:12]}")
-        print(f"{d['gate']} tests={d['tests']}")
+        print(f"{d['gate']} tests={d['tests']} lane={d.get('lane', '-')}")
         print(f"next: scripts/release.sh publish {self.v} --wave {self.a.wave}")
 
     def summary(self):
@@ -684,6 +741,8 @@ def parse(argv):
     ap.add_argument("--wave", required=True)
     ap.add_argument("--strand", help="name of the release gate (prepare)")
     ap.add_argument("--decide", action="append", help="passed to `strand.sh gate` as given")
+    ap.add_argument("--host", help="the lane of the release gate (prepare; default: the reachable "
+                                   "build lane with the most vCPU)")
     ap.add_argument("--issue", help="issue number for the test-count commit")
     ap.add_argument("--title", help="discussion title (default: meclaw <x.y.z>)")
     ap.add_argument("--repo", help="the main tree (default: the main tree of this script's repo)")

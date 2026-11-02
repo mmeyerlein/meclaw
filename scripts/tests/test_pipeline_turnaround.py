@@ -1565,10 +1565,14 @@ class ReleaseRecordTest(unittest.TestCase):
         spec.loader.exec_module(rmb)
         self.assertFalse(hasattr(rmb, "foreign_reason"))
         self.assertFalse(hasattr(rmb, "changes"))
+        # The battery receipt names its templates tree (GH #1390), so the
+        # measured commit carries one.
+        core = commit(self.repo, {"templates/t/template.json": '{"version": "1.0.0"}\n'})
         b = commit(self.repo, {"scripts/x.py": "print(2)\n"})
         receipt = os.path.join(self._tmp.name, "bat.md")
         with open(receipt, "w", encoding="utf-8") as fh:
-            fh.write("core_commit: %s\n" % self.a)
+            fh.write("core_commit: %s\ntemplates_tree: %s\n"
+                     % (core, tm.git(self.repo, "rev-parse", core + ":templates")))
         seen = []
         real = turnaround.release_offending
 
@@ -1578,8 +1582,8 @@ class ReleaseRecordTest(unittest.TestCase):
         with mock.patch.object(turnaround, "release_offending", spy), \
                 mock.patch("sys.stdout", io.StringIO()):
             self.assertEqual(rmb.main([receipt, "--repo", self.repo, "--release", b]), 1)
-            self.assertFalse(turnaround.release_record_equal(self.repo, self.a, b)[0])
-        self.assertEqual(seen, [("call", self.a, b)] * 2)
+            self.assertFalse(turnaround.release_record_equal(self.repo, core, b)[0])
+        self.assertEqual(seen, [("call", core, b)] * 2)
 
     def test_post_gate_is_not_the_release_allowlist(self):
         # The strand list stays the strand list; the release set is its own.

@@ -53,7 +53,13 @@ LEFTOVER_AGE_S = 3600
 STRAY_FINDING_AGE_S = 24 * 3600
 # `coverage/{tree,target}`: the instrumented build of `lane_sync.sh coverage`
 # (W6 review I1) -- a warm target like a slot's, never a stray.
-LAYOUT_TARGET_DIRS = ("target", "slot", "bench", "export", "tree", "coverage")
+# `kb-target`: the own target of `strand.sh candidate` (GH #1389,
+# OR-d53-1.c2.6) -- warm on purpose and rarely used, so its age is no stray.
+# Named here again (as PYTHON below) because this file also runs alone on a
+# host; a test pins it to lane.CANDIDATE_TARGET.
+CANDIDATE_TARGET = "kb-target"
+LAYOUT_TARGET_DIRS = ("target", "slot", "bench", "export", "tree", "coverage",
+                      CANDIDATE_TARGET)
 # The kit's one Python (`lane.PYTHON`, re-check tv-bn M7m M2). Named here
 # again because this file also runs alone on a host (`lane_sync.sh hygiene
 # --kit` puts `<hash8>/hygiene.py` there, re-check tv-bn M7o M1) where

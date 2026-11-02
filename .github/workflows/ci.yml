@@ -261,6 +261,25 @@ jobs:
         # As many as SHARDS in scripts/pipeline/nextest_shards.py (lock test).
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
+      # GH #1391: the disk first, before checkout, the cache restore and the
+      # build. CI of v0.77.2 (run 41421276845): shard 10 died after 3m52s with
+      # "No space left on device" inside the build of its test step, nine
+      # shards passed. Every shard builds the identical set of test binaries
+      # (`--workspace`; the shard's filterset narrows the run, not the build),
+      # so shard 10 was no heavier than the others -- the hosted runner's
+      # ~14 GB margin was thin for all of them. Debuginfo is already off
+      # (`debug = 0`, .cargo/config.toml), so the space comes from the image:
+      # the preinstalled .NET, Android, Haskell and CodeQL trees and the
+      # cached Docker images, none of which this job runs. The Rust toolchain
+      # and Node (the actions) stay where they are. `df -h /` before and after
+      # the cleanup and after the build puts the numbers in the log for the
+      # next run.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null || true
+          df -h /
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
@@ -296,6 +315,10 @@ jobs:
         run: >
           scripts/test-tier.sh t2
           --no-fail-fast
+      # The disk after the build (GH #1391), also when the test step was red.
+      - name: disk after the build
+        if: always()
+        run: df -h /
       # nextest does not run doctests -- it has no way to, they are rustdoc's.
       # `cargo test --doc` keeps them in the run; it is cheap here because the
       # libraries are already built by the step above (measured: ~2s for all

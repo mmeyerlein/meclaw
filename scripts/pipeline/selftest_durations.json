@@ -39,6 +39,7 @@
  "scripts.tests.test_pipeline_browser_plan": 0.8,
  "scripts.tests.test_pipeline_cache": 3.1,
  "scripts.tests.test_pipeline_cache_reads": 0.3,
+ "scripts.tests.test_pipeline_candidate": 3.5,
  "scripts.tests.test_pipeline_cascade_dry": 0.7,
  "scripts.tests.test_pipeline_coverage": 1.0,
  "scripts.tests.test_pipeline_events": 0.6,

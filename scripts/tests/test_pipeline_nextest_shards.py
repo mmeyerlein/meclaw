@@ -223,6 +223,64 @@ class TestTheWorkflowMatchesTheTable(unittest.TestCase):
         self.assertEqual(str(n), str(self.jobs["gate"]["env"]["MECLAW_CI_SELFTEST_PARTS"]))
 
 
+class TestTheTestJobFreesTheDiskFirst(unittest.TestCase):
+    """GH #1391: the `test` job clears the hosted runner's preinstalled
+    toolchains before anything builds (lock).
+
+    CI of v0.77.2 (run 41421276845): shard 10 died after 3 min 52 s with "No
+    space left on device" inside the build of its test step, while nine shards
+    building the identical set of test binaries passed -- every shard builds
+    the whole workspace's tests, the shard's filterset only narrows the run.
+    The margin was too thin for every shard, so the space is made at the
+    job's start, before checkout, the cache restore and the build."""
+
+    CLEANUP = "free disk space"
+    # What the job itself needs: the Rust toolchain (cargo, rustup) and Node
+    # for the actions. A cleanup that names them could delete them.
+    KEPT = ("cargo", "rust", "node")
+
+    def setUp(self):
+        try:
+            import yaml
+        except ImportError:  # no PyYAML for this interpreter
+            self.skipTest("PyYAML is not importable")
+        self.steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+
+    def _index(self, pred, what):
+        hits = [i for i, s in enumerate(self.steps) if pred(s)]
+        self.assertTrue(hits, "no step in job test: %s" % what)
+        return hits[0]
+
+    def test_the_cleanup_step_runs_before_the_first_cargo_call(self):
+        cleanup = self._index(lambda s: s.get("name") == self.CLEANUP, self.CLEANUP)
+        self.assertEqual(0, cleanup, "the cleanup is the job's first step")
+        for what, pred in (
+                ("checkout", lambda s: str(s.get("uses", "")).startswith("actions/checkout")),
+                ("rust-cache", lambda s: str(s.get("uses", "")).startswith("Swatinem/rust-cache")),
+                ("cargo", lambda s: "cargo" in str(s.get("run", ""))
+                 or "test-tier.sh" in str(s.get("run", "")))):
+            self.assertLess(cleanup, self._index(pred, what), what)
+
+    def test_the_cleanup_step_names_no_rust_node_or_cargo_directory(self):
+        step = self.steps[self._index(lambda s: s.get("name") == self.CLEANUP, self.CLEANUP)]
+        text = str(step.get("run", "")).lower()
+        self.assertIn("rm -rf", text)
+        for kept in self.KEPT:
+            self.assertNotIn(kept, text, "the cleanup names %r, which the job needs" % kept)
+        # Nothing under the tool cache but CodeQL: Node lives there as well.
+        for line in text.splitlines():
+            if "hostedtoolcache" in line:
+                self.assertIn("hostedtoolcache/codeql", line, line)
+
+    def test_the_free_disk_is_logged_before_and_after_the_cleanup_and_after_the_build(self):
+        step = self.steps[self._index(lambda s: s.get("name") == self.CLEANUP, self.CLEANUP)]
+        self.assertGreaterEqual(str(step.get("run", "")).count("df -h /"), 2)
+        build = self._index(lambda s: "test-tier.sh" in str(s.get("run", "")), "test-tier.sh")
+        after = [s for s in self.steps[build + 1:] if "df -h /" in str(s.get("run", ""))]
+        self.assertEqual(1, len(after), "one disk line after the build")
+        self.assertEqual("always()", after[0].get("if"), "a red build reports its disk as well")
+
+
 class TestTheTierAndsTheShard(unittest.TestCase):
     def test_t2_with_a_shard_runs_the_shards_filter_and_only_it(self):
         n = nextest_shards.SHARDS

@@ -1721,6 +1721,90 @@ def ws_kill(lane, ws, pids, timeout=30):
     return ws_procs(lane, ws, timeout=timeout)
 
 
+# --------------------------------------------------------------------------
+# A candidate build (`strand.sh candidate`, GH #1389)
+# --------------------------------------------------------------------------
+
+CANDIDATE_REF = "refs/heads/kb/bin"
+CANDIDATE_TREE = "wt/kb-bin"        # the worktree of the build, beside the strands' `wt/<name>`
+CANDIDATE_TARGET = "kb-target"      # its own target: never the gates' shared `target/`
+CANDIDATE_BIN = "kb/bin"            # under the lane user's $HOME, where the labs start it
+
+# One shell for the lane: a fresh worktree at the commit, `cargo build --release
+# --locked --bin meclaw` in `<root>/kb-target` (the same paths on every lane, so
+# the same commit gives the same bytes -- the paths travel into the binary),
+# the binary renamed into place (a lab may run the old one: `cp` onto it is
+# ETXTBSY), then three marked lines. `fresh` empties the target first: OR-LV-47,
+# build02 built differently for weeks from a stale `libtokio_macros*.so` in its
+# warm target.
+CANDIDATE_BUILD = '''set -e -o pipefail; %(path)s
+g=%(bare)s; wt=%(wt)s; tgt=%(tgt)s; out="$HOME/%(bin)s/meclaw-%(r12)s"
+git --git-dir="$g" worktree prune; rm -rf "$wt"
+%(fresh)s
+git --git-dir="$g" worktree add -q --force --detach "$wt" %(rev)s
+cd "$wt"
+CARGO_TARGET_DIR="$tgt" nice -n 19 cargo build -q --release --locked --bin meclaw 2>&1 | tail -20
+mkdir -p "$HOME/%(bin)s"; cp "$tgt/release/meclaw" "$out.part"; mv -f "$out.part" "$out"
+echo "CANDIDATE-SHA256 $(sha256sum "$out" | cut -d' ' -f1)"
+echo "CANDIDATE-CARGO $(cargo --version)"
+echo "CANDIDATE-VERSION $("$out" --version 2>&1 | head -1)"
+'''
+
+
+def build_candidate(lane, repo_root, rev, fresh=False):
+    """Build the `meclaw` binary of commit `rev` (a full sha of `repo_root`) on
+    `lane` into `~/kb/bin/meclaw-<rev12>` there; returns {sha256, cargo,
+    version}. `fresh`: an empty `kb-target` first (the one rebuild of a
+    deviating lane). Writes `<binary>.origin.json` beside it (core sha, lane,
+    sha256, cargo, version -- the record a lab journals). LaneError(2) when the
+    push, the build or its answer fails."""
+    top = _top(repo_root)
+    root = lane.root.rstrip("/")
+    bare = root + "/meclaw.git"
+    fail = "the candidate build on %s failed" % lane.name
+    _remote(lane, "mkdir -p %s && { test -d %s || git init -q --bare %s; }"
+            % (q(root + "/wt"), q(bare), q(bare)), fail="the host %s did not answer" % lane.name)
+    res = _git_push(lane, top, bare, ["%s:%s" % (rev, CANDIDATE_REF)])
+    if res.returncode != 0:
+        raise LaneError(2, "git push to %s failed (%s)" % (lane.name, _tail(res.stderr)))
+    script = CANDIDATE_BUILD % {
+        "path": REMOTE_PATH, "bare": q(bare), "wt": q(root + "/" + CANDIDATE_TREE),
+        "tgt": q(root + "/" + CANDIDATE_TARGET), "bin": CANDIDATE_BIN, "r12": rev[:12],
+        "rev": q(rev), "fresh": 'rm -rf "$tgt"' if fresh else ":"}
+    res = subprocess.run(_remote_argv(lane, script, long=True), capture_output=True)
+    text = res.stdout.decode(errors="replace")
+    marks = dict(line.split(" ", 1) for line in text.splitlines()
+                 if line.startswith("CANDIDATE-") and " " in line)
+    got = {"sha256": marks.get("CANDIDATE-SHA256", "").strip(),
+           "cargo": marks.get("CANDIDATE-CARGO", "").strip(),
+           "version": marks.get("CANDIDATE-VERSION", "").strip()}
+    if res.returncode != 0 or not re.fullmatch(r"[0-9a-f]{64}", got["sha256"]):
+        raise LaneError(2, "%s (exit %d: %s)" % (fail, res.returncode,
+                                                 _tail(res.stderr + res.stdout)))
+    origin = dict(got, core_sha=rev, lane=lane.name, profile="release", package="bin meclaw",
+                  locked=True, fresh_target=bool(fresh))
+    _remote(lane, 'cat > "$HOME/%s/meclaw-%s.origin.json"' % (CANDIDATE_BIN, rev[:12]),
+            input=(json.dumps(origin, indent=1) + "\n").encode(), fail=fail)
+    return got
+
+
+def fetch_candidate(lane, rev, dest_dir):
+    """Copy `~/kb/bin/meclaw-<rev12>` (and its `.origin.json`) of `lane` into
+    `dest_dir`; returns the local path of the binary. The caller verifies it."""
+    name = "meclaw-%s" % rev[:12]
+    os.makedirs(dest_dir, exist_ok=True)
+    if lane.transport == "local":
+        src = os.path.expanduser("~/%s/%s" % (CANDIDATE_BIN, name))
+        argv = [src, src + ".origin.json", dest_dir + "/"]
+    else:
+        argv = ["%s:%s/%s" % (lane.ssh, CANDIDATE_BIN, n) for n in (name, name + ".origin.json")]
+        argv.append(dest_dir + "/")
+    res = _rsync(lane, ["-t"] + argv)
+    if res.returncode != 0:
+        raise LaneError(2, "the copy of %s from %s failed (%s)" % (name, lane.name, _tail(res.stderr)))
+    return os.path.join(dest_dir, name)
+
+
 def fingerprint(lane, script=None):
     """The lane's fingerprint (V0 section 2.3) as a dict: W1's
     `lane_fingerprint.sh` beside this module, sent on stdin (`sh -s`), so the

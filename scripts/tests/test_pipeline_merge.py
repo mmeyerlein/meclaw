@@ -3599,6 +3599,95 @@ class CloseTest(MergeCase):
         self.assertIn(f.first[:8], cm.exception.text)
 
 
+class CloseCommentTest(MergeCase):
+    """GH #1393: the close comment lands on a public issue -- it names only
+    public paths, never the private wave trees (`plans/**`)."""
+
+    plans_tracked = True
+
+    def close_info(self, name="S1"):
+        return merge.close_info(self.f.root, os.path.join(self.f.wdir, "berichte", "%s.md" % name),
+                                os.path.join(self.f.wdir, "receipts", name), name)
+
+    def test_the_issue_comment_names_no_private_path(self):
+        self.f.strand("S1", 101, {"plans/x/berichte/a.md": "Report.\n",
+                                  "crates/c/src/lib.rs": "pub fn c() {}\n"})
+        _, comment, _ = self.close_info()
+        self.assertIn("Changed: `crates/c/src/lib.rs`\n", comment + "\n")
+        self.assertNotIn("plans/", comment)
+
+    def test_a_plans_only_merge_comments_without_a_file_list(self):
+        self.f.strand("S1", 101, {"plans/x/berichte/a.md": "Report.\n"})
+        _, comment, _ = self.close_info()
+        self.assertIn("Gate: `GATE-SUMMARY strand", comment)
+        self.assertNotIn("Changed:", comment)
+        self.assertNotIn("plans/", comment)
+
+
+    def test_a_broken_export_script_comments_without_a_file_list(self):
+        # fix round 1, I1: an export script that does not import (a syntax
+        # error) or lacks a rule is fail-closed -- no file list, no crash.
+        for name, text in (("syntax", "def (\n"), ("attribute", "ROOT_FILES = []\n")):
+            with self.subTest(name):
+                f = Fixture(self.gate, self.plans_tracked)
+                self.addCleanup(f.close)
+                self.f = f
+                f.master_commit({merge.MAKE_EXPORT: text}, "export script")
+                f.strand("S1", 101, {"crates/c/src/lib.rs": "pub fn c() {}\n"})
+                err = io.StringIO()
+                with mock.patch.object(sys, "stderr", err):
+                    _, comment, _ = self.close_info()
+                self.assertIn("Gate: `GATE-SUMMARY strand", comment)
+                self.assertNotIn("Changed:", comment)
+                self.assertIn("make_export", err.getvalue())
+
+    def test_the_export_rules_decide_what_is_named(self):
+        # fix round 1, M1a: with the export script the comment names only
+        # what it ships -- root files, tree dirs, public templates minus the
+        # blocklist, docs under their target name.
+        self.f.master_commit({merge.MAKE_EXPORT: (
+            "import re\n"
+            "ROOT_FILES = ['CHANGELOG.md']\n"
+            "TREE_DIRS = ['crates']\n"
+            "PUBLIC_TEMPLATE_PREFIXES = ('templates/a/',)\n"
+            "BLOCKLIST = {'crates/c/secret.rs'}\n"
+            "DOCS_MAP = {'docs/x.en.md': 'docs/x.md'}\n"
+            "FORBIDDEN_PREFIX = re.compile(r'^(plans|ideas|archive|workshop)/')\n"
+            "def is_forbidden(path):\n"
+            "    return bool(FORBIDDEN_PREFIX.match(path))\n")}, "export script")
+        self.f.strand("S1", 101, {"CHANGELOG.md": "# Changelog\n", "CLAUDE.md": "private\n",
+                                  "crates/c/secret.rs": "x\n", "crates/c/src/lib.rs": "y\n",
+                                  "docs/x.en.md": "# X\n", "templates/a/foo.txt": "a\n",
+                                  "templates/b/bar.txt": "b\n", "workshop/w.md": "w\n"})
+        _, comment, _ = self.close_info()
+        self.assertIn("Changed: `CHANGELOG.md`, `crates/c/src/lib.rs`, `docs/x.md`, "
+                      "`templates/a/foo.txt`\n", comment + "\n")
+
+    def test_a_gitignored_path_is_not_named(self):
+        # fix round 1, M1b: a path `.gitignore` names stays out
+        write(self.f.root, ".gitignore", "secret/\n")
+        self.assertEqual(merge.public_paths(self.f.root, ["secret/x.txt", "crates/a.rs"]),
+                         ["crates/a.rs"])
+
+    def test_a_check_ignore_without_an_answer_names_nothing(self):
+        # fix round 1, M3: `git check-ignore` says 0 or 1; any other exit
+        # (128: no repository) is fail-closed -- no file list.
+        bare = os.path.join(self.f.tmp, "no-repo")
+        os.makedirs(bare)
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            self.assertEqual(merge.public_paths(bare, ["crates/a.rs"]), [])
+        self.assertIn("check-ignore", err.getvalue())
+
+    def test_a_branch_off_the_kit_name_is_not_named(self):
+        # fix round 1, M1c: a branch that is not `<wave>/<strand>` stays out
+        s = self.f.strand("S1", 101, {"crates/c/src/lib.rs": "pub fn c() {}\n"})
+        git(self.f.root, "branch", "someone-private", s["tip"])
+        self.f.report("S1", "someone-private", 101, [c[:8] for c in s["commits"]])
+        _, comment, _ = self.close_info()
+        self.assertTrue(comment.startswith("Built from "), comment)
+        self.assertNotIn("someone-private", comment)
+
 class MergeQueueZiTest(MergeCase):
     """The first real `strand.sh merge --host` (Z-B) was refused five ways (Z-I 2c)."""
 

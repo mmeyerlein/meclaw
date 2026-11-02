@@ -3,7 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
 pub mod gh1225_kr_seq_never_falls_below_the_ledger;
 pub mod gh1225_kr_the_set_sent_last_stands;
 pub mod gh1225_kr_two_turns_and_a_restart_never_share_an_episode_id;
@@ -36,6 +35,7 @@ pub mod gh1342_the_ambient_question_asks_with_the_persons_words;
 pub mod gh1346_every_tool_the_quick_scope_allows_is_on_the_menu;
 pub mod gh1347_the_quick_window_keeps_the_running_round_whole;
 pub mod gh1352_a_quick_call_without_an_answer_goes_to_the_brain;
+pub mod gh1382_a_failed_speculation_answers_once;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;

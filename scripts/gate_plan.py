@@ -4620,7 +4620,9 @@ def plan(paths, mode, repo=None):
               # live-2 bat-hash (#1358): the release lock against the battery candidate
               "scripts.tests.test_release_matches_battery",
               # release-tempo rt4 (#1387): the release chain prepare/publish
-              "scripts.tests.test_release_script"]])
+              "scripts.tests.test_release_script",
+              # d53-1 c2 (#1389): the candidate build on every lane
+              "scripts.tests.test_pipeline_candidate"]])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that

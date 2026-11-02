@@ -3705,7 +3705,7 @@ def run_lanes(argv, env=None, cwd=None, emit=None):
     return _run_once(argv, env, cwd)
 
 
-def _run_once(argv, env, cwd):
+def _run_once(argv, env, cwd, queue=True):
     """One verb; an old token file goes into an unarmed store first (Z11).
 
     Every verb but init/status migrates (OR-DT.Z11.1, Z15 M3): `who` arms the
@@ -3718,11 +3718,11 @@ def _run_once(argv, env, cwd):
         code, _, pre = _migrate_old(env, cwd)
         if code:
             return code, "", pre
-    code, out, err = _run_verb(argv, env, cwd)
+    code, out, err = _run_verb(argv, env, cwd, queue=queue)
     return code, out, pre + err
 
 
-def _run_verb(argv, env, cwd):
+def _run_verb(argv, env, cwd, queue=True):
     ctx = _Ctx(None, 0)
     verb = argv[0] if argv else ""
     if verb not in TOKEN_VERBS:
@@ -3826,7 +3826,7 @@ def _run_verb(argv, env, cwd):
         else:
             res = lease_take(db, key, lane=opts["lane"] or None, ttl=opts["ttl"],
                              tree=tree if branch == key else "", now=now, branch=branch,
-                             path=db_path, wait=opts["wait"], pid=opts["pid"],
+                             path=db_path, wait=opts["wait"], pid=opts["pid"], queue=queue,
                              # re-check Kette Minor 2 / FR2 m2: the class reads the
                              # strand file in the caller's tree -- any tree, like
                              # `gate --strand`; the place keeps `tree` alone
@@ -3836,6 +3836,43 @@ def _run_verb(argv, env, cwd):
     if res.code == 0 and verb in WAKE_VERBS:
         _wake(db_path)      # after the commit: a lane may be free for a waiter
     return res.code, res.out, res.err
+
+
+# --- the leases of a candidate build (`strand.sh candidate`, GH #1389) -------
+
+CANDIDATE_STRAND = "candidate"
+
+
+def candidate_key(wave_name, n):
+    """The lease of lane number `n` of a candidate build: the holder form of a
+    strand's second lease (`<wave>/candidate:<n>`, GH #1146) -- one strand
+    `candidate` per wave, so `token who` names it, and nothing besides the
+    normal admission: no verb of its own, never `init --force` (kit trap 23.10.)."""
+    return "%s/%s:%s" % (wave_name, CANDIDATE_STRAND, n)
+
+
+def _candidate_argv(verb, wave_name, n):
+    return [verb, "--strand", "%s/%s" % (wave_name, CANDIDATE_STRAND), "--holder", str(n)]
+
+
+def candidate_take(wave_name, n, lane, *, env, cwd, wait=False, pid=None):
+    """`take --lane <lane>` for `candidate_key(wave_name, n)`; (code, out, err)
+    as `run_lanes`. `wait`: `--wait`, queued until the lane is free (the
+    `--wait-admission` of the verb). Without it a leased lane is exit 3 with NO
+    queue place (`lease_take(queue=False)`): the build gives the lanes it got
+    back and ends, it never comes back for an offer."""
+    argv = _candidate_argv("take", wave_name, n) + ["--lane", lane]
+    if pid is not None:
+        argv += ["--pid", str(pid)]
+    if wait:
+        return run_lanes(argv + ["--wait"], env, cwd)
+    return _run_once(argv, env, cwd, queue=False)
+
+
+def candidate_release(wave_name, n, *, env, cwd):
+    """`release` of `candidate_key(wave_name, n)`; (code, out, err) -- the
+    verb wakes the waiters itself (`WAKE_VERBS`)."""
+    return _run_once(_candidate_argv("release", wave_name, n), env, cwd)
 
 
 def _cli_lanes(args):
