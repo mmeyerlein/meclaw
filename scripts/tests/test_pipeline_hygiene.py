@@ -28,7 +28,7 @@ import tempfile
 import time
 import unittest
 from unittest import mock
-from scripts.tests import fake_ssh, kit_time, store_isolation
+from scripts.tests import fake_ssh, kit_time, private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 HYGIENE_PY = REPO / "scripts" / "pipeline" / "hygiene.py"
@@ -1711,6 +1711,15 @@ class KitCpuSource(unittest.TestCase):
 
     def test_the_kit_counts_cpus_in_one_place(self):
         self.assertEqual([], cpu_source_findings(REPO))
+
+    def test_the_export_stations_runner_is_scanned(self):
+        # V8 fix round 1 (review I2): `kit_python_files` adds the runner only
+        # `if ett.is_file()` -- in the export tree it is silently absent, so
+        # this module's private part is declared and kept in the release's
+        # private `gate-selftest`.
+        rel = "plans/export-fixtures/export_tree_tests.py"
+        private_tree.require(rel)
+        self.assertIn(REPO / rel, kit_python_files(REPO))
 
     def test_the_rule_sees_every_other_source(self):
         with tempfile.TemporaryDirectory() as tmp:

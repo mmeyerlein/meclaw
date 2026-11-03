@@ -1,4 +1,4 @@
-# `talky@6.13.1`
+# `talky@6.14.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- one hundred and seven edges,
+dispatcher for the fan-out, the close batch out to the write port -- one hundred and twenty edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -49,6 +49,8 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `quick` | `llm` | this template, since GH #1248 -- the quick voice behind the curator |
+| `quick_spec` | `llm` | this template, since #1398 -- the quick voice's speculation, on a cell of its own |
+| `quick_bridge` | `llm` | this template, since #1398 -- the quick voice's bridge while it speculates |
 | `schemas` | `code` | this template |
 | `splitter` | `code` | this template |
 | `errors` | `code` | this template |
@@ -70,13 +72,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.7.0"}}
+{"cell": {"type": "ref", "template": "collector@5.8.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.13.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.14.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -184,7 +186,7 @@ The rest, each optional and each still at the same address:
 | `in_seed_ask` | in | the voice channel's ask for a live session's seed (`hop.call_id`, `session_id`, `reason`, `renewal_n`); the edge MUST promote `context.audience_set` and `context.call_id`. Answered on `seed`. Since #1279 |
 | `in_seed_line` | in | one line for the next seed of a call, `{session_id\|call_id, kind: wind_down\|hint, text}`, held by `./curator` per call and kind (a new line replaces only its own kind) until that seed, which ends on all of them. Since #1279 |
 | `seed` | out | the answer to `in_seed_ask`: `{messages: [{role, text}], est_tokens, judge}`, hop `call_id`, `session_id` and `renewal_n` as the ask named them, or `messages: []` with `hop.refused` `no_round`, or with `hop.degraded` `store` when the ledger refused the read (the call opens without a seed, a held line waits for the next one); `./curator`'s rim sets `context.call_id`, by which the voice cell finds the session. To the voice channel's `in_seed`. Since #1279 |
-| `in_call_end` | in | the end of a voice call (the voice cell's final `usage`, `hop.call_id`, `hop.session_id`); the edge MUST promote `context.audience_set` and `context.call_id`. To `./curator`, answered on `call_facts`. Since #1369 |
+| `in_call_end` | in | the end of a voice call (the voice cell's final `usage`, `hop.call_id`, `hop.session_id`); the edge MUST promote `context.audience_set` and `context.call_id`. To `./curator`, answered on `call_facts`. Since #1369. Since #1401 also to `./session-keeper`, which seals the open generation of `context.channel_node` at once (`close_reason` `call_ended`; a generation still owing its last answer closes on that answer). The edge that brings the call end in MUST promote `context.channel_node` as well -- the voice cell does not set it, and without it the keeper closes nothing before the night |
 | `live_feed` | out | the curator's feed of a duplex session after a closed turn (`hop.section`), only with its knob `live_feed`; to the voice channel's `in_advise`. Since #1279 |
 | `call_facts` | out | the answer to `in_call_end`: `{messages: [], call_id, session_id, seed_used, facts: [{source, id, text}], delegations: [{turn_id, text}]}`, `hop.call_id`/`hop.session_id` back, `hop.refused` `no_round`/`no_call` or `hop.degraded` `store` with empty lists. Since #1369 |
 | `propose` | out | the curator's proposal out of a `clarify` question and its answer; to affinity's `in_propose`. Since #1279 |
@@ -596,6 +598,7 @@ shipped, and off every message is the bytes above. A switch here and in the sect
   is read as for a turn (`context_turns`, `judge_context`; the curator answers a delta from the
   round's newest rows, the call has no generation yet, #1369), then one decide call whose text
   rides out and back in `context.route_state` on its own decide pair, and the stamp leaves as `delta_stamp` -> `./curator` `in_delta_stamp` with `text_norm`
+  and, since #1404, the partial's `call_id` and `session_id` (carried on every hop of the partial)
   (one space between words, lower case, trailing `.!?…,;:` and space cut) -- never the collector,
   never the rim. Every exit clears `context.delta` and `context.judge_for`.
 
@@ -616,15 +619,31 @@ speaker after a speakable tool result, and the bridge of a `complex` or `researc
 **Speculation (#1275, off by default).** With the curator policy's `quick_speculative` and the
 collector's knob of the same name on, the collector sends the curate of a turn once early,
 before the route stamp (`hop.spec` "1", no path), and the curator asks the quick voice at once.
-`./curator -> ./quick` lifts `hop.spec` into `context.spec` (the brain edges lift it too, a
-brain call never carries one); a quick answer with `context.spec` "1" takes only
-`./quick -> ./curator` on `in_spec_llm` -- never the splitter, the tap or the error drain. The
+`./curator -> ./quick_spec` (since #1398, below) lifts `hop.spec` into `context.spec` (the brain
+edges lift it too, a brain call never carries one); a quick answer with `context.spec` "1" takes
+only the edge into `./curator` on `in_spec_llm` -- never the splitter, the tap or the error drain. The
 curator holds it and decides at the normal curate of the turn; a kept answer comes back as
 `spec_release` on `./curator -> ./splitter` (the call's context set from the hop, `interim` and
 `spec` empty) and goes on like any quick answer. The decision table is in
 `templates/curator/README.md` § *Speculation*: a failed spec answer (error or timeout) lets
 the turn's stored quick call go, and when that one fails too, the turn goes to the brain once,
 also when it fails late (#1382). Every edge out to `.` deletes `context.spec`.
+
+**Two siblings (#1398).** `./quick` is a stateful `llm` cell and runs one call at a time, and a
+call cannot be cancelled inside it. On the one cell the bridge waited behind a speculation in
+flight, the tool round behind the bridge, and a drop the stamp already knew waited for the
+speculation's end. So the speculation and the bridge run on two cells of their own, both copies
+of `./quick` (the same params: model, app id, reasoning off, timeouts): `./curator ->
+./quick_spec` takes the calls with `hop.spec` "1", `./curator -> ./quick_bridge` the bridge of a
+speculating talky (`hop.spec` "bridge", which the curator sets only with `quick_speculative` on),
+and `./curator -> ./quick` everything else -- each road in a person's and an inner turn's copy,
+with the same modifiers. `./quick_spec` has exactly two edges out: its answer into `./curator`
+on `in_spec_llm` and a refused push to `.`; no edge reaches the splitter, so a speculation only
+ever speaks through the curator's `spec_release`, and a dropped or late one never speaks.
+`./quick_bridge` carries `./quick`'s cut to the splitter, its tap, its error drain and its refused
+push. Each has its own model door (`. -> ./quick_spec`, `. -> ./quick_bridge` on `in_model`), the
+brain's door lets both pass, and both stand in the credential lanes beside `./quick` (below).
+With `quick_speculative` "0", as shipped, no call reaches either sibling.
 
 **Born on the brain's start value, moved by a tier.** `./quick` carries `${ctx.model}` like
 `./brain`, so a fresh composite speaks quick turns on the brain's model; the model registry moves
@@ -637,7 +656,10 @@ the tool runs.
 
 ## The internal wiring, edge by edge
 
-Forty-seven edges of round in this hive's `params.graph` (the fortieth to forty-seventh #1279's:
+Fifty-five edges of round in this hive's `params.graph` (the forty-eighth to fifty-fifth #1398's:
+the curator's two roads each onto `./quick_spec` and `./quick_bridge`, the speculation's lane
+`in_spec_llm` into `./curator`, and the bridge's cut to `./splitter`, its tap into `./curator` and
+its error drain into `./errors`; the fortieth to forty-seventh #1279's:
 a partial's own decide pair `./route -> ./decide` and back, its stamp `./route -> ./curator` on
 `in_delta_stamp`, the keeper's turn into `./screen_judge`, its read of the curator's wall and the
 answer, and its call of `./screen_model` and the answer; the thirty-third and thirty-fourth the
@@ -645,9 +667,10 @@ route stamp's read of the curator's wall and its answer, GH #1304, the thirty-fi
 asks for its words on its way to `./curator`, GH #1306, the thirty-sixth and thirty-seventh the
 inner turn's copies of the rounds into `./brain` and `./quick`, which set `hop.silence_ok`,
 GH #1320, the thirty-eighth and thirty-ninth a speculative quick answer's lane `in_spec_llm`
-into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the sixty that ARE the
-boundary (twenty-six door edges from `.`, thirty-four leaving towards it, and those are the lanes
-above; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics`, `in_seed_ask` and
+into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the sixty-five that ARE the
+boundary (twenty-nine door edges from `.`, thirty-six leaving towards it, and those are the lanes
+above; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
+and their two refused pushes; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics`, `in_seed_ask` and
 `in_seed_line` into `./curator`, the screen model's door `in_model` into `./screen_model` -- and six
 exits -- `seed`, `live_feed` and `propose` out of `./curator`, `verdict` out of `./route` (a rim stamp
 that carries the screen) and out of `./screen_judge` (the second stamp), and the screen model's refused push; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
@@ -676,7 +699,7 @@ eleventh a gap's bundle into `./curator`, GH #895, the twelfth the renewed duple
 `./curator`, GH #949, the sixteenth an app's ledger read, `in_read` into `./curator`, GH #949, and the seventeenth
 the decider's model door into `./decide`, GH #1247, and the eighteenth the quick voice's model door into `./quick`, GH #1248, and the nineteenth another hive's notes, `in_note` into `./curator`, GH #1303, and the twentieth an inner turn, `in_turn` with `kind` `inner` into `./session-keeper` on its own channel `inner:<source>`, GH #1305).
 The two halves are the whole of this file, counted from it. Every one of the thirty-two names a
-sub-unit **by its path**: three of the thirteen nodes below are sealed hives, so the address is
+sub-unit **by its path**: three of the fifteen nodes below are sealed hives, so the address is
 the hive and the lane in the third column is what the door behind it reads; what those three
 draw INSIDE themselves is theirs and is not counted here. Read it as the round it is:
 
@@ -701,6 +724,8 @@ session-keeper --(close, session_id + channel + audience_set -> context)->  cura
 collector ==(curate, int(hop.iter) < 12, restore_ttl)==> curator  in_curate  <- the whole round, GH #889/#919
 curator ==(brain, int(hop.iter) < 12, restore_ttl)==>  brain      <- THE SEAM, GH #1247
 curator ==(quick, int(hop.iter) < 12, restore_ttl)==>  quick      <- the short window, on a model cell of its own, GH #1248
+curator ==(quick, hop.spec '1', int(hop.iter) < 12, restore_ttl)==>  quick_spec    <- the speculation on a cell of its own, #1398
+curator ==(quick, hop.spec 'bridge', int(hop.iter) < 12, restore_ttl)==>  quick_bridge  <- the bridge beside the tool round, #1398
 collector --(menu)--------------> curator    in_slots   <- the answered tool menu, GH #464
 collector --(schemas)-----------> curator    in_schemas <- the curator answers the menu too, GH #892
 curator --(tool_schemas, !refused_subscriber)--> collector  in_menu  <- tool_answerer 'curator', GH #892
@@ -708,6 +733,8 @@ collector --(recall)------------> curator    in_recall_ask  <- its question is b
 brain --(any answer, !refused_subscriber)--> curator  in_llm   <- the tap, GH #889
 quick --(any answer, !refused_subscriber, no spec)--> curator  in_llm   <- the quick voice's tap, GH #1248
 quick --(any answer, !refused_subscriber, context.spec '1')--> curator  in_spec_llm  <- a spec answer, held, #1275
+quick_spec --(any answer, !refused_subscriber)--> curator  in_spec_llm  <- every answer of it is a spec answer; its only road, no splitter, #1398
+quick_bridge --(any answer, !refused_subscriber)--> curator  in_llm  <- the bridge's tap, #1398
 curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept spec answer, the quick round once more, #1275
    .      --(in_pack)-----------> curator    <- THE DOOR IN THE WALL, GH #458
    .      --(in_pin)------------> curator    <- another hive's pin, GH #916
@@ -717,6 +744,7 @@ curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept
    .      --(in_model, subscriber ends /curator/summarizer)--> curator   <- GH #889
    .      --(in_model, subscriber ends /decide)--> decide   <- the decider's model door, GH #1247
    .      --(in_model, subscriber ends /quick)--> quick     <- the quick voice's model door, GH #1248
+   .      --(in_model, subscriber ends /quick_spec | /quick_bridge)--> quick_spec | quick_bridge  <- the siblings' doors, #1398
    .      --(in_model, subscriber ends /screen_model)--> screen_model  <- the screen model's door, #1279
    .      --(in_delta)----------> route   in_turn, context.delta '1'  <- a voice partial, #1279
    .      --(in_screen_topics | in_seed_ask | in_seed_line)--> curator  <- #1279
@@ -724,6 +752,7 @@ curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept
 schemas --(operation == schemas)-> collector  in_menu   <- this agent's own sidecar offer, GH #783
 brain --(stop | tool_calls | length)--> splitter  <- the sidecar cut, GH #379; length since 5.4.0, GH #843
 quick --(stop | tool_calls | length)--> splitter  <- the same cut for the quick voice, GH #1248
+quick_bridge --(stop | tool_calls | length)--> splitter  <- and for its bridge, #1398
 splitter --(stop | tool_calls)---> dispatcher
 splitter --(length)--------------> collector    in_answer   <- a cut answer, its sidecar cut too
 splitter --(sidecar: window | gap | memory | things, or sidecar_verify)--> curator  in_section  <- the curator's sections, GH #892; a section to check, GH #1079
@@ -731,6 +760,7 @@ splitter --(sidecar, any other)-->  .        <- one per section, out of the side
 splitter --(answer_check, answer_check_sources set)--> curator  in_answer_check  <- the check asks for its turn's words, GH #1306
 brain --(error | content_filter, !refused_subscriber)-> errors
 quick --(error | content_filter, !refused_subscriber)-> errors
+quick_bridge --(error | content_filter, !refused_subscriber)-> errors
 brain --(has(refused_subscriber))--> .   route := 'model_refused'  <- a refused push, GH #863
 session-keeper --(reject)--------> errors    <- the session store refused a step
 curator --(reject, !refused_subscriber)--> errors  <- a quote that is not in its source, GH #1079
@@ -755,12 +785,13 @@ collector --(schemas)--------->  .            <- what tools this agent declares,
 collector --(brief)----------->  .            <- the counterpart's brief, GH #834
 decide --(has(refused_subscriber))--> .   route := 'model_refused'  <- the decider's refused push, GH #1247
 quick --(has(refused_subscriber))--> .   route := 'model_refused'  <- the quick voice's refused push, GH #1248
+quick_spec | quick_bridge --(has(refused_subscriber))--> .   route := 'model_refused'  <- the siblings' refused pushes, #1398
 screen_model --(has(refused_subscriber))--> .   route := 'model_refused'  <- #1279
 screen_judge --(verdict)------->  .            <- the second stamp, screen_form only, #1279
 route --(stamp_out, has(verdict))--> .   route := 'verdict'  <- a rim stamp with the screen, for the presenter, #1279
 curator --(seed | live_feed | propose)-->  .   <- #1279
 
-[sealed]  session-keeper  collector  curator   [plain]  brain  quick  schemas  splitter  dispatcher  errors  route  decide  screen_judge  screen_model
+[sealed]  session-keeper  collector  curator   [plain]  brain  quick  quick_spec  quick_bridge  schemas  splitter  dispatcher  errors  route  decide  screen_judge  screen_model
 ```
 
 **The edges inside the sealed sub-units are not drawn here, and that is the point.** A sealed sub-unit takes its
@@ -934,7 +965,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.13.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.14.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1678,7 +1709,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all twenty-nine cells (plus four hive markers); the two `timer`s
+The composite comes up with all thirty-one cells (plus four hive markers); the two `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:
@@ -1746,7 +1777,9 @@ Since `talky@4.6.0` the rim declares both halves of the **credential lane** and 
 
 The `at` lists name `./curator/summarizer` beside it, since GH #1247 `./decide` and since
 GH #1248 `./quick` as well: the route decider and the quick voice take their grant the way
-the brain does. Since #1279 `./screen_model` stands in both lists too.
+the brain does. Since #1279 `./screen_model` stands in both lists too, since #1398 the quick
+voice's siblings `./quick_spec` and `./quick_bridge`; the builder's recipe grants all of them
+(`CREDENTIAL_CONSUMERS`), a cell missing there would run without a key.
 
 `params.ports` stays literally `[]`. `at` is not a second kind of port: it is the
 one opening this template pronounces about **itself**, for **one** named lane and

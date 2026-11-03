@@ -574,11 +574,24 @@ fn spec_quick_dropped_when_a_stamped_family_lies_outside_spec_tools() {
     assert_eq!(m[0]["verdict"], json!("dropped"), "{m:?}");
     assert_eq!(m[0]["reason"], json!("family:orga"), "{m:?}");
 
-    // The stamp first, the answer after it (the stored call decides).
+    // The stamp first, the answer after it. Until #1398 the stored call waited
+    // for the spec's end here (the stamp was silent). The drop is known at the
+    // stamp -- `orga` lies outside `spec_tools` -- so the stored call and its
+    // bridge go at once and the late answer sends nothing (#1398, plan
+    // T2-core-voice § V1, pin 3: the wait cost +1.3 s p50 in the t1 breakdown).
     let mut a = spec_hive("web,weather,story_read");
     let call = spec_call(&mut a, "t1", "move my dentist to friday");
     seam_families(&mut a, "t1", "tool", "orga", "move my dentist to friday");
-    assert!(silent(&a), "{:?}", a.out);
+    assert!(normal_round_with(&a, "orga"), "{:?} {:?}", a.out, a.stderr);
+    assert!(
+        a.routed("quick")
+            .iter()
+            .any(|q| q.hop.get("spec") == Some(&json!("bridge"))),
+        "the bridge goes with the call: {:?}",
+        a.out
+    );
+    assert!(a.routed("spec_release").is_empty(), "{:?}", a.out);
+    assert_eq!(spec_marks(&a)[0]["reason"], json!("family:orga"));
     spec_answer(
         &mut a,
         &call,
@@ -586,13 +599,17 @@ fn spec_quick_dropped_when_a_stamped_family_lies_outside_spec_tools() {
         json!([tool_call("cw", "weather")]),
     );
     assert!(
-        a.routed("spec_release").is_empty(),
-        "{:?} {:?}",
+        silent(&a),
+        "the late answer sends nothing: {:?} {:?}",
         a.out,
         a.stderr
     );
-    assert!(normal_round_with(&a, "orga"), "{:?} {:?}", a.out, a.stderr);
-    assert_eq!(spec_marks(&a)[0]["reason"], json!("family:orga"));
+    assert_eq!(spec_marks(&a).len(), 1, "one decision per turn");
+    assert_eq!(
+        a.rows("SELECT count(*) FROM marks WHERE kind = 'late_spec_discarded'")[0][0],
+        json!(1),
+        "the late answer is discarded once"
+    );
 }
 
 // #1366: a stamped family inside `spec_tools` that the spec call did not call
@@ -671,6 +688,79 @@ fn spec_curate_back_from_handover_leaves_the_turn_one_normal_round() {
                "path": "simple", "needs": "tool", "families": "orga"}),
         json!({"messages": [user(text)]}),
     );
+    // Until #1398 the stored call waited here for the spec call's answer.
+    // The stamp's `orga` lies outside `spec_tools`, so the drop is known at the
+    // stamp: the normal call and its bridge go in this very step, and the spec
+    // curate back from the handover finds a decided turn and asks nothing
+    // (#1398, plan T2-core-voice § V1, pin 3). Still one normal round, never none.
+    let mut quick = h.routed("quick");
+    spec_curate(&mut h, "t1", json!({"messages": [user(text)]}));
+    quick.extend(h.routed("quick"));
+    assert!(
+        quick.iter().all(|q| q.hop.get("spec") != Some(&json!("1"))),
+        "no spec call for a decided turn: {quick:?}"
+    );
+    let mut rounds: Vec<String> = quick
+        .iter()
+        .map(|q| {
+            let c = q.hop["curator_call"].as_str().unwrap_or("");
+            c.trim_end_matches("-bridge").to_string()
+        })
+        .collect();
+    rounds.dedup();
+    assert_eq!(
+        rounds.len(),
+        1,
+        "one normal quick round: {quick:?} {:?}",
+        h.stderr
+    );
+    assert!(
+        quick.iter().any(|q| q.hop.get("spec").is_none()
+            && q.body["tool_scope"]["allow"]
+                .as_array()
+                .is_some_and(|a| a.contains(&json!("orga")))),
+        "{quick:?}"
+    );
+    assert!(h.routed("spec_release").is_empty(), "{:?}", h.out);
+    assert_eq!(spec_marks(&h)[0]["reason"], json!("family:orga"));
+    assert!(
+        h.rows("SELECT key FROM state WHERE key LIKE 'spec%'")
+            .is_empty(),
+        "no spec row left behind"
+    );
+}
+
+// #1371, the await case (review I1 of #1398): with a stamped family INSIDE
+// `spec_tools` the drop is not known at the stamp, so the normal curate that
+// comes while the spec curate is in `./handover` still stores its call as the
+// fallback and moves the row to `await`. The spec curate back from the
+// handover must not take that recorded fallback for a decided turn (the
+// `state != "await"` guard): its spec call goes, the answer (a weather call,
+// not web) settles the turn, and the stored call goes -- one normal round.
+// Without the guard the row was dropped and no quick round ran at all (PIN-B
+// lab_zk, trace 01a18e1c-24a1). Since #1398 the `orga` test above never
+// reaches the guard; this one is its only pin.
+#[test]
+fn spec_curate_back_from_handover_still_awaits_a_family_inside_spec_tools() {
+    if !shipped() {
+        return;
+    }
+    let mut h = spec_hive("web,weather,story_read");
+    let text = "weather and news?";
+    h.lane_at_phase(
+        "handover-done",
+        "in_curate",
+        json!({"session_id": "s1", "turn_id": "t1", "iter": "0",
+               "channel": "test", "audience_set": ROUND_E, "path": "simple"}),
+        json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "phase": "",
+               "path": "simple", "needs": "tool", "families": "web"}),
+        json!({"messages": [user(text)]}),
+    );
+    assert!(
+        h.routed("quick").is_empty(),
+        "a family inside spec_tools waits for the spec: {:?}",
+        h.out
+    );
     spec_curate(&mut h, "t1", json!({"messages": [user(text)]}));
     let mut quick = h.routed("quick");
     let spec: Vec<Msg> = quick
@@ -685,7 +775,7 @@ fn spec_curate_back_from_handover_leaves_the_turn_one_normal_round() {
         h.out,
         h.stderr
     );
-    // Its answer (a weather call, not orga) decides: the stored call goes.
+    // Its answer (a weather call, not web) decides: the stored call goes.
     spec_answer(
         &mut h,
         &spec[0],
@@ -709,9 +799,9 @@ fn spec_curate_back_from_handover_leaves_the_turn_one_normal_round() {
         h.out,
         h.stderr
     );
-    assert!(normal_round_with(&h, "orga"), "{:?} {:?}", h.out, h.stderr);
+    assert!(normal_round_with(&h, "web"), "{:?} {:?}", h.out, h.stderr);
     assert!(h.routed("spec_release").is_empty(), "{:?}", h.out);
-    assert_eq!(spec_marks(&h)[0]["reason"], json!("family:orga"));
+    assert_eq!(spec_marks(&h)[0]["reason"], json!("family:web"));
     assert!(
         h.rows("SELECT key FROM state WHERE key LIKE 'spec%'")
             .is_empty(),

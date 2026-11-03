@@ -842,6 +842,23 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, declared: &Value, base_ur
             v["params"]["base_url"] = json!(base_url);
             v["params"]["model"] = json!("gpt-4o-mock");
         });
+        // #1398: the quick voice's siblings carry its model and endpoint.
+        patch(
+            root,
+            &format!("main/{composite}/quick_spec/config.json"),
+            |v| {
+                v["params"]["base_url"] = json!(base_url);
+                v["params"]["model"] = json!("gpt-4o-mock");
+            },
+        );
+        patch(
+            root,
+            &format!("main/{composite}/quick_bridge/config.json"),
+            |v| {
+                v["params"]["base_url"] = json!(base_url);
+                v["params"]["model"] = json!("gpt-4o-mock");
+            },
+        );
     }
 }
 

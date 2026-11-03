@@ -1,4 +1,4 @@
-# `collector@5.7.0`
+# `collector@5.8.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -221,6 +221,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `delegation_answer_mode` | `"fact"` | how the advise mode asks the brain to answer a delegation: `"fact"` the rule of before, `"context"` a `context` section under the delegation's id. See "The advise mode". |
 | `delegation_rule` | `""` | the rule of `delegation_answer_mode` `"context"` as text, replacing the built-in one word for word; `""` = the built-in rule. Ignored in `"fact"`. See "The advise mode". |
 | `delegation_inherits_stamp` | `"0"` | `"1"` or true lets a delegation round take the route stamp of the turn it belongs to; read only while `route_wait_ms` is above 0. See "A delegation round takes its turn's stamp". |
+| `delegation_priority` | `"0"` | `"1"` or true opens the round of a delegation at once, beside a tool round of its session that is still open, with only its own row ([#1399](https://github.com/mmeyerlein/meclaw/issues/1399)); a spoken turn still waits. Read only while `defer_turns` is `"1"`. See "A delegation does not wait behind an open round". |
 
 Removed in `collector@5.0.0` (GH #889): `window_turns`, `window_bytes`, `turn_chars`, `tool_chars`,
 `round_bytes`, `memory_chars`, `context_window`, `curate_soft`, `curate_hard`, `keep_rounds`,
@@ -251,7 +252,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.7.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@5.8.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -487,7 +488,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.7.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@5.8.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -533,7 +534,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.7.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.8.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -644,6 +645,16 @@ apply to the delegation as to the turn (`simple` -> quick, `complex` -> consult)
 already ended, or whose stamp is still out, has no leg to read: the round leaves with an empty path, as
 before. An advice round reads nothing. With the knob shipped (`"0"`) no delegation round reads a stamp:
 it leaves with an empty path and the brain answers it, as in 0.76.6.
+
+**A delegation does not wait behind an open round** (`delegation_priority` `"1"`, [#1399](https://github.com/mmeyerlein/meclaw/issues/1399)).
+With `defer_turns` `"1"` a turn that arrives while a tool round of its session is open is deferred to the
+next round, and so was a delegation: on the telephone the backend call started only once the round before
+it had closed. With the knob on, a turn whose own row is a `delegation` takes the path of `defer_turns`
+`"0"` instead: its round opens at once beside the open one, under its own key, and its window leg carries
+only its own row. A turn deferred behind the open round keeps its place and rides the next round, so
+spoken turns are answered in the order they came; each round ends with its own answer (`drop_round` by
+key). The cell says it on stderr: `collector: delegation_round_opened <key> beside <open keys> for session
+<id>`. With the knob shipped (`"0"`) a delegation behind an open round is deferred like any turn.
 
 **The speculative curate** (`quick_speculative` `"1"`). A turn that waits for its stamp waits for a
 decision, not for anything the curate needs. With the knob on, the fan-in runs ahead: once every expected

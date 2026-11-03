@@ -9,7 +9,7 @@
     "add_nodes": [
       {
         "name": "assistants/scribe",
-        "template": "assistant@3.11.1",
+        "template": "assistant@3.11.2",
         "override_params": {
           "cogny/brain": {
             "temperature": 0.2,
@@ -29,6 +29,12 @@
           "talky/quick": {
             "credential_grant_id": "grant:openrouter@member-alex/talky-quick"
           },
+          "talky/quick_spec": {
+            "credential_grant_id": "grant:openrouter@member-alex/talky-quick_spec"
+          },
+          "talky/quick_bridge": {
+            "credential_grant_id": "grant:openrouter@member-alex/talky-quick_bridge"
+          },
           "talky/screen_model": {
             "credential_grant_id": "grant:openrouter@member-alex/talky-screen_model"
           },
@@ -44,6 +50,12 @@
           },
           "talky-chat/quick": {
             "credential_grant_id": "grant:openrouter@member-alex/talky-chat-quick"
+          },
+          "talky-chat/quick_spec": {
+            "credential_grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec"
+          },
+          "talky-chat/quick_bridge": {
+            "credential_grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge"
           },
           "talky-chat/screen_model": {
             "credential_grant_id": "grant:openrouter@member-alex/talky-chat-screen_model"
@@ -420,6 +432,56 @@
         }
       },
       {
+        "from": "./assistants/scribe/talky/quick_spec",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-quick_spec'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky/quick_spec",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-quick_spec'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/talky/quick_bridge",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-quick_bridge'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky/quick_bridge",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-quick_bridge'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
         "from": "./assistants/scribe/talky/screen_model",
         "to": "./access",
         "lane": "credential_request",
@@ -538,6 +600,56 @@
         "to": "./assistants/scribe/talky-chat/quick",
         "lane": "in_sealed",
         "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-quick'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/talky-chat/quick_spec",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-chat-quick_spec'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky-chat/quick_spec",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-quick_spec'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_sealed'"
+          }
+        }
+      },
+      {
+        "from": "./assistants/scribe/talky-chat/quick_bridge",
+        "to": "./access",
+        "lane": "credential_request",
+        "condition": "has(hop.route) && hop.route == 'credential_request'",
+        "modifier": {
+          "set_hop": {
+            "route": "'in_invoke'"
+          },
+          "set_context": {
+            "requester": "'agent:scribe/talky-chat-quick_bridge'"
+          }
+        }
+      },
+      {
+        "from": "./access",
+        "to": "./assistants/scribe/talky-chat/quick_bridge",
+        "lane": "in_sealed",
+        "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-quick_bridge'",
         "modifier": {
           "set_hop": {
             "route": "'in_sealed'"
@@ -706,6 +818,46 @@
             }
           },
           {
+            "grant_id": "grant:openrouter@member-alex/talky-quick_spec",
+            "requester": "agent:scribe/talky-quick_spec",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ],
+              "cred_class": "llm"
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky/quick_spec against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/talky-quick_bridge",
+            "requester": "agent:scribe/talky-quick_bridge",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ],
+              "cred_class": "llm"
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky/quick_bridge against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
             "grant_id": "grant:openrouter@member-alex/talky-screen_model",
             "requester": "agent:scribe/talky-screen_model",
             "capability": "credential.read",
@@ -798,6 +950,46 @@
             },
             "cred_ref": "cred:openrouter",
             "purpose": "authenticate scribe's talky-chat/quick against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec",
+            "requester": "agent:scribe/talky-chat-quick_spec",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ],
+              "cred_class": "llm"
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky-chat/quick_spec against the provider",
+            "issued_at": "2026-01-01T00:00:00.000000Z",
+            "expires_at": "2099-01-01T00:00:00.000000Z",
+            "rule_id": "alex-credential-read",
+            "constraints": {
+              "rate_per_min": 60
+            }
+          },
+          {
+            "grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge",
+            "requester": "agent:scribe/talky-chat-quick_bridge",
+            "capability": "credential.read",
+            "subject": "member:alex",
+            "scope": {
+              "actions": [
+                "vault.deliver"
+              ],
+              "cred_class": "llm"
+            },
+            "cred_ref": "cred:openrouter",
+            "purpose": "authenticate scribe's talky-chat/quick_bridge against the provider",
             "issued_at": "2026-01-01T00:00:00.000000Z",
             "expires_at": "2099-01-01T00:00:00.000000Z",
             "rule_id": "alex-credential-read",
@@ -917,7 +1109,7 @@
           },
           {
             "id": "ev-organism-0000000005",
-            "grant_id": "grant:openrouter@member-alex/talky-screen_model",
+            "grant_id": "grant:openrouter@member-alex/talky-quick_spec",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -928,7 +1120,7 @@
           },
           {
             "id": "ev-organism-0000000006",
-            "grant_id": "grant:openrouter@member-alex/talky-chat",
+            "grant_id": "grant:openrouter@member-alex/talky-quick_bridge",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -939,7 +1131,7 @@
           },
           {
             "id": "ev-organism-0000000007",
-            "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+            "grant_id": "grant:openrouter@member-alex/talky-screen_model",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -950,7 +1142,7 @@
           },
           {
             "id": "ev-organism-0000000008",
-            "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
+            "grant_id": "grant:openrouter@member-alex/talky-chat",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -961,7 +1153,7 @@
           },
           {
             "id": "ev-organism-0000000009",
-            "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -972,7 +1164,7 @@
           },
           {
             "id": "ev-organism-0000000010",
-            "grant_id": "grant:openrouter@member-alex/talky-chat-screen_model",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -983,7 +1175,7 @@
           },
           {
             "id": "ev-organism-0000000011",
-            "grant_id": "grant:openrouter@member-alex/cogny",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",
             "actor": "operator",
@@ -994,6 +1186,50 @@
           },
           {
             "id": "ev-organism-0000000012",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000013",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000014",
+            "grant_id": "grant:openrouter@member-alex/talky-chat-screen_model",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000015",
+            "grant_id": "grant:openrouter@member-alex/cogny",
+            "event": "granted",
+            "at": "2026-01-01T00:00:00.000000Z",
+            "actor": "operator",
+            "reason_code": "",
+            "detail": {
+              "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+            }
+          },
+          {
+            "id": "ev-organism-0000000016",
             "grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer",
             "event": "granted",
             "at": "2026-01-01T00:00:00.000000Z",

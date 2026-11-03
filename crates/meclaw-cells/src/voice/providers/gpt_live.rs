@@ -315,6 +315,14 @@ async fn run_session(
     {
         return Ok(());
     }
+    // GH #1403: the lab's forced provider abort counts from here, the start
+    // of the session, on the tokio clock. `0` arms nothing: its arm in the
+    // loop below is never polled and the session is the one it always was.
+    let fault_close_at_ms = params.fault_close_at_ms;
+    let fault_close = tokio::time::sleep_until(
+        tokio::time::Instant::now() + Duration::from_millis(fault_close_at_ms),
+    );
+    tokio::pin!(fault_close);
 
     // Exactly once, and only now: a greeting is what the caller should HEAR
     // first, so it travels on `commentary` rather than on `instructions`
@@ -476,6 +484,31 @@ async fn run_session(
                     }
                 }
             },
+
+            // GH #1403: the lab's switch ends the session the way the
+            // provider's own `session.closed reason=content` does (`map_event`),
+            // so what follows is the connection's recovery and nothing new.
+            // Said once on the colony's lane, so a lab tells a forced abort
+            // from a real one; the `session.close` is best effort, so the
+            // provider stops billing a session nobody uses any more.
+            () = &mut fault_close, if fault_close_at_ms > 0 => {
+                tracing::warn!(
+                    fault_close_at_ms,
+                    "gpt_live: fault_close_fired -- the lab's forced provider abort"
+                );
+                let detail = format!(
+                    "fault_close_fired: session ended {fault_close_at_ms} ms after its start \
+                     as reason=content (fault_close_at_ms, a lab switch)"
+                );
+                if events.send(DuplexEvent::Warning { detail }).await.is_err() {
+                    break Ending::HandlerGone;
+                }
+                let _ = send_frame(&mut write, close_frame(), timeouts.external, &mut meter).await;
+                break Ending::Reported {
+                    reason: "content".to_string(),
+                    usage_seconds: meter.usage_seconds,
+                };
+            }
 
             () = &mut idle_deadline => {
                 return Err(DuplexError::Closed(format!(

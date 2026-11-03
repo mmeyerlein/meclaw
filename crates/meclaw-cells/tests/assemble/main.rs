@@ -5,6 +5,8 @@ pub use road::organism_assistant;
 #[path = "../support/assemble_cell.rs"]
 pub mod assemble_cell;
 pub mod builder_brief_mutation_grammar;
+pub mod d53_v2_a_delegation_opens_its_round_beside_an_open_one;
+pub mod d53_v7_the_call_id_reaches_the_delta_stamp;
 pub mod fu1_a_delegation_round_takes_its_turns_stamp;
 pub mod fu1_a_spec_curate_rides_before_the_stamp;
 pub mod fu2_p2_a_failed_tool_result_keeps_its_code;

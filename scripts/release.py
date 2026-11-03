@@ -29,7 +29,8 @@ coordinator before anything goes public:
            `tag_release.sh`, `gh run watch` on ci and release (never through a
            pipe, each with a hang mark), `gh release edit --notes-file`, the
            discussion, the website (version, test count, sitemap date), its
-           deploy as a file list, `publish_docs.sh`, a live check and the
+           deploy as a file list, `publish_docs.sh`, a live check (`curl -L`:
+           it follows the server's slash redirect, GH #1396) and the
            website push. Ends with one line `RELEASE x.y.z tag=... ci=...
            release=... website=...`.
 
@@ -700,7 +701,11 @@ class Release:
         url = self.need("website", "url")
         bad = []
         for rel in self.data["site_files"]:
-            _, page = run(["curl", "-fsS", page_url(url, rel)], what=f"curl {rel}")
+            # -L: nginx of the website answers `blog/` with 301 to `blog`; without
+            # it curl read the redirect body, exit 0 (a 3xx is no -f error), and
+            # 0.78.1 went red on four pages (GH #1396). Following beats dropping
+            # the slash: it holds whichever form the server calls final.
+            _, page = run(["curl", "-fsSL", page_url(url, rel)], what=f"curl {rel}")
             if rel.endswith(".html") and f"releases/tag/v{self.v}" not in page:
                 bad.append(f"{rel}: no v{self.v}")
             if rel.endswith(".txt") and f"Current version: {self.v}." in page \

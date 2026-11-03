@@ -256,7 +256,7 @@ def revert(target, reason, repo="meclaw", start=None, wave=None, host=None, db=N
             raise m.Refused("gate_red" if verdict["verdict"] == "RED" else "gate_aborted",
                             verdict["line"])
         m.hold_tree(db, repo, holder)
-        m.fast_forward(root, base, sha)
+        aside = m.fast_forward(root, base, sha)
         secs = round(clock() - t0, 1)
         if row.get("id"):
             m._set_merge(db, row["id"], state="reverted")
@@ -275,7 +275,9 @@ def revert(target, reason, repo="meclaw", start=None, wave=None, host=None, db=N
             "reason": reason, "versions": result["versions"], "pins": result["pins"],
             "gate": verdict, "secs": secs, "issues": s.issues, "comment": comment,
             "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "summary": "REVERT %s %s %ss GREEN" % (strand, sha[:9], secs)})
+            "summary": "REVERT %s %s %ss GREEN" % (strand, sha[:9], secs),
+            # review I3: what the fast-forward set aside, as in the merge receipt
+            **({"set_aside": [list(pair) for pair in aside]} if aside else {})})
         out_.write("REVERTED %s %s %ss receipt=%s\n" % (strand, sha[:9], secs, d))
         return 0
     except (m.Refused, versions.VersionError) as exc:

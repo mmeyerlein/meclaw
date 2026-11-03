@@ -334,6 +334,9 @@ fn stage_generation(root: &std::path::Path, who: &str) {
         // GH #1248: the quick voice is an `llm` cell this road never reaches --
         // without a stamp the curator sends every round to the brain.
         inerts.push(format!("{talky}/quick"));
+        // #1398: so are its siblings (speculation off, as shipped).
+        inerts.push(format!("{talky}/quick_spec"));
+        inerts.push(format!("{talky}/quick_bridge"));
         // GH #1279: the screen judge's model is an `llm` cell this road
         // never reaches -- the judge ships off (`enabled` "0").
         inerts.push(format!("{talky}/screen_model"));

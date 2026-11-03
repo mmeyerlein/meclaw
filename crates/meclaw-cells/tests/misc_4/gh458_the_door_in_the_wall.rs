@@ -233,6 +233,9 @@ fn llm_cells_of(composite: &str) -> Vec<String> {
     // GH #1248: talky's quick voice, the second model cell behind its curator.
     if composite == "talky" {
         cells.push("quick".to_string());
+        // #1398: the quick voice's two siblings.
+        cells.push("quick_spec".to_string());
+        cells.push("quick_bridge".to_string());
     }
     cells
 }

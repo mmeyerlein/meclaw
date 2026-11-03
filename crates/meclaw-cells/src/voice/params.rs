@@ -600,6 +600,23 @@ pub struct GptLiveParams {
     /// nothing (GH #1377).
     #[serde(default)]
     pub recover_max: u32,
+    /// A declared test switch for labs (GH #1403): this many milliseconds
+    /// after a session started, the adapter ends it the way the provider's
+    /// own `session.closed` with `reason=content` would, so the recovery of
+    /// `recover_max` can be called up on a live line. `0` (the default)
+    /// never fires, and the session is the one it always was. Precedent for
+    /// a test override that is a param, not a mock: `curator/history`'s
+    /// `now_utc`.
+    #[serde(default)]
+    pub fault_close_at_ms: u64,
+    /// The sentence a curator's `horizon` advise becomes (GH #1400): an
+    /// instruction to the model, `{seconds}` replaced by the advise's number,
+    /// appended at once, or at the end of the model's open spoken section.
+    /// `""` (the default) drops every `horizon` section with a warning, and
+    /// the cell is the one it was. The words are the set's; the curator sends
+    /// numbers only (R-LS-2).
+    #[serde(default)]
+    pub horizon_text: String,
     /// How long a session opened while the line rings waits for its media
     /// connection, in milliseconds; `0` (the default) never opens one early
     /// (GH #1055). A `call_ringing` lane with `hop.call_uuid` opens it, the
@@ -2210,6 +2227,44 @@ mod tests {
         assert!(
             VoiceParams::parse(&wrong).is_err(),
             "a count is not negative"
+        );
+    }
+
+    /// GH #1403: the forced provider abort is a lab's switch only; the
+    /// shipped block never fires it, and a set value is read.
+    #[test]
+    fn a_fault_close_is_off_unless_a_lab_sets_it() {
+        let shipped = json!({
+            "mount": "voice",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "x"}
+        });
+        let p = VoiceParams::parse(&shipped).expect("a gpt_live block parses");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.fault_close_at_ms, 0, "the forced abort ships off");
+        let set = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "fault_close_at_ms": 20_000
+            }
+        });
+        let p = VoiceParams::parse(&set).expect("the switch parses");
+        let Some(DuplexParams::GptLive(g)) = &p.duplex else {
+            panic!("expected the gpt_live provider");
+        };
+        assert_eq!(g.fault_close_at_ms, 20_000);
+        let wrong = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "fault_close_at_ms": "20s"
+            }
+        });
+        assert!(
+            VoiceParams::parse(&wrong).is_err(),
+            "milliseconds are a number"
         );
     }
 

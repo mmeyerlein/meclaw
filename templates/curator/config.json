@@ -103,7 +103,7 @@
         },
         {
           "route": "in_seed_line",
-          "because": "GH #1279: one line for the next seed of a call, `{session_id|call_id, kind: wind_down|hint, text}`. `./history` holds one per call AND kind (a new line replaces only its own kind) and ends the next `seed` of that call on every held line as the last messages -- the `hint` first, the `wind_down` last -- then drops them. Nothing answers it; an unknown `kind`, no call or no text is dropped and said"
+          "because": "GH #1279: one line for the next seed of a call, `{session_id|call_id, kind: wind_down|hint|identity, text}`. `./history` holds one per call AND kind (a new line replaces only its own kind) and ends the next `seed` of that call on every held line as the last messages -- the `hint` first, the `wind_down` last -- then drops them; an `identity` line (#1402) is the member's, not a call's: it needs no call (a sent one is ignored), stands in the head of every seed right after the facts line instead and holds for every call until a newer one replaces it. Nothing answers it; an unknown `kind`, no call (except `identity`) or no text is dropped and said"
         },
         {
           "route": "in_call_end",
@@ -208,7 +208,7 @@
         },
         {
           "route": "seed",
-          "because": "GH #1279: the answer to one `in_seed_ask`, `{messages: [{role, text}], est_tokens, judge}` -- `messages` one `developer` line of facts (now, place, topic, screen topics; never an instruction), a `developer` line of the session and until notes (at most `seed_entries_max` of `./history`, the best ranked), the round's newest turns as `user`/`assistant` and its inner turns as `developer` lines within 8192 tokens (the oldest dropped first), and the held `in_seed_line`s of the call last as `developer`, one per kind (`hint` before `wind_down`), with `seed_anchor` of `./history` set its line after the turns and the `hint`, right before `wind_down`; `est_tokens` the token estimate the budget counts with; `judge` the judge context the turns came from. `hop.renewal_n` given back, `hop.call_id` the call, set into `context.call_id` on the way out; `hop.refused` `no_round` or `hop.degraded` `store` with `messages: []`. The composition draws it to the voice cell's `in_seed`"
+          "because": "GH #1279: the answer to one `in_seed_ask`, `{messages: [{role, text}], est_tokens, judge}` -- `messages` one `developer` line of facts (now, place, topic, screen topics; never an instruction), the held `identity` line of the member as `developer` (#1402), a `developer` line of the session and until notes (at most `seed_entries_max` of `./history`, the best ranked), the round's newest turns as `user`/`assistant` and its inner turns as `developer` lines within 8192 tokens (the oldest dropped first), and the held `in_seed_line`s of the call last as `developer`, one per kind (`hint` before `wind_down`), with `seed_anchor` of `./history` set its line after the turns and the `hint`, right before `wind_down` (with `seed_anchor_first` \"1\" at the end of the head instead), and on a `renew`/`recover` ask with `seed_renew_line` set that line last of all (#1402); `est_tokens` the token estimate the budget counts with; `judge` the judge context the turns came from. `hop.renewal_n` given back, `hop.call_id` the call, set into `context.call_id` on the way out; `hop.refused` `no_round` or `hop.degraded` `store` with `messages: []`. The composition draws it to the voice cell's `in_seed`"
         },
         {
           "route": "call_facts",

@@ -1200,18 +1200,21 @@ fn gh1320_the_person_and_inner_round_edges_differ_only_in_the_knob() {
     const PERSON: &str = " && !(has(context.inner_source) && context.inner_source != '')";
     const INNER: &str = " && has(context.inner_source) && context.inner_source != ''";
     let edges = talky_edges();
-    for to in ["./brain", "./quick"] {
+    // #1398: the quick voice's siblings carry the pair too; their roads (and
+    // `./quick`'s) end in a `hop.spec` test after the knob, so the knob is
+    // found inside the condition, not at its end.
+    for to in ["./brain", "./quick", "./quick_spec", "./quick_bridge"] {
         let pair: Vec<&Value> = edges
             .iter()
             .filter(|e| e["from"] == "./curator" && e["to"] == to)
             .collect();
         let person: Vec<&&Value> = pair
             .iter()
-            .filter(|e| e["condition"].as_str().unwrap_or("").ends_with(PERSON))
+            .filter(|e| e["condition"].as_str().unwrap_or("").contains(PERSON))
             .collect();
         let inner: Vec<&&Value> = pair
             .iter()
-            .filter(|e| e["condition"].as_str().unwrap_or("").ends_with(INNER))
+            .filter(|e| e["condition"].as_str().unwrap_or("").contains(INNER))
             .collect();
         assert_eq!((person.len(), inner.len()), (1, 1), "{to}: {pair:#?}");
         let (mut p, mut i) = ((*person[0]).clone(), (*inner[0]).clone());
@@ -1227,7 +1230,7 @@ fn gh1320_the_person_and_inner_round_edges_differ_only_in_the_knob() {
             .remove("set_hop");
         let strip = |e: &mut Value, tail: &str| {
             let c = e["condition"].as_str().unwrap_or("");
-            e["condition"] = Value::String(c.strip_suffix(tail).unwrap_or(c).to_string());
+            e["condition"] = Value::String(c.replacen(tail, "", 1));
         };
         strip(&mut p, PERSON);
         strip(&mut i, INNER);

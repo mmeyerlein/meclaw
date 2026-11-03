@@ -2673,6 +2673,118 @@ class TrackedPlansTest(MergeCase):
                  for n in ns if n == "S1.md"]
         self.assertEqual(len(aside), 1, aside)
 
+    def test_merge_sets_aside_a_latest_pointer_where_the_strand_brings_a_directory(self):
+        """K2 (OR-D53-38): the close of take 1 hung three times on
+        main_tree_dirty -- the close strand committed a gate archive
+        `plans/<wave>/receipts/<S>/**` with `latest` as a real directory (a
+        copy), while the main tree held the same archive untracked with
+        `latest` as the gate's symlink. The run files are byte-equal and went
+        aside; the symlink stayed in the way of the directory. It goes aside
+        too (nothing deleted) and the merge receipt names it."""
+        f = self.f
+        arch = "plans/%s/receipts/S0" % WAVE
+        run = "20261102T000000Z-abcdef12"
+        s = self.a_strand(in_branch=True)
+        write(s["wt"], "%s/%s/summary.txt" % (arch, run), "GATE-SUMMARY strand x\n")
+        write(s["wt"], "%s/latest/summary.txt" % arch, "GATE-SUMMARY strand x\n")
+        git(s["wt"], "add", "-A")
+        git(s["wt"], "commit", "-q", "-m", "S1: archive")
+        f.stamp(s["wt"])
+        tip = git(s["wt"], "rev-parse", "HEAD")
+        f.receipt("S1", "20261102T000100Z-%s" % tip[:8], "strand", tip, "GREEN")
+        write(f.root, "%s/%s/summary.txt" % (arch, run), "GATE-SUMMARY strand x\n")
+        os.symlink(run, os.path.join(f.root, arch, "latest"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        latest = os.path.join(f.root, arch, "latest")
+        self.assertTrue(os.path.isdir(latest) and not os.path.islink(latest))
+        aside = merge_receipt(f, "S1").get("set_aside") or []
+        self.assertIn(os.path.join(f.root, arch, "latest"), [a[0] for a in aside], aside)
+        moved = [a[1] for a in aside if a[0] == latest]
+        self.assertTrue(moved and os.path.islink(moved[0]), aside)
+
+    def k2_archive(self):
+        """The K2 situation: the strand commits a gate archive with `latest`
+        as a directory, the main tree holds it untracked with `latest` as the
+        gate's symlink. Returns `(strand, latest path)`."""
+        f = self.f
+        arch = "plans/%s/receipts/S0" % WAVE
+        run = "20261102T000000Z-abcdef12"
+        s = self.a_strand(in_branch=True)
+        write(s["wt"], "%s/%s/summary.txt" % (arch, run), "GATE-SUMMARY strand x\n")
+        write(s["wt"], "%s/latest/summary.txt" % arch, "GATE-SUMMARY strand x\n")
+        git(s["wt"], "add", "-A")
+        git(s["wt"], "commit", "-q", "-m", "S1: archive")
+        f.stamp(s["wt"])
+        tip = git(s["wt"], "rev-parse", "HEAD")
+        f.receipt("S1", "20261102T000100Z-%s" % tip[:8], "strand", tip, "GREEN")
+        write(f.root, "%s/%s/summary.txt" % (arch, run), "GATE-SUMMARY strand x\n")
+        os.symlink(run, os.path.join(f.root, arch, "latest"))
+        return s, os.path.join(f.root, arch, "latest")
+
+    def test_a_plan_only_merge_names_the_pointer_it_set_aside(self):
+        """V8 fix round 1 (review I3): a close strand that commits gate
+        archives only lands plan-only -- the path of the take-1 incident.
+        `fast_forward` returned the pairs, `land_plan_only` dropped them: the
+        symlink went aside and no receipt named it."""
+        f = self.f
+        _s, latest = self.k2_archive()
+        with mock.patch.object(merge, "plan_only", return_value=True), \
+                mock.patch.object(merge.turnaround, "offending", return_value={}):
+            rc, out, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("MERGE-PLAN-ONLY S1", out)
+        self.assertTrue(os.path.isdir(latest) and not os.path.islink(latest))
+        doc = merge_receipt(f, "S1")
+        self.assertTrue(doc.get("plan_only"), doc)
+        aside = doc.get("set_aside") or []
+        self.assertIn(latest, [a[0] for a in aside], aside)
+
+    def test_an_untracked_symlink_outside_a_receipts_archive_stays(self):
+        """V8 fix round 1 (review M1): K2 sets aside a pointer under
+        `plans/<wave>/receipts/` only; elsewhere an untracked symlink in the
+        way of an added path refuses as before (`main_tree_dirty`)."""
+        f = self.f
+        s = self.a_strand(in_branch=True)
+        write(s["wt"], "templates/a/sub/x.txt", "x\n")
+        git(s["wt"], "add", "-A")
+        git(s["wt"], "commit", "-q", "-m", "S1: sub")
+        f.stamp(s["wt"])
+        tip = git(s["wt"], "rev-parse", "HEAD")
+        f.receipt("S1", "20261102T000100Z-%s" % tip[:8], "strand", tip, "GREEN")
+        os.makedirs(os.path.join(f.root, "templates/a/elsewhere"), exist_ok=True)
+        os.symlink("elsewhere", os.path.join(f.root, "templates/a/sub"))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("main_tree_dirty", err)
+        self.assertTrue(os.path.islink(os.path.join(f.root, "templates/a/sub")))
+
+    def test_a_symlink_higher_up_the_path_ends_the_walk(self):
+        """Re-check M1-R: a symlink above the archive (`plans/<wave>` as a
+        link) ends the walk at any depth -- below it `islink`/`ls-files`/
+        `shutil.move` would act in the link's target outside the main tree."""
+        f = self.f
+        arch = "plans/welle-link-2026-01-01/receipts/S0"
+        s = self.a_strand(in_branch=True)
+        write(s["wt"], "%s/latest/summary.txt" % arch, "GATE-SUMMARY strand x\n")
+        git(s["wt"], "add", "-A")
+        git(s["wt"], "commit", "-q", "-m", "S1: archive")
+        f.stamp(s["wt"])
+        tip = git(s["wt"], "rev-parse", "HEAD")
+        f.receipt("S1", "20261102T000100Z-%s" % tip[:8], "strand", tip, "GREEN")
+        ext = os.path.join(f.tmp, "outside-wave")
+        os.makedirs(os.path.join(ext, "receipts", "S0", "run"))
+        os.symlink("run", os.path.join(ext, "receipts", "S0", "latest"))
+        os.symlink(ext, os.path.join(f.root, "plans", "welle-link-2026-01-01"))
+        # The fast-forward refuses (git: untracked `plans/<wave>`) and moves
+        # back whatever went aside, so the walk is judged on its own.
+        moved = merge.set_aside(f.root, f.head(), tip)
+        self.assertEqual([], moved)
+        self.assertTrue(os.path.islink(os.path.join(ext, "receipts", "S0", "latest")))
+        rc, _, err = f.merge(["S1"])
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("main_tree_dirty", err)
+
     def test_merge_refuses_differing_untracked_copy(self):
         f = self.f
         self.a_strand(in_branch=True)
@@ -4386,6 +4498,63 @@ class ReleaseCutTest(MergeCase):
         from pipeline import turnaround
         self.assertEqual(turnaround.release_record_equal(f.root, merged, cut), (True, {}))
         self.assertEqual(len(f.gate_calls()), 1)    # no gate for the cut commit
+
+    def test_a_release_merge_may_skip_its_candidate_gate_only_with_the_flag(self):
+        """V8 (#1405, D43 section 7 lever 3): the cut merge's candidate gate
+        (up to 1 189 s) judged the tip the release gate judges in full right
+        after it. `--release-gate-follows` skips it -- every precondition stays
+        -- and says so on stdout, in the receipt and in the journal. Without
+        the flag the gate runs as before
+        (`test_the_last_merge_appends_exactly_one_cut_commit`: one gate call)."""
+        f = self.f
+        self.a_strand()
+        rc, out, err = f.merge(["S1"], release="0.2.0", release_gate_follows=True,
+                               today=datetime.date(2026, 3, 4))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(f.gate_calls(), [])
+        self.assertIn("merge_gate: skipped (release gate follows)\n", out)
+        self.assertEqual(f.subject(), "Release 0.2.0")
+        self.assertEqual(merge_receipt(f, "S1")["gate"],
+                         {"verdict": "SKIPPED", "line": "merge_gate: skipped (release gate follows)"})
+        gated = f.events("merge_gated")
+        self.assertEqual([e.get("gate") for e in gated], ["SKIPPED"], gated)
+        # Review M2: the summary does not say GREEN for a merge nobody gated.
+        summary = merge_receipt(f, "S1")["summary"]
+        self.assertTrue(summary.endswith(" SKIPPED (release gate follows)"), summary)
+        self.assertNotIn("GREEN", summary)
+
+    def test_wave_close_and_the_wave_receipt_read_no_merge_verdict(self):
+        """Plan test 3, second half ("wave close accepts it"; review M3): a
+        SKIPPED merge gate needs no exception downstream because nothing
+        there reads the merge receipt's verdict -- `wave close`
+        (`pipeline/wave.py`), the wave receipt's merge column
+        (`wave_receipt.py`) and the release chain (`release.py`).
+        SKIPPED already stood in every plan-only merge receipt. The lock: none
+        of the three spells a merge receipt's gate verdict."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for rel in ("pipeline/wave.py", "wave_receipt.py", "release.py"):
+            with open(os.path.join(here, rel), encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIsNone(re.search(r"merge\.json|\[\"gate\"\]\[\"verdict\"\]", text), rel)
+
+    def test_the_release_gate_follows_flag_needs_release(self):
+        f = self.f
+        self.a_strand()
+        before = f.head()
+        rc, _, err = f.merge(["S1"], release_gate_follows=True)
+        self.assertEqual(rc, merge.REFUSE_EXIT, err)
+        self.assertIn("release_gate_follows_needs_release", err)
+        self.assertEqual(f.head(), before)
+        self.assertEqual(f.gate_calls(), [])
+
+    def test_the_cli_knows_the_release_gate_follows_flag(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        merge.register(parser.add_subparsers())
+        args = parser.parse_args(["merge", "--strand", "S1", "--release", "0.2.0",
+                                  "--release-gate-follows"])
+        self.assertTrue(args.release_gate_follows)
+        self.assertFalse(parser.parse_args(["merge", "--strand", "S1"]).release_gate_follows)
 
     def test_without_intro_the_section_starts_with_its_entries(self):
         f = self.f

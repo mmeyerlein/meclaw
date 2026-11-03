@@ -2139,12 +2139,25 @@ impl Lineup {
         if !self.renewal.as_ref().is_some_and(|r| r.started) {
             return None;
         }
-        let capped = due + cap;
+        Some(self.quiet_at(spoken_open, quiet, cap, due))
+    }
+
+    /// The first quiet moment after `since` (`quiet` after the last speech, no
+    /// spoken section open), at the latest `since + cap`: the moment a due
+    /// renewal takes over at, and an append `when_quiet` goes at (GH #1400).
+    fn quiet_at(
+        &self,
+        spoken_open: bool,
+        quiet: Duration,
+        cap: Duration,
+        since: Instant,
+    ) -> Instant {
+        let capped = since + cap;
         if spoken_open {
-            return Some(capped);
+            return capped;
         }
-        let calm = self.last_speech.map_or(due, |at| (at + quiet).max(due));
-        Some(calm.min(capped))
+        let calm = self.last_speech.map_or(since, |at| (at + quiet).max(since));
+        calm.min(capped)
     }
 
     /// The waiting renewal is gone before it took over: the session in charge
@@ -2580,6 +2593,10 @@ async fn run_duplex(
     let recover_max = shared.duplex_recover_max;
     let mut recoveries: u32 = 0;
     let mut last_close: Option<String> = None;
+    // GH #1400: the append that waits for the line's first quiet moment (the
+    // curator's horizon, `when_quiet`) -- channel, event id, words, and since
+    // when. One at a time: a newer one replaces it.
+    let mut quiet_held: Option<(AppendKind, String, String, Instant)> = None;
 
     loop {
         // When a due renewal takes over (GH #896, review I-2), read before the
@@ -2588,6 +2605,9 @@ async fn run_duplex(
         // mutably while every arm is polled. The value is the same one the
         // macro would read, because building the arms' futures polls nothing.
         let takeover_at = lineup.takeover_at(spoken.is_some(), quiet, cap);
+        let quiet_held_at = quiet_held
+            .as_ref()
+            .map(|h| lineup.quiet_at(spoken.is_some(), quiet, cap, h.3));
         tokio::select! {
             biased;
 
@@ -2623,8 +2643,37 @@ async fn run_duplex(
                         }
                     }
                     Some(ToConnection::Advise {
-                        kind, event_id, delegation_id, content, speak_id, takeover,
+                        kind, event_id, delegation_id, content, speak_id, takeover, when_quiet,
                     }) => {
+                        // GH #1400: an append for the first quiet moment goes
+                        // now where the line is quiet and otherwise waits for
+                        // it -- the takeover's rule, which hears the model's
+                        // own speech too (o8.6) -- replacing one that waits.
+                        if when_quiet {
+                            let older = quiet_held.take();
+                            if !lineup.quiet(spoken.is_some(), quiet) {
+                                if older.is_some() {
+                                    tracing::info!(
+                                        %session_id,
+                                        "voice: a newer append for a quiet moment replaces the waiting one"
+                                    );
+                                }
+                                quiet_held = Some((kind, event_id, content, Instant::now()));
+                                continue;
+                            }
+                        } else if (speak_id.is_some() || delegation_id.is_some())
+                            && quiet_held.take().is_some()
+                        {
+                            // GH #1404 (V3 review, N1): the answer goes out -- a
+                            // new spoken section, or an append that answers a
+                            // delegation -- while a horizon waits: said after
+                            // it, the horizon would announce what the caller
+                            // has already heard. It lapses.
+                            tracing::info!(
+                                %session_id,
+                                "voice: the answer goes out -- the waiting horizon lapses"
+                            );
+                        }
                         if let Some(id) = speak_id {
                             // One spoken section at a time, exactly as one
                             // synthesis at a time in the cascade: an
@@ -3183,6 +3232,32 @@ async fn run_duplex(
                         lineup.renewal = other;
                         lineup.due_since = None;
                     }
+                }
+            }
+
+            // GH #1400: the line's first quiet moment for the append that
+            // waits for it, re-checked as the takeover is: the model's next
+            // words already waiting move the moment out; at the cap it goes.
+            () = sleep_until_opt(quiet_held_at) => {
+                let Some((kind, event_id, content, since)) = quiet_held.take() else {
+                    continue;
+                };
+                if !lineup.quiet(spoken.is_some(), quiet) && since.elapsed() < cap {
+                    quiet_held = Some((kind, event_id, content, since));
+                    lineup.heard();
+                    continue;
+                }
+                let append = DuplexControl::Append {
+                    kind,
+                    event_id,
+                    delegation_id: None,
+                    content,
+                };
+                if lineup.run.control_tx.send(append).await.is_err() {
+                    tracing::debug!(
+                        %session_id,
+                        "voice: the duplex session is gone, the append was dropped"
+                    );
                 }
             }
 

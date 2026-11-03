@@ -1,4 +1,4 @@
-# `voice@2.7.0`
+# `voice@2.8.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -36,7 +36,7 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 | direction | what travels |
 |---|---|
 | in | the finished assistant turn. `context.call_id` picks the connection it is spoken into (`context.session_id` where that key is absent) |
-| in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought), a `correction` (the standing instruction rewritten), an `interrupt` (a `correction` followed at once by a `fact` with the same words -- the guard stepping in) or a `renew` (no words: the call's next provider session opens, D48). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine`. A `context` that carries `hop.renewal_n` is the handover of a renewal (see `renewed` below): it goes to the renewed session before the caller's audio does, and the call follows at the next quiet moment of the line; a block for a renewal that failed is dropped |
+| in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought), a `correction` (the standing instruction rewritten), an `interrupt` (a `correction` followed at once by a `fact` with the same words -- the guard stepping in; since #1404 the first `interrupt` of a `hop.turn_id` in a session acts and a later one of that turn is a no-op, trace `interrupt_deduped` -- the curator's early one and the guard's at the turn's end do not ask twice), a `renew` (no words: the call's next provider session opens, D48) or a `horizon` (#1400: no words either -- `body.seconds` fills `{seconds}` of `duplex.gpt_live.horizon_text`, which goes as one `correction`: at once on a quiet line; otherwise held by the connection to the first quiet moment (no spoken section open, the model's own audio `spoken_quiet_ms` past -- the takeover's rule), at the latest `spoken_cap_ms` after it came, a newer horizon replacing a held one, a held one lapsing when the answer goes out (a new spoken section, or an append that answers a delegation) -- and one still held when the call ends lapses silently; `hop.at_turn_end` is not read; an empty `horizon_text`, the default, drops it with a warning and refuses nothing). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine`. A `context` that carries `hop.renewal_n` is the handover of a renewal (see `renewed` below): it goes to the renewed session before the caller's audio does, and the call follows at the next quiet moment of the line; a block for a renewal that failed is dropped |
 | in, `hop.route == 'in_session'` | who is speaking in one session, where somebody PROVED it ([#979](https://github.com/mmeyerlein/meclaw/issues/979)): `hop.call_id` (or `hop.session_id`) names the session and `hop.user_id` the verified sender, stamped on the session's `turn` and `delegation` as `user_id` and `verified_user`. No text, no answer. An empty `user_id` withdraws the name, and the name goes with the connection -- a session that connects again is named again or not at all. Only an edge the installing level draws reaches it -- in the `freeswitch` hive, the signalling half, which knows the caller the switch put through |
 | out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
 | out, `hop.route == 'partial'` | an interim transcript, same body shape, `hop` carries `eager` beside the rest. OFF by default -- `params.emit_partials` turns it on |
@@ -85,7 +85,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.7.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.8.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -231,7 +231,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -265,7 +265,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -471,7 +471,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -536,7 +536,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -548,7 +548,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -593,7 +593,7 @@ handing text to a synthesiser and no seam between them to tune. Two ship:
 
 | provider | what it is | the block carries |
 |---|---|---|
-| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `recover_max`, `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db` |
+| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `recover_max`, `fault_close_at_ms` (for labs only, default `0`), `horizon_text` (default `""`, #1400), `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db` |
 | `echo` | the loopback, which needs no credential and knows only `sample_rate` | -- |
 
 **`echo` is here for the reason `echo` is always here.** A trait with one
@@ -612,7 +612,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
@@ -737,7 +737,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
       },
       {
         "name": "voice",
-        "template": "voice@2.7.0"
+        "template": "voice@2.8.0"
       }
     ],
     "seed_rows": [
@@ -898,7 +898,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -913,7 +913,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.7.0",
+{"name": "channels/voice", "template": "voice@2.8.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}

@@ -8,6 +8,9 @@ pub mod curator_cells;
 pub mod curator_hive;
 pub mod curator_policy;
 pub mod curator_push;
+pub mod d53_v3_the_voice_knows_its_horizon;
+pub mod d53_v5_a_renewed_seed_waits_and_knows_its_name;
+pub mod d53_v7_a_crisis_interrupts_on_the_partial;
 #[path = "../support/duplex_cell.rs"]
 pub mod duplex_cell;
 pub mod fu1_the_quick_voice_speaks_before_the_stamp;
@@ -58,7 +61,6 @@ pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
 pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
 pub mod gh1225_kr_p_a_sweep_names_only_what_went;
-pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

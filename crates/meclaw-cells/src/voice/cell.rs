@@ -398,6 +398,9 @@ pub enum VoiceReconfig {
         /// The renewal this append is the handover for (GH #896); see
         /// [`crate::voice::io::ToConnection::Advise`].
         takeover: Option<u32>,
+        /// Sent at the line's first quiet moment, not at once (GH #1400); see
+        /// [`crate::voice::io::ToConnection::Advise`].
+        when_quiet: bool,
     },
     /// Hand the seed of a call to the duplex session that is opening (D48).
     Seed {
@@ -513,6 +516,10 @@ pub struct LiveSessionState {
     /// Advice held for the end of the caller's next turn (`hop.at_turn_end`,
     /// OR-LV-9), in the order it came; at most [`HELD_ADVISE_KEPT`].
     pub held_advise: Vec<HeldAdvise>,
+    /// The `hop.turn_id`s an `interrupt` acted on (GH #1404, OR-D53-40), the
+    /// newest [`INTERRUPTED_TURNS_KEPT`]: a second interrupt of one of them
+    /// is a no-op (`interrupt_deduped`).
+    pub interrupted_turns: Vec<String>,
     /// Whether the session is closing (`DuplexEvent::Closed`): the turn it
     /// closes releases nothing into it; what is held goes to the colony as a
     /// `session_ended` dead letter at the disconnect (review M4, GH #1016).
@@ -523,6 +530,11 @@ pub struct LiveSessionState {
 /// waits for the caller's next turn, and a caller on hold or muted says
 /// nothing for as long as that lasts; a turn boundary carries a handful.
 pub const HELD_ADVISE_KEPT: usize = 16;
+
+/// How many interrupted turns a session remembers (GH #1404): the two
+/// senders of one turn's interrupt (the curator's early one, the guard's at
+/// the turn's end) are a turn or two apart, never sixteen.
+pub const INTERRUPTED_TURNS_KEPT: usize = 16;
 
 /// One piece of advice held until the caller's turn closes (D48, LC2).
 #[derive(Debug, Clone)]
@@ -636,6 +648,7 @@ impl LiveSessionState {
             partial_sent_chars: 0,
             partial_held: None,
             held_advise: Vec::new(),
+            interrupted_turns: Vec::new(),
             closing: false,
         }
     }
@@ -713,6 +726,9 @@ pub struct VoiceCell {
     /// What it says when it does. An instruction, not a script: the model
     /// takes an append up in its own words (R-25-4).
     duplex_delegation_fallback: String,
+    /// The sentence a `horizon` advise becomes (GH #1400), `{seconds}` in
+    /// it; empty drops the section. Only read in duplex mode.
+    duplex_horizon_text: String,
     /// The name the I/O half registered on the colony's one listener — the
     /// cell's only door.
     ///
@@ -845,6 +861,7 @@ impl VoiceCell {
             duplex_backchannel_max_ms: duplex_backchannel_ms(params),
             duplex_delegation_grace_ms: duplex_delegation_grace_ms(params),
             duplex_delegation_fallback: duplex_delegation_fallback(params),
+            duplex_horizon_text: duplex_horizon_text(params),
             mount: params.mount.clone(),
             default_mode: params.default_mode,
             barge_in: params.barge_in,
@@ -1973,19 +1990,29 @@ impl VoiceCell {
     /// behaves for the rest of the session.
     async fn advise(&mut self, msg: &Message, body: &Value, reply_target: Path, sink: &OutputSink) {
         let section = msg.headers.hop.get("section").and_then(|v| v.as_str());
+        if section == Some("horizon") && self.duplex_horizon_text.is_empty() {
+            // GH #1400: no `horizon_text`, no horizon -- the set has not said
+            // how one sounds. Dropped, not refused: the curator did nothing
+            // wrong, and the cell stays the one it was (default).
+            tracing::warn!(
+                path = self.path.as_str(),
+                "voice: a horizon advise without duplex.gpt_live.horizon_text -- dropped"
+            );
+            return;
+        }
         // `interrupt` (D48, OR-LV-7) is a `correction` followed by a `fact`
         // with the same words: the model changes course AND says so. `renew`
         // carries no words at all; its kind is never read.
         let (kind, spoken) = match section {
             Some("fact") => (AppendKind::Commentary, true),
             Some("context") => (AppendKind::Thinking, false),
-            Some("correction") | Some("interrupt") | Some("renew") => {
+            Some("correction") | Some("interrupt") | Some("renew") | Some("horizon") => {
                 (AppendKind::Instructions, false)
             }
             other => {
                 let detail = format!(
-                    "hop.section must be one of fact, context, correction, interrupt, renew; \
-                     got {}",
+                    "hop.section must be one of fact, context, correction, interrupt, renew, \
+                     horizon; got {}",
                     other.unwrap_or("nothing")
                 );
                 self.refuse(sink, reply_target, "bad_section", &detail, None)
@@ -2065,6 +2092,11 @@ impl VoiceCell {
             }
             return;
         }
+        if section == Some("horizon") {
+            self.advise_horizon(body, reply_target, sink, session_id)
+                .await;
+            return;
+        }
         let interrupt = section == Some("interrupt");
         // WHERE THE WORDS ARE. Three slots, and the FIRST is the one the
         // producer actually writes: measured against the twin on 2026-09-21
@@ -2129,6 +2161,36 @@ impl VoiceCell {
             )
             .await;
             return;
+        }
+        // ONE INTERRUPT PER TURN (GH #1404, OR-D53-40). Two senders interrupt
+        // the same turn: the curator on the first crisis partial
+        // (`interrupt_on_delta`, before the turn ends) and the guard at the
+        // turn's end (the safety net). The first of a `hop.turn_id` acts;
+        // a later one of that turn would say the question twice -- a no-op
+        // with a trace line, no append, no refusal. Without a `turn_id`
+        // nothing is deduplicated (as before).
+        if interrupt
+            && let Some(turn_id) = msg
+                .headers
+                .hop
+                .get("turn_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            && let Some(state) = self.live_sessions.get_mut(&session_id)
+        {
+            if state.interrupted_turns.iter().any(|t| t == turn_id) {
+                tracing::info!(
+                    path = self.path.as_str(),
+                    %session_id,
+                    turn_id,
+                    "voice: interrupt_deduped -- the turn was interrupted already"
+                );
+                return;
+            }
+            state.interrupted_turns.push(turn_id.to_string());
+            if state.interrupted_turns.len() > INTERRUPTED_TURNS_KEPT {
+                state.interrupted_turns.remove(0);
+            }
         }
         let delegation_id = msg
             .headers
@@ -2202,6 +2264,62 @@ impl VoiceCell {
             )
             .await;
         }
+    }
+
+    /// The curator's `horizon` (GH #1400): how many seconds the answer of a
+    /// running tool round or delegation will take, as numbers only (`seconds`,
+    /// `way`, `family` in the body, no words). The set's `horizon_text` with
+    /// `{seconds}` filled in goes to the model as ONE instruction at the
+    /// line's first quiet moment, which the connection knows (`when_quiet`):
+    /// no spoken section open and the model's own speech `spoken_quiet_ms`
+    /// past, at the latest `spoken_cap_ms` after it came -- an append into
+    /// running speech cut the model off (plan d53 T2 § V3, FU-0), and the
+    /// bridge after a delegation is the model's own speech (o8.6). A newer
+    /// waiting horizon replaces the older one, two estimates would contradict
+    /// each other. `hop.at_turn_end` is not read:
+    /// it holds to the caller's NEXT turn, and the horizon is made right after
+    /// one closed, so it would come after the answer (o8.5).
+    async fn advise_horizon(
+        &mut self,
+        body: &Value,
+        reply_target: Path,
+        sink: &OutputSink,
+        session_id: String,
+    ) {
+        let Some(seconds) = body.get("seconds").and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        }) else {
+            self.refuse(
+                sink,
+                reply_target,
+                "bad_section",
+                "section horizon carries body.seconds, a whole number of seconds",
+                Some(&session_id),
+            )
+            .await;
+            return;
+        };
+        let text = self
+            .duplex_horizon_text
+            .replace("{seconds}", &seconds.to_string());
+        // The connection sends it at the line's first quiet moment -- the
+        // takeover's rule, which also hears the model's OWN speech (its
+        // audio), not only the sections this cell opened (o8.6). One part:
+        // a newer horizon replaces a waiting one there.
+        let _ = self
+            .to_io
+            .send(VoiceReconfig::Advise {
+                session_id,
+                kind: AppendKind::Instructions,
+                event_id: Uuid::now_v7().to_string(),
+                delegation_id: None,
+                content: text,
+                speak_id: None,
+                takeover: None,
+                when_quiet: true,
+            })
+            .await;
     }
 
     /// Settle the delegation an answer names as it is SENT; `false` where it
@@ -2380,6 +2498,7 @@ impl VoiceCell {
                     content: part,
                     speak_id,
                     takeover,
+                    when_quiet: false,
                 })
                 .await;
         }
@@ -2807,6 +2926,14 @@ fn duplex_delegation_fallback(params: &VoiceParams) -> String {
     match &params.duplex {
         Some(crate::voice::params::DuplexParams::GptLive(p)) => p.delegation_fallback.clone(),
         _ => crate::voice::params::DEFAULT_DELEGATION_FALLBACK.to_string(),
+    }
+}
+
+/// And for the sentence a `horizon` advise becomes (GH #1400).
+fn duplex_horizon_text(params: &VoiceParams) -> String {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.horizon_text.clone(),
+        _ => String::new(),
     }
 }
 

@@ -1,4 +1,4 @@
-# `member@2.8.1`
+# `member@2.8.2`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and four edges.
@@ -186,7 +186,7 @@ declaring the lane, would be lying in one of the two directions; the pin is
 `crates/meclaw-cells/tests/misc_3/gh302_member_holds_the_memory.rs`
 § `every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level`, which
 reads `templates/assistant/config.json` off the tree and admits no third answer.
-`crates/meclaw-cells/tests/misc_3/gh454_two_assistants_one_channel.rs` is the other half:
+`crates/meclaw-cells/tests/misc_4/gh454_two_assistants_one_channel.rs` is the other half:
 it measures that one bot really does reach two agents of one person, by name.
 
 `error` is the sharp one, and it is why that test reads the *edges* and not only
@@ -890,7 +890,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.8.1` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.8.2` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1126,7 +1126,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.8.1"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.8.2"}]
 }}
 ```
 
@@ -1135,7 +1135,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.11.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.11.2"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1155,7 +1155,7 @@ knowing what the member knows — the same memory, the same record, the same rat
 window on the same attacker — and is reachable on the same bot, by name. Nothing
 is copied and nothing is synchronised, because there was only ever one of each.
 That is what #454 bought, and
-`crates/meclaw-cells/tests/misc_3/gh454_two_assistants_one_channel.rs` is what measures
+`crates/meclaw-cells/tests/misc_4/gh454_two_assistants_one_channel.rs` is what measures
 it.
 
 ### The member's door

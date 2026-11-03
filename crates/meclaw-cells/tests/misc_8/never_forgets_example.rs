@@ -106,7 +106,9 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// all. MEASURED.
 /// GH #1279: the screen judge and its model (`screen_judge`,
 /// `screen_model`) -- twenty-nine from `talky`, thirty-four in all. MEASURED.
-const CELLS_AFTER_GROW: usize = 34;
+/// #1398: the quick voice's siblings (`quick_spec`, `quick_bridge`) --
+/// thirty-one from `talky`, thirty-six in all. MEASURED.
+const CELLS_AFTER_GROW: usize = 36;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

@@ -276,6 +276,11 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         // GH #1248 (T4-09): the quick voice of each talky takes its grant.
         "assistants/scribe/talky/quick",
         "assistants/scribe/talky-chat/quick",
+        // #1398: the quick voice's siblings (speculation, bridge) take theirs.
+        "assistants/scribe/talky/quick_spec",
+        "assistants/scribe/talky/quick_bridge",
+        "assistants/scribe/talky-chat/quick_spec",
+        "assistants/scribe/talky-chat/quick_bridge",
         // GH #1279: the screen judge's model takes its grant like quick.
         "assistants/scribe/talky/screen_model",
         "assistants/scribe/talky-chat/screen_model",

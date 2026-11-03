@@ -608,11 +608,23 @@ class ReleaseIsSupersetTest(unittest.TestCase):
     the same or a stronger form -- checked on the two diff forms of a wave's last
     merge, a Rust diff and a kit diff (`gate_plan.plan`, the real tree)."""
 
-    def _stronger(self, name, i, r):
+    def _stronger(self, name, i, r, rel=None):
         if (i.scope, i.cmds) == (r.scope, r.cmds):
             return None
         flat_i = [" ".join(map(str, c)) for c in i.cmds]
         flat_r = [" ".join(map(str, c)) for c in r.cmds]
+        if name == "gate-selftest" and rel and "export-tree-kit" in rel:
+            # V8 (#1405): the release runs every module in the export tree
+            # (`export-tree-kit`, the same module list from the same
+            # gate_plan.py there) and keeps in the private tree only the
+            # modules whose verdict needs it. Same runner, a subset of the
+            # modules, the rest held by the export-tree run.
+            mi, mr = i.cmds[0][4:], r.cmds[0][4:]
+            if len(i.cmds) == len(r.cmds) == 1 and i.cmds[0][:4] == r.cmds[0][:4] \
+                    and set(mr) <= set(mi) \
+                    and mr == gate_plan.private_tree_selftest_modules(mi, str(REPO_ROOT)):
+                return None
+            return "gate-selftest is neither the integration's nor its private-tree part"
         if name == "export-audit":
             # the dry audit (`--skip-cargo --rev HEAD`) vs the wet one
             want = [c.replace(" --skip-cargo", "").replace(" --rev HEAD", "") for c in flat_i]
@@ -637,7 +649,7 @@ class ReleaseIsSupersetTest(unittest.TestCase):
                 self.assertTrue(inte)
                 self.assertEqual(sorted(set(inte) - set(rel)), [],
                                  "release misses integration stations (%s)" % form)
-                weaker = {n: why for n in inte for why in [self._stronger(n, inte[n], rel[n])]
+                weaker = {n: why for n in inte for why in [self._stronger(n, inte[n], rel[n], rel)]
                           if why}
                 self.assertEqual(weaker, {}, form)
 

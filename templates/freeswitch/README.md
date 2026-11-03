@@ -1,4 +1,4 @@
-# `freeswitch@3.1.0`
+# `freeswitch@3.1.1`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -82,7 +82,7 @@ out and refuses the session. No key travels through `.env`.
 | direction | what travels |
 |---|---|
 | in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.call_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
-| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it), `correction` (rewrite the standing instruction), `interrupt` (a correction and a fact in one breath) or `renew` (open the call's next provider session). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
+| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it), `correction` (rewrite the standing instruction), `interrupt` (a correction and a fact in one breath; once per `hop.turn_id`, a second of the same turn is a no-op, #1404), `renew` (open the call's next provider session) or `horizon` (when the answer of a running round comes: `body.seconds` in the set's `duplex.gpt_live.horizon_text`, as a correction, never into a section the model is still speaking, never after the answer it announces; without that text it is dropped). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
 | in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid`, `number` and — since 2.0.0 — `user_id`, the member the switch put the caller through as. This is THE turn of an inbound call — a call with no `user_id` and no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
 | in, `call_ringing` | the switch is ringing a number this channel dialled. It moves the row and raises no turn |
 | in, `call_answered` | somebody picked up. `hop` carries `call_uuid`. A turn for a call this channel PLACED; for an inbound call it moves the row and raises no turn, because `call_incoming` already said it |
@@ -279,7 +279,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.1",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -1271,7 +1271,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.0`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.1`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1284,7 +1284,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.1"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

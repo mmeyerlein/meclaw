@@ -1,4 +1,4 @@
-# `session-keeper@2.7.1`
+# `session-keeper@2.8.0`
 
 A session lifecycle as a hive of existing cell types -- no new cell type, no Rust. Five cells:
 `stamp` (a `code` cell in the ingress path), `close` (a `code` cell for the night),
@@ -20,6 +20,9 @@ the only place that mints it.
 - **An end that is arithmetic.** A night window plus an idle threshold: no channel is
   ended while it is talking, and no model is asked whether a conversation is over. Both
   halves are configuration -- the night is a window of the UTC day, the silence is a number.
+  One exception has a cause rather than a clock: the end of a voice call seals the
+  generation of the channel node the call came in by, at once (`in_call_end`,
+  [#1401](https://github.com/mmeyerlein/meclaw/issues/1401)).
 - **A night without a tick.** Nothing fires through a night in which nothing is open: the
   first generation that opens -- or that an import brings in, open as it stood -- arms ONE
   strike for the night, and every firing arms the next one for the moment the next open
@@ -130,6 +133,16 @@ and the episode that becomes `turn_write` in ONE emission, so everything that fo
 room and the round off its row (`crates/meclaw-cells/tests/member_road/gh953_a_round_change_closes_after_the_last_answer.rs`).
 The mark is cleared by exactly one of acknowledgement and night, so the close leaves once.
 
+A call end seals the same way (#1401): a generation that owes nothing closes at once; one whose
+last turn's final answer is still on its branch when the person hangs up (a brain or a
+delegation in flight) is sealed with its mark kept and tagged `call_ended:<turn id>`. The
+acknowledgement of that answer matches the tagged mark too (leg `ack-call`) and sends the close
+with `close_reason` `call_ended`; the night's release of a tagged mark says `call_ended` as well.
+A hang-up is not two hours of silence -- the answer may still land, and the review reads the
+wall the close points at
+(`a_call_end_with_an_owed_answer_closes_on_the_answer` in
+`crates/meclaw-cells/tests/misc_2/gh1401_a_call_end_closes_the_phone_generation.rs`).
+
 An answer that never comes does not hold a generation open for ever: the night's firing also
 asks for sealed rows whose mark is still set and whose channel has been silent past the idle
 threshold, releases the mark and sends the close itself. The same holds for a parent that does
@@ -151,6 +164,7 @@ A door that declares nothing leaves the column empty; nothing here derives a rou
 | `in_turn` | the inbound surface (proxy, intake) | stamps the turn and restarts the idle clock. An inner turn (GH #1305: `context.inner_source` set, its door names the channel `inner:<source>`) needs `context.channel_node` and a round (`context.audience_set`); without them `stamp` refuses it on `reject` (`hop.reject_reason` `inner_unrouted` / `no_round`, `hop.error_code` the same) and opens nothing |
 | `in_sweep` | an operator, a test | forces a sweep outside the night (optional); like every firing it arms the strike for the generation that falls silent next |
 | `in_answered` | the parent, from the curator's `turn_write` | the acknowledgement of a turn's final answer: clears the generation's `owed_turn` and closes a generation sealed while it waited (GH #953) |
+| `in_call_end` | the parent, from the voice cell's final `usage` (talky's `in_call_end`) | the end of a voice call: seals the OPEN generations whose `channel_node` is `context.channel_node` at once -- no idle threshold, no night -- and closes each with `close_reason` `call_ended`: at once when it owes no answer, else on that answer's `in_answered` (GH #953). The edge into this lane MUST promote `context.channel_node` (the channel cell the call came in by; the voice cell does not set it) -- without it the lane parks and nothing closes before the night. `hop.session_id` is the call's id and names no generation. A generation of another node (a chat of the same member) stays open, a sealed one is not a candidate (a second call end is silent), and without a node nothing closes ([#1401](https://github.com/mmeyerlein/meclaw/issues/1401)) |
 | `in_export` | whoever moves this keeper | demands the whole session ledger as a versioned document. Empty `context` -- an export is about the hive, not about a round. |
 | `in_import` | the same, on the receiving side | feeds ONE part of such a document into a keeper that is already running. Empty `context`. |
 
@@ -161,7 +175,7 @@ that names it is refused (see above).
 | route | written by | to | notes |
 |---|---|---|---|
 | `turn` | `stamp` | the context assembly | the inbound turn, unchanged. **Promote `hop.session_id` to context on this edge** -- that promotion IS the stamp. `hop.turn_id` travels ON beside it, untouched: the id is the CHANNEL's (display-hive § 8.2), the session id is this keeper's, and the turn carries both from `session-keeper@2.2.1`. Before it the stamp built this header from scratch and copied only the body into it, so the id died here. |
-| `close` | `close`, `stamp` | the consumer of a finished session | one request per generation -- from the night, or from `stamp` when a turn of another round ends it (GH #940; the turn's chain, so the consumer's edge restores the budget); promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below).. Since GH #1305 it also says **why and when**: `hop.close_reason` (`round` from `stamp` -- a turn of another round sealed it, at the seal or at the acknowledgement of its last answer; `round` too from `close` when it releases a row a turn of another round sealed and whose last answer never came -- the reason is the cause, not the moment the night lets it go; `night` from `close` when the firing lies in the night window, `idle` for a sweep forced outside it; `shutdown` is reserved, nothing sends it today), `hop.opened_at` and `hop.closed_at` off the generation's row, and `hop.channel_node`, the channel cell the generation's turns came in by (written on the row at the open). Every key is present and empty when unknown. The facts ride the store round trip as `context.keeper_meta`, which no exit lets out |
+| `close` | `close`, `stamp` | the consumer of a finished session | one request per generation -- from the night, or from `stamp` when a turn of another round ends it (GH #940; the turn's chain, so the consumer's edge restores the budget); promote `hop.session_id`, `hop.channel` and `hop.audience_set` -- all three, and the third is the one a caller wiring from `template.json` used to miss (see below).. Since GH #1305 it also says **why and when**: `hop.close_reason` (`round` from `stamp` -- a turn of another round sealed it, at the seal or at the acknowledgement of its last answer; `round` too from `close` when it releases a row a turn of another round sealed and whose last answer never came -- the reason is the cause, not the moment the night lets it go; `night` from `close` when the firing lies in the night window, `idle` for a sweep forced outside it; `call_ended` from `close` when the end of a voice call sealed it (#1401); `shutdown` is reserved, nothing sends it today), `hop.opened_at` and `hop.closed_at` off the generation's row, and `hop.channel_node`, the channel cell the generation's turns came in by (written on the row at the open). Every key is present and empty when unknown. The facts ride the store round trip as `context.keeper_meta`, which no exit lets out |
 | `opened` | `stamp` | whoever follows conversations | a generation began (GH #1305): ONE per generation, on the turn whose open claimed the round, only when `stamp`'s knob `conversation_events` is `"1"` (the shipped `"0"` sends nothing and leaves `stamp`'s output as it was). Hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`; body `messages: []`, no text |
 | `export_done` | `porter` | whoever asked for the export | this keeper's own store wrote the whole ledger into `<fence>/<dir>/seed/` and says where: `hop.seed_dir` (relative to `params.transfer.base_path`), `hop.export_hive`, `hop.export_of`, `hop.rows_written` ([#555](https://github.com/mmeyerlein/meclaw/issues/555)). |
 | `dump` | `porter` | whoever fed the import | the receipt of one applied import part (`hop.rows_written`, `hop.export_part` of `hop.export_of`, `hop.export_final == "1"` on the last). Since #555 that is all this lane carries. **Drain it with a PLAIN `hop.route == 'dump'` test** -- an edge that also tests a second hop key reads as no drain under the `required_drains` probe and the mutation is refused. |
@@ -318,6 +332,19 @@ next     -> a row: add night-close at last_seen + IDLE + 1 ms     route night
             (never sooner than now + 1 s; a moment outside the night moves to the next opening)
          -> no row: nothing -- nothing is open, nothing is armed
 late     -> a strike with hop.late outside the night: no sweep; add night-close at the next opening
+```
+
+The end of a call, no firing (#1401):
+
+```
+in_call_end -> no context.channel_node: nothing
+            -> select sessions (closed 0, channel_node)              phase call-end
+call-end    -> per row: bundle, reason call_ended                       phase call-seal
+                 seal-done  update closed=1, owed '' where closed=0 and owed ''/NULL
+                 seal-owed  update closed=1, owed 'call_ended:'+owed where closed=0 and owed = read mark
+                            (only for a row that owes an answer)
+call-seal   -> seal-done took: ROUTE close; else nothing (the answer's in_answered closes,
+               or someone else sealed / moved the row first)
 ```
 
 A sweep without a candidate and a lost guard race emit **nothing** (empty multi-send,
@@ -538,6 +565,12 @@ one that is already running — the two are complements, not a choice.
 - the same file, the round of a generation (GH #273) -- the row records the set the door
   declared, a running generation never has it rewritten, every seal carries its own, and a
   generation without one says so instead of inventing one.
+- `crates/meclaw-cells/tests/misc_2/gh1401_a_call_end_closes_the_phone_generation.rs` -- the
+  call end with the shipped two-hour threshold: the phone generation closes in the same
+  chain with `call_ended`, a chat generation of the same member stays open, a second call end
+  seals nothing, the review downstream hears `in_closed`, a call end while the last answer is
+  still on its way seals without a close and the answer's acknowledgement sends the one close
+  (`call_ended`), and talky draws the lane beside the curator's.
 - `crates/meclaw-cells/tests/misc_2/gh273_a_swept_close_reaches_the_memory.rs` -- the whole way:
   a conversation, a SWEEP that ends it, the shipped drain, and the episode row that lands
   with the room and the round the conversation was spoken in.

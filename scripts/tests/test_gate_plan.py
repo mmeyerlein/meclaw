@@ -1633,6 +1633,43 @@ class Classify(unittest.TestCase):
         self.assertIn(["python3", "plans/export-fixtures/test_export_tree_tests.py"],
                       st["export-selftest"].cmds)
 
+    def test_gate_selftest_runs_once_in_a_release_pass(self):
+        """V8 (#1405, D43 section 7 lever 1): relgate-0781 ran `gate-selftest`
+        twice -- 1570 s in the private tree and once more inside
+        `export-tree-kit` (1979 s, the critical path). In a release the
+        export tree runs every module; the private station keeps only the
+        modules whose verdict needs the private tree (`private_tree` inputs,
+        and the modules that import them), so no module runs twice except
+        those."""
+        paths = ["scripts/pipeline/merge.py"]
+        rel = by_name(gp.plan(paths, "release", repo=None))
+        inte = by_name(gp.plan(paths, "integration", repo=None))
+        self.assertIn("export-tree-kit", rel)
+        everything = inte["gate-selftest"].cmds[0][4:]
+        private = rel["gate-selftest"].cmds[0][4:]
+        self.assertEqual(rel["gate-selftest"].cmds[0][:4], inte["gate-selftest"].cmds[0][:4])
+        self.assertLess(len(private), len(everything))
+        self.assertEqual(sorted(set(private) - set(everything)), [])
+        self.assertEqual(private, gp.private_tree_selftest_modules(everything, gp.REPO_ROOT))
+        self.assertIn("scripts.tests.test_private_tree", private)
+        self.assertNotIn("scripts.tests.test_pipeline_store", private)
+        self.assertEqual(rel["gate-selftest"].scope, "unittest private-tree modules")
+
+    def test_a_module_that_imports_a_private_tree_module_stays_private(self):
+        """Over-selection allowed, under-selection not: a helper of a
+        private-tree module reaches its importers' tests too."""
+        with tempfile.TemporaryDirectory() as td:
+            t = pathlib.Path(td, "scripts", "tests")
+            t.mkdir(parents=True)
+            (t / "test_a.py").write_text("from scripts.tests import private_tree\n")
+            (t / "test_b.py").write_text("from scripts.tests.test_a import Case\n")
+            (t / "test_c.py").write_text("import unittest\n")
+            (t / "test_d.py").write_text("from scripts.tests import test_b\n")
+            mods = ["scripts.tests.test_%s" % c for c in "abcd"]
+            self.assertEqual(gp.private_tree_selftest_modules(mods, td),
+                             ["scripts.tests.test_a", "scripts.tests.test_b",
+                              "scripts.tests.test_d"])
+
     def test_integration_ends_with_the_dry_export_audit(self):
         """The cheap export rules belong in the pass that declares a wave done.
 

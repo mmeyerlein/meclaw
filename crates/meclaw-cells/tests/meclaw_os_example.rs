@@ -141,7 +141,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// GH #1248: talky's quick voice (`quick`) -- thirty-nine. MEASURED.
 /// GH #1279: talky's screen judge and its model (`screen_judge`,
 /// `screen_model`) -- forty-one. MEASURED.
-const CELLS_AFTER_GROW: usize = 41;
+/// #1398: the quick voice's siblings (`quick_spec`, `quick_bridge`) --
+/// forty-three. MEASURED (43 against 41 in the strand's gate).
+const CELLS_AFTER_GROW: usize = 43;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -174,7 +176,9 @@ const CELLS_AFTER_GROW: usize = 41;
 /// GH #1279: talky's screen judge and its model are in
 /// [`CELLS_AFTER_GROW`] and so in this total too; `cogny` grows neither --
 /// sixty. Measured in the strand's test run (61 with the probe, against 59).
-const CELLS_AFTER_COGNY: usize = 60;
+/// #1398: talky's quick-voice siblings are in [`CELLS_AFTER_GROW`] too --
+/// sixty-two. Measured in the strand's test run (63 with the probe, against 61).
+const CELLS_AFTER_COGNY: usize = 62;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -663,7 +667,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "two checked-in cells plus thirty-nine instantiated ones: {after:?}"
+        "two checked-in cells plus forty-one instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.

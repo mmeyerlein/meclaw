@@ -251,6 +251,15 @@ fn build_tree(
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
+    // #1398: the quick voice's siblings carry its model and endpoint.
+    patch(root, "main/talky/quick_spec/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
+    patch(root, "main/talky/quick_bridge/config.json", |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     // GH #555 — the one thing an instance says about files: the fence this
     // store writes its own seed set inside.
     let fence_s = fence.to_str().expect("a utf-8 fence").to_string();

@@ -518,7 +518,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 95 -> 99 with GH #1279: every `talky` grew
 /// `screen_judge` and `screen_model`, the second stamp's screen form (2 x 2).
 /// Measured red in the strand's run (99 against 95).
-const TEMPLATE_BORN_ROWS: usize = 99;
+///
+/// Moved 99 -> 103 with #1398: every `talky` grew the quick voice's siblings
+/// `quick_spec` and `quick_bridge` (2 x 2). Measured red in the strand's gate
+/// (103 against 99).
+const TEMPLATE_BORN_ROWS: usize = 103;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -942,7 +946,20 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// (`./history -> .` on `call_facts`; the door rides the `./history` edge that
 /// already carries `in_seed_ask`). Two talkies and three curators: 2 x 2 + 3 x 1.
 /// Measured red in the strand's run (601 against 594).
-const EDGES: usize = 601;
+///
+/// Moved 601 -> 625 with GH #1398 (the quick voice's siblings): every `talky`
+/// twelve edges more (107 -> 119 in `templates/talky/README.md`: the doors of
+/// `./quick_spec` and `./quick_bridge`, the curator's two legs to each, the
+/// spec's answer back to the curator and its refusal, the bridge's splitter,
+/// answer, errors and refusal legs). Two talkies: 2 x 12. Measured red in the
+/// strand's run (625 against 601).
+/// Moved 625 -> 629 with GH #1401 (the call end closes its generation): every
+/// `talky` one edge more (`. -> ./session-keeper` on `in_call_end`, 119 -> 120
+/// in `templates/talky/README.md`) and every `session-keeper` one more
+/// (`. -> ./close` on `in_call_end`). Two talkies, two keepers: 2 x 1 + 2 x 1.
+/// Measured red in the strand's run (605 against 601 before the rebase onto
+/// GH #1398).
+const EDGES: usize = 629;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

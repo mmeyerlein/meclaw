@@ -105,6 +105,22 @@ class RevertTest(RevertCase):
         self.assertEqual(f.gate_calls()[-1]["label"], "revert-S1")
         self.assertFalse(os.path.exists(merge.candidate_path("revert-S1")))
 
+    def test_the_revert_receipt_names_what_the_fast_forward_set_aside(self):
+        """V8 fix round 1 (review I3): `revert` dropped the pairs
+        `fast_forward` returns; the revert receipt names them now."""
+        pair = ("/main/plans/w/receipts/S/latest", "/state/aside/x/latest")
+        real = merge.fast_forward
+
+        def ff(root, base, sha):
+            real(root, base, sha)
+            return [pair]
+        with mock.patch.object(merge, "fast_forward", ff):
+            rc, _, err = self.revert()
+        self.assertEqual(rc, 0, err)
+        archive = os.path.join(self.f.wdir, "receipts", "revert-S1")
+        doc = json.loads(fx.read(os.path.join(archive, os.listdir(archive)[0]), "revert.json"))
+        self.assertEqual(doc.get("set_aside"), [list(pair)])
+
     def test_revert_red_keeps_master_and_the_merge(self):
         f = self.f
         with mock.patch.dict(os.environ, {"MECLAW_PIPELINE_FAKE_GATE": "red"}):

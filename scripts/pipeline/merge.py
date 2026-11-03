@@ -1866,9 +1866,10 @@ def fast_forward(root, base, sha):
     aside = set_aside(root, base, sha)
     res = git(root, "merge", "--ff-only", "-q", sha)
     if res.returncode != 0:
-        for src, dst in aside:
+        for src, dst in reversed(aside):
             shutil.move(dst, src)
         raise Refused("main_tree_dirty", res.stderr.strip()[:300])
+    return aside
 
 
 def set_aside(root, base, sha):
@@ -1878,6 +1879,36 @@ def set_aside(root, base, sha):
     added = out(root, "diff", "--name-only", "--no-renames", "--diff-filter=A", base, sha)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     moved = []
+    # K2 (OR-D53-38): the close of take 1 hung three times on main_tree_dirty.
+    # The close strand committed a gate archive `plans/<wave>/receipts/<S>/**`
+    # with `latest` as a real directory (a copy); the main tree held the same
+    # archive untracked, `latest` the gate's symlink (`gate.py` archive). The
+    # run files went aside byte for byte, the symlink stayed where the merge
+    # brings a directory. An untracked symlink on the way to an added path is
+    # a pointer, not content: it goes aside as well (nothing deleted; the
+    # merge receipt names it, `set_aside`). Only inside a gate archive
+    # (`plans/<wave>/receipts/<S>/...`, review M1): elsewhere a symlink in
+    # the way refuses as before.
+    links = []
+    for rel in (p for p in added.splitlines() if p):
+        parts = rel.split("/")[:-1]
+        for n in range(1, len(parts) + 1):
+            pre = "/".join(parts[:n])
+            if pre in links:
+                break
+            if os.path.islink(os.path.join(root, pre)):
+                # Any symlink ends the walk (re-check M1-R): below it the
+                # checks and the move would act in the link's target.
+                if n >= 4 and parts[0] == "plans" and parts[2] == "receipts" and git(
+                        root, "ls-files", "--error-unmatch", "--", pre).returncode != 0:
+                    links.append(pre)
+                break
+    for pre in links:
+        src = os.path.join(root, pre)
+        dst = os.path.join(state_dir(), "aside", "%s-%s" % (stamp, sha[:8]), pre)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(src, dst)
+        moved.append((src, dst))
     for rel in (p for p in added.splitlines() if p):
         src = os.path.join(root, rel)
         if not os.path.isfile(src) or os.path.islink(src) or git(
@@ -2097,7 +2128,7 @@ def land_plan_only(db, ctx, s, base):
         steps.done()
         steps.at("ref-update")
         hold_tree(db, ctx["repo"], ctx["holder"])
-        fast_forward(root, base, head)
+        aside = fast_forward(root, base, head)
         steps.done()
     except Refused as exc:
         steps.fail()
@@ -2109,12 +2140,22 @@ def land_plan_only(db, ctx, s, base):
     line = "MERGE-PLAN-ONLY %s %s %d files GREEN" % (s.name, sha[:9], len(paths))
     _set_merge(db, mid, state="merged", merge_sha=sha)
     _event(db, "merge_done", mid, s.name, base, merge_sha=sha, plan_only=True)
-    merge_receipt(ctx, s.wdir, "merge-%s" % s.name, sha, {
+    doc = {
         "strand": s.name, "base": base, "merge_sha": sha, "plan_only": True,
         "files": paths, "gate": {"verdict": "SKIPPED", "line": "plan-only: gate-neutral"},
-        "wait_s": wait_s(ctx, s.name), "summary": line})
+        "wait_s": wait_s(ctx, s.name), "summary": line}
+    # Review I3: a close strand of gate archives lands HERE (the take-1
+    # incident's path) -- what the fast-forward set aside stands in its receipt.
+    if aside:
+        doc["set_aside"] = [list(pair) for pair in aside]
+    merge_receipt(ctx, s.wdir, "merge-%s" % s.name, sha, doc)
     ctx["out"].write("%s\n" % line)
     return [(s.name, "merged", None, sha)]
+
+
+# The stdout line and receipt `gate.line` of a cut merge whose candidate gate
+# was skipped (`--release-gate-follows`, V8 #1405).
+MERGE_GATE_SKIPPED = "merge_gate: skipped (release gate follows)"
 
 
 def land(db, ctx, strands, base, depth=0):
@@ -2163,23 +2204,38 @@ def land(db, ctx, strands, base, depth=0):
     try:
         if ctx.get("release"):
             release_dry_run(cand, ctx["release"])
-        gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx)
+        # V8 (#1405, D43 section 7 lever 3): the cut merge's candidate gate
+        # (up to 1 189 s, 0.77.2) judged the very tip the release gate judges
+        # in full right after it. With `--release-gate-follows` it is skipped;
+        # the preconditions above (pre stamp, strand receipt GREEN on the
+        # head, review verdict, outsourced findings, release dry run, the
+        # cut's allowlist) all held. Master is never left unjudged:
+        # `release.sh prepare` follows at once, and a red release gate is a
+        # fix round on the same tip before any further merge
+        # (docs/development-rules.md section 7).
+        follows = bool((ctx.get("release") or {}).get("gate_follows"))
+        if not follows:
+            gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx)
         for s in strands:
             _set_merge(db, mids[s.name], state="gating", versions=result["versions"],
                        pins=result["pins"])
             _event(db, "merge_gated", mids[s.name], s.name, base, merge_sha=sha,
-                   versions=result["versions"], resolved=resolved)
+                   versions=result["versions"], resolved=resolved,
+                   gate="SKIPPED" if follows else None)
         steps.done()
         steps.at("gate")
-        # N3: every gate run starts on a renewed lease -- a bisection runs
-        # several gates under one lease, each up to TTL_S long.
-        hold_tree(db, repo, ctx["holder"])
-        try:
-            # RC-GK2 I1: the generator's lane lease spans the gate -- its
-            # admission takes the held lane -- and goes back before a bisection.
-            verdict = run_gate(cand, gctx)
-        finally:
-            golden_give_back(db, gctx, ctx["err"])
+        if follows:
+            verdict = {"verdict": "SKIPPED", "line": MERGE_GATE_SKIPPED}
+        else:
+            # N3: every gate run starts on a renewed lease -- a bisection runs
+            # several gates under one lease, each up to TTL_S long.
+            hold_tree(db, repo, ctx["holder"])
+            try:
+                # RC-GK2 I1: the generator's lane lease spans the gate -- its
+                # admission takes the held lane -- and goes back before a bisection.
+                verdict = run_gate(cand, gctx)
+            finally:
+                golden_give_back(db, gctx, ctx["err"])
         ctx["out"].write("%s\n" % verdict["line"])
         lane_s = verdict.get("lane_wait_s") or 0
         adm_s = verdict.get("admission_wait_s") or 0
@@ -2192,7 +2248,9 @@ def land(db, ctx, strands, base, depth=0):
         if lane_s - adm_s:
             ctx["err"].write("merge: waited %ds for the lane of the candidate run (behind other "
                              "runs' cargo lock)\n" % (lane_s - adm_s))
-        if verdict["verdict"] != "GREEN":
+        if verdict["verdict"] == "SKIPPED":
+            steps.done("SKIPPED")
+        elif verdict["verdict"] != "GREEN":
             steps.done(verdict["verdict"])
             reason = "gate_aborted" if verdict["verdict"] == "ABORTED" else "gate_red"
             if len(strands) > 1 and depth < MAX_BISECT and verdict["verdict"] == "RED":
@@ -2203,7 +2261,8 @@ def land(db, ctx, strands, base, depth=0):
                 now = out(root, "rev-parse", "master")
                 return done + land(db, ctx, strands[half:], now, depth + 1)
             return [(s.name, "refused", reason, verdict["line"]) for s in strands]
-        steps.done()
+        else:
+            steps.done()
         head, cut_date = sha, None
         if ctx.get("release"):
             # RT2: the cut commit after the GREEN gate, wholly in the release
@@ -2213,7 +2272,7 @@ def land(db, ctx, strands, base, depth=0):
             steps.done()
         steps.at("ref-update")
         hold_tree(db, repo, ctx["holder"])
-        fast_forward(root, base, head)
+        aside = fast_forward(root, base, head)
         steps.done()
     except Refused as exc:
         steps.fail()
@@ -2236,9 +2295,14 @@ def land(db, ctx, strands, base, depth=0):
             "strand": s.name, "base": base, "merge_sha": sha, "versions": result["versions"],
             "workspace": result["workspace"], "pins": result["pins"], "gate": verdict,
             "wait_s": wait_s(ctx, s.name),
-            "summary": "MERGE %s %s %s GREEN" % (s.name, sha[:9], versions.version_line(result))}
+            # Review M2: a merge whose candidate gate was skipped is not GREEN.
+            "summary": "MERGE %s %s %s %s" % (
+                s.name, sha[:9], versions.version_line(result),
+                "SKIPPED (release gate follows)" if verdict["verdict"] == "SKIPPED" else "GREEN")}
         if goldens is not None:
             doc["goldens"] = goldens
+        if aside:
+            doc["set_aside"] = [list(pair) for pair in aside]
         if cut_date:
             doc["release_cut"] = {"version": ctx["release"]["version"], "sha": head,
                                   "date": cut_date}
@@ -2269,7 +2333,7 @@ def waited(db, repo, mids, fresh):
 
 def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, close=True,
           db=None, out_=None, err=None, wait=False, clock=None, release=None, intro=None,
-          today=None):
+          today=None, release_gate_follows=False):
     """`pipeline.py merge`: returns the exit code (0 merged, 1 refused, 3 queued).
 
     `wait` (`--wait`) blocks in the queue instead of exit 3 (`take_tree_waiting`).
@@ -2277,7 +2341,9 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
     the receipt's `wait_s` is the time between them (V2-A10).
     `release` (`--release x.y.z`, RT2): after the GREEN gate the merge point
     appends the release cut commit (`versions.release_cut`, `intro` the text of
-    `--intro`, `today` the injected clock of the tests) and fast-forwards to it."""
+    `--intro`, `today` the injected clock of the tests) and fast-forwards to it.
+    `release_gate_follows` (`--release-gate-follows`, V8 #1405, only with
+    `release`): the candidate gate is skipped, every precondition holds."""
     out_, err = out_ or sys.stdout, err or sys.stderr
     clock = clock or store.now
     root = main_root(start or os.getcwd())
@@ -2300,7 +2366,12 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
             else:
                 mids[s.name] = _new_merge(db, repo, s.name, base, "queued", clock())
                 created.add(s.name)
-        rel = {"version": release, "intro": intro, "today": today} if release else None
+        if release_gate_follows and not release:
+            raise Refused("release_gate_follows_needs_release",
+                          "--release-gate-follows skips the candidate gate only of the "
+                          "release cut merge (--release x.y.z)")
+        rel = ({"version": release, "intro": intro, "today": today,
+                "gate_follows": bool(release_gate_follows)} if release else None)
         release_precheck(root, strands, rel)
         def queued():
             for s in strands:
@@ -2761,7 +2832,8 @@ def _cmd_merge(args):
                 return 2
         return merge(names, repo=args.repo, wave=args.wave, host=args.host, no_pre=no_pre,
                      close=not args.no_close, db=store.open(args.db) if args.db else None,
-                     wait=args.wait, release=args.release, intro=intro)
+                     wait=args.wait, release=args.release, intro=intro,
+                     release_gate_follows=args.release_gate_follows)
     except Refused as exc:
         print("merge: refused (%s): %s" % (exc.reason, exc.text), file=sys.stderr)
         return REFUSE_EXIT
@@ -2813,6 +2885,9 @@ def register(sub):
                    help="the wave's last merge: append the release cut commit (RT2)")
     p.add_argument("--intro", metavar="FILE",
                    help="with --release: the intro paragraph of the released section")
+    p.add_argument("--release-gate-follows", action="store_true",
+                   help="with --release: skip the candidate gate, the release gate "
+                        "(release.sh prepare) follows at once (V8)")
     p.add_argument("--db")
     p.set_defaults(func=_cmd_merge)
     c = sub.add_parser("close", help="the issue's English close comment (GH #1107)")

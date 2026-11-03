@@ -13,7 +13,7 @@ one record (`crates/meclaw-cells/tests/misc_3/gh302_member_holds_the_memory.rs`)
 
 Screening and channels belong to the person for the same reason. A new generation meets the
 attacker record and the rate window the old one left behind, and one chat account reaches two
-of that person's agents (`crates/meclaw-cells/tests/misc_3/gh454_two_assistants_one_channel.rs`).
+of that person's agents (`crates/meclaw-cells/tests/misc_4/gh454_two_assistants_one_channel.rs`).
 
 The control loop and the authoring path sit at the shell, because one colony has one charter and
 one place a submission lives. A person's own keys are held one level down, by the member whose

@@ -196,7 +196,14 @@ STATIONS (S strand, I integration, R release, C ci)
                     mark of the display scenarios, the quarantine grammar of
                     nextest, the roadmap anchor gate and the tests of the
                     `meclaw` binary owner lock -- the lock itself runs in
-                    `precheck`, a manifest diff plans no selftest)
+                    `precheck`, a manifest diff plans no selftest). In R
+                    only the modules whose verdict needs the private tree
+                    (`private_tree_selftest_modules`: they name
+                    `private_tree`, or import a module that does; scope
+                    `unittest private-tree modules`): `export-tree-kit`,
+                    planned in every release, runs the whole list in the
+                    export tree (V8, #1405: relgate-0781 ran it twice,
+                    1570 s here and inside the 1979 s of export-tree-kit)
     display-lab     display_lab (workshop/tools/display-lab/** and its test);
                     I/R always; never in C -- workshop/ does not travel
     llm-conformance llm_conformance (workshop/tools/llm-conformance/**, its
@@ -4398,6 +4405,42 @@ def test_hook_flags(root, selector):
     return [ln for ln in res.stdout.splitlines() if ln]
 
 
+# A self-test module that declares a private-tree input (`private_tree.require`
+# or `@private_tree.private`, the one mechanism, GH #1199) skips that case in
+# the export tree. Its import line names the helper module.
+_PRIVATE_TREE_RE = re.compile(r"\bprivate_tree\b")
+
+
+def private_tree_selftest_modules(modules, repo):
+    """The modules of `modules` (dotted, `scripts.tests.test_x`) whose verdict
+    needs the private tree (V8, #1405): every module that names `private_tree`
+    -- its declared cases skip in the export tree --, and every module that
+    imports one of those (a helper of such a module reaches the importer's
+    tests). Over-selection is allowed, under-selection not: a module whose
+    file cannot be read stays in. Order kept."""
+    texts = {}
+    for mod in modules:
+        try:
+            with open(os.path.join(repo, *mod.split(".")) + ".py", encoding="utf-8") as f:
+                texts[mod] = f.read()
+        except OSError:
+            texts[mod] = None
+    picked = {m for m, t in texts.items() if t is None or _PRIVATE_TREE_RE.search(t)}
+    grew = True
+    while grew:
+        grew = False
+        for mod, text in texts.items():
+            if mod in picked or text is None:
+                continue
+            imports = [ln for ln in text.splitlines()
+                       if ln.lstrip().startswith(("import ", "from "))]
+            if any(re.search(r"\b%s\b" % re.escape(p.rsplit(".", 1)[-1]), ln)
+                   for p in picked for ln in imports):
+                picked.add(mod)
+                grew = True
+    return [m for m in modules if m in picked]
+
+
 def plan(paths, mode, repo=None):
     """The stations this diff must run, cheapest first."""
     if mode not in MODES:
@@ -4513,8 +4556,7 @@ def plan(paths, mode, repo=None):
             [["shellcheck"] + _shell_files(repo, globs)])
 
     if "gate_infra" in classes or ci:
-        out["gate-selftest"] = station(
-            "gate-selftest", "unittest", False,
+        selftest = (
             # One command, every module: the resolver's own tests, the
             # runner's, the strand kit's, the wave retro's and the merge
             # driver's. They all arrive with the runner (ROOT_FILES), so this
@@ -4522,7 +4564,7 @@ def plan(paths, mode, repo=None):
             # case skips itself there. `selftest_shard.py` runs the modules
             # in shards side by side (GH #1126); one shard is the plain
             # `python3 -m unittest` of before.
-            [["/usr/bin/python3", "-I", "scripts/pipeline/selftest_shard.py", "unittest",
+            ["/usr/bin/python3", "-I", "scripts/pipeline/selftest_shard.py", "unittest",
               "scripts.tests.test_gate_plan", "scripts.tests.test_gate_sh",
               "scripts.tests.test_strand_sh",
               "scripts.tests.test_pipeline_hygiene",
@@ -4622,7 +4664,20 @@ def plan(paths, mode, repo=None):
               # release-tempo rt4 (#1387): the release chain prepare/publish
               "scripts.tests.test_release_script",
               # d53-1 c2 (#1389): the candidate build on every lane
-              "scripts.tests.test_pipeline_candidate"]])
+              "scripts.tests.test_pipeline_candidate"])
+        scope = "unittest"
+        if mode == "release":
+            # V8 (#1405, D43 section 7 lever 1): relgate-0781 ran every module
+            # twice -- 1570 s here and again inside `export-tree-kit` (1979 s,
+            # the release's critical path), which the release always plans
+            # and which runs this same list from the same gate_plan.py in the
+            # export tree. Here only the modules whose verdict needs the
+            # private tree stay: they skip there (`private_tree`).
+            selftest = selftest[:4] + private_tree_selftest_modules(
+                selftest[4:], REPO_ROOT if repo is None else repo)
+            scope = "unittest private-tree modules"
+        if len(selftest) > 4:
+            out["gate-selftest"] = station("gate-selftest", scope, False, [selftest])
 
     # `ir` as well as the class: the library is what every display measurement
     # of the next wave is read with, it costs five seconds, and a pass that

@@ -234,6 +234,17 @@ fn word(n: usize) -> &'static str {
         // `./curator` and its answer `call_facts` out -- one hundred and seven,
         // the boundary sixty, twenty-six doors, thirty-four leaving.
         (107, "one hundred and seven"),
+        // #1398: the quick voice's two siblings `quick_spec` and `quick_bridge`
+        // -- two model doors, four curator edges onto them, the spec's lane back
+        // and the bridge's splitter, curator and error edges, two refused pushes:
+        // one hundred and nineteen, fifty-five of round, the boundary sixty-four,
+        // twenty-eight doors, thirty-six leaving.
+        (55, "fifty-five"),
+        (119, "one hundred and nineteen"),
+        // GH #1401: the call end's door into `./session-keeper` beside the
+        // curator's -- one hundred and twenty, the boundary sixty-five,
+        // twenty-nine doors.
+        (120, "one hundred and twenty"),
     ]
     .into_iter()
     .collect();

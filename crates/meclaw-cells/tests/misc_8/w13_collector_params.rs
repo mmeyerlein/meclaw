@@ -99,6 +99,8 @@ const KNOBS: &[(&str, &str)] = &[
     ("delegation_answer_mode", "_str"),
     ("delegation_inherits_stamp", "_str"),
     ("delegation_rule", "_str"),
+    // #1399 -- a delegation opens its own round beside an open one (`"0"` shipped).
+    ("delegation_priority", "_str"),
 ];
 
 fn config() -> serde_json::Value {

@@ -1,12 +1,15 @@
 //! Test harness `duplex` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod d53_v3_a_horizon_advise_reaches_the_voice;
+pub mod d53_v7_the_voice_interrupts_once_per_turn;
 #[path = "../support/duplex_cell.rs"]
 pub mod duplex_cell;
 pub mod gh1016_nothing_is_said_after_the_call_ended;
 pub mod gh1055_a_ringing_call_finds_its_model_ready;
 pub mod gh1276_a_speaker_turn_passes_no_cold_code_cell;
 pub mod gh1377_a_provider_abort_is_recovered;
+pub mod gh1403_a_fault_close_is_recovered;
 pub mod gh728_a_late_answer_after_a_turn_change_is_not_spoken;
 pub mod gh896_a_duplex_call_is_renewed_at_its_limit;
 pub mod gh979_a_spoken_turn_names_the_verified_caller;

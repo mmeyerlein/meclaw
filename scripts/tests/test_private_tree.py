@@ -5,9 +5,11 @@ export tree) and fails, never skips, where it is present (the private tree).
 These cases pin both halves on throw-away trees, and on the real tree that the
 marker is the export script and never travels.
 """
+import ast
 import importlib.util
 import pathlib
 import re
+import sys
 import tempfile
 import unittest
 
@@ -145,6 +147,127 @@ class OneMechanism(unittest.TestCase):
         self.assertEqual(["test_forms.py:2", "test_forms.py:3", "test_forms.py:4",
                           "test_forms.py:15"],
                          adhoc_path_skips(root))
+
+
+# V8 fix round 1 (#1405, review I2): the release's private `gate-selftest`
+# keeps only the modules that name `private_tree`
+# (`gate_plan.private_tree_selftest_modules`); every other module runs in the
+# export tree only. Three modules read `workshop/` or `plans/export-fixtures/`
+# with a silent empty fallback (`rglob`/`os.walk` on a missing directory is
+# `[]`, an `is_file()` guard drops the file) -- green there, checking nothing,
+# and gone from the private run. The scan: a read call (`rglob`, `os.walk`,
+# `is_file`, ...; or a module function that reads) on a path built from the
+# repo root and a private root (a literal, or a name bound to one).
+PRIVATE_ROOT = re.compile(r"^(?:workshop|plans|ideas|archive|AGENTS\.md|docs)(?:/|$)")
+REPO_NAMES = {"REPO", "REPO_ROOT"}
+READ_CALLS = {"rglob", "glob", "iterdir", "is_file", "is_dir", "exists", "read_text",
+              "walk", "listdir", "open"}
+
+
+def _names(node):
+    out = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    out |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)
+            and isinstance(n.value, ast.Name) and n.value.id in ("self", "cls")}
+    return out
+
+
+def _private_literal(node):
+    return any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and PRIVATE_ROOT.match(n.value) for n in ast.walk(node))
+
+
+def _callee(call):
+    f = call.func
+    return f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
+
+
+def silent_private_reads(text):
+    """Line numbers of `text` where a read call reaches the repo root's private
+    trees. Names bound to a private-root literal (constants, loop variables,
+    functions that spell one) are followed to a fixpoint."""
+    tree = ast.parse(text)
+    local = {n.name: n for n in ast.walk(tree)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    tainted = {name for name, fn in local.items() if _private_literal(fn)}
+    grew = True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                source = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            elif isinstance(node, (ast.For, ast.comprehension)):
+                source, targets = node.iter, [node.target]
+            else:
+                continue
+            if not (_private_literal(source) or _names(source) & tainted):
+                continue
+            for name in set().union(*map(_names, targets)) - tainted - REPO_NAMES:
+                tainted.add(name)
+                grew = True
+
+    def reads(fn):
+        return any(isinstance(c, ast.Call) and _callee(c) in READ_CALLS for c in ast.walk(fn))
+
+    out = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        names = _names(node)
+        if not (names & REPO_NAMES and (_private_literal(node) or names & tainted)):
+            continue
+        name = _callee(node)
+        if name in READ_CALLS or (name in tainted and name in local and reads(local[name])):
+            out.add(node.lineno)
+    return sorted(out)
+
+
+def undeclared_private_reads(repo):
+    """`module:line` of every gate-selftest module outside the release's
+    private list whose code reads the private tree (`silent_private_reads`)."""
+    sys.path.insert(0, str(pathlib.Path(repo) / "scripts"))
+    import gate_plan
+    stations = {s.name: s for s in gate_plan.plan(["scripts/gate_plan.py"], "integration")}
+    modules = stations["gate-selftest"].cmds[0][4:]
+    private = set(gate_plan.private_tree_selftest_modules(modules, str(repo)))
+    found = []
+    for mod in modules:
+        if mod in private:
+            continue
+        path = pathlib.Path(repo, *mod.split(".")).with_suffix(".py")
+        found += ["%s:%d" % (mod, n)
+                  for n in silent_private_reads(path.read_text(encoding="utf-8"))]
+    return found
+
+
+class NoSilentPrivateRead(unittest.TestCase):
+    """V8 fix round 1 (review I2): a module that reads the private tree
+    declares it (`private_tree`), so the release keeps it in its private run
+    and the export tree skips it by name instead of passing it empty."""
+
+    def test_every_selftest_module_that_reads_the_private_tree_declares_it(self):
+        self.assertEqual([], undeclared_private_reads(private_tree.REPO))
+
+    def test_the_scan_sees_a_constant_a_loop_and_a_reading_helper(self):
+        text = "\n".join((
+            'TREES = ("scripts/tests", "workshop/evals/tests")',
+            "def t1():",
+            "    for tree in TREES:",
+            "        list((REPO / tree).rglob('*.py'))",
+            "ROOTS = ('scripts', os.path.join('plans', 'export-fixtures'))",
+            "def t2():",
+            "    for root in ROOTS:",
+            "        os.walk(REPO / root)",
+            "def files(root):",
+            "    ett = root / 'plans' / 'x.py'",
+            "    return [ett] if ett.is_file() else []",
+            "def t3():",
+            "    files(REPO)",
+            "def fixture(root):",
+            "    (root / 'plans' / 'w').mkdir(parents=True)",
+            "    list((REPO / 'scripts').rglob('*.py'))",
+            ""))
+        self.assertEqual([4, 8, 13], silent_private_reads(text))
 
 
 class TheRealTree(unittest.TestCase):

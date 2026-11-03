@@ -24,6 +24,7 @@ pub mod gh138_affinity_firewall_params;
 pub mod gh138_keeper_summarizer_dispatcher_params;
 pub mod gh138_long_tail_params;
 pub mod gh138_memory_hive_params;
+pub mod gh1401_a_call_end_closes_the_phone_generation;
 pub mod gh144_network_allow_resolves_names;
 pub mod gh146_embed_read_lane_retry;
 pub mod gh146_recall_names_the_embed_reason;
@@ -60,7 +61,6 @@ pub mod gh279_the_payload_does_not_hedge;
 pub mod gh281_facts_and_utterances_are_two_sections;
 pub mod gh282_only_what_somebody_said_is_drained;
 pub mod gh291_the_shipped_memory_hive_instantiates;
-pub mod gh292_every_ctx_key_is_declared;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

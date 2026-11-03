@@ -102,6 +102,19 @@ elif name == "gh":
         print(json.dumps({"data": {"createDiscussion": {"discussion": {"url": "https://example.invalid/d/1"}}}}))
 elif name == "curl":
     path = args[-1].split("//", 1)[1].partition("/")[2]
+    follows = "--location" in args or any(
+        a.startswith("-") and not a.startswith("--") and "L" in a for a in args[:-1])
+    redirect = os.path.join(os.environ["RELEASE_STUB_FAIL"], "curl-redirect")
+    if os.path.exists(redirect) and path.endswith("/") and not follows:
+        # nginx of the website (GH #1396, `curl -sI` on a directory page such as `/blog/`):
+        # 301 to the form without the slash; without -L curl prints this body
+        # and exits 0, a 3xx is no -f error
+        print("<html><head><title>301 Moved Permanently</title></head></html>")
+        sys.exit(0)
+    stale = os.path.join(os.environ["RELEASE_STUB_FAIL"], "curl-stale")
+    if os.path.exists(stale) and open(stale).read().strip() == path:
+        print("<p>a page the deploy never reached</p>")
+        sys.exit(0)
     if path == "" or path.endswith("/"):
         path += "index.html"
     with open(os.path.join(os.environ["RELEASE_STUB_SITE"], path)) as f:
@@ -518,6 +531,31 @@ class ReleaseScript(unittest.TestCase):
         self.assertEqual([e["verdict"] for e in end], ["RED"], out)
         self.assertIn("HANG", end[0]["reason"])
         self.assertNotIn("gh run view", w.names())
+
+    def test_a_redirect_on_the_way_is_followed(self):
+        # GH #1396: at 0.78.1 nginx answered `blog/` with 301 to `blog`; curl
+        # without -L read the redirect body and the live check went red on
+        # four pages, website-push never ran
+        w = World(self.tmp)
+        self.assertEqual(w.run("prepare")[0], 0)
+        (w.fail / "curl-redirect").write_text("")
+        rc, out = w.run("publish")
+        self.assertEqual(rc, 0, out)
+        end = [e for e in w.state() if e["step"] == "live-check" and e["event"] == "end"]
+        self.assertEqual([e["verdict"] for e in end], ["GREEN"], out)
+        self.assertEqual(git(w.site_origin, "rev-parse", "master"), git(w.site, "rev-parse", "HEAD"))
+
+    def test_a_missing_version_still_names_page_and_version(self):
+        w = World(self.tmp)
+        self.assertEqual(w.run("prepare")[0], 0)
+        (w.fail / "curl-redirect").write_text("")
+        (w.fail / "curl-stale").write_text("blog/")
+        rc, out = w.run("publish")
+        self.assertEqual(rc, 1, out)
+        last = w.state()[-1]
+        self.assertEqual((last["step"], last["event"], last["verdict"]), ("live-check", "end", "RED"), out)
+        self.assertEqual(last["reason"], f"live check: blog/index.html: no v{VERSION}", out)
+        self.assertNotIn("website-push", [e["step"] for e in w.state()])
 
     def test_an_unexpected_error_ends_the_step_red(self):
         w = World(self.tmp, site_files=["llms.txt", "gone.txt"])

@@ -114,6 +114,8 @@
           "at": [
             "./brain",
             "./quick",
+            "./quick_spec",
+            "./quick_bridge",
             "./curator/summarizer",
             "./decide",
             "./screen_model"
@@ -231,6 +233,8 @@
           "at": [
             "./brain",
             "./quick",
+            "./quick_spec",
+            "./quick_bridge",
             "./curator/summarizer",
             "./decide",
             "./screen_model"
@@ -339,12 +343,22 @@
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/screen_model')))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/quick_spec') || hop.subscriber.endsWith('/quick_bridge') || hop.subscriber.endsWith('/screen_model')))"
         },
         {
           "from": ".",
           "to": "./quick",
           "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/quick')"
+        },
+        {
+          "from": ".",
+          "to": "./quick_spec",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/quick_spec')"
+        },
+        {
+          "from": ".",
+          "to": "./quick_bridge",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/quick_bridge')"
         },
         {
           "from": ".",
@@ -461,7 +475,7 @@
         {
           "from": "./curator",
           "to": "./quick",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '') && !(has(hop.spec) && (hop.spec == '1' || hop.spec == 'bridge'))",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -479,7 +493,85 @@
         {
           "from": "./curator",
           "to": "./quick",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != '' && !(has(hop.spec) && (hop.spec == '1' || hop.spec == 'bridge'))",
+          "modifier": {
+            "set_hop": {
+              "silence_ok": "'1'"
+            },
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "has(hop.interim) ? hop.interim : ''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_spec",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '') && has(hop.spec) && hop.spec == '1'",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "has(hop.interim) ? hop.interim : ''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_spec",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != '' && has(hop.spec) && hop.spec == '1'",
+          "modifier": {
+            "set_hop": {
+              "silence_ok": "'1'"
+            },
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "has(hop.interim) ? hop.interim : ''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_bridge",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '') && has(hop.spec) && hop.spec == 'bridge' && has(hop.curator_call) && hop.curator_call.endsWith('-bridge')",
+          "modifier": {
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "turn_id": "hop.turn_id",
+              "session_id": "hop.session_id",
+              "iter": "hop.iter",
+              "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "interim": "has(hop.interim) ? hop.interim : ''",
+              "spec": "has(hop.spec) ? hop.spec : ''"
+            },
+            "restore_ttl": true
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_bridge",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != '' && has(hop.spec) && hop.spec == 'bridge' && has(hop.curator_call) && hop.curator_call.endsWith('-bridge')",
           "modifier": {
             "set_hop": {
               "silence_ok": "'1'"
@@ -577,6 +669,11 @@
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length') && !(has(context.spec) && context.spec == '1')"
         },
         {
+          "from": "./quick_bridge",
+          "to": "./splitter",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+        },
+        {
           "from": "./curator",
           "to": "./splitter",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'spec_release' && has(hop.iter) && int(hop.iter) < 12",
@@ -617,9 +714,29 @@
           }
         },
         {
+          "from": "./quick_bridge",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_llm'"
+            }
+          }
+        },
+        {
           "from": "./quick",
           "to": "./curator",
           "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber) && has(context.spec) && context.spec == '1'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_spec_llm'"
+            }
+          }
+        },
+        {
+          "from": "./quick_spec",
+          "to": "./curator",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
           "modifier": {
             "set_hop": {
               "route": "'in_spec_llm'"
@@ -725,6 +842,11 @@
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge')) && !(has(context.spec) && context.spec == '1')"
         },
         {
+          "from": "./quick_bridge",
+          "to": "./errors",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge'))"
+        },
+        {
           "from": "./brain",
           "to": ".",
           "condition": "has(hop.refused_subscriber)",
@@ -753,6 +875,60 @@
         },
         {
           "from": "./quick",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./quick_spec",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./quick_bridge",
           "to": ".",
           "condition": "has(hop.refused_subscriber)",
           "modifier": {
@@ -1725,6 +1901,11 @@
         {
           "from": ".",
           "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_call_end'"
+        },
+        {
+          "from": ".",
+          "to": "./session-keeper",
           "condition": "has(hop.route) && hop.route == 'in_call_end'"
         },
         {

@@ -16,8 +16,9 @@
 //!    "medium"` and declares it as a string setting with that default; no
 //!    provider overlay and no `params.reasoning` object carries a reasoning
 //!    past it (an object outranks the shorthand) -- the one exception is
-//!    talky's `quick`, reasoning off by ruling R-EF-2, pinned to exactly
-//!    `{"enabled": false}`;
+//!    talky's `quick` and its two siblings `quick_spec`/`quick_bridge`
+//!    (#1398, the same voice on cells of their own), reasoning off by ruling
+//!    R-EF-2, pinned to exactly `{"enabled": false}`;
 //! 2. a Sonnet summarizer, born from the shipped `curator/summarizer` params
 //!    and moved to the native Anthropic lane, sends `output_config.effort:
 //!    "medium"` -- against a strict mock that refuses any body field the
@@ -124,7 +125,9 @@ fn every_llm_cell_declares_reasoning_effort_and_ships_medium() {
             "{rel}: a provider_extra.reasoning overlay is sent verbatim and outranks the \
              declared effort (the Messages wire refuses it)"
         );
-        if rel == "talky/quick" {
+        // #1398: the speculation and the bridge are the quick voice on cells
+        // of their own, so they carry its reasoning exactly.
+        if ["talky/quick", "talky/quick_spec", "talky/quick_bridge"].contains(&rel.as_str()) {
             assert_eq!(
                 params["reasoning"],
                 json!({"enabled": false}),

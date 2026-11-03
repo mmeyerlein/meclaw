@@ -876,6 +876,34 @@ pub async fn boot_recovering(
     .await
 }
 
+/// Boot a duplex cell around a provider the test built itself -- the shipped
+/// `gpt_live` adapter against `meclaw_testing::mock_gpt_live`, say (GH #1403)
+/// -- recovering `recover_max` times per call and asking for seeds where
+/// `seed_wait_ms` is set, as [`boot_recovering`] does. Nothing of the fake is
+/// wired: what the provider saw is read off its own mock.
+pub async fn boot_recovering_with(
+    raw: Value,
+    provider: Arc<dyn DuplexProvider>,
+    recover_max: u32,
+    seed_wait_ms: u64,
+) -> Live {
+    boot_core(
+        raw,
+        Some(provider),
+        None,
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        TICK_MS,
+        0,
+        meclaw_cells::voice::params::DEFAULT_RENEW_GRACE_MS,
+        (0, meclaw_cells::voice::duck::DuckParams::default()),
+        seed_wait_ms,
+        recover_max,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn boot_full(
     raw: Value,

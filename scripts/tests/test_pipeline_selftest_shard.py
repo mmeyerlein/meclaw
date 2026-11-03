@@ -18,7 +18,7 @@ import textwrap
 import unittest
 from unittest import mock
 
-from scripts.tests import kit_time, store_isolation
+from scripts.tests import kit_time, private_tree, store_isolation
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 REPO = SCRIPTS.parent
@@ -1391,6 +1391,14 @@ class TestDieWithRunner(unittest.TestCase):
                         if self.CALL.search(line.split("#", 1)[0]):
                             hits.append("%s:%d" % (rel, no))
         self.assertEqual([], hits, "preexec_fn in a file that reaches threads")
+
+    def test_the_private_root_of_the_scan_is_there(self):
+        # V8 fix round 1 (review I2): `os.walk` of a missing root yields
+        # nothing; plans/export-fixtures never travels, so the scan above
+        # checks it only in the private tree -- declared, never silent.
+        private_tree.require(*(r for r in self.ROOTS if r != "scripts"))
+        for root in self.ROOTS:
+            self.assertTrue((REPO / root).is_dir(), root)
 
     def test_the_runner_package_counts_as_thread_reachable(self):
         self.assertTrue(self.thread_reachable("scripts/pipeline/x.py", ""))

@@ -122,6 +122,12 @@ pub enum ToConnection {
         /// block that came after a takeover without one); and nowhere where
         /// the renewal it names failed (review M-8).
         takeover: Option<u32>,
+        /// Sent at the line's first quiet moment, not at once (GH #1400, the
+        /// curator's horizon): no spoken section open and the model's own
+        /// speech `spoken_quiet_ms` past -- the moment a due renewal takes
+        /// over at -- at the latest `spoken_cap_ms` after it came. A newer one
+        /// replaces one that still waits; `false` for every other append.
+        when_quiet: bool,
     },
     /// Open the next session of this duplex call now (D48, `in_advise`
     /// section `renew`), unless one is already opening.
@@ -1009,6 +1015,7 @@ async fn serve_until_the_handler_goes(
                 content,
                 speak_id,
                 takeover,
+                when_quiet,
             }) => {
                 // The same one hop as every other command: `send_to` hands it
                 // to the connection's `deliver` task and never waits on the
@@ -1023,6 +1030,7 @@ async fn serve_until_the_handler_goes(
                             content,
                             speak_id,
                             takeover,
+                            when_quiet,
                         },
                     )
                     .await;
@@ -1874,7 +1882,7 @@ mod tests {
     ///
     /// What is measured is the mapping and the hop, not the model: a
     /// `VoiceReconfig::Advise` goes in on the handler's seam and a
-    /// `ToConnection::Advise` with the same six fields comes out at the
+    /// `ToConnection::Advise` with the same seven fields comes out at the
     /// connection, through the same `deliver` task every other command takes
     /// (GH #593).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1924,6 +1932,7 @@ mod tests {
                 content: "it is eighteen degrees out".to_string(),
                 speak_id: Some("s9".to_string()),
                 takeover: Some(1),
+                when_quiet: true,
             })
             .await
             .expect("the handler seam is open");
@@ -1955,7 +1964,9 @@ mod tests {
                 content,
                 speak_id,
                 takeover,
+                when_quiet,
             } => {
+                assert!(when_quiet, "the flag travels");
                 assert_eq!(kind, AppendKind::Commentary);
                 assert_eq!(event_id, "e1");
                 assert_eq!(

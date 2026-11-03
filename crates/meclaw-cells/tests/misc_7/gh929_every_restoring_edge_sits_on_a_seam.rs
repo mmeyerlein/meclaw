@@ -193,6 +193,52 @@ const SEAMS: &[Row] = &[
         row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
         "< 12 && has(context.inner_source)",
     ),
+    // #1398: the quick voice's siblings -- the speculation and the bridge on
+    // cells of their own -- take the same round, each in both copies.
+    split(
+        row(
+            TALKY,
+            "./curator",
+            "./quick_spec",
+            "quick",
+            None,
+            Seam::Round,
+        ),
+        "&& !(has(context.inner_source)",
+    ),
+    split(
+        row(
+            TALKY,
+            "./curator",
+            "./quick_spec",
+            "quick",
+            None,
+            Seam::Round,
+        ),
+        "< 12 && has(context.inner_source)",
+    ),
+    split(
+        row(
+            TALKY,
+            "./curator",
+            "./quick_bridge",
+            "quick",
+            None,
+            Seam::Round,
+        ),
+        "&& !(has(context.inner_source)",
+    ),
+    split(
+        row(
+            TALKY,
+            "./curator",
+            "./quick_bridge",
+            "quick",
+            None,
+            Seam::Round,
+        ),
+        "< 12 && has(context.inner_source)",
+    ),
     // GH #1275: a kept speculative quick answer is the quick call's answer,
     // released by the curator onto the splitter -- the quick voice's round
     // once more, bounded by the same iteration counter.

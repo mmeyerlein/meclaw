@@ -1,6 +1,7 @@
 //! Test harness `misc_7` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod gh849_a_peer_says_it_and_the_memory_says_who;
 pub mod gh849_each_fact_names_the_peer_who_said_it;
 pub mod gh852_a_warm_sink_keeps_up_with_a_flood;
 pub mod gh853_a_model_switch_is_visible_reversible_and_operator_only;
@@ -60,7 +61,6 @@ pub mod gh963_the_observed_topics_hold;
 pub mod gh964_the_screen_draws_the_map;
 pub mod gh965_the_residents_have_topics_on_the_screen;
 pub mod gh975_a_projection_job_fits_the_colony_ttl;
-pub mod gh976_seed_slug_has_the_model_id_form;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../llm/mock_responses.rs"]

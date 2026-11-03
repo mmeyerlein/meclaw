@@ -11,11 +11,23 @@ import ast
 import pathlib
 import tempfile
 import unittest
-from scripts.tests import store_isolation
+from scripts.tests import private_tree, store_isolation
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The trees the gate runs with `python3 -m unittest` (scripts/gate_plan.py).
-TREES = ("scripts/tests", "workshop/evals/scenarios/tests", "workshop/evals/builder-scenarios/tests")
+# The two under workshop/ never travel with the export: there the scan of a
+# missing tree is an empty `rglob`, green and checking nothing (V8 fix round
+# 1, review I2) -- so they are declared private inputs (`private_tree`).
+PUBLIC_TREES = ("scripts/tests",)
+PRIVATE_TREES = ("workshop/evals/scenarios/tests", "workshop/evals/builder-scenarios/tests")
+TREES = PUBLIC_TREES + PRIVATE_TREES
+
+
+def present_trees():
+    """TREES, with the private ones required first: a missing one fails in
+    the private tree and skips (named) in the export tree."""
+    private_tree.require(*PRIVATE_TREES)
+    return TREES
 
 
 def module_level_tests(path, root=REPO):
@@ -53,9 +65,16 @@ def tearDownModule():  # noqa: N802 -- unittest's name
 
 
 class TestUnittestShape(unittest.TestCase):
+    def test_no_module_level_test_functions_in_the_public_tree(self):
+        found = []
+        for tree in PUBLIC_TREES:
+            for path in sorted((REPO / tree).rglob("test*.py")):
+                found += module_level_tests(path) + classes_after_main(path)
+        self.assertEqual([], found, "in the tree the export carries:\n  " + "\n  ".join(found))
+
     def test_no_module_level_test_functions(self):
         found = []
-        for tree in TREES:
+        for tree in present_trees():
             for path in sorted((REPO / tree).rglob("test*.py")):
                 found += module_level_tests(path)
         self.assertEqual([], found, "module-level test functions unittest never runs "
@@ -63,7 +82,7 @@ class TestUnittestShape(unittest.TestCase):
 
     def test_no_class_after_the_main_block(self):
         found = []
-        for tree in TREES:
+        for tree in present_trees():
             for path in sorted((REPO / tree).rglob("test*.py")):
                 found += classes_after_main(path)
         self.assertEqual([], found, "classes after the main block:\n  " + "\n  ".join(found))
