@@ -1,6 +1,7 @@
 //! Test harness `duplex` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod d53_fx_the_tool_fact_is_said_once;
 pub mod d53_v3_a_horizon_advise_reaches_the_voice;
 pub mod d53_v7_the_voice_interrupts_once_per_turn;
 #[path = "../support/duplex_cell.rs"]

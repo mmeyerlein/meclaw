@@ -304,3 +304,68 @@ fn interrupt_on_delta_off_moves_no_byte() {
     assert!(off.0.is_empty(), "{:?}", off.0);
     assert!(off.1.is_empty());
 }
+
+/// #1407 (P4-F1): `talky/route` marks an unsure PATH with `hop.fallback`
+/// "unsure" and leaves the choices as the model chose them (#1304). The
+/// phone battery's crisis partial (20-P4 turn 5: `risk acute p 1.0 source
+/// model`) carried exactly that and was dropped silently -- the interrupt
+/// waited for the turn's end (+1 505 ms after the sentence instead of about
+/// +300). An unsure path interrupts at once like a sure one.
+#[test]
+fn a_crisis_delta_stamp_on_an_unsure_path_interrupts_early() {
+    if !shipped() {
+        return;
+    }
+    let mut h = hive();
+    delta(
+        &mut h,
+        "s1#5",
+        "i do not really want to go on anymore",
+        "acute",
+        json!({"fallback": "unsure"}),
+    );
+    let sent = interrupts(&h);
+    assert_eq!(sent.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert_eq!(sent[0].hop["turn_id"], json!("s1#5"));
+    assert!(marks(&h, "interrupt_skipped").is_empty());
+}
+
+/// #1407 lock: the fallbacks that are no judgement of the text -- `no_text`
+/// (the greeting, a continuation: FX3A1C), `error`, `late` -- still never
+/// interrupt; a crisis value they carry is booked once as skipped, with the
+/// fallback as its reason, and nothing is claimed.
+#[test]
+fn a_no_text_turn_still_never_interrupts() {
+    if !shipped() {
+        return;
+    }
+    let mut h = hive();
+    for (n, fb) in ["no_text", "error", "late"].iter().enumerate() {
+        let turn = format!("s1#{n}");
+        delta(&mut h, &turn, "hello", "acute", json!({"fallback": fb}));
+        assert!(interrupts(&h).is_empty(), "{fb}: {:?}", h.out);
+    }
+    assert_eq!(
+        marks(&h, "interrupt_skipped"),
+        vec![
+            json!({"reason": "fallback:no_text"}),
+            json!({"reason": "fallback:error"}),
+            json!({"reason": "fallback:late"}),
+        ],
+        "{:?}",
+        h.stderr
+    );
+    assert!(
+        h.rows("SELECT key FROM state WHERE key LIKE 'pending:interrupt:%'")
+            .is_empty()
+    );
+    // A blocked stamp without a crisis value books nothing.
+    delta(
+        &mut h,
+        "s1#9",
+        "hello",
+        "strained",
+        json!({"fallback": "no_text"}),
+    );
+    assert_eq!(marks(&h, "interrupt_skipped").len(), 3);
+}

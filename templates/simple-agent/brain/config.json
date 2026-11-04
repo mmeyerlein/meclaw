@@ -23,11 +23,25 @@
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
     "reasoning_effort": "medium",
-    "max_tokens": 16384
+    "max_tokens": 16384,
+    "cache_mode": "off",
+    "cache_ttl_s": 0
   },
   "contract": {
     "version": "1.0.0",
     "settings": {
+      "cache_mode": {
+        "type": "string",
+        "secret": false,
+        "default": "off",
+        "description": "GH #1408: how this cell marks the provider's prompt cache (`off`, `implicit`, `breakpoints`; docs/cell-types.md \u00a7 llm). It ships `off`, the llm cell's own value when nothing is set, so the request is byte-identical to one without the key and the registry's model package still decides: a package that names `cache_mode` wins, one that resets it falls back to this birth value. An instance sets it through `override_params` on this cell's path for a lab or a model the package does not reach (measured without it: 67 calls, prompt 8.6k -> 57.9k tokens, 0 cached). An empty string or null is refused by the cell's parse, so `off` is the one form of not set."
+      },
+      "cache_ttl_s": {
+        "type": "number",
+        "secret": false,
+        "default": 0,
+        "description": "GH #1408: how long the provider keeps a written prefix warm, in seconds; with `cache_mode` not `off` and a value above 0 every answer carries `hop.cache_expires_at`, and 3600 or more asks for the one-hour mark under `breakpoints`. It ships 0, the llm cell's own value when nothing is set (the expiry is unknown, nothing is stamped); an instance sets it through `override_params` beside `cache_mode`, and the registry's package still decides when it names the key."
+      },
       "model": {
         "type": "string",
         "secret": false,

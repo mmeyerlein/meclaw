@@ -520,6 +520,10 @@ pub struct LiveSessionState {
     /// newest [`INTERRUPTED_TURNS_KEPT`]: a second interrupt of one of them
     /// is a no-op (`interrupt_deduped`).
     pub interrupted_turns: Vec<String>,
+    /// The `hop.turn_id`s whose `fact` came from a tool (`hop.fact_source`
+    /// "tool", GH #1407), the newest [`INTERRUPTED_TURNS_KEPT`]: a later
+    /// `fact` of one of them is a no-op (`fact_deduped`).
+    pub tool_fact_turns: Vec<String>,
     /// Whether the session is closing (`DuplexEvent::Closed`): the turn it
     /// closes releases nothing into it; what is held goes to the colony as a
     /// `session_ended` dead letter at the disconnect (review M4, GH #1016).
@@ -649,6 +653,7 @@ impl LiveSessionState {
             partial_held: None,
             held_advise: Vec::new(),
             interrupted_turns: Vec::new(),
+            tool_fact_turns: Vec::new(),
             closing: false,
         }
     }
@@ -2190,6 +2195,48 @@ impl VoiceCell {
             state.interrupted_turns.push(turn_id.to_string());
             if state.interrupted_turns.len() > INTERRUPTED_TURNS_KEPT {
                 state.interrupted_turns.remove(0);
+            }
+        }
+        // ONE FACT PER TURN ONCE ITS TOOL SAID IT (GH #1407). The curator
+        // sends a listed tool's `summary` as the turn's fact the moment the
+        // result is in (`fact_from_tool`, `hop.fact_source` "tool") -- on the
+        // phone 2.8 to 6.7 s before the second model round wrote its own
+        // `fact` into the sidecar (d53 battery round 1, DIAG-A B-P2-1). That
+        // sidecar fact of the same `hop.turn_id` would say it twice: a no-op
+        // with a trace line, no append, no refusal. Only a tool fact arms
+        // it; a delegation's answer (`context.delegation_id`) settles its
+        // delegation as before. Without `fact_source` nothing changes.
+        if section == Some("fact")
+            && !msg
+                .headers
+                .context
+                .get("delegation_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+            && let Some(turn_id) = msg
+                .headers
+                .hop
+                .get("turn_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            && let Some(state) = self.live_sessions.get_mut(&session_id)
+        {
+            if state.tool_fact_turns.iter().any(|t| t == turn_id) {
+                tracing::info!(
+                    path = self.path.as_str(),
+                    %session_id,
+                    turn_id,
+                    "voice: fact_deduped -- the turn's fact came from its tool already"
+                );
+                return;
+            }
+            let from_tool =
+                msg.headers.hop.get("fact_source").and_then(|v| v.as_str()) == Some("tool");
+            if from_tool {
+                state.tool_fact_turns.push(turn_id.to_string());
+                if state.tool_fact_turns.len() > INTERRUPTED_TURNS_KEPT {
+                    state.tool_fact_turns.remove(0);
+                }
             }
         }
         let delegation_id = msg

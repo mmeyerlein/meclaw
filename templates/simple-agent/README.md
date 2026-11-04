@@ -1,4 +1,4 @@
-# `simple-agent@2.2.10`
+# `simple-agent@2.2.11`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
@@ -292,6 +292,7 @@ is no deep merge: overriding `collector` replaces only the top-level key named.
 |---|---|---|---|
 | `brain` | `model` | `${ctx.model}` | the provider model id, a resolved literal |
 | `brain` | `reasoning_effort` | `medium` | `low`/`medium`/`high`, passed through |
+| `brain`, `strong` | `cache_mode`, `cache_ttl_s` | `off`, `0` | the prompt cache (`off`/`implicit`/`breakpoints`, seconds the prefix stays warm; GH #1408). Unset, the request is the same byte for byte and the registry's model package decides; a set value is the birth value a package `$reset` falls back to |
 | every model cell and `memory-hive/embed` | `x_title`, `http_referer` | `${OPENROUTER_X_TITLE:-MeClaw}`, `${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}` | the app attribution every request sends (the embedder's since GH #1315) |
 | `door` | `agent_id` | `agent` | the agent's id: entry `entity:<id>` in the colony's affinity, actor `agent:<id>` |
 | every model cell | `credential_grant_id`, `api_key` | `""` | the grant in the colony's access, set at birth (above) |

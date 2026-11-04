@@ -3,6 +3,7 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
+pub mod gh1225_kr_p_a_sweep_names_only_what_went;
 pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
 pub mod gh1225_kr_seq_never_falls_below_the_ledger;
 pub mod gh1225_kr_the_set_sent_last_stands;
