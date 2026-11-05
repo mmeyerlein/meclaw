@@ -1,7 +1,8 @@
 //! Phase-8 LlmCell core — orchestrates parse/persist/translate/wire/emit per
 //! handle()-Reihenfolge (Plan § 9). T17-T22 grow this incrementally.
 
-use crate::llm::params::{AuthMode, WireDialect};
+use crate::llm::params::{AuthMode, PartialUnit, WireDialect};
+use crate::llm::partial::PartialTap;
 use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::window;
 use crate::llm::wire::WireError;
@@ -201,6 +202,7 @@ async fn run_responses_lane(
     request_json: &Value,
     timeout: std::time::Duration,
     wire_out: &mut Option<wire::WireTimings>,
+    tap: Option<&mut PartialTap<'_>>,
 ) -> Result<TranslatedResponse, LaneFailure> {
     let url = responses_url(&cell.params);
     let attribution = translate::build_attribution_headers(&cell.params);
@@ -215,20 +217,31 @@ async fn run_responses_lane(
             let bearer = cell.bearer();
             let mut headers = translate_responses::build_responses_headers(&cell.params, None);
             headers.extend(attribution);
-            let (result, timings) = wire::call_responses_timed(
+            // GH #1410: with a tap the body is read as it streams.
+            let (result, timings) = wire::call_responses_tapped(
                 &cell.http,
                 &url,
                 bearer,
                 &headers,
                 request_json,
                 timeout,
+                tap,
             )
             .await;
             *wire_out = Some(timings);
             result.map_err(|e| LaneFailure::from_wire(&e))?
         }
         AuthMode::OauthSubscription => {
-            call_with_oauth(cell, &url, &attribution, request_json, timeout, wire_out).await?
+            call_with_oauth(
+                cell,
+                &url,
+                &attribution,
+                request_json,
+                timeout,
+                wire_out,
+                tap,
+            )
+            .await?
         }
     };
 
@@ -268,10 +281,12 @@ async fn run_responses_lane(
 /// `POST <base_url>/messages` with the key as `x-api-key` and the app
 /// attribution (`X-Title`, `HTTP-Referer`) as on the other lanes -- the
 /// mapped headers pass, the credential headers stay the wire's
-/// ([`wire::messages_headers`]). One JSON body, one A-timeout; no
-/// continuation (the wire refuses the prefill it would send). A tool turn's
+/// ([`wire::messages_headers`]). One JSON body, one A-timeout -- with
+/// `partial_unit` on one event stream under the same A-timeout (GH #1410);
+/// no continuation (the wire refuses the prefill it would send). A tool turn's
 /// thinking is kept for the next call of its round, and the answer ends the
 /// round `open_round` of this conversation (T10-10, re-check M1).
+#[allow(clippy::too_many_arguments)]
 async fn run_messages_lane(
     cell: &LlmCell,
     db: &mut meclaw_colony::DbConn,
@@ -280,6 +295,7 @@ async fn run_messages_lane(
     timeout: std::time::Duration,
     wire_out: &mut Option<wire::WireTimings>,
     silence_ok: bool,
+    tap: Option<&mut PartialTap<'_>>,
 ) -> Result<TranslatedResponse, LaneFailure> {
     let url = crate::llm::params::endpoint_url(
         cell.params
@@ -296,15 +312,33 @@ async fn run_messages_lane(
             translate_anthropic::THINKING_BINDING_BETA.to_string(),
         ));
     }
-    let (result, timings) = wire::call_messages_timed(
-        &cell.http,
-        &url,
-        cell.bearer(),
-        &attribution,
-        request_json,
-        timeout,
-    )
-    .await;
+    // GH #1410: the stream only with the partials on -- off, the request is
+    // the one of before, byte for byte.
+    let (result, timings) = match tap {
+        Some(t) => {
+            wire::call_messages_streamed_timed(
+                &cell.http,
+                &url,
+                cell.bearer(),
+                &attribution,
+                request_json,
+                timeout,
+                t,
+            )
+            .await
+        }
+        None => {
+            wire::call_messages_timed(
+                &cell.http,
+                &url,
+                cell.bearer(),
+                &attribution,
+                request_json,
+                timeout,
+            )
+            .await
+        }
+    };
     *wire_out = Some(timings);
     let json = result.map_err(|e| LaneFailure::from_wire(&e))?;
     // GH #75: a 2xx body that carries only an `error` object (a proxy in
@@ -397,6 +431,7 @@ async fn call_with_oauth(
     request_json: &Value,
     timeout: std::time::Duration,
     wire_out: &mut Option<wire::WireTimings>,
+    mut tap: Option<&mut PartialTap<'_>>,
 ) -> Result<String, LaneFailure> {
     let auth_ref = cell.params.auth_ref.as_deref().unwrap_or_default();
     let endpoint = cell
@@ -417,27 +452,27 @@ async fn call_with_oauth(
         .await
         .map_err(wire_auth_failure)?;
 
-    let call = |bearer: String, account: Option<String>| {
+    let headers_for = |account: Option<String>| {
         let mut headers =
             translate_responses::build_responses_headers(&cell.params, account.as_deref());
         headers.extend(attribution.to_vec());
-        async move {
-            // The broker's token goes through verbatim: it never crossed a
-            // params boundary, so the GH #271 emptiness rule (which lives at
-            // the `params.api_key` call sites) does not apply to it.
-            wire::call_responses_timed(
-                &cell.http,
-                url,
-                Some(&bearer),
-                &headers,
-                request_json,
-                timeout,
-            )
-            .await
-        }
+        headers
     };
 
-    let (first, first_timings) = call(token.access_token.clone(), token.account_id.clone()).await;
+    // The broker's token goes through verbatim: it never crossed a params
+    // boundary, so the GH #271 emptiness rule (which lives at the
+    // `params.api_key` call sites) does not apply to it. GH #1410: a refused
+    // first attempt answered no text, so the one tap serves both attempts.
+    let (first, first_timings) = wire::call_responses_tapped(
+        &cell.http,
+        url,
+        Some(token.access_token.as_str()),
+        &headers_for(token.account_id.clone()),
+        request_json,
+        timeout,
+        tap.as_deref_mut(),
+    )
+    .await;
     *wire_out = Some(first_timings);
     match first {
         Ok(text) => Ok(text),
@@ -453,8 +488,16 @@ async fn call_with_oauth(
             )
             .await
             .map_err(wire_auth_failure)?;
-            let (retried, retry_timings) =
-                call(fresh.access_token.clone(), fresh.account_id.clone()).await;
+            let (retried, retry_timings) = wire::call_responses_tapped(
+                &cell.http,
+                url,
+                Some(fresh.access_token.as_str()),
+                &headers_for(fresh.account_id.clone()),
+                request_json,
+                timeout,
+                tap,
+            )
+            .await;
             // Both POSTs were spent on this one logical call — report their sum.
             *wire_out = Some(first_timings.plus_attempt(retry_timings));
             match retried {
@@ -1420,6 +1463,9 @@ impl LlmCell {
     /// the backstop never drops an answer a continuation was still adding to.
     /// GH #1350 (review M4/M2): a continuation cut at `tool_call_limit` ends
     /// the round with that error and the answer of the calls before it.
+    /// GH #1410 (review I1): so does a continuation that fails after it
+    /// emitted partials -- the text so far would be shorter than what the
+    /// partials handed out, so it is the error, never a cut answer.
     #[allow(clippy::too_many_arguments)]
     async fn continue_after_length(
         &self,
@@ -1431,6 +1477,7 @@ impl LlmCell {
         started_at_unix_ms: i64,
         mut answer: translate::TranslatedResponse,
         mut cut: Option<String>,
+        mut tap: Option<&mut PartialTap<'_>>,
     ) -> Result<translate::TranslatedResponse, (wire::WireError, Box<translate::TranslatedResponse>)>
     {
         let budget = self.params.effective_max_tokens();
@@ -1488,15 +1535,22 @@ impl LlmCell {
             // streamed and cut at the first call over the limit, answered
             // with the same error (a continuation only starts on an answer
             // without a call, so the whole budget is still open).
-            let (res, _timings) = if self.params.tool_call_limit > 0 {
-                wire::call_openai_streamed_timed(
+            // GH #1410: the partials go on from the text so far, their `seq`
+            // counting on -- one tap for every call of the answer.
+            if let Some(t) = tap.as_mut() {
+                t.rebase(&so_far);
+            }
+            let partials_before = tap.as_ref().map_or(0, |t| t.stats().partials);
+            let (res, _timings) = if self.params.tool_call_limit > 0 || tap.is_some() {
+                wire::call_openai_streamed_tapped(
                     &self.http,
                     url,
                     self.bearer(),
                     headers,
                     &req,
                     call_timeout,
-                    self.params.tool_call_limit,
+                    self.stream_limit(),
+                    tap.as_deref_mut(),
                 )
                 .await
             } else {
@@ -1518,17 +1572,24 @@ impl LlmCell {
             // I-1: a clean continuation stays text); that rest carries no
             // frame and would become text.
             let mut next_cut = None;
-            match res.map_err(|e| format!("{e:?}")).and_then(|j| {
-                translate::parse_openai_response(&j)
-                    .and_then(|mut t| {
-                        if let Some(head) = cut.as_deref() {
-                            sanitize::reopen(&mut t, head);
-                        }
-                        next_cut = sanitize::cut_frame(&t);
-                        sanitize::checked_tool_calls(t, &req)
-                    })
-                    .map_err(|e| format!("{e:?}"))
-            }) {
+            let mut wire_err = None;
+            match res
+                .map_err(|e| {
+                    let line = format!("{e:?}");
+                    wire_err = Some(e);
+                    line
+                })
+                .and_then(|j| {
+                    translate::parse_openai_response(&j)
+                        .and_then(|mut t| {
+                            if let Some(head) = cut.as_deref() {
+                                sanitize::reopen(&mut t, head);
+                            }
+                            next_cut = sanitize::cut_frame(&t);
+                            sanitize::checked_tool_calls(t, &req)
+                        })
+                        .map_err(|e| format!("{e:?}"))
+                }) {
                 Ok(next) => {
                     answer = continuation::joined(&so_far, &answer, next);
                     cut = next_cut;
@@ -1544,6 +1605,13 @@ impl LlmCell {
                             &format!("continuation call failed: {}", e.chars().take(200).collect::<String>())
                         )
                     );
+                    // Review I1: partials of this call went out beyond
+                    // `so_far` -- the error, as for `ToolCallLimit` above;
+                    // a continuation that said nothing keeps the cut answer.
+                    if tap.as_ref().map_or(0, |t| t.stats().partials) > partials_before {
+                        let err = wire_err.unwrap_or(wire::WireError::BodyParse(e));
+                        return Err((err, Box::new(answer)));
+                    }
                     break;
                 }
             }
@@ -1710,6 +1778,38 @@ impl LlmCell {
     /// time. Logging first would have hidden exactly that in the blind spot
     /// GH #124 is about — this way it lands in `handle_ms` and therefore in
     /// `unaccounted_ms`.
+    /// GH #1410: the tap of one call when `partial_unit` is on (never on the
+    /// decisions wire, which refuses the param at birth).
+    fn partial_tap<'s>(
+        &self,
+        sink: &'s OutputSink,
+        target: &Path,
+        partial_of: meclaw_core::Uuid,
+        clock: &latency::PhaseClock,
+    ) -> Option<PartialTap<'s>> {
+        (self.params.partial_unit == PartialUnit::Sentence && !self.params.is_decisions()).then(
+            || {
+                PartialTap::new(
+                    sink,
+                    target.clone(),
+                    partial_of,
+                    self.params.partial_min_chars,
+                    clock.started_at(),
+                )
+            },
+        )
+    }
+
+    /// GH #1350/#1410: the call budget a streamed chat read is cut at;
+    /// without `tool_call_limit` (a stream only for the partials) none.
+    fn stream_limit(&self) -> u32 {
+        if self.params.tool_call_limit > 0 {
+            self.params.tool_call_limit
+        } else {
+            u32::MAX
+        }
+    }
+
     fn log_phases(&self, clock: &latency::PhaseClock, outcome: &str) {
         latency::log_summary(
             &clock.finish(),
@@ -2126,6 +2226,8 @@ impl LlmCell {
             let mut clock = latency::PhaseClock::start();
             let started_at_unix_ms = unix_ms_now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
+            // GH #1410: the call a partial belongs to.
+            let partial_of = msg.id;
 
             // Step 1: parse the input body. Validation failures → emit_error
             // with source="parse", input_messages=[], NO DB write.
@@ -2965,6 +3067,8 @@ impl LlmCell {
                         r
                     })
                 };
+                // GH #1410: the partials of this call, when the cell has them on.
+                let mut tap = self.partial_tap(sink, &reply_target, partial_of, &clock);
                 let outcome = match built {
                     Ok(mut request_json) => {
                         // R-HK-15/16: the window, as on the chat wire.
@@ -3010,11 +3114,18 @@ impl LlmCell {
                                     timeout,
                                     &mut wire_timings,
                                     silence_ok,
+                                    tap.as_mut(),
                                 )
                                 .await
                             } else {
-                                run_responses_lane(self, &request_json, timeout, &mut wire_timings)
-                                    .await
+                                run_responses_lane(
+                                    self,
+                                    &request_json,
+                                    timeout,
+                                    &mut wire_timings,
+                                    tap.as_mut(),
+                                )
+                                .await
                             }
                         }
                     }
@@ -3022,6 +3133,9 @@ impl LlmCell {
                 };
                 if let Some(t) = wire_timings {
                     clock.wired(t);
+                }
+                if let Some(t) = &tap {
+                    clock.partials(t.stats());
                 }
                 let latency_ms = (unix_ms_now() - started_at_unix_ms).max(0) as u64;
                 match outcome {
@@ -3179,15 +3293,19 @@ impl LlmCell {
             // GH #1350: with a call budget the answer is streamed and the
             // read stops at the first call over it (measured: 686 calls in
             // 129 s, cut by the dispatcher only after the whole answer).
-            let (wire_result, wire_timings) = if self.params.tool_call_limit > 0 {
-                wire::call_openai_streamed_timed(
+            // GH #1410: the partials stream the answer as well; without a
+            // call budget no call is cut (`u32::MAX`).
+            let mut tap = self.partial_tap(sink, &reply_target, partial_of, &clock);
+            let (wire_result, wire_timings) = if self.params.tool_call_limit > 0 || tap.is_some() {
+                wire::call_openai_streamed_tapped(
                     &self.http,
                     &url,
                     self.bearer(),
                     &attribution_headers,
                     &request_json,
                     timeout,
-                    self.params.tool_call_limit,
+                    self.stream_limit(),
+                    tap.as_mut(),
                 )
                 .await
             } else {
@@ -3204,6 +3322,9 @@ impl LlmCell {
                 .await
             };
             clock.wired(wire_timings);
+            if let Some(t) = &tap {
+                clock.partials(t.stats());
+            }
             let response_json = match wire_result {
                 Ok(json) => json,
                 Err(err) => {
@@ -3273,8 +3394,12 @@ impl LlmCell {
                     started_at_unix_ms,
                     translated,
                     cut,
+                    tap.as_mut(),
                 )
                 .await;
+            if let Some(t) = &tap {
+                clock.partials(t.stats());
+            }
             let translated = match continued {
                 Ok(t) => t,
                 Err((err, before)) => {

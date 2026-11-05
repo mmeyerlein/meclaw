@@ -263,6 +263,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "provider_idle_timeout_ms",
     "audio_out_frame_ms",
     "speak_plain",
+    "speak_partials",
     "release_grace_ms",
     "stt",
     "tts",
@@ -332,6 +333,17 @@ pub struct VoiceParams {
     /// pipes — never reaches a provider that would read it aloud. `false` hands
     /// the text over exactly as it arrived.
     pub speak_plain: bool,
+    /// Whether a cascade call speaks an answer while it is still being written
+    /// (`speak_partials`, `"0"` default | `"1"`, GH #1411).
+    ///
+    /// With `"1"` a message on route `partial` (the `llm` cell's sentence lane:
+    /// the answer cumulated up to its last sentence boundary) hands what is new
+    /// in it to the synthesis queue at once, the finished answer says only what
+    /// the partials did not, and an error after partials drops the rest. Off,
+    /// every answer is spoken whole exactly as before and a partial is dropped
+    /// (the member's `partial` edge is always wired). A duplex cell always
+    /// drops partials.
+    pub speak_partials: bool,
     /// How long a released `hold` boundary waits for the provider's own
     /// `EndOfTurn` before it cuts with what it has, in milliseconds.
     ///
@@ -1154,6 +1166,7 @@ impl VoiceParams {
         let provider_idle_timeout_ms = read_positive_u64(obj, "provider_idle_timeout_ms", 30000)?;
         let audio_out_frame_ms = read_frame_ms(obj, "audio_out_frame_ms")?;
         let speak_plain = read_bool(obj, "speak_plain", DEFAULT_SPEAK_PLAIN)?;
+        let speak_partials = read_flag01(obj, "speak_partials")?;
         let release_grace_ms = read_release_grace_ms(obj, "release_grace_ms")?;
         let credential_backoff_max_ms = read_positive_u64(
             obj,
@@ -1334,6 +1347,7 @@ impl VoiceParams {
             provider_idle_timeout_ms,
             audio_out_frame_ms,
             speak_plain,
+            speak_partials,
             release_grace_ms,
             stt,
             tts,
@@ -1595,6 +1609,22 @@ fn read_bool(
     }
 }
 
+/// Read a `"0"` | `"1"` switch (absent = `"0"`), refusing anything else by
+/// name.
+fn read_flag01(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    key: &str,
+) -> Result<bool, String> {
+    match obj.get(key) {
+        None => Ok(false),
+        Some(v) => match v.as_str() {
+            Some("0") => Ok(false),
+            Some("1") => Ok(true),
+            _ => Err(format!("{key}: must be \"0\" or \"1\", got {v}")),
+        },
+    }
+}
+
 /// Read the outbound frame length: `0` is legal and means "send what the
 /// provider produced", anything above [`MAX_AUDIO_OUT_FRAME_MS`] is refused.
 ///
@@ -1787,6 +1817,12 @@ pub struct VoiceOverlay {
     /// and in force from the next `in_speak` on: the handler is the half that
     /// does the work, so nothing has to be rebuilt for it.
     pub speak_plain: bool,
+    /// `speak_partials` as its wire form (`"0"` | `"1"`), so the round trip
+    /// goes through [`VoiceParams::parse`]. Mutable, read on every message.
+    /// Not written while `"0"`, so a cell that never orders it stores the
+    /// same overlay bytes as before the key existed.
+    #[serde(skip_serializing_if = "flag01_is_off")]
+    pub speak_partials: String,
     /// How long a released boundary waits for the provider's end. Mutable, and
     /// read at the next `release`: a boundary already draining finishes on the
     /// deadline it was armed with.
@@ -1824,6 +1860,16 @@ pub struct VoiceOverlay {
     pub call_mark_every_s: u64,
 }
 
+/// The wire form of a `"0"` | `"1"` switch.
+pub fn flag01(on: bool) -> String {
+    if on { "1" } else { "0" }.to_string()
+}
+
+/// Whether a `"0"` | `"1"` switch is off (serde skip predicate).
+fn flag01_is_off(v: &str) -> bool {
+    v == "0"
+}
+
 impl OverlayParams for VoiceOverlay {
     /// Every key an update may name. `stt`, `tts` and `duplex` are deliberately
     /// absent.
@@ -1837,6 +1883,7 @@ impl OverlayParams for VoiceOverlay {
         "provider_idle_timeout_ms",
         "audio_out_frame_ms",
         "speak_plain",
+        "speak_partials",
         "release_grace_ms",
         "credential_backoff_max_ms",
     ];
@@ -1876,6 +1923,7 @@ impl OverlayParams for VoiceOverlay {
             provider_idle_timeout_ms,
             audio_out_frame_ms,
             speak_plain,
+            speak_partials,
             release_grace_ms,
             // The provider blocks travel raw (below), credentials included:
             // `split_credential` takes the grant from inside the raw block,
@@ -1905,6 +1953,7 @@ impl OverlayParams for VoiceOverlay {
             provider_idle_timeout_ms,
             audio_out_frame_ms,
             speak_plain,
+            speak_partials: flag01(speak_partials),
             release_grace_ms,
             stt: obj.get("stt").cloned().unwrap_or(JsonValue::Null),
             tts: obj.get("tts").cloned(),

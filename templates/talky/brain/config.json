@@ -18,6 +18,8 @@
     "temperature": 0.3,
     "reasoning_effort": "medium",
     "external_timeout_ms": 1241000,
+    "partial_unit": "off",
+    "partial_min_chars": 12,
     "system_order": [
       "identity",
       "memory",
@@ -60,6 +62,18 @@
         "secret": false,
         "default": "medium",
         "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it."
+      },
+      "partial_unit": {
+        "type": "string",
+        "secret": false,
+        "default": "off",
+        "description": "GH #1410/#1412: `off` (the default, the answer leaves the cell once, as before) or `sentence` -- the cell streams the answer and emits each finished sentence as a partial before the final answer. A set switches it on via override_params; the edge that drains the partials is the topology's choice."
+      },
+      "partial_min_chars": {
+        "type": "number",
+        "secret": false,
+        "default": 12,
+        "description": "GH #1410/#1412: the fewest characters a partial adds to the one before it; a shorter sentence waits for the next boundary. Only read with `partial_unit` `sentence`."
       },
       "external_timeout_ms_row": {
         "type": "string",

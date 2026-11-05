@@ -53,6 +53,11 @@ pub struct ProxyParams {
     /// the backstop this colony hands a cell that declares none
     /// (`message_timeout_default_ms`, as resolved for this cell). Immutable.
     pub typing_max_ms: Option<u64>,
+    /// GH #1411: how a `partial` of an `llm` cell reaches the chat --
+    /// `"off"` (default, a partial is dropped silently) or
+    /// `"first_sentence"` (the first partial of a turn at once, the final
+    /// answer only with the rest; `proxy::partial`). Immutable.
+    pub partial_delivery: crate::proxy::partial::PartialDelivery,
 }
 
 /// β: the `proxy` runtime-overlay projection — the mutable, runtime-tunable
@@ -92,6 +97,7 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
         "credential_wait_ms",
         "credential_backoff_max_ms",
         "typing_max_ms",
+        "partial_delivery",
     ];
     // GH #907: `max_document_bytes` is read at birth into the one client the
     // handler and the I/O task share; a runtime change would have to rebuild
@@ -106,6 +112,7 @@ impl crate::params_overlay::OverlayParams for ProxyOverlay {
         "credential_wait_ms",
         "credential_backoff_max_ms",
         "typing_max_ms",
+        "partial_delivery",
     ];
     fn parse(raw: &JsonValue) -> Result<Self, String> {
         let obj = raw.as_object().ok_or("params: must be object")?;
@@ -248,10 +255,13 @@ impl ProxyParams {
             ),
         };
 
+        let partial_delivery = crate::proxy::partial::PartialDelivery::parse(obj)?;
+
         Ok(Self {
             bot_token,
             emit_to: Path::new(emit_to_s),
             typing_max_ms,
+            partial_delivery,
             long_poll_timeout_ms,
             long_poll_request_secs,
             send_timeout_ms,
@@ -262,5 +272,30 @@ impl ProxyParams {
             credential_wait_ms,
             credential_backoff_max_ms,
         })
+    }
+}
+
+#[cfg(test)]
+mod partial_delivery_tests {
+    use super::*;
+    use crate::proxy::partial::PartialDelivery;
+    use serde_json::json;
+
+    fn params(extra: JsonValue) -> JsonValue {
+        let mut v = json!({"bot_token": "T", "emit_to": "/dst"});
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    }
+
+    #[test]
+    fn partial_delivery_defaults_to_off_reads_its_value_and_refuses_a_foreign_one() {
+        let p = ProxyParams::parse(&params(json!({}))).unwrap();
+        assert_eq!(p.partial_delivery, PartialDelivery::Off);
+        let p = ProxyParams::parse(&params(json!({"partial_delivery": "first_sentence"}))).unwrap();
+        assert_eq!(p.partial_delivery, PartialDelivery::FirstSentence);
+        let e = ProxyParams::parse(&params(json!({"partial_delivery": "all"}))).unwrap_err();
+        assert!(e.contains("partial_delivery"), "{e}");
     }
 }

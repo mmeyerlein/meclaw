@@ -1443,6 +1443,45 @@ mod tests {
         }
     }
 
+    // ───── GH #1376: the argus door's port of this rule ─────
+
+    /// The argus door (a python code cell) redacts every URL in an error's
+    /// detail before it stores the detail as a hint, and it cannot call this
+    /// function, so it carries a port (`templates/argus/door`, GH #1376). One
+    /// table holds both sides to the same answers: this test runs every case
+    /// through [`redact_url`] and the word lists against the constants, the
+    /// argus test (`gh1376_argus_takes_an_error_as_a_hint`) runs the same
+    /// table through the port. A word or a case changed on one side only is
+    /// red on the other.
+    #[test]
+    fn gh1376_redact_url_matches_the_shared_parity_table() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/gh1376_redact_url_parity.json"
+        );
+        let raw = std::fs::read_to_string(path).expect("the parity table is readable");
+        let table: Value = meclaw_core::serde_json::from_str(&raw).expect("the table is json");
+        let words = |key: &str| -> Vec<String> {
+            table[key]
+                .as_array()
+                .expect("a word list")
+                .iter()
+                .map(|w| w.as_str().expect("a word").to_string())
+                .collect()
+        };
+        assert_eq!(words("strong_secret_words"), STRONG_SECRET_WORDS);
+        assert_eq!(words("weak_secret_words"), WEAK_SECRET_WORDS);
+        assert_eq!(table["redacted"], REDACTED);
+        assert_eq!(table["redacted_whole"], REDACTED_WHOLE);
+        let cases = table["cases"].as_array().expect("cases");
+        assert!(cases.len() >= 20, "the table lost its cases");
+        for case in cases {
+            let input = case["in"].as_str().expect("in");
+            let want = case["out"].as_str().expect("out");
+            assert_eq!(redact_url(input), want, "{}: {input:?}", case["why"]);
+        }
+    }
+
     // ───── GH #117: the private-network deny matrix ─────
 
     /// Every range the deny matrix must refuse, with the label it must name.

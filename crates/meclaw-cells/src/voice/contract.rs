@@ -424,6 +424,11 @@ pub enum DuplexEvent {
     Warning {
         /// Human-readable cause. Never carries a credential.
         detail: String,
+        /// The provider's own error code, when it named one in identifier
+        /// form (GH #1376). It reaches the error lane as
+        /// `meta.provider_code`, so a reader can tell a spent quota from a
+        /// bad request without parsing the detail.
+        provider_code: Option<String>,
     },
     /// The session is over and this is the final meter reading.
     Closed {
@@ -483,6 +488,15 @@ pub enum DuplexError {
     Auth(String),
     /// The provider spoke something this adapter does not understand.
     Protocol(String),
+    /// The provider refused the session with an error event that named its
+    /// own code (GH #1376). Displays exactly like [`Self::Protocol`], so the
+    /// `detail` on the error lane does not move; the code travels apart.
+    Refused {
+        /// The provider's code, already in identifier form.
+        code: String,
+        /// The human-readable half of the error event.
+        message: String,
+    },
     /// An A-timeout (rule 12) elapsed around a bounded provider operation.
     Timeout,
     /// The provider closed the session on its side, mid-conversation.
@@ -491,12 +505,25 @@ pub enum DuplexError {
     Unavailable(String),
 }
 
+impl DuplexError {
+    /// The provider's own error code, when the failure carried one.
+    pub fn provider_code(&self) -> Option<&str> {
+        match self {
+            DuplexError::Refused { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for DuplexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DuplexError::Connect(e) => write!(f, "duplex connect failed: {e}"),
             DuplexError::Auth(e) => write!(f, "duplex rejected credentials: {e}"),
             DuplexError::Protocol(e) => write!(f, "duplex protocol error: {e}"),
+            DuplexError::Refused { message, .. } => {
+                write!(f, "duplex protocol error: {message}")
+            }
             DuplexError::Timeout => write!(f, "duplex operation timed out"),
             DuplexError::Closed(e) => write!(f, "duplex session closed: {e}"),
             DuplexError::Unavailable(e) => write!(f, "duplex provider unavailable: {e}"),

@@ -72,7 +72,7 @@ pub struct FakeSession {
     hang_up: Option<oneshot::Sender<()>>,
     /// Where the fake renews: ends the provider's task at once, while this
     /// handle keeps its event channel open ([`Self::stop`]). `None` elsewhere.
-    stop: Option<oneshot::Sender<oneshot::Sender<()>>>,
+    stop: Option<oneshot::Sender<(oneshot::Sender<()>, Option<String>)>>,
 }
 
 impl FakeSession {
@@ -117,11 +117,23 @@ impl FakeSession {
     /// end of its events, held open for as long as the test likes: the
     /// connection can only tell by the senders it holds.
     pub async fn stop(&mut self) {
+        self.end_task(None).await;
+    }
+
+    /// Like [`Self::stop`], but the provider task ends with the provider's
+    /// own refusal: `DuplexError::Refused` carrying `code`, the verdict a
+    /// renewal refused for a spent quota returns (review m1, GH #1376).
+    pub async fn refuse(&mut self, code: &str) {
+        self.end_task(Some(code.to_string())).await;
+    }
+
+    /// Ends the provider task, with an ordinary verdict or a refusal.
+    async fn end_task(&mut self, refused: Option<String>) {
         let Some(tx) = self.stop.take() else {
             panic!("stop() is a knob of the renewing fake")
         };
         let (ack_tx, ack_rx) = oneshot::channel();
-        tx.send(ack_tx)
+        tx.send((ack_tx, refused))
             .expect("the session's provider task is still running");
         ack_rx
             .await
@@ -266,7 +278,8 @@ impl FakeDuplex {
             }
             let (finish_tx, finish_rx) = oneshot::channel::<()>();
             let (hang_up_tx, mut hang_up_rx) = oneshot::channel::<()>();
-            let (stop_tx, mut stop_rx) = oneshot::channel::<oneshot::Sender<()>>();
+            let (stop_tx, mut stop_rx) =
+                oneshot::channel::<(oneshot::Sender<()>, Option<String>)>();
             let (finish_tx, hang_up_tx, stop_tx) = if renewing {
                 (Some(finish_tx), Some(hang_up_tx), Some(stop_tx))
             } else {
@@ -326,6 +339,7 @@ impl FakeDuplex {
                             let _ = events
                                 .send(DuplexEvent::Warning {
                                     detail: "socket ended mid-session".to_string(),
+                                    provider_code: None,
                                 })
                                 .await;
                             let _ = events
@@ -344,11 +358,17 @@ impl FakeDuplex {
                     signal = &mut stop_rx, if stop_armed => match signal {
                         // Gone: the way in and the control channel drop here,
                         // the event channel stays with the handle.
-                        Ok(ack) => {
+                        Ok((ack, refused)) => {
                             drop(audio_in);
                             drop(control);
                             let _ = ack.send(());
-                            return Ok(());
+                            return match refused {
+                                Some(code) => Err(DuplexError::Refused {
+                                    code,
+                                    message: "the provider refused the session".to_string(),
+                                }),
+                                None => Ok(()),
+                            };
                         }
                         Err(_) => stop_armed = false,
                     },

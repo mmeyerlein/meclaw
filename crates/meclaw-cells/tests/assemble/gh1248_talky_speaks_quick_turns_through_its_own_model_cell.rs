@@ -142,7 +142,16 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
     let tap = edge(&edges, "./quick", "./curator", "finish_reason");
     assert_eq!(tap["modifier"]["set_hop"]["route"], "'in_llm'", "{tap}");
     edge(&edges, "./quick", "./errors", "'error'");
-    let refused = edge(&edges, "./quick", ".", "refused_subscriber");
+    // GH #1411: the `partial` exit names `!has(hop.refused_subscriber)` too,
+    // so the refusal's own way back is the edge whose condition is exactly it.
+    let refused = edges
+        .iter()
+        .find(|e| {
+            e["from"] == "./quick"
+                && e["to"] == "."
+                && e["condition"] == "has(hop.refused_subscriber)"
+        })
+        .expect("talky has no refusal way back out of ./quick");
     assert_eq!(
         refused["modifier"]["set_hop"]["route"], "'model_refused'",
         "{refused}"

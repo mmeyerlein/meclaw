@@ -857,13 +857,16 @@ fn the_boundary_matches_the_member_this_level_is_instantiated_into() {
         // GH #1255: the sent answer goes into the person's apps container, where
         // the app that checks it is bound on its section, like a sidecar section.
         "answer_check",
+        // GH #1411: a streamed sentence of the answer goes to the channel
+        // `context.channel_node` names, like the `answer` it is a prefix of.
+        "partial",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
     assert_eq!(
         consumed_by_the_member, want,
-        "the member consumes exactly the eleven lanes of this level it has a holder for: the \
+        "the member consumes exactly the twelve lanes of this level it has a holder for: the \
          `answer` goes to a channel of the PERSON (GH #454), `recall` and `sidecar` to \
          the memory that belongs to the person (GH #122), `write` is fanned onto the \
          memory's close pass as well as leaving the level (GH #447), `turn_write` is fanned \

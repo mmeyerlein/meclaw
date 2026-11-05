@@ -13,6 +13,7 @@
     "provider_idle_timeout_ms": 30000,
     "audio_out_frame_ms": 20,
     "speak_plain": true,
+    "speak_partials": "0",
     "release_grace_ms": 2500,
     "emit_usage": false,
     "call_marks_s": [],
@@ -113,6 +114,12 @@
         "secret": false,
         "default": true,
         "description": "Whether a written answer becomes speech text before it is synthesised: markdown emphasis (*, **, _, __, backticks), heading hashes, list markers, link and image syntax (the text and the alt text stay), code fences (the code stays) and table pipes (a row becomes its cells, joined by commas) are removed, and a line break becomes a sentence end. An assistant writes for a screen without being asked to, and a synthesis provider reads what it is given -- the first live call of this cell had Cartesia pronouncing the stars around a bolded word. Two shapes are kept on purpose: a * or _ with whitespace on both sides is an arithmetic operator, and an ordinal at the start of a line keeps its digit ('5. September 2026' -> '5 September 2026'), because a date and a list item look identical there. An answer with no words left in it is neither spoken nor refused. Set false where the answers are already plain and the text must reach the provider byte for byte."
+      },
+      "speak_partials": {
+        "type": "string",
+        "secret": false,
+        "default": "0",
+        "description": "GH #1411/#1412: `\"0\"` (the default, only the final answer is spoken, as before) or `\"1\"` -- on a cascade call a partial sentence of the answer is synthesised as it arrives, and the final answer speaks only what is left; a duplex cell always drops partials. A set switches it on via override_params."
       },
       "release_grace_ms": {
         "type": "number",

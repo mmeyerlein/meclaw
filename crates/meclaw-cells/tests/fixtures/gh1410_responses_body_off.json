@@ -1,0 +1,21 @@
+{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "hello",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "max_output_tokens": 256,
+  "model": "sse-model",
+  "parallel_tool_calls": false,
+  "store": false,
+  "stream": true,
+  "temperature": 0.7,
+  "tool_choice": "auto"
+}

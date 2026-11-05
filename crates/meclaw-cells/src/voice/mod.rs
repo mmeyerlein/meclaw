@@ -39,6 +39,7 @@ pub mod params;
 pub mod providers;
 pub mod service;
 pub mod speech_text;
+pub mod spoken_partials;
 pub mod testpage;
 pub mod turns;
 pub mod vaulted;

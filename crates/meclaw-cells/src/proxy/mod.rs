@@ -10,6 +10,7 @@ pub mod factory;
 pub mod io;
 pub mod meclaw;
 pub mod params;
+pub mod partial;
 pub mod platform;
 pub mod slack;
 pub mod telegram;

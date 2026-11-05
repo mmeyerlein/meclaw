@@ -97,7 +97,7 @@ async fn voice_duplex_gpt_live_warns_when_the_socket_tears() {
         warning < closed,
         "the warning is part of this session, not a postscript to it: {seen:?}"
     );
-    let DuplexEvent::Warning { detail } = &seen[warning] else {
+    let DuplexEvent::Warning { detail, .. } = &seen[warning] else {
         unreachable!("checked above")
     };
     assert!(

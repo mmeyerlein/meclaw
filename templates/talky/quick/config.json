@@ -23,6 +23,8 @@
     "external_timeout_ms": 1241000,
     "external_timeout_from_chain": true,
     "tool_call_limit": 16,
+    "partial_unit": "off",
+    "partial_min_chars": 12,
     "system_order": [
       "identity",
       "memory",
@@ -71,6 +73,18 @@
         "secret": false,
         "default": 16,
         "description": "GH #1350: the most tool calls one answer may carry -- the budget of `./dispatcher` (`max_calls`), held equal by a lock. Set, the cell streams the answer and stops at the first call over it with `provider_error` / `tool_call_limit`, so a runaway round ends there instead of after its whole answer, and the next turn does not wait behind it in this serial cell. 0 = no limit."
+      },
+      "partial_unit": {
+        "type": "string",
+        "secret": false,
+        "default": "off",
+        "description": "GH #1410/#1412: `off` (the default, the answer leaves the cell once, as before) or `sentence` -- the cell streams the answer and emits each finished sentence as a partial before the final answer. A set switches it on via override_params; the edge that drains the partials is the topology's choice."
+      },
+      "partial_min_chars": {
+        "type": "number",
+        "secret": false,
+        "default": 12,
+        "description": "GH #1410/#1412: the fewest characters a partial adds to the one before it; a shorter sentence waits for the next boundary. Only read with `partial_unit` `sentence`."
       },
       "external_timeout_ms_row": {
         "type": "string",

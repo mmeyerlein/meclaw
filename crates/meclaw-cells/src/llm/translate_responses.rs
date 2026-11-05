@@ -319,6 +319,33 @@ pub(crate) fn attach_input_images(
     }
 }
 
+/// GH #1410: the partial-lane meaning of one SSE `data:` payload, read while
+/// the stream still runs. The deltas stay display-only for the answer
+/// ([`parse_responses_sse`] reads the done items); here they are exactly
+/// what the `partial` lane displays: `response.output_text.delta` is visible
+/// text, a `function_call` item that opens closes the text before it, every
+/// other `*.delta` (reasoning, call arguments) only marks the first token.
+pub(crate) fn stream_signal(data: &str) -> crate::llm::wire::StreamSignal {
+    use crate::llm::wire::StreamSignal;
+    let Ok(event) = serde_json::from_str::<Value>(data) else {
+        return StreamSignal::Nothing;
+    };
+    let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "response.output_text.delta" => match event.get("delta").and_then(Value::as_str) {
+            Some(d) => StreamSignal::Text(d.to_string()),
+            None => StreamSignal::Nothing,
+        },
+        "response.output_item.added"
+            if event.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
+        {
+            StreamSignal::ToolCall
+        }
+        k if k.ends_with(".delta") => StreamSignal::Token,
+        _ => StreamSignal::Nothing,
+    }
+}
+
 /// Parse a Responses SSE body into UBF turns + meta.
 ///
 /// Follows the reference's rule: the deltas

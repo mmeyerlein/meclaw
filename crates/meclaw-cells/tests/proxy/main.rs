@@ -6,6 +6,8 @@ pub mod gh1059_grants;
 pub mod gh1059_slack_grant;
 pub mod gh1059_telegram_grant;
 pub mod gh1105_proxy_meclaw_client_secret_grant;
+pub mod gh1411_telegram_partials_reach_only_surface_channels;
+pub mod gh1411_telegram_sends_the_first_sentence_first;
 pub mod gh677_the_proxy_example_strips_the_prefix;
 pub mod gh907_a_pdf_from_telegram_is_read_by_its_address;
 pub mod proxy_db_round_trip;

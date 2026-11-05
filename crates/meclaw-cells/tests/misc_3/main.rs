@@ -1,6 +1,7 @@
 //! Test harness `misc_3` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+pub mod gh291_the_shipped_memory_hive_instantiates;
 pub mod gh292_every_ctx_key_is_declared;
 pub mod gh296_the_bundle_is_payload_not_plumbing;
 pub mod gh297_a_leg_may_come_back_short;
@@ -60,6 +61,5 @@ pub mod gh438_two_submissions_do_not_swap_receipts;
 pub mod gh447_the_member_fires_the_close_pass;
 pub mod gh449_the_hardline_is_not_a_row;
 pub mod gh450_a_turn_can_wait_for_a_person;
-pub mod gh453_the_seeded_subscription_pushes_after_subscribe;
 #[path = "../support_14b.rs"]
 pub mod support;

@@ -959,7 +959,11 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// (`. -> ./close` on `in_call_end`). Two talkies, two keepers: 2 x 1 + 2 x 1.
 /// Measured red in the strand's run (605 against 601 before the rebase onto
 /// GH #1398).
-const EDGES: usize = 629;
+/// Moved 629 -> 633 with GH #1411 (a sentence while the model streams): every
+/// `talky` two edges more (`./brain -> .` and `./quick -> .` on `partial`,
+/// 120 -> 122 in `templates/talky/README.md`). Two talkies: 2 x 2. Measured
+/// red in the wave's second gate (633 against 629).
+const EDGES: usize = 633;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "argus@1.4.4"
+    "template": "argus@1.5.0"
   },
   "override_params": {
     "judge": {

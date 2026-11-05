@@ -4157,8 +4157,16 @@ meclaw: watchdog trip - colony heartbeat lost for 5 consecutive supervisor perio
   [starved=colony_loop silent_for=500ms nominal_window=500ms supervisor_lag=0ms
    in_flight_work=false work_item_budget=5000ms witness=kept witness_missed=0/5
    beats_seen=3 armed_for=801ms colony_task=alive work_item=none cpu_denied=0ms
-   cells_at_boot=3 on_trip=exit]
+   beats_dropped=0 last_marks=[-503ms working, -501ms writer-send:dlq>]]
+  cells_at_boot=3 on_trip=exit
 ```
+
+`beats_dropped` counts the beats refused by a full channel since arming, and `last_marks` shows the
+loop's last 16 words with their distance to the trip (phases, refused beats as `dropped:<word>`, steps
+as `<step>>`/`<step><`, an open step is the one the trip fell into); both are diagnosis, no verdict
+reads them (GH #1372). The blob offload in the loop declares itself as work
+(`work_item=blob-offload`), and a phase beat refused by a full channel no longer falsifies the phase:
+the supervisor reads the last word said from the trail the source writes (GH #1372).
 
 `starved` is the diagnosis, derived from three pieces of evidence: the witness, the loop's last
 declared phase and `supervisor_lag`.

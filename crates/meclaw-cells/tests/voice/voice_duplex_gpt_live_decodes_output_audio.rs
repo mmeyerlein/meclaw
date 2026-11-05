@@ -125,7 +125,7 @@ async fn voice_duplex_gpt_live_decodes_output_audio() {
     );
 
     match next_event(&mut session.events).await {
-        DuplexEvent::Warning { detail } => {
+        DuplexEvent::Warning { detail, .. } => {
             assert!(
                 detail.contains("output_audio"),
                 "the warning says which frame it was about: {detail}"

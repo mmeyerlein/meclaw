@@ -9,6 +9,7 @@ pub mod duplex_cell;
 pub mod gh1016_nothing_is_said_after_the_call_ended;
 pub mod gh1055_a_ringing_call_finds_its_model_ready;
 pub mod gh1276_a_speaker_turn_passes_no_cold_code_cell;
+pub mod gh1376_a_provider_error_code_reaches_meta;
 pub mod gh1377_a_provider_abort_is_recovered;
 pub mod gh1403_a_fault_close_is_recovered;
 pub mod gh728_a_late_answer_after_a_turn_change_is_not_spoken;

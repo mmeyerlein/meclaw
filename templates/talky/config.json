@@ -205,6 +205,10 @@
           "because": "a turn the route cell stamped `complex` or `research` (GH #1247, R-WP-5, R-WP-9), handed by the curator straight to the backend without a call of the voice model: `messages[]` the whole window, `hop.consult_id` and `hop.consult_class` (`consult` or `research`). The parent routes it to its backend like a `consult_cogny` tool call, and the answer comes back on `in_advice`, where the voice model speaks it"
         },
         {
+          "route": "partial",
+          "because": "GH #1411: a sentence of an answer while the model still streams it -- the `partial` lane of `./quick` or `./brain` (`docs/cell-types.md` § llm), handed STRAIGHT from the model to this rim and never through `./splitter`, `./dispatcher`, `./collector` or `./curator`, so no ledger, window, memory or counselor ever holds a half answer. Hop `route` \"partial\", `seq`, `final` false, `partial_of`; body one assistant message whose `text` is cumulative and a prefix of the finished answer that follows on `answer`. It carries no `finish_reason`, so no edge drawn on one fires on it. Only a model whose `partial_unit` is switched on emits it (off as shipped: nothing travels here); a parent draws it to the surface channel that asked for the turn and to nothing else"
+        },
+        {
           "route": "error",
           "because": "a normalised failure report. The parent MUST wire it -- unwired it dead-letters, loudly. Since GH #1079 it also carries the refusals of the word-for-word check (the splitter's knob `sidecar_verify`): one report per item of a section whose quoted field did not stand in its source, `hop.error_source` `sidecar_verify`, `hop.error_code` = `hop.reject_reason` (`quote_missing` or `quote_not_in_source`; since GH #1225, for an item checked at the source it names itself, also `source_missing`, `source_unknown` or `store_error`), `hop.section`, `hop.field`, `hop.episode_turn_id` beside `session_id` and `turn_id` -- never the item's words. A parent counts them by class; the section itself leaves on `sidecar` without the item"
         },
@@ -672,6 +676,60 @@
           "from": "./quick_bridge",
           "to": "./splitter",
           "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+        },
+        {
+          "from": "./brain",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'partial'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./quick",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.spec) && context.spec == '1')",
+          "modifier": {
+            "set_hop": {
+              "route": "'partial'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
         },
         {
           "from": "./curator",

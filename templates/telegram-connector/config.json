@@ -10,7 +10,8 @@
     "query_timeout_ms": 5000,
     "max_document_bytes": 20971520,
     "base_url": "https://api.telegram.org",
-    "typing_max_ms": 3364000
+    "typing_max_ms": 3364000,
+    "partial_delivery": "off"
   },
   "contract": {
     "version": "1.0.0",
@@ -44,6 +45,12 @@
         "secret": false,
         "default": 10000,
         "description": "Client-side timeout around sendMessage"
+      },
+      "partial_delivery": {
+        "type": "string",
+        "secret": false,
+        "default": "off",
+        "description": "GH #1410/#1412: `off` (the default, one message per answer, as before) or `first_sentence` -- the first partial of a turn leaves at once as its own message and the final answer follows with the rest. A set switches it on via override_params."
       }
     },
     "emits": {

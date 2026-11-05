@@ -2240,10 +2240,12 @@ async fn report_failed_renewal(
         done_rx,
         ..
     } = failed.run;
-    let why = match tokio::time::timeout(shared.external_timeout, done_rx).await {
-        Ok(Ok(Ok(()))) => "the provider ended it".to_string(),
-        Ok(Ok(Err(e))) => e.to_string(),
-        Ok(Err(_)) | Err(_) => "the renewal ended without a verdict".to_string(),
+    // A renewal refused with the provider's own code (a spent quota on the
+    // new session) carries it like a refused start does (review m1, GH #1376).
+    let (why, provider_code) = match tokio::time::timeout(shared.external_timeout, done_rx).await {
+        Ok(Ok(Ok(()))) => ("the provider ended it".to_string(), None),
+        Ok(Ok(Err(e))) => (e.to_string(), e.provider_code().map(str::to_string)),
+        Ok(Err(_)) | Err(_) => ("the renewal ended without a verdict".to_string(), None),
     };
     let mut moved = false;
     while let Ok(event) = events_rx.try_recv() {
@@ -2265,6 +2267,7 @@ async fn report_failed_renewal(
             session_id: session_id.to_string(),
             event: DuplexEvent::Warning {
                 detail: format!("the renewed duplex session ended before it took over: {why}"),
+                provider_code,
             },
         })
         .await;
@@ -3423,11 +3426,11 @@ async fn run_duplex(
                     }
                     // A fault the new session survived is the colony's to
                     // read, whether or not that session is in charge yet.
-                    RenewalTick::Event(Some(DuplexEvent::Warning { detail })) => {
+                    RenewalTick::Event(Some(w @ DuplexEvent::Warning { .. })) => {
                         shared.liveness.mark_success();
                         shared.emit(VoiceEvent::Live {
                             session_id: session_id.clone(),
-                            event: DuplexEvent::Warning { detail },
+                            event: w,
                         }).await;
                     }
                     RenewalTick::Event(Some(other)) => {
@@ -3713,6 +3716,7 @@ async fn run_duplex(
                             "the provider ended the duplex session mid-call ({cause}); \
                              {recoveries} of recover_max {recover_max} recoveries spent"
                         ),
+                        provider_code: None,
                     })
                     .await;
                 closing = Some(1011);
@@ -3731,6 +3735,7 @@ async fn run_duplex(
                     .emit(VoiceEvent::DuplexFailed {
                         session_id: session_id.clone(),
                         detail: e.to_string(),
+                        provider_code: e.provider_code().map(str::to_string),
                     })
                     .await;
                 closing = Some(1011);
@@ -4400,6 +4405,7 @@ mod tests {
             DuplexEvent::Muted,
             DuplexEvent::Warning {
                 detail: "x".to_string(),
+                provider_code: None,
             },
         ] {
             assert_eq!(

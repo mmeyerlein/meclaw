@@ -130,6 +130,47 @@ pub enum CacheMode {
     Breakpoints,
 }
 
+/// GH #1410: whether the cell hands its answer out sentence by sentence on
+/// the `partial` lane while the provider still streams it.
+///
+/// `off` (the default) = no partial, and every request is the request of
+/// before, byte for byte. `sentence` streams the call (chat completions,
+/// Responses, the Messages wire) and emits one `route: "partial"` message at
+/// each sentence boundary of the visible text -- cumulative, a prefix of the
+/// answer, never cut inside tool-call arguments or thinking. The answer itself
+/// is unchanged. The `decisions` wire takes no partials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartialUnit {
+    /// No partial output; the wire of before.
+    #[default]
+    Off,
+    /// One partial per sentence boundary (`.`, `!`, `?` or `…`, then
+    /// whitespace) of the visible text.
+    Sentence,
+}
+
+impl PartialUnit {
+    /// Whether this is the default (`off`) -- kept out of the serialized
+    /// params so a cell without the knob serializes as before.
+    pub fn is_off(&self) -> bool {
+        *self == PartialUnit::Off
+    }
+}
+
+/// GH #1410: the default of `partial_min_chars` -- a sentence of fewer
+/// characters joins the next one (a bare "Yes." is no reaction worth a
+/// message of its own).
+pub const DEFAULT_PARTIAL_MIN_CHARS: u32 = 12;
+
+fn default_partial_min_chars() -> u32 {
+    DEFAULT_PARTIAL_MIN_CHARS
+}
+
+fn is_default_partial_min_chars(n: &u32) -> bool {
+    *n == DEFAULT_PARTIAL_MIN_CHARS
+}
+
 /// Which provider wire format the cell speaks (P10).
 ///
 /// Deliberately orthogonal to `provider`: the Responses API is the SAME vendor
@@ -498,6 +539,19 @@ pub struct LlmParams {
     /// the Messages wire, where the dispatcher's budget stays the bound.
     #[serde(default)]
     pub tool_call_limit: u32,
+    /// GH #1410: `off` (the default) or `sentence` -- see [`PartialUnit`].
+    /// Not a package key: which cell speaks to a person is the topology's
+    /// choice, not the model's.
+    #[serde(default, skip_serializing_if = "PartialUnit::is_off")]
+    pub partial_unit: PartialUnit,
+    /// GH #1410: the fewest characters a partial adds to the one before it;
+    /// a shorter sentence waits for the next boundary. Default
+    /// [`DEFAULT_PARTIAL_MIN_CHARS`]; only read with `partial_unit` on.
+    #[serde(
+        default = "default_partial_min_chars",
+        skip_serializing_if = "is_default_partial_min_chars"
+    )]
+    pub partial_min_chars: u32,
     /// R-HK-15/16: the prompt size, in tokens, from which a rebuild of the
     /// window pays for this model -- the curator's soft bound. The cell does
     /// nothing with it but stamp it (`hop.input_soft`, only above 0). 0 (the
@@ -1198,6 +1252,9 @@ impl LlmParams {
         if self.thinking_budget.is_some() {
             named.push("thinking_budget".into());
         }
+        if self.partial_unit != PartialUnit::Off {
+            named.push("partial_unit".into());
+        }
         // `tools`, `tool_choice`, `response_format` and `stream` can only
         // reach a request through the pass-through map; the decisions wire
         // takes no pass-through at all, so every key in it is named.
@@ -1502,6 +1559,9 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "length_continuations",
     // GH #1350: the call budget the chat wire stops a streamed answer at.
     "tool_call_limit",
+    // GH #1410: the sentence partials of the `partial` lane.
+    "partial_unit",
+    "partial_min_chars",
     "output_tps",
     // GH #1350 (review I1): the cell derives its timeout from a pushed rate.
     "external_timeout_from_chain",
@@ -2634,6 +2694,42 @@ mod tests {
 
     fn decisions_raw() -> serde_json::Value {
         json!({"provider": "decisions", "model": "", "base_url": "", "api_key": "x"})
+    }
+
+    /// GH #1410 (review M1): `partial_unit` takes `off` and `sentence` only
+    /// -- an unknown unit is a spawn reject and an invalid update -- and the
+    /// decisions wire refuses it by name.
+    #[test]
+    fn partial_unit_takes_off_and_sentence_and_decisions_refuses_it() {
+        let raw = json!({"provider": "openai", "model": "m", "api_key": "k",
+                         "partial_unit": "word"});
+        assert!(
+            LlmParams::parse(&raw).is_err(),
+            "an unknown unit is a spawn reject"
+        );
+        let base = LlmParams::parse(&json!({"provider": "openai", "model": "m",
+                                            "api_key": "k"}))
+        .unwrap();
+        let update = json!({"partial_unit": "word"}).as_object().unwrap().clone();
+        assert!(matches!(
+            base.apply_update(&update),
+            Err(super::ParamUpdateError::Invalid(_))
+        ));
+        let update = json!({"partial_unit": "sentence"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(base.apply_update(&update).is_ok());
+        let mut d = decisions_raw();
+        d["partial_unit"] = json!("sentence");
+        let err = LlmParams::parse(&d).unwrap_err();
+        assert!(err.contains("partial_unit"), "{err}");
+        let mut d = decisions_raw();
+        d["partial_unit"] = json!("off");
+        assert!(
+            LlmParams::parse(&d).is_ok(),
+            "off is the default, not refused"
+        );
     }
 
     #[test]

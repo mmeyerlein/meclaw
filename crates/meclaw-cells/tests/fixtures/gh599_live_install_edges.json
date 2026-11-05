@@ -78,7 +78,7 @@
       {
         "from": "./channels",
         "to": "./apps",
-        "condition": "has(hop.route) && hop.route == 'partial'"
+        "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.partial_of)"
       },
       {
         "from": "./apps",
@@ -451,7 +451,7 @@
       {
         "from": "./channels",
         "to": "./apps",
-        "condition": "has(hop.route) && hop.route == 'partial'"
+        "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.partial_of)"
       },
       {
         "from": "./apps",

@@ -262,6 +262,21 @@ fn gh1382_c_a_kept_speculation_is_unchanged() {
     }
     let mut edges = Vec::new();
     quick_edges(&read_json(&repo("templates/talky/config.json")), &mut edges);
+    // GH #1411 came after 6.13.0: the rim edge that hands a streamed sentence
+    // (`partial`) out of talky. It is not part of the lock, but it must keep
+    // the promise the lock stands for -- a speculation sends nothing out.
+    let partial = |c: &str| c.starts_with("has(hop.route) && hop.route == 'partial'");
+    let rim: Vec<(String, String)> = edges.iter().filter(|(_, c)| partial(c)).cloned().collect();
+    assert_eq!(rim.len(), 1, "one partial rim edge out of ./quick: {rim:?}");
+    assert_eq!(rim[0].0, ".", "{rim:?}");
+    assert!(
+        rim[0]
+            .1
+            .ends_with("!(has(context.spec) && context.spec == '1')")
+            && rim[0].1.contains("!has(hop.finish_reason)"),
+        "a speculation never streams out: {rim:?}"
+    );
+    edges.retain(|(_, c)| !partial(c));
     let want: Vec<(String, String)> = QUICK_EDGES_6_13_0
         .iter()
         .map(|(t, c)| (t.to_string(), c.to_string()))

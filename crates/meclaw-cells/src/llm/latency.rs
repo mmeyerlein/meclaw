@@ -15,6 +15,7 @@
 //! Nothing here touches the message body: instrumentation is tracing fields
 //! only — no new UBF slot, no substrate change.
 
+use crate::llm::partial::PartialStats;
 use crate::llm::wire::WireTimings;
 
 /// Tracing target of the instrumentation. Kept out of the module path so an
@@ -42,6 +43,10 @@ pub(crate) struct PhaseTimings {
     pub wire: Option<WireTimings>,
     /// The whole `handle()`, from entry to just before the emission.
     pub handle_ms: u64,
+    /// GH #1410: the first token, the first partial and the partial count of
+    /// a call with `partial_unit` on; `None` (and no field on the line)
+    /// without it.
+    pub partial: Option<PartialStats>,
 }
 
 impl PhaseTimings {
@@ -115,6 +120,17 @@ impl PhaseClock {
         self.mark = tokio::time::Instant::now();
     }
 
+    /// GH #1410: the instant `handle()` started -- what the partial figures
+    /// count from.
+    pub(crate) fn started_at(&self) -> tokio::time::Instant {
+        self.start
+    }
+
+    /// GH #1410: record what the partials of the call did.
+    pub(crate) fn partials(&mut self, stats: PartialStats) {
+        self.timings.partial = Some(stats);
+    }
+
     /// Freeze the total `handle()` duration and hand out the phases.
     pub(crate) fn finish(&self) -> PhaseTimings {
         let mut t = self.timings;
@@ -149,6 +165,9 @@ pub(crate) fn log_summary(t: &PhaseTimings, dialect: &str, model: &str, outcome:
         wire_total_ms = t.wire.map(|w| w.total_ms),
         wire_attempts = t.wire.map(|w| w.attempts),
         unaccounted_ms = t.unaccounted_ms(),
+        first_token_ms = t.partial.and_then(|p| p.first_token_ms),
+        first_partial_ms = t.partial.and_then(|p| p.first_partial_ms),
+        partials = t.partial.map(|p| p.partials),
         "llm provider call phases"
     );
 }
@@ -201,6 +220,7 @@ mod tests {
             translate_ms: 70,
             wire: wire(Some(4_000), 4_100, 1),
             handle_ms: 16_000,
+            partial: None,
         };
         assert_eq!(t.provider_ms(), Some(4_000));
         assert_eq!(t.unaccounted_ms(), 16_000 - 30 - 70 - 4_100);
@@ -215,6 +235,7 @@ mod tests {
             translate_ms: 5,
             wire: wire(Some(11_800), 12_000, 1),
             handle_ms: 12_020,
+            partial: None,
         };
         assert_eq!(t.unaccounted_ms(), 10);
     }
@@ -226,6 +247,7 @@ mod tests {
             translate_ms: 8,
             wire: None,
             handle_ms: 40,
+            partial: None,
         };
         assert_eq!(t.provider_ms(), None);
         assert_eq!(t.unaccounted_ms(), 20);
@@ -241,6 +263,7 @@ mod tests {
             translate_ms: 10,
             wire: wire(Some(1), 10, 1),
             handle_ms: 29,
+            partial: None,
         };
         assert_eq!(t.unaccounted_ms(), 0);
     }
@@ -254,6 +277,7 @@ mod tests {
             translate_ms: 0,
             wire: wire(Some(3_000), 3_340, 2),
             handle_ms: 3_400,
+            partial: None,
         };
         assert_eq!(t.unaccounted_ms(), 60);
         assert_eq!(t.wire.unwrap().attempts, 2);

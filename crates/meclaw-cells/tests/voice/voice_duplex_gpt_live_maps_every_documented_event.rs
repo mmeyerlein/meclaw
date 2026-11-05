@@ -237,6 +237,7 @@ async fn voice_duplex_gpt_live_maps_every_documented_event() {
         DuplexEvent::Unmuted,
         DuplexEvent::Warning {
             detail: "one append was too long".to_string(),
+            provider_code: None,
         },
         DuplexEvent::Closed {
             reason: "drained".to_string(),

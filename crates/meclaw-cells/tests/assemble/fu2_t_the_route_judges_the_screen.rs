@@ -402,7 +402,9 @@ fn route_judge_context_asks_the_screen_question() {
         s["screen"],
         json!({"topic": "weather", "confidence": 0.8, "lead": "week", "further": "today"})
     );
-    // A lead or further of another topic is no lead (#1371).
+    // A lead or further of another topic is no lead (#1371); without a
+    // distribution over the chosen topic's blocks the presenter's standard
+    // leads (#1412: with one, the best block of the chosen topic does).
     let mut a = sure();
     a["screen.lead"] = json!({"choice": "calendar/day", "p": 0.7});
     let s = on(

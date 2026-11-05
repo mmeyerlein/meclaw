@@ -1,0 +1,136 @@
+{
+  "about": "GH #1375 / #1376: one table, two implementations of the URL redaction rule. A Rust test runs every case through web_fetch::redact_url, the argus test runs it through the python port in templates/argus/door; both compare the word lists with their own constants. Change a case or a word on both sides or on neither.",
+  "redacted": "REDACTED",
+  "redacted_whole": "<url redacted>",
+  "strong_secret_words": [
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "signature",
+    "credential",
+    "credentials",
+    "assertion",
+    "apikey",
+    "sessionid"
+  ],
+  "weak_secret_words": [
+    "key",
+    "sig",
+    "pwd",
+    "auth",
+    "session"
+  ],
+  "cases": [
+    {
+      "why": "userinfo, name and password",
+      "in": "https://user-mock:pw-mock@gw.example:8443/p/q?page=2#top",
+      "out": "https://REDACTED@gw.example:8443/p/q?page=2#top"
+    },
+    {
+      "why": "userinfo, a name alone",
+      "in": "http://name-only-mock@gw.example/",
+      "out": "http://REDACTED@gw.example/"
+    },
+    {
+      "why": "an @ inside the password: the last @ ends the userinfo",
+      "in": "https://user-mock:pw@mock@gw.example/",
+      "out": "https://REDACTED@gw.example/"
+    },
+    {
+      "why": "a password with an empty name",
+      "in": "http://:pw-mock@gw.example/",
+      "out": "http://REDACTED@gw.example/"
+    },
+    {
+      "why": "a name with an empty password",
+      "in": "http://u-mock:@gw.example/",
+      "out": "http://REDACTED@gw.example/"
+    },
+    {
+      "why": "empty userinfo hides nothing and stays as written",
+      "in": "http://@h.example/",
+      "out": "http://@h.example/"
+    },
+    {
+      "why": "secret query values, any case, several at once",
+      "in": "https://h.example/a?Token=t-mock&x=1&API_KEY=k-mock&Sig=s-mock&page=2",
+      "out": "https://h.example/a?Token=REDACTED&x=1&API_KEY=REDACTED&Sig=REDACTED&page=2"
+    },
+    {
+      "why": "a secret fragment parameter (the OAuth redirect form)",
+      "in": "https://h.example/cb#access_token=t-mock&state=s1",
+      "out": "https://h.example/cb#access_token=REDACTED&state=s1"
+    },
+    {
+      "why": "userinfo, query and fragment at once on a websocket URL",
+      "in": "wss://svc-mock:pw-mock@api.example.com/v1/realtime?model=m1&api_key=k-mock#access_token=t-mock",
+      "out": "wss://REDACTED@api.example.com/v1/realtime?model=m1&api_key=REDACTED#access_token=REDACTED"
+    },
+    {
+      "why": "camelCase and dashed names",
+      "in": "https://h.example/?accessToken=t-mock&X-Amz-Signature=s-mock&n=1",
+      "out": "https://h.example/?accessToken=REDACTED&X-Amz-Signature=REDACTED&n=1"
+    },
+    {
+      "why": "a percent-encoded name",
+      "in": "https://h.example/?api%5Fkey=k-mock",
+      "out": "https://h.example/?api%5Fkey=REDACTED"
+    },
+    {
+      "why": "a hash route: the name is the part behind the last ?",
+      "in": "https://h.example/#/cb?token=t-mock",
+      "out": "https://h.example/#/cb?token=REDACTED"
+    },
+    {
+      "why": "a weak word inside another word is no secret, code stays on purpose",
+      "in": "https://h.example/?monkey=1&author=x&signal=2&keyboard=3&code=c-1",
+      "out": "https://h.example/?monkey=1&author=x&signal=2&keyboard=3&code=c-1"
+    },
+    {
+      "why": "an empty secret value hides nothing",
+      "in": "https://h.example/?token=&x=1",
+      "out": "https://h.example/?token=&x=1"
+    },
+    {
+      "why": "no secret: byte for byte, no re-serialisation",
+      "in": "HTTP://Example.ORG/Foo%2fbar?a=1&b=&author=x&key=#frag",
+      "out": "HTTP://Example.ORG/Foo%2fbar?a=1&b=&author=x&key=#frag"
+    },
+    {
+      "why": "an address and a port",
+      "in": "http://127.0.0.1:8080/foo?a=1#frag",
+      "out": "http://127.0.0.1:8080/foo?a=1#frag"
+    },
+    {
+      "why": "an IPv6 address, an @ in the query",
+      "in": "http://[::1]:80/x?q=a@b",
+      "out": "http://[::1]:80/x?q=a@b"
+    },
+    {
+      "why": "a bare host",
+      "in": "https://example.org",
+      "out": "https://example.org"
+    },
+    {
+      "why": "unparsable: a blank in the scheme",
+      "in": "ht tp://u-mock:pw-mock@h.example/",
+      "out": "<url redacted>"
+    },
+    {
+      "why": "unparsable: a port out of range",
+      "in": "http://u-mock:pw-mock@h.example:99999/",
+      "out": "<url redacted>"
+    },
+    {
+      "why": "a tab inside a name: the parser drops it and reads token",
+      "in": "http://h.example/?to\tken=v-mock",
+      "out": "<url redacted>"
+    },
+    {
+      "why": "a line break inside a fragment name",
+      "in": "http://h.example/#to\nken=v-mock",
+      "out": "<url redacted>"
+    }
+  ]
+}

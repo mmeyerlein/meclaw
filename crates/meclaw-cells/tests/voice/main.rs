@@ -38,6 +38,7 @@ pub mod voice_duplex_params_refuse_an_unknown_key;
 pub mod voice_duplex_talky_offers_the_advise_sections;
 pub mod voice_duplex_the_collector_switches_to_advise_on_the_engine;
 pub mod voice_duplex_turn_time_anchors;
+pub mod voice_gh1411_speaks_partials;
 pub mod voice_t1_cell_boots;
 pub mod voice_t2a_deepgram;
 pub mod voice_t2b_openai_stt;

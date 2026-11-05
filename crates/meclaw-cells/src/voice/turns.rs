@@ -143,6 +143,10 @@ pub struct SessionState {
     /// that debt was paid by the end of the NEXT take, which therefore never
     /// became a turn (GH #697, measured 2026-09-13).
     pub provider_in_turn: bool,
+    /// What this call has already said of answers still being written
+    /// (`speak_partials: "1"`, GH #1411). Empty with the param off; dies with
+    /// the connection.
+    pub spoken: crate::voice::spoken_partials::SpokenPartials,
 }
 
 impl SessionState {
@@ -161,6 +165,7 @@ impl SessionState {
             grace_token: 0,
             pending_provider_end: false,
             provider_in_turn: false,
+            spoken: Default::default(),
         }
     }
 }

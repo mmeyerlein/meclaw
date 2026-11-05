@@ -1,0 +1,199 @@
+{
+  "an error no edge restamped": [],
+  "goals page": [
+    {
+      "header": {
+        "detail": "",
+        "error_code": "",
+        "read_tag": "t",
+        "read_what": "charter",
+        "route": "read"
+      },
+      "messages": [],
+      "next_since": "",
+      "rows": [
+        {
+          "id": "g1",
+          "table": "goals"
+        },
+        {
+          "id": "g2",
+          "table": "goals"
+        }
+      ]
+    }
+  ],
+  "hint refused": [
+    {
+      "header": {
+        "detail": "origin",
+        "error_code": "invalid_hint",
+        "hint_id": "",
+        "route": "hint_ack"
+      },
+      "messages": []
+    }
+  ],
+  "hint store failed": [
+    {
+      "header": {
+        "detail": "unknown_column",
+        "error_code": "store_error",
+        "hint_id": "",
+        "route": "hint_ack"
+      },
+      "messages": []
+    }
+  ],
+  "hint stored": [
+    {
+      "header": {
+        "detail": "",
+        "error_code": "",
+        "hint_id": "hint:abc",
+        "route": "hint_ack"
+      },
+      "messages": []
+    }
+  ],
+  "hint taken": [
+    {
+      "header": {
+        "carry": "{\"hint_id\": \"hint:00000000000000000000000000000001\"}",
+        "phase": "hint",
+        "route": "rstore"
+      },
+      "messages": [
+        {
+          "id": "000000000000",
+          "origin": "assistant",
+          "text": "{\"operation\": \"insert\", \"table\": \"hints\", \"row\": {\"id\": \"hint:00000000000000000000000000000001\", \"at\": \"2026-11-04T12:00:00.000000Z\", \"consumed_by\": \"\", \"origin\": \"probe\", \"confidence\": 70, \"line\": \"a line\"}}",
+          "type": "tool_call"
+        }
+      ]
+    }
+  ],
+  "no lane, no store answer": [],
+  "read charter": [
+    {
+      "header": {
+        "carry": "{\"what\": \"charter\", \"since\": null, \"limit\": 20, \"tag\": \"t\"}",
+        "phase": "goals",
+        "route": "cstore"
+      },
+      "messages": [
+        {
+          "id": "000000000000",
+          "origin": "assistant",
+          "text": "{\"operation\": \"select\", \"table\": \"goals\", \"columns\": [\"id\", \"metric\", \"direction\", \"window_minutes\", \"min_samples\", \"min_delta_pct\", \"quality_gate\", \"enabled\", \"note\", \"source\"], \"limit\": 20, \"order_by\": [{\"col\": \"id\", \"dir\": \"asc\"}]}",
+          "type": "tool_call"
+        }
+      ]
+    }
+  ],
+  "read cycles since": [
+    {
+      "header": {
+        "carry": "{\"what\": \"cycles\", \"since\": \"2026-11-01T00:00:00.000000Z\", \"limit\": 5, \"tag\": \"t\"}",
+        "phase": "rows",
+        "route": "rstore"
+      },
+      "messages": [
+        {
+          "id": "000000000000",
+          "origin": "assistant",
+          "text": "{\"operation\": \"select\", \"table\": \"cycles\", \"columns\": [\"id\", \"goal\", \"at\", \"status\", \"measured\", \"judged\", \"simulated\", \"change\", \"revert_plan\", \"verified\", \"effect\", \"outcome\", \"reason_code\", \"role\", \"evidence\", \"hints\"], \"limit\": 5, \"order_by\": [{\"col\": \"at\", \"dir\": \"asc\"}], \"where\": {\"at\": {\"gt\": \"2026-11-01T00:00:00.000000Z\"}}}",
+          "type": "tool_call"
+        }
+      ]
+    }
+  ],
+  "read failed": [
+    {
+      "header": {
+        "detail": "unknown_column",
+        "error_code": "store_error",
+        "read_tag": "t",
+        "read_what": "cycles",
+        "route": "read"
+      },
+      "messages": [],
+      "next_since": "",
+      "rows": []
+    }
+  ],
+  "read hints": [
+    {
+      "header": {
+        "carry": "{\"what\": \"hints\", \"since\": null, \"limit\": 20, \"tag\": \"h\"}",
+        "phase": "rows",
+        "route": "rstore"
+      },
+      "messages": [
+        {
+          "id": "000000000000",
+          "origin": "assistant",
+          "text": "{\"operation\": \"select\", \"table\": \"hints\", \"columns\": [\"id\", \"at\", \"origin\", \"confidence\", \"line\", \"consumed_by\"], \"limit\": 20, \"order_by\": [{\"col\": \"at\", \"dir\": \"asc\"}]}",
+          "type": "tool_call"
+        }
+      ]
+    }
+  ],
+  "read refused": [
+    {
+      "header": {
+        "detail": "read_what",
+        "error_code": "invalid_input",
+        "read_tag": "t",
+        "read_what": "goals",
+        "route": "read"
+      },
+      "messages": [],
+      "next_since": "",
+      "rows": []
+    }
+  ],
+  "rows page": [
+    {
+      "header": {
+        "detail": "",
+        "error_code": "",
+        "read_tag": "h",
+        "read_what": "hints",
+        "route": "read"
+      },
+      "messages": [],
+      "next_since": "2026-11-04T12:00:00.000000Z",
+      "rows": [
+        {
+          "at": "2026-11-04T12:00:00.000000Z",
+          "id": "hint:1"
+        }
+      ]
+    }
+  ],
+  "rules page": [
+    {
+      "header": {
+        "detail": "",
+        "error_code": "",
+        "read_tag": "t",
+        "read_what": "charter",
+        "route": "read"
+      },
+      "messages": [],
+      "next_since": "",
+      "rows": [
+        {
+          "id": "g1",
+          "table": "goals"
+        },
+        {
+          "id": "r1",
+          "table": "rules"
+        }
+      ]
+    }
+  ],
+  "unknown phase": []
+}

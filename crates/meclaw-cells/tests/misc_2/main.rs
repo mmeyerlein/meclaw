@@ -20,6 +20,7 @@ pub mod gh1266_the_night_keeps_its_contract_and_its_moment;
 pub mod gh1305_conversation_events_and_inner_turns_at_the_rims;
 pub mod gh1338_a_credential_pending_receipt_reaches_its_caller;
 pub mod gh135_happened_at_over_ubf;
+pub mod gh1376_argus_takes_an_error_as_a_hint;
 pub mod gh138_affinity_firewall_params;
 pub mod gh138_keeper_summarizer_dispatcher_params;
 pub mod gh138_long_tail_params;
@@ -60,7 +61,6 @@ pub mod gh278_the_ambient_recall_is_a_tool_result;
 pub mod gh279_the_payload_does_not_hedge;
 pub mod gh281_facts_and_utterances_are_two_sections;
 pub mod gh282_only_what_somebody_said_is_drained;
-pub mod gh291_the_shipped_memory_hive_instantiates;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

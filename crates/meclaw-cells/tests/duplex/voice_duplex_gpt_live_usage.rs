@@ -322,6 +322,7 @@ async fn usage_and_marks_off_by_default() {
     session
         .say(DuplexEvent::Warning {
             detail: "marker".to_string(),
+            provider_code: None,
         })
         .await;
 

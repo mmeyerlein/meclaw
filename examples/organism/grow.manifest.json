@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.3.15"
+            "template": "meclaw-os@2.4.0"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.2.14"
+            "template": "org@2.2.15"
           }
         ],
         "add_edges": [
@@ -161,7 +161,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.8.3",
+            "template": "member@2.9.0",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -315,7 +315,7 @@
         "add_nodes": [
           {
             "name": "assistants/scribe",
-            "template": "assistant@3.11.3",
+            "template": "assistant@3.12.0",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2,
@@ -406,6 +406,11 @@
             "from": "./assistants/scribe",
             "to": "./assistants",
             "condition": "has(hop.route) && hop.route == 'answer'"
+          },
+          {
+            "from": "./assistants/scribe",
+            "to": "./assistants",
+            "condition": "has(hop.route) && hop.route == 'partial'"
           },
           {
             "from": "./assistants/scribe/talky",
@@ -1574,7 +1579,7 @@
         "add_nodes": [
           {
             "name": "telegram",
-            "template": "telegram-connector@2.2.6",
+            "template": "telegram-connector@2.2.7",
             "birth": "inactive"
           }
         ],
@@ -1618,6 +1623,11 @@
             "from": ".",
             "to": "./telegram",
             "condition": "has(hop.route) && hop.route == 'in_advise' && has(context.channel_node) && context.channel_node == 'telegram'"
+          },
+          {
+            "from": ".",
+            "to": "./telegram",
+            "condition": "has(hop.route) && hop.route == 'partial' && has(hop.partial_of) && !has(hop.finish_reason) && has(context.channel_node) && context.channel_node == 'telegram'"
           }
         ]
       }

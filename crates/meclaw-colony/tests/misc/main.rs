@@ -10,4 +10,5 @@ pub mod p1_read_messages_inbox;
 pub mod r12_add_edges_subscope_matrix;
 pub mod read_echo_tag;
 pub mod w13_memory_hive_is_sealed;
+pub mod watchdog_trip_names_the_last_marks;
 pub mod writer_shutdown_with_a_full_queue_persists_every_op;

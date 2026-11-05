@@ -19,6 +19,7 @@ pub mod mock_http;
 pub mod mock_openai_realtime;
 pub mod mock_openai_tts;
 pub mod mock_slack;
+pub mod mock_sse;
 pub mod mocks;
 pub mod page_scripts;
 pub mod ports;

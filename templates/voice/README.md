@@ -1,4 +1,4 @@
-# `voice@2.8.1`
+# `voice@2.8.2`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -85,7 +85,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.8.1",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.8.2",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -231,7 +231,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -265,7 +265,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -294,6 +294,13 @@ frames is what that module expects, and a gap of 100 ms is what it cannot take.
 Set `0` to send each chunk exactly as the provider produced it -- the behaviour
 this template had before the knob existed, and the right value only for a client
 whose playback path has no frame-size limit at all.
+
+### Speaking an answer while it is written
+
+`params.speak_partials` is `"0"` here: every answer is spoken whole, as before, and a message on
+route `partial` is dropped. `"1"` hands each new sentence of a `partial` to the synthesis queue at
+once and the final answer says only what the partials did not (GH #1411); a duplex cell always
+drops partials. The template declares the key, so a set switches it on via `override_params` ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)).
 
 ### Markdown never reaches the microphone
 
@@ -471,7 +478,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -536,7 +543,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -548,7 +555,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -612,7 +619,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
@@ -737,7 +744,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
       },
       {
         "name": "voice",
-        "template": "voice@2.8.1"
+        "template": "voice@2.8.2"
       }
     ],
     "seed_rows": [
@@ -898,7 +905,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"tts": {"provider": "cartesia",
                              "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -913,7 +920,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.1",
+{"name": "channels/voice", "template": "voice@2.8.2",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}

@@ -14,6 +14,7 @@ pub mod collector_window;
 pub mod compaction_lane;
 pub mod cron_parse_smoke;
 pub mod curator_history;
+pub mod d53_x3b_a_set_can_switch_streaming_on;
 pub mod doc_comment_audit;
 pub mod doc_comment_audit_phase_10b;
 pub mod doc_comment_audit_phase_10c;

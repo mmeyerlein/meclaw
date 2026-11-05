@@ -11,6 +11,7 @@ pub(crate) mod latency;
 pub(crate) mod output;
 pub(crate) mod package;
 pub mod params;
+pub(crate) mod partial;
 pub(crate) mod sanitize;
 pub(crate) mod seed;
 pub(crate) mod state;
@@ -30,3 +31,6 @@ pub use factory::LlmCellFactory;
 /// `gh890_every_llm_cell_declares_what_output_writes`.
 pub use output::HOP_KEYS;
 pub use params::{AuthMode, LlmParams, WireDialect};
+/// GH #1410: the hop keys of a partial, read by the template sweep
+/// `gh1410_a_partial_llm_cell_declares_the_partial_lane`.
+pub use partial::PARTIAL_HOP_KEYS;

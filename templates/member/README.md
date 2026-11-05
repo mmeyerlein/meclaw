@@ -1,4 +1,4 @@
-# `member@2.8.3`
+# `member@2.9.0`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and four edges.
@@ -812,6 +812,7 @@ live model carries two more again, and they are the last two rows here.)
 | up, from the channel | `turn` — a raw inbound message | the channel's mutation draws `./channels/<name> -> ./channels`; **this level** ships `./channels -> ./firewall`, which re-stamps it to `in_turn` and promotes `context.engine` |
 | up, from the channel | `error` — the connector's own failure | the channel's mutation draws it; **this level** ships `./channels -> .` |
 | down, to the channel | `answer` — what an assistant said | **this level** ships `./assistants -> ./channels`; the channel's mutation draws `./channels -> ./channels/<name>`, guarded on `context.channel_node == '<name>'` |
+| down, to the channel | `partial` — a sentence of the answer while the model still streams it (GH #1411) | **this level** ships `./assistants -> ./channels` on `partial` with `hop.partial_of` (a model's partial carries it, the caller's transcript does not), guarded on `context.channel_node` like `answer`; the channel's mutation draws `./channels -> ./channels/<name>` beside the `answer` leg. Nothing else of this level receives it: not `./apps`, the memory, the firewall or a peer. A channel that does not deliver partials (`partial_delivery`, `speak_partials` off) drops them silently. The caller's own transcript `partial` of a voice channel is a different lane in the other direction (`./channels -> ./apps`, for an app that listens, on `!has(hop.partial_of)`: a model's sentence crosses the hive `./channels` too and must not reach an app) |
 | up, from the channel | `delegation` — a live model handed work back (1.9.0) | the channel's mutation draws it up with the rest; **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_delegation`; the generation's mutation draws the last leg into the child, guarded on its own name |
 | up, from the channel | `renewed` — a live model's session was renewed within the call (GH #896) | the same road as `delegation`: **this level** ships `./channels -> ./assistants` DIRECTLY, re-stamped to `in_renewed`, with `call_id` promoted onto context; the handover comes back as a `sidecar` section `context` and leaves on the advice edge below |
 | down, to the channel | `sidecar`, sections `fact`, `context`, `correction` (1.9.0), `interrupt`, `renew` (D48) | **this level** ships `./assistants -> ./channels`, re-stamped to `in_advise`; the channel's mutation draws the last leg, guarded on its own node name |
@@ -846,7 +847,7 @@ steal each other's updates.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.2.6"}],
+  "add_nodes": [{"name": "channels/telegram", "template": "telegram-connector@2.2.7"}],
   "add_edges": [
     {"from": "./channels/telegram", "to": "./channels",
      "condition": "!has(hop.error_code)",
@@ -890,7 +891,7 @@ never hears:
 | edge | condition | why |
 |---|---|---|
 | `./channels/display-<s> -> ./channels` | `event` or `receipt` | what the screen produced, stamped with `context.channel_node` and `context.channel`, which on a screen are the same word |
-| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.8.3` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
+| `./channels -> ./channels/display-<s>` | `view` or `withdraw`, `context.channel_node == '<s>'` | re-stamped with ONE ternary to the display's own `in_view`, or to `in_withdraw` for a view that is over (`member@2.9.0` carries the lane out of `./apps`; [`builder`](../builder/README.md) renders this edge) |
 | `./channels -> ./channels/display-<s>` | `error` | a channel's failure, re-stamped to the display's `in_notice` — since `builder@1.10.0`, drawn by the mutation that grows the screen |
 
 **A view comes down the way it went up.** Since `member@1.8.0` the edge that carries
@@ -1126,7 +1127,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.8.3"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.9.0"}]
 }}
 ```
 
@@ -1135,7 +1136,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.11.3"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@3.12.0"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},
@@ -1556,7 +1557,7 @@ It renders this declaration, and a test holds the two blocks together
     {"from": "./firewall", "to": "./apps", "condition": "has(hop.route) && hop.route == 'pass'", "modifier": {"set_hop": {"route": "'turn'"}, "delete_context": ["fw_body", "fw_now", "fw_phase", "store_origin"]}},
     {"from": "./assistants", "to": "./apps", "condition": "has(hop.route) && hop.route == 'answer'"},
     {"from": "./assistants", "to": ".", "condition": "has(hop.route) && hop.route == 'answer' && (!has(context.channel_node) || context.channel_node == '')", "modifier": {"delete_context": ["tool_answerer"]}},
-    {"from": "./channels", "to": "./apps", "condition": "has(hop.route) && hop.route == 'partial'"},
+    {"from": "./channels", "to": "./apps", "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.partial_of)"},
     {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"},
     {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == '<section>'"},
     {"from": "./apps", "to": "./apps/<app>", "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/<app>/')"},
@@ -1698,7 +1699,7 @@ Both transit lists are prose in the containers' own `description`, not a
 `params.contract`, and the reason is mechanical rather than stylistic.
 `addressed_lane_doors` skips a hive only while **nothing addresses its path**
 (`hive_path_is_wired`). This member addresses `./assistants` on thirty-five of its
-edges and `./channels` on thirteen, so both containers are wired the moment the
+edges and `./channels` on fourteen, so both containers are wired the moment the
 member is instantiated — and from then on every lane they declared would owe a
 `door_exists`: a message arriving at the container path must reach a cell
 *inside* it. An empty container has no inside. The violation would be collected

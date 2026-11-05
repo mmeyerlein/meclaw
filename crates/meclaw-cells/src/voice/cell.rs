@@ -188,6 +188,9 @@ pub enum VoiceEvent {
         session_id: String,
         /// Human-readable cause. Never carries a credential.
         detail: String,
+        /// The provider's own error code, when its refusal named one
+        /// (GH #1376); it reaches the error lane as `meta.provider_code`.
+        provider_code: Option<String>,
     },
     /// The duplex provider session of this call was renewed, inside the same
     /// call (GH #896).
@@ -779,6 +782,9 @@ pub struct VoiceCell {
     /// Whether an assistant turn is turned into speech text before it is
     /// queued. Read on every `in_speak`, so an update is in force at once.
     speak_plain: bool,
+    /// Whether a cascade call speaks an answer's `partial` messages as they
+    /// arrive (`speak_partials`, GH #1411). Read on every message.
+    speak_partials: bool,
     /// How long a released `hold` boundary waits for the provider's own end of
     /// turn before it cuts with what it has. Handed to every session at birth
     /// and to the live ones on a params update.
@@ -880,6 +886,7 @@ impl VoiceCell {
             provider_idle_timeout_ms: params.provider_idle_timeout_ms,
             audio_out_frame_ms: params.audio_out_frame_ms,
             speak_plain: params.speak_plain,
+            speak_partials: params.speak_partials,
             release_grace_ms: params.release_grace_ms,
             grace_seq: 0,
             stt_raw: raw.get("stt").cloned().unwrap_or(Value::Null),
@@ -1010,6 +1017,7 @@ impl VoiceCell {
             provider_idle_timeout_ms: self.provider_idle_timeout_ms,
             audio_out_frame_ms: self.audio_out_frame_ms,
             speak_plain: self.speak_plain,
+            speak_partials: crate::voice::params::flag01(self.speak_partials),
             release_grace_ms: self.release_grace_ms,
             stt: self.stt_raw.clone(),
             tts: self.tts_raw.clone(),
@@ -1098,7 +1106,30 @@ impl VoiceCell {
             return;
         };
         let generation = state.grace_token;
+        // GH #1411: what the existing barge-in treats as the caller cutting in
+        // — speech starting in `auto` with `barge_in` on, a `cancel`, a `hold`
+        // — also ends the answers that are still arriving as partials, even in
+        // the gap between two sentences where nothing is being synthesised and
+        // the machine has nothing to cancel. Without it the next partial would
+        // be spoken over the caller.
+        let caller_cuts_in = match &input {
+            Input::Stt(SttEvent::SpeechStarted) => state.mode == Mode::Auto && state.barge_in,
+            Input::Control(ClientFrame::Cancel) => true,
+            Input::Control(ClientFrame::Hold) => state.mode == Mode::Hold,
+            _ => false,
+        };
         let actions = turns::step(state, session_id, input);
+        if caller_cuts_in || actions.contains(&Action::CancelSpeak) {
+            state.spoken.cut();
+        }
+        // GH #1411: a finished caller turn is the boundary of the open
+        // answers. Whatever is still open belongs to a turn the caller has
+        // moved on from; kept, it would read a later answer with the same
+        // words as a replay and swallow it. A cut answer leaves its
+        // `partial_of` behind, so the rest of its stream stays silent.
+        if actions.iter().any(|a| matches!(a, Action::EmitTurn { .. })) {
+            state.spoken.turn_ended();
+        }
         // Every closed boundary produces exactly one `Turn` frame, and the empty
         // one produces no lane emission at all (`turns::turn_actions`). An empty
         // turn is a take that went missing somewhere, so it is LOUD: it is the
@@ -1601,9 +1632,19 @@ impl VoiceCell {
             // One item went wrong and the session carries on. Reported, never
             // swallowed: a colony that reads its own error lane learns that the
             // model dropped something without anybody watching a log.
-            DuplexEvent::Warning { detail } => {
-                self.emit_error(sink, "duplex_warning", &detail, Some(session_id), None)
-                    .await;
+            DuplexEvent::Warning {
+                detail,
+                provider_code,
+            } => {
+                self.emit_error_coded(
+                    sink,
+                    "duplex_warning",
+                    &detail,
+                    Some(session_id),
+                    None,
+                    provider_code.as_deref(),
+                )
+                .await;
             }
             DuplexEvent::Closed {
                 reason,
@@ -2635,6 +2676,22 @@ impl VoiceCell {
         session: Option<&str>,
         extra: Option<Value>,
     ) {
+        self.emit_error_coded(sink, code, detail, session, extra, None)
+            .await;
+    }
+
+    /// [`Self::emit_error`] with the provider's own error code, which joins
+    /// `meta` as `provider_code` only when there is one, so every error
+    /// without a code leaves byte-identical to before (GH #1376).
+    async fn emit_error_coded(
+        &self,
+        sink: &OriginSink,
+        code: &str,
+        detail: &str,
+        session: Option<&str>,
+        extra: Option<Value>,
+        provider_code: Option<&str>,
+    ) {
         let mut header = Map::new();
         header.insert("route".into(), json!("error"));
         header.insert("error_code".into(), json!(code));
@@ -2649,10 +2706,15 @@ impl VoiceCell {
             }
         }
         self.stamp_engine(&mut header);
+        let mut meta = Map::new();
+        meta.insert("detail".into(), json!(detail));
+        if let Some(p) = provider_code {
+            meta.insert("provider_code".into(), json!(p));
+        }
         let content = json!({
             "header": Value::Object(header),
             "messages": [],
-            "meta": {"detail": detail},
+            "meta": Value::Object(meta),
         });
         self.emit(sink, content).await;
     }
@@ -2710,6 +2772,7 @@ impl VoiceCell {
         self.provider_idle_timeout_ms = merged.provider_idle_timeout_ms;
         self.audio_out_frame_ms = merged.audio_out_frame_ms;
         self.speak_plain = merged.speak_plain;
+        self.speak_partials = merged.speak_partials == "1";
         self.release_grace_ms = merged.release_grace_ms;
         db.set_query_timeout(Some(Duration::from_millis(self.external_timeout_ms)));
 
@@ -2831,6 +2894,30 @@ impl VoiceCell {
         });
         let _ = sink.push(CellOutput { target, content }).await;
     }
+}
+
+/// Whether a message is an answer that failed (`finish_reason: "error"` or an
+/// `error_code`, lane contract item 6).
+fn answer_failed(msg: &Message) -> bool {
+    let hop = &msg.headers.hop;
+    hop.get("finish_reason").and_then(|v| v.as_str()) == Some("error")
+        || hop
+            .get("error_code")
+            .and_then(|v| v.as_str())
+            .is_some_and(|c| !c.is_empty())
+}
+
+/// The call a message addresses: `context.call_id`, else `context.session_id`
+/// (the order of the cascade's own lookup, GH #620).
+fn call_of(msg: &Message) -> Option<String> {
+    ["call_id", "session_id"].into_iter().find_map(|key| {
+        msg.headers
+            .context
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// The name of a section, from the channel it was routed to. The match at the
@@ -3157,6 +3244,25 @@ impl LongRunningCell for VoiceCell {
         async move {
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
+            // GH #1411: a partial of the model's answer (the `llm` cell's
+            // sentence lane) is spoken only by a cascade cell that ordered it.
+            // The member wires its `partial` edge whatever the channel says, so
+            // anywhere else it is dropped without a word, before any check
+            // that would answer it: spoken, every sentence would be said twice,
+            // once as the partial and once in the finished answer (o41,
+            // OR-D53.X2.6); refused, every sentence would add a refusal the
+            // finished answer meets anyway (OR-D53.X2.19). Every message
+            // without the route takes the path it took before the param.
+            let is_partial =
+                msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("partial");
+            if is_partial && (!self.speak_partials || self.duplex) {
+                tracing::debug!(
+                    path = self.path.as_str(),
+                    "voice: an answer partial on a cell that does not speak partials — dropped"
+                );
+                return;
+            }
+
             let Body::Inline(body) = &msg.body else {
                 self.refuse(
                     sink,
@@ -3228,6 +3334,10 @@ impl LongRunningCell for VoiceCell {
                     self.ended_session_of(&msg)
                 };
             if let Some(session_id) = late {
+                // GH #1411: one dead letter per answer, not per sentence.
+                if is_partial {
+                    return;
+                }
                 self.dead_letter_late(&msg, &session_id).await;
                 return;
             }
@@ -3250,6 +3360,26 @@ impl LongRunningCell for VoiceCell {
             // The sender lane (GH #979): no text to speak, a name to keep.
             if msg.headers.hop.get("route").and_then(|v| v.as_str()) == Some("in_session") {
                 self.take_sender(&msg, reply_target, sink).await;
+                return;
+            }
+
+            // GH #1411: an error after partials drops the rest (lane contract
+            // item 6). Nothing of the error is appended — a fallback text
+            // included — and no open answer is touched: the error names no
+            // branch, the failed one sends nothing after it, and the other
+            // goes on to its end, neither cut short nor said again whole (M1).
+            // What is still open ends with the caller's next turn. An error
+            // with no partial before it takes the path it took before the
+            // param.
+            if self.speak_partials
+                && answer_failed(&msg)
+                && let Some(state) = call_of(&msg).and_then(|call| self.sessions.get_mut(&call))
+                && state.spoken.fail()
+            {
+                tracing::info!(
+                    path = self.path.as_str(),
+                    "voice: an answer failed after its partials — the rest is dropped"
+                );
                 return;
             }
 
@@ -3338,6 +3468,10 @@ impl LongRunningCell for VoiceCell {
             }
 
             if !self.sessions.contains_key(&session_id) {
+                // GH #1411: one refusal per answer, not per sentence.
+                if is_partial {
+                    return;
+                }
                 self.refuse(
                     sink,
                     reply_target,
@@ -3348,6 +3482,33 @@ impl LongRunningCell for VoiceCell {
                 .await;
                 return;
             }
+
+            // GH #1411: with `speak_partials` a partial says what is new in it
+            // and a finished answer only what its partials did not
+            // (`spoken_partials`); with the param off nothing here runs.
+            let text = if self.speak_partials {
+                let Some(state) = self.sessions.get_mut(&session_id) else {
+                    return;
+                };
+                let said = if is_partial {
+                    let partial_of = msg.headers.hop.get("partial_of").and_then(|v| v.as_str());
+                    state.spoken.partial(&text, partial_of)
+                } else {
+                    state.spoken.answer(&text)
+                };
+                let Some(said) = said else {
+                    tracing::debug!(
+                        path = self.path.as_str(),
+                        session_id = %session_id,
+                        "voice: nothing left to say of this answer (said by its partials, or \
+                         interrupted)"
+                    );
+                    return;
+                };
+                said
+            } else {
+                text
+            };
 
             // Markdown becomes speech text HERE, before the queue: the queue
             // holds the text that will be synthesised, so rewriting after an
@@ -3690,13 +3851,24 @@ impl LongRunningCell for VoiceCell {
                     )
                     .await;
                 }
-                VoiceEvent::DuplexFailed { session_id, detail } => {
+                VoiceEvent::DuplexFailed {
+                    session_id,
+                    detail,
+                    provider_code,
+                } => {
                     // The one duplex path that IS built here: a provider that
                     // is gone ends the call, and a call that ends without a
                     // word on the error lane is a call nobody can explain
                     // (OR-L20 — there is no reconnect to wait for).
-                    self.emit_error(sink, "duplex_failed", &detail, Some(&session_id), None)
-                        .await;
+                    self.emit_error_coded(
+                        sink,
+                        "duplex_failed",
+                        &detail,
+                        Some(&session_id),
+                        None,
+                        provider_code.as_deref(),
+                    )
+                    .await;
                 }
                 VoiceEvent::BadAudioFrame {
                     session_id,

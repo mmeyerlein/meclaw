@@ -53,6 +53,10 @@ pub struct ProxyCell {
     /// GH #1253: the colony's shutdown drain, handed to the I/O task, which
     /// stops polling once it sees it ([`crate::proxy::io::run_io_with_drain`]).
     pub(crate) drain: meclaw_colony::DrainView,
+    /// GH #1411: `params.partial_delivery` (settled at birth).
+    pub(crate) partial_delivery: crate::proxy::partial::PartialDelivery,
+    /// GH #1411: the early message of each chat whose turn is still open.
+    pub(crate) partials: crate::proxy::partial::PartialTurns,
 }
 
 /// GH #1059: the grant of a connector whose bot token the vault delivers.
@@ -105,7 +109,66 @@ impl ProxyCell {
             blob_store: None,
             credential: None,
             drain: meclaw_colony::DrainView::default(),
+            partial_delivery: crate::proxy::partial::PartialDelivery::Off,
+            partials: crate::proxy::partial::PartialTurns::default(),
         }
+    }
+
+    /// GH #1411: the early message of a turn. Sent like an answer (booked
+    /// once against a replay), but the turn goes on: the typing keeper keeps
+    /// standing, and one `typing` goes out right after it so the chat shows
+    /// that more is coming. A failed send is only logged (OR-D53.X2.2) and
+    /// records nothing, so the final answer then goes out whole.
+    async fn deliver_partial(
+        &mut self,
+        chat_id: i64,
+        text: &str,
+        timeout: std::time::Duration,
+        msg: &Message,
+        db: &mut DbConn,
+    ) {
+        let sent = self.client.send_message(chat_id, text, timeout).await;
+        let failure = sent.err().map(|e| format!("{e:?}"));
+        let once_key = msg.id.to_string();
+        let answer = failure.clone();
+        if let Err(e) = db
+            .call(move |c| {
+                crate::proxy::consumed::settle(c, &once_key, answer.as_deref().map_or(Ok(()), Err))
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "proxy: booking the early message's answer failed");
+        }
+        if let Some(detail) = failure {
+            tracing::warn!(chat_id, %detail, "proxy: the early message failed, the answer goes whole");
+            return;
+        }
+        self.partials.record(chat_id, text);
+        if let Err(e) = self
+            .client
+            .send_chat_action(chat_id, "typing", timeout)
+            .await
+        {
+            tracing::debug!(chat_id, error = ?e, "proxy: typing after the early message failed");
+        }
+    }
+
+    /// GH #1411: how this connector treats the `partial` lane of an `llm`
+    /// cell (`params.partial_delivery`). A builder like [`Self::with_drain`]:
+    /// the factory sets it on birth and respawn alike.
+    #[must_use]
+    pub fn with_partial_delivery(
+        mut self,
+        partial_delivery: crate::proxy::partial::PartialDelivery,
+    ) -> Self {
+        self.partial_delivery = partial_delivery;
+        self
+    }
+
+    /// GH #1411: number of chats whose early message is still open
+    /// (tests: the state is bounded and cleared with the turn).
+    pub fn open_partial_turns(&self) -> usize {
+        self.partials.len()
     }
 
     /// GH #1059: the bot token comes from the vault, sealed, under `grant`.
@@ -432,6 +495,18 @@ impl LongRunningCell for ProxyCell {
                 // Standalone params-update → done (no inbound send in this message).
                 return;
             }
+            // GH #1411 (OR-D53.X2.3): off drops every partial silently -- before
+            // any check below that answers a message with an error, so a
+            // partial never yields one (the member wires the lane always, so a
+            // set that switches on only the llm cell must not send or fail
+            // once per sentence).
+            let first_sentence =
+                self.partial_delivery == crate::proxy::partial::PartialDelivery::FirstSentence;
+            let hop_str = |k: &str| msg.headers.hop.get(k).and_then(|v| v.as_str());
+            let route_partial = hop_str("route") == Some("partial");
+            if route_partial && !first_sentence {
+                return;
+            }
             // GH #1059: no token yet → nothing to send with. Answered at once:
             // a reply that waited for the vault would only be a later failure.
             if let Some(c) = &self.credential
@@ -467,6 +542,19 @@ impl LongRunningCell for ProxyCell {
                 return;
             };
 
+            // GH #1411: the partial lane (`proxy::partial`). An error takes
+            // today's path and leaves the chat's early message recorded: it
+            // may be the other branch's (quick vs. brain), whose answer then
+            // still sends only the rest (OR-D53.X2.12). Nothing of a failed
+            // turn's unseen rest is appended -- no answer of it follows.
+            let is_partial = route_partial;
+            let is_error = hop_str("finish_reason") == Some("error")
+                || hop_str("error_code").is_some_and(|c| !c.is_empty());
+            // A later partial of a turn whose early message is out: ignored.
+            if is_partial && !self.partials.is_first(chat_id) {
+                return;
+            }
+
             // 3. Extract the last assistant turn from messages[].
             let text = body_val
                 .get("messages")
@@ -492,6 +580,20 @@ impl LongRunningCell for ProxyCell {
                 .await;
                 return;
             };
+            // GH #1411: the early message is the partial's text; an answer
+            // after it sends only what the early message did not show -- cut
+            // from exactly the text this connector sends (`""` = nothing).
+            let text = if is_partial {
+                text.trim().to_string()
+            } else if first_sentence && !is_error {
+                let interim = hop_str("interim") == Some("1");
+                self.partials.answer(chat_id, &text, interim).to_string()
+            } else {
+                text
+            };
+            if is_partial && text.is_empty() {
+                return;
+            }
 
             // 4. GH #1015 (OR-HV-61): after a crash the colony replays open
             //    deliveries, so this exact message may already have been sent.
@@ -520,6 +622,10 @@ impl LongRunningCell for ProxyCell {
                 Err(e) => Some(format!("cell.db consumed record failed, not sent: {e}")),
             };
             if let Some(detail) = replay_detail {
+                // GH #1411 (OR-D53.X2.2): an early message is never answered.
+                if is_partial {
+                    return;
+                }
                 self.typing.stop(chat_id);
                 crate::proxy::emit::emit_inbound_error(sink, &msg, "send_failed", &detail).await;
                 return;
@@ -527,7 +633,17 @@ impl LongRunningCell for ProxyCell {
 
             // 5. sendMessage call (W7 A timeout via the client). Errors → T13.
             let timeout = std::time::Duration::from_millis(self.send_timeout_ms);
-            let sent = self.client.send_message(chat_id, &text, timeout).await;
+            if is_partial {
+                self.deliver_partial(chat_id, &text, timeout, &msg, db)
+                    .await;
+                return;
+            }
+            // GH #1411: the rest is empty -- the early message said it all.
+            let sent = if first_sentence && text.is_empty() {
+                Ok(())
+            } else {
+                self.client.send_message(chat_id, &text, timeout).await
+            };
             // GH #515: the answer is on the wire (or has definitively failed) —
             // the keeper for this chat has nothing left to say. Stopping AFTER
             // the call, not before, is deliberate: the status should stand for
@@ -663,6 +779,10 @@ impl LongRunningCell for ProxyCell {
             // something in the first moment of the turn, not after the topology
             // behind the connector has had its say; and `start` only spawns a
             // task, so nothing here waits on Telegram.
+            // GH #1411: a new user message does NOT end an open early message
+            // (OR-D53.X2.11): the old turn's answer may still come and must
+            // send only its rest; an answer that never comes is ended by the
+            // next final answer of the chat, which then goes whole.
             self.typing.start(
                 &self.client,
                 chat_id,

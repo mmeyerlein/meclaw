@@ -1036,8 +1036,10 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // 53 -> 54 with GH #1304: the route stamp, `./assistants -> .` on `stamp`.
     // 54 -> 55 with GH #1305: the conversation events, `./assistants -> .` on
     // `opened`, `closed` and `inner_silent` (one exit for the three lanes).
+    // 55 -> 56 with GH #1411: a streamed sentence, `./assistants -> ./channels`
+    // on `partial`, guarded on `hop.partial_of` and `context.channel_node`.
     assert_eq!(
-        declared, 55,
+        declared, 56,
         "the member's own edges to and from its assistants container are the member \
          template's, drawn ONCE at member instantiation. These reach the container: the \
          screened turn coming back off ./firewall, the memory hive's bundle \u{2014} as the \
@@ -1172,12 +1174,13 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
     );
     assert_eq!(
         arr(&decl["diff"]["add_edges"]).len(),
-        4,
-        "four edges and no more: the raw turn up (stamping route, channel, chat, user, \
+        5,
+        "five edges and no more: the raw turn up (stamping route, channel, chat, user, \
          audience and the assistant it is addressed to), the connector's error up, the \
-         answer back down guarded on `context.channel_node`, and — since GH #803 — the \
+         answer back down guarded on `context.channel_node`, — since GH #803 — the \
          advice section back down under the same guard, because the member re-stamps it \
-         onto the CONTAINER and a container is not a pass-through"
+         onto the CONTAINER and a container is not a pass-through, and — since GH #1411 — \
+         a streamed sentence of the answer (`partial`) under that guard and `hop.partial_of`"
     );
 
     let one = grow(vec![]).await;
@@ -1223,8 +1226,8 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
             .filter(|e| e["from"] == json!("./channels") || e["to"] == json!("./channels"))
             .count();
     assert_eq!(
-        declared, 13,
-        "the member ships thirteen edges between `./channels` and the rest of itself. Three \
+        declared, 14,
+        "the member ships fourteen edges between `./channels` and the rest of itself. Three \
          are the chat channel's own, from GH #454: the screened turn into `./firewall`, \
          the answer coming back from `./assistants` guarded on `context.channel_node`, and \
          the connector's error out at the rim. Five more arrived with GH #455/#459, when \
@@ -1245,7 +1248,10 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
          the three advice sections coming back down out of `./assistants` as `in_advise`, \
          for a live session that can be told something without being interrupted. The \
          thirteenth arrived with GH #896: that session renewed within its call, `renewed` \
-         re-stamped into `./assistants` as `in_renewed`, the errand's road. A second \
+         re-stamped into `./assistants` as `in_renewed`, the errand's road. The \
+         fourteenth arrived with GH #1411: a streamed sentence of the answer, `partial` \
+         out of `./assistants`, guarded on `hop.partial_of` and `context.channel_node` \
+         like the answer it is a prefix of. A second \
          channel must not move any of them \
          (templates/member/README.md § Why a container carries no contract). Move the \
          README with the number."

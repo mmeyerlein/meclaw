@@ -245,6 +245,10 @@ fn word(n: usize) -> &'static str {
         // curator's -- one hundred and twenty, the boundary sixty-five,
         // twenty-nine doors.
         (120, "one hundred and twenty"),
+        // GH #1411: the `partial` exits of `./brain` and `./quick` -- one
+        // hundred and twenty-two, the boundary sixty-seven, thirty-eight leaving.
+        (67, "sixty-seven"),
+        (122, "one hundred and twenty-two"),
     ]
     .into_iter()
     .collect();

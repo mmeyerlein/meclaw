@@ -1,4 +1,4 @@
-# `talky@6.14.1`
+# `talky@6.15.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- one hundred and twenty edges,
+dispatcher for the fan-out, the close batch out to the write port -- one hundred and twenty-two edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -78,7 +78,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.14.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.15.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -172,6 +172,7 @@ The rest, each optional and each still at the same address:
 | `pack_ack` | out | the receipt `in_pack` answers with, accepted and refused alike: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.4.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 6.0.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). See "The model door". Since 5.4.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
 | `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. See "The model door". Since 5.4.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
+| `partial` | out | a sentence of an answer while `./quick` or `./brain` still streams it (the `llm` lane `partial`, `docs/cell-types.md` § llm): hop `seq`, `final` false, `partial_of`, no `finish_reason`; the body's one assistant `text` is cumulative and a prefix of the `answer` that follows. It goes from the model STRAIGHT to this rim -- never through `./splitter`, `./dispatcher`, `./collector` or `./curator`, so no ledger, window or memory holds a half answer -- and a speculative `quick` call (`context.spec` "1") sends none. Only a model whose `partial_unit` is on emits it (off as shipped). The parent draws it to the surface channel and nowhere else. Since GH [#1411](https://github.com/mmeyerlein/meclaw/issues/1411) |
 | `schemas` | out | the tool names this agent declares it uses (`{"tools": [...]}`), for a tools hive's `in_schemas` door. It leaves on a TICK, not per turn. **Paired**: see `in_menu`. Since 4.5.0 |
 | `in_menu` | in | their declarations coming back, plus the names that hive had nothing under. Since 4.5.0 |
 | `in_export` | in | a demand for the session ledger as a versioned document. It crosses to `./session-keeper` unchanged and the keeper's own walk answers it. **Paired**: see `dump`. Since 4.5.0 |
@@ -504,7 +505,9 @@ and back onto the hop of the answer, so `./route` keeps no state.
 decider (no model, a timeout, a refused credential), an answer later than `late_ms` or
 a turn without text all stamp `fallback_class` (`talk`) with `p` 0, no needs and no
 families, and say which of the four it was in `hop.fallback` (`unsure`, `error`, `late`,
-`no_text`). As shipped `./decide` has no model, so every turn is stamped `talk` until the model
+`no_text`). `unsure_families` `"1"` ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)) lets an
+`unsure` stamp keep the families the decider said yes to -- they are their own yes/no questions, like
+`choices` -- while its needs stay empty; off as shipped. As shipped `./decide` has no model, so every turn is stamped `talk` until the model
 registry's overlay or the installing set's `override_params` names one.
 
 `./decide` is an `llm` cell on `provider: decisions`, the form of `presenter/decide`:
@@ -568,8 +571,11 @@ shipped, and off every message is the bytes above. A switch here and in the sect
   `screen.topic` over every topic plus `none`, ONE `screen.lead` over the candidates of every topic
   with two or more and ONE `screen.further` over the candidates of every topic with one or more (plus
   `none`), each candidate as `<topic>/<key>` -- three questions however many topics stand, so the call
-  stays within the decisions wire (#1371); a lead or further of another topic than the chosen one is
-  none. A refused decide call stamps the fallback and says so on stderr. The stamp
+  stays within the decisions wire (#1371). The lead belongs to the chosen topic
+  ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)): a lead of another topic gives way to the
+  block of the chosen topic with the most weight in the lead's distribution (`p` per option, the first by
+  name on equal weight); with no weight on any of its blocks the lead stays `""` and the presenter's
+  standard leads. A further of another topic is none. A refused decide call stamps the fallback and says so on stderr. The stamp
   then carries `screen {topic, confidence, lead, further}` -- not on `none`, not under `threshold`,
   never on `clarify`; without candidates `lead` and `further` stay `""` and the presenter takes its
   standard.
@@ -667,10 +673,10 @@ route stamp's read of the curator's wall and its answer, GH #1304, the thirty-fi
 asks for its words on its way to `./curator`, GH #1306, the thirty-sixth and thirty-seventh the
 inner turn's copies of the rounds into `./brain` and `./quick`, which set `hop.silence_ok`,
 GH #1320, the thirty-eighth and thirty-ninth a speculative quick answer's lane `in_spec_llm`
-into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the sixty-five that ARE the
-boundary (twenty-nine door edges from `.`, thirty-six leaving towards it, and those are the lanes
+into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the sixty-seven that ARE the
+boundary (twenty-nine door edges from `.`, thirty-eight leaving towards it, and those are the lanes
 above; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
-and their two refused pushes; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics`, `in_seed_ask` and
+and their two refused pushes; #1411 adds the `partial` exits of `./brain` and `./quick`; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics`, `in_seed_ask` and
 `in_seed_line` into `./curator`, the screen model's door `in_model` into `./screen_model` -- and six
 exits -- `seed`, `live_feed` and `propose` out of `./curator`, `verdict` out of `./route` (a rim stamp
 that carries the screen) and out of `./screen_judge` (the second stamp), and the screen model's refused push; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
@@ -761,6 +767,8 @@ splitter --(answer_check, answer_check_sources set)--> curator  in_answer_check 
 brain --(error | content_filter, !refused_subscriber)-> errors
 quick --(error | content_filter, !refused_subscriber)-> errors
 quick_bridge --(error | content_filter, !refused_subscriber)-> errors
+brain --(partial, !finish_reason)---> .   <- a sentence while the model streams, GH #1411
+quick --(partial, !finish_reason, !spec)-> .   <- the same for the quick voice
 brain --(has(refused_subscriber))--> .   route := 'model_refused'  <- a refused push, GH #863
 session-keeper --(reject)--------> errors    <- the session store refused a step
 curator --(reject, !refused_subscriber)--> errors  <- a quote that is not in its source, GH #1079
@@ -965,7 +973,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.14.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.15.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1676,6 +1684,8 @@ below names the CELL the knob belongs to, because that is what an
 | `reasoning_effort` | param | `"medium"` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)); ships `medium` like every shipped `llm` cell ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). It reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
 | `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `late_ms`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `1500`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `choices`, `stamp_out`, `context_turns`, `context_budget_tokens` | param | `{}`; `"0"`; `0`; `1500` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `unsure_families` | param | `"0"` | route -- `"1"` lets an unsure stamp keep the families the decider said yes to, its needs stay empty ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `partial_unit`, `partial_min_chars` | param | `"off"`; `12` | quick, brain -- `sentence` streams the answer and emits each finished sentence on the lane `partial` before the final answer, a sentence shorter than `partial_min_chars` waits for the next boundary (GH #1410); declared so a set can switch it on ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes |
 | `notes_class` | param | `"talk"` | route -- the class a stamp with a choice's note leaves on, since only the `brain` way shows turn notes (GH #1340); `""` keeps the decider's path. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `fold_tools` | param | `"1"` (collector default `"0"`, GH #1248, T5-11) | collector -- talky and talky-chat see their menu folded: one tool per name-prefix family with two or more members (`web{op, args}`, `history{op, args}`, `file{op, args}`), `help` answered from the collector's menu store; a lone tool (`consult_cogny`) stays as it is. The quick voice's `tool_scope` names these families (`allow` and `hint`, GH #1248). `"0"` on the ref marker's `override_params` (`collector/assemble`) is the way back (R-WM-6) |
 | `max_calls` | param | `16` | dispatcher -- per-answer call budget |

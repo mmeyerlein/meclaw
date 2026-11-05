@@ -31,6 +31,10 @@
           "because": "a hypothesis from another part of the colony, in the body slot `hint: {origin, confidence, line}` -- a slot, never a turn: `origin` `[a-z0-9-]{1,64}`, `confidence` a JSON integer 0..100, `line` one line of 1..500 characters after trimming. `./door` stores it in the receipts' `hints` table and does nothing else: no edge leads from the door into the loop, so a hint triggers no cycle; the loop shows it to its judge at the earliest in its next cycle, marked as a hypothesis, and a hint never counts as a measurement -- a change resting on hints alone still needs its evidence. Without an edge onto it nobody is heard"
         },
         {
+          "route": "in_error",
+          "because": "an `error` message from another part of the colony, as it is: body `{messages: [], meta: {detail, provider_code}}`, `hop.error_code`, and the sender named by the edge that brings it, `error_sender` in the hop or the context (a cell knows no topology). `./door` stores it as a hint `{origin: \"error:<code>\", confidence: 100, line: \"<sender>: <detail>\"}` -- `<code>` is `meta.provider_code` when the error carries one, else `hop.error_code`, an identifier `[A-Za-z0-9_.-]{1,64}` or else `invalid_code` -- with every `scheme://` URL in the line redacted the way `web_fetch` redacts the URLs it outputs (userinfo and secret parameter values; what cannot be split safely goes whole), the line folded to one line and not cut. It answers nothing; each STORED hint leaves once on `error_hint`. A burst is throttled per code and sender: at most `error_hint_max_per_window` (default 3) hints per `error_hint_window_ms` (default 60000) of the door's clock, and the throttle never swallows the first error of a window (a store that refuses the insert loses it, answered by nothing). Like a hint it triggers no cycle. Nothing is wired by default: without an edge onto it an error goes where it went before (GH #1376)"
+        },
+        {
           "route": "in_sealed",
           "at": [
             "./judge"
@@ -74,6 +78,10 @@
         {
           "route": "hint_ack",
           "because": "the answer to `in_hint`: `hop.hint_id` of the stored hint and an empty `hop.error_code`, or `invalid_hint` with `hop.detail` naming the field and nothing stored, or `store_error`. An acknowledgement says the hint is kept, not that anything will be done about it"
+        },
+        {
+          "route": "error_hint",
+          "because": "a hint `in_error` stored, told once: body `{messages: [], hint: {origin, confidence, line}}`, the fields as stored (the line already redacted). Only a stored hint is told -- an error the throttle held back sends nothing, nor does a refused insert. Nothing draws it by default; a parent that draws `in_error` but not this lane gets one `hive_no_route` dead letter per stored hint at the rim (bounded by the throttle), so it draws both or knows why not; a parent that wants an error to reach someone now, not at the judge's next cycle, draws it (GH #1376)"
         },
         {
           "route": "credential_request",
@@ -442,7 +450,7 @@
         {
           "from": ".",
           "to": "./door",
-          "condition": "has(hop.route) && (hop.route == 'in_read' || hop.route == 'in_hint')",
+          "condition": "has(hop.route) && (hop.route == 'in_read' || hop.route == 'in_hint' || hop.route == 'in_error')",
           "modifier": {
             "set_context": {
               "argus_origin": "'door'",
@@ -488,7 +496,7 @@
         {
           "from": "./door",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'read' || hop.route == 'hint_ack')",
+          "condition": "has(hop.route) && (hop.route == 'read' || hop.route == 'hint_ack' || hop.route == 'error_hint')",
           "modifier": {
             "delete_context": [
               "ar_carry",

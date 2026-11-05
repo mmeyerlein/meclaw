@@ -10,6 +10,8 @@
 //! future tracing path that wants to debug-log headers can do so safely.
 
 use reqwest::header::HeaderMap;
+
+use crate::llm::partial::PartialTap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -941,6 +943,35 @@ pub async fn call_openai_streamed_timed(
     timeout: Duration,
     limit: u32,
 ) -> (Result<Value, WireError>, WireTimings) {
+    call_openai_streamed_tapped(
+        client,
+        url,
+        bearer,
+        extra_headers,
+        body,
+        timeout,
+        limit,
+        None,
+    )
+    .await
+}
+
+/// GH #1410: [`call_openai_streamed_timed`] with a [`PartialTap`] that sees
+/// every visible text delta while the stream is read -- not after the body
+/// is put back together. Thinking and tool-call deltas only mark the first
+/// token; the first tool call closes the text before it. `None` is
+/// [`call_openai_streamed_timed`] byte for byte.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn call_openai_streamed_tapped(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: Option<&str>,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+    limit: u32,
+    mut tap: Option<&mut PartialTap<'_>>,
+) -> (Result<Value, WireError>, WireTimings) {
     let started = tokio::time::Instant::now();
     let mut body = body.clone();
     if let Some(m) = body.as_object_mut() {
@@ -1022,8 +1053,24 @@ pub async fn call_openai_streamed_timed(
                     continue;
                 };
                 seen_data = true;
+                let text_before = stream.content.as_ref().map_or(0, String::len);
+                let chars_before = stream.chars;
+                let calls_before = stream.tool_calls.len();
                 if let Err(e) = stream.feed(data.trim(), limit) {
                     return (Err(e), ttfb);
+                }
+                if let Some(t) = tap.as_mut() {
+                    if stream.chars > chars_before {
+                        t.token();
+                    }
+                    if let Some(text) = stream.content.as_deref()
+                        && text.len() > text_before
+                    {
+                        t.text(&text[text_before..]).await;
+                    }
+                    if calls_before == 0 && !stream.tool_calls.is_empty() {
+                        t.close_text().await;
+                    }
                 }
             }
             if stream.done {
@@ -1091,6 +1138,23 @@ pub async fn call_responses_timed(
     body: &Value,
     timeout: Duration,
 ) -> (Result<String, WireError>, WireTimings) {
+    call_responses_tapped(client, url, bearer, extra_headers, body, timeout, None).await
+}
+
+/// GH #1410: [`call_responses_timed`] with a [`PartialTap`]. A 2xx body is
+/// read chunk by chunk and every `response.output_text.delta` reaches the tap
+/// while the stream still runs; the text returned is the whole body, so the
+/// parser after it reads what it always read (a stream cut short is still
+/// its error). `None` is [`call_responses_timed`] byte for byte.
+pub(crate) async fn call_responses_tapped(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: Option<&str>,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+    mut tap: Option<&mut PartialTap<'_>>,
+) -> (Result<String, WireError>, WireTimings) {
     let started = tokio::time::Instant::now();
     let request_fut = async {
         let mut req = client.post(url);
@@ -1109,6 +1173,11 @@ pub async fn call_responses_timed(
         // that remainder is what `total_ms - ttfb_ms` shows (GH #124).
         let ttfb = Some(ms_since(started));
         let status = resp.status().as_u16();
+        if let Some(t) = tap.as_mut()
+            && (200..300).contains(&status)
+        {
+            return (read_responses_stream(resp, t).await, ttfb);
+        }
         let text = match resp.text().await {
             Ok(t) => t,
             Err(e) => return (Err(WireError::Network(e.to_string())), ttfb),
@@ -1129,6 +1198,54 @@ pub async fn call_responses_timed(
         attempts: 1,
     };
     (result, timings)
+}
+
+/// GH #1410: read a 2xx Responses body chunk by chunk, handing each event's
+/// signal to the tap as it arrives; the whole body comes back as text.
+async fn read_responses_stream(
+    mut resp: reqwest::Response,
+    tap: &mut PartialTap<'_>,
+) -> Result<String, WireError> {
+    let mut all: Vec<u8> = Vec::new();
+    let mut scanned = 0usize;
+    loop {
+        let bytes = match resp.chunk().await {
+            Ok(Some(b)) => b,
+            Ok(None) => break,
+            Err(e) => return Err(WireError::Network(e.to_string())),
+        };
+        all.extend_from_slice(&bytes);
+        while let Some(pos) = all[scanned..].iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8_lossy(&all[scanned..scanned + pos]).into_owned();
+            scanned += pos + 1;
+            let Some(data) = line.trim_end().strip_prefix("data:") else {
+                continue;
+            };
+            match crate::llm::translate_responses::stream_signal(data.trim()) {
+                StreamSignal::Text(delta) => tap.text(&delta).await,
+                StreamSignal::ToolCall => {
+                    tap.token();
+                    tap.close_text().await;
+                }
+                StreamSignal::Token => tap.token(),
+                StreamSignal::Nothing => {}
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&all).into_owned())
+}
+
+/// GH #1410: what one streamed event means for the partials.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StreamSignal {
+    /// A visible text delta.
+    Text(String),
+    /// A tool call opened: the text before it is closed.
+    ToolCall,
+    /// Some other delta of the model (thinking, call arguments).
+    Token,
+    /// No delta at all.
+    Nothing,
 }
 
 /// GH #1239: the headers of a Messages call, in the order they are set.
@@ -1271,6 +1388,287 @@ pub async fn call_messages_timed(
             return (parsed, ttfb);
         }
         (Err(classify_messages_status(status, &text)), ttfb)
+    };
+    let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
+        Ok(pair) => pair,
+        Err(_) => (Err(WireError::Timeout), None),
+    };
+    let timings = WireTimings {
+        ttfb_ms,
+        total_ms: ms_since(started),
+        attempts: 1,
+    };
+    (result, timings)
+}
+
+/// GH #1410: a Messages answer read as a stream, put back together into the
+/// one body [`call_messages_timed`] returns (`id`, `model`, `content` blocks,
+/// `stop_reason`, `usage`), so the parser and the thinking keeper read the
+/// answer of before.
+///
+/// The event set (`message_start`, `content_block_start`,
+/// `content_block_delta` with `text_delta` / `input_json_delta` /
+/// `thinking_delta` / `signature_delta`, `content_block_stop`,
+/// `message_delta` with the stop reason and the output usage,
+/// `message_stop`, `ping`, `error`). A stream that ends without
+/// `message_stop` is an error, never an answer: the blocks so far may be
+/// half a sentence or half a call.
+#[derive(Default)]
+struct MessagesStream {
+    message: Option<serde_json::Map<String, Value>>,
+    blocks: Vec<Value>,
+    /// The `partial_json` of a `tool_use` block, by index, until its stop.
+    json_parts: HashMap<usize, String>,
+    done: bool,
+}
+
+/// What one Messages event means for the partials.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MessagesSignal {
+    text: Option<String>,
+    tool_call: bool,
+    token: bool,
+}
+
+impl MessagesStream {
+    fn feed(&mut self, data: &str) -> Result<MessagesSignal, WireError> {
+        let event: Value =
+            serde_json::from_str(data).map_err(|e| WireError::BodyParse(e.to_string()))?;
+        let mut signal = MessagesSignal::default();
+        let index = || {
+            event
+                .get("index")
+                .and_then(Value::as_u64)
+                .map(|i| i as usize)
+                .ok_or_else(|| WireError::BodyParse("a block event without an index".into()))
+        };
+        match event.get("type").and_then(Value::as_str).unwrap_or("") {
+            "message_start" => {
+                let m = event
+                    .get("message")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .ok_or_else(|| {
+                        WireError::BodyParse("message_start without a message".into())
+                    })?;
+                self.message = Some(m);
+            }
+            "content_block_start" => {
+                let i = index()?;
+                let mut block = event
+                    .get("content_block")
+                    .cloned()
+                    .ok_or_else(|| WireError::BodyParse("a block start without a block".into()))?;
+                match block.get("type").and_then(Value::as_str) {
+                    Some("tool_use") => {
+                        block["input"] = serde_json::json!({});
+                        self.json_parts.insert(i, String::new());
+                        signal.tool_call = true;
+                        signal.token = true;
+                    }
+                    Some("text") => {
+                        let t = block.get("text").and_then(Value::as_str).unwrap_or("");
+                        if !t.is_empty() {
+                            signal.text = Some(t.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+                if self.blocks.len() <= i {
+                    self.blocks.resize(i + 1, Value::Null);
+                }
+                self.blocks[i] = block;
+            }
+            "content_block_delta" => {
+                let i = index()?;
+                let block = self
+                    .blocks
+                    .get_mut(i)
+                    .filter(|b| !b.is_null())
+                    .ok_or_else(|| {
+                        WireError::BodyParse("a delta for a block never started".into())
+                    })?;
+                let delta = event.get("delta").cloned().unwrap_or(Value::Null);
+                let part = |key: &str| delta.get(key).and_then(Value::as_str).unwrap_or("");
+                let mut append = |key: &str, add: &str| {
+                    let mut joined = block
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    joined.push_str(add);
+                    block[key] = Value::String(joined);
+                };
+                match delta.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "text_delta" => {
+                        append("text", part("text"));
+                        signal.text = Some(part("text").to_string());
+                    }
+                    "thinking_delta" => {
+                        append("thinking", part("thinking"));
+                        signal.token = true;
+                    }
+                    "signature_delta" => append("signature", part("signature")),
+                    "input_json_delta" => {
+                        self.json_parts
+                            .entry(i)
+                            .or_default()
+                            .push_str(part("partial_json"));
+                        signal.token = true;
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let i = index()?;
+                if let Some(raw) = self.json_parts.remove(&i) {
+                    let input: Value = if raw.trim().is_empty() {
+                        serde_json::json!({})
+                    } else {
+                        serde_json::from_str(&raw).map_err(|e| {
+                            WireError::BodyParse(format!("tool_use input is no JSON: {e}"))
+                        })?
+                    };
+                    if let Some(block) = self.blocks.get_mut(i) {
+                        block["input"] = input;
+                    }
+                }
+            }
+            "message_delta" => {
+                let m = self.message.get_or_insert_with(serde_json::Map::new);
+                if let Some(d) = event.get("delta").and_then(Value::as_object) {
+                    for (k, v) in d {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
+                if let Some(u) = event.get("usage").and_then(Value::as_object) {
+                    let usage = m
+                        .entry("usage")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if let Some(usage) = usage.as_object_mut() {
+                        for (k, v) in u {
+                            usage.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            "message_stop" => self.done = true,
+            "error" => {
+                return Err(classify_in_body_error(&event).unwrap_or_else(|| {
+                    WireError::Transient(in_body_message(
+                        event.get("error").unwrap_or(&Value::Null),
+                    ))
+                }));
+            }
+            _ => {}
+        }
+        Ok(signal)
+    }
+
+    fn into_body(self) -> Value {
+        let mut m = self.message.unwrap_or_default();
+        m.insert(
+            "content".into(),
+            Value::Array(self.blocks.into_iter().filter(|b| !b.is_null()).collect()),
+        );
+        Value::Object(m)
+    }
+}
+
+/// GH #1410: [`call_messages_timed`] read as a stream (`stream: true`), each
+/// visible text delta handed to `tap` while it arrives. A server that answers
+/// one JSON body is read as one. Same headers, same classification, same
+/// A-timeout around the whole read; a stream that ends before `message_stop`
+/// is a `provider_error`, never a quiet end. Only called with the partials
+/// on: with them off the request is [`call_messages_timed`]'s, byte for byte.
+pub(crate) async fn call_messages_streamed_timed(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: Option<&str>,
+    extra_headers: &[(String, String)],
+    body: &Value,
+    timeout: Duration,
+    tap: &mut PartialTap<'_>,
+) -> (Result<Value, WireError>, WireTimings) {
+    let started = tokio::time::Instant::now();
+    let mut body = body.clone();
+    if let Some(m) = body.as_object_mut() {
+        m.insert("stream".into(), Value::Bool(true));
+    }
+    let request_fut = async {
+        let mut req = client.post(url);
+        for (name, value) in messages_headers(api_key, extra_headers) {
+            req = req.header(name, value);
+        }
+        let mut resp = match req.json(&body).send().await {
+            Ok(r) => r,
+            Err(e) => return (Err(WireError::Network(e.to_string())), None),
+        };
+        let ttfb = Some(ms_since(started));
+        let status = resp.status().as_u16();
+        let streamed = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| {
+                ct.trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("text/event-stream")
+            });
+        if !(200..300).contains(&status) || !streamed {
+            let text = match resp.text().await {
+                Ok(t) => t,
+                Err(e) => return (Err(WireError::Network(e.to_string())), ttfb),
+            };
+            if (200..300).contains(&status) {
+                let parsed = serde_json::from_str::<Value>(&text)
+                    .map_err(|e| WireError::BodyParse(e.to_string()));
+                return (parsed, ttfb);
+            }
+            return (Err(classify_messages_status(status, &text)), ttfb);
+        }
+        let mut stream = MessagesStream::default();
+        let mut pending: Vec<u8> = Vec::new();
+        loop {
+            let bytes = match resp.chunk().await {
+                Ok(Some(b)) => b,
+                Ok(None) => break,
+                Err(e) => return (Err(WireError::Network(e.to_string())), ttfb),
+            };
+            pending.extend_from_slice(&bytes);
+            while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                let Some(data) = line.trim_end().strip_prefix("data:") else {
+                    continue;
+                };
+                let signal = match stream.feed(data.trim()) {
+                    Ok(s) => s,
+                    Err(e) => return (Err(e), ttfb),
+                };
+                if signal.token {
+                    tap.token();
+                }
+                if let Some(text) = signal.text {
+                    tap.text(&text).await;
+                }
+                if signal.tool_call {
+                    tap.close_text().await;
+                }
+            }
+            if stream.done {
+                break;
+            }
+        }
+        if !stream.done {
+            return (
+                Err(WireError::BodyParse(
+                    "the messages stream ended before message_stop".into(),
+                )),
+                ttfb,
+            );
+        }
+        (Ok(stream.into_body()), ttfb)
     };
     let (result, ttfb_ms) = match tokio::time::timeout(timeout, request_fut).await {
         Ok(pair) => pair,

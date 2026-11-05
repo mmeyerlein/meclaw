@@ -315,6 +315,27 @@ fn spawn_relay(
     })
 }
 
+/// GH #1372: the label half of the relay. The supervisor reads the colony's
+/// phase from its slot as well as from the channel (the last word said, H1),
+/// so a relay that cut only the channel would show it a loop that keeps
+/// talking -- not the stall under test. The supervisor gets a slot of its
+/// own; this task carries the colony's labels into it, as the shared slot did
+/// (a refused declaration still reaches it, GH #968), and goes silent with the
+/// read's label: from there the supervisor hears nothing at all.
+fn spawn_label_relay(mut from: LabelSlotReader, to: LabelSlot) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(w) = from.changed().await {
+            let the_read = w.as_str() == LABEL;
+            to.put(w);
+            if the_read {
+                break;
+            }
+        }
+        let _hold = (from, to);
+        std::future::pending::<()>().await;
+    })
+}
+
 /// The first trip that names the read, or a panic after the 30-s failure
 /// marker. A trip before the declaration reached the supervisor (the loaded
 /// host gave the window away before the read was picked up, GH #748) is not
@@ -411,6 +432,7 @@ struct Rig {
     cmd_tx: mpsc::Sender<RelayCmd>,
     quiet_rx: oneshot::Receiver<Quiet>,
     relay: tokio::task::JoinHandle<()>,
+    labels: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
     _td: tempfile::TempDir,
 }
@@ -422,6 +444,8 @@ async fn rig(period_ms: u64) -> Rig {
     let td = tempfile::TempDir::new().expect("tempdir");
     let (hb_tx, hb_rx) = mpsc::channel::<Beat>(HEARTBEAT_CAPACITY);
     let (slot, reader) = label_slot();
+    // GH #1372: the supervisor's own slot, fed by the label relay.
+    let (supervisor_slot, supervisor_reader) = label_slot();
     let (inbox_tx, outputs_tx, stub, colony_join) =
         boot(td.path(), hb_tx.clone(), Some(slot)).await;
 
@@ -439,6 +463,7 @@ async fn rig(period_ms: u64) -> Rig {
     let (cmd_tx, cmd_rx) = mpsc::channel::<RelayCmd>(1);
     let (quiet_tx, quiet_rx) = oneshot::channel::<Quiet>();
     let relay = spawn_relay(hb_rx, relay_tx, reader.observe(), cmd_rx, quiet_tx);
+    let labels = spawn_label_relay(reader, supervisor_slot);
     let watchdog = tokio::spawn(meclaw_colony::watchdog::run_watchdog_with_label_slot(
         relay_rx,
         trip_tx,
@@ -449,7 +474,7 @@ async fn rig(period_ms: u64) -> Rig {
         // that walks out; the fatality rule itself is asserted.
         WatchdogOnTrip::LogOnly,
         None,
-        Some(reader),
+        Some(supervisor_reader),
     ));
     let _ = armed_tx.send(());
     let room = tokio::time::timeout(Duration::from_secs(30), probe_tx.reserve())
@@ -468,6 +493,7 @@ async fn rig(period_ms: u64) -> Rig {
         cmd_tx,
         quiet_rx,
         relay,
+        labels,
         watchdog,
         _td: td,
     }
@@ -478,6 +504,7 @@ impl Rig {
         drop(self.hb_tx);
         shutdown(self.inbox_tx, self.colony_join).await;
         self.relay.abort();
+        self.labels.abort();
         self.watchdog.abort();
     }
 }

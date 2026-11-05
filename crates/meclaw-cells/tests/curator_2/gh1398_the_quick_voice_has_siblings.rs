@@ -406,8 +406,19 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
     // `./session-keeper` is not part of the golden either.
     let call_end_keeper =
         |e: &Value| e["from"] == "." && e["to"] == "./session-keeper" && e["condition"] == CALL_END;
+    // GH #1411 came after 6.13.1 as well: the two rim edges that hand a
+    // streamed sentence (`partial`) out of `./quick` and `./brain`. The one
+    // out of `./quick` carries the speculation guard, so the promise of
+    // #1275 (speculation off sends nothing) holds; it is pinned in gh1382 C.
+    let partial_rim = |e: &Value| {
+        e["to"] == "."
+            && e["condition"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("has(hop.route) && hop.route == 'partial'"))
+    };
     let sibling = |e: &Value| {
         call_end_keeper(e)
+            || partial_rim(e)
             || ["./quick_spec", "./quick_bridge"]
                 .iter()
                 .any(|s| e["from"] == *s || e["to"] == *s)

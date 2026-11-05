@@ -1,4 +1,4 @@
-# `telegram-connector@2.2.6`
+# `telegram-connector@2.2.7`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
@@ -132,7 +132,7 @@ grant and the two edges in the same mutation (`seed_rows` writes through the mut
       },
       {
         "name": "telegram-connector",
-        "template": "telegram-connector@2.2.6"
+        "template": "telegram-connector@2.2.7"
       }
     ],
     "seed_rows": [
@@ -218,7 +218,7 @@ cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.2.6",
+{"name": "telegram-connector-2", "template": "telegram-connector@2.2.7",
  "override_params": {"bot_token_grant_id": "grant:telegram-bot-2@template-telegram-connector/bot-2"}}
 ```
 
@@ -276,7 +276,7 @@ this node itself:
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.2.6",
+        "template": "telegram-connector@2.2.7",
         "birth": "inactive",
         "override_params": {
           "bot_token_grant_id": "",
@@ -330,7 +330,7 @@ credential -- the graph swap `swap_nodes` was re-dedicated for:
         "match": {"name": "telegram"},
         "with": {
           "name": "telegram-live",
-          "template": "telegram-connector@2.2.6",
+          "template": "telegram-connector@2.2.7",
           "params": {"bot_token_grant_id": "grant:telegram-bot@template-telegram-connector/bot"}
         }
       }
@@ -422,6 +422,11 @@ and the answer cancels it, so a chat that got its answer stops typing at once
 **A failed chat action never costs the turn its answer.** It is logged and the
 next refresh tries again; the connector's four `error_code`s in the table above
 are still the whole set.
+
+**`partial_delivery` ships `"off"`.** A `partial` (a sentence of an answer still being written) is
+then dropped and every answer stays one message, as before. `"first_sentence"` sends the first
+partial of a turn at once as its own message, and the final answer sends only the rest (GH #1411).
+The template declares the key, so a set switches it on via `override_params` ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)).
 
 ## What it is not
 

@@ -500,7 +500,7 @@ async fn run_session(
                     "fault_close_fired: session ended {fault_close_at_ms} ms after its start \
                      as reason=content (fault_close_at_ms, a lab switch)"
                 );
-                if events.send(DuplexEvent::Warning { detail }).await.is_err() {
+                if events.send(DuplexEvent::Warning { detail, provider_code: None }).await.is_err() {
                     break Ending::HandlerGone;
                 }
                 let _ = send_frame(&mut write, close_frame(), timeouts.external, &mut meter).await;
@@ -555,7 +555,7 @@ async fn run_session(
                         // reads as a run of short, ordinary calls.
                         tracing::debug!(error = %e, "gpt_live: socket ended mid-session");
                         let detail = format!("socket ended mid-session: {e}");
-                        if events.send(DuplexEvent::Warning { detail }).await.is_err() {
+                        if events.send(DuplexEvent::Warning { detail, provider_code: None }).await.is_err() {
                             break Ending::HandlerGone;
                         }
                         break Ending::ConnectionLost;
@@ -755,7 +755,13 @@ async fn await_started(
                     .unwrap_or_default()
                     .to_string());
             }
-            "error" => return Err(DuplexError::Protocol(error_message(&event))),
+            "error" => {
+                let message = error_message(&event);
+                return Err(match provider_code(&event) {
+                    Some(code) => DuplexError::Refused { code, message },
+                    None => DuplexError::Protocol(message),
+                });
+            }
             other => tracing::debug!(event = other, "gpt_live: frame before session.started"),
         }
     }
@@ -870,6 +876,7 @@ fn map_event(text: &str) -> Mapped {
                 // survivable, a dropped call is not.
                 None => Mapped::Emit(DuplexEvent::Warning {
                     detail: "session.output_audio.delta was not base64".to_string(),
+                    provider_code: None,
                 }),
             }
         }
@@ -931,6 +938,7 @@ fn map_event(text: &str) -> Mapped {
         // `await_started`.
         "error" => Mapped::Emit(DuplexEvent::Warning {
             detail: error_message(&event),
+            provider_code: provider_code(&event),
         }),
         other => {
             tracing::debug!(event = other, "gpt_live: event not translated");
@@ -1004,6 +1012,21 @@ fn error_message(event: &JsonValue) -> String {
         .and_then(|m| m.as_str())
         .unwrap_or("unspecified error")
         .to_string()
+}
+
+/// The provider's own code of an error event (`error.code`), only in
+/// identifier form: 1 to 64 characters of ASCII letters, digits or `_.-` —
+/// the form the argus door accepts as an origin. Anything else (a URL with
+/// userinfo, prose, a number) is foreign text on every consumer's error lane
+/// and is dropped, so the error message stays what it always was
+/// (OR-d53-3.X5.16, GH #1376).
+fn provider_code(event: &JsonValue) -> Option<String> {
+    let code = event.get("error")?.get("code")?.as_str()?;
+    let identifier = (1..=64).contains(&code.len())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+    identifier.then(|| code.to_string())
 }
 
 /// A refused handshake: 401/403 is a credential verdict, everything else is a

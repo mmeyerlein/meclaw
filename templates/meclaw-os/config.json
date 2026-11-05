@@ -32,6 +32,10 @@
           "because": "hand the control loop a hypothesis: one line with an origin and a confidence, stored and acknowledged, shown to its judge at the earliest in its next cycle and never counted as a measurement. Nothing at this level consumes it, so the lane is the shell's. Derived from argus"
         },
         {
+          "route": "in_error",
+          "because": "hand the control loop an `error` message from another part of the colony, as it is; stored as a hint with origin `error:<code>`, throttled per code and sender, and told once on `error_hint`. Nothing at this level consumes it and nothing is wired by default, so the lane is the shell's. Derived from argus (GH #1376)"
+        },
+        {
           "route": "in_hand",
           "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from \"llm-registry@2.14.0\""
         },
@@ -116,6 +120,10 @@
         {
           "route": "read",
           "because": "the control loop's answer to `in_read`: the rows asked for and the cursor for the next page, or the refusal by name. Derived from argus"
+        },
+        {
+          "route": "error_hint",
+          "because": "a hint `in_error` stored, told once, the line already redacted. Nothing draws it by default. Derived from argus (GH #1376)"
         },
         {
           "route": "hint_ack",
@@ -257,6 +265,23 @@
           "from": ".",
           "to": "./argus",
           "condition": "has(hop.route) && hop.route == 'in_hint'"
+        },
+        {
+          "from": ".",
+          "to": "./argus",
+          "condition": "has(hop.route) && hop.route == 'in_error'"
+        },
+        {
+          "from": "./argus",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'error_hint'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./argus",

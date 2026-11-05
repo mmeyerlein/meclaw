@@ -73,7 +73,8 @@ pub enum Beat {
     ///
     /// The supervisor normalises this to `Working` for every judgement it makes
     /// — a label changes the diagnosis, never the verdict — and remembers the
-    /// last label it saw until the loop parks.
+    /// last label it saw until the loop parks or says an unlabelled `Working`
+    /// (GH #1372: the labelled step is over, [`WorkPulse::resume`]).
     WorkingOn(WorkItem),
     /// GH #1216: the loop's last word. An orderly shutdown has ended its
     /// drain (quiescent, or cut at its budget, or never opened) and the
@@ -133,26 +134,339 @@ impl std::fmt::Display for WorkItem {
 /// makes it newer than every beat the channel still holds: those were queued
 /// before the channel filled, so before the refusal.
 ///
-/// Known limit (review M-1 of #968): it is not newer than a beat the channel
-/// refused AFTER it. A label lands here (channel full), the read ends, and its
-/// `Parked` beat meets the same full channel and is dropped -- unlabelled
-/// beats have no slot. The supervisor then reads `Working` plus the label
-/// although the last word was `Parked`. The same holds while the supervisor
-/// drains and the loop refills the room it made. Either way a real hang right
-/// after reads as `slow_work_item` and turns fatal only after the work-item
-/// budget (10 x the window), and the next idle beat (100 ms) of any living
-/// loop corrects the picture.
+/// Review M-1 of #968 (it is not newer than a word said AFTER it -- a
+/// refused `Parked` behind it read as `Working` plus the label) is closed by
+/// GH #1372: the slot also keeps the last phase word the colony SAID
+/// ([`Said`]), and the supervisor reads it after the label.
+///
+/// GH #1372: the slot carries a second half, the colony's [`Notes`] -- the
+/// trail the trip line prints as `beats_dropped` and `last_marks`. It rides
+/// here because every writer that can lose a beat already holds this slot.
 #[derive(Clone, Debug)]
-pub struct LabelSlot(std::sync::Arc<tokio::sync::watch::Sender<Option<WorkItem>>>);
+pub struct LabelSlot {
+    label: std::sync::Arc<tokio::sync::watch::Sender<Option<WorkItem>>>,
+    notes: std::sync::Arc<tokio::sync::watch::Sender<Notes>>,
+}
 
 /// GH #968: the reading half of a [`LabelSlot`], held by the supervisor.
 #[derive(Debug)]
-pub struct LabelSlotReader(tokio::sync::watch::Receiver<Option<WorkItem>>);
+pub struct LabelSlotReader {
+    label: tokio::sync::watch::Receiver<Option<WorkItem>>,
+    notes: tokio::sync::watch::Receiver<Notes>,
+}
 
 /// GH #968: a fresh label slot, both halves.
 pub fn label_slot() -> (LabelSlot, LabelSlotReader) {
     let (tx, rx) = tokio::sync::watch::channel(None);
-    (LabelSlot(std::sync::Arc::new(tx)), LabelSlotReader(rx))
+    let (notes_tx, notes_rx) = tokio::sync::watch::channel(Notes::default());
+    (
+        LabelSlot {
+            label: std::sync::Arc::new(tx),
+            notes: std::sync::Arc::new(notes_tx),
+        },
+        LabelSlotReader {
+            label: rx,
+            notes: notes_rx,
+        },
+    )
+}
+
+/// GH #1372: how many notes the colony keeps and a trip prints.
+///
+/// Measured (#1372, LABK `/tmp` analysis, fx-wd Befund 1): every fatal trip on
+/// the loaded lane said `in_flight_work=false` with `cpu_denied=0`, so the
+/// silence sat behind an `await` the trip could not name. Sixteen is two to
+/// three loop iterations (`Working`, the marked steps, `Parked`) -- the tail
+/// the silence starts from -- in a fixed array, so writing a note never
+/// allocates.
+pub const MARK_DEPTH: usize = 16;
+
+/// GH #1372: which edge of a marked step a note records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkEdge {
+    /// The loop is about to await the step.
+    Begin,
+    /// The step returned.
+    End,
+}
+
+/// GH #1372: the phase word of a [`Beat`], without its label -- what a note
+/// keeps of a beat (a label lives in the [`LabelSlot`] already).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatKind {
+    /// [`Beat::Parked`].
+    Parked,
+    /// [`Beat::Working`].
+    Working,
+    /// [`Beat::WorkingOn`].
+    WorkingOn,
+    /// [`Beat::StandDown`].
+    StandDown,
+}
+
+impl BeatKind {
+    /// The kind of `beat`.
+    pub fn of(beat: &Beat) -> Self {
+        match beat {
+            Beat::Parked => Self::Parked,
+            Beat::Working => Self::Working,
+            Beat::WorkingOn(_) => Self::WorkingOn,
+            Beat::StandDown => Self::StandDown,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Parked => "parked",
+            Self::Working => "working",
+            Self::WorkingOn => "working-on",
+            Self::StandDown => "stand-down",
+        }
+    }
+}
+
+/// GH #1372: one entry of the colony's trail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noted {
+    /// The loop said `kind`; `dropped` = the heartbeat channel was full and
+    /// the supervisor never heard it.
+    Beat {
+        /// The phase word.
+        kind: BeatKind,
+        /// Refused by a full channel.
+        dropped: bool,
+    },
+    /// The loop entered or left a marked step (`writer-send:dlq`, ...).
+    Mark {
+        /// The step, one word, no private data.
+        step: &'static str,
+        /// Entered or left.
+        edge: MarkEdge,
+    },
+}
+
+impl std::fmt::Display for Noted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Beat {
+                kind,
+                dropped: false,
+            } => f.write_str(kind.as_str()),
+            Self::Beat {
+                kind,
+                dropped: true,
+            } => write!(f, "dropped:{}", kind.as_str()),
+            Self::Mark {
+                step,
+                edge: MarkEdge::Begin,
+            } => write!(f, "{step}>"),
+            Self::Mark {
+                step,
+                edge: MarkEdge::End,
+            } => write!(f, "{step}<"),
+        }
+    }
+}
+
+/// GH #1372: the colony's trail, written at the SOURCE -- the beat as the loop
+/// said it, the step it entered, with the time it happened -- and read by the
+/// supervisor only when it trips. The heartbeat channel cannot carry this: it
+/// is the thing that drops words when it is full, and a mark sent through it
+/// would take room from the phase words the verdict reads.
+///
+/// The ring and the refusal count are witness only -- no verdict reads them;
+/// the last phase word said ([`Said`]) is the one verdict input here, read by
+/// [`LastWord::drain`] after the channel. A fixed ring ([`MARK_DEPTH`]) inside a
+/// `tokio::sync::watch` value, modified in place -- the slot's own channel
+/// discipline (one-way, never blocks on the reader), no allocation per note.
+#[derive(Debug, Clone, Default)]
+pub struct Notes {
+    /// Notes written so far; the next one lands at `seq % MARK_DEPTH`.
+    seq: u64,
+    /// Beats a full heartbeat channel refused, ever.
+    dropped: u64,
+    ring: [Option<(tokio::time::Instant, Noted)>; MARK_DEPTH],
+    /// GH #1372 (H1): the last phase word the loop said, refused or not.
+    said: Option<Said>,
+}
+
+/// GH #1372 (H1): the last phase word (`Parked`, `Working`, `WorkingOn`) the
+/// colony said, as the SOURCE knows it -- including a word the full heartbeat
+/// channel refused, which the supervisor would otherwise never hear.
+///
+/// Measured (x4 Teil 2/2b, build04, 27 of 27 events): `beats_dropped > 0` in
+/// every trip, and a refused `Working` left a queued `Parked` as the word the
+/// verdict read -- `colony_loop`, fatal, for a loop inside a work item. The
+/// supervisor reads this after the channel and the label, so the phase it
+/// judges is the one the loop last said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Said {
+    /// Phase words said so far, this one included (orders it against arming).
+    pub(crate) n: u64,
+    /// The word.
+    pub(crate) kind: BeatKind,
+    /// Refused by a full channel.
+    pub(crate) dropped: bool,
+}
+
+/// GH #1372 (x4b I1): where [`Notes::push`] put a beat, so a refusal found
+/// after the `try_send` amends that very note.
+#[derive(Debug, Clone, Copy)]
+struct Ticket {
+    /// The ring sequence of the note.
+    seq: u64,
+    /// The [`Said::n`] it set (`None` for `StandDown`, which is no phase).
+    said: Option<u64>,
+}
+
+impl Notes {
+    fn push(&mut self, at: tokio::time::Instant, what: Noted) -> Ticket {
+        let seq = self.seq;
+        self.ring[(seq % MARK_DEPTH as u64) as usize] = Some((at, what));
+        self.seq = self.seq.wrapping_add(1);
+        let mut said = None;
+        if let Noted::Beat { kind, dropped } = what {
+            if dropped {
+                self.dropped = self.dropped.saturating_add(1);
+            }
+            said = self.say(kind, dropped);
+        }
+        Ticket { seq, said }
+    }
+
+    /// GH #1372 (H1): remember `kind` as the last phase word said.
+    fn say(&mut self, kind: BeatKind, dropped: bool) -> Option<u64> {
+        if kind == BeatKind::StandDown {
+            return None;
+        }
+        let n = self.said.map_or(0, |s| s.n).wrapping_add(1);
+        self.said = Some(Said { n, kind, dropped });
+        Some(n)
+    }
+
+    /// GH #1372 (x4b I1): the beat noted as `t` was refused by the full
+    /// channel. Counted; its ring entry says so; and if it is still the last
+    /// word said, it is said again as refused -- under a new [`Said::n`], so a
+    /// supervisor that read it as heard reads it once more.
+    fn refuse(&mut self, t: Ticket) {
+        self.dropped = self.dropped.saturating_add(1);
+        if self.seq.wrapping_sub(t.seq) <= MARK_DEPTH as u64
+            && let Some((_, Noted::Beat { dropped, .. })) =
+                &mut self.ring[(t.seq % MARK_DEPTH as u64) as usize]
+        {
+            *dropped = true;
+        }
+        if let (Some(n), Some(s)) = (t.said, self.said)
+            && s.n == n
+        {
+            self.say(s.kind, true);
+        }
+    }
+
+    /// The ring oldest first, each entry as its distance before `now`.
+    fn before(&self, now: tokio::time::Instant) -> LastMarks {
+        let mut out = LastMarks::default();
+        let start = (self.seq % MARK_DEPTH as u64) as usize;
+        let mut k = 0;
+        for i in 0..MARK_DEPTH {
+            if let Some((at, what)) = self.ring[(start + i) % MARK_DEPTH] {
+                out.0[k] = Some((now.saturating_duration_since(at), what));
+                k += 1;
+            }
+        }
+        out
+    }
+}
+
+/// GH #1372: the colony's last [`MARK_DEPTH`] notes as a trip carries them,
+/// oldest first, each with how long before the trip it was written.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LastMarks(pub [Option<(std::time::Duration, Noted)>; MARK_DEPTH]);
+
+impl LastMarks {
+    /// The entries, oldest first.
+    pub fn iter(&self) -> impl Iterator<Item = &(std::time::Duration, Noted)> {
+        self.0.iter().flatten()
+    }
+}
+
+impl std::fmt::Display for LastMarks {
+    /// `[-500ms working, -498ms writer-send:dlq>]`: time before the trip, then
+    /// the note.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, (ago, what)) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "-{}ms {what}", ago.as_millis())?;
+        }
+        f.write_str("]")
+    }
+}
+
+/// GH #1372: one non-blocking beat, as [`crate::colony`]'s `beat` and every
+/// relay emit it: `try_send`, and the word as said -- sent or refused -- goes
+/// to the trail of `trace`. Never awaits.
+///
+/// GH #1372 (H1): a refused [`Beat::WorkingOn`] puts its label in the slot,
+/// as [`WorkPulse::tick`] does (GH #968) -- the colony reads declare
+/// themselves through here and lost their name on a full channel.
+///
+/// GH #1372 (x4b I1): the word is noted BEFORE the `try_send` and marked
+/// refused after it, so a supervisor that drains in between never finds a
+/// word in the channel that is newer than the last word said.
+pub fn send_beat(tx: &tokio::sync::mpsc::Sender<Beat>, trace: Option<&LabelSlot>, beat: Beat) {
+    let ticket = trace.map(|t| {
+        t.note(Noted::Beat {
+            kind: BeatKind::of(&beat),
+            dropped: false,
+        })
+    });
+    let refused = match tx.try_send(beat) {
+        Err(tokio::sync::mpsc::error::TrySendError::Full(word)) => Some(word),
+        _ => None,
+    };
+    #[cfg(test)]
+    send_seam::after_send();
+    if let (Some(t), Some(ticket), Some(word)) = (trace, ticket, refused) {
+        t.refuse(ticket);
+        if let Beat::WorkingOn(w) = word {
+            t.put(w);
+        }
+    }
+}
+
+/// GH #1372 (x4b I1): a supervisor drain between a beat's `try_send` and the
+/// return of the call that sent it -- the window a loop thread preempted
+/// under host load leaves open. On this thread, for the pin of the order.
+#[cfg(test)]
+mod send_seam {
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn FnMut()>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Run `hook` right after every `try_send` of a beat on this thread.
+    pub(super) fn set(hook: Option<Hook>) {
+        HOOK.with(|h| *h.borrow_mut() = hook);
+    }
+
+    pub(super) fn after_send() {
+        let hook = HOOK.with(|h| h.borrow_mut().take());
+        if let Some(mut hook) = hook {
+            hook();
+            HOOK.with(|h| {
+                let mut h = h.borrow_mut();
+                if h.is_none() {
+                    *h = Some(hook);
+                }
+            });
+        }
+    }
 }
 
 impl LabelSlot {
@@ -160,15 +474,54 @@ impl LabelSlot {
     /// yet. Never blocks, never fails: a reader that is gone is a watchdog that
     /// is gone, and there is nobody left to tell.
     pub fn put(&self, label: WorkItem) {
-        self.0.send_replace(Some(label));
+        self.label.send_replace(Some(label));
+    }
+
+    /// GH #1372: the loop enters (`Begin`) or leaves (`End`) the step `step`.
+    /// A witness, never a beat: it reaches no verdict and takes no room in
+    /// the heartbeat channel.
+    pub fn mark(&self, step: &'static str, edge: MarkEdge) {
+        self.note(Noted::Mark { step, edge });
+    }
+
+    fn note(&self, what: Noted) -> Ticket {
+        let at = tokio::time::Instant::now();
+        let mut ticket = Ticket { seq: 0, said: None };
+        self.notes.send_modify(|n| ticket = n.push(at, what));
+        ticket
+    }
+
+    /// GH #1372 (x4b I1): the beat noted as `t` was refused.
+    fn refuse(&self, t: Ticket) {
+        self.notes.send_modify(|n| n.refuse(t));
+    }
+
+    /// GH #1372 (H1): a [`WorkPulse`] label the channel took. No ring entry
+    /// (a pulse beats per cell of an instantiation), only the last said
+    /// phase -- and only when it changes, so a run of pulses writes once.
+    fn said_working_on(&self) {
+        self.notes.send_if_modified(|n| {
+            let same = matches!(
+                n.said,
+                Some(Said {
+                    kind: BeatKind::WorkingOn,
+                    dropped: false,
+                    ..
+                })
+            );
+            if !same {
+                n.say(BeatKind::WorkingOn, false);
+            }
+            !same
+        });
     }
 }
 
 impl LabelSlotReader {
     /// The label put since the last call, if any.
     pub fn take(&mut self) -> Option<WorkItem> {
-        match self.0.has_changed() {
-            Ok(true) => self.0.borrow_and_update().clone(),
+        match self.label.has_changed() {
+            Ok(true) => self.label.borrow_and_update().clone(),
             _ => None,
         }
     }
@@ -176,15 +529,34 @@ impl LabelSlotReader {
     /// Another reader on the same slot -- a test relay that has to see what the
     /// supervisor sees. Starts where this one stands.
     pub fn observe(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            label: self.label.clone(),
+            notes: self.notes.clone(),
+        }
     }
 
     /// Wait until a label is put; `None` once the writing side is gone.
     pub async fn changed(&mut self) -> Option<WorkItem> {
-        match self.0.changed().await {
-            Ok(()) => self.0.borrow_and_update().clone(),
+        match self.label.changed().await {
+            Ok(()) => self.label.borrow_and_update().clone(),
             Err(_) => None,
         }
+    }
+
+    /// GH #1372: beats refused so far, and the trail as it stands `now`.
+    pub(crate) fn notes_at(&self, now: tokio::time::Instant) -> (u64, LastMarks) {
+        let n = self.notes.borrow();
+        (n.dropped, n.before(now))
+    }
+
+    /// GH #1372: beats refused so far (the arming base; no copy of the ring).
+    pub(crate) fn dropped(&self) -> u64 {
+        self.notes.borrow().dropped
+    }
+
+    /// GH #1372 (H1): the last phase word the colony said, refused or not.
+    pub(crate) fn said(&self) -> Option<Said> {
+        self.notes.borrow().said
     }
 }
 
@@ -284,12 +656,42 @@ impl WorkPulse {
         let Some(t) = &self.tx else {
             return;
         };
-        if let Err(tokio::sync::mpsc::error::TrySendError::Full(Beat::WorkingOn(w))) =
-            t.try_send(Beat::WorkingOn(self.label.clone()))
-            && let Some(slot) = &self.slot
-        {
+        // GH #1372 (H1, x4b I1): the last word said, BEFORE the channel takes
+        // it -- a word in the channel is never newer than the last word said.
+        if let Some(slot) = &self.slot {
+            slot.said_working_on();
+        }
+        let sent = t.try_send(Beat::WorkingOn(self.label.clone()));
+        #[cfg(test)]
+        send_seam::after_send();
+        let Some(slot) = &self.slot else {
+            return;
+        };
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(Beat::WorkingOn(w))) = sent {
+            // GH #1372: only the refusal is noted -- a pulse beats per cell
+            // of an instantiation, and its label is already the slot's.
+            slot.note(Noted::Beat {
+                kind: BeatKind::WorkingOn,
+                dropped: true,
+            });
             slot.put(w);
         }
+    }
+
+    /// GH #1372: the labelled step is over and the loop is back in the work
+    /// item it was in -- `Working`, unlabelled, so a later step of the same
+    /// iteration is not charged to this label (the `blob-offload` declaration
+    /// ends here). Through [`send_beat`]: refused, it still reaches the
+    /// supervisor as the last word said.
+    pub fn resume(&self) {
+        if let Some(t) = &self.tx {
+            send_beat(t, self.slot.as_ref(), Beat::Working);
+        }
+    }
+
+    /// GH #1372: the colony's trail this pulse writes to, if any.
+    pub(crate) fn slot(&self) -> Option<&LabelSlot> {
+        self.slot.as_ref()
     }
 
     /// The same pulse under a narrower label — one mutation, one cell at a time.
@@ -520,6 +922,12 @@ pub struct WatchdogTrip {
     /// The evidence as read; the item is credited at most
     /// [`Self::denial_deduction`] of it. See [`Self::work_item_silence`].
     pub cpu_denied: std::time::Duration,
+    /// GH #1372: beats a full heartbeat channel refused since the supervisor
+    /// was armed (0 without a [`LabelSlot`]). Witness only, no verdict.
+    pub beats_dropped: u64,
+    /// GH #1372: the colony's last notes before the trip, as the loop wrote
+    /// them (see [`Notes`]). Witness only, no verdict.
+    pub last_marks: LastMarks,
 }
 
 impl WatchdogTrip {
@@ -760,7 +1168,8 @@ impl std::fmt::Display for WatchdogTrip {
              [starved={} silent_for={}ms nominal_window={}ms supervisor_lag={}ms \
              in_flight_work={} work_item_budget={}ms \
              witness={} witness_missed={}/{} \
-             beats_seen={} armed_for={}ms colony_task={} work_item={} cpu_denied={}ms]",
+             beats_seen={} armed_for={}ms colony_task={} work_item={} cpu_denied={}ms \
+             beats_dropped={} last_marks={}]",
             self.silent_periods,
             self.period.as_millis(),
             self.starved(),
@@ -787,6 +1196,9 @@ impl std::fmt::Display for WatchdogTrip {
                 .unwrap_or("none"),
             // GH #1216: appended like GH #439's label, after it.
             self.cpu_denied.as_millis(),
+            // GH #1372: appended after them, the witness of the step.
+            self.beats_dropped,
+            self.last_marks,
         )
     }
 }
@@ -1011,6 +1423,10 @@ pub(crate) struct LastWord {
     /// GH #1216: the loop said [`Beat::StandDown`]; the supervisor returns
     /// without a verdict.
     pub(crate) stood_down: bool,
+    /// GH #1372 (H1): the [`Said::n`] standing at arming -- a word said during
+    /// boot is as stale as a boot beat -- and after that the last one a drain
+    /// read (x4b I1: each word said is read once).
+    pub(crate) said_floor: u64,
 }
 
 /// What one [`LastWord::drain`] found.
@@ -1030,6 +1446,7 @@ impl LastWord {
             label: None,
             beats_seen: 0,
             stood_down: false,
+            said_floor: 0,
         }
     }
 
@@ -1040,7 +1457,12 @@ impl LastWord {
                 self.phase = Beat::Working;
                 self.label = Some(w);
             }
-            Beat::Working => self.phase = Beat::Working,
+            // GH #1372: an unlabelled `Working` ends a labelled step (see
+            // [`WorkPulse::resume`]); the label names the step in progress.
+            Beat::Working => {
+                self.phase = Beat::Working;
+                self.label = None;
+            }
             Beat::Parked => {
                 self.phase = Beat::Parked;
                 self.label = None;
@@ -1052,6 +1474,13 @@ impl LastWord {
     /// Drain every beat buffered this period, then the label slot. The slot is
     /// read LAST because a label lands there only when the channel refused it,
     /// i.e. after every beat the channel still holds (see [`LabelSlot`]).
+    ///
+    /// GH #1372 (H1): then the last phase word the colony SAID ([`Said`]). A
+    /// word the channel refused is newer than everything it holds, so it is
+    /// the phase; and a label in the slot is stale once a later unlabelled word
+    /// was said (review M-1 of #968). Only the input changes -- `hear` and the
+    /// verdict read it as before; `received` stays the channel's and the
+    /// slot's, the trail is no beat.
     pub(crate) fn drain(
         &mut self,
         heartbeat_rx: &mut tokio::sync::mpsc::Receiver<Beat>,
@@ -1074,9 +1503,47 @@ impl LastWord {
                 }
             }
         }
-        if let Some(w) = slot.and_then(LabelSlotReader::take) {
+        let Some(slot) = slot else {
+            return out;
+        };
+        // x4b I1: a word said is read once. A word the channel holds after it
+        // was sent after it (the source says before it sends), so a refused
+        // word read in an earlier drain never overrides a later heard one.
+        let said = slot.said().filter(|s| s.n > self.said_floor);
+        if let Some(s) = said {
+            self.said_floor = s.n;
+        }
+        let unlabelled_since = matches!(
+            said,
+            Some(Said {
+                kind: BeatKind::Working | BeatKind::Parked,
+                ..
+            })
+        );
+        if let Some(w) = slot.take() {
             out.received = true;
-            self.hear(Beat::WorkingOn(w));
+            if !unlabelled_since {
+                self.hear(Beat::WorkingOn(w));
+            }
+        }
+        if let Some(Said {
+            kind,
+            dropped: true,
+            ..
+        }) = said
+        {
+            match kind {
+                BeatKind::Parked => {
+                    self.phase = Beat::Parked;
+                    self.label = None;
+                }
+                BeatKind::Working => {
+                    self.phase = Beat::Working;
+                    self.label = None;
+                }
+                BeatKind::WorkingOn => self.phase = Beat::Working,
+                BeatKind::StandDown => {}
+            }
         }
         out
     }
@@ -1143,6 +1610,8 @@ pub(crate) async fn run_watchdog_reading_denial(
     if let Some(slot) = label_slot.as_mut() {
         let _ = slot.take();
     }
+    // GH #1372: beats refused during boot are not this supervisor's to report.
+    let dropped_at_arming = label_slot.as_ref().map_or(0, LabelSlotReader::dropped);
     // Heartbeats buffered during boot prove liveness of a moment that is already
     // past. Drop them so the first evaluated period is a fresh observation.
     // GH #1216: all but one — a stand-down is not stale: a colony that shut
@@ -1166,6 +1635,11 @@ pub(crate) async fn run_watchdog_reading_denial(
     // reset whenever a colony beat starts a fresh window, and after every trip.
     // GH #165 / GH #439 / GH #968: the loop's last word (see [`LastWord`]).
     let mut last = LastWord::new();
+    // GH #1372 (H1): words said before arming are not this supervisor's.
+    last.said_floor = label_slot
+        .as_ref()
+        .and_then(LabelSlotReader::said)
+        .map_or(0, |s| s.n);
     let mut witness_misses: u32 = 0;
     let mut witness_worst: u32 = 0;
     let mut witness_present = witness_rx.is_some();
@@ -1243,6 +1717,12 @@ pub(crate) async fn run_watchdog_reading_denial(
                 .map(|base| read_denial().max_growth_since(base))
                 .unwrap_or_default()
                 .min(silent_for);
+            // GH #1372: the witness (count and ring), read here and nowhere
+            // else -- no verdict above or below reads it.
+            let (dropped, last_marks) = label_slot
+                .as_ref()
+                .map(|s| s.notes_at(now))
+                .unwrap_or_default();
             let trip = WatchdogTrip {
                 silent_periods: threshold,
                 period,
@@ -1256,6 +1736,8 @@ pub(crate) async fn run_watchdog_reading_denial(
                 witness_worst_misses: witness_worst,
                 work_item: last.label.clone(),
                 cpu_denied,
+                beats_dropped: dropped.saturating_sub(dropped_at_arming),
+                last_marks,
             };
             let fatal = trip.is_fatal(on_trip);
             // `try_send`: the caller drains this channel; a full one means it has
@@ -1291,7 +1773,7 @@ mod tests {
         let (slot, mut reader) = label_slot();
         while tx.try_send(Beat::Parked).is_ok() {}
         let pulse = WorkPulse::new(Some(tx.clone()), WorkItem::new("colony-read /colony/graph"))
-            .with_slot(Some(slot));
+            .with_slot(Some(slot.clone()));
         pulse.tick();
 
         let mut last = LastWord::new();
@@ -1327,6 +1809,100 @@ mod tests {
         );
         last.drain(&mut rx, Some(&mut reader));
         assert_eq!(last.phase, Beat::Working);
+    }
+
+    /// GH #1372 (H1, and review M-1 of #968): a full channel refuses the read's
+    /// label and then the `Parked` after it. The last word SAID is `Parked`,
+    /// so that is the phase -- not the queued words, not the stale label.
+    #[test]
+    fn a_refused_parked_after_a_refused_label_is_the_last_word() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Beat>(4);
+        let (slot, mut reader) = label_slot();
+        while tx.try_send(Beat::Working).is_ok() {}
+        send_beat(
+            &tx,
+            Some(&slot),
+            Beat::WorkingOn(WorkItem::new("colony-read /colony/trace")),
+        );
+        send_beat(&tx, Some(&slot), Beat::Parked);
+
+        let mut last = LastWord::new();
+        let d = last.drain(&mut rx, Some(&mut reader));
+        assert!(d.received);
+        assert_eq!(
+            (last.phase.clone(), last.label.clone()),
+            (Beat::Parked, None)
+        );
+        assert_eq!(last.beats_seen, 4, "the trail is no beat: {last:?}");
+    }
+
+    /// GH #1372 (x4b I1): a word the channel took is never older than the
+    /// last word said. A supervisor that drains between the `try_send` of a
+    /// heard `Working` and the end of the call must not let the refused
+    /// `Parked` before it win -- neither then nor on the next drain.
+    #[test]
+    fn a_heard_word_beats_an_older_refused_one_in_the_send_window() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Beat>(2);
+        let (slot, reader) = label_slot();
+        let sup = Rc::new(RefCell::new((rx, reader, LastWord::new())));
+        let drain = {
+            let sup = sup.clone();
+            move || {
+                let (rx, reader, last) = &mut *sup.borrow_mut();
+                last.drain(rx, Some(reader));
+            }
+        };
+        let phase = || {
+            let s = sup.borrow();
+            (s.2.phase.clone(), s.2.label.clone())
+        };
+
+        // send_beat: the refused `Parked` is the phase, then a heard `Working`.
+        while tx.try_send(Beat::Working).is_ok() {}
+        send_beat(&tx, Some(&slot), Beat::Parked);
+        drain();
+        assert_eq!(phase(), (Beat::Parked, None));
+        send_seam::set(Some(Box::new(drain.clone())));
+        send_beat(&tx, Some(&slot), Beat::Working);
+        send_seam::set(None);
+        assert_eq!(phase(), (Beat::Working, None), "in the window");
+        drain();
+        assert_eq!(phase(), (Beat::Working, None), "after the window");
+
+        // WorkPulse::tick: the same, for a heard labelled pulse.
+        while tx.try_send(Beat::Working).is_ok() {}
+        send_beat(&tx, Some(&slot), Beat::Parked);
+        drain();
+        assert_eq!(phase(), (Beat::Parked, None));
+        let pulse = WorkPulse::new(Some(tx.clone()), WorkItem::new("blob-offload"))
+            .with_slot(Some(slot.clone()));
+        send_seam::set(Some(Box::new(drain.clone())));
+        pulse.tick();
+        send_seam::set(None);
+        drain();
+        let (p, l) = phase();
+        assert_eq!(p, Beat::Working, "after the window");
+        assert_eq!(l.as_ref().map(WorkItem::as_str), Some("blob-offload"));
+    }
+
+    /// GH #1372 (x4b M3): `resume` ends the labelled step -- the label the
+    /// pulse declared is gone once the unlabelled `Working` is heard.
+    #[test]
+    fn resume_clears_the_label_of_the_step() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Beat>(4);
+        let (slot, mut reader) = label_slot();
+        let pulse = WorkPulse::new(Some(tx), WorkItem::new("blob-offload")).with_slot(Some(slot));
+        pulse.tick();
+        pulse.resume();
+        let mut last = LastWord::new();
+        last.drain(&mut rx, Some(&mut reader));
+        assert_eq!(
+            (last.phase.clone(), last.label.clone()),
+            (Beat::Working, None)
+        );
     }
 
     #[test]
@@ -1572,6 +2148,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         assert_eq!(base.nominal_window(), Duration::from_millis(500));
         assert_eq!(base.supervisor_lag(), Duration::from_millis(20));
@@ -1611,6 +2189,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         let line = format!("{trip}");
         assert!(
@@ -1651,6 +2231,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         }
     }
 
@@ -1851,6 +2433,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         assert!(silent.is_fatal(WatchdogOnTrip::Exit));
         assert!(!silent.is_fatal(WatchdogOnTrip::LogOnly));
@@ -2135,6 +2719,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         assert_eq!(base.supervisor_lag(), Duration::ZERO);
         assert_eq!(base.witness(), HostWitness::Kept);
@@ -2183,6 +2769,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         assert_eq!(t.witness(), HostWitness::Absent);
         assert_eq!(t.starved(), "colony_loop");
@@ -2264,6 +2852,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         assert_eq!(incident.supervisor_lag(), Duration::ZERO);
         assert_eq!(incident.work_item_budget(), Duration::from_secs(5));
@@ -2306,6 +2896,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         assert_eq!(base.starved(), "slow_work_item");
         assert!(!base.is_fatal(WatchdogOnTrip::Exit));
@@ -2527,9 +3119,9 @@ mod tests {
 
         /// One handled event, declared the way the colony loop declares it.
         fn declare_one_event(tx: &Option<tokio::sync::mpsc::Sender<Beat>>) {
-            crate::colony::beat(tx, Beat::Working);
-            crate::colony::beat(tx, Beat::Parked);
-            crate::colony::beat(tx, Beat::Working);
+            crate::colony::beat(tx, None, Beat::Working);
+            crate::colony::beat(tx, None, Beat::Parked);
+            crate::colony::beat(tx, None, Beat::Working);
         }
 
         /// What the supervisor takes away from the channel: it drains everything
@@ -2588,6 +3180,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: Some(WorkItem::new("mutation scope=/os/orgs")),
             cpu_denied: std::time::Duration::ZERO,
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         }
     }
 
@@ -2730,6 +3324,8 @@ mod tests {
                 witness_worst_misses,
                 work_item: None,
                 cpu_denied: std::time::Duration::ZERO,
+                beats_dropped: 0,
+                last_marks: LastMarks::default(),
             };
 
         // First window: the witness failed with the loop -- the host, not fatal.
@@ -2779,7 +3375,9 @@ mod tests {
         assert_eq!(denied.starved(), "slow_work_item", "was: {denied}");
         assert!(!denied.is_fatal(WatchdogOnTrip::Exit));
         assert!(
-            denied.to_string().ends_with(" cpu_denied=4000ms]"),
+            denied
+                .to_string()
+                .ends_with(" cpu_denied=4000ms beats_dropped=0 last_marks=[]]"),
             "the trip line carries the denial: {denied}"
         );
     }
@@ -2826,6 +3424,8 @@ mod tests {
             witness_worst_misses: 0,
             work_item: None,
             cpu_denied: Duration::from_millis(cpu_denied_ms),
+            beats_dropped: 0,
+            last_marks: LastMarks::default(),
         };
         for (silent_ms, denied_ms) in [(500, 0), (499, 0), (500, 300), (499, 499)] {
             let t = parked(silent_ms, denied_ms);

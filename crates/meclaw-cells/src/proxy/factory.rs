@@ -434,6 +434,7 @@ fn make_build(
         credential_wait_ms,
         credential_backoff_max_ms,
         typing_max_ms,
+        partial_delivery,
         ..
     } = ProxyParams::parse(&params)?;
     // GH #1099: the typing keeper stands as long as the answer may come.
@@ -525,7 +526,9 @@ fn make_build(
         // handle the delivery boundary gets, on birth and respawn alike.
         .with_blob_store(blob_cap.clone())
         // GH #1253: the I/O task stops polling once the colony drains.
-        .with_drain(drain_cap.clone());
+        .with_drain(drain_cap.clone())
+        // GH #1411: the partial lane's delivery, settled at birth.
+        .with_partial_delivery(partial_delivery);
         let mut cell = cell;
         cell.set_typing_cadence(typing_cadence);
         // GH #1059: a grant's connector is born without a token and asks for it.
