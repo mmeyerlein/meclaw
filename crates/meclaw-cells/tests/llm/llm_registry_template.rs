@@ -870,6 +870,8 @@ const PACKAGE_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1431: the cache-write price.
+    "cost_cache_write",
     // GH #1318: the price steps by prompt length.
     "price_tiers",
     "chars_per_token",
@@ -3982,7 +3984,17 @@ fn gh1318_a_catalogue_row_carries_its_price_steps_as_data() {
                 .map(String::as_str)
                 .collect();
             assert!(
-                keys.is_subset(&["above_input", "cost_in", "cost_out", "cost_cached_in"].into()),
+                keys.is_subset(
+                    &[
+                        "above_input",
+                        "cost_in",
+                        "cost_out",
+                        "cost_cached_in",
+                        // GH #1431: the step's own cache-write price.
+                        "cost_cache_write"
+                    ]
+                    .into()
+                ),
                 "{id}: a step names only its size and its prices: {t}"
             );
             let above = t["above_input"]
@@ -4008,14 +4020,17 @@ fn gh1318_a_catalogue_row_carries_its_price_steps_as_data() {
             .map(|(a, i, o)| json!({"above_input": a, "cost_in": i, "cost_out": o}))
             .collect()
     };
-    // The numbers the notes named until GH #1318, nothing new.
+    // The numbers the notes named until GH #1318, nothing new; GH #1431
+    // (OR-38-17) gave the Haiku step its cache prices.
+    let haiku = json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250,
+                        "cost_cached_in": 5, "cost_cache_write": 62.5}]);
     let want: std::collections::BTreeMap<String, Value> = [
         (
             "qwen/qwen3.7-flash",
             steps(&[(32000, 10, 40), (256000, 20, 80)]),
         ),
-        ("claude-haiku-5-5", steps(&[(100000, 50, 250)])),
-        ("anthropic/claude-haiku-5.5", steps(&[(100000, 50, 250)])),
+        ("claude-haiku-5-5", haiku.clone()),
+        ("anthropic/claude-haiku-5.5", haiku),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -4214,4 +4229,71 @@ fn gh1318_the_hand_takes_ordered_complete_price_steps_and_pushes_them() {
             .is_some_and(|a| a.iter().any(|k| k == "price_tiers")),
         "a row without steps resets them: {back}"
     );
+}
+
+/// GH #1431 (D38 K5, R-38-2 "UX before price", OR-38-12): both Haiku 5.5 rows
+/// carry the owner's hard stop as `input_soft`, 200 000 -- not the price step.
+/// Until now the rows stood at 90 000, below the 100k step, so the curator
+/// rebuilt every window before it reached the dearer tier; the step now enters
+/// the curator's cost rule instead (`price_tiers` on the tap), where it never
+/// rebuilds under the role's target, and the soft line is the hard stop.
+#[test]
+fn haiku_rows_carry_the_hard_stop_as_input_soft() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let (_, rows) = seed_rows(&root, "store/seed/models.jsonl");
+    for id in ["claude-haiku-5-5", "anthropic/claude-haiku-5.5"] {
+        let row = rows
+            .iter()
+            .find(|r| r["model_id"] == id)
+            .unwrap_or_else(|| panic!("the catalogue row {id}"));
+        assert_eq!(
+            row["input_soft"],
+            json!(200000),
+            "{id}: the hard stop of R-38-2"
+        );
+        assert_eq!(row["input_hard"], json!(950000), "{id}: unchanged");
+        let note = row["note"].as_str().unwrap_or_default();
+        assert!(
+            note.contains("UX before price") && note.contains("price_tiers"),
+            "{id}: the note says why and where the step went: {note}"
+        );
+    }
+}
+
+/// GH #1431 (OR-38-17): the Haiku step above 100k names its own cache prices,
+/// as the provider's price list does (read 10 %, 5m write 125 % of the step's
+/// input price; checked against the public pricing page on 2026-11-05: over
+/// 100 000 tokens $0.50 / $0.625 / $0.05 per MTok). Without them `priced_for`
+/// stamps the step's input price as its cached price (50 instead of 5), and
+/// the cost rule prices the held window ten times too dear.
+#[test]
+fn haiku_step_carries_its_cache_prices() {
+    let Some(root) = shipped_registry() else {
+        return;
+    };
+    let (_, rows) = seed_rows(&root, "store/seed/models.jsonl");
+    for id in ["claude-haiku-5-5", "anthropic/claude-haiku-5.5"] {
+        let row = rows
+            .iter()
+            .find(|r| r["model_id"] == id)
+            .unwrap_or_else(|| panic!("the catalogue row {id}"));
+        assert_eq!(
+            row["price_tiers"],
+            json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250,
+                    "cost_cached_in": 5, "cost_cache_write": 62.5}]),
+            "{id}: the step with its cache prices"
+        );
+        assert_eq!(
+            row["cost_cached_in"],
+            json!(1),
+            "{id}: the base step as before"
+        );
+        assert_eq!(
+            row["cost_cache_write"],
+            json!(12.5),
+            "{id}: the base step as before"
+        );
+    }
 }

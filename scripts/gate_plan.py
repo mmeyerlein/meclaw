@@ -38,8 +38,8 @@ CLASSES (a path can carry several)
                   workshop/evals/p5-longmemeval/tools/**
     evals_recall  workshop/evals/p5-longmemeval/*.py -- the harness' own
                   scripts -- and workshop/evals/engine.py, the shared eval
-                  engine they call through; plans `recall-harness` only
-                  (GH #878, #879)
+                  engine they call through, and workshop/evals/mist-de/**;
+                  plans `recall-harness` only (GH #878, #879, #1425)
     evals_builder workshop/evals/builder-scenarios/**
     display_scenarios  templates/display/compose/scenarios/**
                   -- carries `template` as well (the path lies under
@@ -306,13 +306,13 @@ STATIONS (S strand, I integration, R release, C ci)
                     full_pass.py) run all (owner's ruling 10.10.,
                     pipeline/browser_plan.py)
     recall-harness  memory-hive template, recall sources, evals_memory,
-                    evals_recall; R always. Four commands: the recall cases
+                    evals_recall; R always. Five commands: the recall cases
                     (tools/), the answer-side self-check (GH #878), the
                     offline local-path cases of the eval engine
                     (`workshop/evals/engine.py`, GH #879) and the offline
                     pipeline cases of the ingest (per-turn annotation,
                     sidecar section, close pass, fact yield, overnight;
-                    GH #880).
+                    GH #880) and the offline mist-de tests (GH #1425).
                     NOT in I for every diff (R-P2), same measure as
                     `scenarios:memory` and one trigger more: a recall source
                     under `crates/meclaw-cells/src/` reaches the harness and
@@ -1308,7 +1308,9 @@ def _classes_of_path(path):
     # into every harness diff for a station that never reads them (GH #878).
     # The shared eval engine (GH #879) is how every harness call is built; its
     # offline check is `local_path_cases.py` in the same station.
-    if _matches(path, "workshop/evals/p5-longmemeval/*.py") or path == "workshop/evals/engine.py":
+    # The mist-de bench calls the same engine; its tests are offline (GH #1425).
+    if (_matches(path, "workshop/evals/p5-longmemeval/*.py") or path == "workshop/evals/engine.py"
+            or path.startswith("workshop/evals/mist-de/")):
         cls.add("evals_recall")
     if path.startswith("workshop/evals/builder-scenarios/"):
         cls.add("evals_builder")
@@ -4922,9 +4924,11 @@ def plan(paths, mode, repo=None):
         out["recall-harness"] = station(
             "recall-harness", "tier-1+answers", False,
             [["python3", "recall_cases.py"], ["python3", "answer_cases.py"],
-             ["python3", "local_path_cases.py"], ["python3", "pipeline_cases.py"]],
+             ["python3", "local_path_cases.py"], ["python3", "pipeline_cases.py"],
+             ["python3", "-m", "unittest", "discover", "-s", "tests"]],
             cwds=["workshop/evals/p5-longmemeval/tools", "workshop/evals/p5-longmemeval",
-                  "workshop/evals/p5-longmemeval", "workshop/evals/p5-longmemeval"])
+                  "workshop/evals/p5-longmemeval", "workshop/evals/p5-longmemeval",
+                  "workshop/evals/mist-de"])
 
     if mode == "release":
         out["deny-advisories"] = station(

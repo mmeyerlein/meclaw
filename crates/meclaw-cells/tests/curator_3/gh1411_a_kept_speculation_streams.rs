@@ -564,6 +564,18 @@ fn gh1411_speculation_off_moves_no_byte() {
             .expect("hop")
             .remove(k);
     }
+    // GH #1431: the two hop keys every llm cell declares since (the price
+    // ladder and the cache-write price, `gh890_…`) -- not the speculation's.
+    for k in ["cost_cache_write", "price_tiers"] {
+        assert!(
+            qs["contract"]["emits"]["hop"][k].is_object(),
+            "emits.hop.{k}"
+        );
+        qs["contract"]["emits"]["hop"]
+            .as_object_mut()
+            .expect("hop")
+            .remove(k);
+    }
     if let Some(values) = qs["contract"]["emits"]["hop"]["route"]["values"].as_array_mut() {
         values.retain(|v| v != "partial");
     }

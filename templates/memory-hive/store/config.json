@@ -62,7 +62,19 @@
         "muted_at": "text",
         "mute_source": "text",
         "mute_words": "text",
-        "unmuted_at": "text"
+        "unmuted_at": "text",
+        "stance": {
+          "type": "text",
+          "default": ""
+        },
+        "via": {
+          "type": "text",
+          "default": ""
+        },
+        "answers": {
+          "type": "text",
+          "default": ""
+        }
       },
       "entities": {
         "id": "text",

@@ -309,7 +309,8 @@ assert lines() == ["voice: q0", "voice: q1", "voice: r0", "voice: r1"], lines()
 
 /// The inputs of every lane the door had before #1376, and the store answers
 /// it resumes from. Their outputs are the golden: without an edge onto
-/// `in_error` the door answers each of them byte for byte as before.
+/// `in_error` the door answers each of them byte for byte as before (since
+/// #1426 its charter read selects the column `alert_at` too).
 const GOLDEN_CASES: &str = r#"
 G = json.dumps
 CASES = [
@@ -404,7 +405,8 @@ fn a_rim_edge_that_rewrites_is_a_producer() {
 /// edge onto an argus's `in_error` but the argus's own entry edge to its
 /// door (another hive's lane of the same name is not the argus's), and the
 /// door answers every input of its older lanes exactly as before #1376 (the
-/// golden was written by the door of master before the lane existed).
+/// golden was written by the door of master before the lane existed, plus
+/// the charter column `alert_at`, #1426).
 #[test]
 fn without_the_edge_nothing_changes() {
     if skip() {

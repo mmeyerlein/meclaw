@@ -133,6 +133,14 @@
           "type": "number",
           "required": false
         },
+        "cost_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "price_tiers": {
+          "type": "array",
+          "required": false
+        },
         "dropped": {
           "type": "array",
           "required": false

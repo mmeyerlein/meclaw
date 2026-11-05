@@ -1,4 +1,4 @@
-# `memory-hive@3.19.13`
+# `memory-hive@3.20.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -398,7 +398,7 @@ ruling F3. Both halves use the same owning scope, so the store still has exactly
 | `tool_result` | out → your caller | condition `hop.route == 'tool_result'` on an edge FROM `./memory`. One tool_result turn under the original `hop.tool_call_id`, ready to re-enter the round that made the call. A REFUSAL leaves here too and not on `reject`: `hop.error_code` carries the recall cell's own `reject_reason` verbatim (`missing_audience`, `missing_channel`, `half_open_window`, `store_refused`) plus this hive's own two (`malformed_tool_call`, `memory_not_configured`). A call that is not answered stalls the asking round until its idle window runs out, which is why every case answers |
 | `tool_schemas` | out → your caller | condition `hop.route == 'tool_schemas'` on an edge FROM `./memory`. One `{name, description, parameters}` for `memory_recall`, provider-neutral, plus in `unknown[]` the asked names this hive does not serve and in `sidecar[]` the section this hive asks for in return: one `{section, required, schema, instruction}` with `section: "memory"` and `required: true` ([#606](https://github.com/mmeyerlein/meclaw/issues/606)). All three slots are `required: true` in the emitted body — `schemas` carries `contract.version` `1.1.0` for the new one — and `sidecar[]` is filled on EVERY answer of the cell, the `tools_missing` one included, because a section is not a response to a name. A lane of its own and NOT `tool_result`: a result belongs to a call somebody made, this belongs to a start-up question |
 | `recurring` | out → any app that subscribes | condition `hop.route == 'recurring'` on an edge FROM `./memory`. Once per dream run, one message per audience set: `{candidates: [{topic, query, tool, triggers, rrule, tz, lead_min, ttl_min, evidence}], audience_set}` — the member's routines as prewarm candidates ([#1249](https://github.com/mmeyerlein/meclaw/issues/1249), see [Recurring questions become prewarm candidates](#recurring-questions-become-prewarm-candidates-1249)). Every candidate carries a `ttl_min` and a tool. Nobody answers it, and it is no required drain |
-| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. `verify_failed` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) is for facts the curator's word-for-word check refused and kept (`sidecar_verify` with `"mode": "mark"`, the item carries `failed`): such a fact is filed under no source -- a quote of the advice labelled `person` would otherwise become the person's -- and the receipt counts them, never echoing. The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. `op_not_accepted` ([#1229](https://github.com/mmeyerlein/meclaw/issues/1229)) is the writer refusing a `clock_op` that is not a `trigger` of the night: the lane ends at `./writer`, and an `add`, `modify` or `remove` from outside never reaches the clock (section *The night* below). See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
+| `reject` | out → your drain | condition `hop.route == 'reject'` on an edge FROM `./memory`. **Drain it.** `hop.reject_reason` names the case: `missing_audience` and `missing_channel` for a turn, block or question whose provenance was incomplete (#244), `inline_invalid` for a block that did not survive validation, `ambiguous_speaker` (since 3.5.0, [#849](https://github.com/mmeyerlein/meclaw/issues/849)) for facts that name no source while the turns they may answer name more than one -- they are not filed inline and the close pass speaks for the turn, and `unknown_source` for facts that name a source who is not behind a turn they can be bound to (the receipt shows a dropped source only in reference form and counts any other value, since the name is the model's text); both may leave next to what the same block did file. `quote_missing` ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079)) is for facts without a `quote` while `require_quote` is on: one receipt per block, counting and never echoing, beside what the block did file. `verify_failed` ([#1225](https://github.com/mmeyerlein/meclaw/issues/1225)) is for facts the curator's word-for-word check refused and kept (`sidecar_verify` with `"mode": "mark"`, the item carries `failed`): such a fact is filed under no source -- a quote of the advice labelled `person` would otherwise become the person's -- and the receipt counts them, never echoing. `stance_unknown`, `via_without_reported`, `answers_not_inline` and `answers_not_self` ([#1421](https://github.com/mmeyerlein/meclaw/issues/1421)) are the receipts of the three stance columns, counting and never echoing, beside what the block did file (section *How firmly the source said it* below). The transfer lane adds exactly two of its own since [#261](https://github.com/mmeyerlein/meclaw/issues/261) — `export_write_failed` (the store would not write its seed set: no marker, so the directory is not a document) and `import_failed` — and carries the substrate's own code beside them on `hop.store_error` (`transfer_seed_malformed`, `transfer_io_error`, `transfer_path_out_of_bounds`, `import_schema_drift`, …) with `hop.store_operation` naming the operation, for the reason this hive states everywhere else: that code list is OPEN, and a reason enum that had to grow with it would turn the next new code into a failed emit. Beyond those, two older things arrive here and the body says which: an inline block the hive could not bind, and a HALF window (exactly one of `recall_window_from`/`_to` non-empty), which is a caller bug and leaves at request entry before the leg fan. Undrained, a refused block is an unrouted dead end — nobody ever learns the memory was not written — and a refused question leaves the caller waiting for a bundle that never comes. A colony that ran the inline lane for weeks with only the recall half drained is where that lesson comes from. **Since 2.3.1 the same lane also carries what this hive's own STORE would not do** (`hop.reject_reason == 'store_refused'`, `hop.store_error` = the store's `error_code`, `hop.store_operation` = the op it refused): a read or a write that came back refused stops its lane there instead of being read as zero rows. The nightly consolidation reports here too -- it has no caller of its own, and the alternative was reporting nowhere. `op_not_accepted` ([#1229](https://github.com/mmeyerlein/meclaw/issues/1229)) is the writer refusing a `clock_op` that is not a `trigger` of the night: the lane ends at `./writer`, and an `add`, `modify` or `remove` from outside never reaches the clock (section *The night* below). See [When the store says no](#when-the-store-says-no-gh-343-since-231) |
 
 **The drain is enforced, and it is enforced in lanes** ([#237](https://github.com/mmeyerlein/meclaw/issues/237)).
 `params.required_drains` used to pair a PORT with the route it must drain, and it fired when
@@ -631,7 +631,9 @@ opening list above.
 What the pass did leaves on `close_report` with fourteen numbers on the hop (`added`, `sharpened`,
 `corrected`, `closed`, `restated`, `unseen_refs`, `exceptions`, `truncated`, `groups`,
 `unaudienced`, since 3.11.0 `retracted`, `named`, and since [#1095](https://github.com/mmeyerlein/meclaw/issues/1095)
-`muted`, `mute_searched` and `unmuted`, which replace `forgotten` and `forget_searched`).
+`muted`, `mute_searched` and `unmuted`, which replace `forgotten` and `forget_searched`), and since
+[#1423](https://github.com/mmeyerlein/meclaw/issues/1423) two more: `countered` and `stance_sharpened`
+(section *Both voices at the close* below).
 `muted` counts the requests the pass muted by the ids the closer named, `mute_searched` the
 requests whose searches it sent, `unmuted` the mutes it lifted; each search answers on a `close_report` of its own with `phase: forget`,
 the request, the search (`f` facts of other sessions, `s` of this session, `o` of the request's own turn, `e` episodes, `p` facts by provenance) and
@@ -698,10 +700,11 @@ The model answers `replace` (a statement it was SHOWN), `add` or `refuse`. What 
 |---|---|---|
 | `closed` | `replace` | a shown statement is superseded; `hop.replaces` names it |
 | `added` | `add` | a new fact is written on the reported turn |
+| `sharpened` | `sharpen` | only the `stance`/`via` of a shown statement changed ([#1423](https://github.com/mmeyerlein/meclaw/issues/1423)); `hop.fact_id` names it, `hop.stance` is the new value |
 | `refused` | `model_refused` | the model would not follow the report; `hop.why` is its sentence |
 | `refused` | `unseen` | the verdict named a statement outside the window; nothing is closed |
 | `refused` | `restated` | the claim is already standing on the axis |
-| `refused` | `model_failed`, `no_claim`, `no_turn`, `invalid_report`, `missing_audience`, `report_lost`, `window_lost` | nothing is written |
+| `refused` | `model_failed`, `no_claim`, `no_turn`, `no_stance`, `invalid_report`, `missing_audience`, `report_lost`, `window_lost` | nothing is written (`no_stance`: a `sharpen` without one of the three stances) |
 
 Like `close_report`, the receipt counts what LEFT on the inline ingress, not what landed: the
 ingress may still refuse a closure on its direction or its source and says so in `scratch`. A
@@ -1034,6 +1037,127 @@ own side and never as a peer's self-statement (`subject` stays as written). A na
 to is dropped on `reject` (`unknown_source`) and never moved to another source; a fact without a
 `source` takes the old road byte for byte. Recall renders an agent's fact like any statement with
 a source, `agent:<name> says: <claim>`. The store schema does not change.
+
+### How firmly the source said it: `stance`, `via`, `answers` ([#1421](https://github.com/mmeyerlein/meclaw/issues/1421))
+
+The memory does not decide what is true. It keeps who said what, how firmly, and what was said
+back. `facts` carries three additive columns for that, each `text` with the default `""`, so a
+row from before them, an old export and an old seed set all read as they did:
+
+| Column | Values | Meaning |
+|---|---|---|
+| `stance` | `asserted`, `believed`, `reported`; empty reads as `asserted` | how firmly the SOURCE commits: says it, hopes or believes it, passes on a third party's words |
+| `via` | free text, as written | the third party a `reported` fact rests on ("the doctor", "the paper"); only beside `reported` |
+| `answers` | a fact id | the statement this fact replies to; only on a fact of `source` `agent:self`, only from the close pass |
+
+`extract-glue` judges the three per fact before it files the block, with one counting receipt
+on `reject` per case, never echoing the model's words: a `stance` that is none of the three drops
+its fact (`stance_unknown`); a `via` beside any other stance falls away and the fact is filed
+(`via_without_reported`); an `answers` in a per-turn block falls away (`answers_not_inline` -- the
+front model speaking for its own turn files no reply), and in a close-pass block on any source
+but `agent:self` too (`answers_not_self`). A fact naming none of the three takes the old road
+byte for byte. `stance` and `via` belong to the statement identity: `claim_hash` takes them in, so
+"hopes it is harmless" and "the doctor says it is harmless" are two statements and the dedup
+keeps both; `asserted` adds nothing to the hash, so an explicit `asserted` is the same statement
+as a fact without a stance. `confidence` stays what it was and is never a truth signal.
+
+A mute reaches the replies: when a forget request mutes a fact (below), every fact whose
+`answers` names it is muted in the same emission, with the same mark, next to the beliefs made of
+it; a reply written later to a statement the close pass showed muted is born with that mute, and
+lifting the mark lifts it on the replies too. The transfer carries the three columns like every
+other one (the walk projects whole rows), and a part written before them imports with the
+columns empty.
+
+What the model is told ([#1422](https://github.com/mmeyerlein/meclaw/issues/1422)). The `memory`
+section carries one paragraph on it, with the case that matters most: "The doctor says it is
+harmless" is `reported` via "the doctor", never a fact about the knee; a hope or a guess is
+`believed`; everything else is `asserted`. The offered schema declares `stance` (the three values)
+and `via`, both optional, so the example every turn copies is unchanged and a missing stance
+reads as `asserted`. `answers` is not offered and not mentioned: in the turn `agent:self` is
+still only the model's own promise, and a rebuttal of its own is the close pass's to write. The
+rules grew from 2,081 to 2,341 characters, under a bound of 2,350.
+
+### Both voices at the close: `counter`, a stance `sharpen`, the correction ([#1423](https://github.com/mmeyerlein/meclaw/issues/1423))
+
+The per-turn block files how firmly the person said something; the close pass also keeps what the
+companion said back. Its prompt carries a fifth point:
+
+> 5. Keep both voices. A claim the person only hoped, guessed or heard from someone is recorded
+> with that `stance`, never as settled. When the assistant disagreed with or qualified such a
+> claim, record that reply under `counter`; it never replaces the claim, and the claim never
+> absorbs it.
+
+The verdict grows three things. An `add` may name `stance` and `via`; they ride to the ingress,
+which judges them like any block (section above). A `sharpen` that names a `stance` changes only
+that: `./close-glue` writes one update of `stance` and `via` (kept only beside `reported`) on the
+record by its id while it is open -- no replacement, no new claim, nothing closed. A `sharpen`
+without a stance is the better-worded replacement it always was. And a new list:
+
+```json
+"counter": [{"fact_id": "", "episode_id": "", "claim": "", "why": ""}]
+```
+
+Each item becomes one fact through the inline ingress: `source` `agent:self`, `stance`
+`asserted`, `answers` = `fact_id`, on the subject and predicate of the record it answers, hung on
+the companion's turn. The rails are in the code, whatever the verdict says: `fact_id` is a record
+the round was shown and not the agent's own, `episode_id` is a turn of the companion (`sender`
+`assistant`) in the same round -- never the person's or a peer's turn, so a person's fact is never
+answered out of a person's mouth and a reply is never filed as theirs. A counter ends nothing:
+no `replaces`, no `expired_at`. A broken item is dropped alone and counted under `unseen_refs`;
+one that restates a standing record under `restated`. `close_report` counts `countered` and
+`stance_sharpened`.
+
+The pass also points the closer at the likely places. `reporting_cues` (a param of
+`./close-glue`, one list per language) holds the expressions that introduce a source or hedge a
+claim ("says", "according to", "I hope"); a shown record whose own turn holds one, as whole
+words, is paired with the companion's next turn of the round under `candidates` in the prompt.
+That is an order, not a verdict -- the closer reads every turn and decides; a round without a pair
+renders the prompt document it always did.
+
+A correction (`in_correction`, section *A correction* above) may name `stance` and `via` beside its
+quote ("stored as a fact, but it was a hope"); a value that is none of the three is not carried.
+The closer may answer `sharpen` with the `fact_id` of a shown statement and the stance, and the
+run writes the same one update of the status -- the receipt is `sharpened`, never a replacement.
+
+### Reading what was said as said ([#1424](https://github.com/mmeyerlein/meclaw/issues/1424))
+
+`recall` renders the stance into the fact's line, out of the phrase table `stance_lang.<lang>`
+in the one language `stance_language` names (shipped: `en`; the table carries `en` and `de`):
+
+```text
+  user has_mole = the person believes/hopes: harmless   since 2026-11-01
+    ↳ you replied on 2026-11-05: a doctor should look at it
+  user mole = the person reports that the doctor said: harmless   since 2026-11-02
+```
+
+`<who>` is the participant the way a peer's fact has always been named, and the table's `member`
+word on a fact of the own side. A `reported` fact without a `via` takes `reported_unnamed`. A
+firm statement (`asserted`, or no stance) reads exactly as before while `attribute_asserted` is
+off (the shipped value, R-39-2); on, it takes the table's `asserted` phrase. `memory_caveat`
+(shipped off) puts one caveat line over the facts. Both switches change the rendering and
+nothing else: every read and every store op of a request is the same in both positions.
+
+A reply (`answers`) never stands as a hit of its own -- it would read like a world fact of the
+agent's. It is shown only as the indented line under its statement, in the tier-1 bundle and in
+the subject answer; a reply whose statement is not in the bundle is left out, and tier 0 shows
+none. A reply takes no place of the fusion: every leg drops it before the ranking is cut, and
+the tier-1 hydration fetches the open replies of the statements it hydrates in the same bundle,
+so a statement brings its reply along whether or not the reply matched the question (the
+subject answer shows the replies on the subject's own page). The gate decides as it always
+does: a reply the round may not see is not shown, and a reply whose statement the round may
+not see has no line to stand under. A reply that is closed or replaced is no longer shown, and
+the night reads "open" the same way. A reply is also never a version of the statement it
+answers on a shared axis. A `stance_language` without a table, or a table without a phrase a
+fact needs, renders that fact as before and says so in one journal line.
+The JSON beside the text carries `stance`, `via` and `replies`, each absent unless it holds.
+
+The dialectic prompt carries a mandatory rule in the manner of the said-section caveat: a
+candidate that is believed, reported or answered is evidence of what was said, never an answer
+to a question about the world. The night does the same for beliefs: its prompt asks the
+narrative to say who said it, and a belief resting on such a fact whose text names nobody who
+said it -- the `via`, a participant reference, the local part of a `user:` holder, or a name of
+`person_names` (shipped empty) -- is not written; it lands in `belief_refusals` next to the
+beliefs over mixed sources. The check is on names only, never on wording.
 
 ## A peer known by name ([#1039](https://github.com/mmeyerlein/meclaw/issues/1039))
 
@@ -1399,7 +1523,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.19.13` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.20.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1805,7 +1929,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.9.1",
+{"add_nodes": [{"name": "alex", "template": "member@2.9.2",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -1947,6 +2071,7 @@ there is a value that is not `"1"` and the ask is OFF (the apply half runs eithe
 |---|---|---|
 | `close_turn_rows` | `512` | Cap of the session page the close pass reads (GH #300). Counts episode rows of ONE session, newest first, so a session longer than the page loses its OLDEST turns rather than its last ones: the later a turn is, the more likely it is the one that corrects an earlier, which is the whole reason the pass exists. A param of this cell since GH #138, so two members are tuned apart |
 | `close_fact_rows` | `256` | Cap of the fact page the close pass reads (GH #300). Counts the OPEN facts of ONE session -- the records the per-turn path already wrote and the only records the pass may name when it supersedes one. A separate knob from close_turn_rows because it counts a different thing: a short session can carry a long history if its subject has been talked about before |
+| `reporting_cues` | `en` and `de` lists | The expressions that introduce a source or hedge a claim, one list per language, matched as whole words in the turn a record was learned in ([#1423](https://github.com/mmeyerlein/meclaw/issues/1423)). They only order the closer's `candidates` (a record paired with the companion's next turn); the code classifies nothing. Without it nothing is paired. |
 | `forget_fallback` | `true` | `true` (the default; a blanked line, null or a typo keep it) also honours a member's own request to forget that the closer did not cite (GH #1074): the pass reads the asking sentence itself, by the grammar of `forget_lang`, and mutes with its words. Since the mute semantics (#1095) it ships on: a mute hides nothing from a question and one turn of the member lifts it. Only the verbs of the language's `fallback_verbs` are honoured this way (forget; delete and erase only where the closer cites the turn). `false` (also `"false"`, `0`, `"0"`) honours only the requests the closer cites, each still checked against the turn's own text; any other value is said on stderr and the default holds. |
 
 ### The params of `./extract-glue`
@@ -2255,7 +2380,7 @@ The chain, in the order it happens:
 | S3 | `t1-join` | `select entities` (anchors, by name) · `select entities` (anchors, by subject key — GH #1057) · `similar embeddings` | both are free from the rendezvous on; the vector comes from `'qvec'`, the anchors and the `model_id` from `'legs'` |
 | S4 | `t1-legs` | `insert 'sem'` · `traverse entity_edges` · `select facts` (the semantic companion) · `select recall_scratch` | the walk, the audience of the semantic leg's owning facts and everything parked, in ONE answer — **the fusion runs here** unless the walk reached a node |
 | S4a | `t1-graph` | `insert 'graph-walk'` · `insert 'sem-aud'` · `select facts` (the walked nodes) · `select recall_scratch` | GH #520 — the facts the walk's nodes are ABOUT. **Conditional**: the nodes a walk passed through are only known after the walk, so this is the one message a recall pays only when there is something to join; **the fusion runs here when it does** |
-| S5 | `t1-emit` | `insert 'fused'` · `select facts` (hydration) · `select episodes` (hydration) · `select facts` (the axis page) · `select predicate_cardinality` · `select recall_scratch` | hydration, axis expansion and the judged verdicts at once — **the reply to this renders and emits, and asks nothing more** |
+| S5 | `t1-emit` | `insert 'fused'` · `select facts` (hydration) · `select facts` (the open replies to it — GH #1424) · `select episodes` (hydration) · `select facts` (the axis page) · `select predicate_cardinality` · `select recall_scratch` | hydration, axis expansion and the judged verdicts at once — **the reply to this renders and emits, and asks nothing more** |
 
 **Why there is no gate any more.** The `store` is a **stateful** cell (`docs/cell-types.md`,
 concurrency note): one task, one connection, one message at a time. A bundle is ONE message, and

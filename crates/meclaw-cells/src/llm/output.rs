@@ -50,6 +50,8 @@ pub const HOP_KEYS: &[(&str, &str)] = &[
     ("input_hard", "number"),
     ("cost_in", "number"),
     ("cost_cached_in", "number"),
+    ("cost_cache_write", "number"),
+    ("price_tiers", "array"),
     ("dropped", "array"),
     ("unverified", "array"),
 ];
@@ -142,6 +144,17 @@ pub(crate) struct HopCache {
     /// them.
     pub(crate) cost_in: Option<f64>,
     pub(crate) cost_cached_in: Option<f64>,
+    /// GH #1431: the cache-write price of the base step, `Some` only above 0
+    /// (`hop.cost_cache_write`): with the ladder the curator counts a rebuild
+    /// at the write price of its aim's step.
+    pub(crate) cost_cache_write: Option<f64>,
+    /// GH #1431: the whole price ladder, the base step first (`above_input`
+    /// 0, the package's `cost_in` / `cost_cached_in` / `cost_cache_write`),
+    /// then the listed steps (`hop.price_tiers`). Empty = no steps, no key.
+    /// `priced_for` replaces the stamped prices by the step of the PROMPT;
+    /// the curator also prices the window a rebuild aims at, which may fall
+    /// in another step -- the base step is lost without the ladder.
+    pub(crate) price_tiers: Vec<Value>,
     /// GH #993: the sampling fields the request did not carry because the
     /// model's `supported_params` does not name them
     /// (`translate::dropped_params`). Empty = nothing dropped and no key, so
@@ -151,6 +164,39 @@ pub(crate) struct HopCache {
     /// without a `supported_params` list to check them against
     /// (`translate::unverified_params`). Empty with a list, and then no key.
     pub(crate) unverified: Vec<String>,
+}
+
+/// A price as the stamp states it: above 0 and finite, else none.
+fn stated_price(c: f64) -> Option<f64> {
+    (c > 0.0 && c.is_finite()).then_some(c)
+}
+
+/// GH #1431: the price ladder as `hop.price_tiers` carries it -- empty
+/// without steps; else the base step (`above_input` 0, each price only when
+/// stated) and then every listed step as the package names it.
+fn price_ladder(params: &LlmParams) -> Vec<Value> {
+    if params.price_tiers.is_empty() {
+        return Vec::new();
+    }
+    let mut base = Map::new();
+    base.insert("above_input".into(), Value::from(0u64));
+    for (key, c) in [
+        ("cost_in", params.cost_in),
+        ("cost_cached_in", params.cost_cached_in),
+        ("cost_cache_write", params.cost_cache_write),
+    ] {
+        if let Some(c) = stated_price(c) {
+            base.insert(key.into(), Value::from(c));
+        }
+    }
+    let mut out = vec![Value::Object(base)];
+    out.extend(
+        params
+            .price_tiers
+            .iter()
+            .filter_map(|t| serde_json::to_value(t).ok()),
+    );
+    out
 }
 
 impl HopCache {
@@ -165,6 +211,8 @@ impl HopCache {
             cost_in: (params.cost_in > 0.0 && params.cost_in.is_finite()).then_some(params.cost_in),
             cost_cached_in: (params.cost_cached_in > 0.0 && params.cost_cached_in.is_finite())
                 .then_some(params.cost_cached_in),
+            cost_cache_write: stated_price(params.cost_cache_write),
+            price_tiers: price_ladder(params),
             dropped: crate::llm::translate::dropped_params(params),
             unverified: crate::llm::translate::unverified_params(params),
         }
@@ -250,6 +298,12 @@ impl HopCache {
         }
         if let Some(c) = self.cost_cached_in {
             header.insert("cost_cached_in".into(), Value::from(c));
+        }
+        if let Some(c) = self.cost_cache_write {
+            header.insert("cost_cache_write".into(), Value::from(c));
+        }
+        if !self.price_tiers.is_empty() {
+            header.insert("price_tiers".into(), Value::Array(self.price_tiers.clone()));
         }
         self.write_request_keys(header);
     }
@@ -901,6 +955,8 @@ mod tests {
             input_hard: Some(2),
             cost_in: Some(1.0),
             cost_cached_in: Some(0.1),
+            cost_cache_write: Some(0.2),
+            price_tiers: vec![json!({"above_input": 0, "cost_in": 1.0})],
             ..cache(Some(60), Some(1))
         };
         let success = header_of(full, all, 1, 1).await;

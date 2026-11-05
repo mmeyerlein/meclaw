@@ -123,7 +123,11 @@ says better: only a promise of the model's own is its fact, and words it repeats
 source they came from. R-39-1 (GH #1322) added one sentence (2,081): the memory now parks
 the open facts it shows the model for a turn, each line carries its short `id`, and
 `replaces: <id>` ends one of them in the same turn -- the rules of the close pass, one
-sentence long. The lock below keeps them under 2,100 so the sprawl
+sentence long. GH #1422 added one paragraph (2,341): a fact says how firmly its source holds
+it -- `stance` `asserted`, `believed` (a hope, a guess) or `reported` (somebody else's words,
+named in `via`) -- with the one example that keeps a doctor's opinion from becoming a fact
+about the knee. The model's own rebuttal is not asked for here: the close pass writes it
+(`answers`), and the turn refuses it. The lock below keeps them under 2,350 so the sprawl
 cannot grow back unnoticed -- a bound rather than a measurement, because the wording keeps
 moving while the harness tunes it.
 
@@ -161,6 +165,10 @@ quoted text); `agent:cogny`, [advice from your reasoning core; `agent:voice`,
 [delegation; `agent:app:<id>`, [app <id>]; `agent:timer:<id>`, [timer <id>];
 `agent:self`, your promise; a repeat keeps its source.
 What your person did not say is never `person`.
+
+`stance` is how firmly the source holds it: `reported` passes on what someone else said,
+named verbatim in `via`; `believed` hopes, guesses, assumes; else `asserted`.
+"The doctor says it is harmless" is reported via "the doctor", never a fact about the knee.
 ```
 
 **What is not in the block, and why that is a shape decision rather than a fence.**

@@ -1152,7 +1152,9 @@ class Classify(unittest.TestCase):
                                  [["python3", "recall_cases.py"],
                                   ["python3", "answer_cases.py"],
                                   ["python3", "local_path_cases.py"],
-                                  ["python3", "pipeline_cases.py"]], (path, mode))
+                                  ["python3", "pipeline_cases.py"],
+                                  ["python3", "-m", "unittest", "discover", "-s", "tests"]],
+                                 (path, mode))
                 self.assertNotIn("scenarios:memory", st, (path, mode))
 
     def test_a_harness_readme_or_tool_is_not_harness_code(self):
@@ -1204,6 +1206,24 @@ class Classify(unittest.TestCase):
             self.assertIn(["python3", "pipeline_cases.py"], cmds, path)
             self.assertEqual(st["recall-harness"].cwds[cmds.index(["python3", "pipeline_cases.py"])],
                              "workshop/evals/p5-longmemeval", path)
+
+    def test_the_mist_bench_plans_its_offline_tests(self):
+        """The mist-de bench is eval code beside the recall harness (GH #1425).
+
+        Its parser/scoring tests are offline and model-free; before, a diff
+        under `workshop/evals/mist-de/` planned no station that ran them.
+        """
+        for path in ("workshop/evals/mist-de/score.py",
+                     "workshop/evals/mist-de/tests/test_parse.py"):
+            self.assertIn("evals_recall", gp.classify([path]), path)
+            st = by_name(gp.plan([path], "strand", repo=None))
+            self.assertIn("recall-harness", st, path)
+            cmds = st["recall-harness"].cmds
+            cmd = ["python3", "-m", "unittest", "discover", "-s", "tests"]
+            self.assertIn(cmd, cmds, path)
+            self.assertEqual(st["recall-harness"].cwds[cmds.index(cmd)],
+                             "workshop/evals/mist-de", path)
+            self.assertNotIn("scenarios:memory", st, path)
 
     def test_integration_runs_deny_for_the_workspace_class(self):
         st = by_name(gp.plan(["Cargo.lock"], "integration", repo=None))
@@ -2057,12 +2077,14 @@ class Classify(unittest.TestCase):
                          [["python3", "recall_cases.py"],
                           ["python3", "answer_cases.py"],
                           ["python3", "local_path_cases.py"],
-                          ["python3", "pipeline_cases.py"]])
+                          ["python3", "pipeline_cases.py"],
+                          ["python3", "-m", "unittest", "discover", "-s", "tests"]])
         self.assertEqual(st["recall-harness"].cwds,
                          ["workshop/evals/p5-longmemeval/tools",
                           "workshop/evals/p5-longmemeval",
                           "workshop/evals/p5-longmemeval",
-                          "workshop/evals/p5-longmemeval"])
+                          "workshop/evals/p5-longmemeval",
+                          "workshop/evals/mist-de"])
 
     def test_every_station_argv_resolves_from_its_working_directory(self):
         """Whatever the cwd, the script the station names has to be there.

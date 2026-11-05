@@ -449,6 +449,9 @@ fn the_package_keys_are_the_contract() {
             "input_hard",
             "cost_in",
             "cost_cached_in",
+            // GH #1431: the cache-write price -- a contract change, made on
+            // purpose.
+            "cost_cache_write",
             // GH #1318: the price steps by prompt length -- a contract change,
             // made on purpose.
             "price_tiers",

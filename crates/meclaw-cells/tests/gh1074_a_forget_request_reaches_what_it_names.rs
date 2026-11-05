@@ -799,9 +799,16 @@ fn only_the_speakers_own_facts_are_forgotten() {
     let marks: Vec<Value> = tool_calls(&out)
         .into_iter()
         .filter(|(_, o)| o["operation"] == "update" && o["table"] == "facts")
-        .map(|(_, o)| o["where"]["id"].clone())
+        .map(|(_, o)| o["where"].clone())
         .collect();
-    assert_eq!(marks, vec![json!({"in": ["f-own"]})]);
+    // GH #1421: the own fact, then its replies -- never the peer's.
+    assert_eq!(
+        marks,
+        vec![
+            json!({"id": {"in": ["f-own"]}}),
+            json!({"answers": {"in": ["f-own"]}})
+        ]
+    );
 }
 
 #[test]

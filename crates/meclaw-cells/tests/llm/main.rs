@@ -16,6 +16,7 @@ pub mod gh87_llm_attachment_consumption;
 pub mod gh886_every_llm_cell_declares_hop_model;
 pub mod gh890_every_llm_cell_declares_what_output_writes;
 pub mod gh94_responses_attachments;
+pub mod gh_d38_k5_the_llm_tap_stamps_price_tiers_and_cache_write;
 pub mod llm_anthropic_messages_wire;
 pub mod llm_attribution_headers;
 pub mod llm_chat_completions_wire_regression;

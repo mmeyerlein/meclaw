@@ -52,8 +52,10 @@ fn rows(stamped: bool) -> Vec<Value> {
 }
 
 fn plan_of(rows: Vec<Value>) -> Value {
+    // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
+    // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (got, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1}),
+        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
         "window_plan(ARGS['rows'], [], [], [], {}, ARGS['as_of'], [], [], 0, '[\"member:e\"]')",
         json!({"rows": rows, "as_of": AS_OF_MS}),
     );
@@ -115,7 +117,15 @@ fn an_unstamped_wall_keeps_the_plan_of_before() {
                  "round": "[\"member:e\"]", "shrunk": [], "stubs": [], "sum_from": 0,
                  "sum_to": 0, "summary": "", "v": 1},
         "todo": []});
-    assert_eq!(plan_of(rows(false)), golden);
+    // GH #1430: the figure of the `gc` mark travels beside the plan (a key
+    // of its own, OR-d38-1.k3.5); the plan and the rest stay byte for byte.
+    let mut got = plan_of(rows(false));
+    let gc = got.as_object_mut().and_then(|o| o.remove("gc"));
+    assert!(
+        gc.is_some(),
+        "the plan's result carries the gc figure: {got}"
+    );
+    assert_eq!(got, golden);
 }
 
 #[test]
@@ -134,8 +144,10 @@ fn a_replay_ahead_of_the_wall_clock_expires_nothing_early() {
     for r in wall.iter_mut().take(11) {
         r["element"] = json!({"origin": "user", "type": "text", "text": "x"});
     }
+    // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
+    // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (shown, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1}),
+        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
         "[el['text'] for _, el, _, _ in render(ARGS['rows'], {}, window_plan(ARGS['rows'], [], \
          [], [], {}, ARGS['as_of'], [], [], 0, '[\"member:e\"]')['plan'], None, None, \
          '[\"member:e\"]')]",
@@ -171,8 +183,10 @@ fn replay(days: &[&str]) -> Vec<Value> {
 /// The plan of `rows` after the plan `prev` (its summary made: id, hash and
 /// audience as `prev_of` hands them on).
 fn plan_after(rows: Vec<Value>, prev: &Value) -> Value {
+    // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
+    // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (got, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1}),
+        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
         "window_plan(ARGS['rows'], [], [], [], ARGS['prev'], ARGS['as_of'], [], [], 0, \
          '[\"member:e\"]')",
         json!({"rows": rows, "prev": prev, "as_of": AS_OF_MS}),

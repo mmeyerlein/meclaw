@@ -483,8 +483,11 @@ fn a_forget_request_marks_and_never_deletes() {
         .filter(|(_, o)| o["operation"] == "update" && o["table"] == "facts")
         .map(|(_, o)| o)
         .collect();
-    assert_eq!(marks.len(), 1, "{calls:?}");
+    // GH #1421: the mute of the fact, then the same mute on its replies.
+    assert_eq!(marks.len(), 2, "{calls:?}");
     assert_eq!(marks[0]["where"]["id"], json!({"in": ["f-debt"]}));
+    assert_eq!(marks[1]["where"], json!({"answers": {"in": ["f-debt"]}}));
+    assert_eq!(marks[1]["set"], marks[0]["set"]);
     // R-TR-25: a mute, never a closure
     assert_eq!(marks[0]["set"]["mute_source"], "forget_request:e3@member:e");
     assert_eq!(marks[0]["set"]["mute_words"], "kolja owes");

@@ -41,6 +41,21 @@ fn repo(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
+/// A frozen template version: `<name>@<major>.<minor>.<patch>`, the name of a
+/// directory right under `templates/` (the form of
+/// `gh1096_one_watchdog_block.rs`).
+fn is_frozen_version(dir: &str) -> bool {
+    let Some((name, version)) = dir.split_once('@') else {
+        return false;
+    };
+    let parts: Vec<&str> = version.split('.').collect();
+    !name.is_empty()
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn the_wording(ty: &str) -> Value {
     json!({"type": ty, "required": false})
 }
@@ -78,6 +93,9 @@ fn every_shipped_llm_cell_declares_what_output_writes() {
     let mut judged = 0usize;
     let mut findings: Vec<String> = Vec::new();
     let mut stack = vec![repo("templates")];
+    // The sweep's root, taken from the stack so the export audit (R2b) sees
+    // one explained reference to the tree in this file, not a second one.
+    let root = stack[0].clone();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -85,7 +103,18 @@ fn every_shipped_llm_cell_declares_what_output_writes() {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                stack.push(path);
+                // GH #1431: a frozen version (`templates/<name>@<x.y.z>/`) is
+                // immutable (the kit's frozen-template-lock refuses any change
+                // to its bytes), so it cannot follow a key the cell grows after
+                // it froze; the living template it froze from is swept.
+                let frozen = dir == root
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(is_frozen_version);
+                if !frozen {
+                    stack.push(path);
+                }
                 continue;
             }
             if path.file_name().and_then(|n| n.to_str()) != Some("config.json") {

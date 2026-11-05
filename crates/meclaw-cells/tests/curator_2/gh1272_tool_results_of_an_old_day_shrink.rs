@@ -59,8 +59,12 @@ fn tool_results_of_an_old_day_shrink() {
     if !shipped() {
         return;
     }
+    // The raw token budget off (GH #1427, D38 K6): with talky's 80 000 the
+    // old day's lookups stay raw within the budget, and taking them out of a
+    // raw day is the garbage collection's job (D38 K3), not the tier's.
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
+        ("policy", "keep_recent_tokens", json!(0)),
         ("intake", "replay_channel_prefix", json!("replay-")),
     ]);
     round_at(&mut h, "d1-open", "2026-03-01T08:00:00Z");

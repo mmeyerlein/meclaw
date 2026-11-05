@@ -85,7 +85,7 @@
         {
           "id": "000000000000",
           "origin": "assistant",
-          "text": "{\"operation\": \"select\", \"table\": \"goals\", \"columns\": [\"id\", \"metric\", \"direction\", \"window_minutes\", \"min_samples\", \"min_delta_pct\", \"quality_gate\", \"enabled\", \"note\", \"source\"], \"limit\": 20, \"order_by\": [{\"col\": \"id\", \"dir\": \"asc\"}]}",
+          "text": "{\"operation\": \"select\", \"table\": \"goals\", \"columns\": [\"id\", \"metric\", \"direction\", \"window_minutes\", \"min_samples\", \"min_delta_pct\", \"quality_gate\", \"enabled\", \"note\", \"source\", \"alert_at\"], \"limit\": 20, \"order_by\": [{\"col\": \"id\", \"dir\": \"asc\"}]}",
           "type": "tool_call"
         }
       ]

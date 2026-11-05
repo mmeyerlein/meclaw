@@ -50,6 +50,8 @@
               "input_hard": {"type": "number", "required": false},
               "cost_in": {"type": "number", "required": false},
               "cost_cached_in": {"type": "number", "required": false},
+              "cost_cache_write": {"type": "number", "required": false},
+              "price_tiers": {"type": "array", "required": false},
               "dropped": {"type": "array", "required": false},
               "unverified": {"type": "array", "required": false}}
     },

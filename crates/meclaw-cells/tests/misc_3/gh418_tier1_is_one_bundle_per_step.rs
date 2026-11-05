@@ -227,12 +227,13 @@ fn the_hydration_round_is_one_bundle() {
         [
             "r-hyd-fused",
             "r-hyd-fact",
+            "r-hyd-reply",
             "r-hyd-ep",
             "r-hyd-axis",
             "r-hyd-card",
             "r-hyd-read"
         ],
-        "park, fact page, episode page, axis page, verdicts, read-back: {out:#?}"
+        "park, fact page, the open replies to it (GH #1424), episode page, axis page, verdicts, read-back: {out:#?}"
     );
 }
 

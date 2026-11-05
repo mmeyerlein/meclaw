@@ -371,3 +371,40 @@ async fn off_leaves_every_channel_byte_identical() {
         assert_eq!(r.cell.open_partial_turns(), 0);
     }
 }
+
+/// A spec partial as talky's rim hands it on: `route partial` out of
+/// `./curator` (#1411), the hop of the model partial unchanged.
+fn spec_partial(text: &str, seq: u64) -> Message {
+    let mut m = partial(text, seq);
+    m.reply_to = Some(Path::new("/curator"));
+    m
+}
+
+/// GH #1432 pin 5: the speculation's first sentence S was shown, the spec
+/// call failed inside the curator (its error never reaches the rim), and
+/// the fallback answer arrives. If it begins with S anyway, the rim cuts S
+/// and sends only the continuation; if it is the continuation alone (the
+/// fallback call got S as its own words, #1432), it goes whole. S is never
+/// sent twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1432_p5_a_fallback_after_a_shown_spec_sentence_does_not_repeat_it() {
+    let s = "For four people you need about 300 grams of rice.";
+    let mut r = rig(Some(PartialDelivery::FirstSentence)).await;
+    r.feed(spec_partial(s, 1)).await;
+    r.feed(answer(&format!("{s} Rinse it first."), false)).await;
+    assert_eq!(r.sent_texts().await, vec![s, "Rinse it first."]);
+    assert_eq!(r.cell.open_partial_turns(), 0);
+
+    let mut r = rig(Some(PartialDelivery::FirstSentence)).await;
+    r.feed(spec_partial(s, 1)).await;
+    r.feed(answer(
+        "Rinse it first, then cook it for twelve minutes.",
+        false,
+    ))
+    .await;
+    assert_eq!(
+        r.sent_texts().await,
+        vec![s, "Rinse it first, then cook it for twelve minutes."]
+    );
+    assert_eq!(r.cell.open_partial_turns(), 0);
+}

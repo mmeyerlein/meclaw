@@ -164,8 +164,10 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     assert!(h.clock.is_empty(), "no rebuild at 120 000: {:?}", h.clock);
     assert_eq!(h.state("input_soft"), "250000", "{:?}", h.stderr);
     // The lines themselves, out of the row alone.
+    // GH #1427: the cost line of the rule at `rebuild_to` 0.35 (talky ships 0.45 now,
+    // its preset is pinned in `gh1272_a_role_rebuilds_at_its_window_target`).
     let (marks, err) = policy_scope(
-        json!({"role": "talky", "window_target": 0}),
+        json!({"role": "talky", "window_target": 0, "rebuild_to": 0.35}),
         "[curate_mark(w, ARGS)['mark'] for w in (120000, 175000, 175001, 249999, 250000)]",
         luna,
     );

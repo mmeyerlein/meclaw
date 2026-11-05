@@ -103,10 +103,10 @@ fn each_role_has_its_presets() {
             json!([
                 40,
                 0.5,
-                0.35,
+                0.45,
                 "day",
                 ["raw", "summary", "none"],
-                2,
+                1,
                 20,
                 "tail",
                 true,
@@ -228,7 +228,8 @@ fn a_set_knob_beats_the_preset() {
     assert_eq!(got[4], json!(["raw", "none"]), "a set tier list wins");
     assert_eq!(got[10], json!(false), "\"0\" switches a flag off");
     assert_eq!(got[3], json!("day"), "empty is not set: the preset stands");
-    assert_eq!(got[5], json!(2), "what is not set is the role's");
+    // GH #1430 (R-38-2): talky's `keep_rounds` preset is 1 (was 2).
+    assert_eq!(got[5], json!(1), "what is not set is the role's");
     // A form nobody knows keeps the preset, and says so.
     let (got, err) = policy_scope(
         json!({"role": "consult", "tiers": "raw,shredded"}),
@@ -291,7 +292,15 @@ fn talky_keeps_today_raw_yesterday_summarised_older_dropped() {
         return;
     }
     clear_of_midnight();
-    let mut h = hive_of("talky", &[("policy", "keep_recent", json!(1))]);
+    // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
+    // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
+    let mut h = hive_of(
+        "talky",
+        &[
+            ("policy", "keep_recent", json!(1)),
+            ("policy", "keep_recent_tokens", json!(0)),
+        ],
+    );
     h.row(
         days_ago(3, 12),
         "s",
@@ -413,8 +422,10 @@ fn the_day_horizon_counts_calendar_days() {
          "chars": 10}
     ]);
     let probe = "window_plan(ARGS['rows'], [], [], [], {}, ARGS['as_of'])";
+    // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
+    // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (got, _) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1}),
+        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
         probe,
         json!({"rows": rows, "as_of": as_of}),
     );
@@ -635,6 +646,14 @@ fn under_pressure(window: i64, keep_recent: i64) -> (Hive, String) {
             ("policy", "keep_recent", json!(keep_recent)),
             ("policy", "context_window", json!(window)),
             ("policy", "keep_rounds", json!(1)),
+            // GH #1427: the shrink rule under talky's presets of before
+            // (`rebuild_to` 0.35, no raw token budget) -- the numbers below
+            // are that rule's.
+            ("policy", "rebuild_to", json!(0.35)),
+            ("policy", "keep_recent_tokens", json!(0)),
+            // GH #1430: the shrink over the aim alone -- talky's collection at
+            // every rebuild (`gc` "1") is pinned in `gh_d38_k3_*`.
+            ("policy", "gc", json!("0")),
         ],
     );
     h.row(days_ago(1, 9), "s", "y1", "user", &user("yesterday"), 0);
@@ -1057,7 +1076,15 @@ fn a_pinned_block_survives_the_tier_cut() {
     }
     clear_of_midnight();
     let keep = user("keep me, the owner's rule");
-    let mut h = hive_of("talky", &[("policy", "keep_recent", json!(1))]);
+    // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
+    // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
+    let mut h = hive_of(
+        "talky",
+        &[
+            ("policy", "keep_recent", json!(1)),
+            ("policy", "keep_recent_tokens", json!(0)),
+        ],
+    );
     h.row(days_ago(3, 12), "s", "d3", "user", &keep, 0);
     h.row(
         days_ago(3, 12) + chrono::Duration::minutes(1),

@@ -14,7 +14,8 @@
         "min_delta_pct": "int",
         "quality_gate": "text",
         "enabled": "int",
-        "note": "text"
+        "note": "text",
+        "alert_at": "int"
       },
       "rules": {
         "id": "text",

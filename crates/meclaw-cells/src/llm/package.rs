@@ -132,6 +132,10 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             "cost_cached_in" => {
                 (params.cost_cached_in > 0.0).then(|| params.cost_cached_in.to_string())
             }
+            // GH #1431: shown only when stated.
+            "cost_cache_write" => {
+                (params.cost_cache_write > 0.0).then(|| params.cost_cache_write.to_string())
+            }
             // GH #1318: shown only when the row has steps -- each as
             // `<above_input>:<cost_in>/<cost_out>`.
             "price_tiers" => (!params.price_tiers.is_empty()).then(|| {

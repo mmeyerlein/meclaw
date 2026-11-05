@@ -8,6 +8,7 @@ pub mod gh980_the_writer_drives_its_projection;
 pub mod gh981_an_offer_names_its_callers;
 pub mod gh981_run_id_survives_the_tool_path;
 pub mod gh993_a_model_gets_only_the_params_it_takes;
+pub mod gh_d38_k1_the_meter_asks_the_new_kinds;
 #[path = "../h5_support/mod.rs"]
 pub mod h5;
 pub mod h5_a_guessed_param_is_named;
@@ -17,6 +18,8 @@ pub mod h5_recorded_provider_answers_parse;
 pub mod h5_the_catalogue_matches_the_measurement;
 pub mod h5_the_cell_request_per_catalogue_row;
 pub mod hard_shell_example;
+#[path = "../gh927/harness.rs"]
+pub mod harness;
 pub mod librarian_catalogue_carries_the_contract;
 pub mod librarian_seed_corpus;
 pub mod lr_renotify_stop_wiring;

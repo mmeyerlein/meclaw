@@ -203,6 +203,10 @@ pub struct PriceTier {
     /// The cached-input price of the step, when the list names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_cached_in: Option<f64>,
+    /// GH #1431: the cache-write price of the step, when the list names one
+    /// -- the curator counts a rebuild whose aim falls in the step at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cache_write: Option<f64>,
 }
 
 /// Phase-8 LlmCell parameters (cell-types.md `llm`-params block), extended by
@@ -575,6 +579,13 @@ pub struct LlmParams {
     /// 0). A package key.
     #[serde(default)]
     pub cost_cached_in: f64,
+    /// GH #1431: the price of writing one million prompt tokens into the
+    /// provider's cache, in cents (the 5-minute lifetime as listed). Only
+    /// stamped (`hop.cost_cache_write`, above 0): with a price ladder the
+    /// curator counts a rebuild at the write price of its aim's step. A
+    /// package key.
+    #[serde(default)]
+    pub cost_cache_write: f64,
     /// GH #1318: the model's price steps above its base step, by prompt
     /// length -- a provider that prices a prompt over 100k tokens dearer
     /// lists that step here, `cost_in` / `cost_cached_in` stay the base step.
@@ -661,12 +672,19 @@ fn price(key: &str, value: &Value) -> Result<f64, String> {
 
 /// GH #1318: the price steps as the cell takes them -- a list of objects,
 /// each with a whole `above_input` above 0 and above the step before it, and
-/// a `cost_in` and `cost_out` in the form of a price; `cost_cached_in` is
-/// optional, any other key is refused. Ordered and complete, or refused by
-/// the param's name: a step out of order would bill a prompt at the wrong
+/// a `cost_in` and `cost_out` in the form of a price; `cost_cached_in` and
+/// (GH #1431) `cost_cache_write` are optional, any other key is refused.
+/// Ordered and complete, or refused by the param's name: a step out of order would bill a prompt at the wrong
 /// price, a step without a price would bill it at none.
 fn price_tiers_checked(value: &Value) -> Result<Value, String> {
-    const KEYS: &[&str] = &["above_input", "cost_in", "cost_out", "cost_cached_in"];
+    const KEYS: &[&str] = &[
+        "above_input",
+        "cost_in",
+        "cost_out",
+        "cost_cached_in",
+        "cost_cache_write",
+    ];
+    const OPTIONAL: &[&str] = &["cost_cached_in", "cost_cache_write"];
     let refuse = |why: &str| format!("price_tiers {why}");
     let steps = value
         .as_array()
@@ -692,7 +710,7 @@ fn price_tiers_checked(value: &Value) -> Result<Value, String> {
         last = above;
         let mut m = serde_json::Map::new();
         m.insert("above_input".into(), Value::from(above));
-        for key in ["cost_in", "cost_out", "cost_cached_in"] {
+        for key in KEYS[1..].iter().copied() {
             match obj.get(key) {
                 Some(v) => {
                     m.insert(
@@ -700,7 +718,7 @@ fn price_tiers_checked(value: &Value) -> Result<Value, String> {
                         Value::from(price(&format!("price_tiers {key}"), v)?),
                     );
                 }
-                None if key != "cost_cached_in" => {
+                None if !OPTIONAL.contains(&key) => {
                     return Err(refuse(&format!("needs {key} on every step")));
                 }
                 None => {}
@@ -742,7 +760,7 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
                 *v = Value::from(whole_number(key, v)?);
             }
         }
-        for key in ["cost_in", "cost_cached_in"] {
+        for key in ["cost_in", "cost_cached_in", "cost_cache_write"] {
             if let Some(v) = obj.get_mut(key) {
                 *v = Value::from(price(key, v)?);
             }
@@ -776,7 +794,7 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
 /// GH #1037 adds the output limit; R-HK-15/16 the input bounds and the two
 /// prompt prices the curator weighs a cached window with; GH #1085 the two
 /// rates the window estimate counts a prompt with; GH #1318 the price steps
-/// by prompt length.
+/// by prompt length; GH #1431 the cache-write price.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -799,6 +817,8 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1431: the cache-write price -- a contract change, made on purpose.
+    "cost_cache_write",
     // GH #1318: the price steps by prompt length.
     "price_tiers",
     "chars_per_token",
@@ -1571,6 +1591,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "input_hard",
     "cost_in",
     "cost_cached_in",
+    // GH #1431: the cache-write price, a package key.
+    "cost_cache_write",
     // GH #1318: the price steps by prompt length, a package key.
     "price_tiers",
     // GH #1085: the rates the window estimate counts with, package keys.
@@ -1742,13 +1764,15 @@ mod tests {
                     above_input: 100_000,
                     cost_in: 50.0,
                     cost_out: 250.0,
-                    cost_cached_in: None
+                    cost_cached_in: None,
+                    cost_cache_write: None
                 },
                 PriceTier {
                     above_input: 200_000,
                     cost_in: 60.5,
                     cost_out: 300.0,
-                    cost_cached_in: Some(6.0)
+                    cost_cached_in: Some(6.0),
+                    cost_cache_write: None
                 },
             ]
         );

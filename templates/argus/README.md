@@ -1,4 +1,4 @@
-# `argus@1.5.0`
+# `argus@1.6.0`
 
 The colony's watcher and its control loop, as a hive of eight cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -211,6 +211,30 @@ a watcher that sees something and tells nobody is a log file with extra steps.
 optimisation goals and about nothing else, which is also why a colony in trouble
 does not start paying for opinions about it.
 
+## Role goals and their threshold
+
+A goal whose `source` names a role is measured off that role's own counts, asked
+on the `stats` lane: rates per hundred calls (`gap_rate`, `reread_rate`,
+`ask_rate`, `correction_rate`, `tool_error_rate`) and, since
+[#1426](https://github.com/mmeyerlein/meclaw/issues/1426), the curator's window
+figures, read whole off the kind that carries them: `window_p95`
+(`window.p95`, tokens), `rebuild_rate` (`rebuild.rate_pct`), `gc_share`
+(`gc.active_pct`), `tool_share` (`gc.tool_share_pct`) and `recall_rows`
+(`gc.recall_rows_p95`). A figure over nothing counted is unknown, never zero.
+
+A role's number is a level, not a symptom, so it raises no alert by itself.
+The charter draws the line: the `goals` column `alert_at` (an `int`, NULL =
+never, the value of every shipped goal). A role goal whose measured value lies
+over it -- strictly, and with at least `min_samples` calls in the window -- sends
+one `alert` `{goal, metric, value, window_minutes, role}` from the baseline that
+measured it, whatever its direction, and no model is asked to decide that; an
+optimisation goal still goes on to its judge beside it. A goal of the colony
+keeps its own reading and ignores the column. The thresholds and the edge that
+carries an alert to whoever acts on it are the colony's to set. A threshold
+is an upper bound only: an alert says a number grew too high, never that it
+fell too low, so `gc_share` 0 -- a rebuild that cleans nothing -- cannot
+raise one; its cost shows in the window and the tool share instead.
+
 ## The resting state
 
 **A freshly grown argus changes nothing.** Every goal in the seed ships
@@ -268,7 +292,7 @@ and it is named for what a caller asks for, never for the cell it lands on.
 | `error_hint` | out → the hive | a hint `in_error` stored, told once: body `{messages: [], hint: {origin, confidence, line}}`, the fields as stored. An error the throttle held back sends nothing, nor does a refused insert. Nothing draws it by default; a parent that draws `in_error` but not `error_hint` gets one `hive_no_route` dead letter per stored hint at the rim (bounded by the throttle). Since [#1376](https://github.com/mmeyerlein/meclaw/issues/1376) |
 | `model_refused` | out → the hive | a model push `./judge` refused: its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of as a decision at `./mutator`. `meclaw-os` carries it back to its registry. Since 1.2.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
 | `mutate` | out → the hive | a params update — body `{system:{}, params:{…}}`, `hop.target` naming the cell it is for. A parent draws one edge per cell the loop may reach |
-| `alert` | out → the hive | a watched symptom crossed zero, counted deterministically and with no model asked: the metric, the goal that watched for it, the count and the window |
+| `alert` | out → the hive | a watched symptom crossed zero, counted deterministically and with no model asked: the metric, the goal that watched for it, the count and the window. A role goal alerts only over its charter's `alert_at`: `{goal, metric, value, window_minutes, role}` (see *Role goals and their threshold*) |
 | `error` | out → the hive | a step of the cycle could not complete — including the one state this loop cannot leave on its own: an unhealthy colony whose applied change carries no revert plan |
 
 Which cell serves a lane is this hive's business and may change without a caller
@@ -382,7 +406,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.5.0",
+ "nodes": [{"name": "argus", "template": "argus@1.6.0",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},

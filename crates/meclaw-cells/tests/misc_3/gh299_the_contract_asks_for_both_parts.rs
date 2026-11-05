@@ -62,7 +62,14 @@ const SCHEMAS_CONFIG: &str = "../../templates/memory-hive/schemas/config.json";
 /// fact the memory showed in the same turn, and the one sentence that says how
 /// (`replaces: <id>`, same matter, multi axis only on a correction, in doubt
 /// leave it out) costs 183 characters: 1,898 became 2,081.
-const LENGTH_BOUND: usize = 2_100;
+///
+/// Raised a third time for GH #1422: a fact now says how firmly its source
+/// holds it (`stance`: asserted, believed, reported, the last with `via`), and
+/// the one paragraph that says so, with the one example that tells a hope and
+/// a passed-on opinion from a fact about the world, costs 260 characters:
+/// 2,081 became 2,341. The rebuttal of the model's own stays out of the turn
+/// (the close pass writes it), so nothing else grew.
+const LENGTH_BOUND: usize = 2_350;
 
 /// `${VAR:-default}` becomes the default, a bare `${VAR}` becomes the empty string --
 /// the same substitution the colony performs when it instantiates the template.
@@ -706,6 +713,92 @@ fn the_block_stays_under_its_length_bound() {
         "the contract block is {len} characters, over its {LENGTH_BOUND} bound. \
          Cut something before adding something -- what is in here is what the \
          ingress can actually read, and nothing else."
+    );
+}
+
+/// GH #1422: the contract names the three stances, the offer declares them,
+/// and both are the tuple `validate()` accepts.
+///
+/// A hope ("I hope the knee gets better") and a passed-on opinion ("the doctor
+/// says it is harmless") are not facts about the world, and the only place a
+/// model is ever told so is this block. A value the block names that the
+/// validator does not know is a fact dropped with a receipt; a value the
+/// validator knows that the block never names is a stance nobody sends. So the
+/// three are read from all three places and compared.
+///
+/// The other half is what the block must NOT say: `answers` is written by the
+/// close pass alone (`answers_not_inline` refuses it here), so neither the
+/// rules nor the offered schema name it, and `agent:self` stays the model's
+/// own promise and nothing else.
+#[test]
+fn the_contract_names_the_three_stances() {
+    let script = glue_script();
+    let stances_line = script
+        .lines()
+        .find(|l| l.starts_with("STANCES = "))
+        .expect("the validator declares the stances it accepts");
+    let accepted: Vec<&str> = stances_line.split('"').skip(1).step_by(2).collect();
+    assert_eq!(
+        accepted,
+        ["asserted", "believed", "reported"],
+        "the validator's tuple: {stances_line}"
+    );
+
+    let block = flat(&contract_block());
+    assert!(
+        block.contains("`stance` is how firmly the source holds it"),
+        "the block says what a stance IS:\n{block}"
+    );
+    for value in &accepted {
+        assert!(
+            block.contains(&format!("`{value}`")),
+            "the block names the stance {value:?}:\n{block}"
+        );
+    }
+    assert!(
+        block.contains("named verbatim in `via`"),
+        "and that a reported fact names whom it passes on, verbatim:\n{block}"
+    );
+    assert!(
+        block.contains(
+            "\"The doctor says it is harmless\" is reported via \"the doctor\", \
+             never a fact about the knee."
+        ),
+        "and shows the one case that tells a passed-on opinion from a fact:\n{block}"
+    );
+
+    let fact = fact_schema();
+    let offered: Vec<&str> = fact["properties"]["stance"]["enum"]
+        .as_array()
+        .map(|k| k.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_else(|| panic!("the offer enumerates the stances: {fact}"));
+    assert_eq!(
+        offered, accepted,
+        "the stances the section offers are the ones `validate()` accepts: {fact}"
+    );
+    assert!(
+        fact["properties"].get("via").is_some(),
+        "and declares `via`: {fact}"
+    );
+    let required: Vec<&str> = fact["required"]
+        .as_array()
+        .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    for optional in ["stance", "via"] {
+        assert!(
+            !required.contains(&optional),
+            "{optional:?} is optional -- a missing stance reads as asserted, so the \
+             rendered example stays the one every turn already copies: {fact}"
+        );
+    }
+
+    assert!(
+        !block.contains("answers") && fact["properties"].get("answers").is_none(),
+        "the turn never offers `answers` -- the rebuttal is the close pass's:\n{block}\n{fact}"
+    );
+    assert!(
+        block.contains("`agent:self`, your promise;"),
+        "and `agent:self` stays the model's own promise:\n{block}"
     );
 }
 

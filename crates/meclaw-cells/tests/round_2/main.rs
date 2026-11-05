@@ -19,6 +19,7 @@ pub mod gh967_a_round_literal_takes_only_checked_names;
 pub mod gh972_the_turn_round_reaches_the_curator;
 pub mod gh976_a_digest_is_kept_with_its_round_and_shown_only_to_it;
 pub mod gh976_a_result_is_kept_with_its_round;
+pub mod gh_d38_k1_a_role_goal_over_its_threshold_alerts_without_a_judge;
 #[path = "../gh927/harness.rs"]
 pub mod harness;
 #[path = "../gh927/meter.rs"]

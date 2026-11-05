@@ -282,7 +282,8 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
     if !shipped() {
         return;
     }
-    // talky as it ships (`rebuild_to` 0.35): a cost rebuild of a soft limit
+    // talky as it shipped before GH #1427 (`rebuild_to` 0.35, pinned here --
+    // the rule, not the preset, is this test's): a cost rebuild of a soft limit
     // of 5 000 aims at 1 750. A window of 4 000 keeps 2 250 cached at 1 c/M
     // -- 0.00225 cents a turn, 0.0225 over ten turns -- against one rebuild
     // of 1 750 fresh at 10 c/M = 0.0175 cents: paid back on the eighth turn.
@@ -290,7 +291,7 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
         json!({"tokens_prompt": 4000, "tokens_cached": 3900}),
         package(5000, 100_000, 10.0, 1.0),
     );
-    let mut h = talky(&[]);
+    let mut h = talky(&[("policy", "rebuild_to", json!(0.35))]);
     turn_of(&mut h, 15_000, "a", usage.clone());
     assert_eq!(last_add(&h).body["emit_body"]["reason"], "cost");
     let s = stamp(&h);
@@ -306,7 +307,10 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
         "{s}"
     );
     // Two turns to come do not pay a rebuild back: nothing ordered.
-    let mut h = talky(&[("policy", "amortise_turns", json!(2))]);
+    let mut h = talky(&[
+        ("policy", "amortise_turns", json!(2)),
+        ("policy", "rebuild_to", json!(0.35)),
+    ]);
     turn_of(&mut h, 15_000, "a", usage);
     assert!(h.clock.is_empty(), "{:?}", h.clock);
     assert_eq!(stamp(&h)["curate_mark"], "none");
@@ -315,7 +319,8 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
 /// KF2 review B2 (OR-HK-25): with the roles as they ship -- talky's window
 /// target off, GH #1272 -- and a cached price
 /// of 10 %, `cost` fires under soft -- above `2 * rebuild_to` of `input_soft`
-/// at ten turns (talky and consult 0.7, coding and research 0.5) -- and a
+/// at ten turns (talky 0.9 since GH #1427, consult 0.7, coding and research
+/// 0.5) -- and a
 /// `soft` rebuild still aims at `rebuild_to` / `compress_at` of it. Before,
 /// a cost rebuild aimed at the soft share too (talky 0.7 of soft): the
 /// cached rest had to cost more than 23 % of the input price, and the rule
@@ -325,13 +330,14 @@ fn the_roles_compress_for_cost_under_soft_below_their_window_target() {
     if !shipped() {
         return;
     }
-    // GH #1272: talky's window target (40 000) orders its own rebuild, pinned in
+    // GH #1272: talky's window target (100 000) orders its own rebuild, pinned in
     // `gh1272_a_role_rebuilds_at_its_window_target`; this test pins the rule
     // below it, so the target is off here.
     let pkg = "{'input_soft': 100000, 'input_hard': 1000000, 'cost_in': 10, \
                'cost_cached_in': 1}";
     for (role, aim, soft_aim, above, below) in [
-        ("talky", 35_000, 70_000, 75_000, 65_000),
+        // GH #1427: talky's `rebuild_to` 0.45 -- cost above 0.9 of soft.
+        ("talky", 45_000, 90_000, 95_000, 85_000),
         ("consult", 35_000, 70_000, 75_000, 65_000),
         ("coding", 25_000, 62_500, 55_000, 45_000),
         ("research", 25_000, 62_500, 55_000, 45_000),
@@ -438,10 +444,16 @@ fn under_package_pressure(soft: i64) -> (Hive, String) {
 /// `under_package_pressure` with more of the row on the answer (`extra`, e.g.
 /// the row's `chars_per_token`).
 fn under_package_pressure_with(soft: i64, extra: Value) -> (Hive, String) {
+    // GH #1427: the shrink rule under talky's presets of before (`rebuild_to`
+    // 0.35, no raw token budget) -- the numbers below are that rule's.
     let mut h = talky(&[
         ("policy", "keep_recent", json!(2)),
         ("policy", "context_window", json!(1_000_000)),
         ("policy", "keep_rounds", json!(1)),
+        ("policy", "rebuild_to", json!(0.35)),
+        ("policy", "keep_recent_tokens", json!(0)),
+        // GH #1430: the shrink over the aim alone, not talky's `gc` "1".
+        ("policy", "gc", json!("0")),
     ]);
     let base = backdated(PACKAGE_BACKDATE_S);
     let at = |s: i64| base + chrono::Duration::seconds(s);
@@ -545,7 +557,7 @@ fn the_plan_counts_at_the_rows_rate() {
     ]);
     let (got, err) = policy_scope(
         json!({"role": "talky", "keep_recent": 2, "keep_rounds": 1,
-               "context_window": 1_000_000}),
+               "context_window": 1_000_000, "gc": "0"}),
         "[short_id(ARGS['rows'][2]['hash'])] + [window_plan(ARGS['rows'], [], [], [], {}, \
          ARGS['now'], (), (), 1000000, None, aim=1750, chars_per_token=r)['plan']['shrunk'] \
          for r in (4, 3, 0)]",

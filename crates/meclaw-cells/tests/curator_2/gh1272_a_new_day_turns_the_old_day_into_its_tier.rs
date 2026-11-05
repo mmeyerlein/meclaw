@@ -14,6 +14,11 @@
 //! clock the policy ages its rows by (GH #1225, K-1) -- no second clock, and
 //! no test waits for a midnight.
 //!
+//! Since GH #1427 (D38 K6, R-38-1 C) the day cut applies only outside the
+//! token budget `keep_recent_tokens` (talky 80 000): the picture above holds
+//! with the budget off (`keep_recent_tokens` 0, the first test), and with
+//! talky's preset the day before stays raw within the budget (the second).
+//!
 //! Runs the shipped curator hive (`support/curator_hive.rs`).
 
 // harness_fold: #[path = "support/curator_hive.rs"]
@@ -26,10 +31,13 @@ use meclaw_core::serde_json::{Value, json};
 const DAY_1: &str = "2026-03-01";
 const DAY_2: &str = "2026-03-02";
 
-/// talky's policy on an instance whose replay channels carry their time.
-fn talky() -> Hive {
+/// talky's policy on an instance whose replay channels carry their time,
+/// with the raw token budget set to `budget` (0 = off: the floor of
+/// `keep_recent` rounds alone, the policy of before GH #1427).
+fn talky(budget: i64) -> Hive {
     Hive::with(&[
         ("policy", "role", json!("talky")),
+        ("policy", "keep_recent_tokens", json!(budget)),
         ("intake", "replay_channel_prefix", json!("replay-")),
     ])
 }
@@ -87,7 +95,7 @@ fn a_new_day_turns_the_old_day_into_its_tier() {
     if !shipped() {
         return;
     }
-    let mut h = talky();
+    let mut h = talky(0);
     round_at(&mut h, "d1-a", &format!("{DAY_1}T09:00:00Z"));
     assert_eq!(mark(&h), "none", "{:?}", h.stderr);
     round_at(&mut h, "d1-b", &format!("{DAY_1}T18:00:00Z"));
@@ -133,6 +141,42 @@ fn a_new_day_turns_the_old_day_into_its_tier() {
     round_at(&mut h, "d2-b", &format!("{DAY_2}T09:00:00Z"));
     assert_eq!(mark(&h), "none", "{:?}", h.stderr);
     assert_eq!(day_orders(&h), 1, "one day, one day order");
+}
+
+/// GH #1427 (D38 K6, R-38-1 C): with talky's budget (80 000 tokens) the
+/// `day` rebuild is ordered as before, but the day before stays raw -- its
+/// two rounds are within the budget -- and nothing condenses: the cover
+/// stands before the first row, the summary is empty, no summarizer call.
+#[test]
+fn a_new_day_keeps_yesterday_raw_within_the_budget() {
+    if !shipped() {
+        return;
+    }
+    let mut h = talky(80_000);
+    round_at(&mut h, "d1-a", &format!("{DAY_1}T09:00:00Z"));
+    round_at(&mut h, "d1-b", &format!("{DAY_1}T18:00:00Z"));
+    round_at(&mut h, "d2-a", &format!("{DAY_2}T08:00:00Z"));
+    assert_eq!(mark(&h), "day", "{:?}", h.stderr);
+    let order = h
+        .clock_order_for(ROUND_E)
+        .expect("the day orders a rebuild");
+    h.fire(&order);
+    assert!(
+        h.summ.is_empty(),
+        "nothing to condense within the budget: {:?} {:?}",
+        h.summ,
+        h.stderr
+    );
+    let plan = h.plan_in(ROUND_E);
+    let day1: Vec<i64> = [seqs(&h, "d1-a"), seqs(&h, "d1-b")].concat();
+    assert!(!day1.is_empty());
+    let cover = plan["cover"].as_i64().expect("a cover");
+    assert!(
+        day1.iter().all(|s| *s > cover),
+        "the day before stays raw within the budget: {plan} {day1:?}"
+    );
+    assert_eq!(plan["sum_from"], 0, "{plan}");
+    assert_eq!(plan["summary"], "", "{plan}");
 }
 
 /// The clock orders of a `day` rebuild the hive armed.
