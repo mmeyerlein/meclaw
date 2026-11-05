@@ -963,7 +963,13 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// `talky` two edges more (`./brain -> .` and `./quick -> .` on `partial`,
 /// 120 -> 122 in `templates/talky/README.md`). Two talkies: 2 x 2. Measured
 /// red in the wave's second gate (633 against 629).
-const EDGES: usize = 633;
+/// Moved 633 -> 643 with GH #1411 A1 (GH #1415, a kept speculation streams):
+/// every `talky` two edges more (`./quick_spec -> ./curator` on
+/// `in_spec_partial`, `./curator -> .` on `partial`, 122 -> 124 in
+/// `templates/talky/README.md`) and every `curator` two more (`. -> ./policy`
+/// on `in_spec_partial`, `./policy -> .` on `partial`). Two talkies, three
+/// curators: 2 x 2 + 3 x 2.
+const EDGES: usize = 643;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

@@ -44,6 +44,14 @@ fn config_drained() -> ColonyConfig {
 }
 
 async fn boot(db_file: &std::path::Path, cfg: ColonyConfig) -> Booted {
+    boot_with_store(db_file, cfg, None).await
+}
+
+async fn boot_with_store(
+    db_file: &std::path::Path,
+    cfg: ColonyConfig,
+    store: Option<std::sync::Arc<meclaw_colony::DiskBlobStore>>,
+) -> Booted {
     let (inbox_tx, inbox_rx) = mpsc::channel::<ColonyMsg>(1024);
     let (outputs_tx, outputs_rx) = mpsc::channel(1024);
     let db = ColonyDb::open(db_file).expect("open colony.db");
@@ -57,7 +65,7 @@ async fn boot(db_file: &std::path::Path, cfg: ColonyConfig) -> Booted {
         CellFactoryRegistry::new(),
         root,
         cfg,
-        None,
+        store,
         None,
     )));
     Booted {
@@ -1180,4 +1188,96 @@ async fn keyed_ids_carry_a_real_time_prefix() {
     assert_eq!(got.len(), 2);
     assert_eq!(ms(got[0].0), ms(frame), "the frame's time");
     assert_eq!(ms(got[1].0), 1_759_000_000_123u128, "the stamped time");
+}
+
+/// Records what it gets, then never finishes: the delivery stays open.
+struct RecordAndHang(mpsc::UnboundedSender<(Uuid, u32)>);
+impl Cell for RecordAndHang {
+    async fn handle(&mut self, msg: Message, _sink: &OutputSink) {
+        let _ = self.0.send((msg.id, msg.ttl));
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Emits a UBF body of 4 KiB to the hive `/h` (above the 1 KiB blob
+/// threshold of the test below); `hang` keeps the delivery open.
+struct EmitPad {
+    hang: bool,
+}
+impl Cell for EmitPad {
+    async fn handle(&mut self, _msg: Message, sink: &OutputSink) {
+        let _ = sink
+            .push(CellOutput {
+                target: Path::new("/h"),
+                content: json!({ "messages": [], "pad": "x".repeat(4096) }),
+            })
+            .await;
+        if self.hang {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// GH #1418: a replayed emission whose body is at or above the blob threshold
+/// leaves the loop for the blob write and comes back through the inbox; the
+/// hive transit behind it is still checked against the log -- the child the
+/// first life delivered reaches the cell once (its own replay), not twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replayed_offloaded_emission_does_not_deliver_its_transit_child_twice() {
+    const THRESHOLD: usize = 1024;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("c.db");
+    let store = || {
+        Some(std::sync::Arc::new(
+            meclaw_colony::DiskBlobStore::new(dir.path().join("blobs")).expect("blob store"),
+        ))
+    };
+    let cfg = || {
+        let mut c = config("{}");
+        c.blob_inline_max_bytes = THRESHOLD;
+        c
+    };
+    let apply = |b: &Booted| {
+        let inbox = b.inbox.clone();
+        async move {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            inbox
+                .send(ColonyMsg::InitialApply {
+                    edges: vec![edge("/a", "/h"), edge("/h", "/h/b")],
+                    hive_scopes: vec![Path::new("/h")],
+                    ack: ack_tx,
+                })
+                .await
+                .expect("colony inbox closed");
+            ack_rx.await.expect("initial apply ack");
+        }
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut b = boot_with_store(&db, cfg(), store()).await;
+    register_cell(&mut b, "/a", EmitPad { hang: true }, 8).await;
+    register_cell(&mut b, "/h/b", RecordAndHang(tx), 8).await;
+    apply(&b).await;
+    route(&b, source("/a", 1)).await;
+    let child_id = collect(&mut rx, 1).await[0].0;
+    shutdown(b).await;
+
+    // The second life: `/a` replays and emits the same child id; a second
+    // message behind it marks the end -- its child comes after any copy.
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut b = boot_with_store(&db, cfg(), store()).await;
+    register_cell(&mut b, "/a", EmitPad { hang: false }, 8).await;
+    register_cell(&mut b, "/h/b", Recorder(tx), 8).await;
+    apply(&b).await;
+    route(&b, source("/a", 2)).await;
+    let got = collect(&mut rx, 2).await;
+    shutdown(b).await;
+    assert_eq!(
+        got[0].0, child_id,
+        "the logged child arrives (its own replay)"
+    );
+    assert_ne!(
+        got[1].0, child_id,
+        "and only once: next comes the second child"
+    );
 }

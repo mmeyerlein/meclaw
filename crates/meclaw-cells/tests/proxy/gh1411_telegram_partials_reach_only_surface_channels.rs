@@ -47,6 +47,12 @@ const APP: &str = "probe";
 const ROADS: &[(&str, &str, &str)] = &[
     ("talky", "./brain", "."),
     ("talky", "./quick", "."),
+    // GH #1411 A1: a kept speculation streams -- through the curator, which
+    // passes a spec partial only while the turn awaits it (curator_2
+    // `gh1411_a_kept_speculation_streams`), then out of the curator's rim.
+    ("talky", "./quick_spec", "./curator"),
+    ("talky", "./curator", "."),
+    ("curator", "./policy", "."),
     ("assistant", "./talky", "."),
     ("assistant", "./talky-chat", "."),
     ("member", "./assistants", "./channels"),
@@ -65,7 +71,13 @@ const MODEL_ONLY: &[&str] = &["member", "grow_level channel"];
 /// The nodes a model partial stands on, per level: the model cells, the
 /// rims, and the hives it crosses.
 const ON_ROAD: &[(&str, &[&str])] = &[
-    ("talky", &["./quick", "./brain", "."]),
+    (
+        "talky",
+        &["./quick", "./brain", "./quick_spec", "./curator", "."],
+    ),
+    // Inside the curator a spec partial runs on `in_spec_partial` from the
+    // hive path to `./policy`; what leaves `./policy` is a model partial.
+    ("curator", &["./policy"]),
     ("assistant", &["./talky", "./talky-chat", "."]),
     ("member", &["./assistants", "./channels"]),
     (
@@ -143,6 +155,7 @@ fn grown(recipe: &str, params: Value) -> Vec<Value> {
 fn levels() -> Vec<(&'static str, Vec<Value>)> {
     vec![
         ("talky", edges_of("talky")),
+        ("curator", edges_of("curator")),
         ("assistant", edges_of("assistant")),
         ("member", edges_of("member")),
         (

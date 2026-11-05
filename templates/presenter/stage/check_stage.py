@@ -2039,6 +2039,90 @@ def asks(out):
     return [e for e in out if e["header"]["route"] == "in_show" and e.get("op") == "data"]
 
 
+# #1417 (live-2 T5, round 2b: two judge timeouts at 6 s): a turn the screen form never
+# reached ended unnamed (`form` empty). The structural default is `referring` -- the window
+# stays `relevant`, never `focus` without a verdict (R-FU-4) -- and a form after the
+# fallback is journaled late and moves nothing.
+
+
+def form_fields(rows):
+    return [(r.get("form"), r.get("form_late")) for r in rows]
+
+
+def t_form_fallback(s, t):
+    # a_turn_without_a_form_falls_back_to_referring: done without a form
+    c = staged(s)
+    said(c, "x1")
+    out = judged(c, "x1", stamp("x1"))
+    t.check("a_turn_without_a_form_falls_back_to_referring: the window opens relevant",
+            [x["content"]["props"]["relevance"] for x in views(out)], ["0.8"])
+    out = data(c, "x1", ROWS)
+    t.check("a_turn_without_a_form_falls_back_to_referring: journal at done",
+            form_fields(journal_of(out)), [("referring", 0)])
+    t.check("a_turn_without_a_form_falls_back_to_referring: the done window stays relevant",
+            [x["content"]["props"]["relevance"] for x in views(out)], ["0.8"])
+    # ... and at the timeout, with no verdict at all: no window, the form named
+    c = staged(s)
+    said(c, "x2")
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("a_turn_without_a_form_falls_back_to_referring: timeout journal",
+            [(r["fallback"], r["form"], r["form_late"]) for r in journal_of(out)],
+            [("timeout", "referring", 0)])
+    t.check("a_turn_without_a_form_falls_back_to_referring: timeout opens nothing",
+            routes(out), [])
+
+    # a_form_after_the_fallback_is_journaled_late_and_moves_nothing
+    c = staged(s)
+    said(c, "x3")
+    judged(c, "x3", stamp("x3"))
+    data(c, "x3", ROWS)
+    out = judged(c, "x3", form_only("x3", "active"))
+    t.check("a_form_after_the_fallback_is_journaled_late_and_moves_nothing: no screen op",
+            routes(out), [])
+    t.check("a_form_after_the_fallback_is_journaled_late_and_moves_nothing: form_late",
+            form_fields(journal_of(out)), [("referring", 1)])
+    t.check("a_form_after_the_fallback_is_journaled_late_and_moves_nothing: once",
+            journal_of(judged(c, "x3", form_only("x3", "none"))), [])
+    # after a timeout: the late verdict and the late form both say they came
+    c = staged(s)
+    said(c, "x4")
+    c.tick(4000)
+    c.run({"route": "in_tick"})
+    out = judged(c, "x4", stamp("x4", form="active"))
+    t.check("a_form_after_the_fallback_is_journaled_late_and_moves_nothing: after a timeout",
+            (routes(out), [(r["late"], r["form"], r["form_late"]) for r in journal_of(out)]),
+            ([], [(1, "referring", 1)]))
+
+    # a_timely_form_is_journaled_as_it_came
+    c = staged(s)
+    said(c, "x5")
+    out = judged(c, "x5", stamp("x5", form="active"))
+    t.check("a_timely_form_is_journaled_as_it_came: lifted as today",
+            [x["content"]["props"]["relevance"] for x in views(out)], ["1"])
+    out = data(c, "x5", ROWS)
+    j = journal_of(out)
+    t.check("a_timely_form_is_journaled_as_it_came: journal", form_fields(j), [("active", 0)])
+    t.check("a_timely_form_is_journaled_as_it_came: the row is today's plus two fields",
+            sorted(j[0]), sorted(["turn_id", "topic", "p", "lead", "also", "fallback", "late",
+                                  "t_verdict_ms", "t_window_ms", "t_content_ms", "model", "at",
+                                  "missing", "audience_set", "verdict_source", "t_building_ms",
+                                  "t_form_ms", "t_done_ms", "form", "form_late"]))
+    with open(os.path.join(os.path.dirname(HERE), "store", "config.json"), encoding="utf-8") as f:
+        journal = json.load(f)["params"]["schema"]["journal"]
+    t.check("a_timely_form_is_journaled_as_it_came: the store declares every column of the row",
+            sorted(k for k in j[0] if k not in journal), [])
+    # the selector way writes the row it always wrote: no form fields
+    c = Cell(s)
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [sample()]})
+    said(c, "x6")
+    c.tick(4000)
+    out = c.run({"route": "in_tick"})
+    t.check("a_timely_form_is_journaled_as_it_came: the selector row has no form",
+            [("form" in r, "form_late" in r) for r in journal_of(out)], [(False, False)])
+
+
 def t_join(s, t):
     """GH #1367: a turn without `turn_id` (the apps fan-out) and its stamp with the keeper's
     `turn_id` meet presenter-locally -- both orders, the same round only, a matching
@@ -2320,7 +2404,8 @@ TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_
           ("OBSERVE", t_observe), ("SEARCH", t_search), ("WORK", t_work),
           ("SOURCE", t_source), ("REGISTRY", t_registry), ("DATAROUND", t_data_round),
           ("FOLLOWUP", t_followup), ("RESULTS", t_results),
-          ("STAMP", t_stamp), ("JOIN", t_join), ("TOPICS", t_topics),
+          ("STAMP", t_stamp), ("FORMFALL", t_form_fallback), ("JOIN", t_join),
+          ("TOPICS", t_topics),
           ("TOPICSWIRE", t_topics_wire),
           ("CONTRACT", t_contract), ("FOREIGN", t_foreign_round),
           ("STARONLY", t_star_only), ("CLOCK", t_clock)]

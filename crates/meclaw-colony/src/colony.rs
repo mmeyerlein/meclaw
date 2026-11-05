@@ -865,6 +865,11 @@ pub enum ColonyMsg {
     /// or a mailbox that closed under it. Sent only by the drain tasks of
     /// `crate::overflow`; the payload is opaque outside this crate.
     Overflow(crate::overflow::OverflowReport),
+    /// GH #1418: the offload task wrote a body (or let a message of a waiting
+    /// sender pass) and hands the message back for logging and delivery.
+    /// Sent only by `crate::blob::offload`; the payload is opaque outside this
+    /// crate.
+    Offloaded(crate::blob::offload::OffloadJob),
     /// Phase-13.5 Lifecycle-3b Task 3 (F2): a cell-task has finished its
     /// colony-initiated **peace-stop** (Disconnect, NOT idle) and is returning
     /// its mailbox `Receiver` so the remainder can be drained to the DLQ.
@@ -2359,6 +2364,7 @@ async fn run_shutdown_teardown(
     outputs_tx: &mpsc::Sender<CellEmission>,
     colony_config: &crate::ColonyConfig,
     blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    offload: &mut crate::blob::offload::OffloadState,
     env_source: &Option<std::path::PathBuf>,
     egress_tx: &Option<mpsc::Sender<Message>>,
     egress_policy: EgressPolicy,
@@ -2373,13 +2379,80 @@ async fn run_shutdown_teardown(
     // not an iteration of it; an armed supervisor that kept counting would
     // read its length — and the closed channel at its end — as a wedge.
     mutation_pulse.stand_down();
+    // GH #1418: the offload task goes before the inbox closes. `shut` drops
+    // its queue and stops a pending write (a hanging store must not hold the
+    // teardown); the task hands every job back through the still open inbox
+    // and ends. What the inbox yields meanwhile keeps its order in `early`;
+    // the jobs the loop still held follow, with their inline bodies.
+    let out_before = offload.in_flight();
+    let mut early: VecDeque<ColonyMsg> = VecDeque::new();
+    let mut returned = 0usize;
+    if let Some(mut task) = offload.shut() {
+        loop {
+            tokio::select! {
+                biased;
+                m = inbox.recv() => match m {
+                    Some(m) => {
+                        returned += usize::from(matches!(m, ColonyMsg::Offloaded(_)));
+                        early.push_back(m);
+                    }
+                    None => break,
+                },
+                _ = &mut task => break,
+            }
+        }
+    }
+    let rest = offload.take_rest();
+    returned += rest.len();
+    early.extend(rest.into_iter().map(ColonyMsg::Offloaded));
+    let lost = out_before.saturating_sub(returned);
+    let mut offload_dead = 0usize;
+    // The `logged` flag and the threshold of a returned job, for the first
+    // routing call of the `Route` it turns into (no second log row; no blob
+    // write in the teardown).
+    let mut offloaded_first: Option<bool> = None;
     // Phase-5 minimal shutdown (E6):
     // 1. Close inbox — no new sends accepted.
     inbox.close();
-    // 2. Drain buffered items.
-    while let Ok(m) = inbox.try_recv() {
+    // 2. Drain buffered items (`early` first, in order).
+    loop {
+        let m = match early.pop_front() {
+            Some(m) => m,
+            None => match inbox.try_recv() {
+                Ok(m) => m,
+                Err(_) => break,
+            },
+        };
+        let m = match m {
+            // Stopped before its write (or a body still in bytes): a dead
+            // letter with the shutdown's reason, never a silent loss.
+            ColonyMsg::Offloaded(mut job) if job.stopped || job.bytes.is_some() => {
+                job.restore_body();
+                offload_dead += 1;
+                push_dead_letter(
+                    dead_letters,
+                    DeadLetter {
+                        sender_path: job.sender.clone(),
+                        original_target: job.msg.target.clone(),
+                        resolved_target: Path::resolve(&job.sender, job.msg.target.as_str()),
+                        message: job.msg,
+                        reason: crate::dead_letter::DeadLetterReason::ShutdownDraining,
+                    },
+                );
+                continue;
+            }
+            ColonyMsg::Offloaded(job) => {
+                offloaded_first = Some(job.logged);
+                ColonyMsg::Route {
+                    sender_path: job.sender,
+                    msg: job.msg,
+                }
+            }
+            other => other,
+        };
         match m {
-            ColonyMsg::Shutdown { .. } => {}    // skip nested Shutdown in drain
+            ColonyMsg::Offloaded(_) => {} // dead-lettered or turned into `Route` above
+            ColonyMsg::Shutdown { .. } => {} // skip nested Shutdown in drain
             ColonyMsg::ShutdownNow { .. } => {} // skip nested ShutdownNow in drain
             // GH #1208: answered with the shutdown ack below, after the writer closed.
             ColonyMsg::Settle { ack } => settles.push(ack),
@@ -2573,6 +2646,7 @@ async fn run_shutdown_teardown(
             }
             ColonyMsg::Route { sender_path, msg } => {
                 let mut work: VecDeque<(Path, Message)> = VecDeque::new();
+                let mut first = offloaded_first.take();
                 // GH #612: the hive boundary is checked on the way IN, before the
                 // work queue, so a refused address never reaches the corridor.
                 if let Some(msg) =
@@ -2587,7 +2661,13 @@ async fn run_shutdown_teardown(
                     if let Some(n) = build_ttl_notice(&m, &s, colony_config) {
                         work.push_back(n);
                     }
-                    match route_with_log(
+                    // GH #1418: a returned offload job keeps its `logged` flag
+                    // and is not offloaded a second time.
+                    let (logged, max_inline) = match first.take() {
+                        Some(logged) => (logged, usize::MAX),
+                        None => (false, colony_config.blob_inline_max_bytes),
+                    };
+                    match route_with_log_as(
                         registry,
                         hive_scopes,
                         dead_letters,
@@ -2596,7 +2676,8 @@ async fn run_shutdown_teardown(
                         s,
                         m,
                         blob_store,
-                        colony_config.blob_inline_max_bytes,
+                        max_inline,
+                        logged,
                         None,
                     )
                     .await
@@ -2974,6 +3055,15 @@ async fn run_shutdown_teardown(
             })
             .await;
     }
+    // GH #1418: offload jobs the shutdown did not deliver -- dead letters,
+    // and jobs a panicked task took with it -- are counted, never silent.
+    if offload_dead > 0 || lost > 0 {
+        tracing::error!(
+            dead_lettered = offload_dead,
+            lost,
+            "offload: shutdown left jobs undelivered"
+        );
+    }
     // GH #1015 (review M-2): the ordered-stop record the next boot reports.
     let _ = colony_db
         .writer_tx
@@ -2996,7 +3086,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         mut inbox,
         outputs_tx,
         mut outputs_rx,
-        colony_db,
+        mut colony_db,
         factories,
         root,
         templates_root: eda_templates_root,
@@ -3220,6 +3310,10 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
     // GH #1372: the blob offload's declaration (see `offload_oversized`), built
     // once -- the label is one `Arc`, never a fresh one per routed message.
     let offload_pulse = mutation_pulse.with_label(crate::watchdog::WorkItem::new("blob-offload"));
+    // GH #1418: the offload beside the loop -- its sender, the jobs each routing
+    // sender still has out, the jobs held behind a full queue. Task state, never
+    // shared; dropped with the loop, which ends the task after its last job.
+    let mut offload = crate::blob::offload::OffloadState::new(&blob_store, &inbox_self_tx);
     // GH #553: the receipt target, resolved once. `None` is the default and the
     // state of every colony that says nothing about receipts — with it nothing
     // is emitted and no mutation behaves differently.
@@ -3397,21 +3491,22 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                 if let Some(n) = build_ttl_notice(&m, &s, &colony_config) {
                     released.push_back(n);
                 }
-                match marked(
+                match route_in_loop(
+                    &mut registry,
+                    &hive_scopes,
+                    &mut dead_letters,
+                    &mut in_flight,
+                    &colony_db.writer_tx,
+                    &mut offload,
                     wd_trail.as_ref(),
-                    "route-with-log",
-                    route_with_log(
-                        &mut registry,
-                        &hive_scopes,
-                        &mut dead_letters,
-                        &mut in_flight,
-                        &colony_db.writer_tx,
-                        s,
-                        m,
-                        &blob_store,
-                        colony_config.blob_inline_max_bytes,
-                        Some(&offload_pulse),
-                    ),
+                    Some(&offload_pulse),
+                    &blob_store,
+                    colony_config.blob_inline_max_bytes,
+                    s,
+                    m,
+                    false,
+                    None,
+                    None,
                 )
                 .await
                 {
@@ -3469,7 +3564,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         if !settles.is_empty()
             && crate::drain::is_quiescent(
                 &in_flight,
-                mailbox_backlog(&registry) + late_rescues.pending(),
+                mailbox_backlog(&registry) + late_rescues.pending() + offload.in_flight(),
                 inbox.len(),
                 outputs_rx.len(),
             )
@@ -3498,7 +3593,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
             // GH #1209 (re-check H1): a late task still open may yet deliver a
             // write through a permit taken before its cell died; it carries no
             // ticket, so it counts here like mailbox occupancy.
-            let backlog = mailbox_backlog(&registry) + late_rescues.pending();
+            // GH #1418: an offload job still out is a message on its way.
+            let backlog = mailbox_backlog(&registry) + late_rescues.pending() + offload.in_flight();
             if crate::drain::is_quiescent(&in_flight, backlog, inbox.len(), outputs_rx.len()) {
                 tracing::info!("drain complete — the colony is quiescent");
                 if let Some(ack) = ack.take() {
@@ -3529,6 +3625,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &outputs_tx,
                         &colony_config,
                         &blob_store,
+                        &mut offload,
                         &env_source,
                         &egress_tx,
                         egress_policy,
@@ -3585,6 +3682,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         &outputs_tx,
                         &colony_config,
                         &blob_store,
+                        &mut offload,
                         &env_source,
                         &egress_tx,
                         egress_policy,
@@ -3614,12 +3712,40 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
         );
         tokio::select! {
             biased;
-            Some(m) = inbox.recv() => {
+            // GH #1418: jobs a dead offload task never took come before the
+            // inbox; there are none unless that task died (panic). WHY first:
+            // the dead task returns nothing more, so the orphans are drained
+            // at once. Accepted cost, only after a panic in the task: orphans
+            // overtake `Offloaded` returns already in the inbox; once the task
+            // is gone and no orphan is left, a new message goes inline and can
+            // overtake earlier returns; the job in the task's hands is lost
+            // (counted by the `error!` at shutdown).
+            Some(m) = async {
+                match offload.take_orphan() {
+                    Some(job) => Some(ColonyMsg::Offloaded(job)),
+                    None => inbox.recv().await,
+                }
+            } => {
                 // GH #165: an event was taken; everything until the next `Parked`
                 // is ONE work item. Declared before any of the handling awaits, so
                 // that a handler which does not return can still be told apart
                 // from a loop that never woke up.
                 beat(&heartbeat_tx, wd_trail.as_ref(), crate::watchdog::Beat::Working);
+                // GH #1418: a message back from the offload task takes the path of
+                // `Route`, its offload decided (`Some((logged, orphaned))`): it is
+                // never deferred again, not even with its body left inline by a
+                // failed write. An orphan of a dead task gets the inline write.
+                let mut decided: Option<(bool, bool)> = None;
+                let mut origin: Option<bool> = None;
+                let m = match m {
+                    ColonyMsg::Offloaded(job) => {
+                        decided = Some((job.logged, job.orphaned));
+                        origin = job.origin;
+                        let (sender_path, msg) = offload.returned(job);
+                        ColonyMsg::Route { sender_path, msg }
+                    }
+                    other => other,
+                };
                 match m {
                     ColonyMsg::Shutdown { ack } => {
                         let budget = colony_config.shutdown_drain_timeout_ms;
@@ -3650,6 +3776,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 &outputs_tx,
                                 &colony_config,
                                 &blob_store,
+                                &mut offload,
                                 &env_source,
                                 &egress_tx,
                                 egress_policy,
@@ -3713,6 +3840,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                             &outputs_tx,
                             &colony_config,
                             &blob_store,
+                            &mut offload,
                             &env_source,
                             &egress_tx,
                             egress_policy,
@@ -3770,6 +3898,8 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     ColonyMsg::IoLiveness { path, at } => {
                         io_liveness.insert(path, at);
                     }
+                    // GH #1418: turned into `Route` before this match.
+                    ColonyMsg::Offloaded(_) => {}
                     // GH #850: a drain task reports what left a cell's overflow
                     // (delivered, dead-lettered, spilled) or that its mailbox is
                     // gone. Counters and writes only — nothing here waits on a cell.
@@ -3815,85 +3945,15 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // GH #612: the hive boundary is checked on the way IN, before
                         // the work queue, so a refused address never reaches the
                         // corridor and never spends TTL.
+                        // GH #1418: a message back from the offload task passes this
+                        // check a second time. The offload changes only the body, but
+                        // the check also reads the boundary table: if that table went
+                        // `sealed_shut` meanwhile, the already accepted message becomes
+                        // a dead letter. The state at delivery wins.
                         if let Some(msg) = refuse_at_hive_boundary(&hive_boundaries, &mut dead_letters, &sender_path, msg) {
                             work.push_back((sender_path, msg));
                         }
-                        while let Some((s, m)) = work.pop_front() {
-                            // GH #119: TTL death + reply anchor ⇒ ONE terminal notice (see the
-                            // inbox-Route twin above). Corridor untouched.
-                            if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
-                            match marked(wd_trail.as_ref(), "route-with-log", route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes, Some(&offload_pulse))).await {
-                                RouteAction::Done => {}
-                                RouteAction::Cascade { sender, msg } => {
-                                    work.push_back((sender, msg));
-                                }
-                                RouteAction::ColonyDispatch { endpoint, msg, sender } => {
-                                    // GH #47: a build order is the one thing a
-                                    // draining colony must not start — it would
-                                    // spawn cells into a substrate that is
-                                    // tearing itself down. Reads pass: a cell in
-                                    // the middle of its turn may still need
-                                    // `/colony/graph`, and an answer is not new
-                                    // work.
-                                    if matches!(phase, LoopPhase::Draining { .. })
-                                        && endpoint.as_str() == "/colony/mutations"
-                                    {
-                                        push_dead_letter(
-                                            &mut dead_letters,
-                                            DeadLetter {
-                                                sender_path: sender.clone(),
-                                                original_target: endpoint.clone(),
-                                                resolved_target: endpoint,
-                                                message: msg,
-                                                reason: crate::dead_letter::DeadLetterReason::ShutdownDraining,
-                                            },
-                                        );
-                                        continue;
-                                    }
-                                    // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
-                                    // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
-                                    // `&ColonyDb` across an .await boundary. GH #571: the templates
-                                    // half of that prologue is taken only for the endpoints that
-                                    // read templates.
-                                    let (templates_snapshot, templates_rows, rescan_future) =
-                                        crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root, &root);
-                                    let db_path = colony_db.db_path().to_path_buf();
-                                    mark(wd_trail.as_ref(), "colony-dispatch", crate::watchdog::MarkEdge::Begin);
-                                    let follow = crate::colony_dispatch::dispatch_colony_endpoint(
-                                        &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
-                                        &colony_db.writer_tx, &db_path,
-                                        templates_snapshot, templates_rows, rescan_future,
-                                        &factories, &root, &eda_templates_root,
-                                        &inbox_self_tx, &outputs_tx,
-                                        endpoint, msg, sender,
-                                        colony_config.idle_timeout_default_ms,
-                                        colony_config.message_timeout_default_ms,
-                                        colony_config.mailbox_default_capacity,
-                                        colony_config.restart_max_retries,
-                                        colony_config.strict_validation,
-                                        blob_store.clone(),
-                                        colony_config.blob_inline_max_bytes,
-                                        env_source.as_deref(),
-                                        &mutation_pulse,
-                                        // GH #553: the receipt target, or None
-                                        // when this colony asked for none.
-                                        receipt_target.as_ref().map(|t| (t, colony_config.message_default_ttl)),
-                                        &mut seed_waits,
-                                    ).await;
-                                    mark(wd_trail.as_ref(), "colony-dispatch", crate::watchdog::MarkEdge::End);
-                                    enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
-                                    // GH #285: a cell-emitted mutation may change a slot declaration too.
-                                    slot_table_dirty = true;
-                                    // GH #285 (review I3): the dispatch above may have BOUND a park slot, and
-                                    // the rest of this drain is younger than what the slot is holding — so the
-                                    // queue is released to the FRONT of it, not left to the loop head.
-                                    prepend_released_slots(&mut work, &mut parked, &registry, &hive_scopes);
-                                }
-                                RouteAction::HiveTransit { hive_path, msg } => {
-                                    enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl, &slot_table, &registry, &hive_scopes, &mut parked, colony_config.slot_park_max);
-                                }
-                            }
-                        }
+                        drain_work(work, origin, decided, matches!(phase, LoopPhase::Draining { .. }), &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight, &mut colony_db, &mut offload, &mut replay_logged, &mut parked, &mut seed_waits, &mut slot_table_dirty, &slot_table, wd_trail.as_ref(), &offload_pulse, &mutation_pulse, &blob_store, &colony_config, &factories, &root, &eda_templates_root, &inbox_self_tx, &outputs_tx, &env_source, &egress_tx, egress_policy, receipt_target.as_ref()).await;
                     }
                     ColonyMsg::CellDied { path, death_kind } => {
                         // GH #18: keep the path — the corridor consumes it, and the
@@ -4449,7 +4509,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                 }
             }
-            Some(em) = outputs_rx.recv(), if !initial_apply_pending => {
+            // GH #1418: at the cap of held offload jobs the loop takes no
+            // cell emission until returns (inbox arm) free the queue --
+            // backpressure on the flood source. External inbox messages of a
+            // waiting sender still hold past the cap: the inbox arm carries
+            // the returns (no deadlock), the ingress rate bounds them, and an
+            // inline write would overtake the sender's earlier messages.
+            Some(em) = outputs_rx.recv(), if !initial_apply_pending && !offload.saturated() => {
                 // GH #439: an emission is an event like an inbox message, and
                 // everything until the next `Parked` is ONE work item. This arm
                 // was the one that never said so — a cell-emitted mutation (the
@@ -4617,7 +4683,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
                         // Only Cascade is continued — the reply addresses a cell.
                         // Unresolvable reply_to → route_with_log dead-letters it.
-                        if let RouteAction::Cascade { sender, msg } = marked(wd_trail.as_ref(), "route-with-log", route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes, Some(&offload_pulse))).await {
+                        // GH #1418: only a cascade goes on here; a hive transit or a colony
+                        // dispatch of this answer is dropped. An answer deferred to the offload
+                        // task (its sender still waits) returns through the inbox `Route` arm,
+                        // which walks a transit too -- a change only for an exotic `reply_to`.
+                        if let RouteAction::Cascade { sender, msg } = route_in_loop(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, &mut offload, wd_trail.as_ref(), Some(&offload_pulse), &blob_store, colony_config.blob_inline_max_bytes, s, m, false, None, None).await {
                             work.push_back((sender, msg));
                         }
                     }
@@ -4713,7 +4783,11 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                                 // Non-Cascade actions (ColonyDispatch/HiveTransit reply_to)
                                 // are consciously dropped here — exotic reply_to targets,
                                 // POC-accepted (Slice-3 review note).
-                                if let RouteAction::Cascade { sender, msg } = marked(wd_trail.as_ref(), "route-with-log", route_with_log(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes, Some(&offload_pulse))).await {
+                                // GH #1418: only a cascade goes on here; a hive transit or a colony
+                                // dispatch of this answer is dropped. An answer deferred to the offload
+                                // task (its sender still waits) returns through the inbox `Route` arm,
+                                // which walks a transit too -- a change only for an exotic `reply_to`.
+                                if let RouteAction::Cascade { sender, msg } = route_in_loop(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, &mut offload, wd_trail.as_ref(), Some(&offload_pulse), &blob_store, colony_config.blob_inline_max_bytes, s, m, false, None, None).await {
                                     work.push_back((sender, msg));
                                 }
                             }
@@ -4849,95 +4923,7 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                     }
                     let mut work: VecDeque<(Path, Message)> = VecDeque::new();
                     work.push_back((from.clone(), follow_up));
-                    while let Some((s, m)) = work.pop_front() {
-                        // GH #1015: an id the log already holds. To a cell it was
-                        // delivered before (its own open row, if any, replays it);
-                        // a hive transit is walked again without a second log
-                        // row, so the cascade behind it finds its own id.
-                        let mid = m.id;
-                        // Review C-2: a repeated keyed hand-on (`delivery_replay`)
-                        // walks a hive transit again; the cascade's derived id is
-                        // in no boot set (the source has no open row), so every id
-                        // of such a chain asks the log — one primary-key read,
-                        // only on this replay path, never on the hot path.
-                        let logged = replay_logged.remove(&mid)
-                            || (replayed_source && message_is_logged(&colony_db.read_conn, mid));
-                        if logged && registry.contains_key(&Path::resolve(&s, m.target.as_str())) {
-                            continue;
-                        }
-                        // GH #119: the tool-loop case — a fan-out follow-up that runs out of
-                        // TTL notifies its reply anchor instead of dying silently.
-                        if let Some(n) = build_ttl_notice(&m, &s, &colony_config) { work.push_back(n); }
-                        match marked(wd_trail.as_ref(), "route-with-log", route_with_log_as(&mut registry, &hive_scopes, &mut dead_letters, &mut in_flight, &colony_db.writer_tx, s, m, &blob_store, colony_config.blob_inline_max_bytes, logged, Some(&offload_pulse))).await {
-                            RouteAction::Done => {}
-                            RouteAction::Cascade { sender, mut msg } => {
-                                msg.id = derived_message_id(mid, &sender, 0, &msg.target);
-                                work.push_back((sender, msg));
-                            }
-                            RouteAction::ColonyDispatch { endpoint, msg, sender } => {
-                                // GH #47: the same door, reached from a cell's
-                                // own emission — the builder/`submit` flow. It
-                                // is the call site the roadmap line names, and
-                                // it is shut for the same reason. Reads pass.
-                                if matches!(phase, LoopPhase::Draining { .. })
-                                    && endpoint.as_str() == "/colony/mutations"
-                                {
-                                    push_dead_letter(
-                                        &mut dead_letters,
-                                        DeadLetter {
-                                            sender_path: sender.clone(),
-                                            original_target: endpoint.clone(),
-                                            resolved_target: endpoint,
-                                            message: msg,
-                                            reason: crate::dead_letter::DeadLetterReason::ShutdownDraining,
-                                        },
-                                    );
-                                    continue;
-                                }
-                                // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
-                                // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
-                                // `&ColonyDb` across an .await boundary. GH #571: the templates
-                                // half of that prologue is taken only for the endpoints that
-                                // read templates.
-                                let (templates_snapshot, templates_rows, rescan_future) =
-                                    crate::colony_dispatch::templates_prologue(&endpoint, &colony_db, &eda_templates_root, &root);
-                                let db_path = colony_db.db_path().to_path_buf();
-                                mark(wd_trail.as_ref(), "colony-dispatch", crate::watchdog::MarkEdge::Begin);
-                                let follow = crate::colony_dispatch::dispatch_colony_endpoint(
-                                    &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight,
-                                    &colony_db.writer_tx, &db_path,
-                                    templates_snapshot, templates_rows, rescan_future,
-                                    &factories, &root, &eda_templates_root,
-                                    &inbox_self_tx, &outputs_tx,
-                                    endpoint, msg, sender,
-                                    colony_config.idle_timeout_default_ms,
-                                    colony_config.message_timeout_default_ms,
-                                    colony_config.mailbox_default_capacity,
-                                    colony_config.restart_max_retries,
-                                    colony_config.strict_validation,
-                                    blob_store.clone(),
-                                    colony_config.blob_inline_max_bytes,
-                                    env_source.as_deref(),
-                                    &mutation_pulse,
-                                    // GH #553: the receipt target, or None when
-                                    // this colony asked for none.
-                                    receipt_target.as_ref().map(|t| (t, colony_config.message_default_ttl)),
-                                    &mut seed_waits,
-                                ).await;
-                                mark(wd_trail.as_ref(), "colony-dispatch", crate::watchdog::MarkEdge::End);
-                                enqueue_dispatch_follow(&mut work, &mut dead_letters, follow);
-                                // GH #285: a cell-emitted mutation may change a slot declaration too.
-                                slot_table_dirty = true;
-                                // GH #285 (review I3): the dispatch above may have BOUND a park slot, and
-                                // the rest of this drain is younger than what the slot is holding — so the
-                                // queue is released to the FRONT of it, not left to the loop head.
-                                prepend_released_slots(&mut work, &mut parked, &registry, &hive_scopes);
-                            }
-                            RouteAction::HiveTransit { hive_path, msg } => {
-                                enqueue_hive_transit(&mut work, &mut dead_letters, &edges, hive_path, msg, egress_tx.as_ref(), egress_policy, colony_config.message_default_ttl, &slot_table, &registry, &hive_scopes, &mut parked, colony_config.slot_park_max);
-                            }
-                        }
-                    }
+                    drain_work(work, Some(replayed_source), None, matches!(phase, LoopPhase::Draining { .. }), &mut registry, &mut hive_scopes, &mut edges, &mut node_contracts, &mut dead_letters, &mut in_flight, &mut colony_db, &mut offload, &mut replay_logged, &mut parked, &mut seed_waits, &mut slot_table_dirty, &slot_table, wd_trail.as_ref(), &offload_pulse, &mutation_pulse, &blob_store, &colony_config, &factories, &root, &eda_templates_root, &inbox_self_tx, &outputs_tx, &env_source, &egress_tx, egress_policy, receipt_target.as_ref()).await;
                 }
             }
             // #1233 (OR-programm-tm.H3.6): the seed wait table's deadline. A
@@ -5145,31 +5131,10 @@ async fn offload_oversized(
     msg
 }
 
-/// GH #1372: fault injection for the pin of the offload declaration -- a blob
-/// store whose `write_streaming` hangs, on this thread, for the next offload.
+/// GH #1372 / #1418: the stall seam of the offload pins lives with the
+/// offload task, which awaits it too.
 #[cfg(test)]
-mod offload_seam {
-    use std::cell::RefCell;
-    use std::future::Future;
-    use std::pin::Pin;
-
-    type Stall = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-    thread_local! {
-        static STALL: RefCell<Option<Stall>> = const { RefCell::new(None) };
-    }
-
-    /// Hang the next offload on this thread until `stall` completes.
-    pub(super) fn set(stall: impl Future<Output = ()> + Send + 'static) {
-        STALL.with(|s| *s.borrow_mut() = Some(Box::pin(stall)));
-    }
-
-    pub(super) async fn stall() {
-        if let Some(stall) = STALL.with(|s| s.borrow_mut().take()) {
-            stall.await;
-        }
-    }
-}
+use crate::blob::offload::seam as offload_seam;
 
 /// GH #850: the message exactly as `route()` delivers it in its registry
 /// branch — the TTL decrement it starts with and the resolved target it sends
@@ -5186,6 +5151,320 @@ fn routed_like_the_corridor(sender_path: &Path, msg: Message) -> Message {
     Message {
         target: resolved,
         ..msg
+    }
+}
+
+/// GH #1418: the work queue of one routing step, shared by the output arm
+/// (a cell's emission, `replay = Some(replayed_source)`) and the inbox `Route`
+/// arm (`replay` of the returned offload job, else `None`). With `replay` set,
+/// every item asks `replay_logged`/the log (GH #1015) and a cascade gets its
+/// derived id -- so a job back from the offload task walks its hive transit
+/// exactly like the emission it came from. `first` is the decision a returned
+/// job carries for its first item. `#[inline(never)]` keeps the constructor
+/// out of `colony_task`; the frame saving comes from one future per call site
+/// instead of the inlined loop of each arm.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+async fn drain_work(
+    mut work: VecDeque<(Path, Message)>,
+    replay: Option<bool>,
+    mut first: Option<(bool, bool)>,
+    draining: bool,
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &mut HiveScopeTable,
+    edges: &mut EdgeTable,
+    node_contracts: &mut HashMap<Path, NodeContract>,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    colony_db: &mut crate::persist::colony_db::ColonyDb,
+    offload: &mut crate::blob::offload::OffloadState,
+    replay_logged: &mut std::collections::HashSet<Uuid>,
+    parked: &mut ParkedSlots,
+    seed_waits: &mut crate::mutation::seed_rows::SeedWaits,
+    slot_table_dirty: &mut bool,
+    slot_table: &SlotTable,
+    wd_trail: Option<&crate::watchdog::LabelSlot>,
+    offload_pulse: &crate::watchdog::WorkPulse,
+    mutation_pulse: &crate::watchdog::WorkPulse,
+    blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    colony_config: &crate::ColonyConfig,
+    factories: &crate::CellFactoryRegistry,
+    root: &std::path::Path,
+    eda_templates_root: &std::path::Path,
+    inbox_self_tx: &mpsc::Sender<ColonyMsg>,
+    outputs_tx: &mpsc::Sender<CellEmission>,
+    env_source: &Option<std::path::PathBuf>,
+    egress_tx: &Option<mpsc::Sender<Message>>,
+    egress_policy: EgressPolicy,
+    receipt_target: Option<&Path>,
+) {
+    while let Some((s, m)) = work.pop_front() {
+        // GH #1015: an id the log already holds. To a cell it was
+        // delivered before (its own open row, if any, replays it);
+        // a hive transit is walked again without a second log
+        // row, so the cascade behind it finds its own id.
+        let mid = m.id;
+        let decided = first.take();
+        let logged = match (decided, replay) {
+            // GH #1418: back from the offload task; its first item was
+            // checked (and its `replay_logged` entry taken) before it left.
+            (Some((logged, _)), _) => logged,
+            // Review C-2: a repeated keyed hand-on (`delivery_replay`)
+            // walks a hive transit again; the cascade's derived id is
+            // in no boot set (the source has no open row), so every id
+            // of such a chain asks the log — one primary-key read,
+            // only on this replay path, never on the hot path.
+            (None, Some(replayed_source)) => {
+                let logged = replay_logged.remove(&mid)
+                    || (replayed_source && message_is_logged(&colony_db.read_conn, mid));
+                if logged && registry.contains_key(&Path::resolve(&s, m.target.as_str())) {
+                    continue;
+                }
+                logged
+            }
+            (None, None) => false,
+        };
+        // GH #119: the tool-loop case — a fan-out follow-up that runs out of
+        // TTL notifies its reply anchor instead of dying silently.
+        if let Some(n) = build_ttl_notice(&m, &s, colony_config) {
+            work.push_back(n);
+        }
+        match route_in_loop(
+            registry,
+            hive_scopes,
+            dead_letters,
+            in_flight,
+            &colony_db.writer_tx,
+            offload,
+            wd_trail,
+            Some(offload_pulse),
+            blob_store,
+            colony_config.blob_inline_max_bytes,
+            s,
+            m,
+            logged,
+            decided,
+            replay,
+        )
+        .await
+        {
+            RouteAction::Done => {}
+            RouteAction::Cascade { sender, mut msg } => {
+                if replay.is_some() {
+                    msg.id = derived_message_id(mid, &sender, 0, &msg.target);
+                }
+                work.push_back((sender, msg));
+            }
+            RouteAction::ColonyDispatch {
+                endpoint,
+                msg,
+                sender,
+            } => {
+                // GH #47: the same door, reached from a cell's
+                // own emission — the builder/`submit` flow. It
+                // is the call site the roadmap line names, and
+                // it is shut for the same reason. Reads pass.
+                if draining && endpoint.as_str() == "/colony/mutations" {
+                    push_dead_letter(
+                        dead_letters,
+                        DeadLetter {
+                            sender_path: sender.clone(),
+                            original_target: endpoint.clone(),
+                            resolved_target: endpoint,
+                            message: msg,
+                            reason: crate::dead_letter::DeadLetterReason::ShutdownDraining,
+                        },
+                    );
+                    continue;
+                }
+                // T3: the real dispatcher — pre-extract every `&ColonyDb` sub-ref
+                // SYNCHRONOUSLY, then await. ColonyDb is !Sync → no
+                // `&ColonyDb` across an .await boundary. GH #571: the templates
+                // half of that prologue is taken only for the endpoints that
+                // read templates.
+                let (templates_snapshot, templates_rows, rescan_future) =
+                    crate::colony_dispatch::templates_prologue(
+                        &endpoint,
+                        &*colony_db,
+                        eda_templates_root,
+                        root,
+                    );
+                let db_path = colony_db.db_path().to_path_buf();
+                mark(
+                    wd_trail,
+                    "colony-dispatch",
+                    crate::watchdog::MarkEdge::Begin,
+                );
+                let follow = crate::colony_dispatch::dispatch_colony_endpoint(
+                    registry,
+                    hive_scopes,
+                    edges,
+                    node_contracts,
+                    dead_letters,
+                    in_flight,
+                    &colony_db.writer_tx,
+                    &db_path,
+                    templates_snapshot,
+                    templates_rows,
+                    rescan_future,
+                    factories,
+                    root,
+                    eda_templates_root,
+                    inbox_self_tx,
+                    outputs_tx,
+                    endpoint,
+                    msg,
+                    sender,
+                    colony_config.idle_timeout_default_ms,
+                    colony_config.message_timeout_default_ms,
+                    colony_config.mailbox_default_capacity,
+                    colony_config.restart_max_retries,
+                    colony_config.strict_validation,
+                    blob_store.clone(),
+                    colony_config.blob_inline_max_bytes,
+                    env_source.as_deref(),
+                    mutation_pulse,
+                    // GH #553: the receipt target, or None when
+                    // this colony asked for none.
+                    receipt_target.map(|t| (t, colony_config.message_default_ttl)),
+                    seed_waits,
+                )
+                .await;
+                mark(wd_trail, "colony-dispatch", crate::watchdog::MarkEdge::End);
+                enqueue_dispatch_follow(&mut work, dead_letters, follow);
+                // GH #285: a cell-emitted mutation may change a slot declaration too.
+                *slot_table_dirty = true;
+                // GH #285 (review I3): the dispatch above may have BOUND a park slot, and
+                // the rest of this drain is younger than what the slot is holding — so the
+                // queue is released to the FRONT of it, not left to the loop head.
+                prepend_released_slots(&mut work, parked, registry, hive_scopes);
+            }
+            RouteAction::HiveTransit { hive_path, msg } => {
+                enqueue_hive_transit(
+                    &mut work,
+                    dead_letters,
+                    edges,
+                    hive_path,
+                    msg,
+                    egress_tx.as_ref(),
+                    egress_policy,
+                    colony_config.message_default_ttl,
+                    slot_table,
+                    registry,
+                    hive_scopes,
+                    parked,
+                    colony_config.slot_park_max,
+                );
+            }
+        }
+    }
+}
+
+/// GH #1418: one routing step of the colony loop -- the offload decision,
+/// then `route_with_log_as` under the mark `route-with-log`, as the loop wrote
+/// it inline before. The decision comes BEFORE the routing call, so the
+/// routing functions keep their signatures and their futures their size; a
+/// message that went to the offload task ends here with `RouteAction::Done`
+/// (nothing to do now) and comes back as [`ColonyMsg::Offloaded`]. A full
+/// queue (or no task) leaves an oversized body to the unchanged inline write
+/// of `route_with_log_inner`.
+///
+/// Its own function on purpose: in a debug build the poll frame of
+/// `colony_task` holds a stack slot for every future it builds, and the apply
+/// paths overflowed a 2 MiB worker stack once that frame grew past about
+/// 625 KiB. One slot of this future per call site, instead of a
+/// `route_with_log` and a `marked` slot each, keeps it below that. `#[inline(never)]`
+/// keeps the constructor out of `colony_task`; the saving comes from the one
+/// future per call site.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+async fn route_in_loop(
+    registry: &mut HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    dead_letters: &mut VecDeque<DeadLetter>,
+    in_flight: &mut crate::drain::DrainLedger,
+    log_tx: &tokio::sync::mpsc::Sender<crate::persist::writer::ColonyWriteOp>,
+    offload: &mut crate::blob::offload::OffloadState,
+    trail: Option<&crate::watchdog::LabelSlot>,
+    work: Option<&crate::watchdog::WorkPulse>,
+    blob_store: &Option<std::sync::Arc<crate::DiskBlobStore>>,
+    blob_inline_max_bytes: usize,
+    sender_path: Path,
+    msg: Message,
+    logged: bool,
+    decided: Option<(bool, bool)>,
+    origin: Option<bool>,
+) -> RouteAction {
+    let Some((msg, logged, inline_max)) = offload_gate(
+        offload,
+        registry,
+        hive_scopes,
+        &sender_path,
+        msg,
+        logged,
+        decided,
+        origin,
+        blob_inline_max_bytes,
+    ) else {
+        return RouteAction::Done;
+    };
+    marked(
+        trail,
+        "route-with-log",
+        route_with_log_as(
+            registry,
+            hive_scopes,
+            dead_letters,
+            in_flight,
+            log_tx,
+            sender_path,
+            msg,
+            blob_store,
+            inline_max,
+            logged,
+            work,
+        ),
+    )
+    .await
+}
+
+/// GH #1418: the offload decision of [`route_in_loop`]. `decided =
+/// Some((logged, orphaned))` is a message back from the offload task: routed as
+/// it is -- its body was written, or stays inline after a failed write, and the
+/// threshold `usize::MAX` keeps the inline write from trying again; an orphan
+/// of a dead task gets the inline write. Any other message is gated like that
+/// write (`should_log`: a colony endpoint or an unresolved target is never
+/// deferred) and offered to the task. `None`: it went to the task. `Some`: the
+/// message, its `logged` and the threshold for the routing call.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn offload_gate(
+    offload: &mut crate::blob::offload::OffloadState,
+    registry: &HashMap<Path, RegistryEntry>,
+    hive_scopes: &HiveScopeTable,
+    sender_path: &Path,
+    msg: Message,
+    logged: bool,
+    decided: Option<(bool, bool)>,
+    origin: Option<bool>,
+    blob_inline_max_bytes: usize,
+) -> Option<(Message, bool, usize)> {
+    match decided {
+        Some((logged, false)) => return Some((msg, logged, usize::MAX)),
+        Some((logged, true)) => return Some((msg, logged, blob_inline_max_bytes)),
+        None => {}
+    }
+    let resolved = Path::resolve(sender_path, msg.target.as_str());
+    let should_log = !(resolved.as_str() == "/colony" || resolved.starts_with("/colony/"))
+        && msg.ttl > 0
+        && (registry.contains_key(&resolved) || hive_scopes.get(&resolved).is_some());
+    if !should_log {
+        return Some((msg, logged, blob_inline_max_bytes));
+    }
+    match offload.defer(sender_path, msg, blob_inline_max_bytes, logged, origin) {
+        crate::blob::offload::Deferral::Deferred => None,
+        crate::blob::offload::Deferral::Route(msg)
+        | crate::blob::offload::Deferral::Inline(msg) => Some((msg, logged, blob_inline_max_bytes)),
     }
 }
 
@@ -14148,7 +14427,7 @@ mod tests {
         };
         assert_eq!(
             receipt_paths_of(&json!({"scope": "/os/orgs/o/members/m",
-                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.14"}],
+                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.15"}],
                          "add_edges": [{"from": "./figure", "to": "./access"}]}})),
             own(&["/os/orgs/o/members/m"], &["/os/orgs/o/members/m/figure"])
         );
@@ -18970,5 +19249,352 @@ mod gh1015_tests {
         assert_ne!(x, derived_message_id(seed, &s, 0, &u));
         assert_eq!(x.get_version_num(), 7);
         assert_eq!(x.as_u128() >> 80, seed.as_u128() >> 80);
+    }
+}
+
+/// GH #1418: the blob offload of an oversized body runs beside the colony
+/// loop. Each pin drives a real `colony_task` in virtual time; the store stall
+/// is the thread-local `offload_seam` (current-thread runtime), the sink is a
+/// raw mailbox the test reads in delivery order.
+#[cfg(test)]
+mod gh1418_tests {
+    use super::*;
+    use meclaw_testing::deadline::hang;
+    use std::sync::Arc;
+
+    /// Bodies at or above this many serialized bytes are offloaded.
+    const THRESHOLD: usize = 1024;
+
+    struct Rig {
+        inbox: mpsc::Sender<ColonyMsg>,
+        sink: mpsc::Receiver<Message>,
+        store: Arc<crate::DiskBlobStore>,
+        _dir: tempfile::TempDir,
+        log_seq: tokio::sync::watch::Receiver<u64>,
+        _peace: oneshot::Sender<()>,
+    }
+
+    /// A colony with a blob store under `<dir>/blobs` and one registered sink
+    /// at `/sink`. `broken` removes the store's root after opening it, so
+    /// every blob write fails.
+    async fn rig(broken: bool) -> Rig {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let blobs = dir.path().join("blobs");
+        let store = Arc::new(crate::DiskBlobStore::new(&blobs).expect("blob store"));
+        if broken {
+            std::fs::remove_dir_all(&blobs).expect("remove the blob root");
+        }
+        let db = crate::ColonyDb::open(&dir.path().join("c.db")).expect("colony db");
+        let log_seq = db.subscribe_log_seq();
+        let cfg = crate::ColonyConfig {
+            blob_inline_max_bytes: THRESHOLD,
+            ..Default::default()
+        };
+        let (inbox_tx, inbox_rx) = mpsc::channel(1024);
+        let (out_tx, out_rx) = mpsc::channel::<CellEmission>(8);
+        tokio::spawn(colony_task(ColonyTaskConfig::new(
+            inbox_tx.clone(),
+            inbox_rx,
+            out_tx,
+            out_rx,
+            db,
+            crate::CellFactoryRegistry::new(),
+            dir.path().to_path_buf(),
+            cfg,
+            Some(store.clone()),
+            None,
+        )));
+        let (sink_tx, sink) = mpsc::channel(1024);
+        let (peace, peace_rx) = oneshot::channel::<()>();
+        let (_backstop, backstop_rx) = oneshot::channel::<()>();
+        let (ack, acked) = oneshot::channel();
+        inbox_tx
+            .send(ColonyMsg::Register {
+                path: Path::new("/sink"),
+                sender: sink_tx,
+                join: tokio::spawn(std::future::pending::<()>()),
+                peace_rx,
+                backstop_rx,
+                stop_tx: None,
+                death_ack_rx: None,
+                respawn: Box::new(|| unreachable!("the sink is never restarted")),
+                wake: None,
+                restart_limit: None,
+                cell_id: Uuid::now_v7(),
+                cell_type: "probe".into(),
+                active: true,
+                ack,
+            })
+            .await
+            .expect("colony inbox open");
+        hang("the sink registers", acked)
+            .await
+            .expect("register ack");
+        Rig {
+            inbox: inbox_tx,
+            sink,
+            store,
+            _dir: dir,
+            log_seq,
+            _peace: peace,
+        }
+    }
+
+    /// A message to `/sink` whose body serializes to about `pad` bytes.
+    fn probe(tag: &str, pad: usize) -> Message {
+        MessageBuilder::new(Path::new("/sink"))
+            .ttl(8)
+            .body(Body::Inline(
+                meclaw_core::serde_json::json!({"tag": tag, "pad": "x".repeat(pad)}),
+            ))
+            .build()
+    }
+
+    impl Rig {
+        async fn route(&self, sender: &str, msg: Message) {
+            self.inbox
+                .send(ColonyMsg::Route {
+                    sender_path: Path::new(sender),
+                    msg,
+                })
+                .await
+                .expect("colony inbox open");
+        }
+
+        async fn next(&mut self, what: &str) -> Message {
+            hang(what, self.sink.recv()).await.expect("sink open")
+        }
+    }
+
+    fn tag(msg: &Message, store_body: Option<&Value>) -> String {
+        let body = match (&msg.body, store_body) {
+            (Body::Inline(v), _) => v.clone(),
+            (Body::Blob(_), Some(v)) => v.clone(),
+            (Body::Blob(_), None) => return "<blob>".into(),
+        };
+        body["tag"].as_str().unwrap_or("<none>").to_string()
+    }
+
+    /// A stall gate: the next offload on this thread waits until `release`
+    /// fires (or is dropped).
+    fn stall_next_offload() -> oneshot::Sender<()> {
+        let (release, stalled) = oneshot::channel::<()>();
+        offload_seam::set(async move {
+            let _ = stalled.await;
+        });
+        release
+    }
+
+    /// Pin 1: while the store hangs on an oversized body of `/a`, a small
+    /// message of `/b` is still delivered -- the loop does not wait for the
+    /// write (x4: 27/27 lab events, 500-1260 ms per fsync under host load).
+    #[tokio::test(start_paused = true)]
+    async fn an_oversized_body_does_not_hold_the_loop() {
+        let mut r = rig(false).await;
+        let release = stall_next_offload();
+        let big = probe("big", 4 * THRESHOLD);
+        let big_id = big.id;
+        r.route("/a", big).await;
+        let small = probe("small", 16);
+        let small_id = small.id;
+        r.route("/b", small).await;
+        let first = r
+            .next("the other sender is delivered during the stall")
+            .await;
+        assert_eq!(
+            first.id, small_id,
+            "the loop delivered past the stalled offload"
+        );
+        let _ = release.send(());
+        let second = r.next("the oversized body follows its write").await;
+        assert_eq!(second.id, big_id);
+        assert!(
+            matches!(second.body, Body::Blob(_)),
+            "the oversized body travels as a blob"
+        );
+    }
+
+    /// Pin 2: a small message of the same sender waits behind the sender's
+    /// pending offload -- delivery order big, small. The `/b` marker proves the
+    /// loop took the small one while the write still hung.
+    #[tokio::test(start_paused = true)]
+    async fn a_later_message_of_the_same_sender_waits_behind_its_offload() {
+        let mut r = rig(false).await;
+        let release = stall_next_offload();
+        let big = probe("big", 4 * THRESHOLD);
+        let big_id = big.id;
+        r.route("/a", big).await;
+        let small = probe("small", 16);
+        let small_id = small.id;
+        r.route("/a", small).await;
+        let marker = probe("marker", 16);
+        let marker_id = marker.id;
+        r.route("/b", marker).await;
+        let first = r.next("the marker of another sender").await;
+        assert_eq!(
+            first.id, marker_id,
+            "the loop took both messages of /a before the marker"
+        );
+        let _ = release.send(());
+        let second = r.next("the oversized body").await;
+        let third = r.next("the small body behind it").await;
+        assert_eq!(
+            (second.id, third.id),
+            (big_id, small_id),
+            "no message overtakes an earlier one of the same sender"
+        );
+    }
+
+    /// Pin 3: the deferred message is logged after its write (`body_kind =
+    /// blob`), the sink gets the blob reference, the blob resolves back to the
+    /// sent body and its sidecar (the commit marker) exists.
+    #[tokio::test(start_paused = true)]
+    async fn the_offloaded_message_is_logged_and_delivered_after_the_write() {
+        let mut r = rig(false).await;
+        let big = probe("big", 4 * THRESHOLD);
+        let sent = match &big.body {
+            Body::Inline(v) => v.clone(),
+            Body::Blob(_) => unreachable!("built inline"),
+        };
+        r.route("/a", big).await;
+        let got = r.next("the offloaded message").await;
+        let Body::Blob(id) = got.body else {
+            panic!("the oversized body must arrive as a blob reference");
+        };
+        assert_eq!(r.store.read_body(id).await.expect("blob body"), sent);
+        r.store.read_sidecar(id).await.expect("the sidecar exists");
+        r.inbox
+            .send(ColonyMsg::WorkDone {
+                path: Path::new("/sink"),
+            })
+            .await
+            .expect("colony inbox open");
+        let (ack, settled) = oneshot::channel();
+        r.inbox
+            .send(ColonyMsg::Settle { ack })
+            .await
+            .expect("colony inbox open");
+        hang("the colony settles", settled)
+            .await
+            .expect("settle ack");
+        // TV-A3: through the colony (`ReadMessages`), woken by the writer's
+        // commit counter -- never the database file.
+        let filter = crate::api_dto::MessageLogFilter {
+            to_path_prefix: Some("/sink".into()),
+            ..Default::default()
+        };
+        let mut seq = r.log_seq.clone();
+        let kind = hang("the delivery is logged", async {
+            loop {
+                seq.borrow_and_update();
+                let (ack, read) = oneshot::channel();
+                r.inbox
+                    .send(ColonyMsg::ReadMessages {
+                        filter: filter.clone(),
+                        ack,
+                    })
+                    .await
+                    .expect("colony inbox open");
+                let reply = read.await.expect("read reply");
+                if let Some(row) = reply.entries.first() {
+                    return row.body_kind.clone();
+                }
+                seq.changed().await.expect("the writer runs");
+            }
+        })
+        .await;
+        assert_eq!(kind, "blob");
+    }
+
+    /// Pin 4: with the offload task stalled on one job and its queue (256)
+    /// full, the next oversized body of a sender with nothing pending is
+    /// written inline, as before -- under the `blob-offload` mark and work item
+    /// (pinned by `a_hanging_blob_offload_is_a_declared_work_item`). A message
+    /// of the waiting sender still queues behind its own.
+    #[tokio::test(start_paused = true)]
+    async fn a_full_offload_queue_falls_back_to_the_inline_write() {
+        let mut r = rig(false).await;
+        let release = stall_next_offload();
+        let mut order = Vec::new();
+        for i in 0..=256 {
+            let m = probe(&format!("a{i}"), 2 * THRESHOLD);
+            order.push(m.id);
+            r.route("/a", m).await;
+        }
+        let other = probe("b", 2 * THRESHOLD);
+        let other_id = other.id;
+        r.route("/b", other).await;
+        let tail = probe("a-tail", 16);
+        order.push(tail.id);
+        r.route("/a", tail).await;
+        let first = r.next("the inline fallback of /b").await;
+        assert_eq!(
+            first.id, other_id,
+            "a full queue writes inline instead of waiting"
+        );
+        assert!(
+            matches!(first.body, Body::Blob(_)),
+            "the inline write still offloads"
+        );
+        let _ = release.send(());
+        let mut got = Vec::new();
+        for _ in 0..order.len() {
+            got.push(r.next("the queued messages of /a").await.id);
+        }
+        assert_eq!(got, order, "the queued messages of /a keep their order");
+    }
+
+    /// Pin 5: a failed blob write keeps the body inline and still delivers it
+    /// (best effort, as before: `tracing::error!` and the inline body).
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_write_keeps_the_body_inline_and_delivers() {
+        let mut r = rig(true).await;
+        let big = probe("big", 4 * THRESHOLD);
+        let (big_id, sent) = (big.id, big.body.clone());
+        r.route("/a", big).await;
+        let got = r.next("the message whose write failed").await;
+        assert_eq!(got.id, big_id);
+        assert_eq!(tag(&got, None), "big");
+        assert!(
+            matches!((&got.body, &sent), (Body::Inline(a), Body::Inline(b)) if a == b),
+            "the body stays inline when the write fails"
+        );
+    }
+
+    /// Pin 6: a stop without a drain (`ShutdownNow`, the watchdog trip) while
+    /// the offload task hangs on a write loses nothing in silence: the job is
+    /// delivered or it is a dead letter `shutdown_draining` in the log.
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_with_a_hanging_offload_delivers_or_dead_letters_the_job() {
+        let mut r = rig(false).await;
+        let _release = stall_next_offload();
+        let big = probe("big", 4 * THRESHOLD);
+        let big_id = big.id;
+        r.route("/a", big).await;
+        let marker = probe("marker", 16);
+        r.route("/b", marker).await;
+        let _ = r.next("the loop routed past the hanging job").await;
+        let (ack, acked) = oneshot::channel();
+        r.inbox
+            .send(ColonyMsg::ShutdownNow { ack })
+            .await
+            .expect("colony inbox open");
+        hang("the stop is acknowledged", acked)
+            .await
+            .expect("shutdown ack");
+        let delivered = std::iter::from_fn(|| r.sink.try_recv().ok()).any(|m| m.id == big_id);
+        let conn = rusqlite::Connection::open(r._dir.path().join("c.db")).expect("open c.db");
+        let dead: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM dead_letters \
+                 WHERE error_code = 'shutdown_draining' AND message_json LIKE ?1",
+                [format!("%{big_id}%")],
+                |row| row.get(0),
+            )
+            .expect("dead letter query");
+        assert!(
+            delivered || dead == 1,
+            "the hanging job is delivered or dead-lettered (delivered {delivered}, dead letters {dead})"
+        );
     }
 }

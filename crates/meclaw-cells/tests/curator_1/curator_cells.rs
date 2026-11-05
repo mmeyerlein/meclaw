@@ -697,6 +697,8 @@ fn curator_template_shape() {
             "in_llm",
             // GH #1275: the quick voice's answer to a spec call, held.
             "in_spec_llm",
+            // GH #1411 / #1415: a spec partial, passed only while its turn awaits it.
+            "in_spec_partial",
             "in_pack",
             "in_close",
             "in_model",
@@ -737,6 +739,8 @@ fn curator_template_shape() {
             "quick",
             // GH #1275: a held spec answer the normal curate kept.
             "spec_release",
+            // GH #1411 / #1415: a spec partial the turn awaits, to the rim.
+            "partial",
             "consult",
             "research",
             "turn_write",

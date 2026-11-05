@@ -64,6 +64,12 @@ DEADLINE_OVERHEAD_S = 1500
 ORPHAN_GRACE_S = 600
 DEFAULT_EXPECTED_G = 35       # a cold target (W2 point 3)
 WS_EXPECTED_G = 20            # a run without cargo: its workspace only
+# A cold `<lane root>/aux/<name>` target of crate-isolation or clippy (GH #1419
+# review o53-r1 M2): check builds, no linked test binaries. Start value, not
+# measured: no production path records a `workspaces` row for an aux path yet
+# (`hygiene.warm_targets` knows target/ only), so today every booked aux target
+# counts this value; a recorded row of that path would count its own bytes.
+AUX_EXPECTED_G = 10
 DEFAULT_BUDGET = {"free_min_g": 30, "reserve_g": 60, "max_trees": 4, "export_g": 40,
                   "ws_g": 20, "bench_g": 60, "pool_g": 10}
 # `cpu` may be overbooked by this factor (W3 plan: 1.25 until measured). 1.5 is
@@ -569,6 +575,12 @@ def _needs(st):
         needs["cargo"] = int(st.get("cargo") or 0)
     if st.get("name") == "build":  # Z17: the one cargo rule (`gate._needs_cargo` asks here)
         needs["cargo"] = max(1, int(needs.get("cargo") or 0))
+    # GH #1419 L3: a `cargo_aux` station (clippy, crate-isolation) builds in a target
+    # of its own, but under the run's lock and on the run's cargo tree: for the lane
+    # it is a cargo run like any other (tree, lock, 60 G entry floor). The slot
+    # itself lives in the executor (capacity 1 per run), not in the lane's capacity.
+    if int(needs.get("cargo_aux") or 0) >= 1:
+        needs["cargo"] = max(1, int(needs.get("cargo") or 0))
     return {k: int(needs.get(k) or 0) for k in CAPACITY_KEYS}
 
 
@@ -607,7 +619,7 @@ def _core_repo():
 
 def _demand_on(stations, lane_cpu, lane_colony=None):
     """`_demand` on a lane with `lane_cpu` threads: every `needs.cpu` (the symbols
-    `CPU_LANE`, `CPU_SHARDS` and plain counts) resolves to the threads it takes there,
+    `CPU_LANE`, `CPU_SHARDS`, `CPU_HEADROOM` and plain counts) resolves to the threads it takes there,
     at most the lane (`check_cpu` has refused anything else); `COLONY_REST` to the
     slots it takes beside browser on a lane with `lane_colony` colonies."""
     from . import plan as plan_mod
@@ -722,12 +734,26 @@ def _fit(cap, live_here, demand, tree):
     return ("needs " + ", ".join(over)) if over else ""
 
 
-def _target_g(db, lane):
-    row = db.execute(
-        "SELECT bytes FROM workspaces WHERE runner = ? AND kind = 'target' AND "
-        "state IN ('warm', 'in_use') AND bytes IS NOT NULL ORDER BY used_at DESC LIMIT 1",
-        (lane,)).fetchone()
-    return int(math.ceil(row["bytes"] / float(1 << 30))) if row else None
+def _target_g(db, lane, aux=()):
+    """The disk a cargo pass on `lane` reserves: the lane's target/ (its last
+    recorded bytes, else None) plus each aux target the plan books (`aux`, names
+    of `plan.AUX_TARGETS`): a recorded row of its path, else `AUX_EXPECTED_G`
+    -- today always the latter, nothing records aux rows yet (GH #1419 review
+    o53-r1 M2 -- the aux targets lie beside target/, not in it)."""
+    sql = ("SELECT bytes FROM workspaces WHERE runner = ? AND kind = 'target' AND "
+           "state IN ('warm', 'in_use') AND bytes IS NOT NULL AND %s "
+           "ORDER BY used_at DESC LIMIT 1")
+    # lazy: the executor imports schedule lazily; a module, not an upper-case
+    # name (the fake-ssh sweep reads an imported upper-case name as a script body)
+    from . import executor as _executor
+    aux_like = "%%/%s/%%" % _executor.AUX_DIR
+    row = db.execute(sql % "path NOT LIKE ?", (lane, aux_like)).fetchone()
+    g = int(math.ceil(row["bytes"] / float(1 << 30))) if row else None
+    for name in sorted(set(aux)):
+        row = db.execute(sql % "path LIKE ?", (lane, "%%/%s/%s" % (_executor.AUX_DIR, name))).fetchone()
+        add = int(math.ceil(row["bytes"] / float(1 << 30))) if row else AUX_EXPECTED_G
+        g = (DEFAULT_EXPECTED_G if g is None else g) + add
+    return g
 
 
 # --- admission -----------------------------------------------------------------------------
@@ -1002,7 +1028,7 @@ def with_hang_caps(stations, p95):
     """(stations, raised): every `timeout_min` at least `plan.hang_cap_min` of the
     station's P95 -- raised, never lowered; `raised` = [(name, old, new)], each a
     finding (a cap below 3x P95)."""
-    from . import plan as _plan  # lazy: plan imports nothing of the scheduler
+    from . import plan as _plan  # lazy: plan imports the scheduler only lazily
     out, raised = [], []
     for st in stations:
         st = dict(st)
@@ -1019,7 +1045,7 @@ def clamped_caps(stations, p95):
     """[(name, cap, wanted)]: a cap the [5, 120] min clamp of `plan.hang_cap_min`
     holds below 3x the station's P95 -- a finding with its own NOTE line, never
     silent (re-check tv-p0, B-Offen; `wanted` = 3x P95 in whole minutes)."""
-    from . import plan as _plan  # lazy: plan imports nothing of the scheduler
+    from . import plan as _plan  # lazy: plan imports the scheduler only lazily
     out = []
     for st in stations:
         secs = _finite_secs(p95.get(st.get("name")))
@@ -1390,7 +1416,9 @@ def _dispatch(db, plan, runner, run, stations, names, demand, cargo, tree, now, 
     need = dict(demand, cpu=min(demand["cpu"], int(cap.get("cpu") or 0)))
     expected_g = WS_EXPECTED_G
     if cargo:
-        expected_g = _target_g(db, lane) or DEFAULT_EXPECTED_G
+        aux = [st["aux_target"] for st in stations
+               if st.get("aux_target") and (st.get("needs") or {}).get("cargo_aux")]
+        expected_g = _target_g(db, lane, aux) or DEFAULT_EXPECTED_G
     reserved_live_g = sum(int(x["expected_g"] or 0) for x in here)
     budget = dict(DEFAULT_BUDGET, reserved_live_g=reserved_live_g)
     budget["need_free_g"] = budget["reserve_g"] + reserved_live_g + expected_g

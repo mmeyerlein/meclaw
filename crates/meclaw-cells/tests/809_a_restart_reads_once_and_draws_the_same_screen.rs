@@ -1116,6 +1116,7 @@ fn reads_the_colony(m: &meclaw_colony::ColonyMsg) -> bool {
         M::MailboxRescued { .. } => false,
         M::MailboxRescuedLate(_) => false,
         M::Overflow(_) => false,
+        M::Offloaded(_) => false,
         M::Stopped { .. } => false,
         M::StopWiringRestored { .. } => false,
         M::CellDbUnusable { .. } => false,

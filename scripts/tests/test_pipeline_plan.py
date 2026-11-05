@@ -25,7 +25,8 @@ from scripts.tests import store_isolation  # noqa: E402
 
 NEW_KEYS = {"needs", "inputs", "stage", "after", "when", "timeout_min", "env", "reason",
             "cmds", "run", "keep_ws"}
-NEEDS_KEYS = {"cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo"}
+NEEDS_KEYS = {"cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo",
+              "cargo_aux"}
 
 SAMPLES = [
     (["crates/meclaw-cells/src/lib.rs"], "strand"),
@@ -98,9 +99,14 @@ class PlanShape(PlanCase):
     def test_needs_cargo_only_for_target_lock_stations(self):
         doc = self.plan(["Cargo.lock"], "release")
         rows = self.by_name(doc)
-        for name in ("fmt", "clippy", "doctests", "deny", "deny-advisories",
+        for name in ("fmt", "doctests", "deny", "deny-advisories",
                      "unwrap-budget", "build"):
             self.assertEqual(rows[name]["needs"]["cargo"], 1, name)
+        # GH #1419 L3: clippy and crate-isolation build in a target of their own
+        # and book the `cargo_aux` slot instead (IsolationAndClippy below).
+        for name in sorted(pl.AUX_TARGETS):
+            self.assertEqual((0, 1), (rows[name]["needs"]["cargo"],
+                                      rows[name]["needs"]["cargo_aux"]), name)
         for name in ("tests", "browser:display", "slow-tests", "scenarios:memory",
                      "roadmap-anchors"):
             self.assertEqual(rows[name]["needs"]["cargo"], 0, name)
@@ -248,10 +254,69 @@ class PlanShape(PlanCase):
         rows = self.by_name(doc)
         iso = rows["crate-isolation"]
         self.assertIn("build", iso["after"])
-        self.assertEqual((1, 4), (iso["needs"]["cargo"], iso["needs"]["cpu"]))
+        # GH #1419 L3: its own target, the `cargo_aux` slot, not the cargo chain
+        self.assertEqual((0, 1, 4), (iso["needs"]["cargo"], iso["needs"]["cargo_aux"],
+                                     iso["needs"]["cpu"]))
         self.assertEqual(30, iso["timeout_min"])
         self.assertEqual(["R"], iso["stage"])
         self.assertTrue(all(c["argv"][:2] == ["cargo", "check"] for c in iso["cmds"]))
+
+    def test_the_kit_books_the_headroom_beside_a_lane_station(self):
+        # GH #1419 review o53-r1 I1 (OR-d53-4.z2.11): the lane admits nproc x
+        # CPU_OVERBOOK threads; `build`, `tests` and `doctests` book all nproc
+        # (`CPU_LANE`), so a kit booked at 4 x 4 = 16 never ran beside them
+        # (24: 24 + 16 = 40 > 36; 12: 12 + 12 = 24 > 18) and queued behind
+        # `tests`. It books the headroom instead: min(16, capacity - nproc).
+        from scripts.pipeline import executor as ex, schedule
+        kit = pl.NEEDS["export-tree-kit"]["cpu"]
+        self.assertIn(kit, pl.CPU_SYMBOLS)
+        self.assertEqual(12, pl.resolve_cpu(kit, 24))
+        self.assertEqual(6, pl.resolve_cpu(kit, 12))
+        self.assertEqual(16, pl.resolve_cpu(kit, 64))
+        self.assertEqual(1, pl.resolve_cpu(kit, 1))
+        for nproc in (24, 12):
+            run = ex._Run.__new__(ex._Run)
+            run.cap = {k: float(ex.RUN_SLOTS.get(k, 0)) for k in ex.DIMS}
+            run.cap.update(cpu=nproc * schedule.CPU_OVERBOOK, cargo=1.0, export=1.0)
+            run.used = {k: 0.0 for k in ex.DIMS}
+            tests = dict(pl.NEEDS["tests"], cpu=pl.resolve_cpu(pl.NEEDS["tests"]["cpu"], nproc))
+            run.used.update({k: float(v) for k, v in tests.items()})
+            st = {"name": "export-tree-kit",
+                  "needs": dict(pl.NEEDS["export-tree-kit"], cpu=pl.resolve_cpu(kit, nproc))}
+            self.assertTrue(run._fits(ex._needs(st)), (nproc, st["needs"]))
+            # the old booking of 16 queued behind `tests` on both lanes
+            old = {"name": "export-tree-kit", "needs": dict(st["needs"], cpu=min(16, nproc))}
+            self.assertFalse(run._fits(ex._needs(old)), nproc)
+
+    def test_isolation_and_clippy_leave_the_cargo_slot(self):
+        # GH #1419 L3 (relgate-0800, build04): the cargo slot (capacity 1, one
+        # target/) ran build:browser 230 -> build 296 -> tests 882 -> crate-isolation
+        # 484 -> clippy 257 -> ... serially, 2 250 s. The two checks build in targets
+        # of their own (`aux_target`, the executor sets CARGO_TARGET_DIR), book
+        # `cargo_aux` (capacity 1: they serialize only with each other) and run
+        # beside `tests`; their edges stay as they were.
+        self.assertEqual({"crate-isolation": "iso", "clippy": "clippy"}, pl.AUX_TARGETS)
+        from scripts.pipeline import schedule
+        for mode in ("strand", "release"):
+            doc = self.plan(["crates/meclaw-core/src/lib.rs"], mode)
+            rows = self.by_name(doc)
+            for name in sorted(pl.AUX_TARGETS):
+                if name not in rows:
+                    continue
+                st = rows[name]
+                self.assertEqual(0, st["needs"]["cargo"], (mode, name))
+                self.assertEqual(1, st["needs"]["cargo_aux"], (mode, name))
+                self.assertEqual(pl.AUX_TARGETS[name], st["aux_target"], (mode, name))
+                self.assertIn("precheck", st["after"], (mode, name))
+                # still a cargo run for the admission: a cargo tree, the lock,
+                # the 60 G entry floor (`schedule._needs` folds the aux slot)
+                self.assertEqual(1, schedule._needs(st)["cargo"], (mode, name))
+            self.assertIn("clippy", rows, mode)
+        rows = self.by_name(self.plan(["crates/meclaw-core/src/lib.rs"], "release"))
+        self.assertIn("build", rows["crate-isolation"]["after"])
+        self.assertNotIn("crate-isolation", rows["clippy"]["after"])
+        self.assertNotIn("aux_target", rows["unwrap-budget"])
+        self.assertEqual(1, rows["unwrap-budget"]["needs"]["cargo"])
 
     def test_release_plans_the_full_suite_whatever_narrows_its_row(self):
         # KR-TB-1 (d), GH #1162 OR-TB.S4.39: a one-file release plans all() from the
@@ -334,8 +399,9 @@ class PlanShape(PlanCase):
                 self.assertIn("export-selftest", kit["after"])
                 self.assertNotIn("export-tree-tests", kit["after"])
                 self.assertNotIn("export-tree-kit", rows["export-tree-tests"]["after"])
+                # GH #1419 L1 / OR-d53-4.z2.11: the headroom beside a lane station
                 self.assertEqual({k: kit["needs"][k] for k in ("export", "cargo", "cpu")},
-                                 {"export": 0, "cargo": 0, "cpu": 4})
+                                 {"export": 0, "cargo": 0, "cpu": pl.CPU_HEADROOM})
                 self.assertEqual(audit["needs"]["export"], 0)
             self.assertIn("corpus-committed", rows["corpus"]["after"])
             self.assertIn("precheck", rows["clippy"]["after"])

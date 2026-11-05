@@ -679,6 +679,10 @@ class TestUnittestEntry(StrandShTestCase):
         tests = self.repo / "scripts" / "tests"
         (tests / "test_main_style.py").write_text(
             "def main():\n    raise SystemExit(1)   # never reached by unittest\n")
+        # an empty name (an unset variable) is a usage error, never a GREEN 0/0
+        res = self.unittest("")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("an empty name", res.stderr)
         res = self.unittest("scripts/tests/test_main_style.py")
         self.assertEqual(1, res.returncode, res.stdout + res.stderr)
         self.assertIn("no test in scripts.tests.test_main_style", res.stdout)
@@ -687,12 +691,18 @@ class TestUnittestEntry(StrandShTestCase):
         for k in range(5):
             (tests / ("test_real_%d.py" % k)).write_text(self.PROBE % "1")
             mods.append("scripts.tests.test_real_%d" % k)
-        res = self.unittest(*mods)
-        self.assertEqual(1, res.returncode, res.stdout + res.stderr)
-        self.assertIn("no test in scripts.tests.test_main_style", res.stdout)
-        self.assertNotIn("no test in scripts.tests.test_real_", res.stdout)
-        self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_main_style .*\] "
-                                     r"10/10 \(skipped 0\) \d+s RED$")
+        # GH #1419 L2: the shard count follows the host (nproc // 4), so the
+        # count must not: in 4 shards the name shares one, in 6 it is alone
+        for shards in ("4", "6"):
+            with self.subTest(shards=shards):
+                res = run_strand(self.repo, "-C", str(self.repo), "test", "--unittest", *mods,
+                                 cwd=self.outside,
+                                 extra_env=dict(self.env, MECLAW_SELFTEST_SHARDS=shards))
+                self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+                self.assertIn("no test in scripts.tests.test_main_style", res.stdout)
+                self.assertNotIn("no test in scripts.tests.test_real_", res.stdout)
+                self.assertRegex(res.stdout, r"(?m)^TEST \[unittest scripts\.tests\.test_main_style .*\] "
+                                             r"10/10 \(skipped 0\) \d+s RED$")
 
     def test_a_skipped_test_is_counted_apart_green_or_red_one_shard_or_many(self):
         # re-check RC-K3 M1: a skip is neither passed nor failed, in one form

@@ -206,7 +206,7 @@
         },
         {
           "route": "partial",
-          "because": "GH #1411: a sentence of an answer while the model still streams it -- the `partial` lane of `./quick` or `./brain` (`docs/cell-types.md` § llm), handed STRAIGHT from the model to this rim and never through `./splitter`, `./dispatcher`, `./collector` or `./curator`, so no ledger, window, memory or counselor ever holds a half answer. Hop `route` \"partial\", `seq`, `final` false, `partial_of`; body one assistant message whose `text` is cumulative and a prefix of the finished answer that follows on `answer`. It carries no `finish_reason`, so no edge drawn on one fires on it. Only a model whose `partial_unit` is switched on emits it (off as shipped: nothing travels here); a parent draws it to the surface channel that asked for the turn and to nothing else"
+          "because": "GH #1411: a sentence of an answer while the model still streams it -- the `partial` lane of `./quick` or `./brain` (`docs/cell-types.md` § llm), handed STRAIGHT from the model to this rim, or of `./quick_spec` through `./curator` (`in_spec_partial`, passed on only while the turn awaits the speculation and needs no tool, GH #1411 A1); never through `./splitter`, `./dispatcher` or `./collector` and never into a ledger, window, memory or counselor of `./curator`, so none of them ever holds a half answer. Hop `route` \"partial\", `seq`, `final` false, `partial_of`; body one assistant message whose `text` is cumulative and a prefix of the finished answer that follows on `answer`. It carries no `finish_reason`, so no edge drawn on one fires on it. Only a model whose `partial_unit` is switched on emits it (off as shipped: nothing travels here); a parent draws it to the surface channel that asked for the turn and to nothing else"
         },
         {
           "route": "error",
@@ -733,6 +733,33 @@
         },
         {
           "from": "./curator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'partial'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
           "to": "./splitter",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'spec_release' && has(hop.iter) && int(hop.iter) < 12",
           "modifier": {
@@ -798,6 +825,16 @@
           "modifier": {
             "set_hop": {
               "route": "'in_spec_llm'"
+            }
+          }
+        },
+        {
+          "from": "./quick_spec",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_spec_partial'"
             }
           }
         },

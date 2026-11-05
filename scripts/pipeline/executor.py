@@ -91,7 +91,16 @@ from . import events, finding, flakes, gitenv, hang_dump, ports, receipt, store
 # the executor keeps only its own disk check and emits `hygiene_checked` once.
 
 EXIT = {"GREEN": 0, "RED": 1, "ABORTED": 2, "ASK": 4}
-DIMS = ("cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo")
+DIMS = ("cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo", "cargo_aux")
+# GH #1419 L3: slots of the run itself, not of the lane -- the admission books a
+# `cargo_aux` station as a cargo run (`schedule._needs`); inside the run one such
+# station builds at a time (clippy and crate-isolation, each in its own target).
+RUN_SLOTS = {"cargo_aux": 1}
+# The persistent targets of the `cargo_aux` stations (`plan.AUX_TARGETS`): on a
+# lane `<lane root>/aux/<name>` beside the lane's `target/`, on this machine
+# `<target>/aux/<name>`; the inventory is scripts/cargo-target.sh
+# (`meclaw_aux_target_dir`), the lane hygiene knows the directory as layout.
+AUX_DIR = "aux"
 WATCH_PERIOD_S = 30          # the one clock of the executor (OR-DT-8): the disk watcher
 KILL_GRACE_S = 10
 # TV-K5 (b), ruling K6 2026-10-11: a station cap is a hang marker. `_spawn` waits
@@ -573,7 +582,17 @@ def _estimate(st):
 
 
 def _needs_cargo(st):
-    return _needs(st)["cargo"] > 0
+    """Does `st` start cargo under the run's lock -- in the shared target (`cargo`)
+    or in a target of its own (`cargo_aux`, GH #1419)?"""
+    n = _needs(st)
+    return n["cargo"] > 0 or n["cargo_aux"] > 0
+
+
+def aux_target_dir(target, name, lane_root=None):
+    """The persistent target of a `cargo_aux` station (see AUX_DIR); the same rule
+    as `meclaw_aux_target_dir` in scripts/cargo-target.sh (pinned)."""
+    base = lane_root if lane_root else target
+    return os.path.join(base, AUX_DIR, name)
 
 
 def _tier_filter(argv):
@@ -1184,7 +1203,7 @@ class _Run:
         self.by_name = {s["name"]: s for s in self.stations}
         self.names = set(self.by_name)
         cap = dict(d.get("capacity") or {})
-        self.cap = {k: float(cap.get(k, 0) or 0) for k in DIMS}
+        self.cap = {k: float(cap.get(k, RUN_SLOTS.get(k, 0)) or 0) for k in DIMS}
         self.cap["cpu"] *= float(d.get("+cpu_overbook") or 1.0)
         self.used = {k: 0.0 for k in DIMS}
         # The colony slots (GH #1161): a station gets the lowest free slots it booked,
@@ -1582,7 +1601,9 @@ class _Run:
                 holding.add(name)
                 blocked.append((name, False))
                 continue
-            if needs["cargo"] > 0 and self.lock_state != "held":
+            if needs["cargo_aux"] > 0 and self._aux_floor_hit(st):
+                return True  # aborted: the next pass ends every pending station
+            if (needs["cargo"] > 0 or needs["cargo_aux"] > 0) and self.lock_state != "held":
                 if self.lock_state == "none":
                     self.lock_state = "waiting"
                     threading.Thread(target=self._take_lock, daemon=True).start()
@@ -1748,6 +1769,14 @@ class _Run:
     def _env(self, st, extra=None):
         env = dict(self.base_env)
         env["CARGO_TARGET_DIR"] = self.target
+        if _needs(st)["cargo_aux"] > 0:
+            # GH #1419 L3: its own persistent target, never the run's shared one
+            aux = self._aux_target(st)
+            try:
+                os.makedirs(aux, exist_ok=True)
+            except OSError:  # cargo creates it itself; the env is built for views too
+                pass
+            env["CARGO_TARGET_DIR"] = aux
         if self.lock_file:
             env["MECLAW_GATE_LOCK"] = self.lock_file
         if self.lock_state == "held":
@@ -2670,6 +2699,30 @@ class _Run:
                                              "action": "aborted"}, kind="finding")
                 self.abort("disk")
                 return
+
+    def _aux_target(self, st):
+        return aux_target_dir(self.target, st.get("aux_target") or st["name"].replace(":", "-"),
+                              self.d.get("+lane_root") or None)
+
+    def _aux_floor_hit(self, st):
+        """GH #1419 L3: the disk floor in front of a `cargo_aux` station, measured where
+        it builds. The 60 G entry floor already counts such a plan as a cargo plan
+        (`schedule._needs`); in the run the running floor holds (`free_min_g`, the
+        watcher's -- the entry 60 G held all the way aborted cold builds, gate.py
+        `_local_budget` Z3). A floor that cannot be measured refuses (fail-closed)."""
+        threshold = float((self.d.get("budget") or {}).get("free_min_g") or 0)
+        if threshold <= 0:
+            return False
+        free = _free_g(self._aux_target(st))
+        if free is not None and free >= threshold:
+            return False
+        print("exec: only %sG free at %s before %s -- the floor is %sG"
+              % (free, self._aux_target(st), st["name"], threshold), file=self.err)
+        self.emit("watchdog_fired", {"runner": self.runner, "kind": "disk", "value": free,
+                                     "threshold": threshold, "action": "aborted"},
+                  kind="finding")
+        self.abort("disk")
+        return True
 
     def _hygiene(self):
         """True when the lane may run; emits `hygiene_checked`."""

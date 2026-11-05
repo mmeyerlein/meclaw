@@ -24,6 +24,9 @@ sys.path.insert(0, str(SCRIPTS))
 from pipeline import lane, nextest_shards  # noqa: E402
 
 TOOL = str(SCRIPTS / "pipeline" / "nextest_shards.py")
+# The slot-seconds of CI run 41946784793 per test binary (`nextest_shards.py
+# durations` over the run's JUnit artifacts, GH #1419 L4).
+RUN_WEIGHTS = str(SCRIPTS / "tests" / "fixtures" / "nextest_run_41946784793.json")
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 
 
@@ -102,6 +105,27 @@ class TestTheCheckedInTable(unittest.TestCase):
         mean = sum(sums) / len(sums)
         for k, s in enumerate(sums, 1):
             self.assertLessEqual(abs(s - mean), 0.2 * mean, (k, sums))
+
+    def test_the_ci_shard_table_balances_the_measured_run(self):
+        # GH #1419 (L4): CI run 41946784793 (0.80.0) ran its test shards 8.3-12.3 min;
+        # the table of 0.77.1 cut the run's own slot-seconds into 448..807 per shard
+        # (max/min 1.80). The table is rewritten from that run's JUnit by `durations`;
+        # each shard, as the CLI filter cuts it, carries within 25 % of the lightest.
+        # The weights are the run's own (RUN_WEIGHTS, `durations` over its JUnit
+        # artifacts, no `--union`), not the table the filters come from: with the
+        # table of 0.77.1 this test is red at 1.80 (review o53-r1 M1). A table
+        # rewritten from a newer run brings that run's weights here with it.
+        run = nextest_shards.load(RUN_WEIGHTS)
+        n = nextest_shards.SHARDS
+        sums = []
+        for k in range(1, n + 1):
+            out = subprocess.run(lane.python_argv(TOOL, "filter", "%d/%d" % (k, n)), cwd=REPO,
+                                 capture_output=True, text=True, timeout=kit_time.HANG)
+            self.assertEqual(0, out.returncode, out.stderr)
+            expr = out.stdout.strip()
+            sums.append(sum(s for b, s in run.items() if selects(expr, b)))
+        self.assertAlmostEqual(sum(run.values()), sum(sums), places=3)
+        self.assertLessEqual(max(sums) / min(sums), 1.25, [round(s) for s in sums])
 
     def test_the_cli_filter_is_the_function_and_refuses_another_count(self):
         n = nextest_shards.SHARDS

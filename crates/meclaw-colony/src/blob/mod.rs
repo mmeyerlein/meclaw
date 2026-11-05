@@ -15,6 +15,7 @@
 
 pub mod attachments;
 pub mod disk;
+pub(crate) mod offload;
 pub(crate) mod pointers;
 pub use attachments::{AttachmentBytes, AttachmentReadError, AttachmentReader};
 pub use disk::{BlobError, BlobSidecar, DiskBlobStore};

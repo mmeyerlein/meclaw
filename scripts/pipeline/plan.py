@@ -7,9 +7,11 @@ every field the resolver gives stays as it is, with two V0 mappings
 (the legacy single `cmd`, `cwd` and `cwds` stay beside it), and the legacy
 `env: true` becomes `env: "lane"` (absent: `"none"`). Each station gains
 
-    needs        {cpu, colony, browser_chromium, browser_webkit, export, cargo}
-                 -- `cpu` may be `CPU_LANE` / `CPU_SHARDS`, see `resolve_cpu`;
-                 `cargo` only means "holds the target lock"
+    needs        {cpu, colony, browser_chromium, browser_webkit, export, cargo,
+                 cargo_aux} -- `cpu` may be `CPU_LANE` / `CPU_SHARDS` / `CPU_HEADROOM`, see
+                 `resolve_cpu`; `cargo` only means "holds the target lock";
+                 `cargo_aux` builds in a target of its own (`aux_target`,
+                 AUX_TARGETS) under the run's lock, one such station at a time
     inputs       resolver classes, `glob:<pattern>`, `artefact:meclaw`,
                  `tool:<name>` -- the source the cache key is made of
     stage        the modes (S, I, R, C) that can plan the station
@@ -62,11 +64,20 @@ CPU_LANE = 0
 # `gate-selftest` books one thread per shard of `selftest_shard.py` (GH #1126).
 CPU_SHARDS = -2
 SELFTEST_SHARDS_ENV = "MECLAW_SELFTEST_SHARDS"
-# Three shards already reach the floor of the longest module (test_strand_sh,
-# about 150 s); more shards only take threads from tests and build.
+# The floor of the shard count (`selftest_shards`: max(4, nproc // 4)) and the
+# fixed unit cut of a CI part (`selftest_shard.py` PART: n x 4 units, the same in
+# every job whatever its nproc).
 SELFTEST_SHARDS_DEFAULT = 4
+# `export-tree-kit` books the overbooking headroom beside one `CPU_LANE` station:
+# min(KIT_MATRIX_CPU, int(nproc x schedule.CPU_OVERBOOK) - nproc), at least 1
+# (24 threads -> 12, 12 -> 6). GH #1419 review o53-r1 I1 (OR-d53-4.z2.11): booked
+# at 16, it never fitted beside `build`/`tests`/`doctests` (24 + 16 = 40 > 36,
+# 12 + 12 = 24 > 18) and queued behind `tests` (relgate-0800: busy 2..1408 s).
+CPU_HEADROOM = -4  # -3 stays a refused form (test_a_cpu_that_is_no_thread_count_is_refused)
+# What the kit starts: three `gate-selftest` parts and the rest, 4 pinned vCPU each.
+KIT_MATRIX_CPU = 16
 # The symbolic values; any other `needs.cpu` is a thread count >= 1.
-CPU_SYMBOLS = (CPU_LANE, CPU_SHARDS)
+CPU_SYMBOLS = (CPU_LANE, CPU_SHARDS, CPU_HEADROOM)
 # `needs.colony` of `scenarios:memory`: the colonies of the executing lane that
 # `browser:display` leaves (OR-TB.S3.12/13). A lane's colonies come from ONE source,
 # `schedule.colony_capacity` (its `cores=`, welle-tb S5); the port register caps the
@@ -75,7 +86,20 @@ CPU_SYMBOLS = (CPU_LANE, CPU_SHARDS)
 # station that still carries it (RED before start).
 COLONY_REST = -1
 
-NEEDS_KEYS = ("cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo")
+NEEDS_KEYS = ("cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo",
+              "cargo_aux")
+
+# GH #1419 L3: the two checks that build in a persistent target of their own --
+# station -> the directory under `<lane root>/aux/` (lane) or `<target>/aux/`
+# (this machine), `executor.aux_target_dir`, inventory in scripts/cargo-target.sh.
+# relgate-0800 (build04): the cargo slot ran build:browser 230 -> build 296 ->
+# tests 882 -> crate-isolation 484 -> clippy 257 -> unwrap-budget 61 -> ... one
+# after the other, 2 250 s, while `tests` runs no cargo at all. Two builds never
+# share a target/ (the reason for the lock per run), so each check has its own
+# and books `cargo_aux` (capacity 1, the executor's) instead of `cargo`: they
+# serialize with each other only and run beside `tests`; the chain loses 741 s.
+# Their edges stay (crate-isolation after build, precheck before both).
+AUX_TARGETS = {"crate-isolation": "iso", "clippy": "clippy"}
 
 # `clippy` books a side width, not the lane (GH #1162). The integration pass
 # 7b1e0e5 (build01, 12 threads, events.jsonl) started clippy only when `tests`
@@ -101,7 +125,7 @@ NEEDS = {
     "tests": {"cpu": CPU_LANE},
     # KR-TB-1 (d): the release's scenario class (57 units, gate_plan SCENARIO_STATION)
     "scenario-tests": {"cpu": 4},
-    "clippy": {"cargo": 1, "cpu": CLIPPY_CPU},
+    "clippy": {"cargo_aux": 1, "cpu": CLIPPY_CPU},
     "doctests": {"cargo": 1, "cpu": CPU_LANE},
     "deny": {"cargo": 1, "cpu": 2},
     "unwrap-budget": {"cargo": 1, "cpu": 2},
@@ -109,7 +133,7 @@ NEEDS = {
     "deny-advisories": {"cargo": 1, "cpu": 1},
     # #1166 M-1: a quarter of a 12-thread lane, so it runs beside the long
     # stations without cargo (scenarios:memory) instead of after them
-    "crate-isolation": {"cargo": 1, "cpu": 4},
+    "crate-isolation": {"cargo_aux": 1, "cpu": 4},
     # The rest beside browser, not the register's eight: with eight memory never
     # fitted beside `browser:display` and ran after it on the integration path
     # (OR-TB.S3.12, RZ-S4-1); 6 real cores -> 3, 12 -> 5 (register 8).
@@ -128,7 +152,12 @@ NEEDS = {
     # unpacks its own /tmp tree (no `export` slot), builds nothing (cargo 0),
     # and runs pinned to the public runner's vCPU (`export_tree_tests.ci_runner`:
     # taskset over CI_RUNNER_VCPU = 4) -- the threads it books are the ones it runs.
-    "export-tree-kit": {"export": 0, "cargo": 0, "cpu": 4},
+    # GH #1419 L1: it runs the CI's matrix form, three `gate-selftest` parts and one
+    # rest process, each on 4 pinned vCPU (`KIT_MATRIX_CPU`). It books less than it
+    # pins on purpose (OR-d53-4.z2.11, replaces z2.10's 16): the headroom beside a
+    # lane station (`CPU_HEADROOM`), so it runs beside `tests`; the pins overlap
+    # the lane's other threads, which the overbooking already admits.
+    "export-tree-kit": {"export": 0, "cargo": 0, "cpu": CPU_HEADROOM},
     "gate-selftest": {"cpu": CPU_SHARDS},
 }
 # `export-audit` builds the export tree in release only; integration is a dry run.
@@ -297,14 +326,20 @@ def browser_workers(nproc, cargo_jobs):
 
 def selftest_shards(nproc, env=None):
     """Shards of `gate-selftest` on a lane with `nproc` threads: `MECLAW_SELFTEST_SHARDS`
-    when set (an ASCII integer >= 1, else ValueError), else min(4, nproc)."""
+    when set (an ASCII integer >= 1, else ValueError), else max(4, nproc // 4), at
+    most nproc.
+
+    GH #1419 L2: relgate-0800 ran 4 shards on build04's 24 threads (609 / 1163 /
+    1249 / 622 s, 3 643 shard seconds); 6 shards on a measured table plan about
+    600 s, the station's longest unit stays below that. A quarter of the lane
+    leaves `tests` and `build` their width; the 12-thread lanes keep 4."""
     env = os.environ if env is None else env
     raw = (env.get(SELFTEST_SHARDS_ENV) or "").strip()
     if raw:
         if not (raw.isascii() and raw.isdigit()) or int(raw) < 1:
             raise ValueError("%s=%r is not an integer >= 1" % (SELFTEST_SHARDS_ENV, raw))
         return int(raw)
-    return max(1, min(SELFTEST_SHARDS_DEFAULT, int(nproc)))
+    return max(1, min(max(SELFTEST_SHARDS_DEFAULT, int(nproc) // 4), int(nproc)))
 
 
 def resolve_cpu(value, nproc):
@@ -317,6 +352,9 @@ def resolve_cpu(value, nproc):
             n = selftest_shards(nproc)
         except ValueError:  # the executor starts the booked default, never the whole lane
             n = selftest_shards(nproc, {})
+    elif value == CPU_HEADROOM:
+        from . import schedule  # lazy: schedule imports plan the same way
+        n = min(KIT_MATRIX_CPU, int(nproc * schedule.CPU_OVERBOOK) - nproc)
     else:
         n = int(value)
     return max(1, min(n, nproc))
@@ -737,7 +775,8 @@ def _needs(name, row, mode):
         needs.update(EXPORT_AUDIT_NEEDS.get(mode, EXPORT_AUDIT_NEEDS["integration"]))
     else:
         needs.update(NEEDS.get(name, {}))
-    if row.get("cargo") and name not in REUSE and name not in OWN_TARGET:
+    if row.get("cargo") and name not in REUSE and name not in OWN_TARGET \
+            and name not in AUX_TARGETS:
         needs["cargo"] = 1
     if name in REUSE:
         needs["cargo"] = 0
@@ -826,6 +865,8 @@ def _station(row, mode, calibration, metadata):
     st["reason"] = list(row.get("reason") or [])
     st["stage"] = _stage(name)
     st["needs"] = _needs(name, row, mode)
+    if name in AUX_TARGETS:
+        st["aux_target"] = AUX_TARGETS[name]
     if name == ALONE:
         st["alone"] = True
     st["inputs"] = _inputs(name, row)
@@ -1127,7 +1168,7 @@ def build_plan(repo_root, mode, base, files=None, only=None, calibration=None, *
             if s["name"] == "precheck" or s["name"] in builds_named \
                     or EARLY_BUILD in s["after"]:
                 continue
-            if s["needs"]["cargo"] or "build" in s["after"]:
+            if s["needs"]["cargo"] or s["needs"].get("cargo_aux") or "build" in s["after"]:
                 s["after"].insert(0, "precheck")
     for s in stations:
         s["after"] = [a for a in dict.fromkeys(s["after"]) if a in names and a != s["name"]]

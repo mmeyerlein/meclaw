@@ -855,6 +855,370 @@ fn tool_args_triple_encoded_is_error() {
     );
 }
 
+/// A brain answer under a collector that keeps some op tools at hint level:
+/// `context.tools_hinted` names them, lifted beside `tools_folded` (GH #1272).
+fn hinted(tools: &str, mut doc: Value) -> Value {
+    doc["header"]["context"]["tools_hinted"] = json!(tools);
+    doc
+}
+
+/// The arguments one tool message carries, parsed.
+fn args_of(msg: &Value) -> Value {
+    meclaw_core::serde_json::from_str(turns_of(msg)[0]["text"].as_str().unwrap())
+        .expect("arguments are json")
+}
+
+/// The families a quick voice saw beside the flat `weather` (the measured
+/// menu of GH #1416).
+const MEASURED_FAMILIES: &str = "ask,character,needs,orga,peer,room,set,topics,verbund,web";
+
+#[test]
+fn a_flat_tool_call_with_its_arguments_in_an_args_hull_is_unwrapped_once() {
+    // GH #1416: a small quick voice, shown a folded menu where every family
+    // takes `{op, args}`, packed the arguments of the FLAT tool `weather` the
+    // same way -- `weather {"args": "{\"place\": ...}", "op": "weather"}`.
+    // The call left unchanged, the tool refused `invalid_input` (`place` is
+    // required) and the curator spent a brain round on it. The exact hull --
+    // `{args}` or `{args, op: <the tool's own name>}`, `args` an object or the
+    // JSON string of one -- is unwrapped once and said on stderr.
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            MEASURED_FAMILIES,
+            brain_doc(
+                "tool_calls",
+                vec![
+                    call_turn(
+                        "c1",
+                        "weather",
+                        r#"{"args":"{\"place\":\"Berlin\"}","op":"weather"}"#,
+                    ),
+                    call_turn(
+                        "c2",
+                        "weather",
+                        r#"{"args":"{\"days\":1,\"place\":\"Paris\"}"}"#,
+                    ),
+                    call_turn(
+                        "c3",
+                        "weather",
+                        r#"{"args":{"place":"Berlin","days":2},"op":"weather"}"#,
+                    ),
+                    call_turn("c4", "weather", r#"{"args":{"place":"Paris"}}"#),
+                ],
+            ),
+        ),
+    );
+
+    assert_eq!(out.len(), 5, "{out:?}");
+    let expected = [
+        json!({"place": "Berlin"}),
+        json!({"days": 1, "place": "Paris"}),
+        json!({"place": "Berlin", "days": 2}),
+        json!({"place": "Paris"}),
+    ];
+    for (i, want) in expected.iter().enumerate() {
+        let msg = &out[i + 1];
+        let id = format!("c{}", i + 1);
+        assert_eq!(route_of(msg), "tool", "{msg}");
+        assert_eq!(
+            hop_str(msg, "tool_name"),
+            "weather",
+            "name unchanged: {msg}"
+        );
+        assert_eq!(hop_str(msg, "tool_call_id"), id);
+        assert_eq!(&args_of(msg), want, "the inner object travels: {msg}");
+        assert!(
+            stderr.contains(&format!(
+                "dispatcher: tool call {id} (`weather`) args_unwrapped"
+            )),
+            "the repair of {id} is named on stderr: {stderr}"
+        );
+    }
+    assert_eq!(
+        stderr.matches("args_unwrapped").count(),
+        4,
+        "one line per repaired call: {stderr}"
+    );
+}
+
+#[test]
+fn an_args_hull_naming_another_op_stays_as_it_came() {
+    // GH #1416 (d): a flat tool may take `op` and `args` as keys of its own;
+    // an `op` that is not the tool's name is such an argument, not a hull.
+    let raw = r#"{"args":{"place":"Berlin"},"op":"forecast"}"#;
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            MEASURED_FAMILIES,
+            brain_doc("tool_calls", vec![call_turn("c1", "weather", raw)]),
+        ),
+    );
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(hop_str(&out[1], "tool_name"), "weather");
+    assert_eq!(turns_of(&out[1])[0]["text"], raw, "arguments as they came");
+    assert!(!stderr.contains("args_unwrapped"), "{stderr}");
+}
+
+#[test]
+fn a_hull_inside_a_hull_stays_the_error_it_was() {
+    // GH #1416 (f), precedent GH #1360: one level is a model's slip; a string
+    // whose content is the JSON string of the object is decoded once to a
+    // string, not an object, and is not repaired.
+    let twice = meclaw_core::serde_json::to_string(r#"{"place":"Berlin"}"#).unwrap();
+    let raw = json!({"args": twice}).to_string();
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            MEASURED_FAMILIES,
+            brain_doc("tool_calls", vec![call_turn("c1", "weather", &raw)]),
+        ),
+    );
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(hop_str(&out[1], "tool_name"), "weather");
+    assert_eq!(turns_of(&out[1])[0]["text"], raw, "arguments as they came");
+    assert!(
+        !stderr.contains("args_unwrapped"),
+        "no repair is claimed: {stderr}"
+    );
+}
+
+#[test]
+fn keys_beside_the_hull_make_it_no_hull() {
+    // GH #1416 (e): an orga `propose {item, op, args, why}` carries `op` and
+    // an `args` object among keys of its own -- a tool's arguments, whole.
+    let propose = r#"{"item":"7","op":"orga_propose","args":{"why":"done"},"why":"x"}"#;
+    let beside = r#"{"args":{"place":"Berlin"},"days":1}"#;
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        folded(
+            MEASURED_FAMILIES,
+            brain_doc(
+                "tool_calls",
+                vec![
+                    call_turn("c1", "orga_propose", propose),
+                    call_turn("c2", "weather", beside),
+                ],
+            ),
+        ),
+    );
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert_eq!(hop_str(&out[1], "tool_name"), "orga_propose");
+    assert_eq!(turns_of(&out[1])[0]["text"], propose);
+    assert_eq!(hop_str(&out[2], "tool_name"), "weather");
+    assert_eq!(turns_of(&out[2])[0]["text"], beside);
+    assert!(!stderr.contains("args_unwrapped"), "{stderr}");
+}
+
+#[test]
+fn folded_and_hinted_calls_do_not_move() {
+    // GH #1416 (g): the unwrap is for flat tools only. A mixed bundle -- a
+    // folded family call, a folded call with double-encoded `args`, a hinted
+    // tool's `help`, a hinted tool in the hull shape, a flat call without a
+    // hull -- leaves exactly as it left before the rule existed.
+    let calls = vec![
+        call_turn("c1", "web", r#"{"op":"search","args":{"query":"tide"}}"#),
+        call_turn(
+            "c2",
+            "ask",
+            r#"{"op":"keeper","args":"{\"question\":\"x\"}"}"#,
+        ),
+        call_turn("c3", "topics", r#"{"op":"help"}"#),
+        call_turn("c4", "topics", r#"{"args":{"q":"x"}}"#),
+        call_turn("c5", "weather", r#"{"place":"Berlin","days":1}"#),
+    ];
+    let (out, stderr) = emit_and_stderr(
+        json!({}),
+        hinted(
+            "topics",
+            folded("ask,web", brain_doc("tool_calls", calls.clone())),
+        ),
+    );
+    let tool = |id: &str, name: &str, text: &str| {
+        json!({"header": {"route": "tool", "tool_name": name, "tool_call_id": id},
+               "messages": [{"origin": "assistant", "type": "tool_call", "id": id,
+                             "text": text}]})
+    };
+    let expected = vec![
+        json!({"header": {"route": "calls", "call_count": "5", "async_calls": "",
+                          "handoff_calls": ""},
+               "messages": calls}),
+        tool("c1", "web_search", r#"{"query": "tide"}"#),
+        tool("c2", "ask_keeper", r#"{"question": "x"}"#),
+        json!({"header": {"route": "result", "tool_call_id": "c3", "help_for": "topics"},
+               "messages": [{"origin": "tool", "type": "tool_result", "id": "c3",
+                             "text": "{}"}]}),
+        tool("c4", "topics", r#"{"args":{"q":"x"}}"#),
+        tool("c5", "weather", r#"{"place":"Berlin","days":1}"#),
+    ];
+    assert_eq!(out, expected);
+    assert!(!stderr.contains("args_unwrapped"), "{stderr}");
+}
+
+/// The sweep behind [`no_declared_tool_takes_a_lone_args_key`]: every
+/// `config.json` under the root argument, the JSON itself and every
+/// `script_inline` in it that names `properties` (parsed with `ast`, never
+/// run). A hit is a `properties` object whose only key is `args` -- written
+/// in place, or passed to a helper whose returned dict puts one of its own
+/// parameters under `properties` (`_obj(props, required)` in the file-space,
+/// librarian and objects hives, review A2 I1). Prints `{scanned, hits,
+/// unparsed}` as JSON.
+const LONE_ARGS_SWEEP: &str = r#"
+import ast, json, os, sys
+
+root = sys.argv[1]
+scanned, hits, unparsed = [], [], []
+
+def scripts(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == "script_inline" and isinstance(v, str):
+                yield v
+            else:
+                yield from scripts(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from scripts(v)
+
+def lone(o):
+    if isinstance(o, dict):
+        p = o.get("properties")
+        if isinstance(p, dict) and set(p) == {"args"}:
+            return True
+        return any(lone(v) for v in o.values())
+    if isinstance(o, list):
+        return any(lone(v) for v in o)
+    return False
+
+def is_lone(d):
+    return [getattr(x, "value", None) for x in d.keys] == ["args"]
+
+for d, _, fs in sorted(os.walk(root)):
+    for f in fs:
+        if f != "config.json":
+            continue
+        p = os.path.relpath(os.path.join(d, f), root)
+        cfg = json.load(open(os.path.join(d, f)))
+        if lone(cfg):
+            hits.append(p)
+        for s in scripts(cfg):
+            if "properties" not in s:
+                continue
+            scanned.append(p)
+            try:
+                tree = ast.parse(s)
+            except SyntaxError as e:
+                unparsed.append("%s: %s" % (p, e))
+                continue
+            helpers = {}
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef):
+                    continue
+                names = [a.arg for a in node.args.args]
+                for r in ast.walk(node):
+                    if not (isinstance(r, ast.Return) and isinstance(r.value, ast.Dict)):
+                        continue
+                    for k, v in zip(r.value.keys, r.value.values):
+                        if (isinstance(k, ast.Constant) and k.value == "properties"
+                                and isinstance(v, ast.Name) and v.id in names):
+                            helpers[node.name] = names.index(v.id)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Dict):
+                    for k, v in zip(node.keys, node.values):
+                        if (isinstance(k, ast.Constant) and k.value == "properties"
+                                and isinstance(v, ast.Dict) and is_lone(v)):
+                            hits.append("%s:%d" % (p, v.lineno))
+                elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in helpers):
+                    i = helpers[node.func.id]
+                    if i < len(node.args) and isinstance(node.args[i], ast.Dict) \
+                            and is_lone(node.args[i]):
+                        hits.append("%s:%d" % (p, node.args[i].lineno))
+print(json.dumps({"scanned": sorted(set(scanned)), "hits": hits, "unparsed": unparsed}))
+"#;
+
+fn lone_args_sweep(root: &std::path::Path) -> Value {
+    let out = Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(LONE_ARGS_SWEEP)
+        .arg(root)
+        .output()
+        .expect("python3");
+    assert!(
+        out.status.success(),
+        "sweep failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    meclaw_core::serde_json::from_slice(&out.stdout).expect("sweep json")
+}
+
+#[test]
+fn no_declared_tool_takes_a_lone_args_key() {
+    // GH #1416 (h): the dispatcher unwraps `{args}` of a flat tool. A tool
+    // whose schema has exactly one parameter named `args` would be ambiguous
+    // under that rule; none exists today. When one comes, this sweep is red
+    // and the rule needs the collector's schema knowledge -- not a name list.
+    //
+    // The sweep itself is pinned first: it sees a lone `args` in a script and
+    // in plain JSON, and not one beside a second key.
+    let td = tempfile::TempDir::new().unwrap();
+    let put = |rel: &str, doc: Value| {
+        let p = td.path().join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, doc.to_string()).unwrap();
+    };
+    put(
+        "a/schemas/config.json",
+        json!({"params": {"script_inline":
+            "S = {\"t\": {\"parameters\": {\"type\": \"object\", \"properties\": {\"args\": {}}}}}\n"}}),
+    );
+    put(
+        "b/config.json",
+        json!({"tools": [{"parameters": {"properties": {"args": {"type": "object"}}}}]}),
+    );
+    put(
+        "c/schemas/config.json",
+        json!({"params": {"script_inline":
+            "S = {\"t\": {\"parameters\": {\"properties\": {\"op\": {}, \"args\": {}}}}}\n"}}),
+    );
+    // Review A2 I1: three hives build their schemas through a helper whose
+    // `properties` is a parameter; the lone `args` sits at the call site.
+    put(
+        "d/schemas/config.json",
+        json!({"params": {"script_inline":
+            "def _obj(p, r):\n    return {\"type\": \"object\", \"properties\": p, \"required\": r}\n\
+             S = [_obj({\"id\": {}}, []), _obj({\"args\": {}}, [])]\n"}}),
+    );
+    let probe = lone_args_sweep(td.path());
+    assert_eq!(
+        probe["hits"],
+        json!([
+            "a/schemas/config.json:1",
+            "b/config.json",
+            "d/schemas/config.json:3"
+        ]),
+        "{probe}"
+    );
+
+    let shipped = lone_args_sweep(std::path::Path::new("../../templates"));
+    for table in ["tools/schemas/config.json", "objects/schemas/config.json"] {
+        assert!(
+            shipped["scanned"]
+                .as_array()
+                .expect("scanned")
+                .iter()
+                .any(|p| p == table),
+            "the schema table {table} is read: {shipped}"
+        );
+    }
+    assert_eq!(shipped["unparsed"], json!([]), "{shipped}");
+    assert_eq!(
+        shipped["hits"],
+        json!([]),
+        "a declared tool takes a lone `args` key: {shipped}"
+    );
+}
+
 /// The shipped composites that fold their menu, read from the template tree
 /// so a third folding composite is checked without anyone adding it to a list.
 fn folding_composites() -> Vec<String> {

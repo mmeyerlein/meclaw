@@ -23,6 +23,10 @@
           "because": "GH #1275: the quick voice's answer to a spec call (`hop.spec` \"1\", policy `quick_speculative`), with the call's context (`context.curator_call`, `session_id`, `turn_id`). Held in the ledger, never on the wall: the normal curate of the turn keeps it (out on `spec_release`, into the tap as `in_llm`) or drops it"
         },
         {
+          "route": "in_spec_partial",
+          "because": "GH #1411: a partial (a sentence while it streams) of a spec call of the quick voice, with the call's context (`context.curator_call`, `session_id`, `turn_id`). Never on the wall, never held: `./policy` passes it on `partial` unchanged when the turn's spec row is `await` for this call and the stored `needs` carries no `tool`, else it goes nowhere (one stderr line)"
+        },
+        {
           "route": "in_pack",
           "because": "an identity pack: `system.{identity,identity_short,persona,handover,instructions}` and nothing else, answered on `pack_ack` with the context passed through untouched. An unknown family refuses the whole pack (`slot_unknown`), an empty one is `pack_empty`"
         },
@@ -126,6 +130,10 @@
         {
           "route": "spec_release",
           "because": "GH #1275: a held spec answer of the quick voice that the normal curate kept -- the model's messages and `hop.finish_reason`, its usage, `hop.curator_call` (the spec call), `session_id`, `turn_id`, `iter`, `episode_turn_id`; the composite hands it to its splitter like a quick answer. Never two answers for one turn"
+        },
+        {
+          "route": "partial",
+          "because": "GH #1411: a spec partial the turn awaits -- hop `seq`, `final`, `partial_of` and the body exactly as they came in on `in_spec_partial`; the parent draws it to its rim and nowhere else"
         },
         {
           "route": "consult",
@@ -743,10 +751,34 @@
           "condition": "has(hop.route) && hop.route == 'in_spec_llm'"
         },
         {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_spec_partial'"
+        },
+        {
           "from": "./policy",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'spec_release'",
           "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason)",
+          "modifier": {
+            "set_hop": {
+              "route": "'partial'"
+            },
             "delete_context": [
               "cur_origin",
               "cur_phase",
@@ -867,7 +899,7 @@
     "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got, by the policy of the model's role. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
     "not_in_scope": "No retrieval of its own (memory answers; `./push` only builds the question) and no tool fan-out -- the one tool family it serves is its own wall (`history_*`, GH #893) -- no persona of its own. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
-    "contract_in": "Twenty-four lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_pack, in_close, in_model, in_section, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_candidate, in_note, in_read, in_sealed, in_turns_ask, in_screen_topics, in_seed_ask, in_seed_line, in_delta_stamp.",
-    "contract_out": "Twenty-three routes on `hop.route`, leaving through the hive path: brain, quick, spec_release, consult, research, turn_write, write, pack_ack, model_refused, sidecar, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, turns, seed, live_feed, propose."
+    "contract_in": "Twenty-seven lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_spec_partial, in_pack, in_close, in_model, in_section, in_answer_check, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_candidate, in_note, in_read, in_sealed, in_turns_ask, in_screen_topics, in_seed_ask, in_seed_line, in_call_end, in_delta_stamp.",
+    "contract_out": "Twenty-seven routes on `hop.route`, leaving through the hive path: brain, quick, spec_release, partial, consult, research, turn_write, write, closed, pack_ack, model_refused, sidecar, answer_check, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, turns, seed, call_facts, live_feed, propose."
   }
 }

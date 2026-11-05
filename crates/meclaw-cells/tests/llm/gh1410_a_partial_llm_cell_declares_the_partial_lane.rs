@@ -5,9 +5,11 @@
 //! list, `meclaw_cells::llm::PARTIAL_HOP_KEYS`, not in `HOP_KEYS`: only a cell
 //! that streams partials writes them, so only such a cell has to declare them
 //! (the GH #890 sweep holds every cell to `HOP_KEYS`). This sweep reads every
-//! `llm` cell under `templates/`; one whose `params.partial_unit` is set and
-//! not `off` must declare each key as `{"type": <type>, "required": false}`
-//! (no key is on every emission: the answer carries none of them).
+//! `llm` cell under `templates/`; one whose params carry `partial_unit` at all
+//! -- on, or shipped `off` and switched on by a set (GH #1411 A1) -- must
+//! declare each key as `{"type": <type>, "required": false}` (no key is on
+//! every emission: the answer carries none of them); `route` may keep a
+//! `values` list when the list names `partial`.
 //!
 //! Static: no colony, no provider. A tree without such a cell passes; the
 //! verdict itself is pinned on fabricated input below.
@@ -21,17 +23,37 @@ fn repo(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
-/// Whether `config` turns the partials on.
-fn streams_partials(config: &Value) -> bool {
-    config
-        .pointer("/params/partial_unit")
-        .and_then(Value::as_str)
-        .is_some_and(|u| u != "off")
+/// Whether `config` can stream partials: its params carry `partial_unit` at
+/// all. A set switches it on through `override_params`, which this static
+/// sweep never sees -- so a cell shipped `off` declares the lane as well
+/// (GH #1411 A1: `./quick_spec` ships `off` and is switched on by the set,
+/// like `./quick` and `./brain`).
+fn can_stream_partials(config: &Value) -> bool {
+    config.pointer("/params/partial_unit").is_some()
+}
+
+/// Whether `d` declares the `route` key so that `partial` passes: the
+/// wording, or the wording with a `values` list that names `partial`.
+fn route_admits_partial(d: &Value, ty: &str) -> bool {
+    let Some(m) = d.as_object() else {
+        return false;
+    };
+    let values_ok = match m.get("values") {
+        None => true,
+        Some(v) => v
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x == "partial")),
+    };
+    m.get("type") == Some(&json!(ty))
+        && m.get("required") == Some(&json!(false))
+        && values_ok
+        && m.keys()
+            .all(|k| ["type", "required", "values", "description"].contains(&k.as_str()))
 }
 
 /// Every way `config` falls short of declaring the partial lane.
 fn complaints(config: &Value) -> Vec<String> {
-    if !streams_partials(config) {
+    if !can_stream_partials(config) {
         return Vec::new();
     }
     let hop = config.pointer("/contract/emits/hop");
@@ -40,6 +62,7 @@ fn complaints(config: &Value) -> Vec<String> {
         .filter_map(|(key, ty)| {
             let want = json!({"type": ty, "required": false});
             match hop.and_then(|h| h.get(*key)) {
+                Some(d) if *key == "route" && route_admits_partial(d, ty) => None,
                 Some(d) if *d == want => None,
                 Some(d) => Some(format!("`{key}` is {d}; the wording is {want}")),
                 None => Some(format!("`contract.emits.hop` does not declare `{key}`")),
@@ -107,16 +130,34 @@ fn the_verdict_asks_only_a_partial_cell() {
         }
         c
     };
-    // Off or absent: nothing asked.
+    // Without the param: nothing asked.
     assert!(complaints(&cell(None, serde_json::Map::new())).is_empty());
-    assert!(complaints(&cell(Some("off"), serde_json::Map::new())).is_empty());
+    // Shipped `off` but switchable (GH #1411 A1): asked like a cell that is on.
+    assert_eq!(
+        complaints(&cell(Some("off"), serde_json::Map::new())).len(),
+        PARTIAL_HOP_KEYS.len()
+    );
+    assert!(complaints(&cell(Some("off"), full.clone())).is_empty());
     // On: every key, in its wording.
     assert!(complaints(&cell(Some("sentence"), full.clone())).is_empty());
     assert_eq!(
         complaints(&cell(Some("sentence"), serde_json::Map::new())).len(),
         PARTIAL_HOP_KEYS.len()
     );
-    let mut wrong = full;
+    let mut wrong = full.clone();
     wrong.insert("final".into(), json!({"type": "string", "required": false}));
     assert_eq!(complaints(&cell(Some("sentence"), wrong)).len(), 1);
+    // A route with a `values` list passes only when the list names `partial`.
+    let mut listed = full.clone();
+    listed.insert(
+        "route".into(),
+        json!({"type": "string", "values": ["credential_request", "partial"], "required": false}),
+    );
+    assert!(complaints(&cell(Some("off"), listed)).is_empty());
+    let mut closed = full;
+    closed.insert(
+        "route".into(),
+        json!({"type": "string", "values": ["credential_request"], "required": false}),
+    );
+    assert_eq!(complaints(&cell(Some("off"), closed)).len(), 1);
 }

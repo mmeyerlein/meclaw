@@ -37,7 +37,15 @@
         },
         "t_building_ms": "int",
         "t_form_ms": "int",
-        "t_done_ms": "int"
+        "t_done_ms": "int",
+        "form": {
+          "type": "text",
+          "default": ""
+        },
+        "form_late": {
+          "type": "int",
+          "default": 0
+        }
       },
       "work": {
         "seq": "int",

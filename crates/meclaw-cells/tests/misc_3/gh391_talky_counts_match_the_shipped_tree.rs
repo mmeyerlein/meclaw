@@ -249,6 +249,12 @@ fn word(n: usize) -> &'static str {
         // hundred and twenty-two, the boundary sixty-seven, thirty-eight leaving.
         (67, "sixty-seven"),
         (122, "one hundred and twenty-two"),
+        // GH #1411 A1 (GH #1415): the speculation's partial road
+        // `./quick_spec -> ./curator` and its exit `./curator -> .` -- one
+        // hundred and twenty-four, fifty-six of round, the boundary
+        // sixty-eight, thirty-nine leaving.
+        (68, "sixty-eight"),
+        (124, "one hundred and twenty-four"),
     ]
     .into_iter()
     .collect();

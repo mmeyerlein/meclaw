@@ -258,6 +258,28 @@ class TestAdmission(ScheduleCase):
         self.assertEqual(budget["reserve_g"] + 25 + schedule.WS_EXPECTED_G,
                          second.dispatch["budget"]["need_free_g"])
 
+    def test_the_reservation_counts_the_aux_targets_of_the_plan(self):
+        # GH #1419 review o53-r1 M2: crate-isolation and clippy build in
+        # `<lane root>/aux/{iso,clippy}` beside the lane's target/; the admission
+        # reserved the target/ alone and underestimated the disk of a pass that
+        # books them. A known aux target counts its last bytes, an unknown one
+        # the cold estimate; a plan without them reserves the target/ alone.
+        self.lanes("north")
+        self.warm("north", gib=25)
+        self.db.execute(
+            "INSERT INTO workspaces (id, runner, kind, path, state, bytes, created_at, used_at) "
+            "VALUES ('ws-north-iso', 'north', 'target', '/srv/target/aux/iso', 'warm', ?, ?, ?)",
+            (7 * (1 << 30), "2027-01-15T08:00:00Z", "2027-01-15T08:00:00Z"))
+        plan = cargo_plan()
+        for name, aux in (("crate-isolation", "iso"), ("clippy", "clippy")):
+            st = station(name, cpu=4, cargo_aux=1, after=["build"])
+            st["aux_target"] = aux
+            plan["stations"].append(st)
+        adm = self.admit(plan)
+        self.assertEqual(25 + 7 + schedule.AUX_EXPECTED_G, adm.expected_g)
+        # the aux rows never count as the lane's target/ itself
+        self.assertEqual(25, schedule._target_g(self.db, "north"))
+
     def test_schedule_uses_the_default_reservation_without_a_known_target(self):
         self.lanes("north")
         adm = self.admit(cargo_plan())

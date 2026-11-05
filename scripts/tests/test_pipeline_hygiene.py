@@ -1619,10 +1619,11 @@ CPU_COUNT_HOME = {("scripts/pipeline/cpus.py", "threads")}
 # the sysroot reader of the kit; hygiene.py runs alone on a lane (ssh stdin, no
 # sibling to import) and counts its affinity inline
 TOPOLOGY_READERS = {("scripts/pipeline/cpus.py", None)}
-# (and `ci_runner`, which picks the CPUs of its `taskset` pin from the affinity)
+# (and `kit_cpu_sets`, which picks the CPUs of the runners' `taskset` pins from
+# the affinity -- `ci_runner`'s default and the matrix form's sets, GH #1419)
 AFFINITY_READERS = {("scripts/pipeline/cpus.py", None),
                     ("scripts/pipeline/hygiene.py", "_affinity_threads"),
-                    ("plans/export-fixtures/export_tree_tests.py", "ci_runner")}
+                    ("plans/export-fixtures/export_tree_tests.py", "kit_cpu_sets")}
 # writers of a FAKE topology, never a reading: the runner's sysroot of `--kit`
 TOPOLOGY_WRITERS = {("plans/export-fixtures/export_tree_tests.py", "runner_sysroot")}
 TOPOLOGY_WORDS = ("cpuinfo", "thread_siblings", "devices/system/cpu")

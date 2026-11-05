@@ -118,6 +118,11 @@ BUILDING = "building"
 FORMS = ("active", "accompanying", "referring", "none")
 FORM_RUNGS = {"active": "focus", "accompanying": "relevant", "referring": "relevant",
               "none": "none"}
+# #1417: the form of a stamp-way turn that ends without one (live-2 T5 round 2b: two judge
+# timeouts at 6 s left `form` empty, the window `relevant` but unnamed). A structural
+# default, never read from words: its rung is `relevant`, the window's standing weight, so
+# naming it moves nothing -- never `focus` without a verdict (R-FU-4).
+FORM_FALLBACK = "referring"
 # The presenter writes no rung -- the curator does (§ 4.17-4.23). It writes the hint the
 # rung follows: `focus` leads its ladder by score, `relevant` keeps today's weight
 # (OR-LV.GR-1, display-hive.md § 9b.13).
@@ -1140,7 +1145,11 @@ def journal_row(rec, at):
         # display-hive.md § 9b.7 and § 1.6: the source and the three times of the window
         # under construction. The selector way writes the row it always wrote.
         row.update({"verdict_source": SOURCE_STAMP, "t_building_ms": ms(rec.get("t_building")),
-                    "t_form_ms": ms(rec.get("t_form")), "t_done_ms": ms(rec.get("t_done"))})
+                    "t_form_ms": ms(rec.get("t_form")), "t_done_ms": ms(rec.get("t_done")),
+                    # #1417: the form the turn ended with (`referring` when none came,
+                    # `form_fallback`) and whether the judge's form came after that.
+                    "form": rec.get("form") or "",
+                    "form_late": 1 if rec.get("form_late") else 0})
     return row
 
 
@@ -1459,6 +1468,7 @@ def close(rec, now):
     """The turn is done: the request text, the data sets and the bound blocks leave the
     pending row (OR-DP.P.4 -- the words are transient, review I1). The journal row is
     the one written before; nothing on the screen changes."""
+    form_fallback(rec)
     rec["state"] = "done"
     rec["done_at"] = now
     rec["sets"] = {}
@@ -1466,6 +1476,15 @@ def close(rec, now):
     rec["text"] = ""
     rec["observed"] = {}
     return w_pending(rec)
+
+
+def form_fallback(rec):
+    """#1417: a stamp-way turn that ends (done, timeout or any fallback) without a screen
+    form takes `FORM_FALLBACK`; the window's weight stays as it is. The selector way has
+    no form and keeps its row."""
+    if rec.get("source") == SOURCE_STAMP and rec.get("form") is None:
+        rec["form"] = FORM_FALLBACK
+        rec["form_fallback"] = True
 
 
 def finish(rec, fallback, now):
@@ -1833,6 +1852,7 @@ def stamp_window(rec, manifest, params, touched):
 
 def stamp_done(rec, now, params):
     """Mark the window done (§ 9b.14) and return its last tree."""
+    form_fallback(rec)
     rec["built"] = "done"
     rec["t_done"] = now - rec["arrived"]
     show_manifest = rec.get("_manifest") or {}
@@ -2019,13 +2039,19 @@ def lane_verdict(body, hop, ctx, params, now):
 def stamp_on(r, rec, screen, form, topics, params, now):
     """A stamp applied to its record (`lane_verdict`)."""
     if rec["state"] == "done":
+        noted = False
         if rec["fallback"] == "timeout" and not rec["late"] and screen is not None:
             # A late verdict changes nothing on the screen; the journal says it came.
             v = stamp_verdict(screen, topics)
             rec["late"] = True
             rec["topic"], rec["p"], rec["model"] = v["topic"], v["p"], v["model"]
-            return [bundle(PHASE_WRITE, w_pending(rec) + w_journal(rec))]
-        return []
+            noted = True
+        if form is not None and rec.get("form_fallback") and not rec.get("form_late"):
+            # #1417: the judge's form after the fallback -- journaled, once; the window
+            # stays as the fallback left it.
+            rec["form_late"] = True
+            noted = True
+        return [bundle(PHASE_WRITE, w_pending(rec) + w_journal(rec))] if noted else []
     if rec["state"] == "showing":
         out = restamp(r, rec, stamp_verdict(screen, topics), topics, params, now) \
             if screen is not None else []

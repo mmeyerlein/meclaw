@@ -23,6 +23,8 @@
     "external_timeout_ms": 1241000,
     "external_timeout_from_chain": true,
     "tool_call_limit": 16,
+    "partial_unit": "off",
+    "partial_min_chars": 12,
     "system_order": [
       "identity",
       "memory",
@@ -72,6 +74,18 @@
         "default": 16,
         "description": "GH #1350: the most tool calls one answer may carry -- the budget of `./dispatcher` (`max_calls`), held equal by a lock. Set, the cell streams the answer and stops at the first call over it with `provider_error` / `tool_call_limit`, so a runaway round ends there instead of after its whole answer, and the next turn does not wait behind it in this serial cell. 0 = no limit."
       },
+      "partial_unit": {
+        "type": "string",
+        "secret": false,
+        "default": "off",
+        "description": "GH #1410/#1412: `off` (the default, the answer leaves the cell once, as before) or `sentence` -- the cell streams the answer and emits each finished sentence as a partial before the final answer. A set switches it on via override_params; the edge that drains the partials is the topology's choice."
+      },
+      "partial_min_chars": {
+        "type": "number",
+        "secret": false,
+        "default": 12,
+        "description": "GH #1410/#1412: the fewest characters a partial adds to the one before it; a shorter sentence waits for the next boundary. Only read with `partial_unit` `sentence`."
+      },
       "external_timeout_ms_row": {
         "type": "string",
         "secret": false,
@@ -94,7 +108,8 @@
         "route": {
           "type": "string",
           "values": [
-            "credential_request"
+            "credential_request",
+            "partial"
           ],
           "required": false
         },
@@ -176,6 +191,18 @@
         "unverified": {
           "type": "array",
           "required": false
+        },
+        "seq": {
+          "type": "number",
+          "required": false
+        },
+        "final": {
+          "type": "boolean",
+          "required": false
+        },
+        "partial_of": {
+          "type": "string",
+          "required": false
         }
       }
     },
@@ -205,8 +232,8 @@
     ]
   },
   "description": {
-    "purpose": "The speculating twin of talky's quick voice (GH #1398, #1275): the same model cell as `./quick` with the same params, born on the same start value. It takes every call the curator makes with `hop.spec` \"1\" -- the early call of a turn before its route stamp, under `spec_tools` only -- so a spec call in flight never holds up a bridge, a tool round or the next turn's call on `./quick` (an llm cell runs one `handle()` at a time and cannot drop a call it started). Its answers never reach the splitter: they go to the curator on `in_spec_llm`, which keeps or drops them. The model registry moves it to the row of the tier `quick` once it is subscribed there.",
-    "use_when": "Inside the talky composite only. The curator edges (`./curator` -> here on `quick` with `hop.spec` \"1\") carry restore_ttl; every answer goes to `./curator` on `in_spec_llm`, a refused push out on `model_refused`. Without `quick_speculative` on the curator it receives nothing.",
+    "purpose": "The speculating twin of talky's quick voice (GH #1398, #1275): the same model cell as `./quick` with the same params, born on the same start value. It takes every call the curator makes with `hop.spec` \"1\" -- the early call of a turn before its route stamp, under `spec_tools` only -- so a spec call in flight never holds up a bridge, a tool round or the next turn's call on `./quick` (an llm cell runs one `handle()` at a time and cannot drop a call it started). Its answers never reach the splitter: they go to the curator on `in_spec_llm`, which keeps or drops them. Its partials (`partial_unit`, off as shipped, GH #1411) go to `./curator` on `in_spec_partial`, which passes them on only while the turn awaits the speculation and needs no tool -- a kept speculation then streams like any answer. The model registry moves it to the row of the tier `quick` once it is subscribed there.",
+    "use_when": "Inside the talky composite only. The curator edges (`./curator` -> here on `quick` with `hop.spec` \"1\") carry restore_ttl; every answer goes to `./curator` on `in_spec_llm`, every partial to `./curator` on `in_spec_partial`, a refused push out on `model_refused`. Without `quick_speculative` on the curator it receives nothing.",
     "not_in_scope": "No window of its own, no recall, no sidecar: what it sees is the curator's choice."
   }
 }

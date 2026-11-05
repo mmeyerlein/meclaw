@@ -2980,5 +2980,91 @@ class TestFlakyBlocksLikeRed(ExecutorCase):
         self.assertFalse(r.fail_fast_hit)
 
 
+class IsolationAndClippyLeaveTheCargoSlot(ExecutorCase):
+    """GH #1419 L3 (relgate-0800, build04): crate-isolation 484 s and clippy 257 s sat
+    in the cargo slot's serial chain (2 250 s) although `tests` beside them runs no
+    cargo. They now book `cargo_aux` (capacity 1) and build in persistent targets of
+    their own -- two builds never share one target/, so each station has its own and
+    the slot serializes the two with each other. Fake stations, no cargo."""
+
+    run_guarded = TestExecutorFailures.run_guarded
+
+    def aux(self, name, cmd):
+        from scripts.pipeline import plan as plan_mod
+        return station(name, cmd, needs={"cpu": 4, "cargo_aux": 1},
+                       aux_target=plan_mod.AUX_TARGETS[name])
+
+    def probe(self, name, sleep="0.3"):
+        out = self.root / ("%s.env" % name)
+        return out, ('echo "$CARGO_TARGET_DIR $MECLAW_CARGO_LOCK_HELD" > %s; sleep %s'
+                     % (out, sleep))
+
+    def test_isolation_and_clippy_leave_the_cargo_slot(self):
+        fifo = self.root / "rv"
+        os.mkfifo(fifo)
+        iso_env, iso_cmd = self.probe("crate-isolation")
+        clippy_env, clippy_cmd = self.probe("clippy")
+        # `tests`-like cargo station: it ends only when crate-isolation writes the FIFO,
+        # so crate-isolation must run beside it (the old chain made it wait behind).
+        stations = [station("c", "cat %s >/dev/null" % fifo, needs={"cargo": 1}),
+                    self.aux("crate-isolation", "%s; echo x > %s" % (iso_cmd, fifo)),
+                    self.aux("clippy", clippy_cmd)]
+        rc, evs = self.run_guarded(self.dispatch(stations))
+        self.assertEqual(0, rc, self.err_text)
+        seq = [(e["event"], e["data"]["station"]) for e in evs
+               if e["event"] in ("station_started", "station_ended")
+               and e["data"]["station"] in ("crate-isolation", "clippy")]
+        self.assertEqual(["station_started", "station_ended"] * 2, [s[0] for s in seq],
+                         "cargo_aux has capacity 1: the two never overlap")
+        target = str(self.target)
+        self.assertEqual("%s/aux/iso 1" % target, iso_env.read_text().strip())
+        self.assertEqual("%s/aux/clippy 1" % target, clippy_env.read_text().strip())
+        # on a lane: beside the lane's target, under the lane root
+        lane_root = self.root / "lane"
+        rc, _ = self.run_guarded(self.dispatch([self.aux("clippy", clippy_cmd)],
+                                               **{"+lane_root": str(lane_root)}))
+        self.assertEqual(0, rc, self.err_text)
+        self.assertEqual("%s/aux/clippy 1" % lane_root, clippy_env.read_text().strip())
+
+    def test_a_full_disk_stops_before_an_aux_station(self):
+        ran = self.root / "ran"
+        aux = str(self.target / "aux")
+
+        def free(path):
+            return 10.0 if str(path).startswith(aux) else 500.0
+        with mock.patch.object(executor, "_free_g", side_effect=free):
+            rc, evs = self.run_guarded(self.dispatch(
+                [self.aux("clippy", "touch %s" % ran)],
+                budget={"free_min_g": 30, "reserve_g": 0}))
+        self.assertEqual(2, rc, self.err_text)
+        self.assertFalse(ran.exists(), "the aux station ran below the floor")
+        fired = [e["data"] for e in evs if e["event"] == "watchdog_fired"]
+        self.assertEqual(["disk"], [f["kind"] for f in fired])
+        self.assertEqual(10.0, fired[0]["value"])
+
+    def test_the_aux_targets_are_in_the_inventory(self):
+        from scripts.pipeline import hygiene, plan as plan_mod
+        lib = REPO / "scripts" / "cargo-target.sh"
+        for lane_root in ("", "/srv/target"):
+            for name in sorted(plan_mod.AUX_TARGETS.values()):
+                got = subprocess.run(
+                    ["bash", "-c", '. "$1" && meclaw_aux_target_dir "$2" "$3" "$4"', "x",
+                     str(lib), "/w/target", name, lane_root],
+                    capture_output=True, text=True, timeout=kit_time.HANG)
+                self.assertEqual(0, got.returncode, got.stderr)
+                self.assertEqual(executor.aux_target_dir("/w/target", name, lane_root or None),
+                                 got.stdout.strip())
+        listed = subprocess.run(["bash", "-c", '. "$1" && echo "$MECLAW_AUX_TARGETS"', "x",
+                                 str(lib)], capture_output=True, text=True,
+                                timeout=kit_time.HANG).stdout.split()
+        self.assertEqual(sorted(plan_mod.AUX_TARGETS.values()), sorted(listed))
+        # the lane hygiene knows the directory as layout, never as a stray target
+        self.assertIn(executor.AUX_DIR, hygiene.LAYOUT_TARGET_DIRS)
+        root = self.root / "laneroot"
+        (root / executor.AUX_DIR / "iso" / "debug" / "deps").mkdir(parents=True)
+        ctx = types.SimpleNamespace(root=str(root), clock=lambda: 0.0)
+        self.assertEqual([], hygiene.stray_targets(ctx))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -108,6 +108,31 @@ meclaw_resolve_target_dir() {   # <root>
     fi
 }
 
+# AUX TARGETS (GH #1419)
+# ======================
+# `clippy` and `crate-isolation` build in persistent targets of their own, so
+# they leave the shared target's one-build-at-a-time slot and run beside
+# `tests` (relgate-0800: 484 + 257 s off a 2 250 s serial chain). Each station
+# has its own directory -- two builds never share a target -- and the runner
+# starts them one at a time under the run's lock (slot `cargo_aux`), after the
+# tree sync above, whose touch makes a foreign tree's artefacts in these
+# directories stale as well. On a lane they sit beside the lane's `target/`
+# (`<lane root>/aux/<name>`), on this machine inside the shared target
+# (`<target>/aux/<name>`, so a hygiene that removes target/ removes them too).
+# The disk floor of the run covers them (same filesystem). Inventory, pinned
+# against `plan.AUX_TARGETS` and `executor.aux_target_dir`. Read by whoever
+# sources this file (an inventory, not used here):
+# shellcheck disable=SC2034
+MECLAW_AUX_TARGETS="iso clippy"
+
+meclaw_aux_target_dir() {   # <target_dir> <name> [<lane root>]
+    if [ -n "${3:-}" ]; then
+        printf '%s/aux/%s\n' "$3" "$2"
+    else
+        printf '%s/aux/%s\n' "$1" "$2"
+    fi
+}
+
 # Touch every build input of every workspace member of the tree at $1 and print
 # what was done. `find crates -name '*.rs'` covers src, tests, benches, examples
 # and build.rs in one sweep; the manifests sit one level below `crates/`, and

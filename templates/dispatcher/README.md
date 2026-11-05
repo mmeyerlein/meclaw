@@ -1,4 +1,4 @@
-# `dispatcher@1.6.2`
+# `dispatcher@1.6.3`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -53,6 +53,16 @@ messages a graph can route.
   stderr line (`dispatcher: family call <id> … args_double_decoded`); a string that
   holds a string again is not unpacked and the call takes the path of every call whose
   `args` are no object.
+- **A flat tool's arguments leave a family hull once.** A model shown families that all
+  take `{op, args}` may write a flat tool the same way: `weather {args: "{\"place\": …}",
+  op: weather}` was measured, the tool refused it `invalid_input` and the curator spent a
+  brain round per call. Since [#1416](https://github.com/mmeyerlein/meclaw/issues/1416) a
+  call outside the fold and outside the hint level whose arguments are exactly `{args}` or
+  `{args, op}` with `op` the tool's own name, `args` an object or the JSON string of one,
+  leaves under its name with the inner object as its arguments, named on one stderr line
+  (`dispatcher: tool call <id> … args_unwrapped`). Any other key beside the two,
+  an `op` naming something else, or a string inside the string leaves as it came; the rule
+  reads the shape, never a list of tool names.
 - **Only a folded family unfolds.** The shape alone proves nothing: a tool outside the fold
   may take an `op` and an `args` object of its own. The collector names the families of its
   folded menu on every `curate` seam (`hop.tools_folded`), the composite's curate edge lifts

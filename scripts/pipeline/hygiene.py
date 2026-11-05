@@ -58,8 +58,12 @@ STRAY_FINDING_AGE_S = 24 * 3600
 # Named here again (as PYTHON below) because this file also runs alone on a
 # host; a test pins it to lane.CANDIDATE_TARGET.
 CANDIDATE_TARGET = "kb-target"
+# `aux/{iso,clippy}`: the persistent targets of crate-isolation and clippy
+# (GH #1419, `executor.AUX_DIR`, inventory in scripts/cargo-target.sh) -- warm on
+# purpose like a slot's, never a stray.
+AUX_DIR = "aux"
 LAYOUT_TARGET_DIRS = ("target", "slot", "bench", "export", "tree", "coverage",
-                      CANDIDATE_TARGET)
+                      CANDIDATE_TARGET, AUX_DIR)
 # The kit's one Python (`lane.PYTHON`, re-check tv-bn M7m M2). Named here
 # again because this file also runs alone on a host (`lane_sync.sh hygiene
 # --kit` puts `<hash8>/hygiene.py` there, re-check tv-bn M7o M1) where

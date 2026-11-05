@@ -19,8 +19,8 @@ SHARD COUNT
 ===========
 min(`plan.selftest_shards(nproc)`, nproc), nproc = the threads this process may
 run on: `MECLAW_SELFTEST_SHARDS` when set (an integer >= 1, anything else is a
-usage error, exit 2), else 4 -- three shards already reach the longest module;
-never more shards than modules. Admission books `plan.CPU_SHARDS` against the
+usage error, exit 2), else max(4, nproc // 4) -- 6 on a 24-thread lane, 4 on
+12 (GH #1419); never more shards than modules. Admission books `plan.CPU_SHARDS` against the
 lane, and the executor hands the booked number to this runner as
 `MECLAW_SELFTEST_SHARDS`, on a remote lane too: started == booked.
 
@@ -55,6 +55,19 @@ nothing:
 
     SHARD <k>/<n> modules=<m> tests=<t> est=<secs>s <module> ...
     SHARD-PLAN shards=<n> modules=<m> tests=<t> units=<u>
+
+THE TABLE COMES FROM THE GATE (GH #1419)
+========================================
+Each shard runs `unittest --durations 0` (Python >= 3.12), so its log ends with
+the seconds of every test. `durations --from-log <station log> ...` turns a GREEN
+sharded run into the table: each shard's wall seconds spread over its tests in
+proportion, summed per module (and per class for a module of several), merged
+into the committed table (`--into`, an unmeasured module rescaled to the new
+scale), written to `--write` or stdout; a red or unmeasured run is exit 1 and
+writes nothing. The gate leaves that table in the archive of every GREEN run
+(`<run>/selftest_durations.json`); a strand takes it over into this directory.
+
+    selftest_shard.py durations --from-log <log> [<log> ...] [--into <t>] [--write <out>]
 
 PART (the public CI)
 ====================
@@ -193,6 +206,145 @@ def imbalance(secs):
     return ("shard imbalance max/mean %.2f > %.1f (%s s) -- is %s stale?"
             % (max(secs) / mean, IMBALANCE_NOTE, "/".join("%.1f" % x for x in secs),
                os.path.relpath(DURATIONS, os.path.dirname(os.path.dirname(HERE)))))
+
+
+# --- the measured table (GH #1419 L2) -------------------------------------------
+# relgate-0800 (build04): the table was applied -- all 35 station modules had an
+# entry and LPT planned four shards of ~160 s -- but its seconds were another
+# machine's (647.9 s for the station against 3 643 shard seconds) and out of
+# proportion under a gate's load: 609 / 1163 / 1249 / 622 s. So every shard now
+# measures its tests (`--durations 0`, Python >= 3.12) and the gate's own logs
+# give the table (`durations --from-log`, the archive of a GREEN gate, gate.py).
+DURATIONS_ARGS = ("--durations", "0") if sys.version_info >= (3, 12) else ()
+_DURATION = re.compile(r"^(\d+\.\d+)s\s+(\w+) \(([\w.]+)\)$")
+_SHARD_LINE = re.compile(r"^SHARD (\d+)/(\d+) (GREEN|RED) tests=\d+ fail=\d+ ([\d.]+)s -- log (\S+)",
+                         re.M)
+_VERDICT = re.compile(r"^SELFTEST-VERDICT (GREEN|RED)\b", re.M)
+
+
+def shard_argv(python, units):
+    """The command of one shard: unittest through the hang dump, measuring its tests."""
+    return hang_dump.argv(python, "unittest") + list(DURATIONS_ARGS) + unit_argv(units)
+
+
+def test_durations(text):
+    """`{test id: seconds}` of the last `Slowest test durations` block of a shard log
+    (a test that starts a runner of its own may print one before), None without
+    one. unittest leaves out tests under 1 ms, so a block can be empty."""
+    lines = (text or "").splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == "Slowest test durations"]
+    if not starts:
+        return None
+    out = {}
+    for line in lines[starts[-1] + 1:]:
+        if line.startswith("Ran "):
+            break
+        m = _DURATION.match(line.strip())
+        if m and m.group(3).endswith("." + m.group(2)):
+            out[m.group(3)] = out.get(m.group(3), 0.0) + float(m.group(1))
+    return out
+
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def measured_table(station_log):
+    """`{unit: seconds}` of a GREEN sharded run, from its station log and the shard
+    logs beside it (the SHARD lines name them); None for a red run, a run of one
+    shard, or a shard log without durations -- no half table (fail-closed).
+
+    A shard's wall seconds go onto its tests in proportion (the wall holds imports
+    and class fixtures the test durations do not), so a module weighs what it
+    cost in the run. A module of several classes carries its classes as well
+    (`<module>.<Class>`, read by the class mode of `plan_units`)."""
+    text = _read(station_log)
+    verdicts = _VERDICT.findall(text or "")
+    if not verdicts or verdicts[-1] != "GREEN":
+        return None
+    shards = _SHARD_LINE.findall(text)
+    if not shards or any(v != "GREEN" for _k, _n, v, _w, _p in shards) \
+            or len(shards) != int(shards[0][1]):
+        return None
+    per_test = {}
+    for _k, _n, _v, wall, path in shards:
+        times = test_durations(_read(os.path.join(os.path.dirname(station_log),
+                                                  os.path.basename(path))))
+        if times is None:
+            return None
+        raw = sum(times.values())
+        for tid, secs in (times.items() if raw > 0 else ()):
+            per_test[tid] = per_test.get(tid, 0.0) + secs * float(wall) / raw
+    table, classes = {}, {}
+    for tid, secs in per_test.items():
+        cls = tid.rsplit(".", 1)[0]
+        mod = cls.rsplit(".", 1)[0]
+        table[mod] = table.get(mod, 0.0) + secs
+        classes.setdefault(mod, {})
+        classes[mod][cls] = classes[mod].get(cls, 0.0) + secs
+    for mod, cls in classes.items():
+        if len(cls) > 1:
+            table.update(cls)
+    return {k: max(0.1, round(v, 1)) for k, v in sorted(table.items())}
+
+
+def merge_table(old, measured):
+    """`old` with the measured entries in: a measured module replaces every old entry
+    of its own (a class gone with it); an unmeasured one is rescaled by measured /
+    old over the modules both know, so the table keeps one scale."""
+    mods = [k for k in measured if not any(k.startswith(m + ".") for m in measured if m != k)]
+    both = [m for m in mods if old.get(m)]
+    old_sum = sum(old[m] for m in both)
+    factor = (sum(measured[m] for m in both) / old_sum) if old_sum > 0 else 1.0
+    out = {}
+    for key, secs in old.items():
+        if any(key == m or key.startswith(m + ".") for m in mods):
+            continue
+        out[key] = max(0.1, round(secs * factor, 1))
+    out.update(measured)
+    return dict(sorted(out.items()))
+
+
+def write_table(path, table):
+    """The table as the committed file has it (one entry per line), atomically."""
+    tmp = "%s.tmp-%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(table, indent=1, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def durations_main(args):
+    """`durations --from-log <station log> [...] [--into <table>] [--write <out>]`:
+    the table measured by GREEN gate-selftest runs (later logs win), merged into
+    `--into` (default the committed table); to `--write` or stdout. A log without
+    a green measured run: exit 1, nothing written."""
+    import argparse
+    p = argparse.ArgumentParser(prog="selftest_shard.py durations")
+    p.add_argument("--from-log", nargs="+", required=True, dest="logs")
+    p.add_argument("--into", default=None)
+    p.add_argument("--write", default=None)
+    try:
+        o = p.parse_args(args)
+    except SystemExit as exc:
+        return 2 if exc.code else 0
+    table = load_durations(o.into or DURATIONS)
+    for log in o.logs:
+        measured = measured_table(log)
+        if measured is None:
+            print("selftest_shard: durations: no green measured run in %s -- nothing written"
+                  % log, file=sys.stderr)
+            return 1
+        table = merge_table(table, measured)
+    if o.write:
+        write_table(o.write, table)
+        print("SELFTEST-DURATIONS entries=%d -> %s" % (len(table), o.write))
+    else:
+        print(json.dumps(table, indent=1, sort_keys=True))
+    return 0
 
 
 def distribute(modules, shards, durations=None):
@@ -641,6 +793,8 @@ def main(argv):
     # plan (re-check tb-s2 h2 m2).
     for name in gitenv.GIT_REPO_VARS:
         os.environ.pop(name, None)
+    if argv and argv[0] == "durations":
+        return durations_main(argv[1:])
     ignored = os.environ.get(plan.SELFTEST_SHARDS_ENV + "_IGNORED")
     if ignored is not None:
         print("selftest_shard: override %s=%r ignored, booked %s" % (
@@ -757,7 +911,7 @@ def main(argv):
             futs = []
             for k, mods in enumerate(shards, 1):
                 state = os.path.join(base, "shard-%d" % k)
-                futs.append(pool.submit(run_shard, hang_dump.argv(py, "unittest") + unit_argv(mods),
+                futs.append(pool.submit(run_shard, shard_argv(py, mods),
                                         shard_env(os.environ, state), root, logs[k - 1],
                                         children))
             results = [f.result() for f in futs]

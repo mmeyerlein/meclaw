@@ -1743,12 +1743,13 @@ cmd_test() {
 # `log: <path>`; RED adds the log's tail. Exit 0 GREEN, 1 RED (also a name
 # without a test), 2 a usage error, 128 + signal when the runner was stopped.
 cmd_test_unittest() {
-    local top arg rel mods=() log rc start secs ran failed skipped tail empty sumline counted shardlogs
+    local top arg rel mods=() run=() log rc start secs ran failed skipped tail empty sumline counted shardlogs
     [ $# -ge 1 ] || die "test --unittest needs a module, a test id or a file"
     top=$(git rev-parse --show-toplevel 2>/dev/null) || die "test --unittest: not in a git tree"
     for arg in "$@"; do
         case "$arg" in
             -*) die "test --unittest: unknown option $arg (modules, test ids or files)" ;;
+            '') die "test --unittest: an empty name (an unset variable?)" ;;
             *.py)
                 [ -f "$arg" ] || die "test --unittest: no such file: $arg"
                 rel=$(realpath --relative-to="$top" -- "$arg") || die "test --unittest: cannot resolve $arg"
@@ -1761,10 +1762,6 @@ cmd_test_unittest() {
     log="${TMPDIR:-/tmp}/strand-unittest/${top##*/}-$(date +%Y%m%dT%H%M%S)-$$.log"
     mkdir -p -- "${log%/*}" || die "test --unittest: cannot create ${log%/*}"
     start=$SECONDS
-    (cd -- "$top" && "${KIT_PY[@]}" "$KIT_DIR/pipeline/selftest_shard.py" unittest "${mods[@]}") \
-        >"$log" 2>&1
-    rc=$?
-    secs=$((SECONDS - start))
     # The names that load no test, from the same root as the run (a name
     # that does not load at all is left to the run, which reports it red).
     empty=$("${KIT_PY[@]}" - "$top" "${mods[@]}" <<'PY'
@@ -1780,6 +1777,21 @@ for name in sys.argv[2:]:
         pass
 PY
     )
+    # They stay out of the run (GH #1419 L2): alone in a shard of their own
+    # (the shard count follows the host) they were a phantom failure that
+    # changed the count; they are named and the run is RED below either way.
+    run=()
+    for arg in "${mods[@]}"; do
+        grep -qxF -- "$arg" <<<"$empty" || run+=("$arg")
+    done
+    rc=0
+    : >"$log"
+    if [ ${#run[@]} -gt 0 ]; then
+        (cd -- "$top" && "${KIT_PY[@]}" "$KIT_DIR/pipeline/selftest_shard.py" unittest "${run[@]}") \
+            >"$log" 2>&1
+        rc=$?
+    fi
+    secs=$((SECONDS - start))
     ran=$(sed -n 's/^Ran \([0-9]*\) tests\{0,1\} in .*/\1/p' "$log" | tail -n 1)
     # failed = failures + errors + unexpected successes of the last summary
     sumline=$(sed -n 's/^\(OK\|FAILED\)\( (.*)\)\{0,1\}$/&/p' "$log" | tail -n 1)

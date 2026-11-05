@@ -1,4 +1,4 @@
-# `presenter@1.4.0`
+# `presenter@1.4.1`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -280,7 +280,11 @@ with nothing shown. The three times count from the turn's
 arrival at `stage`: to the verdict, to the emission of the window, to the first block. The
 row never carries the turn's text. On the stamp way the row adds `verdict_source` (`stamp`; the store's default for every other
 row is `selector`), `t_building_ms` (to the window under construction), `t_form_ms` (to the
-first screen form, empty without one) and `t_done_ms` (to done), and is written again at
+first screen form, empty without one), `t_done_ms` (to done), `form` (the screen form the
+turn ended with; a turn that ends -- done, timeout or any fallback -- without one takes
+`referring`, whose rung `relevant` is the window's standing weight, so the default moves
+nothing and never gives the focus without a verdict) and `form_late` (1 when the judge's
+form came after that default; it changes nothing on the screen), and is written again at
 done. `missing` is the JSON list of question keys the decider
 left unanswered (`[]` for a whole verdict): a missing `topic` is an `error` (nothing opens), a
 missing `<topic>.lead` lets the standard lead (`invalid`), a missing `<topic>.also` places no

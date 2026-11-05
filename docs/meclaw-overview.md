@@ -3619,6 +3619,11 @@ Behaviour:
 - On writing, a body at or above the threshold is offloaded as `blobs/<uuid>.json`, the sidecar is
   co-written, and only `Blob(uuid)` remains in the message. The `==` boundary case is inclusive,
   because the `Body` enum canonically implements `≥`.
+- The offload runs beside the colony loop in one task per colony; delivery follows the write; the
+  order per sender holds, because the colony holds a waiting sender's messages (cap 256,
+  back-pressure on cell outputs); `/colony` answers (reject, handover) bypass the offload, inline,
+  and can overtake earlier `/colony` messages; a full queue or a failed write falls back to the
+  inline write as before.
 - On attachments (from phase 12), files uploaded via the HTTP API (`multipart/form-data`) are stored
   as `blobs/<uuid>.<ext>` with the real MIME type, and the associated message carries an
   `attachments[]` slot entry. Write order: first the blob file (`tmp` then `rename(2)`), then the

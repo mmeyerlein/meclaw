@@ -108,7 +108,8 @@
         "route": {
           "type": "string",
           "values": [
-            "credential_request"
+            "credential_request",
+            "partial"
           ],
           "required": false
         },
@@ -189,6 +190,18 @@
         },
         "unverified": {
           "type": "array",
+          "required": false
+        },
+        "seq": {
+          "type": "number",
+          "required": false
+        },
+        "final": {
+          "type": "boolean",
+          "required": false
+        },
+        "partial_of": {
+          "type": "string",
           "required": false
         }
       }

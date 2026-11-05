@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
 from unittest import mock
 
@@ -641,7 +642,14 @@ class TestClassMode(HeavyCase):
         units, weights, tests = selftest_shard.plan_units(mods, 4, table, str(REPO))
         ideal = sum(table[m] for m in mods) / 4
         for mod in mods:
-            self.assertNotIn(mod, units, "%s runs whole: its table entry is stale" % mod)
+            # Whole only where it fits the ideal shard (GH #1419 M3, OR-d53-4.z2.12):
+            # on the table a green gate measured (a 12-thread lane, 4 shards)
+            # test_gate_sh weighs 142.4 s of an ideal 201.0 s and rightly runs whole;
+            # the pin is about a module heavier than the ideal one kept whole.
+            if mod in units:
+                self.assertLessEqual(table[mod], ideal,
+                                     "%s runs whole: its table entry is stale" % mod)
+                continue
             info = selftest_shard.discover(mod, str(REPO))
             self.assertEqual(info["total"], sum(n for u, n in tests.items()
                                                if selftest_shard.module_of(u) == mod))
@@ -1050,8 +1058,14 @@ class TestOneShard(ShardCase):
         self.assertIn("Ran 1 test in", res.stdout)
 
     def test_the_shard_count_and_its_override(self):
-        self.assertEqual(4, plan.selftest_shards(24, {}))
+        # GH #1419 L2: max(4, nproc // 4), at most nproc -- build04 (24) 6, the
+        # 12-thread lanes 4, the public runner (4) 4
+        self.assertEqual(6, plan.selftest_shards(24, {}))
+        self.assertEqual(4, plan.selftest_shards(12, {}))
+        self.assertEqual(8, plan.selftest_shards(32, {}))
+        self.assertEqual(4, plan.selftest_shards(4, {}))
         self.assertEqual(3, plan.selftest_shards(3, {}))
+        self.assertEqual(6, plan.resolve_cpu(plan.CPU_SHARDS, 24))
         self.assertEqual(1, plan.selftest_shards(24, {plan.SELFTEST_SHARDS_ENV: "1"}))
         self.assertEqual(12, plan.selftest_shards(4, {plan.SELFTEST_SHARDS_ENV: "12"}))
         for bad in ("0", "-2", "x", "1.5"):
@@ -1067,7 +1081,8 @@ class TestCpuNeed(unittest.TestCase):
     def test_the_station_books_its_shards(self):
         self.assertEqual(plan.CPU_SHARDS, plan.NEEDS["gate-selftest"]["cpu"])
         with mock.patch.dict(os.environ, {plan.SELFTEST_SHARDS_ENV: ""}):
-            self.assertEqual(4, plan.resolve_cpu(plan.CPU_SHARDS, 24))
+            # GH #1419 L2: max(4, nproc // 4), at most nproc
+            self.assertEqual(6, plan.resolve_cpu(plan.CPU_SHARDS, 24))
             self.assertEqual(2, plan.resolve_cpu(plan.CPU_SHARDS, 2))
         with mock.patch.dict(os.environ, {plan.SELFTEST_SHARDS_ENV: "3"}):
             self.assertEqual(3, plan.resolve_cpu(plan.CPU_SHARDS, 24))
@@ -1131,7 +1146,7 @@ class TestBookedIsStarted(unittest.TestCase):
         import io
         for bad in ("x", "0", "-3", "\u00b2", "\u0663"):
             with self.subTest(bad=bad):
-                self.assertEqual(4, self.assert_started_is_booked(
+                self.assertEqual(6, self.assert_started_is_booked(
                     24, 24, {plan.SELFTEST_SHARDS_ENV: bad}, {plan.SELFTEST_SHARDS_ENV: bad}))
                 env = self.station_env(self.booked(24, {plan.SELFTEST_SHARDS_ENV: bad}),
                                        {plan.SELFTEST_SHARDS_ENV: bad})
@@ -1140,14 +1155,14 @@ class TestBookedIsStarted(unittest.TestCase):
                         mock.patch.object(selftest_shard, "_nproc", return_value=24), \
                         contextlib.redirect_stdout(out):
                     selftest_shard.main(["--plan-only", "unittest"] + self.MODS)
-                self.assertIn("override %s=%r ignored, booked 4" % (plan.SELFTEST_SHARDS_ENV, bad),
+                self.assertIn("override %s=%r ignored, booked 6" % (plan.SELFTEST_SHARDS_ENV, bad),
                               out.getvalue())
                 with self.assertRaises(ValueError):
                     plan.selftest_shards(24, {plan.SELFTEST_SHARDS_ENV: bad})
 
     def test_the_runner_never_starts_more_shards_than_threads(self):
         self.assertEqual(2, self.started({plan.SELFTEST_SHARDS_ENV: "16"}, 2))
-        self.assertEqual(4, self.started({}, 24), "default: min(nproc, 4)")
+        self.assertEqual(6, self.started({}, 24), "default: max(4, nproc // 4)")
         self.assertEqual(3, self.started({}, 3))
 
 
@@ -1564,6 +1579,256 @@ class TestGateLine(unittest.TestCase):
         self.assertIn("shard 3/8 1 failed -- log x.shard-3.log -- red fx.b_red.T.test_red; seed 11",
                       reason)
         self.assertIn("at fx.b_red.T.test_red", reason)
+
+
+# --- GH #1419 L2: the table from the gate's own measurement ----------------------
+# relgate-0800 (build04, 4 shards): the table WAS applied -- every one of the 35
+# station modules had an entry, LPT planned four shards of ~160 s each -- but its
+# numbers were another machine's (647.9 s for the station against 3 643 s of shard
+# seconds measured) and not even in proportion: the shards ran 609 / 1163 / 1249 /
+# 622 s. The subprocess-heavy kit modules weigh far more under a gate's load.
+
+def _shard_log(path, times, wall_scale=1.25, header="$ python3 -m unittest --durations 0"):
+    """A shard log as the runner leaves it: unittest's `--durations 0` block, then
+    the summary; returns the shard's wall seconds (the tests' sum x `wall_scale`:
+    imports and class fixtures are in the wall, not in the test durations)."""
+    lines = [header, "." * len(times), "", "Slowest test durations", "-" * 70]
+    for tid, secs in sorted(times.items(), key=lambda kv: (-kv[1], kv[0])):
+        lines.append("%-10s %s (%s)" % ("%.3fs" % secs, tid.rsplit(".", 1)[1], tid))
+    total = sum(times.values())
+    lines += ["", "-" * 70, "Ran %d tests in %.3fs" % (len(times), total), "", "OK"]
+    pathlib.Path(path).write_text("\n".join(lines) + "\n")
+    return total * wall_scale
+
+
+def _station_log(path, shards, verdict="GREEN"):
+    """The station log: one SHARD line per (wall, shard log) and the verdict."""
+    n = len(shards)
+    lines = ["$ /usr/bin/python3 -I scripts/pipeline/selftest_shard.py unittest ...",
+             "SELFTEST-SEED 1"]
+    for k, (wall, log) in enumerate(shards, 1):
+        lines.append("SHARD %d/%d %s tests=1 fail=0 %.1fs -- log /srv/target/ws/run-x/logs/%s"
+                     % (k, n, "GREEN" if verdict == "GREEN" else "RED", wall,
+                        os.path.basename(log)))
+    lines += ["-" * 70, "Ran 9 tests in 1.0s", "", "OK" if verdict == "GREEN" else "FAILED (errors=1)",
+              "SELFTEST-VERDICT %s %d/%d shards" % (verdict, n if verdict == "GREEN" else n - 1, n)]
+    pathlib.Path(path).write_text("\n".join(lines) + "\n")
+
+
+# The measured weights of a station shaped after relgate-0800 (sum 3 643 s): one
+# module of eight classes, four heavy kit modules, twenty small ones. The stale
+# table has the same names in the proportions of the old table (the kit modules
+# understated 5x) -- on paper balanced, measured not.
+_HEAVY = "scripts.tests.test_gate_plan"
+_TRUE = {"%s.C%d" % (_HEAVY, i): 110.0 for i in range(8)}
+_KIT = {"scripts.tests.test_pipeline_gate_cli": 520.0, "scripts.tests.test_strand_sh": 430.0,
+        "scripts.tests.test_pipeline_executor": 380.0, "scripts.tests.test_precheck": 260.0}
+_SMALL = {"scripts.tests.test_small_%02d" % i: 58.65 for i in range(20)}
+
+
+def _true_tests():
+    """{test id: seconds}: four tests per class, the weights above."""
+    out = {}
+    for cls, secs in _TRUE.items():
+        for j in range(4):
+            out["%s.test_%d" % (cls, j)] = secs / 4
+    for mod, secs in list(_KIT.items()) + list(_SMALL.items()):
+        for j in range(4):
+            out["%s.T.test_%d" % (mod, j)] = secs / 4
+    return out
+
+
+def _fake_discover(mod, root):
+    if mod != _HEAVY:
+        return {"classes": {"T": 4}, "total": 4, "class_fixtures": [],
+                "methods": {"T": ["%s.T.test_%d" % (mod, j) for j in range(4)]}}
+    classes = {c.rsplit(".", 1)[1]: 4 for c in _TRUE}
+    return {"classes": classes, "total": 32, "class_fixtures": [],
+            "methods": {c: ["%s.%s.test_%d" % (_HEAVY, c, j) for j in range(4)] for c in classes}}
+
+
+class MeasuredDurations(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.logs = pathlib.Path(self._tmp.name) / "logs"
+        self.logs.mkdir()
+
+    def measured_run(self, verdict="GREEN", shards=4):
+        """A station log + shard logs: the tests spread round-robin over the shards."""
+        tests = sorted(_true_tests().items())
+        per = [dict(tests[k::shards]) for k in range(shards)]
+        entries = []
+        for k, times in enumerate(per, 1):
+            log = self.logs / ("gate-selftest.shard-%d.log" % k)
+            entries.append((_shard_log(log, times), log))
+        station = self.logs / "gate-selftest.log"
+        _station_log(station, entries, verdict)
+        return station
+
+    def loads(self, table, n):
+        true = _true_tests()
+        mods = sorted({t.rsplit(".", 2)[0] for t in true})
+        units, weights, _ = selftest_shard.plan_units(mods, n, table, "/nowhere",
+                                                      discover_fn=_fake_discover)
+        shards = selftest_shard.distribute(units, n, weights)
+        # the true seconds of each shard: its units' tests
+        out = []
+        for sh in shards:
+            s = 0.0
+            for u in sh:
+                base = u.split("[", 1)[0]
+                names = getattr(u, "names", ()) or ()
+                if names:
+                    s += sum(true[x] for x in names)
+                else:
+                    s += sum(v for t, v in true.items() if t.startswith(base + "."))
+            out.append(s)
+        return out
+
+    def test_selftest_shards_follow_the_measured_durations(self):
+        table = selftest_shard.measured_table(str(self.measured_run()))
+        self.assertIsNotNone(table)
+        # the shard's wall goes onto its tests: the table sums the measured seconds
+        total = sum(_true_tests().values()) * 1.25
+        mods = [k for k in table if not any(k.startswith(m + ".") for m in table if m != k)]
+        self.assertAlmostEqual(total, sum(table[m] for m in mods), delta=1.0)
+        self.assertAlmostEqual(_KIT["scripts.tests.test_pipeline_gate_cli"] * 1.25,
+                               table["scripts.tests.test_pipeline_gate_cli"], delta=0.5)
+        # a module of several classes carries its classes (the class mode reads them)
+        self.assertAlmostEqual(110.0 * 1.25, table["%s.C3" % _HEAVY], delta=0.5)
+        self.assertNotIn("scripts.tests.test_strand_sh.T", table, "one class: no class entry")
+        # six shards (build04, nproc // 4): LPT over the measured table stays within
+        # 1.2 x the ideal shard -- Plan: 3 020-3 643 s / 6 = 500-600 s instead of 1 250
+        loads = self.loads(table, 6)
+        ideal = sum(loads) / 6
+        self.assertLessEqual(max(loads), 1.2 * ideal, loads)
+        # the stale table (kit modules understated 5x) misses that bound
+        stale = dict(table)
+        for mod in _KIT:
+            stale[mod] = table[mod] / 5
+        self.assertGreater(max(self.loads(stale, 6)), 1.2 * ideal)
+        # without a table: round-robin over the sorted names, as before
+        names = ["m%02d" % i for i in range(9)]
+        self.assertEqual([names[k::6] for k in range(6)], selftest_shard.distribute(names, 6))
+
+    def test_a_red_or_unmeasured_run_gives_no_table(self):
+        self.assertIsNone(selftest_shard.measured_table(str(self.measured_run("RED"))))
+        station = self.measured_run()
+        # a shard log without the durations block (an older runner, a crash): no table
+        (self.logs / "gate-selftest.shard-2.log").write_text("Ran 3 tests in 1.0s\n\nOK\n")
+        self.assertIsNone(selftest_shard.measured_table(str(station)))
+        # one shard (the command of before) prints no SHARD line
+        one = self.logs / "one.log"
+        one.write_text("Ran 3 tests in 1.0s\n\nOK\n")
+        self.assertIsNone(selftest_shard.measured_table(str(one)))
+
+    def test_the_merge_keeps_one_scale(self):
+        old = {"a.m": 10.0, "a.m.X": 6.0, "a.m.Y": 4.0, "a.other": 2.0, "a.other.Z": 1.0}
+        new = selftest_shard.merge_table(old, {"a.m": 50.0, "a.m.X": 30.0, "a.m.W": 20.0})
+        # measured entries replace the module's old ones (Y is gone with the class)
+        self.assertEqual({"a.m": 50.0, "a.m.X": 30.0, "a.m.W": 20.0},
+                         {k: v for k, v in new.items() if k.startswith("a.m")})
+        # an unmeasured module keeps its entry on the new scale (50 / 10 = 5x)
+        self.assertEqual((10.0, 5.0), (new["a.other"], new["a.other.Z"]))
+
+    def test_the_shards_measure_their_tests(self):
+        argv = selftest_shard.shard_argv(["/usr/bin/python3", "-I"], ["fx.a", "fx.b"])
+        self.assertEqual(["fx.a", "fx.b"], argv[-2:])
+        if sys.version_info >= (3, 12):
+            self.assertEqual(["--durations", "0"], argv[-4:-2])
+        self.assertIn("unittest", argv)
+
+
+class MeasuredDurationsCli(ShardCase):
+    """The verb `durations --from-log` and a real two-shard run (fixture modules)."""
+
+    def test_a_real_run_measures_and_the_verb_writes_the_table(self):
+        if sys.version_info < (3, 12):
+            self.skipTest("unittest --durations needs Python 3.12")
+        # unittest hides durations under 1 ms: these tests compute for longer
+        slow = GREEN_CASE.replace("self.assertTrue(True)",
+                                  "self.assertTrue(sum(range(10 ** 6)))")
+        mods = [self.module("a_ok", slow), self.module("c_ok", slow)]
+        station = self.root / "station.log"
+        with open(station, "w") as fh:
+            res = self.run_runner(["unittest"] + mods, 2, stdout=fh)
+        self.assertEqual(0, res.returncode, station.read_text())
+        table = selftest_shard.measured_table(str(station))
+        self.assertIsNotNone(table, station.read_text())
+        self.assertEqual({"fx.a_ok", "fx.c_ok"}, set(table))
+        into = self.root / "old.json"
+        into.write_text(json.dumps({"fx.a_ok": 1.0, "fx.gone": 3.0}))
+        out = self.root / "new.json"
+        got = subprocess.run(lane.python_argv(RUNNER, "durations", "--from-log", str(station),
+                                              "--into", str(into), "--write", str(out)),
+                             cwd=self.root, capture_output=True, text=True,
+                             timeout=kit_time.HANG)
+        self.assertEqual(0, got.returncode, got.stderr)
+        written = json.loads(out.read_text())
+        self.assertEqual({"fx.a_ok", "fx.c_ok", "fx.gone"}, set(written))
+        self.assertEqual(table["fx.a_ok"], written["fx.a_ok"])
+
+    def test_a_red_run_writes_nothing(self):
+        station = self.root / "station.log"
+        _station_log(station, [(1.0, self.root / "s1.log"), (1.0, self.root / "s2.log")], "RED")
+        out = self.root / "new.json"
+        got = subprocess.run(lane.python_argv(RUNNER, "durations", "--from-log", str(station),
+                                              "--write", str(out)),
+                             cwd=self.root, capture_output=True, text=True,
+                             timeout=kit_time.HANG)
+        self.assertEqual(1, got.returncode, got.stderr)
+        self.assertFalse(out.exists())
+        self.assertIn("nothing written", got.stderr)
+
+
+class AGreenGateWritesTheSelftestDurationsItMeasured(unittest.TestCase):
+    """Test 3 (GH #1419 L2): the gate's archive keeps the table its GREEN
+    gate-selftest measured (`<run>/selftest_durations.json`, the committed table
+    merged with the measurement); a red run writes nothing."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+
+    def archive(self, verdict):
+        from pipeline import gate
+        dest = self.tmp / ("ws-" + verdict)
+        logs = dest / "logs"
+        logs.mkdir(parents=True)
+        times = _true_tests()
+        tests = sorted(times.items())
+        entries = []
+        for k in (1, 2):
+            log = logs / ("gate-selftest.shard-%d.log" % k)
+            entries.append((_shard_log(log, dict(tests[k - 1::2])), log))
+        _station_log(logs / "gate-selftest.log", entries, verdict)
+        repo = self.tmp / "repo"
+        (repo / "scripts" / "pipeline").mkdir(parents=True, exist_ok=True)
+        (repo / "scripts" / "pipeline" / "selftest_durations.json").write_text(
+            json.dumps({"scripts.tests.test_unmeasured": 2.0, _HEAVY: 100.0}))
+        o = types.SimpleNamespace(archive=str(self.tmp / ("archive-" + verdict)), mode="strand")
+        p = gate._Pass(o, str(repo), {"rev": "c" * 40, "stations": []}, io.StringIO(), io.StringIO())
+        v2 = {"stations": [{"name": "gate-selftest", "verdict": verdict}], "rev": "c" * 40}
+        p.archive(v2, str(dest), ["GATE-SUMMARY strand c 1/1 1s %s" % verdict])
+        return pathlib.Path(o.archive) / p.rid, p
+
+    def test_a_green_gate_writes_the_selftest_durations_it_measured(self):
+        adir, p = self.archive("GREEN")
+        path = adir / "selftest_durations.json"
+        self.assertTrue(path.is_file(), p.err.getvalue())
+        table = json.loads(path.read_text())
+        measured = selftest_shard.measured_table(str(adir / "logs" / "gate-selftest.log"))
+        for k, v in measured.items():
+            self.assertEqual(v, table[k], k)
+        self.assertIn("scripts.tests.test_unmeasured", table, "the committed rest stays")
+
+    def test_a_red_gate_writes_nothing(self):
+        adir, _ = self.archive("RED")
+        self.assertTrue((adir / "receipt.json").is_file())
+        self.assertFalse((adir / "selftest_durations.json").exists())
 
 
 if __name__ == "__main__":

@@ -852,6 +852,7 @@ class _Pass:
                     src = os.path.join(logs, name)
                     if os.path.isfile(src):
                         shutil.copy2(src, os.path.join(adir, "logs", name))
+            self._selftest_table(v2, adir)
             latest = os.path.join(root, "latest")
             try:
                 if os.path.lexists(latest):
@@ -862,6 +863,38 @@ class _Pass:
                     fh.write(rid + "\n")
         except OSError as exc:
             print("gate: could not copy receipt/logs to %s (the run itself stands): %s" % (root, exc),
+                  file=self.err)
+
+    def _selftest_table(self, v2, adir):
+        """GH #1419 L2: a GREEN `gate-selftest` leaves the seconds it measured in its
+        archive -- `<run>/selftest_durations.json`, the committed table of the tree
+        merged with the measurement (`selftest_shard.py durations --from-log`), the
+        form of `scripts/pipeline/selftest_durations.json`, so a strand can take it
+        over as it is. relgate-0800 planned on another machine's seconds (647.9 s
+        for 3 643 s measured) and ran 609 / 1163 / 1249 / 622 s. A red or
+        unmeasured run writes nothing; the pass never depends on it. The tree's
+        file is not written here: a gate that changed its own tree would leave the
+        receipt behind its head."""
+        green = any(s.get("name") == "gate-selftest" and s.get("verdict") == "GREEN"
+                    for s in v2.get("stations") or [])
+        log = os.path.join(adir, "logs", "gate-selftest.log")
+        if not green or not os.path.isfile(log):
+            return
+        kit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "selftest_shard.py")
+        into = os.path.join(self.repo, "scripts", "pipeline", "selftest_durations.json")
+        argv = [sys.executable, "-I", kit, "durations", "--from-log", log,
+                "--write", os.path.join(adir, "selftest_durations.json")]
+        if os.path.isfile(into):
+            argv += ["--into", into]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=120,
+                               stdin=subprocess.DEVNULL, cwd=adir)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print("gate: selftest durations not measured: %s" % exc, file=self.err)
+            return
+        if r.returncode not in (0, 1):  # 1: no measured run (one shard, an old runner)
+            print("gate: selftest durations not measured: %s"
+                  % (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1],
                   file=self.err)
 
     def head(self, run, lane_name, rnd, dispatch=None):
