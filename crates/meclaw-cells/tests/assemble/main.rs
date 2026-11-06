@@ -60,6 +60,8 @@ pub mod gh939_a_brief_never_names_more_than_the_disclosure_releases;
 pub mod gh941_a_section_marks_its_own_episode;
 pub mod gh946_who_names_only_what_the_disclosure_releases;
 pub mod gh949_an_app_candidate_reaches_the_push;
+pub mod gh_d38_k7_a_memory_need_waits_for_the_recall_leg;
+pub mod gh_d38_k7_the_stamp_carries_memory_when_configured;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../support/gh929_member_road.rs"]

@@ -3,10 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1352_a_quick_call_without_an_answer_goes_to_the_brain;
-pub mod gh1382_a_failed_speculation_answers_once;
-pub mod gh1398_the_quick_voice_has_siblings;
-pub mod gh1411_a_kept_speculation_streams;
 pub mod gh1432_a_shown_spec_sentence_is_not_repeated;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
@@ -46,6 +42,13 @@ pub mod gh_d38_k6_null_budget_is_byte_identical;
 pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
 pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
 pub mod gh_d38_k6_the_window_watch_reads_the_raw_part;
+pub mod gh_d38_k6b_the_budget_measures_the_rounds_as_sent;
+pub mod gh_d38_k6b_the_curate_stamp_measures_like_the_budget;
+pub mod gh_d38_k6b_the_rebuild_measures_a_cut_answer_as_sent;
+pub mod gh_d38_k6b_the_running_round_counts_whole;
+pub mod gh_d38_k7_a_set_override_of_the_new_params_passes_the_door;
+pub mod gh_d38_k7_a_simple_turn_that_needs_memory_leaves_on_brain;
+pub mod gh_d38_k7_knob_off_is_byte_identical;
 #[path = "../gh927/harness.rs"]
 pub mod harness;
 #[path = "../mock_openai.rs"]

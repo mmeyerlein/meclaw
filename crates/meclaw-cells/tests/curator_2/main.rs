@@ -3,8 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kh_writer_a_late_wall_row_waits_for_the_next_close;
-pub mod gh1225_kh_writer_a_refused_close_read_is_no_empty_session;
 pub mod gh1225_kh_writer_a_written_store_error_mark_is_not_said_refused;
 pub mod gh1225_kp_fix1_names_and_the_ledgers_word;
 pub mod gh1225_kp_the_push_holds_what_the_ledger_holds;
@@ -47,3 +45,7 @@ pub mod gh1337_the_persons_words_get_a_frame_of_their_own;
 pub mod gh1342_the_ambient_question_asks_with_the_persons_words;
 pub mod gh1346_every_tool_the_quick_scope_allows_is_on_the_menu;
 pub mod gh1347_the_quick_window_keeps_the_running_round_whole;
+pub mod gh1352_a_quick_call_without_an_answer_goes_to_the_brain;
+pub mod gh1382_a_failed_speculation_answers_once;
+pub mod gh1398_the_quick_voice_has_siblings;
+pub mod gh1411_a_kept_speculation_streams;

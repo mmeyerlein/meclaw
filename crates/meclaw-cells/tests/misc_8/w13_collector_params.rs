@@ -92,6 +92,9 @@ const KNOBS: &[(&str, &str)] = &[
     // the stamped paths that do not wait for the memory leg.
     ("route_wait_ms", "_int"),
     ("route_no_recall", "_list"),
+    // GH #1435 -- a stamp that names `memory` in `needs` waits for the memory
+    // leg even on a `route_no_recall` path (`"0"` shipped).
+    ("needs_wait_recall", "_str"),
     // #1275 -- the early curate before the route stamp (`"0"` shipped)
     // and how a delegation is answered (`"fact"` shipped = the advise text of
     // before; `"context"` = the delegation's own context).

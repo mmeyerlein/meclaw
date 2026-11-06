@@ -1,4 +1,4 @@
-# `talky@6.16.1`
+# `talky@6.16.2`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -72,13 +72,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.8.0"}}
+{"cell": {"type": "ref", "template": "collector@5.9.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.16.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.16.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -493,7 +493,9 @@ Exactly these seven keys, in the body slot `stamp`; `hop.turn_id` and `hop.path`
 beside it for an edge to test. The stamp is a **recommendation**: the curator decides
 the round (R-WP-1). `path` is one of the classes in `./route`'s param `classes`, four as
 shipped -- `talk`, `simple`, `complex`, `research` (R-WP-9) -- and `p` is the decider's
-confidence in it. `needs` lists the names of `needs` (`tool`, `reasoning`, `research`)
+confidence in it. `needs` lists the names of `needs` (`tool`, `reasoning`, `research`; a set may add `memory`
+for a question that needs what the person said earlier -- their people, their life, their past,
+[#1435](https://github.com/mmeyerlein/meclaw/issues/1435))
 and `families` the names of `families` (`web`, `history`: the tool families of this
 composite's menu) the decider said yes to at `yes_threshold` or more; the families are
 the hint the curator scopes a quick round's tools by. `intent` is one of `intents`, or
@@ -984,7 +986,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.16.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.16.2",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

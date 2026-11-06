@@ -45,6 +45,15 @@
   "contract": {
     "version": "1.0.0",
     "settings": {
+      "needs": {
+        "type": "object",
+        "default": {
+          "tool": "a tool call",
+          "reasoning": "careful step-by-step reasoning",
+          "research": "a deep search over many sources"
+        },
+        "description": "GH #1435: the yes/no needs the decider is asked, `{<name>: describe}`; the stamp's `needs` lists the names said yes at `yes_threshold`. Shipped: `tool`, `reasoning`, `research`. A set may add `memory` (\"something the person said earlier or before today -- their people, their life, their past\"): the collector then waits for the recall leg (`needs_wait_recall`) and the curator sends the turn to the brain (`memory_to_brain`)."
+      },
       "choices": {
         "type": "object",
         "default": {},
