@@ -858,6 +858,11 @@
           "condition": "has(hop.route) && hop.route == 'in_delta_stamp'"
         },
         {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_summary_self'"
+        },
+        {
           "from": "./policy",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'live_feed'",

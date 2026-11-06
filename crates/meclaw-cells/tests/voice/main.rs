@@ -5,6 +5,7 @@
 pub mod gh1059_grants;
 pub mod gh1059_voice_grant;
 pub mod gh1374_a_failed_duplex_session_is_not_silence;
+pub mod gh1438_the_voice_page_plays_one_answer_back_to_back;
 pub mod gh643_a_voice_topic_rides_the_display_socket;
 pub mod gh949_a_bound_chat_names_its_speaker;
 pub mod voice_duplex_a_delegation_never_reaches_the_memory;

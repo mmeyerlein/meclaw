@@ -280,8 +280,22 @@ fn closed(c: &str) -> bool {
                 || *t == "has(hop.refused_subscriber)"
                 || *t == "!has(hop.partial_of)"
                 || pins_route_off_partial(t)
+                || closed_disjunction(t)
         })
     })
+}
+
+/// `true` when `t` is a parenthesised disjunction whose every branch is
+/// itself closed. GH #1440: talky's self-summary edge takes
+/// `(has(hop.finish_reason) || has(hop.refused_subscriber))` -- a partial
+/// carries neither key, so no branch can let one through.
+fn closed_disjunction(t: &str) -> bool {
+    let inner = unwrap(t);
+    if inner == t.trim() {
+        return false;
+    }
+    let branches = split_top(inner, "||");
+    branches.len() > 1 && branches.iter().all(|b| closed(b))
 }
 
 fn has_conjunct(c: &str, t: &str) -> bool {
@@ -363,6 +377,7 @@ fn the_closure_reads_a_condition_as_the_substrate_does() {
         "has(hop.route) && (hop.route == 'answer' || hop.route == 'partial')",
         "has(hop.route) && hop.route == 'answer' || true",
         "has(hop.finish_reason) || has(hop.route)",
+        "has(context.summarize) && (has(hop.finish_reason) || has(hop.route))",
         "",
     ] {
         assert!(!closed(open), "open read as closed: {open}");
@@ -373,6 +388,7 @@ fn the_closure_reads_a_condition_as_the_substrate_does() {
         "has(hop.route) && ((hop.route == 'event' && has(hop.owner)) || (hop.route == 'receipt' && has(hop.owner)))",
         "has(hop.finish_reason) && hop.finish_reason == 'stop'",
         "has(hop.route) && hop.route == 'partial' && !has(hop.partial_of)",
+        "has(context.summarize) && context.summarize == '1' && (has(hop.finish_reason) || has(hop.refused_subscriber))",
     ] {
         assert!(closed(shut), "closed read as open: {shut}");
     }

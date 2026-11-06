@@ -110,6 +110,16 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
         Some(json!("''")),
         "the brain clears the mark"
     );
+    // GH #1440 (OR-38-42 A1): the brain alone lifts the three keys of the
+    // role's self summary (`summarizer_self`) -- the curator sends it on the
+    // way `brain` only, never on `quick`.
+    for k in ["summarize", "summary_call", "summary_token"] {
+        assert_eq!(
+            brain_ctx.as_object_mut().and_then(|c| c.remove(k)),
+            Some(json!(format!("has(hop.{k}) ? hop.{k} : ''"))),
+            "the brain lifts {k}"
+        );
+    }
     assert_eq!(
         quick_ctx, brain_ctx,
         "the quick call carries the context of a brain call"
@@ -132,9 +142,12 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
         q_split["condition"].as_str().unwrap_or(""),
         format!(
             "{} && !(has(context.spec) && context.spec == '1')",
+            // GH #1440: the brain's answer to a self summary never reaches
+            // the splitter; a quick answer is never one.
             edge(&edges, "./brain", "./splitter", "'stop'")["condition"]
                 .as_str()
                 .unwrap_or("")
+                .trim_end_matches(" && !(has(context.summarize) && context.summarize == '1')")
         ),
         "the quick answer reaches the splitter like the brain's"
     );

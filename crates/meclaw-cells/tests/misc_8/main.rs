@@ -9,6 +9,7 @@ pub mod gh981_an_offer_names_its_callers;
 pub mod gh981_run_id_survives_the_tool_path;
 pub mod gh993_a_model_gets_only_the_params_it_takes;
 pub mod gh_d38_k1_the_meter_asks_the_new_kinds;
+pub mod gh_d38_z2_a_flat_distribution_answers_empty;
 #[path = "../h5_support/mod.rs"]
 pub mod h5;
 pub mod h5_a_guessed_param_is_named;

@@ -480,13 +480,20 @@ fn gh1411_the_spec_partial_reaches_only_the_rim() {
 // ------------------------------------------------------------------ golden
 
 /// talky's edges without the two #1411 spec-partial edges, before A1.
-const TALKY_EDGES_SHA256: &str = "3dfb4ed81595e8f5c08dfb86c6e2979392884e4656fc5f01523faf4f097406da";
+/// Re-blessed for GH #1440 (the role's self summary: `./brain -> ./curator`
+/// on `in_summary_self`, the `summarize` exclusion on the brain's edges, the
+/// three keys in the exits' `delete_context`) -- a wanted edge change, old
+/// `3dfb4ed81595e8f5c08dfb86c6e2979392884e4656fc5f01523faf4f097406da`.
+const TALKY_EDGES_SHA256: &str = "70d98405aa07b68977d889968b501bd08326935b11bc4c89b43d0a7623f29ae2";
 /// `quick_spec/config.json` without the partial declarations and without its
 /// prose (`description`), before A1.
 const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee20264201b661567494";
 /// The curator hive's edges, accepts and emits without the #1411 lane, its
 /// door, its way out and the `partial` route, before A1.
-const CURATOR_SHA256: &str = "1c3e91d9792f67284977f46abdc9d13ddac7d9282c374462a1404047f2e2c252";
+/// Re-blessed for GH #1440 (the door `. -> ./policy` also takes
+/// `in_summary_self`) -- a wanted edge change, old
+/// `1c3e91d9792f67284977f46abdc9d13ddac7d9282c374462a1404047f2e2c252`.
+const CURATOR_SHA256: &str = "72a5a36ab7f1398f0b58a60406431c8380d1335958e5206cc510bd4f45cd0da9";
 
 fn sorted(v: &Value) -> Value {
     match v {

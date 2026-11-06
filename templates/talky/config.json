@@ -450,7 +450,10 @@
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
               "interim": "''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "summarize": "has(hop.summarize) ? hop.summarize : ''",
+              "summary_call": "has(hop.summary_call) ? hop.summary_call : ''",
+              "summary_token": "has(hop.summary_token) ? hop.summary_token : ''"
             },
             "restore_ttl": true
           }
@@ -471,7 +474,10 @@
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
               "interim": "''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "summarize": "has(hop.summarize) ? hop.summarize : ''",
+              "summary_call": "has(hop.summary_call) ? hop.summary_call : ''",
+              "summary_token": "has(hop.summary_token) ? hop.summary_token : ''"
             },
             "restore_ttl": true
           }
@@ -615,7 +621,10 @@
               "route_state",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -665,7 +674,7 @@
         {
           "from": "./brain",
           "to": "./splitter",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls' || hop.finish_reason == 'length') && !(has(context.summarize) && context.summarize == '1')"
         },
         {
           "from": "./quick",
@@ -680,7 +689,7 @@
         {
           "from": "./brain",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1')",
           "modifier": {
             "set_hop": {
               "route": "'partial'"
@@ -700,7 +709,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -727,7 +739,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -754,7 +769,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -781,11 +799,29 @@
         {
           "from": "./brain",
           "to": "./curator",
-          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1')",
           "modifier": {
             "set_hop": {
               "route": "'in_llm'"
             }
+          }
+        },
+        {
+          "from": "./brain",
+          "to": "./curator",
+          "condition": "has(context.summarize) && context.summarize == '1' && (has(hop.finish_reason) || has(hop.refused_subscriber))",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_summary_self'",
+              "summarize": "'1'",
+              "summary_call": "context.summary_call",
+              "summary_token": "context.summary_token"
+            },
+            "delete_context": [
+              "summarize",
+              "summary_call",
+              "summary_token"
+            ]
           }
         },
         {
@@ -863,7 +899,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -887,7 +926,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -929,7 +971,7 @@
         {
           "from": "./brain",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber)"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1')"
         },
         {
           "from": "./quick",
@@ -944,7 +986,7 @@
         {
           "from": "./brain",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1')",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -964,7 +1006,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -991,7 +1036,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1018,7 +1066,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1045,7 +1096,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1099,7 +1153,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1123,7 +1180,10 @@
               "turn_notes",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ],
             "set_hop": {
               "route": "'inner_silent'",
@@ -1152,7 +1212,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1176,7 +1239,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1220,7 +1286,10 @@
               "route_state",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1249,7 +1318,10 @@
               "route_state",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1273,7 +1345,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1297,7 +1372,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1322,7 +1400,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1346,7 +1427,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1373,7 +1457,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1397,7 +1484,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1426,7 +1516,10 @@
               "route_state",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1450,7 +1543,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1484,7 +1580,10 @@
               "turn_notes",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1508,7 +1607,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1532,7 +1634,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1596,7 +1701,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1620,7 +1728,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1644,7 +1755,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1763,7 +1877,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1790,7 +1907,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1914,7 +2034,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1941,7 +2064,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -1965,7 +2091,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -2028,7 +2157,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -2052,7 +2184,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -2076,7 +2211,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         },
@@ -2100,7 +2238,10 @@
               "inner_source",
               "spec",
               "delta",
-              "judge_for"
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
             ]
           }
         }

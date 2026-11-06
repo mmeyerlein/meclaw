@@ -61,6 +61,33 @@ const OTHER: &str = "./beta/members/bo/assistants/helper";
 
 const REFUSAL_CONDITION: &str = "has(hop.route) && hop.route == 'model_refused'";
 
+/// GH #1440 -- the one narrowing a way back may carry: talky's role condenses
+/// its own context (`summarize '1'`, lane `in_summary_self`), and a refused
+/// self call must never leave the composite -- the old summary stays. So the
+/// way back is `has(hop.refused_subscriber) && <this>`, and under
+/// `summarize '1'` exactly [`SELF_SUMMARY_CONDITION`] to `./curator` takes the
+/// refusal instead. Any other narrowing still counts as no way back.
+const NOT_SELF_SUMMARY: &str = "!(has(context.summarize) && context.summarize == '1')";
+/// GH #1440 -- the edge that carries a refusal while the role condenses itself.
+const SELF_SUMMARY_CONDITION: &str = "has(context.summarize) && context.summarize == '1' && (has(hop.finish_reason) || has(hop.refused_subscriber))";
+
+/// The way back's condition: plain, or narrowed by exactly the self-summary
+/// clause (GH #1440). `Some(true)` = narrowed.
+fn way_back_form(c: &str) -> Option<bool> {
+    if c == "has(hop.refused_subscriber)" {
+        return Some(false);
+    }
+    (c.strip_prefix("has(hop.refused_subscriber) && ") == Some(NOT_SELF_SUMMARY)).then_some(true)
+}
+
+/// GH #1440 -- the refusal of a self-summary call goes to `./curator` on lane
+/// `in_summary_self`, never past `.`.
+fn carries_the_self_summary_refusal(e: &Value) -> bool {
+    e["to"] == "./curator"
+        && cond(e) == SELF_SUMMARY_CONDITION
+        && e["modifier"]["set_hop"]["route"] == "'in_summary_self'"
+}
+
 /// The composites of the library that carry a model door, as the fix found
 /// them: the five the registry's shipped road reaches (the brains a generation
 /// and a member bring, and the shell's `argus` and `builder`) and the six that
@@ -189,15 +216,29 @@ fn every_composite_with_a_model_door_sends_refusals_back() {
                 .filter(|e| {
                     e["from"] == cell.as_str()
                         && e["to"] == "."
-                        && cond(e) == "has(hop.refused_subscriber)"
+                        && way_back_form(cond(e)).is_some()
                         && e["modifier"]["set_hop"] == json!({"route": "'model_refused'"})
                 })
                 .collect();
             if back.len() != 1 {
                 missing.push(format!("{name}: {cell} has {} ways back", back.len()));
             }
+            // GH #1440: a way back narrowed by the self-summary clause needs
+            // exactly one edge that takes the refusal under `summarize '1'`.
+            let narrowed = back.iter().any(|e| way_back_form(cond(e)) == Some(true));
+            let self_refusal: Vec<&Value> = edges
+                .iter()
+                .filter(|e| e["from"] == cell.as_str() && carries_the_self_summary_refusal(e))
+                .collect();
+            if narrowed && self_refusal.len() != 1 {
+                missing.push(format!(
+                    "{name}: {cell} narrows its way back to the self summary but has {} \
+                     self-summary refusal edges",
+                    self_refusal.len()
+                ));
+            }
             for e in edges.iter().filter(|e| e["from"] == cell.as_str()) {
-                if back.contains(&e) {
+                if back.contains(&e) || (narrowed && self_refusal.contains(&e)) {
                     continue;
                 }
                 if !cannot_take_a_refusal(e) {

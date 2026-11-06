@@ -1,4 +1,4 @@
-# `memory-hive@3.20.1`
+# `memory-hive@3.21.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1523,7 +1523,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.20.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.21.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1929,7 +1929,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.9.3",
+{"add_nodes": [{"name": "alex", "template": "member@2.9.4",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -2031,6 +2031,7 @@ say "no legacy subject at all".
 | `rrf_w_self` | `1.0` | Weight of the **self** leg (GH #536). Its rank list is recency, not relevance — it is the one leg the query does not shape — so a hit two query-driven legs agree on outranks it through the agreement factor rather than through a special case. `0` leaves the leg as discovery only, which is the ablation the eval prices |
 | `rrf_w_temporal_point` | `0.0` | Weight of the temporal leg in **point** mode. Measured, not chosen: 50 identical LongMemEval extractions, paired — `0.0` gives R@1 **84.0 vs 74.0** and R@5 **98.0 vs 96.0**, flips **11:1** (sign test p=0.0063), and across 100 runs (2×50) the leg never carried a hit **alone**. Set it to `1.0` to restore the pre-O-4 fusion |
 | `rrf_agreement` | `0.5` | Strength of the agreement factor in the fusion (#297): a candidate two VOTING legs found is multiplied once, three legs twice. `0` restores the plain rank sum |
+| `flat_ratio` | `0` | The shape of the fused scores ([#1441](https://github.com/mmeyerlein/meclaw/issues/1441)): above 0, a tier-1 recall whose best fused score over the median of the first TOPK is at or below this number answers with an empty bundle (`answers` `"none"`, `recall_empty` `"1"`) and `recall_diagnostic.flat` true. Fewer than two candidates are never flat. `0` = off, the bundle of before |
 | `query_safe_chars` | `null` (package; `200` without) | A query at or below this length reaches the legs untouched. Above it the hygiene guard runs (GH #88) |
 | `query_max_chars` | `null` (package; `250` without) | Hard clamp of the hygiene guard: whatever survived the question / tail-sentence steps is cut to its last this many characters, so the cost of a recall stops depending on how much context the caller pasted |
 | `query_tokens` | `null` (package; `24` without) | How many tokens of the sanitised query reach the FTS matcher, taken from the TAIL — after the hygiene guard the tail is the question (GH #88) |
@@ -2424,7 +2425,9 @@ split is the whole point of the shape:
 `recall_diagnostic` is declared in `contract.emits.body` and is a body slot on purpose: the
 `collector`'s `in_bundle` lane keeps `system` and `messages` and nothing else, so the diagnostic
 is dropped before the next prompt is assembled while `/colony/messages` — which stores whole
-bodies — keeps it. The trace survives without ever being paid for in prompt budget. The tier-2
+bodies — keeps it. The trace survives without ever being paid for in prompt budget. With
+`flat_ratio` above 0, a recall that found only a flat field says so in `recall_diagnostic.flat`
+(`true`, absent otherwise) and answers empty (#1441). The tier-2
 `dialectic` call is the one consumer that gets the **full internal records** (ids, scores,
 `agreement`, sessions and all): it is a reasoning step over the retrieval, not the answer, and
 #296 draws its line at what reaches the ANSWERING model, not at what reaches every model.

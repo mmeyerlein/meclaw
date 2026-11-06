@@ -255,6 +255,10 @@ fn word(n: usize) -> &'static str {
         // sixty-eight, thirty-nine leaving.
         (68, "sixty-eight"),
         (124, "one hundred and twenty-four"),
+        // GH #1440: the role's self summary `./brain -> ./curator` on
+        // `in_summary_self` -- one hundred and twenty-five, fifty-seven of
+        // round, the boundary unchanged.
+        (125, "one hundred and twenty-five"),
     ]
     .into_iter()
     .collect();

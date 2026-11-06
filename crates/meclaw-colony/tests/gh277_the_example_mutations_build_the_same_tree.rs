@@ -969,7 +969,12 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// `templates/talky/README.md`) and every `curator` two more (`. -> ./policy`
 /// on `in_spec_partial`, `./policy -> .` on `partial`). Two talkies, three
 /// curators: 2 x 2 + 3 x 2.
-const EDGES: usize = 643;
+/// Moved 643 -> 648 with GH #1440 (the role condenses itself): every `talky`
+/// one edge more (`./brain -> ./curator` on `in_summary_self`, 124 -> 125 in
+/// `templates/talky/README.md`) and every `curator` one more (`. -> ./policy`
+/// on `in_summary_self`). Two talkies, three curators: 2 x 1 + 3 x 1.
+/// Measured red in the strand's run (648 against 643).
+const EDGES: usize = 648;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

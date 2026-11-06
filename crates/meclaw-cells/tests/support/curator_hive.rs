@@ -126,6 +126,55 @@ pub fn policy_scope(over: Value, probe: &str, args: Value) -> (Value, String) {
     (got, err)
 }
 
+/// [`AST_LOADER`] for a cell whose upper-case names also read the running
+/// message (`./history`: `SESSION`, `ROUND`, ...): an assignment that cannot
+/// be evaluated without a message is left out of the scope; imports and defs
+/// load as there.
+const AST_LOADER_LENIENT: &str = r#"
+import ast, io, json, sys
+inp = json.load(sys.stdin)
+sys.stdin = io.StringIO("")
+src, params = inp["src"], inp["params"]
+keep = [n for n in ast.parse(src).body
+        if isinstance(n, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+        or (isinstance(n, ast.Assign)
+            and all(isinstance(t, ast.Name) and t.id.isupper() for t in n.targets))]
+scope = {"P": params, "doc": {"params": params, "body": {}, "envelope": {}}}
+for n in keep:
+    try:
+        exec(compile(ast.Module(body=[n], type_ignores=[]), "cell", "exec"), scope)
+    except Exception:
+        if not isinstance(n, ast.Assign):
+            raise
+scope["ARGS"] = inp.get("args")
+print(json.dumps(eval(inp["probe"], scope)))
+"#;
+
+/// The pure half of the shipped cell `cell` (GH #1436: the one function both
+/// `./history` and `./policy` age a topic with), loaded with the shipped
+/// params overlaid by `over`, and `probe` evaluated in it.
+pub fn cell_scope(cell: &str, over: Value, probe: &str, args: Value) -> (Value, String) {
+    let mut params = cell_config(cell)["params"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    params.remove("script_inline");
+    for (k, v) in over.as_object().cloned().unwrap_or_default() {
+        params.insert(k, v);
+    }
+    let doc = json!({"src": script_of(cell), "params": params, "probe": probe,
+                     "args": args});
+    let out = run_python(AST_LOADER_LENIENT, &doc.to_string());
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        out.status.success(),
+        "{cell}: the pure half does not load: {err}"
+    );
+    let got: Value = sj::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)));
+    (got, err)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Msg {
     pub context: Map<String, Value>,

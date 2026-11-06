@@ -347,8 +347,12 @@ const CALL_END: &str = "has(hop.route) && hop.route == 'in_call_end'";
 
 /// The edges of talky before #1398 (6.13.1), hashed in a canonical form
 /// (keys sorted, no whitespace): the golden of pin 4.
+/// Re-blessed for GH #1440 (the role's self summary on `in_summary_self`, the
+/// brain's `summarize` exclusion, the three keys in the exits'
+/// `delete_context`) -- a wanted edge change, old
+/// `781c0dc7c4464d412a3943e0cd88016848bb11155b9044803c913c68bbc2290a`.
 const EDGES_6_13_1_SHA256: &str =
-    "781c0dc7c4464d412a3943e0cd88016848bb11155b9044803c913c68bbc2290a";
+    "c19ec872ed4c7da304f3e6fa5bf8cebe534db03574ad4f7e68f8e1e8172d34f3";
 
 /// The guard #1398 adds to the brain's model door and to `./curator -> ./quick`.
 const DOOR_GUARD: &str =

@@ -1,4 +1,4 @@
-# `talky@6.16.2`
+# `talky@6.17.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- one hundred and twenty-four edges,
+dispatcher for the fan-out, the close batch out to the write port -- one hundred and twenty-five edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -72,13 +72,13 @@ The four sub-units are **references**, not copies. Each of the four directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.9.0"}}
+{"cell": {"type": "ref", "template": "collector@5.10.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.16.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.17.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -672,7 +672,8 @@ the tool runs.
 
 ## The internal wiring, edge by edge
 
-Fifty-six edges of round in this hive's `params.graph` (the fifty-sixth GH #1415's: a
+Fifty-seven edges of round in this hive's `params.graph` (the fifty-seventh GH #1440's: the
+role's self summary `./brain -> ./curator` on `in_summary_self`; the fifty-sixth GH #1415's: a
 speculation's partial into `./curator` on `in_spec_partial`; the forty-eighth to fifty-fifth #1398's:
 the curator's two roads each onto `./quick_spec` and `./quick_bridge`, the speculation's lane
 `in_spec_llm` into `./curator`, and the bridge's cut to `./splitter`, its tap into `./curator` and
@@ -747,7 +748,8 @@ collector --(menu)--------------> curator    in_slots   <- the answered tool men
 collector --(schemas)-----------> curator    in_schemas <- the curator answers the menu too, GH #892
 curator --(tool_schemas, !refused_subscriber)--> collector  in_menu  <- tool_answerer 'curator', GH #892
 collector --(recall)------------> curator    in_recall_ask  <- its question is built there, GH #895
-brain --(any answer, !refused_subscriber)--> curator  in_llm   <- the tap, GH #889
+brain --(any answer, !refused_subscriber, no self summary)--> curator  in_llm   <- the tap, GH #889
+brain --(any answer or refusal, context.summarize '1')--> curator  in_summary_self  <- the curator's self summary, never spoken, GH #1440
 quick --(any answer, !refused_subscriber, no spec)--> curator  in_llm   <- the quick voice's tap, GH #1248
 quick --(any answer, !refused_subscriber, context.spec '1')--> curator  in_spec_llm  <- a spec answer, held, #1275
 quick_spec --(any answer, !refused_subscriber)--> curator  in_spec_llm  <- every answer of it is a spec answer; its only road, no splitter, #1398
@@ -814,6 +816,8 @@ curator --(seed | live_feed | propose)-->  .   <- #1279
 
 [sealed]  session-keeper  collector  curator   [plain]  brain  quick  quick_spec  quick_bridge  schemas  splitter  dispatcher  errors  route  decide  screen_judge  screen_model
 ```
+
+**A self summary is never spoken (GH #1440).** With the curator's `summarizer_self` `1` a rebuild sends the brain one call with `hop.summarize` `1`. `./curator -> ./brain` lifts `summarize`, `summary_call` and `summary_token` into the context (empty on every other call); every edge out of `./brain` -- to the splitter, the partial exit, the tap, the errors and the refusal exit -- is closed to a context with `summarize` `1`, and the answer or refusal of such a call goes to the curator on `in_summary_self` alone, the three keys dropped. Every exit's `delete_context` drops them as well, so no next turn carries them. Speculation (`./quick_spec`) and the quick voice are not touched.
 
 **The edges inside the sealed sub-units are not drawn here, and that is the point.** A sealed sub-unit takes its
 lane at its own `{"from": "."}` door edges and distributes behind them -- `session-keeper`
@@ -986,7 +990,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.16.2",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.17.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

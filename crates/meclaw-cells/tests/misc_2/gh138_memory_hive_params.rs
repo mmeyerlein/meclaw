@@ -110,6 +110,7 @@ const SCRIPTED: &[Scripted] = &[
             ("rrf_w_self", "_float"),
             ("rrf_w_temporal_point", "_float"),
             ("rrf_agreement", "_float"),
+            ("flat_ratio", "_float"),
             ("query_safe_chars", "_pkg"),
             ("query_max_chars", "_pkg"),
             ("query_tokens", "_pkg"),
@@ -493,7 +494,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 74,
+        total, 75,
         "the scripted half of the migration is forty-four knobs, plus `bundle_share` (GH #1040), \
          `generation_idle_ms` (GH #1042), `require_quote` (GH #1079), `tier1_graph_node_facts` \
          and the four graph page sizes of `recall`, the three thresholds and two page sizes of \
@@ -501,7 +502,7 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
          its switch `forget_fallback` (R-TR-25), less `tier0_episode_chars` and \
          `tier1_item_chars` (GH #1085: an item has no length of its own), plus \
          `input_soft_fallback` (GH #1085), plus the language data `stopwords_lang` of `recall` \
-         (GH #1095), plus the language data `question_words` of `close-glue` and `recall` and `forget_lang` of `recall` (GH #1225), plus the language data `entity_stop_lang` of `recall` and `entity-glue` (GH #1089), plus the lift bounds `lift_turns` and `lift_marks` of `recall` (GH #1225), plus `night_at_utc` of `writer` (GH #1229), plus `correction_fact_rows` of `close-glue` (GH #1323), plus the language data `reporting_cues` of `close-glue` (GH #1423), plus `stance_lang`, `stance_language`, `attribute_asserted` and `memory_caveat` of `recall` and `person_names` of `dream-glue` (GH #1424)"
+         (GH #1095), plus the language data `question_words` of `close-glue` and `recall` and `forget_lang` of `recall` (GH #1225), plus the language data `entity_stop_lang` of `recall` and `entity-glue` (GH #1089), plus the lift bounds `lift_turns` and `lift_marks` of `recall` (GH #1225), plus `night_at_utc` of `writer` (GH #1229), plus `correction_fact_rows` of `close-glue` (GH #1323), plus the language data `reporting_cues` of `close-glue` (GH #1423), plus `stance_lang`, `stance_language`, `attribute_asserted` and `memory_caveat` of `recall` and `person_names` of `dream-glue` (GH #1424), plus `flat_ratio` of `recall` (GH #1441)"
     );
 }
 
