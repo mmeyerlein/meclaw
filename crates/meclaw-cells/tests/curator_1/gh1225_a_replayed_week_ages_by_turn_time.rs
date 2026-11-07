@@ -148,7 +148,7 @@ fn a_replay_ahead_of_the_wall_clock_expires_nothing_early() {
     // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (shown, err) = policy_scope(
         json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
-        "[el['text'] for _, el, _, _ in render(ARGS['rows'], {}, window_plan(ARGS['rows'], [], \
+        "[el['text'] for _, el, _, _ in render(blocks_of_rows(ARGS['rows'], [], None), ARGS['rows'], {}, window_plan(ARGS['rows'], [], \
          [], [], {}, ARGS['as_of'], [], [], 0, '[\"member:e\"]')['plan'], None, None, \
          '[\"member:e\"]')]",
         json!({"rows": wall, "as_of": AS_OF_MS}),

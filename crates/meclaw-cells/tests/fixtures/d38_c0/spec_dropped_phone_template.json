@@ -1,0 +1,466 @@
+{
+  "case": "spec_dropped_phone_template",
+  "steps": [
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Hello.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-0"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t0"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "01 say t0 talk Hello.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":2,\"window_estimate\":43,\"window_tokens\":43}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-1"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "02 reply brain stop",
+      "summarizer": []
+    },
+    {
+      "marks": [],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "What is the weather in Berlin?",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-2"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#a413d83d0971] What is the weather in Berlin?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "spec": "1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "03 spec t1",
+      "summarizer": []
+    },
+    {
+      "marks": [],
+      "out": [],
+      "step": "04 spec answer",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"path\":\"simple\",\"way\":\"quick\"}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "quick_spec",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost\":null,\"done_ms\":1772445620000,\"fired_ms\":1772445610000,\"reason\":\"no_tool_call\",\"verdict\":\"dropped\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#a413d83d0971] What is the weather in Berlin?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "bridge": {
+                  "text": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. Your lookup is already running right now, on the web and at the weather service; it was started for you, and its result follows in this turn. Say one short sentence that bridges the wait, in your own words: only that you are looking it up, one moment. Never speak of missing access, missing abilities or limits of any kind. Ask the person nothing: the answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Speak plainly: write no tool call, no JSON, no code and no command."
+                },
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a790-4500-8000-0000000001c0-bridge",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "interim": "1",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "spec": "bridge",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#a413d83d0971] What is the weather in Berlin?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": [
+                "web",
+                "weather"
+              ],
+              "hint": [],
+              "require": true
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a790-4500-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "interim": "tool",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "05 say t1 simple What is the weather in Berlin?",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":14,\"window_estimate\":62,\"window_tokens\":62}"
+        }
+      ],
+      "out": [],
+      "step": "06 reply quick tool_calls",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a828-4b80-8000-0000000001c0\",\"path\":\"simple\",\"way\":\"quick\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#a413d83d0971] What is the weather in Berlin?",
+                "type": "text"
+              },
+              {
+                "id": "c1",
+                "origin": "assistant",
+                "text": "{\"arguments\":\"{}\",\"name\":\"web_search\"}",
+                "type": "tool_call"
+              },
+              {
+                "id": "c1",
+                "origin": "tool",
+                "text": "[#a2bc103f2403] 12 degrees, cloudy",
+                "type": "tool_result"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "quick": {
+                  "text": "When you call a tool, say one short sentence beside the call, in your own words, so the person hears you while it runs. Keep answers short. If you are unsure how the person means a request even with the conversation so far, ask one short question about it instead of guessing."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": [
+                "web",
+                "weather"
+              ],
+              "hint": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a828-4b80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "1",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "07 tool result t1 1",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a828-4b80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":32,\"window_estimate\":222,\"window_tokens\":222}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "It is 12 degrees and cloudy.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "1",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-3"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "08 reply quick stop",
+      "summarizer": []
+    }
+  ]
+}

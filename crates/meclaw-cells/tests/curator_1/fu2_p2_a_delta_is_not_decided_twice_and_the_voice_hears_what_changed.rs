@@ -68,7 +68,7 @@ fn marks(h: &Hive, kind: &str) -> Vec<Value> {
 }
 
 fn keys_like(h: &Hive, prefix: &str) -> Vec<Vec<Value>> {
-    h.rows(&format!(
+    h.lead_rows(&format!(
         "SELECT key, value FROM state WHERE key LIKE '{prefix}%'"
     ))
 }
@@ -204,9 +204,9 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
 fn delta_hive() -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("")),
-        ("policy", "delta_speculation", json!("1")),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("")),
+        ("lead", "delta_speculation", json!("1")),
     ]);
     h.check_emits = true;
     h
@@ -382,14 +382,15 @@ fn fu2_p2_defaults_byte_identical() {
     if !shipped() {
         return;
     }
-    let policy = cell_config("policy");
-    for (k, v) in [
-        ("live_feed", json!("0")),
-        ("live_feed_section", json!("renew")),
-        ("delta_speculation", json!("0")),
+    // `delta_speculation` lives in the lead since GH #1447.
+    for (cell, k, v) in [
+        ("policy", "live_feed", json!("0")),
+        ("policy", "live_feed_section", json!("renew")),
+        ("lead", "delta_speculation", json!("0")),
     ] {
-        assert_eq!(policy["params"][k], v, "{k}");
-        assert_eq!(policy["contract"]["settings"][k]["default"], v, "{k}");
+        let config = cell_config(cell);
+        assert_eq!(config["params"][k], v, "{k}");
+        assert_eq!(config["contract"]["settings"][k]["default"], v, "{k}");
     }
     // A run with duplex turns and a delta stamp: the same calls with the knobs
     // shipped and with the knobs absent, and nothing of P2 in the ledger.
@@ -426,14 +427,14 @@ fn fu2_p2_defaults_byte_identical() {
     };
     let shipped_run = run(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
+        ("lead", "quick_speculative", json!("1")),
     ]);
     let absent_run = run(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
+        ("lead", "quick_speculative", json!("1")),
         ("policy", "live_feed", Value::Null),
         ("policy", "live_feed_section", Value::Null),
-        ("policy", "delta_speculation", Value::Null),
+        ("lead", "delta_speculation", Value::Null),
     ]);
     assert_eq!(shipped_run, absent_run);
 }
@@ -465,9 +466,9 @@ fn live_feed_and_delta_switches_read_json_true() {
 
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!(true)),
-        ("policy", "spec_tools", json!("")),
-        ("policy", "delta_speculation", json!(true)),
+        ("lead", "quick_speculative", json!(true)),
+        ("lead", "spec_tools", json!("")),
+        ("lead", "delta_speculation", json!(true)),
     ]);
     delta_stamp(&mut h, "t1", "what is the weather in berlin");
     assert_eq!(

@@ -249,6 +249,7 @@ warm_cells! {
     coder_pipeline_taskarchive: "coder-pipeline/taskarchive",
     cogny_ask: "cogny/ask",
     collector_assemble: "collector/assemble",
+    curator_lead: "curator/lead",
     curator_reader: "curator/reader",
     curator_writer: "curator/writer",
     dispatcher: "dispatcher",

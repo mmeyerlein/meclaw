@@ -115,6 +115,9 @@ struct Hive {
     edges: Vec<Edge>,
     cells: BTreeMap<String, Value>,
     db: rusqlite::Connection,
+    /// GH #1447: the lead's own store `./lead_state`, a second in-memory
+    /// SQLite from its params; never counted in `reads` or `trips`.
+    lead_db: rusqlite::Connection,
     out: Vec<Msg>,
     clock: Vec<Msg>,
     summ: VecDeque<Msg>,
@@ -182,6 +185,8 @@ impl Hive {
             // GH #896: `./policy` hands the first call of every new session
             // through `./handover`, so a hive without it stops there.
             "handover",
+            // GH #1447: `./policy` asks `./lead` the way of every call.
+            "lead",
         ] {
             cells.insert(name.to_string(), cell_config(name));
         }
@@ -206,10 +211,19 @@ impl Hive {
             &ledger.schema,
         )
         .expect("seed");
+        let lead_db = rusqlite::Connection::open_in_memory().expect("sqlite");
+        let lead_state =
+            meclaw_cells::store::StoreParams::parse(&cell_config("lead_state")["params"])
+                .expect("the lead_state params parse");
+        meclaw_cells::store::ddl::apply_declared_schema_ddl(&lead_db, &lead_state)
+            .expect("lead ddl");
+        meclaw_cells::store::ddl::apply_index_ddl(&lead_db, &lead_state.indexes)
+            .expect("lead index ddl");
         Self {
             edges,
             cells,
             db,
+            lead_db,
             out: Vec::new(),
             clock: Vec::new(),
             summ: VecDeque::new(),
@@ -383,6 +397,14 @@ impl Hive {
                     "./ledger" => {
                         let answer = self.store(&m);
                         queue.push_back(("./ledger".to_string(), answer));
+                    }
+                    "./lead_state" => {
+                        let (reads, trips) = (self.reads.clone(), self.trips);
+                        std::mem::swap(&mut self.db, &mut self.lead_db);
+                        let answer = self.store(&m);
+                        std::mem::swap(&mut self.db, &mut self.lead_db);
+                        (self.reads, self.trips) = (reads, trips);
+                        queue.push_back(("./lead_state".to_string(), answer));
                     }
                     "./clock" => self.clock.push(m),
                     "./summarizer" => self.summ.push_back(m),

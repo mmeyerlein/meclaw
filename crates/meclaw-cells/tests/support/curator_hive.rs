@@ -216,8 +216,9 @@ struct Edge {
 /// since GH #895, `handover` since GH #896 (`./policy` hands the first
 /// call of every new session through it) and `stats` since GH #926 (the
 /// ledger's counts on `in_stats`), `history` since GH #1279 (the judge
-/// context, the seed of a live call and its seed lines).
-pub const CELLS: [&str; 11] = [
+/// context, the seed of a live call and its seed lines), `reader` since
+/// GH #1448 (the audience-gated read of the plan snapshots).
+pub const CELLS: [&str; 12] = [
     "intake",
     "policy",
     "writer",
@@ -229,6 +230,7 @@ pub const CELLS: [&str; 11] = [
     "handover",
     "stats",
     "history",
+    "reader",
 ];
 
 /// The curator hive in one process: its cells, its edges, its ledger.
@@ -292,11 +294,45 @@ pub struct Hive {
     /// `hop.bridge = "tool"` outside the declared values, and no test saw it.
     pub check_emits: bool,
     pub emit_violations: Vec<String>,
+    /// GH #1446 (D38 C0): the corpus clock, see [`Hive::set_clock`].
+    clock_us: Option<i64>,
+    runs_since_clock: i64,
+    /// GH #1447 (D38 C1): the store of `./lead` (`./lead_state`), its own
+    /// in-memory SQLite with the shipped schema and seed of that cell --
+    /// never the ledger. `None` in a tree without the lead cell.
+    pub lead_db: Option<rusqlite::Connection>,
+    /// GH #1447: every operation `./lead_state` ran, with the cell that sent
+    /// it -- measured at the store, like `ledger_ops`.
+    pub lead_ops: Vec<(String, Value)>,
+    /// GH #1447: `refuse_legs` for `./lead_state` -- `(leg, error_code)`, the
+    /// store of the lead refuses that leg of the next message carrying it
+    /// and runs the others. Taken when it strikes.
+    pub lead_refuse_legs: Vec<(String, String)>,
+    /// GH #1447 (the join of `win`): `(from, cur_phase)` -- every message
+    /// routed from `from` to `./policy` (and, when the phase is set, only one
+    /// whose context `cur_phase` is it) is held in `held` instead of
+    /// delivered, until [`Hive::release_held`]. Two arrival orders of the two
+    /// halves of a call (ledger legs, lead verdict) are made this way.
+    pub hold: Option<(String, Option<String>)>,
+    pub held: Vec<Msg>,
 }
+
+/// GH #1447 (D38 C1): the cells of the lead, loaded when the tree ships them.
+pub const LEAD_CELLS: [&str; 2] = ["lead", "lead_state"];
+
+/// GH #1447: whether the tree ships the lead cell of the curator.
+pub fn lead_shipped() -> bool {
+    repo("templates/curator/lead/config.json").is_file()
+}
+
+/// GH #1446 (D38 C0): the microseconds one cell run moves the corpus clock --
+/// room for the readings of one run, the millisecond of a step unchanged
+/// for up to 125 runs.
+pub const CLOCK_STEP_US: i64 = 8;
 
 /// GH #1225: the cells the hive runs `resident`, the way they ship.
 /// `push` since strand KP: its RAM is a cache of in-flight writes only (A1).
-pub const RESIDENT_CELLS: [&str; 2] = ["intake", "push"];
+pub const RESIDENT_CELLS: [&str; 3] = ["intake", "push", "policy"];
 
 // Folded, this module is `pub` at a harness root, so clippy::new_without_default
 // applies to `Hive::new` (W5 clippy).
@@ -313,6 +349,14 @@ impl Hive {
 
     /// The shipped hive with `(cell, param, value)` overrides.
     pub fn with(over: &[(&str, &str, Value)]) -> Self {
+        Self::with_prelude(over, "")
+    }
+
+    /// GH #1446 (D38 C0): [`Hive::with`], every cell's program run behind
+    /// `prelude` -- python the test puts in front of each shipped script
+    /// (the corpus's own clock). The shipped text follows unchanged; an empty
+    /// prelude is [`Hive::with`].
+    pub fn with_prelude(over: &[(&str, &str, Value)], prelude: &str) -> Self {
         let hive = read_json(&repo("templates/curator/config.json"));
         let mut edges = Vec::new();
         for e in hive["params"]["graph"]["edges"].as_array().expect("edges") {
@@ -337,6 +381,11 @@ impl Hive {
         for name in CELLS {
             cells.insert(name.to_string(), cell_config(name));
         }
+        if lead_shipped() {
+            for name in LEAD_CELLS {
+                cells.insert(name.to_string(), cell_config(name));
+            }
+        }
         for (cell, key, value) in over {
             let params = cells
                 .get_mut(*cell)
@@ -344,6 +393,14 @@ impl Hive {
                 .expect("a cell with params");
             assert!(params.contains_key(*key), "no such param: {cell}.{key}");
             params.insert((*key).to_string(), value.clone());
+        }
+        if !prelude.is_empty() {
+            for cfg in cells.values_mut() {
+                if let Some(s) = cfg["params"]["script_inline"].as_str() {
+                    let joined = format!("{prelude}\n{s}");
+                    cfg["params"]["script_inline"] = json!(joined);
+                }
+            }
         }
         let db = rusqlite::Connection::open_in_memory().expect("sqlite");
         // GH #1225: the store's own reading of the ledger params -- a column
@@ -363,6 +420,22 @@ impl Hive {
             &ledger.schema,
         )
         .expect("seed");
+        // GH #1447: the lead's own store, built like the ledger (schema ->
+        // indexes -> seed) from the params of `./lead_state`.
+        let lead_db = cells.get("lead_state").map(|cfg| {
+            let p = meclaw_cells::store::StoreParams::parse(&cfg["params"])
+                .expect("the lead_state params parse");
+            let db = rusqlite::Connection::open_in_memory().expect("sqlite");
+            meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &p).expect("lead ddl");
+            meclaw_cells::store::ddl::apply_index_ddl(&db, &p.indexes).expect("lead index ddl");
+            meclaw_cells::store::seed::load_seed_if_present(
+                &db,
+                &repo("templates/curator/lead_state"),
+                &p.schema,
+            )
+            .expect("lead seed");
+            db
+        });
         let mut resident = BTreeMap::new();
         for name in RESIDENT_CELLS {
             let cfg = &cells[name];
@@ -390,7 +463,23 @@ impl Hive {
             lane_at: None,
             check_emits: false,
             emit_violations: Vec::new(),
+            clock_us: None,
+            runs_since_clock: 0,
+            lead_db,
+            lead_ops: Vec::new(),
+            lead_refuse_legs: Vec::new(),
+            hold: None,
+            held: Vec::new(),
         }
+    }
+
+    /// GH #1446 (D38 C0): the corpus clock at `us` microseconds since the
+    /// epoch. From here on every cell run's stdin document starts with the
+    /// key `c0_clock_us` -- this instant plus `CLOCK_STEP_US` per run since
+    /// the clock was set -- which the corpus prelude reads.
+    pub fn set_clock(&mut self, us: i64) {
+        self.clock_us = Some(us);
+        self.runs_since_clock = 0;
     }
 
     /// GH #1225: the child of the resident `cell` killed and booted again --
@@ -400,6 +489,13 @@ impl Hive {
             .get_mut(cell)
             .unwrap_or_else(|| panic!("{cell} does not run resident"))
             .restart();
+    }
+
+    /// OR-d38-3.o9.4: `cell` runs without a child of its own from here on --
+    /// every message a fresh process, nothing kept between two of them (as a
+    /// resident child restarted after each message).
+    pub fn run_cold(&mut self, cell: &str) {
+        self.resident.remove(cell);
     }
 
     fn run_cell(&mut self, name: &str, msg: &Msg) -> Vec<Msg> {
@@ -414,6 +510,14 @@ impl Hive {
             "params": params,
         })
         .to_string();
+        let doc = match self.clock_us {
+            Some(us) => {
+                let at = us + self.runs_since_clock * CLOCK_STEP_US;
+                self.runs_since_clock += 1;
+                format!("{{\"c0_clock_us\":{at},{}", &doc[1..])
+            }
+            None => doc,
+        };
         let mut warm = None;
         if self.resident.contains_key(name) {
             let phase = msg
@@ -458,6 +562,18 @@ impl Hive {
                 String::from_utf8_lossy(&out.stdout)
             )
         });
+        // GH #1447: the code cell refuses an array its contract does not
+        // declare (`multi_send_not_declared`, docs/cell-types.md § code) --
+        // the lead's first form wrote one and dead-lettered in a real colony
+        // while this harness took it. Like the cell (`code/cell.rs`,
+        // `parsed.len() > 1`), an array of at most one message is one send
+        // (`curator/stats` answers so).
+        assert!(
+            emitted.as_array().is_none_or(|a| a.len() <= 1)
+                || self.cells[name]["contract"]["multi_send_capable"] == json!(true),
+            "{name} writes a JSON array without contract.multi_send_capable \
+             (multi_send_not_declared)"
+        );
         let list = match emitted {
             Value::Array(a) => a,
             other => vec![other],
@@ -703,6 +819,30 @@ impl Hive {
                         let answer = self.store(&m);
                         queue.push_back(("./ledger".to_string(), answer));
                     }
+                    "./policy"
+                        if self.hold.as_ref().is_some_and(|(f, p)| {
+                            *f == from
+                                && p.as_deref().is_none_or(|p| {
+                                    m.context.get("cur_phase").and_then(Value::as_str) == Some(p)
+                                })
+                        }) =>
+                    {
+                        self.held.push(m)
+                    }
+                    "./lead_state" if self.lead_db.is_some() => {
+                        let sender = from.trim_start_matches("./").to_string();
+                        for c in m.messages().iter().filter(|c| c["type"] == "tool_call") {
+                            let args = sj::from_str(c["text"].as_str().unwrap_or(""))
+                                .unwrap_or(Value::Null);
+                            self.lead_ops.push((sender.clone(), args));
+                        }
+                        let answer = store_plain(
+                            self.lead_db.as_ref().expect("lead db"),
+                            &m,
+                            &mut self.lead_refuse_legs,
+                        );
+                        queue.push_back(("./lead_state".to_string(), answer));
+                    }
                     "./clock" => self.clock.push(m),
                     "./summarizer" => self.summ.push_back(m),
                     cell => {
@@ -864,24 +1004,36 @@ impl Hive {
         req
     }
 
+    /// GH #1447: the held messages delivered to `./policy`, in the order they
+    /// were held, and the hive run to rest; the hold is lifted.
+    pub fn release_held(&mut self) {
+        self.hold = None;
+        let held = std::mem::take(&mut self.held);
+        for m in held {
+            let outs = self.run_cell("policy", &m);
+            let starts = outs
+                .into_iter()
+                .map(|o| ("./policy".to_string(), o))
+                .collect();
+            self.pump_many(starts);
+        }
+    }
+
+    /// GH #1447: rows of the lead's own store (`./lead_state`).
+    pub fn lead_rows(&self, sql: &str) -> Vec<Vec<Value>> {
+        rows_of(self.lead_db.as_ref().expect("the tree ships the lead"), sql)
+    }
+
+    /// GH #1447: the state row `key` of the lead's own store.
+    pub fn lead_state(&self, key: &str) -> String {
+        self.lead_rows(&format!("SELECT value FROM state WHERE key = '{key}'"))
+            .first()
+            .and_then(|r| r[0].as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
     pub fn rows(&self, sql: &str) -> Vec<Vec<Value>> {
-        use rusqlite::types::ValueRef;
-        let mut st = self.db.prepare(sql).expect(sql);
-        let n = st.column_count();
-        st.query_map([], |r| {
-            Ok((0..n)
-                .map(|i| match r.get_ref(i).unwrap() {
-                    ValueRef::Null => Value::Null,
-                    ValueRef::Integer(x) => json!(x),
-                    ValueRef::Real(x) => json!(x),
-                    ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-                    ValueRef::Blob(_) => Value::Null,
-                })
-                .collect())
-        })
-        .expect(sql)
-        .map(Result::unwrap)
-        .collect()
+        rows_of(&self.db, sql)
     }
 
     pub fn state(&self, key: &str) -> String {
@@ -901,6 +1053,18 @@ impl Hive {
     /// GH #943), `{}` before the round's first rebuild.
     pub fn plan_in(&self, round: &str) -> Value {
         sj::from_str(&self.state_in("window_plan", round)).unwrap_or_else(|_| json!({}))
+    }
+
+    /// GH #1448: what the rebuilds of the round `round` made of its plan --
+    /// [`Hive::plan_in`] without the blocks the answers write ahead
+    /// (`blocks`, `blocks_to`); `{}` before the round's first rebuild.
+    pub fn rebuild_in(&self, round: &str) -> Value {
+        let mut plan = self.plan_in(round);
+        if let Some(m) = plan.as_object_mut() {
+            m.remove("blocks");
+            m.remove("blocks_to");
+        }
+        plan
     }
 
     /// The plan after the LAST rebuild, of whichever round it ran in: the
@@ -1114,6 +1278,92 @@ impl Hive {
 
 /// GH #1225: a `refuse_legs` entry against a tool_call id -- equal, or a
 /// prefix when the entry ends in `*`.
+/// The rows of `sql` on `db`, every column as JSON.
+fn rows_of(db: &rusqlite::Connection, sql: &str) -> Vec<Vec<Value>> {
+    use rusqlite::types::ValueRef;
+    let mut st = db.prepare(sql).expect(sql);
+    let n = st.column_count();
+    st.query_map([], |r| {
+        Ok((0..n)
+            .map(|i| match r.get_ref(i).unwrap() {
+                ValueRef::Null => Value::Null,
+                ValueRef::Integer(x) => json!(x),
+                ValueRef::Real(x) => json!(x),
+                ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+                ValueRef::Blob(_) => Value::Null,
+            })
+            .collect())
+    })
+    .expect(sql)
+    .map(Result::unwrap)
+    .collect()
+}
+
+/// GH #1447: one message of a store cell other than the ledger (`./lead_state`)
+/// through the store's own dispatcher, answered in its own reply shape --
+/// the ledger path without its refusal hooks. A refused op fails the test.
+fn store_plain(db: &rusqlite::Connection, msg: &Msg, refuse: &mut Vec<(String, String)>) -> Msg {
+    use meclaw_cells::store::ops::dispatch;
+    use meclaw_cells::store::output::{BundleLeg, build_bundle_result, build_tool_result};
+    let calls: Vec<Value> = msg
+        .messages()
+        .into_iter()
+        .filter(|m| m["type"] == "tool_call")
+        .collect();
+    let struck: Vec<(String, String)> = refuse
+        .iter()
+        .filter(|(leg, _)| calls.iter().any(|c| leg_matches(leg, &c["id"])))
+        .cloned()
+        .collect();
+    refuse.retain(|e| !struck.contains(e));
+    let (body, hop) = if !struck.is_empty() {
+        let legs: Vec<BundleLeg> = calls
+            .iter()
+            .map(|c| {
+                let id = c["id"].as_str().unwrap_or("").to_string();
+                let args: Value = sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
+                let op = args["operation"].as_str().unwrap_or("error");
+                match struck.iter().find(|(leg, _)| leg_matches(leg, &c["id"])) {
+                    Some((_, code)) => {
+                        BundleLeg::refusal(op, id, 0, code, "refused by the test".to_string())
+                    }
+                    None => BundleLeg::from_outcome(
+                        &dispatch(db, &args)
+                            .unwrap_or_else(|e| panic!("a lead_state op failed: {e} in {args}")),
+                        id,
+                        0,
+                    ),
+                }
+            })
+            .collect();
+        build_bundle_result(&legs, 0)
+    } else if calls.len() == 1 {
+        let c = &calls[0];
+        let args: Value = sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
+        let outcome =
+            dispatch(db, &args).unwrap_or_else(|e| panic!("a lead_state op failed: {e} in {args}"));
+        build_tool_result(&outcome, c["id"].as_str().unwrap_or("").to_string(), 0)
+    } else {
+        let legs: Vec<BundleLeg> = calls
+            .iter()
+            .map(|c| {
+                let id = c["id"].as_str().unwrap_or("").to_string();
+                let args: Value = sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
+                let outcome = dispatch(db, &args)
+                    .unwrap_or_else(|e| panic!("a lead_state op failed: {e} in {args}"));
+                BundleLeg::from_outcome(&outcome, id, 0)
+            })
+            .collect();
+        build_bundle_result(&legs, 0)
+    };
+    Msg {
+        context: msg.context.clone(),
+        hop,
+        body: obj(body),
+        reply_to: String::new(),
+    }
+}
+
 fn leg_matches(leg: &str, id: &Value) -> bool {
     let id = id.as_str().unwrap_or("");
     match leg.strip_suffix('*') {
@@ -1323,4 +1573,58 @@ pub fn clear_of_midnight() {
     if wait > 0 {
         std::thread::sleep(std::time::Duration::from_secs(wait as u64));
     }
+}
+
+/// GH #1448 (D38 C2, R-38-4 Nr. 2): the keys every building block of the
+/// window plan carries -- `{id, kind, prio, origin, tokens, audience,
+/// valid_until}`, `origin` as `{source, seq}` or `{source, hash}`.
+pub const BLOCK_KEYS: [&str; 7] = [
+    "id",
+    "kind",
+    "prio",
+    "origin",
+    "tokens",
+    "audience",
+    "valid_until",
+];
+
+/// GH #1448: the id of the building block of `kind` whose origin is the
+/// wall element `el` -- the kind and the element's short id
+/// (`words:<12 hex>`, `answer:<12 hex>`, `recall:<12 hex>`).
+pub fn block_id(kind: &str, el: &Value) -> String {
+    format!("{kind}:{}", short_id(el))
+}
+
+/// GH #1448: the building blocks of the plan of the round `round`
+/// (`state.window_plan:<rk>`, the one plan form, `blocks`), empty when the
+/// round has no plan or the plan none.
+pub fn plan_blocks(h: &Hive, round: &str) -> Vec<Value> {
+    h.plan_in(round)["blocks"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// GH #1448: the ids of `blocks`, in their order.
+pub fn block_ids(blocks: &[Value]) -> Vec<String> {
+    blocks
+        .iter()
+        .map(|b| b["id"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// GH #1448 (R-38-4 Nr. 5): the plan snapshot the ledger keeps for the call
+/// `call` (table `snapshots`, column `body`: `[{id, prio, tokens}, ...]`),
+/// `None` when the ledger has no such table or no row of the call.
+pub fn snapshot_of(h: &Hive, call: &Msg) -> Option<Vec<Value>> {
+    let has = h.rows("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'");
+    if has.is_empty() {
+        return None;
+    }
+    let id = call.hop["curator_call"].as_str().unwrap_or_default();
+    let rows = h.rows(&format!(
+        "SELECT body FROM snapshots WHERE call_id = '{id}'"
+    ));
+    let body = rows.first()?.first()?.as_str()?.to_string();
+    sj::from_str::<Value>(&body).ok()?.as_array().cloned()
 }

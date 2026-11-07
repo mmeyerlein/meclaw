@@ -66,11 +66,12 @@ fn the_new_params_are_declared_with_their_shipped_defaults() {
         json!("0"),
         "templates/collector/assemble/config.json declares needs_wait_recall \"0\""
     );
-    let policy = cell_config("policy");
+    // The knob lives in the lead since GH #1447.
+    let lead = cell_config("lead");
     assert_eq!(
-        policy["params"]["memory_to_brain"],
+        lead["params"]["memory_to_brain"],
         json!("0"),
-        "templates/curator/policy/config.json declares memory_to_brain \"0\""
+        "templates/curator/lead/config.json declares memory_to_brain \"0\""
     );
 }
 
@@ -85,5 +86,5 @@ fn a_set_override_of_the_new_params_passes_the_door() {
                          "memory": "something the person said earlier or before today -- their people, their life, their past"}}),
     );
     passes("collector", "assemble", json!({"needs_wait_recall": "1"}));
-    passes("curator", "policy", json!({"memory_to_brain": "1"}));
+    passes("curator", "lead", json!({"memory_to_brain": "1"}));
 }

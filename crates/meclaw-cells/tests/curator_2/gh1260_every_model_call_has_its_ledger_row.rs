@@ -62,7 +62,7 @@ fn every_model_call_has_its_ledger_row() {
     }
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "consult_pending_ms", json!(86_400_000)),
+        ("lead", "consult_pending_ms", json!(86_400_000)),
     ]);
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 

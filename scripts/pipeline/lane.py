@@ -81,7 +81,7 @@ LANE_SYNC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # The switches whose goldens come back from a lane (GH #1051). An ALLOWLIST by
 # exact name, never a pattern: a pattern over the environment is how a key
 # would leave this machine.
-GOLDEN_SWITCHES = ("GH277_WRITE_GOLDEN", "MECLAW_GH935_BLESS")
+GOLDEN_SWITCHES = ("GH277_WRITE_GOLDEN", "MECLAW_GH935_BLESS", "MECLAW_D38_C0_BLESS")
 
 q = shlex.quote
 

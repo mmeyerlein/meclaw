@@ -148,7 +148,7 @@ fn the_window_shows_an_error_result_whole_even_when_the_plan_shrank_it() {
                       "shrunk": [short_id(&err_el), short_id(&ok_el)], "stubs": [],
                       "summary": "", "sum_from": 0, "sum_to": 0, "marks_to": 0,
                       "as_of_ms": AS_OF_MS});
-    let probe = "[e.get('text') for _, e, _, _ in render(ARGS['rows'], P, ARGS['plan'], \
+    let probe = "[e.get('text') for _, e, _, _ in render(blocks_of_rows(ARGS['rows'], [], None), ARGS['rows'], P, ARGS['plan'], \
                  tuple(ARGS['current'])) if e.get('type') == 'tool_result']";
     let (got, err) = policy_scope(
         json!({"role": "talky"}),

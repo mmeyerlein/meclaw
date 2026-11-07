@@ -1,0 +1,145 @@
+{
+  "case": "cogny_tool_text_template",
+  "steps": [
+    {
+      "marks": [],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#69e9a1269538] Find a moving company in Berlin.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "01 say t1  Find a moving company in Berlin.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":10,\"window_estimate\":52,\"window_tokens\":52}"
+        }
+      ],
+      "out": [],
+      "step": "02 reply brain tool_calls",
+      "summarizer": []
+    },
+    {
+      "marks": [],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#69e9a1269538] Find a moving company in Berlin.",
+                "type": "text"
+              },
+              {
+                "id": "c1",
+                "origin": "assistant",
+                "text": "{\"arguments\":\"{}\",\"name\":\"web_search\"}",
+                "type": "tool_call"
+              },
+              {
+                "id": "c1",
+                "origin": "tool",
+                "text": "[#31549d097408] Three companies found.",
+                "type": "tool_result"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "1",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "03 tool result t1 1",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":30,\"window_estimate\":100,\"window_tokens\":100}"
+        }
+      ],
+      "out": [],
+      "step": "04 reply brain stop",
+      "summarizer": []
+    }
+  ]
+}

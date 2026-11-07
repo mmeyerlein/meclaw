@@ -137,8 +137,8 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
     }
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("web")),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("web")),
     ]);
     h.check_emits = true;
     let spec = spec_curate(&mut h, "t1", "the choir in Dresden, search please");

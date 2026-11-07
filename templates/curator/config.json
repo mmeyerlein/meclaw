@@ -75,12 +75,16 @@
           "because": "a question an observer asks about this hive (GH #926), all hop: `stats_tag` (1 to 64 characters, echoed), `stats_from` and `stats_to` (RFC 3339; `from` counts, `to` does not; `from` before `to`, at most 31 days apart), `stats_kinds` (a JSON array as text, not empty, out of `calls`, `gap`, `reread`, `ask`, `correction`, `tool_error`), `stats_samples` (0 to 50, default 0); the body `{messages: []}`. `./stats` counts it out of the ledger alone, in one round trip and without writing, and answers it exactly once on `stats` -- a question that does not hold too"
         },
         {
+          "route": "in_catalog",
+          "because": "GH #1449: the package line of a model cell this hive serves: `{messages: [], package: {model, input_soft, input_hard, max_output, price_tiers, cache_mode, cache_ttl_s, wire_dialect, supported_params, chars_per_token}}`, every key present and `null` where the package states none, `hop.package_of` the cell's path. Sent once per push that touches the model's package and as the answer to an empty params slot, so the catalogue row is here before the first call. Handed to `./policy`"
+        },
+        {
           "route": "in_candidate",
           "because": "push candidates of another hive or an app (GH #949), one door for every sender: `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?: [id]}` -- `source` one path segment by the pin rule (never `model`), at most 32 candidates, `id` 1 to 64 characters, `text` 1 to 600, at most 16 `triggers` of 1 to 64 characters with a letter or digit in each, `priority` 0 to 9 (default 5), `once` (default true without triggers, false with them), `until` RFC 3339 or absent; a repeated `id` is its last entry. Each kept candidate becomes a block of kind `candidate` and one `candidates` row per `(source, id)`, written again in place (a new text, `once` or triggers start the push's marks over), and `withdraw` ends the named ones now (`until` = now). Fail-closed on the round, `context.audience_set`: without one nothing is written (`missing_audience`); a candidate without `audience_set` takes the round, one with it must name only members of the round -- `*` only when the round holds `*`, the empty set only in an empty round -- or it alone is refused (`audience_widened`); a field out of bounds refuses it alone (`invalid_input`), a broken body the whole message. Answered on `candidate_ack` only when `hop.ack` is \"1\""
         },
         {
           "route": "in_note",
-          "because": "notes for the window (GH #1303): `notes[{id, source, text, scope, until?, priority?}]` -- `source` one path segment, never `model`; `scope` `turn` (the next window of the round, and every later call of that turn), `session` (until the close of the generation it came in) or `until` (until that RFC 3339 time, or until withdrawn); `priority` 0 to 9, 0 first, default 5; the same id with text \"\" withdraws it. At most 32 per body, a repeated id counts by its last entry. Each becomes one `notes` row in the round of `context.audience_set`, which is required: a body without one is refused (`missing_audience`, a stderr line, nothing written), a note out of its bounds alone (a stderr line). The window shows the live ones as ONE block that opens the newest message of the person, never in the system part, within the role's `notes_share`. Nothing answers it"
+          "because": "notes for the window (GH #1303): `notes[{id, source, text, scope, until?, priority?, item?}]` (`item`, 1 to 64 characters, names the thing a note speaks about and is kept in the row, D38 V1, GH #1451) -- `source` one path segment, never `model`; `scope` `turn` (the next window of the round, and every later call of that turn), `session` (until the close of the generation it came in) or `until` (until that RFC 3339 time, or until withdrawn); `priority` 0 to 9, 0 first, default 5; the same id with text \"\" withdraws it. At most 32 per body, a repeated id counts by its last entry. Each becomes one `notes` row in the round of `context.audience_set`, which is required: a body without one is refused (`missing_audience`, a stderr line, nothing written), a note out of its bounds alone (a stderr line). The window shows the live ones as ONE block that opens the newest message of the person, never in the system part, within the role's `notes_share`. Nothing answers it"
         },
         {
           "route": "in_read",
@@ -641,6 +645,11 @@
           "condition": "has(hop.route) && hop.route == 'in_stats'"
         },
         {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_catalog'"
+        },
+        {
           "from": "./stats",
           "to": "./ledger",
           "condition": "has(hop.route) && hop.route == 'lstore'",
@@ -896,6 +905,58 @@
               "interim"
             ]
           }
+        },
+        {
+          "from": "./policy",
+          "to": "./lead",
+          "condition": "has(hop.route) && (hop.route == 'lead_ask' || hop.route == 'lead_spec' || hop.route == 'lead_note')"
+        },
+        {
+          "from": "./lead",
+          "to": "./lead_state",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./lead_state",
+          "to": "./lead",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-lead'"
+        },
+        {
+          "from": "./lead",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'lead_verdict'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_lead'"
+            },
+            "set_context": {
+              "cur_origin": "''"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'catalog_ask'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
         }
       ]
     }
@@ -904,7 +965,7 @@
     "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got, by the policy of the model's role. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
     "not_in_scope": "No retrieval of its own (memory answers; `./push` only builds the question) and no tool fan-out -- the one tool family it serves is its own wall (`history_*`, GH #893) -- no persona of its own. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
-    "contract_in": "Twenty-seven lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_spec_partial, in_pack, in_close, in_model, in_section, in_answer_check, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_candidate, in_note, in_read, in_sealed, in_turns_ask, in_screen_topics, in_seed_ask, in_seed_line, in_call_end, in_delta_stamp.",
-    "contract_out": "Twenty-seven routes on `hop.route`, leaving through the hive path: brain, quick, spec_release, partial, consult, research, turn_write, write, closed, pack_ack, model_refused, sidecar, answer_check, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, turns, seed, call_facts, live_feed, propose."
+    "contract_in": "Twenty-eight lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_spec_partial, in_pack, in_close, in_model, in_section, in_answer_check, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_catalog, in_candidate, in_note, in_read, in_sealed, in_turns_ask, in_screen_topics, in_seed_ask, in_seed_line, in_call_end, in_delta_stamp.",
+    "contract_out": "Twenty-eight routes on `hop.route`, leaving through the hive path: brain, quick, spec_release, partial, consult, research, turn_write, write, closed, pack_ack, model_refused, sidecar, answer_check, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, turns, seed, call_facts, live_feed, propose, catalog_ask."
   }
 }

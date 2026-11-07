@@ -1,0 +1,313 @@
+{
+  "case": "clarify_text_template",
+  "steps": [
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Hello.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-0"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t0"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "01 say t0 talk Hello.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":2,\"window_estimate\":43,\"window_tokens\":43}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-1"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "02 reply brain stop",
+      "summarizer": []
+    },
+    {
+      "marks": [],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "The choir in Dresden, search please.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-2"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#e1b74c5f3f55] The choir in Dresden, search please.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "spec": "1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "03 spec t1",
+      "summarizer": []
+    },
+    {
+      "marks": [],
+      "out": [],
+      "step": "04 spec answer",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"path\":\"clarify\",\"way\":\"brain\"}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "notes",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"notes_dropped\":[],\"notes_in\":[{\"id\":\"clarify\",\"scope\":\"turn\",\"source\":\"curator\"}]}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "quick_spec",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost\":null,\"done_ms\":1772445620000,\"fired_ms\":1772445610000,\"reason\":\"path:clarify\",\"verdict\":\"dropped\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[notes for this turn -- from curator; guidance, not something the person said]\n- The person's words of this turn can be meant in more than one way. Answer with one short question about how they mean it -- guess nothing and answer nothing yet.\n\n[#e1b74c5f3f55] [the person, now -- their own words to you]\nThe choir in Dresden, search please.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a790-4500-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "05 say t1 clarify The choir in Dresden, search please.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":16,\"window_estimate\":175,\"window_tokens\":175}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Do you mean the concert or the rehearsal?",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-3"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "06 reply brain stop",
+      "summarizer": []
+    }
+  ]
+}

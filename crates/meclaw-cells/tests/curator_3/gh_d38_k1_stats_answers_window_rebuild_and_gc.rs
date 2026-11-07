@@ -3,8 +3,9 @@
 //! (`curate` once per call, `gc` once per rebuild).
 //!
 //! The answers are whole numbers, so a charter threshold (an `int` column)
-//! compares against them: `window` `{n, p50, p95, max, cached_pct, cold_pct,
-//! cost_cents_sum, raw_p95}`, `rebuild` `{n, by_mark, rate_pct}` and `gc`
+//! compares against them: `window` `{n, p50, p95, max, cached_pct, cached_n, cold_pct,
+//! cost_cents_sum, raw_p95}`, `rebuild` `{n, by_mark, rate_pct,
+//! cost_cents_sum}` (the sum since GH #1444) and `gc`
 //! `{n, classes, active_pct, tool_share_pct, recall_rows_p95}`. A ledger that
 //! holds none of those marks (one written before they existed) answers zeros
 //! and `truncated: false` -- never a refusal. A figure carries numbers only:
@@ -105,7 +106,7 @@ fn sow(db: &rusqlite::Connection) {
         "gc",
         &gc(
             json!({"shrunk_tools": 0, "dup_recall": 0, "transient": 0, "released": 0,
-                   "scaffold": 0, "recall_unused": 0}),
+                   "scaffold": 0}),
             0.75,
             12,
         ),
@@ -154,18 +155,19 @@ fn window_figure() -> Value {
     // p50/p95 nearest rank over 10k, 20k, 30k, 40k, 100k; cached 84k of 200k;
     // cold = cached under 0.2 x window: the 20k (0 cached) and the 100k (11k).
     json!({"n": 5, "p50": 30000, "p95": 100000, "max": 100000, "cached_pct": 42,
-           "cold_pct": 40, "cost_cents_sum": 20, "raw_p95": 70000})
+           "cached_n": 5, "cold_pct": 40, "cost_cents_sum": 20, "raw_p95": 70000})
 }
 
 fn rebuild_figure() -> Value {
     json!({"n": 6, "by_mark": {"hard": 1, "soft": 0, "day": 0, "target": 1, "cost": 0,
                                "none": 4, "target_hold": 1},
-           "rate_pct": 33})
+           // GH #1444: the cents of the two calls that rebuilt, target 2 + hard 10.
+           "rate_pct": 33, "cost_cents_sum": 12})
 }
 
 fn gc_figure() -> Value {
     json!({"n": 2, "classes": {"shrunk_tools": 3, "dup_recall": 0, "transient": 1,
-                               "released": 0, "scaffold": 0, "recall_unused": 0},
+                               "released": 0, "scaffold": 0},
            "active_pct": 50, "tool_share_pct": 50, "recall_rows_p95": 12})
 }
 
@@ -234,15 +236,15 @@ fn gh_d38_k1_a_ledger_without_the_marks_answers_zeros() {
     let counts = &m.body["stats"]["counts"];
     assert_eq!(
         counts["window"],
-        json!({"n": 0, "p50": 0, "p95": 0, "max": 0, "cached_pct": 0, "cold_pct": 0,
-               "cost_cents_sum": 0, "raw_p95": 0}),
+        json!({"n": 0, "p50": 0, "p95": 0, "max": 0, "cached_pct": 0, "cached_n": 0,
+               "cold_pct": 0, "cost_cents_sum": 0, "raw_p95": 0}),
         "{counts}"
     );
     assert_eq!(
         counts["rebuild"],
         json!({"n": 0, "by_mark": {"hard": 0, "soft": 0, "day": 0, "target": 0, "cost": 0,
                                    "none": 0, "target_hold": 0},
-               "rate_pct": 0}),
+               "rate_pct": 0, "cost_cents_sum": 0}),
         "{counts}"
     );
     assert_eq!(
@@ -291,5 +293,8 @@ fn gh_d38_k1_an_unmeasured_cache_is_not_cold() {
     let w = &m.body["stats"]["counts"]["window"];
     assert_eq!(w["n"], 2, "both calls had a window: {w}");
     assert_eq!(w["cold_pct"], 0, "the unmeasured call is not cold: {w}");
+    // Review d38_o11-r1 I-1: the base of the share travels with it, so a
+    // reader tells a measured 0 from a share over nothing.
+    assert_eq!(w["cached_n"], 1, "one call measured a cache: {w}");
     assert_eq!(w["cached_pct"], 50, "over the measured call only: {w}");
 }

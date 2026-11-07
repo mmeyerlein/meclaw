@@ -35,8 +35,9 @@ fn curate_with(h: &mut Hive, turn_id: &str, path: &str, extra_ctx: Value, ask: &
     );
 }
 
+/// The consult mark of `s1` -- the lead's row since GH #1447 (`lead_state`).
 fn pending(h: &Hive) -> Value {
-    meclaw_core::serde_json::from_str(&h.state("consult_pending:s1")).unwrap_or(Value::Null)
+    meclaw_core::serde_json::from_str(&h.lead_state("consult_pending:s1")).unwrap_or(Value::Null)
 }
 
 /// `until - at` of the pending mark, in milliseconds.

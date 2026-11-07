@@ -259,6 +259,14 @@ fn word(n: usize) -> &'static str {
         // `in_summary_self` -- one hundred and twenty-five, fifty-seven of
         // round, the boundary unchanged.
         (125, "one hundred and twenty-five"),
+        // GH #1449: the package lines of `./brain`, `./quick`, `./quick_spec`
+        // and `./quick_bridge` on `in_catalog` -- one hundred and twenty-nine,
+        // sixty-one of round, the boundary unchanged.
+        (129, "one hundred and twenty-nine"),
+        // GH #1450: the catalog question `./curator -> ./brain|quick|
+        // quick_spec|quick_bridge` on `catalog_ask` -- one hundred and
+        // thirty-three, sixty-five of round, the boundary unchanged.
+        (133, "one hundred and thirty-three"),
     ]
     .into_iter()
     .collect();

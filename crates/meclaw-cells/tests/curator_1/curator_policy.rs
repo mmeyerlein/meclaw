@@ -1205,9 +1205,10 @@ fn memory_section_leaves_unchanged_and_marks_its_topic() {
     // OR-KY-71: the `topic` mark is the canonical JSON of movement and name
     // (keys sorted, no whitespace) -- the form of the `gap` mark -- so a reader
     // of the ledger learns WHICH topic is open, not only that one moved.
+    // The lead's station mark per call (`lead`, GH #1447) is not the section's.
     let started = r#"{"movement":"start","name":"where the user lives"}"#;
     assert_eq!(
-        h.rows("SELECT kind, value, session_id, turn_id FROM marks"),
+        h.rows("SELECT kind, value, session_id, turn_id FROM marks WHERE kind != 'lead'"),
         vec![vec![
             json!("topic"),
             json!(started),
@@ -1228,7 +1229,7 @@ fn memory_section_leaves_unchanged_and_marks_its_topic() {
         json!({"nothing_new": true, "facts": [], "topic": {"movement": "end"}}),
     );
     assert_eq!(
-        h.rows("SELECT kind, value FROM marks ORDER BY seq"),
+        h.rows("SELECT kind, value FROM marks WHERE kind != 'lead' ORDER BY seq"),
         vec![
             vec![json!("topic"), json!(started)],
             vec![json!("topic"), json!(r#"{"movement":"end","name":""}"#)]
@@ -1251,8 +1252,9 @@ fn window_section_writes_marks() {
     let section = json!({"release": [format!("[#{a}]"), "#GGGGGGGGGGGG"], "pin": [a.clone()]});
     h.section(&c, "window", section.clone());
     // The turn's tap ran without a model package: its `curate` and
-    // `no_package` marks (GH #1225 K-3) are not the section's.
-    let theirs = "kind NOT IN ('curate', 'no_package')";
+    // `no_package` marks (GH #1225 K-3) are not the section's, nor the
+    // lead's station mark per call (`lead`, GH #1447).
+    let theirs = "kind NOT IN ('curate', 'no_package', 'lead')";
     assert_eq!(
         h.rows(&format!(
             "SELECT kind, value, session_id, turn_id FROM marks WHERE {theirs} ORDER BY seq"
@@ -2792,7 +2794,11 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
         ("w-keep", list("keep")),
         ("w-blocks", list("blocks")),
     ];
-    let (out, err) = policy_step("win", aud, json!({}), &legs);
+    // GH #1447 (D38 C1): `win` builds on the lead's verdict -- here the one
+    // the lead gives on this seam, riding on the reason (`leadv:`) as the
+    // read once more of a child without the join's RAM carries it.
+    let reason = format!("leadv:{}cache", lead_verdict_on(session, &hop));
+    let (out, err) = policy_step_as("win", aud, json!({}), &legs, &reason);
     let route = ledger["route"].as_str().unwrap_or("brain");
     let brain = out
         .iter()
@@ -2800,6 +2806,42 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
         .cloned()
         .unwrap_or_else(|| panic!("a call leaves for the model: {out:?} {err}"));
     (brain, out.first().map(ops_of).unwrap_or_default())
+}
+
+/// GH #1447 (D38 C1): the verdict `./lead` gives on the seam `hop` of call
+/// `c1` (turn `t9`, iteration 0) with no rows of its own -- its phase `ask`
+/// on an empty store answer, the way a real call is decided.
+fn lead_verdict_on(session: &str, hop: &Value) -> String {
+    let s = |k: &str| hop[k].as_str().unwrap_or("").to_string();
+    let ask = json!({"call": "c1", "session": session, "turn": "t9", "iter": "0",
+                     "path": s("path"), "needs": hop["needs"].clone(),
+                     "families": hop["families"].clone(), "consult_id": s("consult_id"),
+                     "spec": s("spec"), "engine": s("engine"), "call_id": s("call_id"),
+                     "at": "2026-09-30T00:00:00.000000Z", "on": ""});
+    let mut params = cell_config("lead")["params"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    params.remove("script_inline");
+    let doc = json!({
+        "envelope": {"header": {"context": {"cur_phase": "ask", "cur_reason": ask.to_string()},
+                                "hop": {"operation": "bundle"}}},
+        "body": {"messages": [{"origin": "tool", "type": "tool_result", "id": "l-rows",
+                               "text": "[]"}]},
+        "params": params,
+    });
+    let out = run_python(&script_of("lead"), &doc.to_string());
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "lead ask: {err}");
+    let got: Value = meclaw_core::serde_json::from_slice(&out.stdout).expect("JSON out");
+    let verdict = got
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["header"]["route"] == "lead_verdict")
+        .map(|m| m["verdict"].clone())
+        .unwrap_or_else(|| panic!("the lead gives a verdict: {got} {err}"));
+    canonical(&verdict)
 }
 
 /// The texts of the messages a call carries.

@@ -1174,7 +1174,7 @@ hygiene_after() {
 # set here -- an ALLOWLIST by exact name, never a pattern: a pattern over the
 # environment is how a key or a token would leave this machine. When one
 # travelled, the golden files the run changed come back into this tree.
-GOLDEN_SWITCHES=(GH277_WRITE_GOLDEN MECLAW_GH935_BLESS)
+GOLDEN_SWITCHES=(GH277_WRITE_GOLDEN MECLAW_GH935_BLESS MECLAW_D38_C0_BLESS)
 
 # tv-br M10u (re-check R-delta M1): the quota mark the hang marks read
 # (meclaw_testing::deadline::CPU_QUOTA_MARK_VAR), taken INSIDE the scope from

@@ -31,7 +31,8 @@
       "history"
     ],
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
-    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "package_line": true
   },
   "contract": {
     "version": "1.0.0",
@@ -88,13 +89,18 @@
         "meta": {
           "type": "object",
           "required": false
+        },
+        "package": {
+          "type": "object",
+          "required": false
         }
       },
       "hop": {
         "route": {
           "type": "string",
           "values": [
-            "credential_request"
+            "credential_request",
+            "package"
           ],
           "required": false
         },
@@ -183,6 +189,10 @@
         },
         "unverified": {
           "type": "array",
+          "required": false
+        },
+        "package_of": {
+          "type": "string",
           "required": false
         }
       }

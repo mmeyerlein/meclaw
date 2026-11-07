@@ -40,8 +40,8 @@ const S2: &str = "For four people you need about 300 grams of rice. Rinse it fir
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("web,weather")),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("web,weather")),
     ]);
     h.check_emits = true;
     h
@@ -116,13 +116,13 @@ fn spec_end(h: &mut Hive, call: &Msg, finish: &str, extra: Value, messages: Valu
 }
 
 fn row_state(h: &Hive, turn: &str) -> String {
-    let raw = h.state(&format!("spec:s1#{turn}"));
+    let raw = h.lead_state(&format!("spec:s1#{turn}"));
     let row: Value = sj::from_str(&raw).unwrap_or(Value::Null);
     row["state"].as_str().unwrap_or_default().to_string()
 }
 
 fn shown_row(h: &Hive, turn: &str) -> String {
-    h.state(&format!("spec_shown:s1#{turn}"))
+    h.lead_state(&format!("spec_shown:s1#{turn}"))
 }
 
 fn err() -> Value {
@@ -328,10 +328,10 @@ fn gh1432_a_refused_read_of_the_shown_sentence_sends_as_before() {
         spec_partial(&mut h, &spec, 1, S),
         vec!["partial".to_string()]
     );
-    h.ledger_may_refuse = true;
-    h.refuse_legs = vec![("h-shown".to_string(), "store_error".to_string())];
+    // The shown sentence lives in the lead's store since GH #1447.
+    h.lead_refuse_legs = vec![("h-shown".to_string(), "store_error".to_string())];
     spec_end(&mut h, &spec, "error", err(), json!([]));
-    assert!(h.refuse_legs.is_empty(), "the refusal struck");
+    assert!(h.lead_refuse_legs.is_empty(), "the refusal struck");
     let quick = h.routed("quick");
     assert_eq!(quick.len(), 1, "{:?} {:?}", h.out, h.stderr);
     assert_eq!(quick[0].messages(), reference);

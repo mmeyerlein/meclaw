@@ -701,7 +701,7 @@ fn a_renewal_or_rebuild_of_another_session_leaves_the_snapshot_standing() {
         "s2's call caused the rebuild: {plan}"
     );
     assert_eq!(h.plan(), plan, "the newest plan is {{e,b}}'s");
-    assert_eq!(h.plan_in(EA), json!({}), "{{e,a}} was not rebuilt");
+    assert_eq!(h.rebuild_in(EA), json!({}), "{{e,a}} was not rebuilt");
     h.ledger_ops.clear();
     let a3 = turn_in(&mut h, EA, "s1", "t3", "q3", "a3", json!({}));
     hold(&mut held, &a3);

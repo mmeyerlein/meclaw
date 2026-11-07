@@ -2451,10 +2451,10 @@ impl LlmCell {
                             self.params = change.merged;
                             self.overlay = change.overlay;
                             // GH #853: the sight. Every update, `{"params": {}}`
-                            // included, answers with this line rather than an
-                            // emission — the shipped brains' out-edges would
-                            // take an emission for a model answer or dead-letter
-                            // it (OR-SN.L2.1).
+                            // included, writes this line; with `package_line`
+                            // off it is the only answer, since an emission would
+                            // be taken for a model answer or dead-lettered
+                            // (OR-SN.L2.1). GH #1449 below is the one emission.
                             tracing::info!(
                                 target: package::PARAMS_LOG_TARGET,
                                 "{}",
@@ -2465,6 +2465,22 @@ impl LlmCell {
                             }
                             if let Some(note) = self.tool_call_limit_note(msg.target.as_str()) {
                                 tracing::warn!(target: package::PARAMS_LOG_TARGET, "{note}");
+                            }
+                            // GH #1449: with `package_line` on, the applied
+                            // package goes out once on the `package` lane,
+                            // readable without a call -- before, it was only
+                            // in an answer's header. Using it is the curator's.
+                            // Off, the silence above stands (OR-SN.L2.1).
+                            if !is_turn && package::wants_package_line(&self.params, &update_obj) {
+                                let _ = sink
+                                    .push(meclaw_core::CellOutput {
+                                        target: reply_target.clone(),
+                                        content: package::package_line(
+                                            sink.sender_path().as_str(),
+                                            &self.params,
+                                        ),
+                                    })
+                                    .await;
                             }
                         }
                         Err(detail) => {

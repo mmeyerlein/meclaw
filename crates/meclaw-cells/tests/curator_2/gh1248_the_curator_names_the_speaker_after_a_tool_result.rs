@@ -40,7 +40,8 @@ fn the_curator_names_the_speaker_after_a_tool_result() {
     if !shipped() {
         return;
     }
-    let (max, _) = policy_scope(json!({}), "QUICK_MAX_ITER", Value::Null);
+    // GH #1447: the iteration bound is the lead's, the cell that names the way.
+    let (max, _) = cell_scope("lead", json!({}), "QUICK_MAX_ITER", Value::Null);
     assert_eq!(
         max,
         json!(2),

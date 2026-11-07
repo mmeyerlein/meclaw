@@ -20,8 +20,8 @@ use meclaw_core::serde_json::{self as sj, Value, json};
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("")),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("")),
     ]);
     h.check_emits = true;
     h
@@ -77,9 +77,9 @@ fn id_of(call: &Msg) -> String {
     call.hop["curator_call"].as_str().unwrap().to_string()
 }
 
-/// Every speculation row the ledger still holds.
+/// Every speculation row the lead still holds (GH #1447: its own store).
 fn spec_rows(h: &Hive) -> Vec<Vec<Value>> {
-    h.rows(
+    h.lead_rows(
         "SELECT key, value FROM state WHERE key LIKE 'spec:%' OR key LIKE 'spec_held:%' \
          OR key LIKE 'spec_fb:%'",
     )

@@ -110,6 +110,9 @@ fn inserts_of(h: &Hive, key: &str) -> usize {
                 && op["operation"] == "insert"
                 && op["table"] == "state"
                 && op["row"]["key"] == key
+                // GH #1448: the first plan of blocks an answer writes ahead
+                // is an insert only while none stands -- no rebuild's plan.
+                && op.get("if_absent").is_none()
         })
         .count()
 }

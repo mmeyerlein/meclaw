@@ -1,0 +1,366 @@
+{
+  "case": "research_phone_template",
+  "steps": [
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Hello.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-0"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t0"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "01 say t0 talk Hello.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":2,\"window_estimate\":43,\"window_tokens\":43}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-1"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "02 reply brain stop",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"path\":\"research\",\"way\":\"research\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Find everything on the choir.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-2"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#7216c6a8a52f] Find everything on the choir.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "call_id": "call-1",
+            "consult_class": "research",
+            "consult_id": "k-00064c07-a6f7-4e80-8000-0000000001c0",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "research"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#7216c6a8a52f] Find everything on the choir.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "bridge": {
+                  "text": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. It is researched in the background; that takes about 2 minutes, and the result comes in a later turn. Tell the person so in your own words and name the waiting time. Then keep the conversation going on another subject -- how they are, or what else is on their mind -- never on this request: ask nothing about it, not its details, not their wishes or experiences with it, not what matters to them in it; the research has what it needs. Never speak of missing access, missing abilities or limits of any kind. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Call no tool."
+                },
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0-bridge",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "03 say t1 research Find everything on the choir.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Is it done yet?",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-3"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#7216c6a8a52f] Find everything on the choir.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#1802e7f3252a] Is it done yet?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true,
+                "pending": {
+                  "text": "A consult is pending (id k-00064c07-a6f7-4e80-8000-0000000001c0, since 2026-03-02T10:00:10.000033Z): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked."
+                }
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "deny": [
+                "consult_cogny"
+              ]
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a744-49c0-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-3",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t2"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "04 say t2 talk Is it done yet?",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":3,\"raw_tokens\":18,\"window_estimate\":175,\"window_tokens\":175}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Not yet, it takes a moment.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-4"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "05 reply brain stop",
+      "summarizer": []
+    }
+  ]
+}

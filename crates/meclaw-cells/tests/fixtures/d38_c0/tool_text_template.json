@@ -1,0 +1,388 @@
+{
+  "case": "tool_text_template",
+  "steps": [
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"path\":\"simple\",\"way\":\"quick\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Who won the match yesterday?",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-0"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#9bfa521e393d] Who won the match yesterday?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "bridge": {
+                  "text": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. Your lookup is already running right now, on the web and at the weather service; it was started for you, and its result follows in this turn. Say one short sentence that bridges the wait, in your own words: only that you are looking it up, one moment. Never speak of missing access, missing abilities or limits of any kind. Ask the person nothing: the answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Speak plainly: write no tool call, no JSON, no code and no command."
+                },
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0-bridge",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "interim": "1",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#9bfa521e393d] Who won the match yesterday?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": [
+                "web",
+                "weather"
+              ],
+              "hint": [],
+              "require": true
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "interim": "tool",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "01 say t1 simple Who won the match yesterday?",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":9,\"window_estimate\":36,\"window_tokens\":36}"
+        }
+      ],
+      "out": [],
+      "step": "02 reply quick tool_calls",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"path\":\"simple\",\"way\":\"quick\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#9bfa521e393d] Who won the match yesterday?",
+                "type": "text"
+              },
+              {
+                "id": "c1",
+                "origin": "assistant",
+                "text": "{\"arguments\":\"{}\",\"name\":\"web_search\"}",
+                "type": "tool_call"
+              },
+              {
+                "id": "c1",
+                "origin": "tool",
+                "text": "[#f82e8838fa09] The home team won 2:1.",
+                "type": "tool_result"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "quick": {
+                  "text": "When you call a tool, say one short sentence beside the call, in your own words, so the person hears you while it runs. Keep answers short. If you are unsure how the person means a request even with the conversation so far, ask one short question about it instead of guessing."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": [
+                "web",
+                "weather"
+              ],
+              "hint": []
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "1",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "03 tool result t1 1",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":29,\"window_estimate\":197,\"window_tokens\":197}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "The home team won two to one.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "1",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-1"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "04 reply quick stop",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Great news!",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-2"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#9bfa521e393d] Who won the match yesterday?",
+                "type": "text"
+              },
+              {
+                "id": "c1",
+                "origin": "assistant",
+                "text": "{\"arguments\":\"{}\",\"name\":\"web_search\"}",
+                "type": "tool_call"
+              },
+              {
+                "id": "c1",
+                "origin": "tool",
+                "text": "[#f82e8838fa09] The home team won 2:1.",
+                "type": "tool_result"
+              },
+              {
+                "origin": "assistant",
+                "text": "The home team won two to one.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#18bfa9af5a66] Great news!",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "curator_call": "00064c07-a790-4500-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t2"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "05 say t2 talk Great news!",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":42,\"window_estimate\":134,\"window_tokens\":134}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "It is!",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-3"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "06 reply brain stop",
+      "summarizer": []
+    }
+  ]
+}

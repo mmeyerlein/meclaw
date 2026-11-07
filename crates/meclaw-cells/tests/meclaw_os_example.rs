@@ -143,7 +143,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// `screen_model`) -- forty-one. MEASURED.
 /// #1398: the quick voice's siblings (`quick_spec`, `quick_bridge`) --
 /// forty-three. MEASURED (43 against 41 in the strand's gate).
-const CELLS_AFTER_GROW: usize = 43;
+/// GH #1447: the curator's lead and its store (`lead`, `lead_state`) --
+/// forty-five. MEASURED (45 against 43 in the strand's gate).
+const CELLS_AFTER_GROW: usize = 45;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -178,7 +180,10 @@ const CELLS_AFTER_GROW: usize = 43;
 /// sixty. Measured in the strand's test run (61 with the probe, against 59).
 /// #1398: talky's quick-voice siblings are in [`CELLS_AFTER_GROW`] too --
 /// sixty-two. Measured in the strand's test run (63 with the probe, against 61).
-const CELLS_AFTER_COGNY: usize = 62;
+/// GH #1447: the curator's lead and its store, in talky's curator and in
+/// cogny's -- sixty-six. Measured in the strand's test run (67 with the probe,
+/// against 63).
+const CELLS_AFTER_COGNY: usize = 66;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -667,7 +672,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         after.len(),
         CELLS_AFTER_GROW,
-        "two checked-in cells plus forty-one instantiated ones: {after:?}"
+        "two checked-in cells plus forty-three instantiated ones: {after:?}"
     );
 
     // --- the liveness proof: one turn, all the way through.
@@ -743,7 +748,7 @@ async fn the_seed_plus_grow_json_is_a_living_agent() {
     assert_eq!(
         with_core.len(),
         CELLS_AFTER_COGNY + 1,
-        "twenty-five plus the core's twelve (five and its curator's seven), plus the \
+        "twenty-five plus the core's fourteen (five and its curator's nine), plus the \
          test-only probe: {with_core:?}"
     );
 

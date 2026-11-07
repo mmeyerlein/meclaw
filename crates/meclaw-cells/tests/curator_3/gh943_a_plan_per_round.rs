@@ -943,7 +943,7 @@ fn gh943_two_rounds_rebuild_side_by_side() {
         "the answer of {{e,a}} freed the claim of {{e,b}}"
     );
     assert_eq!(
-        h.plan_in(ROUND_EB),
+        h.rebuild_in(ROUND_EB),
         json!({}),
         "the answer of {{e,a}} wrote a plan of {{e,b}}"
     );

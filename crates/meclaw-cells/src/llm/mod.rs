@@ -30,6 +30,10 @@ pub use factory::LlmCellFactory;
 /// GH #890: the hop keys the cell writes, read by the template sweep
 /// `gh890_every_llm_cell_declares_what_output_writes`.
 pub use output::HOP_KEYS;
+/// GH #1449: the package line -- its route, its hop keys and the keys of its
+/// body slot, read by the template sweep
+/// `gh1449_an_llm_cell_tells_the_curator_its_package`.
+pub use package::{PACKAGE_HOP_KEYS, PACKAGE_LINE_KEYS, PACKAGE_ROUTE};
 pub use params::{AuthMode, LlmParams, WireDialect};
 /// GH #1410: the hop keys of a partial, read by the template sweep
 /// `gh1410_a_partial_llm_cell_declares_the_partial_lane`.

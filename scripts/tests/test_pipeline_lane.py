@@ -195,7 +195,8 @@ class LaneTestCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         # the narrow point checks the local rsync of a remote way like ssh (OR-T10-25)
         fake_ssh.register_tool(self.bin / "rsync")
-        for var in ("GH277_WRITE_GOLDEN", "MECLAW_GH935_BLESS", "MECLAW_PIPELINE_NO_SCOPE",
+        for var in ("GH277_WRITE_GOLDEN", "MECLAW_GH935_BLESS", "MECLAW_D38_C0_BLESS",
+                    "MECLAW_PIPELINE_NO_SCOPE",
                     "FAKE_RSYNC_DROP", "FAKE_RSYNC_FAIL", "MECLAW_LANE_FLOOR_G", "MECLAW_LANE_WIPE_OK",
                     "MECLAW_LANE_EGON_GATE_OK", "MECLAW_LANE_SLOT"):
             os.environ.pop(var, None)
@@ -813,6 +814,19 @@ class TestLaneGoldens(LaneTestCase):
             got = self.fetch(pushed)
         self.assertEqual("blessed\n", (self.repo / "crates/x/tests/golden/gh935.txt").read_text())
         self.assertEqual(["crates/x/tests/golden/gh935.txt"], got["goldens_back"])
+
+    def test_lane_corpus_bless_switch_fixtures_come_back(self):
+        # GH #1446 (D38 C0): the curator corpus writes its fixtures under its own
+        # switch; on a lane they must come back like the gh935 goldens.
+        self.assertIn("MECLAW_D38_C0_BLESS", lane.GOLDEN_SWITCHES)
+        os.environ["MECLAW_D38_C0_BLESS"] = "1"
+        pushed = self.push(cargo=True)
+        rel = "crates/x/tests/fixtures/d38_c0/quick_text_template.json"
+        self.run_on_lane(pushed["tree"], {rel: "{}\n"})
+        with mock.patch("sys.stderr"):
+            got = self.fetch(pushed)
+        self.assertEqual("{}\n", (self.repo / rel).read_text())
+        self.assertEqual([rel], got["goldens_back"])
 
     def test_lane_failed_golden_fetch_says_so(self):
         os.environ["GH277_WRITE_GOLDEN"] = "1"

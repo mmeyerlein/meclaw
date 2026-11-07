@@ -9,9 +9,10 @@
 //!   sender, so the FORM of the message decides: params-only = operator).
 //! - [`params_line`]: the one stderr line with the effective package and each
 //!   key's source (`start` | `overlay`). Written on every update and every
-//!   restore; a params-only message answers with it instead of an emission,
-//!   because every shipped brain's out-edges would take an emission for a
-//!   model answer or dead-letter it as `no_route` (OR-SN.L2.1).
+//!   restore. Without `package_line` a params-only message answers with it
+//!   instead of an emission, because an out-edge would take an emission for
+//!   a model answer or dead-letter it as `no_route` (OR-SN.L2.1); with it on,
+//!   [`package_line`] is the one emission (GH #1449).
 
 use crate::llm::params::{CacheMode, LlmParams, MODEL_PACKAGE_KEYS, WireDialect};
 use crate::params_overlay::RESET_KEY;
@@ -34,6 +35,92 @@ pub(crate) fn touches_package(update: &Map<String, Value>) -> bool {
             });
         }
         MODEL_PACKAGE_KEYS.contains(&key.as_str())
+    })
+}
+
+/// GH #1449: the `route` of the package line.
+pub const PACKAGE_ROUTE: &str = "package";
+
+/// GH #1449: the hop keys the package line carries, with their JSON type.
+/// Kept apart from [`crate::llm::output::HOP_KEYS`]: only a cell with
+/// `package_line` on writes them, so only such a cell declares them (the
+/// template sweep `gh1449_an_llm_cell_tells_the_curator_its_package`).
+pub const PACKAGE_HOP_KEYS: &[(&str, &str)] = &[("route", "string"), ("package_of", "string")];
+
+/// GH #1449: the keys of the body slot `package` -- the model id and the
+/// fields the curator cuts a window by (`input_soft`, `input_hard`,
+/// `max_output`, `price_tiers`, `cache_mode`, `cache_ttl_s`, `wire_dialect`,
+/// `supported_params`, `chars_per_token`). Each key is always present; one
+/// the package does not state is `null`, so the reader falls back exactly
+/// where it did before the line existed.
+pub const PACKAGE_LINE_KEYS: &[&str] = &[
+    "model",
+    "input_soft",
+    "input_hard",
+    "max_output",
+    "price_tiers",
+    "cache_mode",
+    "cache_ttl_s",
+    "wire_dialect",
+    "supported_params",
+    "chars_per_token",
+];
+
+/// GH #1449: whether a params-only update gets the package line: the cell has
+/// `package_line` on, and the slot touched a package key -- or is empty, the
+/// question (one round trip, no polling).
+pub(crate) fn wants_package_line(params: &LlmParams, update: &Map<String, Value>) -> bool {
+    params.package_line && (update.is_empty() || touches_package(update))
+}
+
+/// GH #1449: the package line of `params`, sent by the cell at `own` (the
+/// path the substrate stamps on its sink, never a value from the message).
+/// The price ladder is the one the tap stamps as `hop.price_tiers`.
+pub(crate) fn package_line(own: &str, params: &LlmParams) -> Value {
+    let stated_u = |n: u64| {
+        if n > 0 { Value::from(n) } else { Value::Null }
+    };
+    let cache_mode = match params.cache_mode {
+        CacheMode::Off => "off",
+        CacheMode::Implicit => "implicit",
+        CacheMode::Breakpoints => "breakpoints",
+    };
+    let wire = match params.effective_wire_dialect() {
+        WireDialect::ChatCompletions => "chat_completions",
+        WireDialect::Responses => "responses",
+    };
+    let mut package = Map::new();
+    package.insert("model".into(), Value::from(params.model.clone()));
+    package.insert("input_soft".into(), stated_u(params.input_soft));
+    package.insert("input_hard".into(), stated_u(params.input_hard));
+    package.insert("max_output".into(), stated_u(params.max_output));
+    package.insert(
+        "price_tiers".into(),
+        Value::Array(crate::llm::output::price_ladder(params)),
+    );
+    package.insert("cache_mode".into(), Value::from(cache_mode));
+    package.insert("cache_ttl_s".into(), stated_u(params.cache_ttl_s));
+    package.insert("wire_dialect".into(), Value::from(wire));
+    package.insert(
+        "supported_params".into(),
+        params
+            .supported_params
+            .as_ref()
+            .map(|names| Value::Array(names.iter().cloned().map(Value::String).collect()))
+            .unwrap_or(Value::Null),
+    );
+    package.insert(
+        "chars_per_token".into(),
+        if params.chars_per_token.is_finite() && params.chars_per_token > 0.0 {
+            Value::from(params.chars_per_token)
+        } else {
+            Value::Null
+        },
+    );
+    meclaw_core::serde_json::json!({
+        "header": {"route": PACKAGE_ROUTE, "package_of": own},
+        "messages": [],
+        "package": Value::Object(package),
     })
 }
 

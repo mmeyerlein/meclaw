@@ -1,0 +1,571 @@
+{
+  "case": "live_phone_set056",
+  "steps": [
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Hello, it is me.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-0"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#874a1d059b45] Hello, it is me.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "01 say t1 talk Hello, it is me.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":5,\"window_estimate\":47,\"window_tokens\":47}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Hello! Nice to hear you.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-1"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [],
+            "screen_topics": []
+          },
+          "hop": {
+            "at_turn_end": "1",
+            "audience_set": "[\"member:e\"]",
+            "call_id": "call-1",
+            "section": "renew",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "live_feed"
+        }
+      ],
+      "step": "02 reply brain stop",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"path\":\"simple\",\"way\":\"quick\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Will it rain today?",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-2"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#dfeffb37d1e1] Will it rain today?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "bridge": {
+                  "text": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. Your lookup is already running right now, on the web and at the weather service and in other places; it was started for you, and its result follows in this turn. Say one short sentence that bridges the wait, in your own words: only that you are looking it up, one moment. Never speak of missing access, missing abilities or limits of any kind. Ask the person nothing: the answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Speak plainly: write no tool call, no JSON, no code and no command."
+                },
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0-bridge",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "interim": "1",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t2"
+          },
+          "route": "quick"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#874a1d059b45] Hello, it is me.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello! Nice to hear you.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#dfeffb37d1e1] Will it rain today?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": [
+                "web",
+                "weather",
+                "story_read",
+                "orga"
+              ],
+              "hint": [],
+              "require": true
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "interim": "tool",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t2"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "03 say t2 simple Will it rain today?",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":19,\"window_estimate\":68,\"window_tokens\":68}"
+        }
+      ],
+      "out": [],
+      "step": "04 reply quick tool_calls",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"path\":\"simple\",\"way\":\"quick\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#874a1d059b45] Hello, it is me.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello! Nice to hear you.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#dfeffb37d1e1] Will it rain today?",
+                "type": "text"
+              },
+              {
+                "id": "c1",
+                "origin": "assistant",
+                "text": "{\"arguments\":\"{}\",\"name\":\"web_search\"}",
+                "type": "tool_call"
+              },
+              {
+                "id": "c1",
+                "origin": "tool",
+                "text": "[#cfed0f492bac] Rain from noon.",
+                "type": "tool_result"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "quick": {
+                  "text": "When you call a tool, say one short sentence beside the call, in your own words, so the person hears you while it runs. Keep answers short. If you are unsure how the person means a request even with the conversation so far, ask one short question about it instead of guessing."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": [
+                "web",
+                "weather",
+                "story_read",
+                "orga"
+              ],
+              "hint": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a790-4500-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "1",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t2"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "05 tool result t2 1",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a790-4500-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":37,\"window_estimate\":227,\"window_tokens\":227}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Yes, from noon on.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "1",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-3"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "06 reply quick stop",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t3",
+          "value": "{\"call\":\"00064c07-a828-4b80-8000-0000000001c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "notes",
+          "session_id": "s1",
+          "turn_id": "t3",
+          "value": "{\"call\":\"00064c07-a828-4b80-8000-0000000001c0\",\"notes_dropped\":[],\"notes_in\":[{\"id\":\"state\",\"scope\":\"turn\",\"source\":\"curator\"}]}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Then I stay in.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-4"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#874a1d059b45] Hello, it is me.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello! Nice to hear you.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#dfeffb37d1e1] Will it rain today?",
+                "type": "text"
+              },
+              {
+                "id": "c1",
+                "origin": "assistant",
+                "text": "{\"arguments\":\"{}\",\"name\":\"web_search\"}",
+                "type": "tool_call"
+              },
+              {
+                "id": "c1",
+                "origin": "tool",
+                "text": "[#cfed0f492bac] Rain from noon.",
+                "type": "tool_result"
+              },
+              {
+                "origin": "assistant",
+                "text": "Yes, from noon on.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[notes for this turn -- from curator; guidance, not something the person said]\n- [state -- today: the rain today]\n\n[#113f1b9052e4] [the person, now -- their own words to you]\nThen I stay in.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a828-4b80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-4",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t3"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "07 say t3 talk Then I stay in.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t3",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a828-4b80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":3,\"raw_tokens\":48,\"window_estimate\":214,\"window_tokens\":214}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "A good plan.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-5"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [],
+            "topic": "the rain today"
+          },
+          "hop": {
+            "at_turn_end": "1",
+            "audience_set": "[\"member:e\"]",
+            "call_id": "call-1",
+            "section": "renew",
+            "session_id": "s1",
+            "turn_id": "t3"
+          },
+          "route": "live_feed"
+        }
+      ],
+      "step": "08 reply brain stop",
+      "summarizer": []
+    }
+  ]
+}

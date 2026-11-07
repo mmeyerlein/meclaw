@@ -29,9 +29,9 @@ const QUESTION: &str = "Are you safe right now?";
 fn hive() -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "interrupt_on_delta", json!("1")),
+        ("lead", "interrupt_on_delta", json!("1")),
         (
-            "policy",
+            "lead",
             "interrupt_questions",
             json!(json!({"acute": QUESTION}).to_string()),
         ),
@@ -252,7 +252,8 @@ fn interrupt_on_delta_off_moves_no_byte() {
     if !shipped() {
         return;
     }
-    let policy = cell_config("policy");
+    // The knobs live in the lead since GH #1447.
+    let policy = cell_config("lead");
     for (k, v) in [
         ("interrupt_on_delta", json!("0")),
         ("interrupt_questions", json!("{}")),
@@ -293,9 +294,9 @@ fn interrupt_on_delta_off_moves_no_byte() {
     let plain = run(&[("policy", "role", json!("talky"))]);
     let off = run(&[
         ("policy", "role", json!("talky")),
-        ("policy", "interrupt_on_delta", json!("0")),
+        ("lead", "interrupt_on_delta", json!("0")),
         (
-            "policy",
+            "lead",
             "interrupt_questions",
             json!(json!({"acute": QUESTION}).to_string()),
         ),

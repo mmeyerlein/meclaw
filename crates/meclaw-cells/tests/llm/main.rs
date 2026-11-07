@@ -8,6 +8,7 @@ pub mod gh1260_the_llm_reads_a_leaked_harmony_call;
 pub mod gh1273_a_push_moves_the_llm_cell_onto_another_provider;
 pub mod gh1300_every_llm_cell_deliberates_at_medium;
 pub mod gh1410_a_partial_llm_cell_declares_the_partial_lane;
+pub mod gh1449_an_llm_cell_tells_the_curator_its_package;
 pub mod gh271_an_empty_llm_key_is_not_a_bearer;
 pub mod gh47_an_async_llm_cell_survives_the_eof;
 pub mod gh845_the_llm_narrows_tools_per_request;

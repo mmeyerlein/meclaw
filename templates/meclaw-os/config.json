@@ -93,7 +93,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a curator's counts coming back to the control loop, answering its `stats` question: body `stats` with the window, the counts per kind, metadata-only samples and whether the count was truncated, `hop.stats_tag` echoing the ask. Nothing at this level wires the loop to a curator yet, so the lane is the shell's to carry; an answer that names no open ask is dropped inside. Derived from argus"
+          "because": "a curator's counts coming back to the control loop, answering its `stats` question: body `stats` with the window, the counts per kind, metadata-only samples and whether the count was truncated, `hop.stats_tag` echoing the ask. An answer that comes up out of `./orgs` on `stats` is restamped `in_stats` into `./argus` at this level (GH #1444), with the organisation, member and assistant the question named taken off its context; the lane stays the shell's for an answer from outside. An answer that names no open ask is dropped inside. Derived from argus"
         },
         {
           "route": "in_eval",
@@ -183,7 +183,7 @@
         },
         {
           "route": "stats",
-          "because": "the control loop asking a curator about its own ledger for a goal that names a role: the window, the kinds to count, the role and a tag. Nothing at this level answers it, and a colony that draws no edge for it gets role goals receipted as unanswered and never judged. Derived from argus"
+          "because": "the control loop asking a curator about its own ledger for a goal that names a role: the window, the kinds to count, the role and a tag. Nothing at this level answers it. The way down into a generation needs names this level does not hold -- the doors of `./orgs`, of an organisation's members and of a member's assistants are strict for `in_stats` -- so the colony that grows the generation draws the edge `./argus -> ./orgs` on `stats`, restamped `in_stats`, with `context.org`, `context.member` and `context.assistant` set (GH #1444); a colony that draws none gets role goals receipted as unanswered and never judged. Derived from argus"
         },
         {
           "route": "eval",
@@ -919,6 +919,21 @@
           "from": ".",
           "to": "./argus",
           "condition": "has(hop.route) && hop.route == 'in_eval'"
+        },
+        {
+          "from": "./orgs",
+          "to": "./argus",
+          "condition": "has(hop.route) && hop.route == 'stats'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_stats'"
+            },
+            "delete_context": [
+              "org",
+              "member",
+              "assistant"
+            ]
+          }
         },
         {
           "from": "./argus",

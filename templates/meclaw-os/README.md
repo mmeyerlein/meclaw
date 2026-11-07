@@ -1,4 +1,4 @@
-# `meclaw-os@2.4.4`
+# `meclaw-os@2.4.5`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -138,16 +138,17 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The seventy-nine edges
+## The eighty edges
 
 Fifty-five of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Twenty-four wire two occupants to each other, and that is what owning a baumeister, a
+**Twenty-five wire two occupants to each other, and that is what owning a baumeister, a
 front door and a model registry looks like.** Four of them are the credential road since
 #801: the judge of `./argus` and the translator of `./llm-registry` ask the shell's own
-`./access` for their key and are answered sealed.
+`./access` for their key and are answered sealed. One since #1444 carries the answer to a
+role question from `./orgs` back to `./argus` (*The way back of a role question* below).
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
 `member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
@@ -580,6 +581,21 @@ pass-through from this level; since `argus@1.1.0` they are PARAMS of those cells
 (GH #138), so an operator who wants other values sets them with `override_params`
 in the manifest that grows the loop, not in an environment every occupant shares.
 
+**The way back of a role question
+([#1444](https://github.com/mmeyerlein/meclaw/issues/1444)).** A role goal of
+`./argus` asks the curator of a generation on `stats` and is answered on
+`in_stats`. Inside a generation the lane runs both ways already (organisation,
+member, assistant, role, curator); this level carries its ends. The answer that
+comes up out of `./orgs` on `stats` is restamped `in_stats` into `./argus`,
+with `context.org`, `context.member` and `context.assistant` taken off, so the
+address of the question does not ride on every later message of the meter. The
+way down is not drawn here: the `in_stats` doors of `./orgs`, of an
+organisation's members and of a member's assistants are strict and match on
+those three names, which only the colony that grows the generation knows. That
+colony draws one edge at this level, `./argus -> ./orgs` on `stats`, restamped
+`in_stats`, with the three names set on the context. Without it a role goal is
+receipted as unanswered and never judged.
+
 **No `requires` block.** This template substitutes nothing in its own config values, so it
 declares nothing. The requirements of `access` and `argus` are **not** repeated here:
 W3's validator resolves each node's ref chain back to the template it came from and
@@ -598,7 +614,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.4.4"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.4.5"}}
 ```
 
 ```bash
@@ -684,7 +700,7 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.4.4"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.4.5"}],
           "add_edges": []}}
 ```
 
@@ -706,7 +722,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.2.19"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.2.20"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

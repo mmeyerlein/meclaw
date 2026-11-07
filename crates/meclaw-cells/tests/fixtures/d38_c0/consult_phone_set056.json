@@ -1,0 +1,512 @@
+{
+  "case": "consult_phone_set056",
+  "steps": [
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Hello.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-0"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
+            "episode_turn_id": "s1#bd1794fa-0",
+            "iter": "0",
+            "recall_input_soft": "",
+            "session_id": "s1",
+            "turn_id": "t0"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "01 say t0 talk Hello.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":2,\"window_estimate\":43,\"window_tokens\":43}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-1"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [],
+            "screen_topics": []
+          },
+          "hop": {
+            "at_turn_end": "1",
+            "audience_set": "[\"member:e\"]",
+            "call_id": "call-1",
+            "section": "renew",
+            "session_id": "s1",
+            "turn_id": "t0"
+          },
+          "route": "live_feed"
+        }
+      ],
+      "step": "02 reply brain stop",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"path\":\"complex\",\"way\":\"consult\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "Plan my week around the move.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-2"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#13c67f290378] Plan my week around the move.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "call_id": "call-1",
+            "consult_class": "consult",
+            "consult_id": "k-00064c07-a6f7-4e80-8000-0000000001c0",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "consult"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#13c67f290378] Plan my week around the move.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "bridge": {
+                  "text": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. The answer follows in this turn, within about 10 seconds. Say one short sentence that bridges the wait, in your own words: only that you are on it and the answer is still coming. Never speak of missing access, missing abilities or limits of any kind. Ask nothing about this request itself: its answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Call no tool."
+                },
+                "mode": {
+                  "text": "Be brief."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "allow": []
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0-bridge",
+            "episode_turn_id": "s1#bd1794fa-2",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t1"
+          },
+          "route": "quick"
+        }
+      ],
+      "step": "03 say t1 complex Plan my week around the move.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "notes",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"notes_dropped\":[],\"notes_in\":[{\"id\":\"state\",\"scope\":\"turn\",\"source\":\"curator\"}]}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "And what about tomorrow?",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-3"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#13c67f290378] Plan my week around the move.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[notes for this turn -- from curator; guidance, not something the person said]\n- [state -- open: a consult]\n\n[#c2602215fb43] [the person, now -- their own words to you]\nAnd what about tomorrow?",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true,
+                "pending": {
+                  "text": "A consult is pending (id k-00064c07-a6f7-4e80-8000-0000000001c0, since 2026-03-02T10:00:10.000033Z): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked."
+                }
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            },
+            "tool_scope": {
+              "deny": [
+                "consult_cogny"
+              ]
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "curator_call": "00064c07-a744-49c0-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-3",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t2"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "04 say t2 talk And what about tomorrow?",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t2",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":3,\"raw_tokens\":21,\"window_estimate\":229,\"window_tokens\":229}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Tomorrow is still open.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-4"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "05 reply brain stop",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "route",
+          "session_id": "s1",
+          "turn_id": "t3",
+          "value": "{\"call\":\"00064c07-a7dc-4040-8000-0000000001c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "The plan for the week.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-5"
+          },
+          "route": "turn_write"
+        },
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "user",
+                "text": "[#6dc42d772492] Hello.",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Hello!",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#13c67f290378] Plan my week around the move.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#c2602215fb43] And what about tomorrow?",
+                "type": "text"
+              },
+              {
+                "origin": "assistant",
+                "text": "Tomorrow is still open.",
+                "type": "text"
+              },
+              {
+                "origin": "user",
+                "text": "[#3fba385eb32a] The plan for the week.",
+                "type": "text"
+              }
+            ],
+            "system": {
+              "consult": {
+                "$replace": true
+              },
+              "history": {
+                "$replace": true
+              },
+              "instructions": {
+                "$replace": true,
+                "mode": {
+                  "text": "Be brief."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
+                }
+              },
+              "pinned": {
+                "$replace": true
+              },
+              "roster": {
+                "$replace": true
+              }
+            }
+          },
+          "hop": {
+            "call_id": "call-1",
+            "consult_id": "k-00064c07-a6f7-4e80-8000-0000000001c0",
+            "curator_call": "00064c07-a7dc-4040-8000-0000000001c0",
+            "episode_turn_id": "s1#bd1794fa-5",
+            "iter": "0",
+            "recall_input_soft": "90000",
+            "session_id": "s1",
+            "turn_id": "t3"
+          },
+          "route": "brain"
+        }
+      ],
+      "step": "06 say t3 talk The plan for the week.",
+      "summarizer": []
+    },
+    {
+      "marks": [
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "curate",
+          "session_id": "s1",
+          "turn_id": "t3",
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a7dc-4040-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":4,\"raw_tokens\":36,\"window_estimate\":134,\"window_tokens\":134}"
+        }
+      ],
+      "out": [
+        {
+          "body": {
+            "messages": [
+              {
+                "origin": "assistant",
+                "text": "Here is the plan for your week.",
+                "type": "text"
+              }
+            ]
+          },
+          "hop": {
+            "iter": "0",
+            "session_id": "s1",
+            "turn_id": "s1#bd1794fa-6"
+          },
+          "route": "turn_write"
+        }
+      ],
+      "step": "07 reply brain stop",
+      "summarizer": []
+    }
+  ]
+}

@@ -108,7 +108,10 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// `screen_model`) -- twenty-nine from `talky`, thirty-four in all. MEASURED.
 /// #1398: the quick voice's siblings (`quick_spec`, `quick_bridge`) --
 /// thirty-one from `talky`, thirty-six in all. MEASURED.
-const CELLS_AFTER_GROW: usize = 36;
+/// GH #1447: the curator's lead and its store (`lead`, `lead_state`) --
+/// thirty-three from `talky`, thirty-eight in all. MEASURED (38 against 36
+/// in the strand's gate).
+const CELLS_AFTER_GROW: usize = 38;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

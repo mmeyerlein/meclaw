@@ -23,8 +23,8 @@ use meclaw_core::serde_json::{self as sj, Value, json};
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("")),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("")),
     ]);
     h.check_emits = true;
     h
@@ -277,6 +277,9 @@ fn gh1382_c_a_kept_speculation_is_unchanged() {
         "a speculation never streams out: {rim:?}"
     );
     edges.retain(|(_, c)| !partial(c));
+    // GH #1449: the package line into `./curator` (lane `in_catalog`) came
+    // after 6.13.0 and never carries a turn or a speculation.
+    edges.retain(|(_, c)| !c.starts_with("has(hop.route) && hop.route == 'package'"));
     let want: Vec<(String, String)> = QUICK_EDGES_6_13_0
         .iter()
         .map(|(t, c)| (t.to_string(), c.to_string()))
@@ -372,7 +375,7 @@ fn gh1382_e_a_plain_quick_call_whose_projection_fell_still_escalates_once() {
     ] {
         let mut h = Hive::with(&[
             ("policy", "role", json!("talky")),
-            ("policy", "quick_speculative", json!("0")),
+            ("lead", "quick_speculative", json!("0")),
         ]);
         h.check_emits = true;
         seam(&mut h, "t1", "simple", "please call my daughter");

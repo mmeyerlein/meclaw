@@ -1,0 +1,76 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "state": {
+        "key": "text",
+        "value": "text"
+      }
+    },
+    "indexes": {
+      "state_key": {
+        "table": "state",
+        "on": [
+          "key"
+        ],
+        "unique": true
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The own store of `./lead` (GH #1447): its rows `escalated:<session>`, `consult_pending:<session>`, the speculation rows `spec:`/`spec_held:`/`spec_fb:`/`spec_shown:<session>#<turn>`, `spec_called:<session>` (the session's last decided turns), `delta:<turn>` and `delta_fb:<session>#<turn>`, and the last verdict per session. The unique index on `state.key` makes an insert-if-absent a compare-and-set. Only the lead speaks to it."
+  }
+}

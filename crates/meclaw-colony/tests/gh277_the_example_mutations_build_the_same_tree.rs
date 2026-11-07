@@ -522,7 +522,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 99 -> 103 with #1398: every `talky` grew the quick voice's siblings
 /// `quick_spec` and `quick_bridge` (2 x 2). Measured red in the strand's gate
 /// (103 against 99).
-const TEMPLATE_BORN_ROWS: usize = 103;
+///
+/// Moved 103 -> 109 with GH #1447: every shipped curator grew `lead` and
+/// `lead_state`, the switch and its own store. Measured red in the strand's
+/// gate (109 against 103).
+const TEMPLATE_BORN_ROWS: usize = 109;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -974,7 +978,25 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// `templates/talky/README.md`) and every `curator` one more (`. -> ./policy`
 /// on `in_summary_self`). Two talkies, three curators: 2 x 1 + 3 x 1.
 /// Measured red in the strand's run (648 against 643).
-const EDGES: usize = 648;
+/// Moved 648 -> 660 with GH #1447 (the curator's lead): every `curator` four
+/// edges more (`./policy -> ./lead`, `./lead -> ./lead_state`, `./lead_state ->
+/// ./lead`, `./lead -> ./policy`). Three curators: 3 x 4. Measured red in the
+/// strand's run (660 against 648).
+/// Moved 660 -> 672 with GH #1449 (the package line before the first call):
+/// every `talky` four edges more (`./brain`, `./quick`, `./quick_spec` and
+/// `./quick_bridge` -> `./curator` on `in_catalog`, 125 -> 129 in
+/// `templates/talky/README.md`), every `curator` one more (`. -> ./policy` on
+/// `in_catalog`) and the one `cogny` one more (`./brain -> ./curator`).
+/// Two talkies, three curators, one cogny: 2 x 4 + 3 x 1 + 1 x 1.
+/// Measured red in the strand's run (672 against 660).
+/// Moved 672 -> 684 with GH #1450 (the catalog question at the session
+/// start): every `talky` four edges more (`./curator` -> `./brain`,
+/// `./quick`, `./quick_spec` and `./quick_bridge` on `catalog_ask`, 129 -> 133
+/// in `templates/talky/README.md`), every `curator` one more (`./policy -> .`
+/// on `catalog_ask`) and the one `cogny` one more (`./curator -> ./brain`).
+/// Two talkies, three curators, one cogny: 2 x 4 + 3 x 1 + 1 x 1.
+/// Measured red in the strand's run (684 against 672).
+const EDGES: usize = 684;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

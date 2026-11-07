@@ -310,6 +310,16 @@
           }
         },
         {
+          "from": "./brain",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
           "from": "./splitter",
           "to": "./collector",
           "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
@@ -651,6 +661,11 @@
               "tools_folded"
             ]
           }
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'brain'"
         }
       ]
     },

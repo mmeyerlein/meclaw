@@ -36,8 +36,8 @@ const BASE: &str = "/t";
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!(spec_tools)),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!(spec_tools)),
     ]);
     h.check_emits = true;
     h
@@ -321,10 +321,12 @@ fn gh1275_a_drop_known_at_the_stamp_releases_the_stored_call_at_once() {
     assert_eq!(m.len(), 1, "{m:?}");
     assert_eq!(m[0]["verdict"], json!("dropped"));
     assert_eq!(m[0]["reason"], json!("family:orga"));
+    // The turn's rows (`<kind>:<session>#<turn>`); `spec_called:<session>`
+    // names the session's newest normal verdict and stays (GH #1447).
+    let left = h.lead_rows("SELECT key FROM state WHERE key LIKE 'spec%#t1'");
     assert!(
-        h.rows("SELECT key FROM state WHERE key LIKE 'spec%'")
-            .is_empty(),
-        "the turn's spec rows went with the drop"
+        left.is_empty(),
+        "the turn's spec rows went with the drop: {left:?}"
     );
     spec_end(
         &mut h,
@@ -420,9 +422,29 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
                 .as_str()
                 .is_some_and(|c| c.starts_with("has(hop.route) && hop.route == 'partial'"))
     };
+    // GH #1449 came after 6.13.1 too: the package lines of the four model
+    // cells into `./curator` on `in_catalog`. They leave on their own
+    // `package` lane and never carry a turn, so #1275 is not touched.
+    let package_line = |e: &Value| {
+        e["to"] == "./curator"
+            && e["condition"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("has(hop.route) && hop.route == 'package'"))
+    };
+    // GH #1450 came after 6.13.1 as well: the curator's catalogue ask onto
+    // each model cell (`catalog_ask`, bound by `hop.catalog_for`). It is the
+    // empty params slot, never a turn, so #1275 is not touched.
+    let catalog_ask = |e: &Value| {
+        e["from"] == "./curator"
+            && e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("hop.route == 'catalog_ask'"))
+    };
     let sibling = |e: &Value| {
         call_end_keeper(e)
             || partial_rim(e)
+            || package_line(e)
+            || catalog_ask(e)
             || ["./quick_spec", "./quick_bridge"]
                 .iter()
                 .any(|s| e["from"] == *s || e["to"] == *s)

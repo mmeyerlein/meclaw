@@ -290,6 +290,16 @@ pub struct LlmParams {
     /// `credential_grant_id`.
     #[serde(default)]
     pub credential_late_notice: bool,
+    /// GH #1449: whether the cell tells its package on the `package` lane --
+    /// one message after every params-only update that touches a package key
+    /// (and as the answer to an empty `params` slot, the question). Before,
+    /// the curator learned the package only from the header of an answer and
+    /// ran its first call on fallback params. Off by default: a cell whose
+    /// edges have no reader for the line must not dead-letter it (the reason
+    /// a push was answered with silence, OR-SN.L2.1). Not a package key --
+    /// whether anyone listens is the topology's choice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub package_line: bool,
     /// T6-06 (GH #1232): how long a twin waits for its original's handover
     /// before it runs its parked turns without the inheritance, in
     /// milliseconds; default 0 = the cell expects no handover and parks
@@ -1540,6 +1550,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "credential_wait_ms",
     // GH #1225: the notice of a box that opened after its round's deadline.
     "credential_late_notice",
+    // GH #1449: the package line to the curator.
+    "package_line",
     // T6-06 (GH #1232): the twin's wait for its original's handover.
     "handover_wait_ms",
     "base_url",

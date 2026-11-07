@@ -24,6 +24,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/warm_python.rs"]
+#[allow(unused_imports)]
+use crate::warm_python; // harness_fold: mod warm_python;
 
 use meclaw_colony::cel_eval::{
     CompiledCondition, CompiledModifier, apply_modifier, evaluate_condition, parse_condition,
@@ -76,22 +79,7 @@ fn run_python(script: &str, stdin_doc: &str) -> std::process::Output {
 /// instead of bracketed by the test machine's clock (TV-Z1: an injected clock,
 /// never a verdict on elapsed real time).
 fn run_python_at(script: &str, stdin_doc: &str, wall: Option<&str>) -> std::process::Output {
-    let clock = match wall {
-        None => String::new(),
-        Some(at) => format!(
-            concat!(
-                "import datetime as _dt\n",
-                "_WALL = _dt.datetime.fromisoformat({})\n",
-                "class _HeldWall(_dt.datetime):\n",
-                "    @classmethod\n",
-                "    def now(cls, tz=None):\n",
-                "        t = cls.fromtimestamp(_WALL.timestamp(), _dt.timezone.utc)\n",
-                "        return t.astimezone(tz) if tz is not None else t.replace(tzinfo=None)\n",
-                "_dt.datetime = _HeldWall\n"
-            ),
-            sj::to_string(at).unwrap(),
-        ),
-    };
+    let clock = held_clock(wall);
     let src = format!(
         concat!(
             "import sys, io\n",
@@ -115,6 +103,30 @@ fn run_python_at(script: &str, stdin_doc: &str, wall: Option<&str>) -> std::proc
     sink.write_all(src.as_bytes()).expect("write program");
     drop(sink);
     child.wait_with_output().expect("wait")
+}
+
+/// The program text that holds `datetime.datetime.now` at `wall` ([`run_python_at`]);
+/// empty for the machine's own clock. Run again in the same interpreter (a
+/// resident child runs it before every message) it changes nothing more.
+fn held_clock(wall: Option<&str>) -> String {
+    match wall {
+        None => String::new(),
+        Some(at) => format!(
+            concat!(
+                "import datetime as _dt\n",
+                "if not getattr(_dt.datetime, '_held', False):\n",
+                "    _WALL = _dt.datetime.fromisoformat({})\n",
+                "    class _HeldWall(_dt.datetime):\n",
+                "        _held = True\n",
+                "        @classmethod\n",
+                "        def now(cls, tz=None):\n",
+                "            t = cls.fromtimestamp(_WALL.timestamp(), _dt.timezone.utc)\n",
+                "            return t.astimezone(tz) if tz is not None else t.replace(tzinfo=None)\n",
+                "    _dt.datetime = _HeldWall\n"
+            ),
+            sj::to_string(at).unwrap(),
+        ),
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -160,6 +172,14 @@ struct Hive {
     stderr: Vec<String>,
     /// The held wall clock of every cell run, `None` = the machine's own.
     wall: Option<&'static str>,
+    /// GH #1447 (OR-d38-3.o9.5): the lead's own store `./lead_state`, a
+    /// second in-memory SQLite from its params, when the tree ships the lead.
+    lead_db: Option<rusqlite::Connection>,
+    /// `./policy` the way it ships, `runner_mode: resident`: one child whose
+    /// globals live from message to message, booted under the held clock it
+    /// runs with (a new clock boots a new child). A document the child cannot
+    /// take (`warm_python`) runs in a fresh process, as a restarted child would.
+    policy_child: Option<(Option<&'static str>, warm_python::Resident)>,
 }
 
 impl Hive {
@@ -203,6 +223,13 @@ impl Hive {
         ] {
             cells.insert(name.to_string(), cell_config(name));
         }
+        // GH #1447: `./policy` asks `./lead` beside its ledger reads; the
+        // lead keeps its rows in `./lead_state`.
+        if curator_hive::lead_shipped() {
+            for name in curator_hive::LEAD_CELLS {
+                cells.insert(name.to_string(), cell_config(name));
+            }
+        }
         for (cell, key, value) in over {
             let params = cells
                 .get_mut(*cell)
@@ -228,6 +255,14 @@ impl Hive {
             &ledger.schema,
         )
         .expect("seed");
+        let lead_db = cells.get("lead_state").map(|cfg| {
+            let p = meclaw_cells::store::StoreParams::parse(&cfg["params"])
+                .expect("the lead_state params parse");
+            let db = rusqlite::Connection::open_in_memory().expect("sqlite");
+            meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &p).expect("lead ddl");
+            meclaw_cells::store::ddl::apply_index_ddl(&db, &p.indexes).expect("lead index ddl");
+            db
+        });
         Self {
             edges,
             cells,
@@ -237,6 +272,8 @@ impl Hive {
             summ: VecDeque::new(),
             stderr: Vec::new(),
             wall: None,
+            lead_db,
+            policy_child: None,
         }
     }
 
@@ -252,7 +289,30 @@ impl Hive {
             "body": msg.body,
             "params": params,
         });
-        let out = run_python_at(script, &doc.to_string(), self.wall);
+        let doc = doc.to_string();
+        let resident = name == "policy" && cfg["params"]["runner_mode"] == "resident";
+        let mut warm = None;
+        if resident {
+            if self
+                .policy_child
+                .as_ref()
+                .is_none_or(|(w, _)| *w != self.wall)
+            {
+                let boot = format!("{}{}", held_clock(self.wall), script);
+                self.policy_child = Some((self.wall, warm_python::Resident::boot(&boot)));
+            }
+            warm = self.policy_child.as_mut().and_then(|(_, r)| r.run(&doc));
+        }
+        let out = match warm {
+            Some(out) => out,
+            None => run_python_at(
+                self.cells[name]["params"]["script_inline"]
+                    .as_str()
+                    .expect("script"),
+                &doc,
+                self.wall,
+            ),
+        };
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         assert!(out.status.success(), "{name} exited non-zero: {err}");
         if !err.trim().is_empty() {
@@ -287,6 +347,14 @@ impl Hive {
 
     /// One store message answered the way the store cell answers it.
     fn store(&mut self, msg: &Msg) -> Msg {
+        store_on(&self.db, msg)
+    }
+}
+
+/// One store message answered on `db` the way the store cell answers it; a
+/// refused op fails the test.
+fn store_on(db: &rusqlite::Connection, msg: &Msg) -> Msg {
+    {
         use meclaw_cells::store::ops::dispatch;
         use meclaw_cells::store::output::{BundleLeg, build_bundle_result, build_tool_result};
         let calls: Vec<Value> = msg
@@ -297,7 +365,7 @@ impl Hive {
         let (body, hop) = if calls.len() == 1 {
             let c = &calls[0];
             let args: Value = sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
-            match dispatch(&self.db, &args) {
+            match dispatch(db, &args) {
                 Ok(outcome) => {
                     build_tool_result(&outcome, c["id"].as_str().unwrap_or("").to_string(), 0)
                 }
@@ -317,7 +385,7 @@ impl Hive {
                     let id = c["id"].as_str().unwrap_or("").to_string();
                     let args: Value =
                         sj::from_str(c["text"].as_str().unwrap_or("")).expect("op json");
-                    match dispatch(&self.db, &args) {
+                    match dispatch(db, &args) {
                         Ok(outcome) => BundleLeg::from_outcome(&outcome, id, 0),
                         Err(e) => BundleLeg::refusal(
                             args["operation"].as_str().unwrap_or("error"),
@@ -346,7 +414,9 @@ impl Hive {
             reply_to: String::new(),
         }
     }
+}
 
+impl Hive {
     fn route(&self, from: &str, msg: &Msg) -> Vec<(String, Msg)> {
         let mut out = Vec::new();
         for e in self.edges.iter().filter(|e| e.from == from) {
@@ -383,6 +453,10 @@ impl Hive {
                     "./ledger" => {
                         let answer = self.store(&m);
                         queue.push_back(("./ledger".to_string(), answer));
+                    }
+                    "./lead_state" if self.lead_db.is_some() => {
+                        let answer = store_on(self.lead_db.as_ref().expect("lead db"), &m);
+                        queue.push_back(("./lead_state".to_string(), answer));
                     }
                     "./clock" => self.clock.push(m),
                     "./summarizer" => self.summ.push_back(m),
@@ -712,6 +786,8 @@ fn curator_template_shape() {
             "in_gap_bundle",
             "in_renewed",
             "in_stats",
+            // GH #1449: the package line of a model cell, before its first call.
+            "in_catalog",
             "in_candidate",
             // GH #1303: notes right before the newest turn.
             "in_note",
@@ -814,11 +890,14 @@ fn curator_template_shape() {
         "candidates": ["source", "cand_id", "hash", "triggers", "until", "once", "used_at",
                        "last_seq", "priority", "audience_set", "at"],
         "notes": ["source", "note_id", "text", "scope", "until", "priority",
-                  "audience_set", "session_id", "at", "used_turn"],
+                  "audience_set", "session_id", "at", "used_turn", "item"],
+        "snapshots": ["seq", "call_id", "session_id", "turn_id", "body", "cut", "at", "audience_set"],
     });
     // GH #892: `marks` and `pins` joined the seven of 1.0.0; GH #949
-    // `candidates`; GH #1303 `notes`.
-    assert_eq!(schema.as_object().unwrap().len(), 11, "eleven tables");
+    // `candidates`; GH #1303 `notes`; GH #1448 `snapshots` (the plan of each call),
+    // GH #1450 its column `cut` (the second half: the cut of the call);
+    // GH #1451 `notes.item`.
+    assert_eq!(schema.as_object().unwrap().len(), 12, "twelve tables");
     // The llm cell stamps `cost` as a fraction; the store knows `int`, `text`
     // and `json`, and only `json` says what the column holds (review M4).
     assert_eq!(schema["calls"]["cost"], "json", "calls.cost");
@@ -945,6 +1024,12 @@ fn the_shared_helpers_are_one_text() {
         "topic_of",
         "topic_now",
         "epoch_ms",
+        // GH #1451 (D38 V2): the open wellbeing, seed and feed one rule.
+        "wellbeing_line",
+        "with_wellbeing",
+        // Review o15-Rv1 m2/m3: one clock and one notes rule, seed and feed.
+        "wellbeing_day",
+        "rows_latest_per_item",
     ] {
         assert_eq!(body(&h, name), body(&p, name), "{name}: history vs policy");
     }
@@ -2730,11 +2815,12 @@ fn the_round_is_written_on_every_row_it_causes() {
         vec![vec![json!(ROUND_AE)]]
     );
     // The tap's own bookkeeping without a model package (`curate`,
-    // `no_package`, GH #1225 K-3) is not what this round causes; that every
+    // `no_package`, GH #1225 K-3) and the lead's station mark per call
+    // (`lead`, GH #1447) are not what this round causes; that every
     // mark carries the round, theirs included, the next assertion holds.
     assert_eq!(
         h.rows(
-            "SELECT kind, value FROM marks WHERE kind NOT IN ('curate', 'no_package') \
+            "SELECT kind, value FROM marks WHERE kind NOT IN ('curate', 'no_package', 'lead') \
              ORDER BY kind"
         ),
         vec![
@@ -2789,8 +2875,14 @@ fn a_round_without_an_audience_writes_the_empty_set() {
             vec![json!("tool_result"), json!("[]")]
         ]
     );
+    // The lead's station mark (`lead`, GH #1447) is a row of the round too:
+    // it carries `[]` like the rest, the list below names the round's own.
     assert_eq!(
-        h.rows("SELECT kind, audience_set FROM marks ORDER BY kind"),
+        h.rows("SELECT DISTINCT audience_set FROM marks"),
+        vec![vec![json!("[]")]]
+    );
+    assert_eq!(
+        h.rows("SELECT kind, audience_set FROM marks WHERE kind != 'lead' ORDER BY kind"),
         vec![
             vec![json!("missing_audience"), json!("[]")],
             vec![json!("release"), json!("[]")],
@@ -3042,8 +3134,9 @@ fn a_failed_tool_result_is_one_tool_error_mark() {
     grown.push(tool_result("c4", r#"{"hits":[],"tool":"history_search"}"#));
     h.curate("s1", "t1", 2, json!(grown), mode("Be brief."));
     assert_eq!(marks(&h), want, "a clean result marks nothing");
+    // Each call also leaves the lead's station mark (`lead`, GH #1447).
     assert_eq!(
-        h.rows("SELECT COUNT(*) FROM marks")[0][0],
+        h.rows("SELECT COUNT(*) FROM marks WHERE kind != 'lead'")[0][0],
         json!(values.len())
     );
     assert!(
@@ -3092,11 +3185,12 @@ fn an_ask_and_a_correction_are_marked_once_off_the_tap() {
         h.tap(&call, "stop", json!({}), json!([said(CORRECTED)]));
     }
     // Without a model package the tap also marks its call (`curate`) and the
-    // stand-in row (`no_package`, GH #1225 K-3); this test counts the rest.
+    // stand-in row (`no_package`, GH #1225 K-3), policy each call's lead
+    // verdict (`lead`, GH #1447); this test counts the rest.
     let marks = |h: &Hive| {
         h.rows(
             "SELECT kind, value, session_id, turn_id, audience_set FROM marks \
-             WHERE kind NOT IN ('curate', 'no_package') ORDER BY seq",
+             WHERE kind NOT IN ('curate', 'no_package', 'lead') ORDER BY seq",
         )
     };
     let want = vec![

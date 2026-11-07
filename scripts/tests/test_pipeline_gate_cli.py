@@ -194,7 +194,7 @@ class GateCase(unittest.TestCase):
         # set them itself (welle-tb tb-zexp, #1164: the merge gate planned
         # narrowed because the queue named a strand run).
         for var in ("MECLAW_GATE_ARCHIVE", "XDG_STATE_HOME", "GH277_WRITE_GOLDEN", "MECLAW_HYGIENE",
-                    "MECLAW_GH935_BLESS", "CARGO_TARGET_DIR", "MECLAW_GATE_MODE",
+                    "MECLAW_GH935_BLESS", "MECLAW_D38_C0_BLESS", "CARGO_TARGET_DIR", "MECLAW_GATE_MODE",
                     "MECLAW_GATE_STRAND_RUN", "MECLAW_GATE_WAVE", "MECLAW_GATE_NARROW",
                     "MECLAW_GATE_CACHE_FROM", "MECLAW_ALLOW_BUMP"):
             os.environ.pop(var, None)

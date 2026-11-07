@@ -68,7 +68,7 @@ fn a_complex_turn_goes_straight_to_cogny() {
     // duration between two calls decides this test (dev-rules § 11).
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "consult_pending_ms", json!(86_400_000)),
+        ("lead", "consult_pending_ms", json!(86_400_000)),
     ]);
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
@@ -145,8 +145,9 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
         "plan my week around the move",
     );
     assert_eq!(h.routed("consult").len(), 1, "{:?} {:?}", h.out, h.stderr);
+    // GH #1447: the consult mark is the lead's row (`lead_state`).
     let key = "SELECT value FROM state WHERE key = 'consult_pending:s1'";
-    let rows = h.rows(key);
+    let rows = h.lead_rows(key);
     assert_eq!(rows.len(), 1, "the consult leaves its mark: {:?}", h.stderr);
     let mut mark: Value =
         meclaw_core::serde_json::from_str(rows[0][0].as_str().unwrap_or("")).unwrap_or_default();
@@ -157,11 +158,14 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
     );
 
     mark["until"] = json!("2000-01-01T00:00:00.000000Z");
-    h.db.execute(
-        "UPDATE state SET value = ?1 WHERE key = 'consult_pending:s1'",
-        rusqlite::params![mark.to_string()],
-    )
-    .expect("age the mark");
+    h.lead_db
+        .as_ref()
+        .expect("the tree ships the lead")
+        .execute(
+            "UPDATE state SET value = ?1 WHERE key = 'consult_pending:s1'",
+            rusqlite::params![mark.to_string()],
+        )
+        .expect("age the mark");
     curate_with(&mut h, "t2", "", json!({}), "are you still there?");
     let brain = h.routed("brain");
     assert_eq!(brain.len(), 1, "a plain turn: {:?} {:?}", h.out, h.stderr);
@@ -171,8 +175,8 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
         brain[0].body["system"]
     );
     assert!(
-        h.rows(key).is_empty(),
+        h.lead_rows(key).is_empty(),
         "the mark is gone: {:?}",
-        h.rows(key)
+        h.lead_rows(key)
     );
 }

@@ -63,10 +63,19 @@ fn hive_with(copies: usize) -> (Hive, Msg, Vec<String>) {
 }
 
 fn estimate_of(h: &Hive, call: &Msg) -> String {
-    h.state(&format!(
+    let raw = h.state(&format!(
         "window_est:{}",
         call.hop["curator_call"].as_str().unwrap()
-    ))
+    ));
+    // GH #1448: the call's plan rides beside the estimate; its `blocks_to`
+    // is a wall seq of its own hive, no part of the count.
+    match meclaw_core::serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Object(mut m)) => {
+            m.remove("plan");
+            Value::Object(m).to_string()
+        }
+        _ => raw,
+    }
 }
 
 #[test]

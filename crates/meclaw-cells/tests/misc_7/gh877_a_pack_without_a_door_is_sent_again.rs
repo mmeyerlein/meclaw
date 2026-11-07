@@ -2242,3 +2242,109 @@ fn the_curator_summarizers_are_announced_with_their_need() {
         );
     }
 }
+
+// ═════════════ (g) GH #1451 (D38 V4, T-13): a persona after the birth
+
+/// The agent row of the affinity seed, as the gate's `upsert_entity` takes it.
+fn seeded_agent() -> Value {
+    let raw = std::fs::read_to_string(templates_root().join("affinity/store/seed/entities.jsonl"))
+        .expect("the entity seed");
+    raw.lines()
+        .skip(1)
+        .map(|l| meclaw_core::serde_json::from_str::<Value>(l).expect("a seed row"))
+        .find(|r| r["entity_id"] == "entity:aiden")
+        .expect("the seeded agent")
+}
+
+/// D38 V4 (OR-38-88, soul2me #208): on POC C the persona reached the agent's
+/// record after the birth pack (`identity.py apply`, `mx.brain.persona`), and
+/// the weather delegation's window had no `persona.*` leaf -- no slot row
+/// after the birth's. The pusher's half of the chain: a self-subscription for
+/// `brain`, the birth pack booked, then an `upsert_entity` that adds
+/// `mx.brain.persona` -- the hash moves, so EVERY rim's curator gets a second
+/// pack, the talky curator (the delegation window) included, and it holds the
+/// new family. The curator's half is `curator_4/gh_d38_v4_*`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persona_after_the_birth_reaches_every_rim() {
+    let (Some(affinity), Some(assistant)) = (affinity_shipped(), generation_shipped()) else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    let rel = build_generation_tree(&td, &affinity, &assistant, true);
+    let (h, mut s) = boot_with(&td, generation_factories(&td.path().join("main"))).await;
+    let subscriber = subscriber_literal();
+    let agent = seeded_agent();
+    let id = derived_id(&subscriber, "entity:aiden");
+
+    subscribe(
+        &h,
+        &mut s.sink,
+        json!({"op": "subscribe", "subject": "entity:aiden", "channel": "*",
+               "slots": ["brain"], "subscriber": subscriber, "actor": "agent:aiden"}),
+    )
+    .await;
+    for rim in ["talky", "talky-chat", "cogny"] {
+        eventually(
+            &format!("the birth pack never reached the {rim} curator"),
+            || {
+                let slots = curator_pack_slots(&td, &rel, rim);
+                holds_identity(&slots).then_some(slots)
+            },
+        )
+        .await;
+    }
+    let birth = eventually("the birth pack was never booked", || {
+        row_of(&td, &id).filter(|r| r[2].len() == 64)
+    })
+    .await;
+    h.quiesce().await;
+    let talky = curator_path(&rel, "talky");
+    let first = logged(&h, &talky, "in_pack").await.len();
+
+    let mut mx = agent["mx"].clone();
+    mx["brain"]["persona"] = json!({"self": "A companion.", "member": "Lives in Berlin."});
+    subscribe(
+        &h,
+        &mut s.sink,
+        json!({"op": "upsert_entity", "entity_id": "entity:aiden", "kind": agent["kind"],
+               "display_name": agent["display_name"], "owner_member": agent["owner_member"],
+               "aieos": agent["aieos"], "mx": mx, "source": "curated", "confidence": 100}),
+    )
+    .await;
+
+    // The ledger books a pack's slots as legs of one store bundle, and a bundle
+    // is no transaction: a read of its store can fall between `persona.member`
+    // and `persona.self`, so the wait holds out for both families of the new
+    // persona (release gate 0.85.0).
+    for rim in ["talky", "talky-chat", "cogny"] {
+        let slots = eventually(
+            &format!("the persona never reached the {rim} curator (D38 V4)"),
+            || {
+                let slots = curator_pack_slots(&td, &rel, rim);
+                (slots.iter().any(|p| p == "persona.member")
+                    && slots.iter().any(|p| p == "persona.self"))
+                .then_some(slots)
+            },
+        )
+        .await;
+        assert!(
+            slots.iter().any(|p| p == "persona.self"),
+            "{rim}: {slots:?}"
+        );
+    }
+    let booked = eventually("the persona pack was never booked", || {
+        row_of(&td, &id).filter(|r| r[2].len() == 64 && r[2] != birth[2])
+    })
+    .await;
+    h.quiesce().await;
+    let delivered = logged(&h, &talky, "in_pack").await;
+    assert!(
+        delivered.len() > first
+            && delivered
+                .iter()
+                .any(|r| r["context"]["pack_hash"] == booked[2].as_str()),
+        "the talky curator got the pack of the moved hash: {delivered:?}"
+    );
+
+    h.shutdown().await;
+}

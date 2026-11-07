@@ -210,8 +210,8 @@ fn a_parked_turn_ends_its_speculation() {
     }
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("")),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("")),
     ]);
     h.check_emits = true;
     // The collector's early curate of the turn: `spec` "1", no path.
@@ -238,7 +238,8 @@ fn a_parked_turn_ends_its_speculation() {
         json!({"messages": [said("Cloudy tomorrow.")]}),
     );
     assert!(
-        !h.state("spec_held:s1#t1").is_empty(),
+        // The spec rows live in the lead's store since GH #1447.
+        !h.lead_state("spec_held:s1#t1").is_empty(),
         "the answer is held: {:?}",
         h.stderr
     );
@@ -263,11 +264,11 @@ fn a_parked_turn_ends_its_speculation() {
         vec![json!({"delegation_id": "d1", "iter": 0})]
     );
     assert!(
-        h.state("spec:s1#t1").is_empty(),
+        h.lead_state("spec:s1#t1").is_empty(),
         "the spec row goes with the park"
     );
     assert!(
-        h.state("spec_held:s1#t1").is_empty(),
+        h.lead_state("spec_held:s1#t1").is_empty(),
         "the held answer goes with it"
     );
     let spec = marks(&h, "quick_spec");

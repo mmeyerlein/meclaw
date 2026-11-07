@@ -29,11 +29,11 @@ const SAID_BEFORE: &str = "WHAT WAS SAID\n  user: \"My sister Anna moved to Hamb
 fn memory_hive(spec: bool) -> Hive {
     let mut over = vec![
         ("policy", "role", json!("talky")),
-        ("policy", "memory_to_brain", json!("1")),
+        ("lead", "memory_to_brain", json!("1")),
     ];
     if spec {
-        over.push(("policy", "quick_speculative", json!("1")));
-        over.push(("policy", "spec_tools", json!("")));
+        over.push(("lead", "quick_speculative", json!("1")));
+        over.push(("lead", "spec_tools", json!("")));
     }
     Hive::with(&over)
 }
@@ -275,10 +275,10 @@ fn a_held_speculation_of_a_memory_turn_is_dropped() {
 fn delta_hive(memory_to_brain: &str) -> Hive {
     Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "memory_to_brain", json!(memory_to_brain)),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!("")),
-        ("policy", "delta_speculation", json!("1")),
+        ("lead", "memory_to_brain", json!(memory_to_brain)),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!("")),
+        ("lead", "delta_speculation", json!("1")),
     ])
 }
 

@@ -46,17 +46,18 @@ fn knob_off_is_byte_identical() {
     if !shipped() {
         return;
     }
-    let policy = cell_config("policy");
-    assert_eq!(policy["params"]["memory_to_brain"], json!("0"), "ships off");
+    // The knob lives in the lead since GH #1447.
+    let lead = cell_config("lead");
+    assert_eq!(lead["params"]["memory_to_brain"], json!("0"), "ships off");
     assert_eq!(
-        policy["contract"]["settings"]["memory_to_brain"]["default"],
+        lead["contract"]["settings"]["memory_to_brain"]["default"],
         json!("0"),
         "the setting says the same"
     );
 
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "memory_to_brain", json!("0")),
+        ("lead", "memory_to_brain", json!("0")),
     ]);
     seam(&mut h, "t1", "simple", "memory", "How is my sister doing?");
     assert!(

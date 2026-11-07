@@ -37,14 +37,15 @@ fn a_talk_turn_goes_to_the_conversation_model() {
     if !shipped() {
         return;
     }
-    let policy = cell_config("policy");
+    // GH #1447: the routes are the lead's, the cell that names the way.
+    let lead = cell_config("lead");
     assert_eq!(
-        policy["params"]["path_routes"],
+        lead["params"]["path_routes"],
         json!(DEFAULT),
         "the shipped param sends talk to the brain"
     );
     assert_eq!(
-        policy["contract"]["settings"]["path_routes"]["default"],
+        lead["contract"]["settings"]["path_routes"]["default"],
         json!(DEFAULT),
         "the schema default says the same"
     );

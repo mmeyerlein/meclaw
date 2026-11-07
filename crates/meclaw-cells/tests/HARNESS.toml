@@ -100,3 +100,9 @@ harness = "simple_agent"
 # the figure template pins (GH #1267, #1292): a harness of their own, so misc keeps its eight parts
 match = "^figure_"
 harness = "figure"
+
+[[rule]]
+# the watcher pins of GH #1444 (calendar line, stats way, role figures): a
+# harness of their own, so misc keeps its eight parts
+match = "^gh_d38_w1_"
+harness = "watcher"

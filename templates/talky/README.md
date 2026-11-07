@@ -1,4 +1,4 @@
-# `talky@6.17.0`
+# `talky@6.18.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- one hundred and twenty-five edges,
+dispatcher for the fan-out, the close batch out to the write port -- one hundred and thirty-three edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -78,7 +78,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.17.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.18.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -672,7 +672,11 @@ the tool runs.
 
 ## The internal wiring, edge by edge
 
-Fifty-seven edges of round in this hive's `params.graph` (the fifty-seventh GH #1440's: the
+Sixty-five edges of round in this hive's `params.graph` (the sixty-second to sixty-fifth GH #1450's: the
+curator's catalogue ask `./curator -> ./brain`, `./quick`, `./quick_spec` and `./quick_bridge` on
+`catalog_ask`, each bound to its cell by `hop.catalog_for`; the fifty-eighth to sixty-first GH #1449's: the
+package lines of `./brain`, `./quick`, `./quick_spec` and `./quick_bridge` into `./curator` on `in_catalog`;
+the fifty-seventh GH #1440's: the
 role's self summary `./brain -> ./curator` on `in_summary_self`; the fifty-sixth GH #1415's: a
 speculation's partial into `./curator` on `in_spec_partial`; the forty-eighth to fifty-fifth #1398's:
 the curator's two roads each onto `./quick_spec` and `./quick_bridge`, the speculation's lane
@@ -755,6 +759,7 @@ quick --(any answer, !refused_subscriber, context.spec '1')--> curator  in_spec_
 quick_spec --(any answer, !refused_subscriber)--> curator  in_spec_llm  <- every answer of it is a spec answer; its only road, no splitter, #1398
 quick_spec --(partial, !finish_reason)--> curator  in_spec_partial  <- a spec sentence, passed only while the turn awaits it, #1411
 quick_bridge --(any answer, !refused_subscriber)--> curator  in_llm  <- the bridge's tap, #1398
+brain | quick | quick_spec | quick_bridge --(package, !finish_reason)--> curator  in_catalog  <- the model's package line, on a push or a question, #1449
 curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept spec answer, the quick round once more, #1275
    .      --(in_pack)-----------> curator    <- THE DOOR IN THE WALL, GH #458
    .      --(in_pin)------------> curator    <- another hive's pin, GH #916
@@ -990,7 +995,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.17.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.18.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1736,7 +1741,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all thirty-one cells (plus four hive markers); the two `timer`s
+The composite comes up with all thirty-three cells (plus four hive markers); the two `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:

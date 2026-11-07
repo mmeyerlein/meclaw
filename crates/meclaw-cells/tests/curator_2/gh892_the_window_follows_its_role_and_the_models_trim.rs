@@ -632,7 +632,9 @@ async fn gh892_the_window_follows_its_role_and_the_models_trim() {
     // plan is the round's (`window_plan:<round key>`, GH #943).
     until_row(
         &ledger,
-        "SELECT value FROM state WHERE key LIKE 'window_plan:%'",
+        // GH #1448: the plan of blocks the answers write ahead names the
+        // turn too -- the rebuild's plan is the one with a cover.
+        "SELECT value FROM state WHERE key LIKE 'window_plan:%' AND value LIKE '%\"cover\":%'",
         &first_id,
         "a cold cache rebuilt the window with the release in its plan",
     )

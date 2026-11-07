@@ -109,7 +109,21 @@
         "audience_set": "text",
         "session_id": "text",
         "at": "text",
-        "used_turn": "text"
+        "used_turn": "text",
+        "item": "text"
+      },
+      "snapshots": {
+        "seq": "int",
+        "call_id": "text",
+        "session_id": "text",
+        "turn_id": "text",
+        "body": "text",
+        "cut": {
+          "type": "text",
+          "default": ""
+        },
+        "at": "text",
+        "audience_set": "text"
       }
     },
     "indexes": {
@@ -228,6 +242,21 @@
           "audience_set"
         ],
         "unique": true
+      },
+      "snapshots_call_id": {
+        "table": "snapshots",
+        "on": [
+          "call_id"
+        ],
+        "unique": false
+      },
+      "snapshots_round_seq": {
+        "table": "snapshots",
+        "on": [
+          "audience_set",
+          "seq"
+        ],
+        "unique": false
       }
     },
     "write_surface": "internal",

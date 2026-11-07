@@ -26,8 +26,8 @@ use meclaw_core::serde_json::{self as sj, Map, Value, json};
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!(spec_tools)),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!(spec_tools)),
     ]);
     h.check_emits = true;
     h
@@ -338,12 +338,37 @@ fn spec_two_turns_keep_their_own_answers() {
     assert_eq!(in_blocks(&h, "SPECOLD"), 0);
 }
 
+// GH #1447 (review o9-c1 I1): the spec curate of an older turn, held back
+// until the session's next turn already got its normal verdict, still finds
+// its own turn decided -- the lead keeps the last turns of the session
+// (`spec_called_turns`), not only the newest -- and parks (`parked:called`):
+// no quick_spec call for a decided turn.
+#[test]
+fn spec_late_curate_of_an_older_decided_turn_parks() {
+    if !shipped() {
+        return;
+    }
+    let mut h = spec_hive("");
+    seam(&mut h, "t1", "talk", "", "first");
+    assert_eq!(h.routed("brain").len(), 1, "{:?} {:?}", h.out, h.stderr);
+    seam(&mut h, "t2", "talk", "", "second");
+    assert_eq!(h.routed("brain").len(), 1, "{:?} {:?}", h.out, h.stderr);
+    spec_curate(&mut h, "t1", json!({"messages": [user("first")]}));
+    assert!(
+        h.routed("quick").is_empty() && h.routed("brain").is_empty(),
+        "a decided turn gets no spec call: {:?} {:?}",
+        h.out,
+        h.stderr
+    );
+}
+
 #[test]
 fn spec_off_parks_a_spec_curate() {
     if !shipped() {
         return;
     }
-    let policy = cell_config("policy");
+    // The knobs live in the lead since GH #1447.
+    let policy = cell_config("lead");
     for (k, v) in [("quick_speculative", "0"), ("spec_tools", "")] {
         assert_eq!(policy["params"][k], json!(v), "{k}");
         assert_eq!(
@@ -723,11 +748,10 @@ fn spec_curate_back_from_handover_leaves_the_turn_one_normal_round() {
     );
     assert!(h.routed("spec_release").is_empty(), "{:?}", h.out);
     assert_eq!(spec_marks(&h)[0]["reason"], json!("family:orga"));
-    assert!(
-        h.rows("SELECT key FROM state WHERE key LIKE 'spec%'")
-            .is_empty(),
-        "no spec row left behind"
-    );
+    // The turn's rows (`<kind>:<session>#<turn>`); `spec_called:<session>`
+    // names the session's newest normal verdict and stays (GH #1447).
+    let left = h.lead_rows("SELECT key FROM state WHERE key LIKE 'spec%#t1'");
+    assert!(left.is_empty(), "no spec row left behind: {left:?}");
 }
 
 // #1371, the await case (review I1 of #1398): with a stamped family INSIDE
@@ -802,9 +826,8 @@ fn spec_curate_back_from_handover_still_awaits_a_family_inside_spec_tools() {
     assert!(normal_round_with(&h, "web"), "{:?} {:?}", h.out, h.stderr);
     assert!(h.routed("spec_release").is_empty(), "{:?}", h.out);
     assert_eq!(spec_marks(&h)[0]["reason"], json!("family:web"));
-    assert!(
-        h.rows("SELECT key FROM state WHERE key LIKE 'spec%'")
-            .is_empty(),
-        "no spec row left behind"
-    );
+    // The turn's rows (`<kind>:<session>#<turn>`); `spec_called:<session>`
+    // names the session's newest normal verdict and stays (GH #1447).
+    let left = h.lead_rows("SELECT key FROM state WHERE key LIKE 'spec%#t1'");
+    assert!(left.is_empty(), "no spec row left behind: {left:?}");
 }

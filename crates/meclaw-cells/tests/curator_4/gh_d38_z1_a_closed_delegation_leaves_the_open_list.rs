@@ -34,6 +34,27 @@ fn put_state(h: &Hive, key: &str, value: &str) {
     .expect("a state row");
 }
 
+/// GH #1447: the consult mark is the lead's row (`lead_state`), the window
+/// hears of it through the lead's verdict, never from the ledger.
+fn put_lead_state(h: &Hive, key: &str, value: &str) {
+    h.lead_db
+        .as_ref()
+        .expect("the tree ships the lead")
+        .execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        )
+        .expect("a lead state row");
+}
+
+fn drop_lead_state(h: &Hive, key: &str) {
+    h.lead_db
+        .as_ref()
+        .expect("the tree ships the lead")
+        .execute("DELETE FROM state WHERE key = ?1", [key])
+        .expect("the row goes");
+}
+
 fn drop_state(h: &Hive, key: &str) {
     h.db.execute("DELETE FROM state WHERE key = ?1", [key])
         .expect("the row goes");
@@ -147,7 +168,7 @@ fn an_answered_consult_leaves_the_open_list() {
         json!({}),
     );
     let now = chrono::Utc::now();
-    put_state(
+    put_lead_state(
         &h,
         "consult_pending:s1",
         &canonical(
@@ -164,7 +185,7 @@ fn an_answered_consult_leaves_the_open_list() {
         h.stderr
     );
     h.tap(&c, "stop", json!({}), json!([said("One moment.")]));
-    drop_state(&h, "consult_pending:s1");
+    drop_lead_state(&h, "consult_pending:s1");
     let c = h.curate("s1", "t3", 0, json!([user("Well?")]), mode("Be brief."));
     assert!(!state_line(&c).contains("open:"), "{:?}", texts(&c));
 }

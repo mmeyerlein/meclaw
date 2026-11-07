@@ -845,6 +845,46 @@
           }
         },
         {
+          "from": "./brain",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
+          "from": "./quick",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
+          "from": "./quick_spec",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
+          "from": "./quick_bridge",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
           "from": "./quick",
           "to": "./curator",
           "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber) && has(context.spec) && context.spec == '1'",
@@ -2244,6 +2284,26 @@
               "summary_token"
             ]
           }
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'brain'"
+        },
+        {
+          "from": "./curator",
+          "to": "./quick",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'quick'"
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_spec",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'quick_spec'"
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_bridge",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'quick_bridge'"
         }
       ]
     }

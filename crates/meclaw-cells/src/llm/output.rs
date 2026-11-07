@@ -174,7 +174,7 @@ fn stated_price(c: f64) -> Option<f64> {
 /// GH #1431: the price ladder as `hop.price_tiers` carries it -- empty
 /// without steps; else the base step (`above_input` 0, each price only when
 /// stated) and then every listed step as the package names it.
-fn price_ladder(params: &LlmParams) -> Vec<Value> {
+pub(crate) fn price_ladder(params: &LlmParams) -> Vec<Value> {
     if params.price_tiers.is_empty() {
         return Vec::new();
     }

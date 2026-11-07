@@ -38,8 +38,9 @@ fn curate_with(h: &mut Hive, turn_id: &str, path: &str, extra_ctx: Value, ask: &
     );
 }
 
+/// The consult mark of `s1` -- the lead's row since GH #1447 (`lead_state`).
 fn pending(h: &Hive) -> Value {
-    meclaw_core::serde_json::from_str(&h.state("consult_pending:s1")).unwrap_or(Value::Null)
+    meclaw_core::serde_json::from_str(&h.lead_state("consult_pending:s1")).unwrap_or(Value::Null)
 }
 
 /// `until - at` of the pending mark, in milliseconds.
@@ -157,11 +158,14 @@ fn a_pending_consult_takes_the_consult_tool_away() {
     assert_eq!(h.routed("consult").len(), 1, "{:?}", h.out);
     let mut lost = pending(&h);
     lost["until"] = json!("2000-01-01T00:00:00.000000Z");
-    h.db.execute(
-        "UPDATE state SET value = ?1 WHERE key = 'consult_pending:s1'",
-        [canonical(&lost)],
-    )
-    .unwrap();
+    h.lead_db
+        .as_ref()
+        .expect("the tree ships the lead")
+        .execute(
+            "UPDATE state SET value = ?1 WHERE key = 'consult_pending:s1'",
+            [canonical(&lost)],
+        )
+        .unwrap();
     curate_with(&mut h, "t7", "talk", json!({}), "still there?");
     let lapsed = brain_call(&h);
     assert_eq!(pending(&h), Value::Null, "the lapsed mark is gone");

@@ -42,8 +42,8 @@ const BASE: &str = "/t";
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
         ("policy", "role", json!("talky")),
-        ("policy", "quick_speculative", json!("1")),
-        ("policy", "spec_tools", json!(spec_tools)),
+        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_tools", json!(spec_tools)),
     ]);
     h.check_emits = true;
     h
@@ -116,7 +116,7 @@ fn spec_partial(h: &mut Hive, call: &Msg, seq: u64, text: &str) -> (Map<String, 
 
 /// The state of the turn's spec row (`spec:<session>#<turn>`), "" when gone.
 fn row_state(h: &Hive, turn: &str) -> String {
-    let raw = h.state(&format!("spec:s1#{turn}"));
+    let raw = h.lead_state(&format!("spec:s1#{turn}"));
     let row: Value = sj::from_str(&raw).unwrap_or(Value::Null);
     row["state"].as_str().unwrap_or_default().to_string()
 }
@@ -124,16 +124,20 @@ fn row_state(h: &Hive, turn: &str) -> String {
 /// Rewrites the state of the turn's spec row in place (a fixture for the
 /// states the shipped flow never leaves standing).
 fn set_row_state(h: &mut Hive, turn: &str, state: &str) {
+    // The spec row lives in the lead's store since GH #1447.
     let key = format!("spec:s1#{turn}");
-    let raw = h.state(&key);
+    let raw = h.lead_state(&key);
     let mut row: Value = sj::from_str(&raw).expect("a spec row to rewrite");
     row["state"] = json!(state);
     let value = sj::to_string(&row).expect("JSON");
-    h.db.execute(
-        "UPDATE state SET value = ?1 WHERE key = ?2",
-        rusqlite::params![value, key],
-    )
-    .expect("rewrite the spec row");
+    h.lead_db
+        .as_ref()
+        .expect("the tree ships the lead")
+        .execute(
+            "UPDATE state SET value = ?1 WHERE key = ?2",
+            rusqlite::params![value, key],
+        )
+        .expect("rewrite the spec row");
     assert_eq!(row_state(h, turn), state);
 }
 
@@ -493,7 +497,10 @@ const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee2
 /// Re-blessed for GH #1440 (the door `. -> ./policy` also takes
 /// `in_summary_self`) -- a wanted edge change, old
 /// `1c3e91d9792f67284977f46abdc9d13ddac7d9282c374462a1404047f2e2c252`.
-const CURATOR_SHA256: &str = "72a5a36ab7f1398f0b58a60406431c8380d1335958e5206cc510bd4f45cd0da9";
+/// Re-blessed for GH #1451 (D38 V1: the lane `in_note` names its optional
+/// `item?`) -- a wanted contract text change, old
+/// `72a5a36ab7f1398f0b58a60406431c8380d1335958e5206cc510bd4f45cd0da9`.
+const CURATOR_SHA256: &str = "8b68263bac338d0ad3e6e463948f6c0fe791fd7243df2d1079d4f9f34bad864b";
 
 fn sorted(v: &Value) -> Value {
     match v {
@@ -533,7 +540,20 @@ fn gh1411_speculation_off_moves_no_byte() {
         is_partial_edge(e)
             && (e["from"] == "./quick_spec" || (e["from"] == "./curator" && e["to"] == "."))
     };
-    let old: Vec<Value> = all.iter().filter(|e| !new(e)).cloned().collect();
+    // GH #1449 came after A1: the package lines into `./curator` on
+    // `in_catalog` are their own lane, not the speculation's.
+    let package_line = |e: &Value| {
+        e["to"] == "./curator" && cond(e).starts_with("has(hop.route) && hop.route == 'package'")
+    };
+    // GH #1450 came after A1 too: the catalog question out of `./curator`
+    // on `catalog_ask` is the catalog's own lane (OR-D53-53).
+    let catalog_ask =
+        |e: &Value| e["from"] == "./curator" && cond(e).contains("hop.route == 'catalog_ask'");
+    let old: Vec<Value> = all
+        .iter()
+        .filter(|e| !new(e) && !package_line(e) && !catalog_ask(e))
+        .cloned()
+        .collect();
     assert_eq!(
         digest(&Value::Array(old)),
         TALKY_EDGES_SHA256,
@@ -583,8 +603,22 @@ fn gh1411_speculation_off_moves_no_byte() {
             .expect("hop")
             .remove(k);
     }
+    // GH #1449: the package line (`package_line`, `hop.package_of`, the body
+    // slot `package`, the route value `package`) -- not the speculation's.
+    assert_eq!(qs["params"]["package_line"], json!(true), "package_line");
+    qs["params"]
+        .as_object_mut()
+        .expect("params")
+        .remove("package_line");
+    qs["contract"]["emits"]["hop"]
+        .as_object_mut()
+        .expect("hop")
+        .remove("package_of");
+    if let Some(body) = qs["contract"]["emits"]["body"].as_object_mut() {
+        body.remove("package");
+    }
     if let Some(values) = qs["contract"]["emits"]["hop"]["route"]["values"].as_array_mut() {
-        values.retain(|v| v != "partial");
+        values.retain(|v| v != "partial" && v != "package");
     }
     qs.as_object_mut().expect("config").remove("description");
     assert_eq!(
@@ -601,7 +635,18 @@ fn gh1411_speculation_off_moves_no_byte() {
         .expect("edges")
         .iter()
         .filter(|e| {
-            !cond(e).contains("in_spec_partial") && !(e["from"] == "./policy" && is_partial_edge(e))
+            !cond(e).contains("in_spec_partial")
+                && !(e["from"] == "./policy" && is_partial_edge(e))
+                // GH #1449: the door of the package line.
+                && !cond(e).contains("'in_catalog'")
+                // GH #1450: the catalog question out of the hive.
+                && !cond(e).contains("'catalog_ask'")
+        })
+        // GH #1447: the lead's four edges (policy <-> lead <-> lead_state) --
+        // a new cell of the hive, not the speculation's.
+        .filter(|e| {
+            !["./lead", "./lead_state"].contains(&e["from"].as_str().unwrap_or(""))
+                && !["./lead", "./lead_state"].contains(&e["to"].as_str().unwrap_or(""))
         })
         .cloned()
         .collect();
@@ -616,6 +661,9 @@ fn gh1411_speculation_off_moves_no_byte() {
         (rest, n)
     };
     let (acc, n_acc) = lane(&p["contract"]["accepts"], "in_spec_partial");
+    // GH #1449: the lane of the package line.
+    let (acc, n_cat) = lane(&Value::Array(acc), "in_catalog");
+    assert_eq!(n_cat, 1, "the package line's lane");
     let (emi, n_emi) = lane(&p["contract"]["emits"], "partial");
     assert_eq!((n_acc, n_emi), (1, 1), "the new lane and the new route");
     assert_eq!(

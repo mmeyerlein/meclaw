@@ -1,4 +1,4 @@
-# `argus@1.6.0`
+# `argus@1.6.1`
 
 The colony's watcher and its control loop, as a hive of eight cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -220,7 +220,12 @@ on the `stats` lane: rates per hundred calls (`gap_rate`, `reread_rate`,
 figures, read whole off the kind that carries them: `window_p95`
 (`window.p95`, tokens), `rebuild_rate` (`rebuild.rate_pct`), `gc_share`
 (`gc.active_pct`), `tool_share` (`gc.tool_share_pct`) and `recall_rows`
-(`gc.recall_rows_p95`). A figure over nothing counted is unknown, never zero.
+(`gc.recall_rows_p95`), and since
+[#1444](https://github.com/mmeyerlein/meclaw/issues/1444) `cold_pct`
+(`window.cold_pct`, the share of the calls whose usage measured a cache that
+held under `cold_cached_share` of the window; unknown while `window.cached_n`,
+the count of those calls, is 0 or missing) and `rebuild_cost` (`rebuild.cost_cents_sum`, the cents of the calls
+that rebuilt). A figure over nothing counted is unknown, never zero.
 
 A role's number is a level, not a symptom, so it raises no alert by itself.
 The charter draws the line: the `goals` column `alert_at` (an `int`, NULL =
@@ -255,6 +260,33 @@ nothing had changed. A store reject on a read before the charter answered (the
 deadline read `stale`, the charter read `goals`) writes its `store_error` row and
 orders the next cycle as well: the strike that started the cycle is spent, and
 a refused read must not stop a loop with an enabled goal for good.
+
+**The first cycle from the calendar
+([#1444](https://github.com/mmeyerlein/meclaw/issues/1444)).** A colony that
+wants its watcher to start on its own, without the parent's call, gives
+`./clock` one calendar line at birth. `schedules` is a birth seed of the
+`timer` cell, not a runtime param, so the line rides `override_params` on the
+ref that grows argus (key `clock`) and only a fresh `cell.db` reads it -- it
+lands with a new birth, never in place. The shipped clock keeps `schedules: []`:
+
+```json
+{"clock": {"schedules": [{
+  "schedule_id": "b758d96e-fb9b-5dff-b93a-837c8ce33b99",
+  "schedule_name": "argus-cycle",
+  "cron": "0 0 */6 * * *",
+  "emit_to": "../meter",
+  "emit_body": {"messages": [{"origin": "user", "type": "text", "text": "argus-cycle"}]},
+  "emit_headers": {}
+}]}}
+```
+
+The `schedule_id` is not free: it is the meter's own watchdog id (`uuid5` of
+`argus-cycle` in the meter's watchdog namespace). The line strikes on the edge
+`schedule_name == 'argus-cycle'` like the one-shot does, and the first cycle that
+finds an enabled goal re-arms under the same id, so `rearm` replaces the
+calendar line with the one-shot chain. Under any other id both would run, two
+cycles per period. Against an inert charter the line keeps striking, one
+`idle` receipt every six hours; that is the price of starting without an event.
 
 **Quiet is not silent.** Every tick that does come -- an event against an inert
 charter included -- writes a receipt, with `outcome: idle` and
@@ -406,7 +438,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.6.0",
+ "nodes": [{"name": "argus", "template": "argus@1.6.1",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},
