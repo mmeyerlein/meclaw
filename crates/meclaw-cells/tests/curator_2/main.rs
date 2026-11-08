@@ -3,7 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kr_a_refused_write_is_written_by_the_next_message;
 pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
 pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
@@ -54,6 +53,8 @@ pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;
 pub mod gh901_the_hook_register_parses_three_languages;
+pub mod gh904_the_curator_clock_keeps_one_row;
+pub mod gh916_a_pin_source_is_replaced;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
 #[path = "../mock_openai.rs"]

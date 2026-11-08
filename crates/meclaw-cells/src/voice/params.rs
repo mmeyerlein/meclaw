@@ -272,6 +272,8 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "emit_usage",
     "call_marks_s",
     "call_mark_every_s",
+    "x_title",
+    "http_referer",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -400,6 +402,14 @@ pub struct VoiceParams {
     /// (`call_marks_s`, `call_mark_every_s`; D48, DK). Off by default.
     /// Settled at birth.
     pub call_marks: crate::voice::call_marks::CallMarks,
+    /// App attribution of the cell (`x_title`, GH #1455, OR-38-120): what a
+    /// `gpt_live` duplex block that names none of its own sends as `X-Title`.
+    /// The shipped template carries it as an env default (AGENTS.md rule 15)
+    /// because its `duplex` is null and the sets switch duplex on through
+    /// `override_params` without the two keys. Empty = `None`. Settled at birth.
+    pub x_title: Option<String>,
+    /// As [`Self::x_title`], for `HTTP-Referer`.
+    pub http_referer: Option<String>,
 }
 
 /// GH #1059: the three provider slots of a voice cell that can spend a
@@ -534,6 +544,14 @@ pub struct GptLiveParams {
     /// `http(s)` or `ws(s)`; the path is the adapter's own (R-V10).
     #[serde(default = "GptLiveParams::default_base_url")]
     pub base_url: String,
+    /// App attribution (GH #1455): the `X-Title` header of the session
+    /// handshake, as `x_title` of an `llm` cell (GH #1225). `None` = no header.
+    #[serde(default)]
+    pub x_title: Option<String>,
+    /// App attribution (GH #1455): the `HTTP-Referer` header of the session
+    /// handshake, as `http_referer` of an `llm` cell. `None` = no header.
+    #[serde(default)]
+    pub http_referer: Option<String>,
     /// The model; default
     /// [`crate::voice::providers::gpt_live::DEFAULT_MODEL`].
     #[serde(default = "GptLiveParams::default_model")]
@@ -1167,6 +1185,8 @@ impl VoiceParams {
         let audio_out_frame_ms = read_frame_ms(obj, "audio_out_frame_ms")?;
         let speak_plain = read_bool(obj, "speak_plain", DEFAULT_SPEAK_PLAIN)?;
         let speak_partials = read_flag01(obj, "speak_partials")?;
+        let x_title = read_opt_string(obj, "x_title")?;
+        let http_referer = read_opt_string(obj, "http_referer")?;
         let release_grace_ms = read_release_grace_ms(obj, "release_grace_ms")?;
         let credential_backoff_max_ms = read_positive_u64(
             obj,
@@ -1197,8 +1217,23 @@ impl VoiceParams {
                 }
                 let (raw, cred) = split_credential(raw, "duplex")?;
                 duplex_credential = cred;
-                let parsed = meclaw_core::serde_json::from_value::<DuplexParams>(raw)
+                let mut parsed = meclaw_core::serde_json::from_value::<DuplexParams>(raw)
                     .map_err(|e| format!("duplex: {e}"))?;
+                // GH #1455 (OR-38-120): the block inherits the cell's app
+                // attribution where it names none of its own -- no delivered
+                // instance carried it, because the sets switch duplex on
+                // without the two keys. A block value wins; empty counts as
+                // not named.
+                if let DuplexParams::GptLive(g) = &mut parsed {
+                    for (own, cell) in [
+                        (&mut g.x_title, &x_title),
+                        (&mut g.http_referer, &http_referer),
+                    ] {
+                        if own.as_deref().is_none_or(str::is_empty) {
+                            own.clone_from(cell);
+                        }
+                    }
+                }
                 // Two periods, and serde takes a `0` for both of them. Neither
                 // is a value: a clock with no period is a busy loop -- the
                 // connection's `.max(1)` would turn it into a thousand wakeups
@@ -1358,6 +1393,8 @@ impl VoiceParams {
             credential_backoff_max_ms,
             emit_usage,
             call_marks,
+            x_title,
+            http_referer,
         };
         parsed.check_secrets()?;
         // Whether the duplex block NAMED a rate: the parsed struct cannot say,
@@ -1606,6 +1643,19 @@ fn read_bool(
         Some(v) => v
             .as_bool()
             .ok_or_else(|| format!("{key}: must be a boolean, got {v}")),
+    }
+}
+
+/// Read an optional string param (absent, `null` and `""` = `None`).
+fn read_opt_string(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(v)) if v.is_empty() => Ok(None),
+        Some(JsonValue::String(v)) => Ok(Some(v.clone())),
+        Some(v) => Err(format!("{key}: must be a string, got {v}")),
     }
 }
 
@@ -1858,6 +1908,15 @@ pub struct VoiceOverlay {
     /// The repeating call-time mark (`call_mark_every_s`), carried and refused
     /// by an update for the reason `emit_usage` is (GH #1379).
     pub call_mark_every_s: u64,
+    /// The cell's app attribution (GH #1455), carried and refused by an
+    /// update for the reason `emit_usage` is: the replay re-parses the raw
+    /// duplex block, which never named it, so a block that inherited it would
+    /// send no header after the first round trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x_title: Option<String>,
+    /// As [`Self::x_title`], for `HTTP-Referer`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_referer: Option<String>,
 }
 
 /// The wire form of a `"0"` | `"1"` switch.
@@ -1888,8 +1947,9 @@ impl OverlayParams for VoiceOverlay {
         "credential_backoff_max_ms",
     ];
 
-    /// The credential rounds' ceiling (GH #1059) and the three D48 call
-    /// settings (`emit_usage`, `call_marks_s`, `call_mark_every_s`, GH #1379),
+    /// The credential rounds' ceiling (GH #1059), the three D48 call
+    /// settings (`emit_usage`, `call_marks_s`, `call_mark_every_s`, GH #1379)
+    /// and the app attribution (`x_title`, `http_referer`, GH #1455),
     /// all read once per life. Nothing else is refused here for being the key
     /// it is; the provider blocks — grants included — are out of reach because they
     /// are not *known* keys, which is a different sentence and a better one —
@@ -1900,6 +1960,8 @@ impl OverlayParams for VoiceOverlay {
         "emit_usage",
         "call_marks_s",
         "call_mark_every_s",
+        "x_title",
+        "http_referer",
     ];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
@@ -1941,6 +2003,8 @@ impl OverlayParams for VoiceOverlay {
                     marks_s: call_marks_s,
                     every_s: call_mark_every_s,
                 },
+            x_title,
+            http_referer,
         } = VoiceParams::parse(raw)?;
         let obj = raw.as_object().ok_or("params: must be object")?;
         Ok(Self {
@@ -1962,6 +2026,8 @@ impl OverlayParams for VoiceOverlay {
             emit_usage,
             call_marks_s,
             call_mark_every_s,
+            x_title,
+            http_referer,
         })
     }
 }
@@ -2148,6 +2214,28 @@ mod tests {
             crate::params_overlay::apply_update(&current, &close).is_err(),
             "a cell reachable through no door is refused, update or not"
         );
+    }
+
+    /// GH #1455: a duplex block that inherited the cell's attribution still
+    /// carries it after the replay -- the replay re-parses the raw block, which
+    /// never named it, so the top-level keys have to travel.
+    #[test]
+    fn gh1455_voice_the_inherited_attribution_survives_the_replay() {
+        let raw = json!({
+            "mount": "voice",
+            "x_title": "soul2me c-test",
+            "http_referer": "https://soul2.me",
+            "duplex": {"provider": "gpt_live", "api_key": "k", "instructions": "Be Egon."},
+        });
+        let current = VoiceOverlay::parse(&raw).expect("parses");
+        let replayed = meclaw_core::serde_json::to_value(&current).expect("serialize");
+        let back = VoiceParams::parse(&replayed).expect("the replay parses again");
+        let Some(DuplexParams::GptLive(g)) = &back.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert_eq!(g.x_title.as_deref(), Some("soul2me c-test"));
+        assert_eq!(g.http_referer.as_deref(), Some("https://soul2.me"));
+        assert_eq!(back.x_title.as_deref(), Some("soul2me c-test"));
     }
 
     #[test]
@@ -2764,6 +2852,8 @@ mod tests {
             ("call_marks_s", json!([60])),
             ("call_mark_every_s", json!(60)),
             ("credential_backoff_max_ms", json!(1000)),
+            ("x_title", json!("other")),
+            ("http_referer", json!("https://example.org")),
         ] {
             let mut update = meclaw_core::serde_json::Map::new();
             update.insert(key.into(), value);

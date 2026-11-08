@@ -69,7 +69,13 @@ const SCHEMAS_CONFIG: &str = "../../templates/memory-hive/schemas/config.json";
 /// a passed-on opinion from a fact about the world, costs 260 characters:
 /// 2,081 became 2,341. The rebuttal of the model's own stays out of the turn
 /// (the close pass writes it), so nothing else grew.
-const LENGTH_BOUND: usize = 2_350;
+///
+/// Raised a fourth time for GH #1456: the curator's wellbeing line keyed on
+/// the predicate `health`, which the sidecar never writes (its predicates are
+/// open keys), so the model now classifies the fact itself (`wellbeing:
+/// true`). The rule and its two examples -- one fact that says how the person
+/// is doing, one that does not -- cost 257 characters: 2,341 became 2,598.
+const LENGTH_BOUND: usize = 2_600;
 
 /// `${VAR:-default}` becomes the default, a bare `${VAR}` becomes the empty string --
 /// the same substitution the colony performs when it instantiates the template.

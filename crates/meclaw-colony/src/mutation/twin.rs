@@ -380,6 +380,9 @@ fn cell_type(cfg: &JsonValue) -> Option<&str> {
 }
 
 #[cfg(test)]
+mod gh1250_book_fence;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use meclaw_core::serde_json::json;

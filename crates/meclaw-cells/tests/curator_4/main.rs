@@ -3,9 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh_d38_k5_the_rebuild_counts_the_cache_write;
-pub mod gh_d38_k6_a_token_budget_keeps_the_youngest_rounds_raw;
-pub mod gh_d38_k6_keep_recent_stays_the_floor;
 pub mod gh_d38_k6_null_budget_is_byte_identical;
 pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
 pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
@@ -17,6 +14,9 @@ pub mod gh_d38_k6b_the_running_round_counts_whole;
 pub mod gh_d38_k7_a_set_override_of_the_new_params_passes_the_door;
 pub mod gh_d38_k7_a_simple_turn_that_needs_memory_leaves_on_brain;
 pub mod gh_d38_k7_knob_off_is_byte_identical;
+pub mod gh_d38_pins_a_recall_keeps_its_quote_when_the_guard_cuts_the_source;
+pub mod gh_d38_pins_b_the_curator_form_runs_with_every_knob_on;
+pub mod gh_d38_pins_c_a_folded_recall_of_the_oldest_round_goes_once;
 pub mod gh_d38_v1_a_scheduled_line_stays_out_of_the_block;
 pub mod gh_d38_v1_one_line_per_subject;
 pub mod gh_d38_v1_two_notes_on_one_item_keep_the_latest;
@@ -52,5 +52,8 @@ pub mod gh_d38_z3_the_brief_carries_the_four_line_kinds;
 pub mod gh_d38_z3_the_brief_off_is_byte_identical;
 pub mod gh_d38_z3_the_handover_sets_the_brief_in_verbatim;
 pub mod gh_d38_z3_the_summary_is_itemised_and_attributed;
+pub mod gh_d58_f1_a_mark_keeps_the_class_only_with_fact_mark_kind_on;
+pub mod gh_d58_f1_the_wellbeing_line_keys_on_the_class_not_the_predicate;
+pub mod gh_d58_rv5_a_recall_of_an_answer_with_a_sidecar_is_sent_once;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;

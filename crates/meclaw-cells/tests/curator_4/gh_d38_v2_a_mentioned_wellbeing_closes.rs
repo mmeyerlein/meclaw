@@ -16,9 +16,10 @@ use meclaw_core::serde_json::{Value, json};
 
 fn fact(seq: i64, at: &str) -> Value {
     json!({"seq": seq, "kind": "fact", "session_id": "text-1", "at": at,
-           "value": canonical(&json!({"subject": "Ada", "predicate": "health",
+           "value": canonical(&json!({"subject": "Ada", "predicate": "has_symptom",
                                       "claim": "Ada feels unwell.", "source": "person",
-                                      "stance": "asserted", "confidence": 0.9}))})
+                                      "stance": "asserted", "confidence": 0.9,
+                                      "wellbeing": true}))})
 }
 
 fn line(cell: &str, marks: &Value) -> Value {

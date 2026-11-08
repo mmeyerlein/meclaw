@@ -6,8 +6,10 @@
 //! of the text window. A call starts from the seed of `./history`
 //! (`seed_fact_state`) and goes on with the live feed of `./policy`; both
 //! read ONE function, `wellbeing_line(marks, day)`: the day's newest fact
-//! of predicate `health` (or `needs` `unfulfilled`) at a confidence of at
-//! least `wellbeing_min_confidence` is one data line `{state: "open", ...}`
+//! the sidecar classed `wellbeing: true` (GH #1456: the model sets the class
+//! on the fact; the predicate is an open key and never decides) at a
+//! confidence of at least `wellbeing_min_confidence` is one data line
+//! `{state: "open", ...}`
 //! -- no prose, the words belong to the model (R-TR-27). Knob
 //! `wellbeing_line` "0" (shipped), both cells the same preset.
 
@@ -20,11 +22,15 @@ use meclaw_core::serde_json::{Value, json};
 
 pub const DAY: &str = "2026-11-07";
 
-pub fn fact(seq: i64, at: &str, predicate: &str, claim: &str, conf: f64) -> Value {
+pub fn fact(seq: i64, at: &str, predicate: &str, claim: &str, conf: f64, wellbeing: bool) -> Value {
+    let mut value = json!({"subject": "Ada", "predicate": predicate,
+                           "claim": claim, "source": "person",
+                           "stance": "asserted", "confidence": conf});
+    if wellbeing {
+        value["wellbeing"] = json!(true);
+    }
     json!({"seq": seq, "kind": "fact", "session_id": "text-1", "at": at,
-           "value": canonical(&json!({"subject": "Ada", "predicate": predicate,
-                                      "claim": claim, "source": "person",
-                                      "stance": "asserted", "confidence": conf}))})
+           "value": canonical(&value)})
 }
 
 pub fn line(cell: &str, marks: &Value) -> Value {
@@ -62,27 +68,30 @@ fn the_next_call_knows_the_open_wellbeing_once() {
             "2026-11-07T08:58:00Z",
             "moves_to",
             "Elias wants to move to Hamburg.",
-            0.9
+            0.9,
+            false
         ),
         fact(
             2,
             "2026-11-07T08:55:00Z",
-            "health",
+            "has_symptom",
             "Ada feels unwell and slept badly.",
-            0.9
+            0.9,
+            true
         )
     ]);
     let seed = line("history", &marks);
     assert_eq!(seed["state"], json!("open"), "{seed}");
-    assert_eq!(seed["predicate"], json!("health"), "{seed}");
+    assert_eq!(seed["predicate"], json!("has_symptom"), "{seed}");
     assert_eq!(seed, line("policy", &marks), "one function, both twins");
     // Under the confidence preset it is no line.
     let weak = json!([fact(
         2,
         "2026-11-07T08:55:00Z",
-        "health",
+        "has_symptom",
         "Maybe tired.",
-        0.1
+        0.1,
+        true
     )]);
     assert_eq!(line("history", &weak), Value::Null);
 }

@@ -761,6 +761,10 @@ pub struct VoiceCell {
     /// only so its overlay view -- the merge base of a params update -- says
     /// what the cell runs on (GH #1379).
     call_marks: crate::voice::call_marks::CallMarks,
+    /// The cell's app attribution (`x_title`, `http_referer`, GH #1455), kept
+    /// for the overlay view as `call_marks` is: the duplex block inherited it
+    /// at the parse, and a replay that dropped it would send no header.
+    attribution: (Option<String>, Option<String>),
     /// The throttle of the caller's `partial` lane in duplex mode
     /// (`params.duplex.delta_min_chars` / `delta_min_ms`, D48); `(0, 0)`
     /// sends every delta. Settled at birth like the whole duplex block.
@@ -879,6 +883,7 @@ impl VoiceCell {
             emit_partials: params.emit_partials,
             emit_usage: params.emit_usage,
             call_marks: params.call_marks.clone(),
+            attribution: (params.x_title.clone(), params.http_referer.clone()),
             duplex_delta_min: duplex_delta_min(params),
             duplex_emit_spoken: duplex_emit_spoken(params),
             emit_speak_end: params.emit_speak_end,
@@ -1026,6 +1031,8 @@ impl VoiceCell {
             emit_usage: self.emit_usage,
             call_marks_s: self.call_marks.marks_s.clone(),
             call_mark_every_s: self.call_marks.every_s,
+            x_title: self.attribution.0.clone(),
+            http_referer: self.attribution.1.clone(),
         }
     }
 

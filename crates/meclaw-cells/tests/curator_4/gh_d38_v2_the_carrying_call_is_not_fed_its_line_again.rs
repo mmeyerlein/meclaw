@@ -58,9 +58,10 @@ fn unwell_today(knob: &str) -> Hive {
         "text-1",
         "t1",
         "fact",
-        &canonical(&json!({"subject": "Ada", "predicate": "health",
+        &canonical(&json!({"subject": "Ada", "predicate": "has_symptom",
                            "claim": "Ada feels unwell and slept badly.",
-                           "source": "person", "stance": "asserted"})),
+                           "source": "person", "stance": "asserted",
+                           "wellbeing": true})),
     );
     h
 }

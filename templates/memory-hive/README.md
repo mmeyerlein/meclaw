@@ -1,4 +1,4 @@
-# `memory-hive@3.21.1`
+# `memory-hive@3.21.2`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1077,6 +1077,20 @@ reads as `asserted`. `answers` is not offered and not mentioned: in the turn `ag
 still only the model's own promise, and a rebuttal of its own is the close pass's to write. The
 rules grew from 2,081 to 2,341 characters, under a bound of 2,350.
 
+### How the person is doing: `wellbeing` ([#1456](https://github.com/mmeyerlein/meclaw/issues/1456))
+
+A fact may carry the closed class `wellbeing: true` when it says how the person is doing right
+now, in body or mind ("my back twinges a little today" is `has_symptom` with it; "the neighbour
+brought me tomatoes" is `visited`, without it). The model sets it at the fact; predicates stay
+open keys, so no predicate could stand in for it -- the curator's wellbeing line keyed on
+`health`, which no sidecar ever wrote. The offered schema declares it as an optional boolean, so
+the example every turn copies is unchanged and a missing class reads as false. `extract-glue`
+stages it only as the boolean `true` and interprets nothing: `false`, a word or a number stage
+the fact without the key, and no fact is dropped for it. The store keeps no column for it -- the
+curator reads the class off the sidecar item itself (`curator/intake` keeps it on the `fact`
+mark with `fact_mark_kind` "1"). The rules grew from 2,341 to 2,598 characters, under a bound
+of 2,600.
+
 ### Both voices at the close: `counter`, a stance `sharpen`, the correction ([#1423](https://github.com/mmeyerlein/meclaw/issues/1423))
 
 The per-turn block files how firmly the person said something; the close pass also keeps what the
@@ -1523,7 +1537,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.21.1` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.21.2` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1929,7 +1943,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.9.5",
+{"add_nodes": [{"name": "alex", "template": "member@2.9.6",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

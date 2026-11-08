@@ -143,7 +143,7 @@ fn the_fact_mark_carries_the_confidence_of_its_item() {
     if !shipped() {
         return;
     }
-    let item = json!({"subject": "Ada", "predicate": "health", "claim": "Ada slept badly.",
+    let item = json!({"subject": "Ada", "predicate": "has_symptom", "claim": "Ada slept badly.",
                       "source": "person", "stance": "asserted", "confidence": 0.8,
                       "verified": ["claim"]});
     let probe = "fact_marks('memory', {'items': [ARGS]}, 'items')";

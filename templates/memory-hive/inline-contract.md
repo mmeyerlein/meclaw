@@ -127,7 +127,10 @@ sentence long. GH #1422 added one paragraph (2,341): a fact says how firmly its 
 it -- `stance` `asserted`, `believed` (a hope, a guess) or `reported` (somebody else's words,
 named in `via`) -- with the one example that keeps a doctor's opinion from becoming a fact
 about the knee. The model's own rebuttal is not asked for here: the close pass writes it
-(`answers`), and the turn refuses it. The lock below keeps them under 2,350 so the sprawl
+(`answers`), and the turn refuses it. GH #1456 added one paragraph (2,598): `wellbeing: true`
+marks a fact that says how the person is doing right now, in body or mind -- a closed class the
+model sets at the fact, because the curator's wellbeing line keyed on a predicate (`health`) the
+open predicate keys never produced. The lock below keeps them under 2,600 so the sprawl
 cannot grow back unnoticed -- a bound rather than a measurement, because the wording keeps
 moving while the harness tunes it.
 
@@ -169,6 +172,11 @@ What your person did not say is never `person`.
 `stance` is how firmly the source holds it: `reported` passes on what someone else said,
 named verbatim in `via`; `believed` hopes, guesses, assumes; else `asserted`.
 "The doctor says it is harmless" is reported via "the doctor", never a fact about the knee.
+
+`wellbeing: true` marks a fact that says how your person is doing right now, in body or
+mind; on any other fact leave it out.
+"My back twinges a little today" is has_symptom with wellbeing: true; "the neighbour
+brought me tomatoes" is visited, without it.
 ```
 
 **What is not in the block, and why that is a shape decision rather than a fence.**

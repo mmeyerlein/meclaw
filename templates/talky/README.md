@@ -1,4 +1,4 @@
-# `talky@6.18.0`
+# `talky@6.18.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -78,7 +78,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.18.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@6.18.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -995,7 +995,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.18.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@6.18.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1266,6 +1266,12 @@ what the turn carried for somebody else -- the durable memory first, and since G
 any other section a receiver has offered. That saves a second inference over the whole window
 -- but the reason to do it is freshness, not tokens: a fact extracted at night cannot
 answer a question asked this afternoon.
+
+What a `memory` section carries is the memory hive's contract (`memory-hive/inline-contract.md`),
+not this template's: a fact names subject, predicate, claim, quote, `fact_kind`, `valid_from` and
+`source`, optionally `stance`/`via` and, since [#1456](https://github.com/mmeyerlein/meclaw/issues/1456),
+the closed class `wellbeing: true` for a fact that says how the person is doing right now -- the
+key the curator's wellbeing line reads, set by the model, never inferred from a predicate.
 
 **This used to be a TOOL, and that instruction is retracted rather than reworded**
 (owner ruling 2026-08-24 on [#373](https://github.com/mmeyerlein/meclaw/issues/373),

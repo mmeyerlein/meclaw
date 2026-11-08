@@ -52,6 +52,21 @@ fn shipped() -> Option<(Value, Value, String)> {
 
 /// Every `${NAME}` token in a value, in the order they are met. `$${NAME}` is
 /// the escape form and is not a substitution (`substitute.rs`, `replace_env`).
+/// The two environment tokens a template params document carries on purpose:
+/// the app attribution, an env default per AGENTS.md rule 15 that the
+/// deployment names and an instance overrides (GH #1455, OR-38-120). Neither
+/// is a key nor a behaviour knob, so the #801 locks below leave them out.
+const APP_ID_TOKENS: [&str; 2] = [
+    "OPENROUTER_X_TITLE:-MeClaw",
+    "OPENROUTER_HTTP_REFERER:-https://meclaw.ai",
+];
+
+/// [`env_tokens`] without the [`APP_ID_TOKENS`].
+fn knob_tokens(v: &Value, into: &mut Vec<String>) {
+    env_tokens(v, into);
+    into.retain(|t| !APP_ID_TOKENS.contains(&t.as_str()));
+}
+
 fn env_tokens(v: &Value, into: &mut Vec<String>) {
     match v {
         Value::String(s) => {
@@ -249,7 +264,7 @@ fn no_env_token_is_left_and_the_credentials_are_grants() {
         return;
     };
     let mut found = Vec::new();
-    env_tokens(&cfg["params"], &mut found);
+    knob_tokens(&cfg["params"], &mut found);
     assert!(
         found.is_empty(),
         "a key or a knob read out of the environment is unreachable per \
@@ -307,7 +322,7 @@ fn the_two_credentials_are_a_declared_vault_surface() {
         );
     }
     let mut in_params = Vec::new();
-    env_tokens(&cfg["params"], &mut in_params);
+    knob_tokens(&cfg["params"], &mut in_params);
     assert!(in_params.is_empty(), "{in_params:?}");
 }
 
@@ -420,7 +435,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.8.2"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.9.0"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()

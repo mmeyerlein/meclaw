@@ -3,8 +3,6 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh904_the_curator_clock_keeps_one_row;
-pub mod gh916_a_pin_source_is_replaced;
 pub mod gh926_a_curator_counts_its_own_ledger;
 pub mod gh932_the_curator_pages_only_over_visible_rows;
 pub mod gh935_the_identity_budget_splits_the_pack;
@@ -54,6 +52,9 @@ pub mod gh_d38_k3_every_rebuild_leaves_one_gc_mark;
 pub mod gh_d38_k3_gc_off_is_byte_identical;
 pub mod gh_d38_k3_the_gc_knobs_are_declared_and_preset;
 pub mod gh_d38_k5_a_window_over_the_price_step_rebuilds_sooner;
+pub mod gh_d38_k5_the_rebuild_counts_the_cache_write;
+pub mod gh_d38_k6_a_token_budget_keeps_the_youngest_rounds_raw;
+pub mod gh_d38_k6_keep_recent_stays_the_floor;
 #[path = "../gh927/harness.rs"]
 pub mod harness;
 #[path = "../mock_openai.rs"]

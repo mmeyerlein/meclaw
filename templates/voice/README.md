@@ -1,4 +1,4 @@
-# `voice@2.8.2`
+# `voice@2.9.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -85,7 +85,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.8.2",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.9.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -231,7 +231,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -265,7 +265,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -478,7 +478,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -543,7 +543,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -555,7 +555,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -600,8 +600,16 @@ handing text to a synthesiser and no seam between them to tune. Two ship:
 
 | provider | what it is | the block carries |
 |---|---|---|
-| `gpt_live` | a hosted live model | `api_key`, `base_url`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `recover_max`, `fault_close_at_ms` (for labs only, default `0`), `horizon_text` (default `""`, #1400), `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db` |
+| `gpt_live` | a hosted live model | `api_key`, `base_url`, `x_title`, `http_referer`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `recover_max`, `fault_close_at_ms` (for labs only, default `0`), `horizon_text` (default `""`, #1400), `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db` |
 | `echo` | the loopback, which needs no credential and knows only `sample_rate` | -- |
+
+**The live model names its app (GH #1455).** The session handshake carries
+`X-Title` and `HTTP-Referer` like every llm request (AGENTS.md rule 15). The
+template ships both at the top of `params` as env defaults
+(`"${OPENROUTER_X_TITLE:-MeClaw}"`, `"${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}"`);
+a gpt_live block that names neither inherits them, and a block that names its
+own keeps it. So an instance a set switches to duplex through `override_params`
+names its app without knowing the keys. Settled at birth, like `duplex`.
 
 **`echo` is here for the reason `echo` is always here.** A trait with one
 implementation is a shape borrowed from that implementation (ADR-0023), and a
@@ -619,7 +627,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
@@ -744,7 +752,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
       },
       {
         "name": "voice",
-        "template": "voice@2.8.2"
+        "template": "voice@2.9.0"
       }
     ],
     "seed_rows": [
@@ -905,7 +913,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -920,7 +928,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.8.2",
+{"name": "channels/voice", "template": "voice@2.9.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}

@@ -154,6 +154,7 @@ impl Default for LiveScript {
 struct State {
     connects: usize,
     authorization_is_bearer: bool,
+    attribution: Vec<(String, String)>,
     session_start: Option<JsonValue>,
     client_events: Vec<JsonValue>,
     appends: Vec<JsonValue>,
@@ -264,6 +265,13 @@ impl MockGptLive {
     pub async fn authorization_is_bearer(&self) -> bool {
         self.state.lock().await.authorization_is_bearer
     }
+
+    /// The app attribution headers of the last upgrade (`HTTP-Referer`,
+    /// `X-Title`), as (lower-case name, value), in that order; absent ones are
+    /// absent (GH #1455).
+    pub async fn attribution(&self) -> Vec<(String, String)> {
+        self.state.lock().await.attribution.clone()
+    }
 }
 
 /// Upgrades to a WebSocket (or refuses to), waits for `session.start`, replays
@@ -280,6 +288,7 @@ async fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>, script: LiveScrip
 
     let upgrade_status = script.upgrade_status;
     let mut authorization: Option<String> = None;
+    let mut attribution: Vec<(String, String)> = Vec::new();
     let handshake = tokio_tungstenite::accept_hdr_async(stream, |req: &_, resp| {
         let req: &tokio_tungstenite::tungstenite::handshake::server::Request = req;
         authorization = req
@@ -287,6 +296,15 @@ async fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>, script: LiveScrip
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.split_whitespace().next().unwrap_or("").to_string());
+        attribution = ["http-referer", "x-title"]
+            .iter()
+            .filter_map(|name| {
+                req.headers()
+                    .get(*name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| (name.to_string(), v.to_string()))
+            })
+            .collect();
         match upgrade_status {
             Some(status) => {
                 let mut err = tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(
@@ -306,6 +324,7 @@ async fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>, script: LiveScrip
         let mut st = state.lock().await;
         st.connects += 1;
         st.authorization_is_bearer = authorization.as_deref() == Some("Bearer");
+        st.attribution = attribution;
     }
 
     let ws = match handshake {

@@ -236,6 +236,20 @@ async fn run_session(
         .parse()
         .map_err(|_| DuplexError::Auth("authorization header could not be built".to_string()))?;
     request.headers_mut().insert("authorization", header);
+    // Every model request names its app (GH #1455, as the llm lane, GH
+    // #1225): unset means no header, a value that is no header value is a
+    // configuration error before any byte leaves.
+    for (name, value) in [
+        ("http-referer", &params.http_referer),
+        ("x-title", &params.x_title),
+    ] {
+        if let Some(v) = value {
+            let v = v
+                .parse()
+                .map_err(|_| DuplexError::Connect(format!("{name} is not a valid header value")))?;
+            request.headers_mut().insert(name, v);
+        }
+    }
 
     // A-timeout around the handshake (hard rule 12): a silent TCP peer must not
     // park this task with no operation-level guard.

@@ -2714,6 +2714,12 @@ async fn run_shutdown_teardown(
                             // `&ColonyDb` across an .await boundary. GH #571: the
                             // templates half of that prologue is taken only for the
                             // endpoints that read templates.
+                            // GH #1250: `/colony/mutations` reads the registry book in the prologue;
+                            // fence the writer first so every stamp enqueued before it is committed
+                            // (see the Mutation arm).
+                            if endpoint.as_str() == "/colony/mutations" {
+                                fence(&colony_db.writer_tx).await;
+                            }
                             let (templates_snapshot, templates_rows, rescan_future) =
                                 crate::colony_dispatch::templates_prologue(
                                     &endpoint,
@@ -4326,6 +4332,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // mutation's own guard reads it.
                         let receipt_scope = receipt_scope_of(&payload);
                         let receipt_paths = receipt_paths_of(&payload);
+                        // GH #1250: the registry book (a twin's library seed) is read below over
+                        // the read-only connection, while every stamp reaches it fire-and-forget
+                        // (`SetRegistryProvenance` acks on the enqueue). Without this fence a swap
+                        // right after the boot read the book before the writer committed the
+                        // original's stamp and handed the twin the drifted directory seed (release
+                        // gate 0.85.1, run 2). Pin: `mutation::twin::gh1250_book_fence`.
+                        marked(wd_trail.as_ref(), "writer-send:fence", fence(&colony_db.writer_tx)).await;
                         // Phase-11 T16: Templates-Snapshot SYNCHRON vor handle_mutation
                         // (ColonyDb is !Sync → no &ColonyDb across an .await boundary).
                         let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
@@ -4406,6 +4419,13 @@ pub async fn colony_task(cfg: ColonyTaskConfig) {
                         // GH #553: see the Mutation arm above.
                         let receipt_scope = receipt_scope_of(&payload);
                         let receipt_paths = receipt_paths_of(&payload);
+                        // GH #1250: the registry book (a twin's library seed) is read below over
+                        // the read-only connection, while every stamp reaches it fire-and-forget
+                        // (`SetRegistryProvenance` acks on the enqueue). Without this fence a swap
+                        // right after the boot read the book before the writer committed the
+                        // original's stamp and handed the twin the drifted directory seed (release
+                        // gate 0.85.1, run 2). Pin: `mutation::twin::gh1250_book_fence`.
+                        marked(wd_trail.as_ref(), "writer-send:fence", fence(&colony_db.writer_tx)).await;
                         // Phase-11 T16: Templates-Snapshot SYNCHRON (ColonyDb is
                         // !Sync → no &ColonyDb across an .await boundary).
                         let mut templates_snapshot = crate::templates::TemplatesRegistry::from_entries(
@@ -5282,6 +5302,12 @@ async fn drain_work(
                 // `&ColonyDb` across an .await boundary. GH #571: the templates
                 // half of that prologue is taken only for the endpoints that
                 // read templates.
+                // GH #1250: `/colony/mutations` reads the registry book in the prologue;
+                // fence the writer first so every stamp enqueued before it is committed
+                // (see the Mutation arm).
+                if endpoint.as_str() == "/colony/mutations" {
+                    marked(wd_trail, "writer-send:fence", fence(&colony_db.writer_tx)).await;
+                }
                 let (templates_snapshot, templates_rows, rescan_future) =
                     crate::colony_dispatch::templates_prologue(
                         &endpoint,
@@ -14427,7 +14453,7 @@ mod tests {
         };
         assert_eq!(
             receipt_paths_of(&json!({"scope": "/os/orgs/o/members/m",
-                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.19"}],
+                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.20"}],
                          "add_edges": [{"from": "./figure", "to": "./access"}]}})),
             own(&["/os/orgs/o/members/m"], &["/os/orgs/o/members/m/figure"])
         );

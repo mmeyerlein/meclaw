@@ -4,7 +4,7 @@
 //! WHY this file exists: the pins beside it hold `wellbeing_line` itself;
 //! this one holds the road of `./history` a call starts on. The person said
 //! in a text session that they felt unwell (a `fact` mark as the intake
-//! writes it, without a confidence); the seed of call 2 carries ONE data line
+//! writes it, without a confidence, the class `wellbeing` set, GH #1456); the seed of call 2 carries ONE data line
 //! `Wellbeing: {...,"state":"open"}` and, in the same bundle, a `wellbeing`
 //! mark `{state: closed}` (OR-d38-3.v.2); the seed of call 3 carries none.
 //! Off (`wellbeing_line` "0", shipped) no line and no mark.
@@ -46,9 +46,10 @@ fn unwell_today() -> Hive {
         "text-1",
         "t1",
         "fact",
-        &canonical(&json!({"subject": "Ada", "predicate": "health",
+        &canonical(&json!({"subject": "Ada", "predicate": "has_symptom",
                            "claim": "Ada feels unwell and slept badly.",
-                           "source": "person", "stance": "asserted"})),
+                           "source": "person", "stance": "asserted",
+                           "wellbeing": true})),
     );
     h
 }
@@ -70,7 +71,7 @@ fn the_seed_carries_the_open_wellbeing_once() {
     assert_eq!(lines.len(), 1, "{:?}", seed2.messages());
     assert!(lines[0].contains("\"state\":\"open\""), "{}", lines[0]);
     assert!(
-        lines[0].contains("\"predicate\":\"health\""),
+        lines[0].contains("\"predicate\":\"has_symptom\""),
         "{}",
         lines[0]
     );
