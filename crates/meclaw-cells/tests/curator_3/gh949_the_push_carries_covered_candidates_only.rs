@@ -44,6 +44,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -65,9 +68,9 @@ const PAIR_ID: &str = "call_candidates_";
 /// The curator of a talky -- the role whose push enriches the question --
 /// with `(cell, param, value)` overrides on top.
 fn talky(over: &[(&str, &str, Value)]) -> Hive {
-    let mut all = vec![("policy", "role", json!("talky"))];
+    let mut all = Vec::<(&str, &str, Value)>::new();
     all.extend(over.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 fn has_candidates_table(h: &Hive) -> bool {

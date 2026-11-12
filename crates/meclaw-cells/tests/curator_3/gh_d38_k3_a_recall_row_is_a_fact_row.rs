@@ -17,6 +17,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -109,7 +112,7 @@ fn plan_of(rows: &[Value]) -> Value {
                  window_plan(rows, [], [], [], {}, ARGS['as_of'], [], [], 0, None)))(\
                  [dict(r, lines=row_lines(r['text'])) if 'text' in r else r for r in ARGS['rows']])";
     let (got, err) = policy_scope(
-        json!({"role": "talky", "gc": "1", "keep_rounds": 2}),
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "keep_rounds": 2})),
         probe,
         json!({"rows": rows, "as_of": AS_OF_MS}),
     );

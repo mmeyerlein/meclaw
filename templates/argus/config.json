@@ -24,7 +24,7 @@
         },
         {
           "route": "in_read",
-          "because": "another part of the colony reads this hive's record: `hop.read_what` names the charter (`goals` and `rules` rows, each with its `table`), the cycle receipts or the hints; `read_since` (RFC 3339) pages cycles and hints oldest first, `read_limit` is 1..100 (default 20), `read_tag` is echoed. Rows come as stored, every column. The lane decides nothing: `./door` only reads, and a read starts no cycle. Without an edge onto it nobody reads"
+          "because": "another part of the colony reads this hive's record: `hop.read_what` names the charter (`goals` and `rules` rows, each with its `table`), the cycle receipts or the hints; `read_since` (RFC 3339) pages cycles and hints oldest first, `read_limit` is 1..100 (default 20), `read_tag` is echoed; for the cycle receipts `read_role` and `read_goal` (each 1..64 characters, blank = no filter) narrow the rows in the store, so `read_limit` and `next_since` count the narrowed rows. Rows come as stored, every column. The lane decides nothing: `./door` only reads, and a read starts no cycle. Without an edge onto it nobody reads"
         },
         {
           "route": "in_hint",

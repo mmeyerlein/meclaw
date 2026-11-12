@@ -4,17 +4,25 @@
 //! `talk`, and the owner's line for it is the conversation model with its
 //! whole sidecar (the brain), not the fast model. Until this strand the shipped
 //! `path_routes` sent `talk` onto `quick`, and every deployment that wanted the
-//! line had to override it (the soul2me set did). The shipped default now
-//! names `talk:brain`; a turn without a path keeps the brain as before.
+//! line had to override it (the soul2me set did). The shipped default then
+//! named `talk:brain`; a turn without a path keeps the brain as before.
+//!
+//! D58 target (contract point 9, OR-d58-2.target.38): the lead names no
+//! target of its own any more -- `path_routes` ships empty and the composite
+//! sets it (talky: `talk:brain`, the harness wiring `LEAD_WIRING`). The test
+//! pins the empty default and the line under that wiring.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
 
-const DEFAULT: &str = "talk:brain,simple:quick,complex:consult,research:research";
+const DEFAULT: &str = "";
 
 fn curate_on(h: &mut Hive, turn_id: &str, path: &str, ask: &str) {
     h.out.clear();
@@ -38,11 +46,18 @@ fn a_talk_turn_goes_to_the_conversation_model() {
         return;
     }
     // GH #1447: the routes are the lead's, the cell that names the way.
-    let lead = cell_config("lead");
+    let lead = lead_config("lead");
     assert_eq!(
         lead["params"]["path_routes"],
         json!(DEFAULT),
-        "the shipped param sends talk to the brain"
+        "the shipped param names no target (the composite wires it)"
+    );
+    assert!(
+        LEAD_WIRING.contains(&(
+            "path_routes",
+            "talk:brain,simple:quick,complex:consult,research:research"
+        )),
+        "the wiring of the harness sends talk to the brain"
     );
     assert_eq!(
         lead["contract"]["settings"]["path_routes"]["default"],
@@ -50,7 +65,7 @@ fn a_talk_turn_goes_to_the_conversation_model() {
         "the schema default says the same"
     );
 
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     curate_on(&mut h, "t1", "talk", "how was your day?");

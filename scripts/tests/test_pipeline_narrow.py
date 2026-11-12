@@ -850,6 +850,22 @@ class NarrowTest(Base):
                     json.dump(dict(COVERAGE, rev=rev, built_at=at), fh)
             self.assertEqual("new", narrow.newest_map(d)[0]["rev"])
 
+    def test_newest_map_never_picks_a_dirty_map(self):
+        # GH #1461: the night of 2026-11-10 wrote `b373e8136...-dirty` (main tree
+        # with untracked files) beside the GREEN `21a4766d1...`; picked as the
+        # newest, `map_fits` refused its rev and every strand gate lost the
+        # narrowing. A dirty map names no commit, so it is never a candidate.
+        with tempfile.TemporaryDirectory() as d:
+            for rev, at in (("clean", "2026-11-09T01:56:24Z"),
+                            ("head-dirty", "2026-11-10T01:45:51Z")):
+                with open(os.path.join(d, "coverage-%s.json" % rev), "w", encoding="utf-8") as fh:
+                    json.dump(dict(COVERAGE, rev=rev, built_at=at), fh)
+            self.assertEqual("clean", narrow.newest_map(d)[0]["rev"])
+            os.remove(os.path.join(d, "coverage-clean.json"))
+            cov, why = narrow.newest_map(d)
+            self.assertIsNone(cov)
+            self.assertIn("dirty", why)
+
     def test_newest_map_skips_a_broken_file_and_says_so_without_a_good_one(self):
         # Review Z-I1 M3/M4: a broken map file was untested.
         with tempfile.TemporaryDirectory() as d:

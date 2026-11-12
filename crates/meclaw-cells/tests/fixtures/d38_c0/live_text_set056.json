@@ -68,9 +68,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1 talk Hello, it is me.",
@@ -175,13 +176,13 @@
           "hop": {
             "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0-bridge",
             "episode_turn_id": "s1#bd1794fa-2",
-            "interim": "1",
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t2"
           },
-          "route": "quick"
+          "route": "model_call"
         },
         {
           "body": {
@@ -240,9 +241,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t2"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "03 say t2 simple Will it rain today?",
@@ -346,9 +348,10 @@
             "iter": "1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t2"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "05 tool result t2 1",
@@ -492,9 +495,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t3"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "07 say t3 talk Then I stay in.",

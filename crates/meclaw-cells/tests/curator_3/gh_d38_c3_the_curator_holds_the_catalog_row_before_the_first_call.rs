@@ -26,6 +26,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -37,14 +40,11 @@ fn row(model: &str, soft: i64, hard: i64) -> Value {
            "chars_per_token": 3.5})
 }
 
+/// The cell `cell` of talky reports its package: `row`, and the profile its
+/// template writes beside it (D58 target, contract point 13).
 fn catalog(h: &mut Hive, cell: &str, row: Value) {
     h.out.clear();
-    h.lane(
-        "in_catalog",
-        json!({}),
-        json!({"package_of": format!("/talky/{cell}")}),
-        json!({"messages": [], "package": row}),
-    );
+    h.report_row("talky", cell, row);
 }
 
 fn has_overflow_cut(call: &Msg) -> bool {
@@ -59,7 +59,7 @@ fn the_policy_keeps_the_row_of_its_model_cell() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(&mut h, "brain", row("test/kept", 90000, 200000));
     let kept: Value = sj::from_str(&h.state("catalog:brain")).unwrap_or(Value::Null);
     assert_eq!(
@@ -82,7 +82,7 @@ fn the_first_call_is_cut_by_the_row() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(&mut h, "brain", row("test/tiny", 20, 30));
     let call = h.curate(
         "s1",
@@ -103,7 +103,7 @@ fn without_a_row_and_the_knob_off_the_first_call_is_as_before() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let call = h.curate(
         "s1",
         "t1",
@@ -128,21 +128,18 @@ fn a_missing_row_is_asked_once_at_the_session_start() {
     if !shipped() {
         return;
     }
+    // OR-d58-2.target.15: the ask is no knob any more -- it always goes,
+    // once per session, to every cell when no cell has reported yet.
     let cfg = cell_config("policy");
-    assert_eq!(
-        cfg["params"]["catalog_ask"],
-        json!("0"),
-        "the ask is a knob, off by default"
+    assert!(cfg["params"].get("catalog_ask").is_none(), "no knob");
+    assert!(
+        cfg["contract"]["settings"].get("catalog_ask").is_none(),
+        "no setting"
     );
-    assert_eq!(
-        cfg["contract"]["settings"]["catalog_ask"]["default"],
-        json!("0"),
-        "the setting's default is the param"
-    );
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "catalog_ask", json!("1")),
-    ]);
+    // The composite names the target of its curates; its cell has not
+    // reported yet.
+    let mut h = Hive::new();
+    h.target = Some(MAIN_TARGET.to_string());
     let c1 = h.curate("s1", "t1", 0, json!([user("q1")]), mode("Be brief."));
     let asks = h.routed("catalog_ask");
     assert_eq!(
@@ -152,10 +149,9 @@ fn a_missing_row_is_asked_once_at_the_session_start() {
         h.out,
         h.stderr
     );
-    assert_eq!(
-        asks[0].hop["catalog_for"],
-        json!("brain"),
-        "{:?}",
+    assert!(
+        asks[0].hop.get("catalog_for").is_none(),
+        "the first ask of the session goes to every cell: {:?}",
         asks[0].hop
     );
     assert_eq!(
@@ -185,10 +181,7 @@ fn a_held_row_asks_nothing() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "catalog_ask", json!("1")),
-    ]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(&mut h, "brain", row("test/held", 90000, 200000));
     h.curate("s1", "t1", 0, json!([user("q1")]), mode("Be brief."));
     assert!(h.routed("catalog_ask").is_empty(), "{:?}", h.out);

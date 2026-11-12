@@ -19,6 +19,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -27,15 +30,12 @@ const RECALL_ID: &str = "call_recall_00000000000000k7";
 const SAID_BEFORE: &str = "WHAT WAS SAID\n  user: \"My sister Anna moved to Hamburg.\"";
 
 fn memory_hive(spec: bool) -> Hive {
-    let mut over = vec![
-        ("policy", "role", json!("talky")),
-        ("lead", "memory_to_brain", json!("1")),
-    ];
+    let mut over = vec![("lead", "memory_to_brain", json!("1"))];
     if spec {
         over.push(("lead", "quick_speculative", json!("1")));
         over.push(("lead", "spec_tools", json!("")));
     }
-    Hive::with(&over)
+    Hive::with(&over).reporting_composite("talky")
 }
 
 /// The person's turn with the collector's recall pair ahead of the answer.
@@ -178,7 +178,7 @@ fn a_simple_turn_without_the_memory_need_still_takes_the_quick_way() {
     let quick = h.routed("quick");
     let calls: Vec<&Msg> = quick
         .iter()
-        .filter(|m| !m.hop.contains_key("bridge"))
+        .filter(|m| m.hop.get("call_kind").is_none())
         .collect();
     assert_eq!(
         calls.len(),
@@ -255,7 +255,7 @@ fn a_held_speculation_of_a_memory_turn_is_dropped() {
         "the spec text leaves nowhere: {:?}",
         h.out
     );
-    let spec = marks(&h, "quick_spec");
+    let spec = marks(&h, "spec");
     assert_eq!(spec.len(), 1, "{spec:?}");
     assert_eq!(spec[0]["verdict"], json!("dropped"), "{spec:?}");
     assert_eq!(
@@ -274,12 +274,12 @@ fn a_held_speculation_of_a_memory_turn_is_dropped() {
 /// collector has the memory leg.
 fn delta_hive(memory_to_brain: &str) -> Hive {
     Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "memory_to_brain", json!(memory_to_brain)),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("")),
         ("lead", "delta_speculation", json!("1")),
     ])
+    .reporting_composite("talky")
 }
 
 fn delta_stamp(h: &mut Hive, turn: &str, needs: Value, text_norm: &str) {
@@ -345,7 +345,7 @@ fn a_delta_of_a_memory_turn_is_refired_and_the_brain_reads_the_recall() {
         brain[0].messages()
     );
     assert!(h.routed("quick").is_empty(), "{:?}", h.out);
-    let spec = marks(&h, "quick_spec");
+    let spec = marks(&h, "spec");
     assert_eq!(spec.len(), 1, "{spec:?}");
     assert_eq!(spec[0]["verdict"], json!("dropped"), "{spec:?}");
     assert_eq!(

@@ -15,7 +15,9 @@
 //! 2. `collector/assemble` with `brief_hints` "1" asks for it on every turn:
 //!    about the counterpart when the turn names one, else about the one person
 //!    of the round (the same rule the curator proposes under), and carries
-//!    what came back as the `curate` slot `hints`;
+//!    what came back on the `curate` as a contribution to the section of its
+//!    `part_target` (D58 judge, GH #1480: `parts`, source `affinity`, the
+//!    brief's subject as `subject`; formerly the slot `hints`/`hints_of`);
 //! 3. `talky/route` renders `judge.hints` -- which the curator fills from that
 //!    slot -- in the decide state, as facts;
 //! 4. shipped, nothing of it moves.
@@ -231,7 +233,16 @@ fn a_brief_without_the_hints_slot_reads_no_proposal() {
 // ═════════════════════════════════════════════════ 2. collector/assemble
 
 fn knob() -> Vec<(&'static str, Value)> {
-    vec![("brief_hints", json!("1"))]
+    vec![
+        ("brief_hints", json!("1")),
+        ("part_target", json!("decide")),
+    ]
+}
+
+/// The one contribution a curate carries for the hints about `subject`
+/// (D58 judge, GH #1480).
+fn hints_part(subject: &str) -> Value {
+    json!([{"target": "decide", "source": "affinity", "value": hints(), "subject": subject}])
 }
 
 fn turn(round: &[&str], counterpart: Option<&str>) -> Value {
@@ -370,9 +381,22 @@ fn the_hints_come_back_as_a_slot_of_the_curate() {
         &knob(),
         in_briefing(&id, "[\"hints\"]", Some(hints())),
     ));
-    let msg = curate_of(&knob(), json!([leg_window_row(), row]));
-    assert_eq!(msg["hints"], hints(), "{msg}");
-    assert_eq!(msg["hints_of"], PERSON, "whom the brief was about: {msg}");
+    let msg = curate_of(&knob(), json!([leg_window_row(), row.clone()]));
+    assert_eq!(
+        msg["parts"],
+        hints_part(PERSON),
+        "the hints as a contribution about whom the brief was about: {msg}"
+    );
+    assert!(
+        msg.get("hints").is_none() && msg.get("hints_of").is_none(),
+        "the old slot is gone: {msg}"
+    );
+    // No target, no contribution: the hints were asked, but nobody reads them.
+    let none = curate_of(
+        &[("brief_hints", json!("1"))],
+        json!([leg_window_row(), row]),
+    );
+    assert!(none.get("parts").is_none(), "{none}");
     assert!(
         !msg.to_string().contains("affinity_brief"),
         "a hints-only brief is no evidence for the model: {msg}"
@@ -381,8 +405,7 @@ fn the_hints_come_back_as_a_slot_of_the_curate() {
     // A brief that answered without the field (a refusal) carries no slot.
     let row = leg_brief_row_of(&assemble(&knob(), in_briefing(&id, "[\"hints\"]", None)));
     let msg = curate_of(&knob(), json!([leg_window_row(), row]));
-    assert!(msg.get("hints").is_none(), "{msg}");
-    assert!(msg.get("hints_of").is_none(), "{msg}");
+    assert!(msg.get("parts").is_none(), "{msg}");
 
     // A counterpart's hints name the counterpart: the curator keeps them only
     // for the person of the round they are about.
@@ -391,7 +414,7 @@ fn the_hints_come_back_as_a_slot_of_the_curate() {
         in_briefing_about("peer:north", &id, "[\"hints\"]", Some(hints())),
     ));
     let msg = curate_of(&knob(), json!([leg_window_row(), row]));
-    assert_eq!(msg["hints_of"], "peer:north", "{msg}");
+    assert_eq!(msg["parts"], hints_part("peer:north"), "{msg}");
 }
 
 #[test]
@@ -402,10 +425,21 @@ fn brief_hints_ships_off_and_changes_nothing() {
         cfg["contract"]["settings"]["brief_hints"]["default"],
         json!("0")
     );
+    // D58 judge (GH #1480): the target of the contribution has no built-in
+    // value (R-58-15); "" is none.
+    assert_eq!(cfg["params"]["part_target"], json!(""));
+    assert_eq!(
+        cfg["contract"]["settings"]["part_target"]["default"],
+        json!("")
+    );
     let src = cfg["params"]["script_inline"].as_str().expect("script");
     assert!(
         src.contains("_str(\"brief_hints\", \"0\")"),
         "the script's own fallback"
+    );
+    assert!(
+        src.contains("_str(\"part_target\", \"\")"),
+        "the script's own fallback of the target"
     );
     // Shipped, a turn without a counterpart asks nothing and waits for nothing,
     // and its curate is the bytes it was.
@@ -415,7 +449,7 @@ fn brief_hints_ships_off_and_changes_nothing() {
     let shipped = curate_of(&[], json!([leg_window_row()]));
     let off = curate_of(&[("brief_hints", json!("0"))], json!([leg_window_row()]));
     assert_eq!(shipped, off);
-    assert!(shipped.get("hints").is_none(), "{shipped}");
+    assert!(shipped.get("parts").is_none(), "{shipped}");
     // A parked empty brief leg keeps the slots it always had.
     let out = assemble(&[("brief_slots", json!(["peer"]))], turn(&round(), None));
     let rows = parked_brief_rows(&out);
@@ -427,16 +461,18 @@ fn brief_hints_ships_off_and_changes_nothing() {
 
 // ═══════════════════════════════════════════════════════ 3. talky/route
 
+/// The judge context as the curator's view (D58 GH #1480): the hints are the
+/// leaf of the source `affinity` in the family of talky's target `decide`.
 fn judged_turns(judge: Value) -> Value {
+    let (messages, system) = talky_view_of(&judge);
     let mut doc = lane(
-        "in_turns",
+        "in_view",
         json!({"state": "the choir, search please",
                "asked_at": (now_ms() + 3_600_000).to_string()}),
         json!({"turn_id": TURN, "channel": "tg:1", "audience_set": "[\"member:e\"]"}),
-        json!([]),
+        messages,
     );
-    doc["turns"] = json!([]);
-    doc["judge"] = judge;
+    doc["system"] = system;
     doc
 }
 
@@ -578,8 +614,10 @@ fn hints_inside_the_budget_render_as_before() {
     let hints = long_hints();
     let lines: Vec<(String, usize)> = hints.as_array().unwrap().iter().map(hint_line).collect();
     let state = decide_state_within(judge_with(json!([]), hints), 1500);
+    // The screen line follows the hints in every judged state, as it always
+    // did in a colony (the curator always answered a screen, D58 GH #1480).
     let block = format!(
-        "How this person meant earlier requests when asked (newest first):\n{}\n{}\n{}\n\nThe request now:",
+        "How this person meant earlier requests when asked (newest first):\n{}\n{}\n{}\n\nOn the screen right now:\n- nothing\n\nThe request now:",
         lines[0].0, lines[1].0, lines[2].0
     );
     assert!(state.contains(&block), "{state}");

@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -27,7 +30,7 @@ fn a_plan_that_holds_every_row_renders_the_whole_wall() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "first words", FIRST_ANSWER, json!({}));
     let call = turn(&mut h, "s1", "t2", "second words", "a2", json!({}));
     let texts = texts(&call);
@@ -41,7 +44,7 @@ fn a_row_below_the_plans_end_is_a_block_of_the_call() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "first words", FIRST_ANSWER, json!({}));
     let to = h.plan_in(ROUND_E)["blocks_to"].as_i64().unwrap_or(0);
     let (seq, _) = h.row(

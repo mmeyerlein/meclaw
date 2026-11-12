@@ -3,12 +3,8 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh926_a_curator_counts_its_own_ledger;
-pub mod gh932_the_curator_pages_only_over_visible_rows;
-pub mod gh935_the_identity_budget_splits_the_pack;
-pub mod gh943_a_plan_per_round;
-pub mod gh949_a_candidate_never_widens_its_round;
-pub mod gh949_a_trigger_matches_on_word_boundaries;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
 pub mod gh949_an_app_reads_its_round_from_the_ledger;
 pub mod gh949_the_push_carries_covered_candidates_only;
 pub mod gh949_things_leave_as_thing_seen;
@@ -55,9 +51,18 @@ pub mod gh_d38_k5_a_window_over_the_price_step_rebuilds_sooner;
 pub mod gh_d38_k5_the_rebuild_counts_the_cache_write;
 pub mod gh_d38_k6_a_token_budget_keeps_the_youngest_rounds_raw;
 pub mod gh_d38_k6_keep_recent_stays_the_floor;
+pub mod gh_d38_k6_null_budget_is_byte_identical;
+pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
+pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
+pub mod gh_d38_k6_the_window_watch_reads_the_raw_part;
+pub mod gh_d38_k6b_the_budget_measures_the_rounds_as_sent;
+pub mod gh_d38_k6b_the_curate_stamp_measures_like_the_budget;
+pub mod gh_d38_k6b_the_rebuild_measures_a_cut_answer_as_sent;
+pub mod gh_d38_k6b_the_running_round_counts_whole;
+pub mod gh_d38_k7_a_set_override_of_the_new_params_passes_the_door;
 #[path = "../gh927/harness.rs"]
 pub mod harness;
-#[path = "../mock_openai.rs"]
-pub mod mock_openai;
+#[path = "../support/objects_hive.rs"]
+pub mod objects_hive;
 #[path = "../support/organism_assistant.rs"]
 pub mod organism_assistant;

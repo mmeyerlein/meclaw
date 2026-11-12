@@ -11,6 +11,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -64,7 +67,10 @@ fn plan_of(over: Value, rows: &[Value]) -> Value {
 #[test]
 fn keep_recent_stays_the_floor() {
     let rows = wall(49, 1, 3000);
-    let got = plan_of(json!({"role": "talky", "keep_recent_tokens": 1_000}), &rows);
+    let got = plan_of(
+        curator_profiles::set_knobs("talky", json!({"keep_recent_tokens": 1_000})),
+        &rows,
+    );
     assert_eq!(
         got["cover"],
         json!(seq_of(10, 0, 49) - 1),
@@ -74,7 +80,10 @@ fn keep_recent_stays_the_floor() {
 
     // No floor at all: the newest round is raw whatever the budget.
     let got = plan_of(
-        json!({"role": "talky", "keep_recent": 0, "keep_recent_tokens": 1_000}),
+        curator_profiles::set_knobs(
+            "talky",
+            json!({"keep_recent": 0, "keep_recent_tokens": 1_000}),
+        ),
         &rows,
     );
     assert_eq!(
@@ -90,23 +99,33 @@ fn keep_recent_stays_the_floor() {
 #[test]
 fn the_budget_knob_resolves_like_every_knob() {
     for (over, want) in [
-        (json!({"role": "talky"}), 80_000),
-        (json!({"role": "talky", "keep_recent_tokens": null}), 80_000),
+        (curator_profiles::set_knobs("talky", json!({})), 80_000),
         (
-            json!({"role": "talky", "keep_recent_tokens": 12_345}),
+            curator_profiles::set_knobs("talky", json!({"keep_recent_tokens": null})),
+            80_000,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"keep_recent_tokens": 12_345})),
             12_345,
         ),
-        (json!({"role": "talky", "keep_recent_tokens": 0}), 0),
-        (json!({"role": "consult"}), 0),
-        (json!({"role": "coding"}), 0),
-        (json!({"role": "research"}), 0),
-        (json!({"role": "quick"}), 0),
+        (
+            curator_profiles::set_knobs("talky", json!({"keep_recent_tokens": 0})),
+            0,
+        ),
+        (curator_profiles::set_knobs("consult", json!({})), 0),
+        (curator_profiles::set_knobs("coding", json!({})), 0),
+        (curator_profiles::set_knobs("research", json!({})), 0),
+        (curator_profiles::set_knobs("quick", json!({})), 0),
         (json!({"role": ""}), 0),
     ] {
         let (got, err) = policy_scope(over.clone(), "KEEP_RECENT_TOKENS", Value::Null);
         assert_eq!(got, json!(want), "{over}: {err}");
     }
     // The floor is untouched by the budget.
-    let (got, _) = policy_scope(json!({"role": "talky"}), "KEEP_RECENT", Value::Null);
+    let (got, _) = policy_scope(
+        curator_profiles::set_knobs("talky", json!({})),
+        "KEEP_RECENT",
+        Value::Null,
+    );
     assert_eq!(got, json!(40));
 }

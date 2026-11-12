@@ -55,6 +55,11 @@ fn shipped_stores() -> Vec<(String, String, String, String, Vec<String>)> {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().join("template.json").is_file())
         .map(|e| e.file_name().to_string_lossy().to_string())
+        // A frozen version (`templates/<name>@<x.y.z>/`, GH #1307) ships for the
+        // pins that name it and is no template to build with: the corpus
+        // generator leaves it out (`build_librarian_seed.py`), so a composer
+        // never looks one up -- the same rule here, not a second one.
+        .filter(|name| !name.contains('@'))
         .collect();
     names.sort();
     for name in names {

@@ -2207,23 +2207,24 @@ def t_join(s, t):
 
 
 def topic_outs(out):
-    return [e for e in out if e["header"]["route"] == "screen_topics"]
+    return [e for e in out if e["header"]["route"] == "part"]
 
 
 def t_topics(s, t):
-    """live-2 GR: the lane `screen_topics` -- the table the decider is asked over, as
-    `{topics: [{name, purpose, candidates}]}` (#1368), on boot and on every change, never per turn; off by
-    default (param `screen_topics`), so a presenter without a taker says nothing."""
+    """live-2 GR, D58 judge (GH #1480): the lane `part` -- the table the decider is asked over
+    as a contribution `{target, source: "presenter", value: [{name, purpose, candidates}]}`
+    (#1368), on boot and on every change, never per turn; no target by default (param
+    `part_target` ""), so a presenter without a taker says nothing."""
     # Off (shipped): neither boot nor an accepted topic nor a turn says the table.
     c = Cell(s)
     out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
                 {"topics": [sample()]})
     out += c.run({"route": "turn", "turn_id": "o1"},
                  {"messages": [{"type": "text", "text": "show me a sample"}]})
-    t.check("off: no screen_topics", topic_outs(out), [])
+    t.check("off: no part", topic_outs(out), [])
 
     # On: the boot says the table once, before the event that woke the cell.
-    c = Cell(s, screen_topics=True, observed_topics=["work"])
+    c = Cell(s, part_target="decide", observed_topics=["work"])
     out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
                 {"topics": [sample()]})
     said_ = topic_outs(out)
@@ -2234,15 +2235,17 @@ def t_topics(s, t):
                            {"key": "files", "describe": "the files touched so far"},
                            {"key": "tests", "describe": "whether the last test run passed"}]}
     t.check("boot: the presenter's own topics",
-            said_[0].get("topics") if said_ else None, [work])
+            said_[0].get("value") if said_ else None, [work])
     t.check("change: own and app topics, by name",
-            said_[1].get("topics") if len(said_) > 1 else None,
+            said_[1].get("value") if len(said_) > 1 else None,
             [SAMPLE_ROW, work])
     if said_:
         t.check("the lane carries no address", sorted(said_[0]["header"]),
                 ["route"])
-        t.check("the body is the table alone", sorted(said_[0]), ["header", "messages",
-                                                                   "topics"])
+        t.check("the body is the contribution alone", sorted(said_[0]),
+                ["header", "messages", "source", "target", "value"])
+        t.check("the target is the param's, the source the presenter",
+                (said_[0]["target"], said_[0]["source"]), ("decide", "presenter"))
     # The same topics again: no change, nothing said.
     out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
                 {"topics": [sample()]})
@@ -2260,39 +2263,39 @@ def t_topics(s, t):
     out = c.run({"route": "show_topics", "show_app": "/other", "show_at": "./show"},
                 {"topics": [sample(topic="extra", describe="another topic")]})
     got = topic_outs(out)
-    t.check("a second app joins", [x["name"] for x in got[0]["topics"]] if got else None,
+    t.check("a second app joins", [x["name"] for x in got[0]["value"]] if got else None,
             ["extra", "sample", "work"])
     out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
                 {"topics": [sample(describe="a new purpose")]})
     got = topic_outs(out)
     t.check("a changed purpose is said",
-            [x["purpose"] for x in got[0]["topics"] if x["name"] == "sample"] if got else None,
+            [x["purpose"] for x in got[0]["value"] if x["name"] == "sample"] if got else None,
             ["a new purpose"])
     # The app takes its topics back: the table shrinks and is said.
     out = c.run({"route": "show_topics", "show_app": "/other", "show_at": "./show"},
                 {"topics": []})
     got = topic_outs(out)
     t.check("a withdrawn topic leaves the table",
-            [x["name"] for x in got[0]["topics"]] if got else None, ["sample", "work"])
+            [x["name"] for x in got[0]["value"]] if got else None, ["sample", "work"])
     # A boot with app rows in the store says them too; a stamp-way cell the same.
-    c = Cell(s, screen_topics=True, verdict_source="stamp")
+    c = Cell(s, part_target="decide", verdict_source="stamp")
     c.store["shows"] = [{"topic": "sample", "owner_app": "/app", "show_at": "./show",
                          "manifest": json.dumps(sample()), "at": 1}]
     out = c.run({"route": "turn", "turn_id": "b1"},
                 {"messages": [{"type": "text", "text": "show me a sample"}]})
     got = topic_outs(out)
     t.check("boot with stored rows says them",
-            got[0]["topics"] if got else None, [SAMPLE_ROW])
+            got[0]["value"] if got else None, [SAMPLE_ROW])
     # Review K-G Minor 4: the table changes through the params alone (`observed_topics`
     # on a reconfigure): the next event says it -- the committed mutation first.
-    c = Cell(s, screen_topics=True, observed_topics=["work"])
+    c = Cell(s, part_target="decide", observed_topics=["work"])
     c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
           {"topics": [sample()]})
     c.params["observed_topics"] = []
     out = c.run({"route": "mutation_committed"})
     got = topic_outs(out)
     t.check("a params change is said on the committed mutation",
-            [x["name"] for x in got[0]["topics"]] if got else None, ["sample"])
+            [x["name"] for x in got[0]["value"]] if got else None, ["sample"])
     out = c.run({"route": "mutation_committed"})
     t.check("a params change is said once", topic_outs(out), [])
     c.params["observed_topics"] = ["work"]
@@ -2300,18 +2303,19 @@ def t_topics(s, t):
                 {"messages": [{"type": "text", "text": "show me a sample"}]})
     got = topic_outs(out)
     t.check("a params change is said on any event",
-            [x["name"] for x in got[0]["topics"]] if got else None, ["sample", "work"])
+            [x["name"] for x in got[0]["value"]] if got else None, ["sample", "work"])
     c = Cell(s, observed_topics=["work"])
     c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
           {"topics": [sample()]})
     c.params["observed_topics"] = []
     out = c.run({"route": "mutation_committed"})
     t.check("off: a params change says nothing", topic_outs(out), [])
-    # Not a boolean true: off (the switch is read strictly, like every other).
-    c = Cell(s, screen_topics="yes")
-    out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
-                {"topics": [sample()]})
-    t.check("a non-boolean switch is off", topic_outs(out), [])
+    # A blank target or one that is no text: no target, nothing said.
+    for blank in ("   ", True):
+        c = Cell(s, part_target=blank)
+        out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+                    {"topics": [sample()]})
+        t.check("a target %r is none" % (blank,), topic_outs(out), [])
 
 
 # The sample topic as the table says it (#1368): every candidate with its key and its
@@ -2322,56 +2326,101 @@ SAMPLE_ROW = {"name": "sample", "purpose": "a generic sample topic",
                              {"key": "steps", "describe": "the path as steps"},
                              {"key": "slow", "describe": "a slow number"}]}
 
-# The readers of the lane on the taker's side (#1368): the presenter's `screen_topics`
-# reaches the talky's `in_screen_topics`, whose curator keeps the list (`./history`,
-# `screen_topics_of`) and whose `./route` asks the lead question over it
-# (`screen_topics`). The lock runs those two functions out of their own templates, so
-# the field names are read there and never typed a second time here.
+# The readers of the lane on the taker's side (#1368, D58 judge GH #1480): the presenter's
+# `part` reaches the curator's `in_part`, whose `./history` keeps the value unread
+# (`part_row`) and hands it to a view of the target as one leaf (`part_leaf`); talky's
+# `./route` reads the view (`view_context`, with its own params `view_target` and
+# `view_sources`) and asks the lead question over the table (`screen_topics`). The lock
+# runs those functions out of their own templates, so the field names are read there and
+# never typed a second time here.
 TEMPLATES = os.path.dirname(os.path.dirname(HERE))
-READERS = [("curator/history", "screen_topics_of"), ("talky/route", "screen_topics")]
+PART_KEEPER = ("curator/history", "part_row", ("part_key", "part_until_ms"))
+PART_LEAF = ("curator/history", "part_leaf", ())
+PART_VIEW = ("talky/route", "view_context",
+             ("view_target", "leaf_text", "leaf_data", "frame_facts", "kept_topics"))
+PART_ASKER = ("talky/route", "screen_topics", ())
 
 
-def reader(where, fn):
+def route_params():
+    """The params talky's `./route` ships with (its `view_target` and `view_sources`)."""
+    with open(os.path.join(TEMPLATES, "talky", "route", "config.json"), encoding="utf-8") as f:
+        return json.load(f)["params"]
+
+
+def route_reads(view, ask, params, source, leaf):
+    """What talky's route asks over when the view of its target carries `leaf` from
+    `source`: the view as the curator answers it, read by `view_context`, then
+    `screen_topics`."""
+    target = params.get("view_target")
+    ctx = view({"messages": [], "system": {"frame": {"text": ""}, "topic": {"text": ""},
+                                           target: {source: leaf}}}, params)
+    return ask(ctx)
+
+
+def reader(where, fn, helpers=()):
     """`fn` of the cell `where`, run apart from the cell: its literal module-level
-    constants and the function itself, nothing that reads stdin or the params. None when the template is not there."""
+    constants, the functions `helpers` it calls and the function itself, nothing that
+    reads stdin or the params. None when the template is not there."""
     import ast
+    import datetime
     path = os.path.join(TEMPLATES, where, "config.json")
     if not os.path.exists(path):
         return None
     with open(path, encoding="utf-8") as f:
         code = json.load(f)["params"]["script_inline"]
     tree = ast.parse(code)
+    names = {fn} | set(helpers)
     keep = [n for n in tree.body
-            if (isinstance(n, ast.FunctionDef) and n.name == fn)
+            if (isinstance(n, ast.FunctionDef) and n.name in names)
             or (isinstance(n, ast.Assign) and all(isinstance(x, ast.Name) and x.id.isupper()
                                                   for x in n.targets)
                 and not any(isinstance(x, (ast.Name, ast.Call)) for x in ast.walk(n.value)))]
-    ns = {"json": json}
+    ns = {"json": json, "datetime": datetime}
     exec(compile(ast.Module(body=keep, type_ignores=[]), path, "exec"), ns)
     return ns.get(fn)
 
 
+def kept_whole(keep, leaf, table):
+    """What a view of the target reads of the presenter's contribution: the value the
+    curator keeps (`part_row`, no subject, no `until`) as its leaf (`part_leaf`), parsed
+    back; the leaf itself; and why the row was refused ("" for none)."""
+    said = topic_outs([table])[0] if isinstance(table, dict) else None
+    row, why = keep(said["target"], said["source"], said["value"], None, None, None)
+    if row is None:
+        return None, None, why
+    held = leaf(json.loads(row["value"])["value"])
+    return json.loads(held["text"]), held, ""
+
+
 def t_topics_wire(s, t):
-    """#1368: the lane `screen_topics` holds the talky's contract field for field -- what the
-    presenter says, the curator keeps whole (nothing cut) and talky's route reads with every
-    candidate; so the lead question can be asked. A topic without candidates leaves the field
-    out (`candidates?`) and is still kept."""
-    keep, ask = (reader(w, f) for w, f in READERS)
-    t.check("the curator's reader is there", keep is not None, True)
+    """#1368, D58 judge (GH #1480): the lane `part` holds the readers' contract field for
+    field -- what the presenter says, the curator keeps whole (nothing read, nothing cut)
+    and a view hands on as one leaf, and talky's route reads it with every candidate; so
+    the lead question can be asked. A topic without candidates leaves the field out
+    (`candidates?`) and is still kept."""
+    keep, leaf, view, ask = (reader(*x) for x in (PART_KEEPER, PART_LEAF, PART_VIEW,
+                                                  PART_ASKER))
+    t.check("the curator's keeper is there", keep is not None, True)
+    t.check("the curator's leaf is there", leaf is not None, True)
+    t.check("talky's view reader is there", view is not None, True)
     t.check("talky's route reader is there", ask is not None, True)
-    if keep is None or ask is None:
+    if keep is None or leaf is None or view is None or ask is None:
         return
-    c = Cell(s, screen_topics=True, observed_topics=["work"])
+    params = route_params()
+    c = Cell(s, part_target="decide", observed_topics=["work"])
     out = c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
                 {"topics": [sample()]})
     got = topic_outs(out)
-    table = got[-1]["topics"] if got else []
+    table = got[-1]["value"] if got else []
     t.check("the table holds both topics", [x["name"] for x in table], ["sample", "work"])
     t.check("the sample topic says its candidates", table[:1], [SAMPLE_ROW])
-    kept, cut = keep(table)
+    kept, held, why = kept_whole(keep, leaf, got[-1] if got else None)
     t.check("the curator keeps the table as said, field for field", kept, table)
-    t.check("the curator cuts nothing", cut, False)
-    asked = ask({"screen": {"topics": kept}})
+    t.check("the curator refuses nothing", why, "")
+    source = got[-1]["source"] if got else ""
+    t.check("talky's route reads the leaf of this source",
+            params.get("view_sources", {}).get("screen"), source)
+    asked = route_reads(view, ask, params, source, held)
     for row in table:
         t.check("talky's route reads %s with every candidate" % row["name"],
                 asked.get(row["name"]),
@@ -2384,10 +2433,11 @@ def t_topics_wire(s, t):
     rows_ = s.topic_table(bare, {"catalog": CATALOG})
     t.check("no candidates: name and purpose alone", rows_,
             [{"name": "bare", "purpose": "a bare topic"}])
-    kept, cut = keep(rows_)
-    t.check("no candidates: the curator keeps it", (kept, cut), (rows_, False))
+    said = s.emission("part", {"target": "decide", "source": s.PART_SOURCE, "value": rows_})
+    kept, held, why = kept_whole(keep, leaf, said)
+    t.check("no candidates: the curator keeps it", (kept, why), (rows_, ""))
     t.check("no candidates: talky's route reads it",
-            ask({"screen": {"topics": kept}}).get("bare"),
+            route_reads(view, ask, params, s.PART_SOURCE, held).get("bare"),
             {"purpose": "a bare topic", "candidates": {}})
 
 

@@ -156,7 +156,12 @@ def coverage_dir():
 
 
 def newest_map(directory=None):
-    """`(map, None)` of the newest `coverage-<rev>.json` (by `built_at`), or `(None, why)`."""
+    """`(map, None)` of the newest `coverage-<rev>.json` (by `built_at`), or `(None, why)`.
+
+    A `<rev>-dirty` map is never a candidate (GH #1461): it measured an overlay
+    no commit names, `map_fits` refuses its rev, and picked as the newest it
+    switched the narrowing off for every strand gate although a clean map lay
+    beside it (night of 2026-11-10, `b373e8136-dirty` over `21a4766d1`)."""
     from . import coverage as coverage_mod
     directory = pathlib.Path(directory or coverage_dir())
     best, why = None, "no coverage map in %s" % directory
@@ -164,6 +169,9 @@ def newest_map(directory=None):
         cov, err = coverage_mod.load_map(path)
         if cov is None:
             why = err
+            continue
+        if str(cov.get("rev") or "").endswith("-dirty"):
+            why = "only a dirty coverage map (%s) in %s" % (cov.get("rev"), directory)
             continue
         if best is None or str(cov.get("built_at") or "") > str(best.get("built_at") or ""):
             best = cov

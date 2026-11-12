@@ -25,7 +25,36 @@
     "reasoning_effort": "medium",
     "max_tokens": 16384,
     "cache_mode": "off",
-    "cache_ttl_s": 0
+    "cache_ttl_s": 0,
+    "package_line": true,
+    "window_profile": {
+      "window": "wall",
+      "system": "delta",
+      "tools": "all",
+      "must_call": false,
+      "speaks": true,
+      "frame": false,
+      "closes_turn": true,
+      "recall": true,
+      "compress_at": 0.5,
+      "rebuild_to": 0.45,
+      "keep_recent": 40,
+      "keep_recent_tokens": 80000,
+      "horizon": "day",
+      "tiers": "raw,summary,none",
+      "keep_rounds": 1,
+      "gc": "1",
+      "gc_scaffold": "1",
+      "stub_tools_after": 20,
+      "broadcast_mode": "tail",
+      "recall_push": "1",
+      "recall_budget": 200,
+      "short_ids": "1",
+      "identity_budget": "full",
+      "window_target": 100000,
+      "notes_share": 0.02,
+      "state_lines": 8
+    }
   },
   "contract": {
     "version": "1.0.0",
@@ -34,7 +63,7 @@
         "type": "string",
         "secret": false,
         "default": "off",
-        "description": "GH #1408: how this cell marks the provider's prompt cache (`off`, `implicit`, `breakpoints`; docs/cell-types.md \u00a7 llm). It ships `off`, the llm cell's own value when nothing is set, so the request is byte-identical to one without the key and the registry's model package still decides: a package that names `cache_mode` wins, one that resets it falls back to this birth value. An instance sets it through `override_params` on this cell's path for a lab or a model the package does not reach (measured without it: 67 calls, prompt 8.6k -> 57.9k tokens, 0 cached). An empty string or null is refused by the cell's parse, so `off` is the one form of not set."
+        "description": "GH #1408: how this cell marks the provider's prompt cache (`off`, `implicit`, `breakpoints`; docs/cell-types.md § llm). It ships `off`, the llm cell's own value when nothing is set, so the request is byte-identical to one without the key and the registry's model package still decides: a package that names `cache_mode` wins, one that resets it falls back to this birth value. An instance sets it through `override_params` on this cell's path for a lab or a model the package does not reach (measured without it: 67 calls, prompt 8.6k -> 57.9k tokens, 0 cached). An empty string or null is refused by the cell's parse, so `off` is the one form of not set."
       },
       "cache_ttl_s": {
         "type": "number",
@@ -77,6 +106,12 @@
         "secret": false,
         "default": "medium",
         "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it."
+      },
+      "window_profile": {
+        "type": "object",
+        "secret": false,
+        "default": {},
+        "description": "D58 target (GH #1483): what this composite uses the cell's model for, as its curator cuts the windows of this cell by it -- an uninterpreted JSON object the cell only reports, in the slot `window_profile` of its package line, beside `package` and `system_order`. Shipped empty (no profile: the curator cuts with its instance knobs). A set or reset of it by a params-only message announces the line again. The fields are the curator's (templates/curator/README.md)."
       }
     },
     "emits": {
@@ -88,13 +123,26 @@
         "meta": {
           "type": "object",
           "required": false
+        },
+        "package": {
+          "type": "object",
+          "required": false
+        },
+        "window_profile": {
+          "type": "object",
+          "required": false
+        },
+        "system_order": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
         "route": {
           "type": "string",
           "values": [
-            "credential_request"
+            "credential_request",
+            "package"
           ],
           "required": false
         },
@@ -183,6 +231,10 @@
         },
         "unverified": {
           "type": "array",
+          "required": false
+        },
+        "package_of": {
+          "type": "string",
           "required": false
         }
       }

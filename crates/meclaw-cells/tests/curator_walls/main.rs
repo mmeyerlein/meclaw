@@ -1,0 +1,37 @@
+//! Test harness `curator_walls` of `meclaw-cells`: one binary, one module per old file.
+//! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
+
+#[path = "../support/curator_bank.rs"]
+pub mod curator_bank;
+#[path = "../support/curator_hive.rs"]
+pub mod curator_hive;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
+#[path = "../support/curator_watch.rs"]
+pub mod curator_watch;
+pub mod gh_d58_bank_a_released_block_shrinks_and_a_pinned_one_stays;
+pub mod gh_d58_bank_an_open_errand_stays_while_closed_ones_shrink;
+pub mod gh_d58_bank_coding_keeps_instructions_and_failed_runs;
+pub mod gh_d58_bank_coding_keeps_the_running_task_raw_and_folds_the_closed_ones;
+pub mod gh_d58_bank_each_class_leaves_its_mark;
+pub mod gh_d58_bank_every_class_leaves_the_window;
+pub mod gh_d58_bank_every_error_family_of_the_set_survives;
+pub mod gh_d58_bank_every_role_runs_its_walls;
+pub mod gh_d58_bank_mutant_always_warm_trips_cold_pct;
+pub mod gh_d58_bank_mutant_duplicate_recall_kept_fails;
+pub mod gh_d58_bank_mutant_free_rebuild_trips_rebuild_cost;
+pub mod gh_d58_bank_mutant_gc_off_trips_gc_share;
+pub mod gh_d58_bank_mutant_no_rebuild_trips_rebuild_rate;
+pub mod gh_d58_bank_mutant_released_kept_fails;
+pub mod gh_d58_bank_mutant_scaffold_kept_fails;
+pub mod gh_d58_bank_mutant_tool_results_kept_fails;
+pub mod gh_d58_bank_mutant_transients_kept_fails;
+pub mod gh_d58_bank_mutant_used_notes_kept_fails;
+pub mod gh_d58_bank_research_shrinks_old_results_to_stubs;
+pub mod gh_d58_bank_the_summarizer_request_is_captured;
+pub mod gh_d58_bank_the_talk_survives_byte_for_byte;
+pub mod gh_d58_bank_the_window_lands_at_its_aim;
+pub mod gh_d58_plant_the_old_kinds_stay_as_they_were;
+pub mod gh_d58_plant_third_party_and_superseded_are_planted;
+#[path = "../gh927/harness.rs"]
+pub mod harness;

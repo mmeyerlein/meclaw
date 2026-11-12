@@ -27,7 +27,34 @@
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
     "reasoning_effort": "medium",
-    "package_line": true
+    "package_line": true,
+    "window_profile": {
+      "window": "wall",
+      "system": "delta",
+      "tools": "all",
+      "must_call": false,
+      "speaks": true,
+      "frame": false,
+      "closes_turn": true,
+      "recall": true,
+      "compress_at": 0.5,
+      "rebuild_to": 0.35,
+      "keep_recent": 10,
+      "horizon": "task",
+      "tiers": "raw,summary",
+      "keep_rounds": 2,
+      "gc": "0",
+      "gc_scaffold": "1",
+      "stub_tools_after": 10,
+      "broadcast_mode": "tail",
+      "recall_push": "",
+      "recall_budget": 0,
+      "short_ids": "1",
+      "identity_budget": "full",
+      "window_target": 0,
+      "notes_share": 0,
+      "state_lines": 0
+    }
   },
   "contract": {
     "version": "1.0.0",
@@ -67,6 +94,12 @@
         "secret": false,
         "default": "medium",
         "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it."
+      },
+      "window_profile": {
+        "type": "object",
+        "secret": false,
+        "default": {},
+        "description": "D58 target (GH #1483): what this composite uses the cell's model for, as its curator cuts the windows of this cell by it -- an uninterpreted JSON object the cell only reports, in the slot `window_profile` of its package line, beside `package` and `system_order`. Shipped empty (no profile: the curator cuts with its instance knobs). A set or reset of it by a params-only message announces the line again. The fields are the curator's (templates/curator/README.md)."
       }
     },
     "emits": {
@@ -81,6 +114,14 @@
         },
         "package": {
           "type": "object",
+          "required": false
+        },
+        "window_profile": {
+          "type": "object",
+          "required": false
+        },
+        "system_order": {
+          "type": "array",
           "required": false
         }
       },

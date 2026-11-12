@@ -29,22 +29,28 @@ fn text(m: &str) -> Value {
 }
 
 /// The bridge's sentence as the dispatcher hands it on: interim, under the
-/// curator's `<call>-bridge`, in a stamped turn.
+/// curator's `<call>-bridge`, in a stamped turn. D58 moveout (contract point
+/// 3): the composite lifts the call's kind (`hop.call_kind` "side") into the
+/// context, and that field -- not the ending of the id -- makes it a bridge.
 fn bridge_in() -> Value {
     lane(
         "in_answer",
         json!({"interim": "1", "finish_reason": "stop"}),
-        json!({"turn_id": T, "iter": "0", "path": "simple", "curator_call": "c-9-bridge"}),
+        json!({"turn_id": T, "iter": "0", "path": "simple", "curator_call": "c-9-bridge",
+               "call_kind": "side"}),
         text(BRIDGE),
     )
 }
 
-/// The brain's answer for the call the quick voice gave up (`<call>-esc`).
+/// The brain's answer for the call the quick voice gave up: its kind
+/// `fallback` in the context (D58 moveout, contract point 3; the id keeps its
+/// ending `-esc`, nobody reads it).
 fn escalated_answer_in() -> Value {
     lane(
         "in_answer",
         json!({"finish_reason": "stop"}),
-        json!({"turn_id": T, "iter": "0", "path": "simple", "curator_call": "c-9-esc"}),
+        json!({"turn_id": T, "iter": "0", "path": "simple", "curator_call": "c-9-esc",
+               "call_kind": "fallback"}),
         text(ANSWER),
     )
 }
@@ -272,4 +278,54 @@ fn an_answer_no_bridge_can_precede_leaves_at_once() {
         text(ANSWER),
     );
     assert_eq!(answers(&assemble(&[], unstamped)).len(), 1);
+}
+
+// D58 target (GH #1483, contract point 11): the collector knows a bridge by
+// a field of its context (`context.bridge`, the composite lifts the curator's
+// `hop.bridge`), not by the ending `-bridge` of its call id. An interim
+// without the field leaves at once, whatever its id says.
+
+fn d58_interim(ctx: Value) -> Value {
+    lane(
+        "in_answer",
+        json!({"interim": "1", "finish_reason": "stop"}),
+        ctx,
+        json!([{"origin": "assistant", "type": "text", "text": "One moment."}]),
+    )
+}
+
+fn d58_gated(out: &[Value]) -> bool {
+    out.iter().any(|m| {
+        m["header"]["route"].as_str() == Some("cstore")
+            && m["header"]["phase"].as_str() == Some("bridge-gate")
+    })
+}
+
+fn d58_left_at_once(out: &[Value]) -> bool {
+    out.iter()
+        .any(|m| m["header"]["route"].as_str() == Some("answer"))
+}
+
+#[test]
+fn d58_target_an_interim_with_the_bridge_field_is_a_bridge() {
+    let out = assemble(
+        &[],
+        d58_interim(
+            json!({"turn_id": T, "iter": "0", "path": "simple", "curator_call": "c-1",
+                       "call_kind": "side"}),
+        ),
+    );
+    assert!(d58_gated(&out), "the field makes it a bridge: {out:?}");
+    assert!(!d58_left_at_once(&out), "{out:?}");
+}
+
+#[test]
+fn d58_target_a_bridge_ending_without_the_field_is_no_bridge() {
+    let out = assemble(
+        &[],
+        d58_interim(json!({"turn_id": T, "iter": "0", "path": "simple",
+                       "curator_call": "c-1-bridge"})),
+    );
+    assert!(!d58_gated(&out), "an id is no kind: {out:?}");
+    assert!(d58_left_at_once(&out), "{out:?}");
 }

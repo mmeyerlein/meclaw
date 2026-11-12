@@ -217,3 +217,141 @@ async fn a_given_session_id_is_echoed_instead_of_invented() {
         "the fixture must honour a pinned session id, like the real CLI does"
     );
 }
+
+// ------------------------------------------------- the input dialect (D57) ----
+
+async fn read_until_result(child: &mut StdioChild) -> Vec<JsonValue> {
+    let mut out = Vec::new();
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(30), child.read_frame())
+            .await
+            .expect("fixture went quiet for 30s")
+            .expect("read failed");
+        match frame {
+            Some(Frame::Json(v)) => {
+                let done = v["type"] == "result";
+                out.push(v);
+                if done {
+                    return out;
+                }
+            }
+            Some(Frame::Malformed(raw)) => panic!("fixture wrote a non-JSON line: {raw}"),
+            None => panic!("fixture ended mid-turn: {out:?}"),
+        }
+    }
+}
+
+fn user_turn(text: &str) -> JsonValue {
+    serde_json::json!({"type": "user", "message": {"role": "user", "content": text}})
+}
+
+/// A2: with `--input-format stream-json` the fixture answers every `user`
+/// frame with a turn of the same session — context per call on the assistant
+/// frame, cost cumulative per process — answers `ask` from stdin, finds its
+/// mode anywhere on the argv, and ends with exit 0 at EOF. `lost` answers a
+/// resume with one error result and nothing else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_stream_json_input_mode_answers_every_user_frame_with_a_turn() {
+    let mut child = StdioChild::spawn(&fixture_spec(&[
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+        "--session-id",
+        "s-x",
+        "--context-tokens",
+        "1234",
+        "--turn-cost",
+        "0.25",
+    ]))
+    .expect("spawn fixture");
+    let timeout = Duration::from_secs(5);
+
+    child
+        .write_frame(&user_turn("one"), timeout)
+        .await
+        .expect("write turn 1");
+    let first = read_until_result(&mut child).await;
+    let types: Vec<&str> = first.iter().filter_map(|f| f["type"].as_str()).collect();
+    assert_eq!(types, vec!["system", "assistant", "result"]);
+    assert_eq!(first[0]["session_id"], "s-x");
+    assert_eq!(first[1]["message"]["usage"]["input_tokens"], 1234);
+    assert_eq!(first[2]["total_cost_usd"], 0.25);
+
+    child
+        .write_frame(&user_turn("two"), timeout)
+        .await
+        .expect("write turn 2");
+    let second = read_until_result(&mut child).await;
+    assert_eq!(second[0]["subtype"], "init");
+    assert_eq!(second[0]["session_id"], "s-x", "one process, one session");
+    assert_eq!(
+        second.last().expect("result")["total_cost_usd"],
+        0.5,
+        "the cost counter is per process"
+    );
+
+    // EOF ends the process cleanly.
+    let (pipes, mut reaper) = child.split();
+    drop(pipes);
+    assert_eq!(
+        reaper.exited_within(Duration::from_secs(30)).await,
+        Some(meclaw_cells::stdio_child::ChildExit::Code(0))
+    );
+
+    // `ask` in the input dialect, with the mode behind the flags.
+    let mut ask = StdioChild::spawn(&fixture_spec(&[
+        "-p",
+        "--input-format",
+        "stream-json",
+        "ask",
+    ]))
+    .expect("spawn fixture");
+    ask.write_frame(&user_turn("go"), timeout)
+        .await
+        .expect("write");
+    let mut frames = Vec::new();
+    while frames.len() < 2 {
+        match ask.read_frame().await.expect("read") {
+            Some(Frame::Json(v)) => frames.push(v),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(frames[1]["type"], "control_request");
+    ask.write_frame(
+        &serde_json::json!({"type": "control_response", "response": {
+            "subtype": "success", "request_id": "req-fixture-1",
+            "response": {"behavior": "deny", "message": "no"}}}),
+        timeout,
+    )
+    .await
+    .expect("answer");
+    let rest = read_until_result(&mut ask).await;
+    assert_eq!(
+        rest.last().expect("result")["result"],
+        "permission decision: deny"
+    );
+
+    // `lost`: one error result, no init, exit 1.
+    let mut lost = StdioChild::spawn(&fixture_spec(&[
+        "--input-format",
+        "stream-json",
+        "--resume",
+        "s-gone",
+        "lost",
+    ]))
+    .expect("spawn fixture");
+    lost.write_frame(&user_turn("go"), timeout)
+        .await
+        .expect("write");
+    let only = read_until_result(&mut lost).await;
+    assert_eq!(only.len(), 1, "no init before the error: {only:?}");
+    assert_eq!(only[0]["is_error"], true);
+    assert_eq!(only[0]["subtype"], "error_during_execution");
+    assert!(
+        only[0]["errors"][0]
+            .as_str()
+            .expect("errors")
+            .contains("s-gone")
+    );
+}

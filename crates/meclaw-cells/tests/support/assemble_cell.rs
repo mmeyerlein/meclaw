@@ -103,6 +103,46 @@ pub fn assemble(over: &[(&str, Value)], doc: Value) -> Vec<Value> {
     run_cell(ASSEMBLE, over, doc).0
 }
 
+/// D58 GH #1480: a judge context of before (`{turns, topic, screen: {topics},
+/// hints?, now: {iso, weekday, timezone}, place}`) as the curator's view for
+/// talky's target `decide`, `(messages, system)`: the turns as `messages`
+/// (`origin` = the role), the leaf `topic` when there is one, the leaf
+/// `frame` when there is a moment (one `<name>: <value>` per line,
+/// OR-d58-2.judge.8), the screen topics as the leaf of the source `presenter`
+/// and the hints as the leaf of `affinity` (the route's `view_sources`). The
+/// curator keeps no screen state (master's history answered `state: []` on
+/// every read), so a view carries none.
+pub fn talky_view_of(judge: &Value) -> (Value, Value) {
+    let messages: Vec<Value> = judge["turns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| json!({"origin": t["role"], "type": "text", "text": t["text"]}))
+        .collect();
+    let word = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let now = &judge["now"];
+    let mut system = json!({"decide": {}});
+    if !word(&now["iso"]).is_empty() {
+        system["frame"] = json!({"text": format!(
+            "now: {}\nweekday: {}\ntimezone: {}\nplace: {}",
+            word(&now["iso"]),
+            word(&now["weekday"]),
+            word(&now["timezone"]),
+            word(&judge["place"])
+        )});
+    }
+    if !word(&judge["topic"]).is_empty() {
+        system["topic"] = json!({"text": judge["topic"]});
+    }
+    if judge["screen"]["topics"].is_array() {
+        system["decide"]["presenter"] = json!({"text": judge["screen"]["topics"].to_string()});
+    }
+    if judge["hints"].is_array() {
+        system["decide"]["affinity"] = json!({"text": judge["hints"].to_string()});
+    }
+    (Value::Array(messages), system)
+}
+
 /// A lane arrival as the hive's door hands it to `./assemble`.
 pub fn lane(route: &str, hop: Value, ctx: Value, messages: Value) -> Value {
     let mut h = json!({"route": route});

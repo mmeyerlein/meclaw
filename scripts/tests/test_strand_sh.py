@@ -156,6 +156,9 @@ def make_repo(root):
     shutil.copytree(PIPELINE_PKG, repo / "scripts" / "pipeline",
                     ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(GATE_PLAN, repo / "scripts" / "gate_plan.py")
+    # `new` installs the merge driver of the cells with an inline script (OR-58-57).
+    shutil.copy(REPO / "scripts" / "git_merge_script_inline.py",
+                repo / "scripts" / "git_merge_script_inline.py")
     # `pipeline.py` loads every command module; W4's `pre` imports the precheck.
     shutil.copy(REPO / "scripts" / "precheck.py", repo / "scripts" / "precheck.py")
     # W4's pre stamp guards a strand gate from a strand worktree. The trees
@@ -336,6 +339,24 @@ class TestNew(StrandShTestCase):
         self.assertRegex(text, r"(?m)^Outsourced findings: none$")
         from scripts.pipeline import merge
         self.assertTrue(merge.outsourced_findings_ok(text))
+
+    def test_new_installs_the_script_merge_driver(self):
+        # OR-58-57: `.gitattributes` only asks for the driver, git runs it where
+        # the clone's config names it. A strand whose clone lacks the two lines
+        # merges the one-line script of a cell config the old way, as one
+        # unreadable conflict -- so every `new` sets them, and only once.
+        want = ["merge.script-inline.name cell script_inline three-way merge",
+                "merge.script-inline.driver "
+                "python3 scripts/git_merge_script_inline.py %O %A %B %P"]
+        self.assertNotIn("merge.", _git(self.repo, "config", "--local", "--list").stdout)
+        for name in ("kit", "kit2"):
+            res = run_strand(self.repo, "new", name, "--issue", "756")
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertNotIn("script-inline", res.stdout)   # the prompt stays the prompt
+            got = _git(self.repo, "config", "--local", "--get-regexp", r"^merge\.").stdout
+            self.assertEqual(want, got.splitlines())
+        # the display's driver stays off: nothing sets it up (plan u-mergedrv, 3)
+        self.assertNotIn("display-sync", got)
 
     def test_new_puts_the_worktree_under_the_worktree_root(self):
         # GH #1290: with MECLAW_WORKTREE_ROOT the tree is <root>/<repo>/<wave>/<name>;

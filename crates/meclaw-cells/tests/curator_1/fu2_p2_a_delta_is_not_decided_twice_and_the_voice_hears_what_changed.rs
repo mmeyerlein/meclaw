@@ -1,7 +1,8 @@
 //! #1279 -- the voice hears what changed, a delta's stamp is
 //! not decided twice, and a failed tool is never spoken by the quick voice.
 //!
-//! WHY this file exists: a duplex call runs on a provider session with its
+//! WHY this file exists: a running session (its handle `live`, D58 live)
+//! runs on a provider session with its
 //! own context; after each closed turn the curator tells the voice cell, as
 //! ONE `live_feed` section (way `renew`), only the facts that changed since
 //! the last one -- nothing when nothing changed, nothing for a text turn.
@@ -17,6 +18,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -36,7 +40,7 @@ fn seam(h: &mut Hive, turn: &str, path: &str, ask: &str, extra: Value) {
 }
 
 fn duplex() -> Value {
-    json!({"engine": "duplex", "call_id": "call-9"})
+    json!({"live": "call-9"})
 }
 
 /// One closed turn: its call and the model's final answer on the tap.
@@ -78,10 +82,7 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "live_feed", json!("1")),
-    ]);
+    let mut h = Hive::with(&[("policy", "live_feed", json!("1"))]).reporting_composite("talky");
     h.check_emits = true;
     // The topic marks lie behind the clock: one day for all of them.
     clear_of_midnight();
@@ -95,7 +96,7 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
     assert_eq!(f.hop["section"], json!("renew"));
     // the voice cell takes a renew at the next turn boundary only.
     assert_eq!(f.hop["at_turn_end"], json!("1"));
-    assert_eq!(f.hop["call_id"], json!("call-9"));
+    assert_eq!(f.hop["live"], json!("call-9"));
     assert_eq!(f.body["topic"], json!("choir"), "{:?}", f.body);
     assert!(
         f.messages().is_empty(),
@@ -104,7 +105,7 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
     );
     for k in f.body.keys() {
         assert!(
-            ["messages", "notes", "inner_turns", "topic", "screen_topics"].contains(&k.as_str()),
+            ["messages", "notes", "inner_turns", "topic", "parts"].contains(&k.as_str()),
             "a fact field only, never an instruction: {k}"
         );
     }
@@ -173,8 +174,8 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
     h.out.clear();
     h.lane(
         "in_seed_ask",
-        json!({"call_id": "call-9", "audience_set": ROUND_E}),
-        json!({"call_id": "call-9", "session_id": "call-9", "reason": "renew",
+        json!({"live": "call-9", "audience_set": ROUND_E}),
+        json!({"live": "call-9", "session_id": "call-9", "reason": "renew",
                "renewal_n": 1}),
         json!({"messages": []}),
     );
@@ -203,11 +204,11 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
 
 fn delta_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("")),
         ("lead", "delta_speculation", json!("1")),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -309,7 +310,7 @@ fn delta_result_refired_when_text_differs() {
 /// result `text` and, when given, the collector's `tool_errors` slot. Returns
 /// the hive after it.
 fn quick_round(text: &str, errors: Option<Value>) -> Hive {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     seam(&mut h, "t1", "simple", ASK, json!({"families": "web"}));
     assert_eq!(h.routed("quick").len(), 1, "{:?} {:?}", h.out, h.stderr);
     h.out.clear();
@@ -382,20 +383,25 @@ fn fu2_p2_defaults_byte_identical() {
     if !shipped() {
         return;
     }
-    // `delta_speculation` lives in the lead since GH #1447.
+    // `delta_speculation` lives in the lead since GH #1447, in the lead hive
+    // (`templates/lead`) since GH #1474.
     for (cell, k, v) in [
         ("policy", "live_feed", json!("0")),
         ("policy", "live_feed_section", json!("renew")),
         ("lead", "delta_speculation", json!("0")),
     ] {
-        let config = cell_config(cell);
+        let config = if cell == "lead" {
+            lead_config(cell)
+        } else {
+            cell_config(cell)
+        };
         assert_eq!(config["params"][k], v, "{k}");
         assert_eq!(config["contract"]["settings"][k]["default"], v, "{k}");
     }
     // A run with duplex turns and a delta stamp: the same calls with the knobs
     // shipped and with the knobs absent, and nothing of P2 in the ledger.
     let run = |over: &[(&str, &str, Value)]| {
-        let mut h = Hive::with(over);
+        let mut h = Hive::with(over).reporting_composite("talky");
         let mut seen = Vec::new();
         delta_stamp(&mut h, "t1", "and then");
         assert!(
@@ -425,12 +431,8 @@ fn fu2_p2_defaults_byte_identical() {
         assert!(marks(&h, "delta").is_empty());
         seen
     };
-    let shipped_run = run(&[
-        ("policy", "role", json!("talky")),
-        ("lead", "quick_speculative", json!("1")),
-    ]);
+    let shipped_run = run(&[("lead", "quick_speculative", json!("1"))]);
     let absent_run = run(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("policy", "live_feed", Value::Null),
         ("policy", "live_feed_section", Value::Null),
@@ -449,10 +451,7 @@ fn live_feed_and_delta_switches_read_json_true() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "live_feed", json!(true)),
-    ]);
+    let mut h = Hive::with(&[("policy", "live_feed", json!(true))]).reporting_composite("talky");
     clear_of_midnight();
     topic(&mut h, 50, "choir");
     closed_turn(&mut h, "t1", duplex());
@@ -465,11 +464,11 @@ fn live_feed_and_delta_switches_read_json_true() {
     );
 
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!(true)),
         ("lead", "spec_tools", json!("")),
         ("lead", "delta_speculation", json!(true)),
-    ]);
+    ])
+    .reporting_composite("talky");
     delta_stamp(&mut h, "t1", "what is the weather in berlin");
     assert_eq!(
         keys_like(&h, "delta:").len(),
@@ -509,10 +508,10 @@ fn live_feed_section_is_renew_only() {
         "the rim names the built way only: {because}"
     );
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "live_feed", json!("1")),
         ("policy", "live_feed_section", json!("context")),
-    ]);
+    ])
+    .reporting_composite("talky");
     clear_of_midnight();
     topic(&mut h, 50, "choir");
     closed_turn(&mut h, "t1", duplex());

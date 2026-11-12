@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -43,7 +46,7 @@ fn version(h: &Hive, v: usize) -> String {
 /// A hive whose ledger holds `copies` slot rows of PATH, version `i % 4` each
 /// (version 3 the newest by `at`); returns the call of one turn.
 fn hive_with(copies: usize) -> (Hive, Msg, Vec<String>) {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     old_ledger(&h);
     let hashes: Vec<String> = (0..4).map(|v| version(&h, v)).collect();
     for i in 0..copies {
@@ -109,10 +112,7 @@ fn duplicate_slots_count_once() {
 
 #[test]
 fn the_summary_slot_is_written_in_one_step() {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(1)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]).reporting_composite("talky");
     // Two rows of the round's summary slot, as two writes in flight left them.
     old_ledger(&h);
     let slot = summary_slot(ROUND_E);
@@ -191,10 +191,7 @@ fn a_tie_on_at_keeps_the_smallest_hash() {
 /// (KD § 1 K-4, review M-3).
 #[test]
 fn the_relayed_summary_slot_is_written_in_one_step() {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(1)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]).reporting_composite("talky");
     let base = chrono::Utc::now() - chrono::Duration::seconds(50);
     for i in 0..4i64 {
         let at = base + chrono::Duration::milliseconds(100 * i);

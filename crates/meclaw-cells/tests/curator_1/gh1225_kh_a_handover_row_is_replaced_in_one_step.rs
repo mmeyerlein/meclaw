@@ -74,13 +74,13 @@ fn leaf_slot(h: &Hive) -> Vec<Vec<Value>> {
     h.rows("SELECT hash, owner FROM slots WHERE path = 'history.handover' ORDER BY hash")
 }
 
-fn renew(h: &mut Hive, session: &str, call_id: &str, n: u32) {
+fn renew(h: &mut Hive, session: &str, live: &str, n: u32) {
     h.out.clear();
     h.lane(
         "in_renewed",
-        json!({"session_id": session, "call_id": call_id, "channel": "test",
+        json!({"session_id": session, "live": live, "channel": "test",
                "audience_set": ROUND_E}),
-        json!({"call_id": call_id, "session_id": session, "renewal_n": n}),
+        json!({"live": live, "session_id": session, "renewal_n": n}),
         json!({"messages": []}),
     );
 }

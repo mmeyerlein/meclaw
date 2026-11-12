@@ -1,17 +1,14 @@
 //! Test harness `curator_4` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/assistant_followup.rs"]
+pub mod assistant_followup;
+#[path = "../support/curator_cold.rs"]
+pub mod curator_cold;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh_d38_k6_null_budget_is_byte_identical;
-pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
-pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
-pub mod gh_d38_k6_the_window_watch_reads_the_raw_part;
-pub mod gh_d38_k6b_the_budget_measures_the_rounds_as_sent;
-pub mod gh_d38_k6b_the_curate_stamp_measures_like_the_budget;
-pub mod gh_d38_k6b_the_rebuild_measures_a_cut_answer_as_sent;
-pub mod gh_d38_k6b_the_running_round_counts_whole;
-pub mod gh_d38_k7_a_set_override_of_the_new_params_passes_the_door;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
 pub mod gh_d38_k7_a_simple_turn_that_needs_memory_leaves_on_brain;
 pub mod gh_d38_k7_knob_off_is_byte_identical;
 pub mod gh_d38_pins_a_recall_keeps_its_quote_when_the_guard_cuts_the_source;
@@ -52,8 +49,20 @@ pub mod gh_d38_z3_the_brief_carries_the_four_line_kinds;
 pub mod gh_d38_z3_the_brief_off_is_byte_identical;
 pub mod gh_d38_z3_the_handover_sets_the_brief_in_verbatim;
 pub mod gh_d38_z3_the_summary_is_itemised_and_attributed;
-pub mod gh_d58_f1_a_mark_keeps_the_class_only_with_fact_mark_kind_on;
-pub mod gh_d58_f1_the_wellbeing_line_keys_on_the_class_not_the_predicate;
-pub mod gh_d58_rv5_a_recall_of_an_answer_with_a_sidecar_is_sent_once;
+pub mod gh_d58_bankfix_a_result_failed_by_its_header_code_is_never_shrunk;
+pub mod gh_d58_bankfix_a_result_filed_before_the_field_reads_as_today;
+pub mod gh_d58_bankfix_an_error_by_its_text_alone_still_stays;
+pub mod gh_d58_cold_a_cold_collection_books_no_cost;
+pub mod gh_d58_cold_a_collection_that_finds_nothing_still_stamps_its_round;
+pub mod gh_d58_cold_a_set_override_of_gc_on_cold_passes_the_door;
+pub mod gh_d58_cold_an_expired_cache_collects_under_the_aim;
+pub mod gh_d58_cold_an_open_tool_round_is_never_collected;
+pub mod gh_d58_cold_each_trigger_names_its_aim;
+pub mod gh_d58_cold_no_summary_under_the_aim;
+pub mod gh_d58_cold_nothing_to_collect_leaves_the_window_and_no_mark;
+pub mod gh_d58_cold_off_is_byte_identical;
+pub mod gh_d58_cold_over_the_cold_aim_the_summarizer_runs_and_lands_there;
+pub mod gh_d58_cold_the_cold_aim_is_its_own_value;
+pub mod gh_d58_cold_the_collection_is_the_same_for_every_role;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;

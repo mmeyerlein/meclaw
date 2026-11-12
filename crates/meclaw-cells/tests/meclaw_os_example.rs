@@ -109,11 +109,13 @@ const GROWN_FROM_COGNY: [(&str, &str); 1] = [("cogny", "templates/cogny")];
 /// the registry resolves the rest. The `summarizer` left the set with
 /// `talky@4.3.0` (GH #447). GH #889: the fourth is `curator`, the hive that
 /// stands between the collector and the brain in `talky` and in `cogny` alike.
-const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
+/// GH #1474: the fifth is `lead`, the hive `talky` wires beside its curator.
+const REFERENCED_SUB_UNITS: [(&str, &str); 5] = [
     ("collector", "templates/collector"),
     ("session-keeper", "templates/session-keeper"),
     ("dispatcher", "templates/dispatcher"),
     ("curator", "templates/curator"),
+    ("lead", "templates/lead"),
 ];
 
 /// One cell from `door@1`, FOUR from `firewall@2` (the third is the transfer
@@ -144,7 +146,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
 /// #1398: the quick voice's siblings (`quick_spec`, `quick_bridge`) --
 /// forty-three. MEASURED (43 against 41 in the strand's gate).
 /// GH #1447: the curator's lead and its store (`lead`, `lead_state`) --
-/// forty-five. MEASURED (45 against 43 in the strand's gate).
+/// forty-five. MEASURED (45 against 43 in the strand's gate). GH #1474 moves
+/// the two into a hive of their own beside the curator (`lead`, `state`):
+/// still forty-five.
 const CELLS_AFTER_GROW: usize = 45;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
@@ -183,7 +187,11 @@ const CELLS_AFTER_GROW: usize = 45;
 /// GH #1447: the curator's lead and its store, in talky's curator and in
 /// cogny's -- sixty-six. Measured in the strand's test run (67 with the probe,
 /// against 63).
-const CELLS_AFTER_COGNY: usize = 66;
+/// GH #1474: the lead leaves the curator for a hive of its own that only
+/// talky wires; cogny runs without one and loses its two (`lead`,
+/// `lead_state`) -- sixty-four. Measured in the strand's test run (65 with
+/// the probe, against 67).
+const CELLS_AFTER_COGNY: usize = 64;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));

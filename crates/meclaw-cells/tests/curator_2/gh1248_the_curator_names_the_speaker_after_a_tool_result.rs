@@ -11,6 +11,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -47,7 +50,7 @@ fn the_curator_names_the_speaker_after_a_tool_result() {
         json!(2),
         "the quick voice speaks at most two iterations"
     );
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
 
     // A speakable result: the quick voice speaks it.
     seam(

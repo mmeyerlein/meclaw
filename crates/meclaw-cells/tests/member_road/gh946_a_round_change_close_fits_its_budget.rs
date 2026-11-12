@@ -484,7 +484,13 @@ async fn a_round_change_close_fits_its_budget() {
 
     // (c) each turn reached the brain once; the close never did.
     let brain_path = format!("{door}/brain");
-    let at_brain: Vec<&Delivery> = log.iter().filter(|d| d.to == brain_path).collect();
+    // D58 target (OR-d58-2.target.15): the curator's ask for the profiles
+    // (`catalog_ask`, an empty params slot) reaches the brain beside the first
+    // call; it is no model call. Counted are the calls (`model_call`).
+    let at_brain: Vec<&Delivery> = log
+        .iter()
+        .filter(|d| d.to == brain_path && d.route == "model_call")
+        .collect();
     assert_eq!(
         (at_brain.len(), brain_calls),
         (2, 2),

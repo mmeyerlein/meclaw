@@ -29,7 +29,35 @@
     ],
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
-    "package_line": true
+    "package_line": true,
+    "window_profile": {
+      "window": "wall",
+      "system": "delta",
+      "tools": "all",
+      "must_call": false,
+      "speaks": true,
+      "frame": false,
+      "closes_turn": true,
+      "recall": true,
+      "compress_at": 0.5,
+      "rebuild_to": 0.45,
+      "keep_recent": 40,
+      "keep_recent_tokens": 80000,
+      "horizon": "day",
+      "tiers": "raw,summary,none",
+      "keep_rounds": 1,
+      "gc": "1",
+      "gc_scaffold": "1",
+      "stub_tools_after": 20,
+      "broadcast_mode": "tail",
+      "recall_push": "1",
+      "recall_budget": 200,
+      "short_ids": "1",
+      "identity_budget": "full",
+      "window_target": 100000,
+      "notes_share": 0.02,
+      "state_lines": 8
+    }
   },
   "contract": {
     "version": "1.0.0",
@@ -81,6 +109,12 @@
         "secret": false,
         "default": "openai/gpt-6-luna",
         "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
+      },
+      "window_profile": {
+        "type": "object",
+        "secret": false,
+        "default": {},
+        "description": "D58 target (GH #1483): what this composite uses the cell's model for, as its curator cuts the windows of this cell by it -- an uninterpreted JSON object the cell only reports, in the slot `window_profile` of its package line, beside `package` and `system_order`. Shipped empty (no profile: the curator cuts with its instance knobs). A set or reset of it by a params-only message announces the line again. The fields are the curator's (templates/curator/README.md)."
       }
     },
     "emits": {
@@ -95,6 +129,14 @@
         },
         "package": {
           "type": "object",
+          "required": false
+        },
+        "window_profile": {
+          "type": "object",
+          "required": false
+        },
+        "system_order": {
+          "type": "array",
           "required": false
         }
       },

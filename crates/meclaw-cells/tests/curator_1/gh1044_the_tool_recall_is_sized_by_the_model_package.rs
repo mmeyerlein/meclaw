@@ -28,6 +28,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::cel_eval::{
@@ -90,7 +93,7 @@ fn cross(template: &str, from: &str, to: &str, h: &Headers) -> Headers {
 /// The model call the curator of `role` builds for a turn, after the model
 /// answered the turn before with `usage` (`None`: no answer yet).
 fn brain_call(role: &str, usage: Option<Value>) -> Msg {
-    let mut h = Hive::with(&[("policy", "role", json!(role))]);
+    let mut h = Hive::with(&[]).reporting(curator_profiles::profile(role));
     if let Some(usage) = usage {
         let call = h.curate("s1", "t1", 0, json!([user("Who is my son?")]), mode(""));
         h.tap(&call, "stop", usage, json!([said("noted")]));
@@ -296,7 +299,7 @@ fn ask(h: &mut Hive, turn: &str, text: &str) -> Vec<Msg> {
 
 #[test]
 fn an_ask_handed_on_untouched_carries_the_package_too() {
-    let mut h = Hive::with(&[("policy", "role", json!("consult"))]);
+    let mut h = Hive::with(&[]).reporting(curator_profiles::profile("consult"));
     let first = ask(&mut h, "t1", "Who is my son?");
     assert_eq!(first.len(), 1, "{:?}", h.stderr);
     assert_eq!(first[0].hop["recall_input_soft"], "", "no answer yet");

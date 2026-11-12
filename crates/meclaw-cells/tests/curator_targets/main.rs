@@ -1,0 +1,34 @@
+//! Test harness `curator_targets` of `meclaw-cells`: one binary, one module per old file.
+//! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
+
+#[path = "../support/curator_hive.rs"]
+pub mod curator_hive;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
+#[path = "../support/curator_target.rs"]
+pub mod curator_target;
+pub mod d58_target_intake_and_push_take_their_names_from_the_instance;
+pub mod d58_target_the_compositions_deliver_by_target;
+pub mod gh_d58_target_a_bare_curator_runs_as_before;
+pub mod gh_d58_target_a_bridge_needs_a_side_target;
+pub mod gh_d58_target_a_changed_profile_cuts_the_next_window;
+pub mod gh_d58_target_a_curate_is_cut_for_the_target_it_names;
+pub mod gh_d58_target_a_curate_without_a_target_is_marked;
+pub mod gh_d58_target_a_failed_call_goes_to_the_fallback_the_verdict_named;
+pub mod gh_d58_target_a_full_tree_call_clears_every_delta_target;
+pub mod gh_d58_target_a_profile_recall_budget_grows_with_the_model_window;
+pub mod gh_d58_target_a_profile_value_wins_and_the_instance_knob_fills_the_gap;
+pub mod gh_d58_target_a_rebuild_counts_with_the_target_that_ordered_it;
+pub mod gh_d58_target_a_reported_row_beats_the_fallback_knobs;
+pub mod gh_d58_target_an_unheard_target_is_asked_beside_its_call_and_marked;
+pub mod gh_d58_target_each_field_of_the_profile_shapes_the_window;
+pub mod gh_d58_target_mutant_a_cell_name_in_a_curator_script_trips_the_lock;
+pub mod gh_d58_target_tap_and_rebuild_take_the_wall_values_of_the_tree_holding_target;
+pub mod gh_d58_target_the_curator_holds_no_list_of_targets_and_no_role;
+pub mod gh_d58_target_the_curator_names_no_cell_of_a_composition;
+pub mod gh_d58_target_the_moved_value_sets_cut_the_same_windows;
+pub mod gh_d58_target_the_snapshot_lists_the_system_part_in_the_order_the_cell_reports;
+pub mod gh_d58_target_the_verdict_names_target_fallback_and_departure;
+pub mod gh_d58_target_the_window_leaves_under_its_target;
+pub mod gh_d58_target_two_targets_never_share_a_window_bound;
+pub mod gh_d58_target_without_one_tree_holding_target_the_instance_knobs_rule_the_wall;

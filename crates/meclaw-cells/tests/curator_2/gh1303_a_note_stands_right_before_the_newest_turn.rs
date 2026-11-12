@@ -27,6 +27,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::cel_eval::{evaluate_condition, parse_condition};
@@ -37,7 +40,7 @@ const HEAD_PROBE: &str =
 
 /// A talky curator: the role whose preset gives notes their share.
 fn talky() -> Hive {
-    Hive::with(&[("policy", "role", json!("talky"))])
+    Hive::with(&[]).reporting_composite("talky")
 }
 
 fn note_door(h: &mut Hive, context: Value, notes: Value) {
@@ -343,10 +346,8 @@ fn gh1303_notes_share_drops_lowest_priority_first() {
     }
     // 100000 tokens x 0.0006 x 3 characters = 180 characters for the block:
     // the head and two lines of 40, not three.
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "notes_share", json!("0.0006")),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "notes_share", json!("0.0006"))]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "a", "b", json!({"input_soft": 100000}));
     let line = |c: char| c.to_string().repeat(40);
     note_door(

@@ -265,7 +265,14 @@ fn gh1401_talky_hands_the_call_end_to_the_keeper_and_the_curator() {
     let mut to: Vec<String> = decide(&t, "/t", &ctx, &hop)
         .into_iter()
         .map(|d| {
-            assert_eq!(d.1.hop["route"], "in_call_end", "unchanged: {:?}", d.1.hop);
+            // D58 live (GH #1482): the keeper keeps its lane's name, the
+            // curator hears the end of a session on its own `in_live_end`.
+            let lane = if d.0 == "/t/curator" {
+                "in_live_end"
+            } else {
+                "in_call_end"
+            };
+            assert_eq!(d.1.hop["route"], lane, "{}: {:?}", d.0, d.1.hop);
             assert_eq!(d.1.context["channel_node"], PHONE, "the node travels");
             d.0
         })

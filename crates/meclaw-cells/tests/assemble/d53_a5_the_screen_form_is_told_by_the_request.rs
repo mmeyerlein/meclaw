@@ -26,14 +26,15 @@ const INSTRUCTIONS: &str = "You decide at once how the screen beside a spoken an
 
 fn judged_turns() -> Value {
     let mut doc = lane(
-        "in_turns",
+        "in_view",
         json!({"state": "What is on tomorrow?", "asked_at": "1800000000000"}),
         json!({"turn_id": "c-1", "channel": "tg:1", "audience_set": "[\"m-1\"]"}),
         json!([]),
     );
-    doc["turns"] = json!([]);
-    doc["judge"] = json!({"screen": {"topics": [
-        {"name": "calendar", "purpose": "the person's appointments"}], "state": []}});
+    // D58 GH #1480: the curator's view for talky's target `decide`, the
+    // screen topics as the leaf of the source `presenter`.
+    doc["system"] = json!({"decide": {"presenter": {"text": json!([
+        {"name": "calendar", "purpose": "the person's appointments"}]).to_string()}}});
     doc
 }
 

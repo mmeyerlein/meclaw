@@ -536,9 +536,8 @@ async fn a_successful_run_closes_the_tombstone_and_reports_the_outcome() {
                          "num_turns": 2, "total_cost_usd": 0.5, "result": "created it"}),
     ))
     .await;
-    r.event(HarnessEvent::Child(ChildEvent::Exited(ChildExit::Code(0))))
-        .await;
 
+    // D57 V7: the task ends at its `result` frame, not at the child's exit.
     let em = r.emission();
     assert_eq!(em["header"]["harness_event"], "result");
     assert_eq!(em["header"]["status"], "ok");
@@ -546,6 +545,12 @@ async fn a_successful_run_closes_the_tombstone_and_reports_the_outcome() {
     assert_eq!(em["header"]["cost_usd"], 0.5);
     assert_eq!(em["header"]["model"], "m-1");
     assert_eq!(em["header"]["session_id"], "s-9");
+    assert_eq!(r.probe_status("t-1").as_deref(), Some("ok"));
+
+    // The exit that follows is the closed child's, and silent.
+    r.event(HarnessEvent::Child(ChildEvent::Exited(ChildExit::Code(0))))
+        .await;
+    assert!(r.origin_rx.try_recv().is_err(), "the exit adds nothing");
     assert_eq!(r.probe_status("t-1").as_deref(), Some("ok"));
 }
 

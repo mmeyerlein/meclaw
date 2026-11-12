@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -31,10 +34,14 @@ fn abs(rel: &str) -> String {
 
 fn hive() -> Hive {
     Hive::with(&[
-        ("intake", "pass_sections", json!("memory")),
-        ("policy", "role", json!("talky")),
+        (
+            "intake",
+            "sections",
+            json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+        ),
         ("policy", "state_block", json!("1")),
     ])
+    .reporting_composite("talky")
 }
 
 fn fact(claim: &str, quote: &str) -> Value {

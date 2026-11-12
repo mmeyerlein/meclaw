@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -35,10 +38,10 @@ fn package() -> Value {
 fn sent(knob: &str) -> (String, Vec<Value>) {
     clear_of_midnight();
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent", json!(2)),
         ("policy", "recall_in_wall", json!(knob)),
-    ]);
+    ])
+    .reporting_composite("talky");
     let base = backdated(50);
     h.row(base, "s", "r_said", "user", &user(SAID), 0);
     h.row(

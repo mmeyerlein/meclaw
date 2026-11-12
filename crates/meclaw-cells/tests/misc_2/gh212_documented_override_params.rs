@@ -304,12 +304,19 @@ fn findings(docs: &[(String, String)], resolved: &mut usize) -> Vec<String> {
     let mut out = Vec::new();
     for (file, text) in docs {
         for r in recipes_in(file, text) {
-            // `name` or `name@version` — the version picks a registry entry, not
-            // a different directory, and a ref naming nothing the tree carries
-            // is skipped rather than judged (the same conservatism the boundary
-            // itself follows).
+            // `name` or `name@version` — the reference resolves through the
+            // registry, as the colony resolves it: a pinned version is the
+            // directory of that entry, a frozen copy `templates/<name>@<x.y.z>/`
+            // included (GH #1473: `simple-agent@1.1.4` pins `curator@1.25.0`,
+            // which ships frozen beside the living `curator` 2.0.0, and its
+            // recipe is judged against the copy it pins). A ref naming nothing
+            // the tree carries is skipped rather than judged (the same
+            // conservatism the boundary itself follows).
             let name = r.template_ref.split('@').next().unwrap_or_default();
-            let dir = templates.join(name);
+            let dir = registry
+                .resolve(&r.template_ref)
+                .map(|e| e.filesystem_path.clone())
+                .unwrap_or_else(|_| templates.join(name));
             if !dir.join("config.json").is_file() {
                 continue;
             }

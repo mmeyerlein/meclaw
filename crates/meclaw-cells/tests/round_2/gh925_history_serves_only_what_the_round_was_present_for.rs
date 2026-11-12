@@ -80,6 +80,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/composite_packages.rs"]
+#[allow(unused_imports)]
+use crate::composite_packages; // harness_fold: mod composite_packages;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -1692,6 +1695,9 @@ async fn a_pin_reaches_only_the_rounds_its_audience_holds() {
     );
     let (h, mut ports) = boot(&td).await;
     await_menu(&h, &root, "talky").await;
+    // OR-d58-2.target.69: the registry's push after the birth -- every
+    // model cell reports its package before the first turn.
+    composite_packages::report_packages(&h, &root.join("main"), "/talky").await;
     let db = ledger_db(&root, "talky");
 
     // The pin first, and the sessions only once it stands in the ledger: a

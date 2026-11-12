@@ -1,17 +1,23 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.24.1"
+    "template": "curator@2.0.0"
   },
   "override_params": {
     "writer": {
       "turn_write": "0"
     },
     "intake": {
-      "nothing_block": "{\"memory\":{\"nothing_new\":true,\"facts\":[],\"topic\":{\"movement\":\"continue\"}}}"
-    },
-    "policy": {
-      "role": "consult"
+      "nothing_block": "{\"memory\":{\"nothing_new\":true,\"facts\":[],\"topic\":{\"movement\":\"continue\"}}}",
+      "sections": {
+        "memory": {
+          "mark": "topic"
+        },
+        "things": {
+          "lane": "thing_seen",
+          "cap_share": 0.1
+        }
+      }
     }
   }
 }

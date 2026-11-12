@@ -226,12 +226,7 @@ fn make_build(
         let overlay = crate::params_overlay::restore::<HarnessOverlay>(&conn, &birth_cap)
             .expect("restore harness overlay");
         let mut params = HarnessParams::parse(&birth_cap).expect("validated in plan-phase");
-        params.model = overlay.model;
-        params.max_turns = overlay.max_turns;
-        params.max_budget_usd = overlay.max_budget_usd;
-        params.startup_timeout_ms = overlay.startup_timeout_ms;
-        params.external_timeout_ms = overlay.external_timeout_ms;
-        params.query_timeout_ms = overlay.query_timeout_ms;
+        overlay.apply_to(&mut params);
 
         let query_timeout = Duration::from_millis(params.query_timeout_ms);
         let cell = HarnessCell::new(params);

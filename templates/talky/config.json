@@ -37,7 +37,7 @@
         },
         {
           "route": "in_renewed",
-          "because": "a duplex voice session of a running call was renewed at its provider's limit (GH #896): `hop.call_id`, `hop.renewal_n`. It goes to `./curator` and nowhere else -- no round, no brain call: the curator puts the running conversation together without a model and the answer leaves as ONE `sidecar` section `context` carrying `hop.renewal_n`, on the edge every curator section leaves by, with `context.call_id` so the channel's `in_advise` finds the call"
+          "because": "a duplex voice session of a running call was renewed at its provider's limit (GH #896): `hop.call_id`, `hop.engine`, `hop.renewal_n`; the edge to `./curator` sets the curator's handle `context.live` from `hop.call_id` when `hop.engine` is \"duplex\" (D58 live). It goes to `./curator` and nowhere else -- no round, no brain call: the curator puts the running conversation together without a model and the answer leaves as ONE `sidecar` section `context` carrying `hop.renewal_n`, on the edge every curator section leaves by, with `context.live`; the member gives the channel's `in_advise` its `context.call_id` back from it"
         },
         {
           "route": "in_bundle",
@@ -64,24 +64,28 @@
           "because": "notes of another hive for this brain's window (GH #1303): `{notes: [{id, source, text, scope, until?, priority?}]}`, handed unchanged to `./curator` on its own `in_note` door, which keeps them in its ledger and shows the live ones as one block opening the newest message of the person (`templates/curator/README.md`). `context.audience_set` travels with it untouched. Nothing answers it"
         },
         {
-          "route": "in_delta",
-          "because": "GH #1279: a partial of a voice call (the voice channel's lane `partial`), the cumulative text so far as the turn's `messages`, `hop.turn_id` = `<session_id>#<n>` (the voice cell's id of the turn the partial belongs to). It goes to `./route` as `in_turn` with `context.delta` \"1\" and `context.turn_id` = `hop.turn_id`: the wall is read as for a turn (the curator answers a delta from the round's newest rows, a partial has no generation yet; #1369), then one decide call, and the stamp goes to `./curator` as `in_delta_stamp` with `text_norm` -- never to the collector and never out of this rim. Nothing answers it; whether the curator uses it is its knob `delta_speculation` (off as shipped)"
+          "route": "in_feed",
+          "because": "D58 feed (GH #1481): an order of another hive that something goes into this agent's running session now, without waiting for a turn's end -- head `live` (the curator's handle of the session), `session_id`, `turn_id`, `section` (the orderer's name; what the voice takes is its own matter and the parent's edge), `sender`, optionally `once` and `at_turn_end`; body as the feed's body, `mark` for the mark `feed`. Handed unchanged to `./curator` on its own `in_feed` door (its `policy.feed_in` \"1\" here), which sends it at once as ONE `live_feed` on the edge every live feed leaves by, or books it with a reason (`templates/curator/README.md`, \"A feed on order\"). `context.audience_set` travels with it untouched. Nothing answers it"
         },
         {
-          "route": "in_screen_topics",
-          "because": "GH #1279: the screen's topics, `{topics: [{name, purpose, candidates?: [{key, describe}]}]}`, as the presenter sends them on `screen_topics` (on a table change and at boot). Handed unchanged to `./curator` on its own `in_screen_topics` door, which keeps the list and puts it into the judge context; `./route` asks the screen question over it (`judge_context`). No static topic list in this template. Nothing answers it"
+          "route": "in_delta",
+          "because": "GH #1279: a partial of a voice call (the voice channel's lane `partial`), the cumulative text so far as the turn's `messages`, `hop.turn_id` = `<session_id>#<n>` (the voice cell's id of the turn the partial belongs to). It goes to `./route` as `in_turn` with `context.delta` \"1\", `context.turn_id` = `hop.turn_id` and the curator's handle `context.live` = `hop.call_id` when `hop.engine` is \"duplex\", else empty (D58 live: the early interrupt of the delta stamp reads it): the wall is read as for a turn (the curator answers a delta from the round's newest rows, a partial has no generation yet; #1369), then one decide call, and the stamp goes to `./curator` as `in_delta_stamp` with `text_norm` -- never to the collector and never out of this rim. Nothing answers it; whether the curator uses it is its knob `delta_speculation` (off as shipped)"
+        },
+        {
+          "route": "in_part",
+          "because": "GH #1279, D58 judge (GH #1480): a contribution to the section of a target, `{target, source, value, subject?, until?}` -- today the presenter's topic table (`part`, source `presenter`, value `[{name, purpose, candidates?: [{key, describe}]}]`, on a table change and at boot; formerly `in_screen_topics` `{topics}`). Handed unchanged to `./curator` on its own `in_part` door, which keeps it unread and hands it to every view of its target as the leaf of its source; `./route` asks the screen question over the leaf `presenter` of its view (`judge_context`). No static topic list in this template. Nothing answers it"
         },
         {
           "route": "in_seed_ask",
-          "because": "GH #1279: the voice channel asks for the seed of a live session -- `hop.call_id`, `hop.session_id`, `hop.reason`, `hop.renewal_n`. The edge that draws it MUST promote `context.audience_set` and `context.call_id`. Handed unchanged to `./curator` on its own door, which answers it with exactly one `seed`"
+          "because": "GH #1279: the voice channel asks for the seed of a live session -- `hop.call_id`, `hop.engine`, `hop.session_id`, `hop.reason`, `hop.renewal_n`. The edge that draws it MUST promote `context.audience_set`. Handed to `./curator` on its own door with the curator's handle `context.live` = `hop.call_id` when `hop.engine` is \"duplex\", else empty (D58 live); the curator answers it with exactly one `seed`"
         },
         {
           "route": "in_call_end",
-          "because": "live-2 (#1369): the end of a voice call -- the set draws the voice cell's final `usage` (`final` true) here, `hop.call_id`, `hop.session_id`. The edge that draws it MUST promote `context.audience_set` and `context.call_id`. Handed unchanged to `./curator` on its own door, which answers it with exactly one `call_facts`"
+          "because": "live-2 (#1369): the end of a voice call -- the set draws the voice cell's final `usage` (`final` true) here, `hop.call_id`, `hop.engine`, `hop.session_id`. The edge that draws it MUST promote `context.audience_set`. Handed to `./curator` as its lane `in_live_end` with the handle `context.live` (as on `in_seed_ask`, D58 live), which answers it with exactly one `live_facts`; `./session-keeper` hears it under its own name `in_call_end`"
         },
         {
           "route": "in_seed_line",
-          "because": "GH #1279: one line for the next seed of a session, `{session_id|call_id, kind: wind_down|hint, text}`. Handed unchanged to `./curator`, which holds it per call and kind (a new one replaces only its own kind) and puts every held line as the LAST lines of the next `seed` of that call (`hint` before `wind_down`), then drops them. Nothing answers it"
+          "because": "GH #1279: one line of the start window, `{live|session_id, position: head|tail, order?, lasts: session|always, text}` (D58 judge, GH #1480: a line without a kind, the sender names its place and its lifetime). Handed unchanged to `./curator`, which holds it per place (position, order and, for a `session` line, the session; a new one replaces only the line in its place) and puts every held line into the next `seed`: `head` lines right after the facts line, `tail` lines at the end, each part by `order`; a `session` line is dropped once a seed carried it, an `always` line stands in every seed. Nothing answers it"
         },
         {
           "route": "in_candidate",
@@ -174,15 +178,15 @@
         },
         {
           "route": "seed",
-          "because": "GH #1279: the answer to one `in_seed_ask` -- `{messages: [{role, text}], est_tokens, judge}` with `hop.renewal_n` back and `context.call_id` kept, or `messages: []` with `hop.refused` `no_round`. The set draws it to the voice channel's `in_seed`"
+          "because": "GH #1279: the answer to one `in_seed_ask` -- `{messages: [{role, text}], est_tokens, judge}` with `hop.renewal_n` back and `context.call_id` set from the curator's handle `live` (D58 live), or `messages: []` with `hop.refused` `no_live`/`no_round`. The set draws it to the voice channel's `in_seed`"
         },
         {
-          "route": "call_facts",
-          "because": "live-2 (#1369): the answer to one `in_call_end` -- `{messages: [], call_id, session_id, seed_used, facts: [{source, id, text}], delegations: [{turn_id, text}]}` with `hop.call_id` and `hop.session_id` back and `context.call_id` kept, or `seed_used` false and empty lists with `hop.refused` `no_round`/`no_call` or `hop.degraded` `store`. The set draws it to whoever reads what a call carried"
+          "route": "live_facts",
+          "because": "live-2 (#1369): the answer to one `in_call_end` -- `{messages: [], live, session_id, seed_used, facts: [{source, id, text}], delegations: [{turn_id, text}]}` with `hop.live` and `hop.session_id` back and `context.call_id` set from the handle (D58 live: the curator's name of the lane, which talky passes on), or `seed_used` false and empty lists with `hop.refused` `no_round`/`no_live` or `hop.degraded` `store`. The set draws it to whoever reads what a call carried"
         },
         {
           "route": "live_feed",
-          "because": "GH #1279: the curator's feed of a duplex session after a closed turn, when the facts the next seed carries moved: `hop.section` = its knob `live_feed_section` (`renew` with `hop.at_turn_end` \"1\", the voice cell's next turn boundary), `context.call_id` kept; only with its knob `live_feed` on. The set draws it to the voice channel's `in_advise`"
+          "because": "GH #1279: the curator's feed of a duplex session after a closed turn, when the facts the next seed carries moved: `hop.section` = its knob `live_feed_section` (`renew` with `hop.at_turn_end` \"1\", the voice cell's next turn boundary), `context.call_id` set from the curator's handle `live`; only with its knob `live_feed` on. The set draws it to the voice channel's `in_advise`"
         },
         {
           "route": "propose",
@@ -251,7 +255,7 @@
         },
         {
           "route": "thing_seen",
-          "because": "the things the model named in the section `things` of an answer (GH #949): `{items: [{name, kind?, note?}], turn_id, episode_turn_id?, session_id}`, checked by `./curator` and raised only when its `things_section` is \"1\" and the turn carries a round, which rides along in `context.audience_set`. The section itself never leaves on `sidecar`: the splitter hands `things` to the curator like `window`, `gap` and `memory`, so one answer yields one `thing_seen` and no copy of it"
+          "because": "the things the model named in the section `things` of an answer (GH #949), which the objects hive offers and checks: `./curator` hands the section on as this composition registered it (`sections`, lane `thing_seen`, `cap_share` 0.1, GH #1473) -- the splitter's `{messages: [], section, payload: {items: [{name, kind?, note?}]}}`, `hop.turn_id` the turn it answered, the round in `context.audience_set`. The section itself never leaves on `sidecar`: the splitter hands `things` to the curator like `window`, `gap` and `memory`, so one answer yields one `thing_seen` and no copy of it"
         },
         {
           "route": "candidate_ack",
@@ -260,6 +264,10 @@
         {
           "route": "read",
           "because": "the curator's answer to one `in_read`, unchanged: `{messages: [], rows, next, truncated}` with `hop.read_tag` and `hop.read_what` echoed, `hop.error_code` (empty, `missing_audience`, `invalid_input`, `store_error`) and `hop.detail` (`templates/curator/README.md`). One answer per question; the asker matches it by its tag, and the corridor back to it is the asker's own edge, drawn at this rim (`install_app` `reads`)"
+        },
+        {
+          "route": "note_receipt",
+          "because": "D58 note (GH #1477): the answer of its curator to the sender of a shown `once` note that carried a `receipt` (`note_once` \"1\"), handed out unchanged -- every field in the head: `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`. Where it goes from here is wired by whoever sends the notes"
         }
       ]
     },
@@ -426,7 +434,8 @@
           "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 12",
           "modifier": {
             "set_hop": {
-              "route": "'in_curate'"
+              "route": "'in_curate'",
+              "target": "'brain'"
             },
             "restore_ttl": true,
             "set_context": {
@@ -440,7 +449,7 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && (!has(hop.target) || hop.target == 'brain') && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -453,7 +462,9 @@
               "spec": "has(hop.spec) ? hop.spec : ''",
               "summarize": "has(hop.summarize) ? hop.summarize : ''",
               "summary_call": "has(hop.summary_call) ? hop.summary_call : ''",
-              "summary_token": "has(hop.summary_token) ? hop.summary_token : ''"
+              "summary_token": "has(hop.summary_token) ? hop.summary_token : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -461,7 +472,7 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && (!has(hop.target) || hop.target == 'brain') && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
           "modifier": {
             "set_hop": {
               "silence_ok": "'1'"
@@ -477,7 +488,9 @@
               "spec": "has(hop.spec) ? hop.spec : ''",
               "summarize": "has(hop.summarize) ? hop.summarize : ''",
               "summary_call": "has(hop.summary_call) ? hop.summary_call : ''",
-              "summary_token": "has(hop.summary_token) ? hop.summary_token : ''"
+              "summary_token": "has(hop.summary_token) ? hop.summary_token : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -485,7 +498,7 @@
         {
           "from": "./curator",
           "to": "./quick",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '') && !(has(hop.spec) && (hop.spec == '1' || hop.spec == 'bridge'))",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -494,8 +507,10 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -503,7 +518,7 @@
         {
           "from": "./curator",
           "to": "./quick",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != '' && !(has(hop.spec) && (hop.spec == '1' || hop.spec == 'bridge'))",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
           "modifier": {
             "set_hop": {
               "silence_ok": "'1'"
@@ -515,8 +530,10 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -524,7 +541,7 @@
         {
           "from": "./curator",
           "to": "./quick_spec",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '') && has(hop.spec) && hop.spec == '1'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'quick_spec' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -533,8 +550,10 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -542,7 +561,7 @@
         {
           "from": "./curator",
           "to": "./quick_spec",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != '' && has(hop.spec) && hop.spec == '1'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'quick_spec' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
           "modifier": {
             "set_hop": {
               "silence_ok": "'1'"
@@ -554,8 +573,10 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -563,7 +584,7 @@
         {
           "from": "./curator",
           "to": "./quick_bridge",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '') && has(hop.spec) && hop.spec == 'bridge' && has(hop.curator_call) && hop.curator_call.endsWith('-bridge')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'quick_bridge' && has(hop.iter) && int(hop.iter) < 12 && !(has(context.inner_source) && context.inner_source != '')",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
@@ -572,8 +593,10 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -581,7 +604,7 @@
         {
           "from": "./curator",
           "to": "./quick_bridge",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'quick' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != '' && has(hop.spec) && hop.spec == 'bridge' && has(hop.curator_call) && hop.curator_call.endsWith('-bridge')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'quick_bridge' && has(hop.iter) && int(hop.iter) < 12 && has(context.inner_source) && context.inner_source != ''",
           "modifier": {
             "set_hop": {
               "silence_ok": "'1'"
@@ -593,8 +616,10 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
-              "interim": "has(hop.interim) ? hop.interim : ''",
-              "spec": "has(hop.spec) ? hop.spec : ''"
+              "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
+              "spec": "has(hop.spec) ? hop.spec : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -602,7 +627,7 @@
         {
           "from": "./curator",
           "to": ".",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'consult' || hop.route == 'research')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'errand'",
           "modifier": {
             "set_hop": {
               "route": "'consult'"
@@ -610,6 +635,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -631,11 +658,39 @@
         {
           "from": "./curator",
           "to": "./collector",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'consult' || hop.route == 'research')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'errand'",
           "modifier": {
             "set_hop": {
               "route": "'in_depart'"
             }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./lead",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && (hop.route == 'lead_ask' || hop.route == 'lead_spec' || hop.route == 'lead_note')"
+        },
+        {
+          "from": "./lead",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'lead_verdict'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_lead'"
+            },
+            "delete_context": [
+              "cur_origin"
+            ]
+          }
+        },
+        {
+          "from": "./lead",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_feed'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin"
+            ]
           }
         },
         {
@@ -697,6 +752,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -727,6 +784,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -757,6 +816,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -788,7 +849,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "interim": "''",
-              "spec": "''"
+              "spec": "''",
+              "call_kind": "''"
             },
             "delete_hop": [
               "route"
@@ -927,6 +989,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -954,6 +1018,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1016,12 +1082,12 @@
         {
           "from": "./quick",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge')) && !(has(context.spec) && context.spec == '1')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side')) && !(has(context.spec) && context.spec == '1')"
         },
         {
           "from": "./quick_bridge",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge'))"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side'))"
         },
         {
           "from": "./brain",
@@ -1034,6 +1100,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1064,6 +1132,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1094,6 +1164,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1124,6 +1196,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1181,6 +1255,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1208,6 +1284,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1240,6 +1318,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1267,6 +1347,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1314,6 +1396,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "gap_ask",
               "recall_input_soft",
               "interim",
@@ -1347,6 +1431,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1373,6 +1459,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1400,6 +1488,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1427,6 +1517,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "gap_ask",
               "recall_input_soft",
               "interim",
@@ -1455,6 +1547,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1485,6 +1579,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1512,6 +1608,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1546,6 +1644,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "path",
@@ -1571,6 +1671,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1608,6 +1710,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1635,6 +1739,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1662,6 +1768,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1712,7 +1820,7 @@
           "condition": "has(hop.route) && hop.route == 'in_renewed'",
           "modifier": {
             "set_context": {
-              "call_id": "has(hop.call_id) ? hop.call_id : ''"
+              "live": "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
             }
           }
         },
@@ -1729,6 +1837,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1756,6 +1866,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1783,6 +1895,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1905,6 +2019,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1935,6 +2051,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -1977,10 +2095,10 @@
         {
           "from": "./route",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'turns_ask'",
+          "condition": "has(hop.route) && hop.route == 'view_ask'",
           "modifier": {
             "set_hop": {
-              "route": "'in_turns_ask'"
+              "route": "'in_view_ask'"
             },
             "set_context": {
               "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
@@ -1991,10 +2109,10 @@
         {
           "from": "./curator",
           "to": "./route",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turns' && !(has(context.judge_for) && context.judge_for == 'screen_judge')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'view' && !(has(context.judge_for) && context.judge_for == 'screen_judge')",
           "modifier": {
             "set_hop": {
-              "route": "'in_turns'",
+              "route": "'in_view'",
               "state": "has(context.route_state) ? context.route_state : ''",
               "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''"
             },
@@ -2007,10 +2125,10 @@
         {
           "from": "./screen_judge",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'turns_ask'",
+          "condition": "has(hop.route) && hop.route == 'view_ask'",
           "modifier": {
             "set_hop": {
-              "route": "'in_turns_ask'"
+              "route": "'in_view_ask'"
             },
             "set_context": {
               "judge_for": "'screen_judge'",
@@ -2021,10 +2139,10 @@
         {
           "from": "./curator",
           "to": "./screen_judge",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'turns' && has(context.judge_for) && context.judge_for == 'screen_judge'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'view' && has(context.judge_for) && context.judge_for == 'screen_judge'",
           "modifier": {
             "set_hop": {
-              "route": "'in_turns'",
+              "route": "'in_view'",
               "state": "has(context.route_state) ? context.route_state : ''"
             },
             "delete_context": [
@@ -2062,6 +2180,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2092,6 +2212,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2119,6 +2241,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2148,24 +2272,38 @@
             },
             "set_context": {
               "delta": "'1'",
-              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"
+              "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
+              "live": "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
             }
           }
         },
         {
           "from": ".",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'in_screen_topics'"
+          "condition": "has(hop.route) && hop.route == 'in_part'"
         },
         {
           "from": ".",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'in_seed_ask'"
+          "condition": "has(hop.route) && hop.route == 'in_seed_ask'",
+          "modifier": {
+            "set_context": {
+              "live": "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
+            }
+          }
         },
         {
           "from": ".",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'in_call_end'"
+          "condition": "has(hop.route) && hop.route == 'in_call_end'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_live_end'"
+            },
+            "set_context": {
+              "live": "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
+            }
+          }
         },
         {
           "from": ".",
@@ -2182,9 +2320,14 @@
           "to": ".",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'seed'",
           "modifier": {
+            "set_context": {
+              "call_id": "has(hop.live) && hop.live != '' ? hop.live : (has(context.live) && context.live != '' ? context.live : (has(context.call_id) ? context.call_id : ''))"
+            },
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2207,11 +2350,16 @@
         {
           "from": "./curator",
           "to": ".",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'call_facts'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'live_facts'",
           "modifier": {
+            "set_context": {
+              "call_id": "has(hop.live) && hop.live != '' ? hop.live : (has(context.live) && context.live != '' ? context.live : (has(context.call_id) ? context.call_id : ''))"
+            },
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2236,9 +2384,14 @@
           "to": ".",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'live_feed'",
           "modifier": {
+            "set_context": {
+              "call_id": "has(hop.live) && hop.live != '' ? hop.live : (has(context.live) && context.live != '' ? context.live : (has(context.call_id) ? context.call_id : ''))"
+            },
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2266,6 +2419,8 @@
             "delete_context": [
               "tool_answerer",
               "curator_call",
+              "curator_target",
+              "call_kind",
               "recall_input_soft",
               "interim",
               "input_soft",
@@ -2304,6 +2459,61 @@
           "from": "./curator",
           "to": "./quick_bridge",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'quick_bridge'"
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./curator",
+          "to": "./quick",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_spec",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./curator",
+          "to": "./quick_bridge",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'note_receipt'",
+          "modifier": {
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "curator_target",
+              "call_kind",
+              "gap_ask",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "turn_notes",
+              "route_state",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_feed'"
         }
       ]
     }

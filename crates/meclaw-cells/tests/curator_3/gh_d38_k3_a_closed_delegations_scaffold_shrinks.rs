@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -66,7 +69,7 @@ fn plan_of(over: Value, rows: &[Value]) -> Value {
 fn a_closed_delegations_scaffold_shrinks() {
     let rows = wall((DAY_2_S + 3600 + 100) * 1000);
     let got = plan_of(
-        json!({"role": "talky", "gc": "1", "gc_scaffold": "1"}),
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "gc_scaffold": "1"})),
         &rows,
     );
     assert_eq!(
@@ -82,14 +85,14 @@ fn a_closed_delegations_scaffold_shrinks() {
 #[test]
 fn a_living_delegation_and_a_switched_off_class_stay_raw() {
     let got = plan_of(
-        json!({"role": "talky", "gc": "1", "gc_scaffold": "1"}),
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "gc_scaffold": "1"})),
         &wall(AS_OF_MS + 1000),
     );
     assert_eq!(got["shrunk"], json!([]), "the errand is still open: {got}");
     assert_eq!(got["gc"]["classes"]["scaffold"], json!(0), "{got}");
 
     let got = plan_of(
-        json!({"role": "talky", "gc": "1", "gc_scaffold": "0"}),
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "gc_scaffold": "0"})),
         &wall((DAY_2_S + 3600 + 100) * 1000),
     );
     assert_eq!(got["shrunk"], json!([]), "gc_scaffold off: {got}");

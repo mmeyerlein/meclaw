@@ -1,0 +1,70 @@
+{
+  "messages": [
+    {
+      "origin": "user",
+      "text": "Good morning.",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "My sister visits today.",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "She brings her dog.",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "We will walk by the river.",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "What should we cook tonight?",
+      "type": "text"
+    }
+  ],
+  "system": {
+    "consult": {
+      "$replace": true
+    },
+    "history": {
+      "$replace": true
+    },
+    "instructions": {
+      "$replace": true,
+      "mode": {
+        "text": "Be brief."
+      }
+    },
+    "pinned": {
+      "$replace": true
+    },
+    "roster": {
+      "$replace": true
+    }
+  },
+  "tool_scope": null
+}

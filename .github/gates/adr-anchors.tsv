@@ -206,3 +206,4 @@ adr	status	anchor_home	target
 0052-the-llm-cell-follows-its-row-across-providers.md	accepted	self	test:gh1273_a_push_moves_the_cell_onto_another_provider_and_back
 0052-the-llm-cell-follows-its-row-across-providers.md	accepted	self	code:check_provider_switch
 0052-the-llm-cell-follows-its-row-across-providers.md	accepted	self	code:slot_key
+0053-a-harness-child-is-a-session.md	accepted	self	test:a_persistent_cell_runs_two_tasks_in_one_child

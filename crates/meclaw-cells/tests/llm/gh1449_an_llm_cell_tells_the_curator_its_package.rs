@@ -279,6 +279,15 @@ fn complaints(config: &Value) -> Vec<String> {
     {
         out.push("`contract.emits.body` does not declare `package`".into());
     }
+    // D58 target (GH #1483): the profile and the order of the system part
+    // travel beside `package`.
+    for (slot, ty) in [("window_profile", "object"), ("system_order", "array")] {
+        if config.pointer(&format!("/contract/emits/body/{slot}"))
+            != Some(&json!({"type": ty, "required": false}))
+        {
+            out.push(format!("`contract.emits.body` does not declare `{slot}`"));
+        }
+    }
     out
 }
 
@@ -341,7 +350,9 @@ fn the_verdict_asks_only_a_cell_with_the_line() {
     let full = json!({
         "cell": {"type": "llm"}, "params": {"package_line": true},
         "contract": {"emits": {
-            "body": {"package": {"type": "object", "required": false}},
+            "body": {"package": {"type": "object", "required": false},
+                     "window_profile": {"type": "object", "required": false},
+                     "system_order": {"type": "array", "required": false}},
             "hop": {"route": {"type": "string", "values": ["partial", "package"], "required": false},
                     "package_of": {"type": "string", "required": false}}}}});
     assert!(complaints(&full).is_empty());
@@ -354,7 +365,8 @@ fn the_verdict_asks_only_a_cell_with_the_line() {
     assert_eq!(complaints(&closed).len(), 1);
     let mut bare = full;
     bare["contract"] = json!({});
-    assert_eq!(complaints(&bare).len(), PACKAGE_HOP_KEYS.len() + 1);
+    // The hop keys, `package`, `window_profile` and `system_order`.
+    assert_eq!(complaints(&bare).len(), PACKAGE_HOP_KEYS.len() + 3);
 }
 
 // ───────────────────────────────────────────────────────────── the tree

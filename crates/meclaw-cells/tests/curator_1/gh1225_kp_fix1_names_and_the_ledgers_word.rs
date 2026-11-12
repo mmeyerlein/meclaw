@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -23,9 +26,9 @@ fn push_shipped() -> bool {
 }
 
 fn talky(over: &[(&str, &str, Value)]) -> Hive {
-    let mut all = vec![("policy", "role", json!("talky"))];
+    let mut all = Vec::<(&str, &str, Value)>::new();
     all.extend(over.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 fn ask_lane(session: &str, turn: &str, text: &str) -> (&'static str, Value, Value, Value) {
@@ -57,20 +60,20 @@ fn gap_lane(
     session: &str,
     turn: &str,
     text: &str,
-    engine: &str,
+    live: &str,
 ) -> (&'static str, Value, Value, Value) {
     (
         "in_section",
         json!({"session_id": session, "turn_id": turn, "iter": "0", "curator_call": "c-1",
-               "channel": "test", "engine": engine, "audience_set": ROUND_E}),
+               "channel": "test", "live": live, "audience_set": ROUND_E}),
         json!({"section": "gap"}),
         json!({"messages": [], "section": "gap", "payload": {"payload": text}}),
     )
 }
 
-fn gap(h: &mut Hive, session: &str, turn: &str, text: &str, engine: &str) -> Vec<Msg> {
+fn gap(h: &mut Hive, session: &str, turn: &str, text: &str, live: &str) -> Vec<Msg> {
     h.out.clear();
-    let (route, c, hop, body) = gap_lane(session, turn, text, engine);
+    let (route, c, hop, body) = gap_lane(session, turn, text, live);
     h.lane(route, c, hop, body);
     h.routed("recall")
 }
@@ -331,7 +334,7 @@ fn a_refused_read_of_the_line_says_no_fact() {
     }
     let mut h = talky(&[]);
     round(&mut h, "s1", "t1", "hi", "hello");
-    let asked = gap(&mut h, "s1", "t1", "the ferry", "duplex")[0].clone();
+    let asked = gap(&mut h, "s1", "t1", "the ferry", "call-9")[0].clone();
     h.ledger_may_refuse = true;
     h.refuse_legs = vec![("j-now".into(), "store_error".into())];
     h.out.clear();

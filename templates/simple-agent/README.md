@@ -1,4 +1,4 @@
-# `simple-agent@2.2.18`
+# `simple-agent@2.3.0`
 
 Version 1 was a sealed agent with its own affinity, its own access and fixed grants; that
 line is frozen as the max-agent (`simple-agent@1.1.4`, its own directory beside this one).
@@ -25,7 +25,7 @@ role is this agent plus the role's own code around it.
 | `door_store` | `store` | the door's durable state: the queue, the open turn, the answered turn ids, the start-memory mark, the open client calls |
 | `collector` | ref | [`collector`](../collector/): `max_iter` 16, `fold_tools` on, `round_idle_ms` 120000, `brief_slots` `["peer", "channel"]`, the tool names spelled out (no `*`: that would bring the build pair) |
 | `watch` | `timer` | one one-shot schedule per round that sent a client call (below) |
-| `curator` | ref | [`curator`](../curator/), role `talky` |
+| `curator` | ref | [`curator`](../curator/), the value set of the former role `talky` in the `window_profile` of `brain` and `strong` alone, none as its knobs (D58 target; both hold their tree, so each call's own target gives the wall's values) |
 | `brain` | `llm` | the thinking cell of a turn: `${ctx.model}`, `reasoning_effort` `medium` |
 | `strong` | `llm` | the second brain of a turn marked `stage: strong`; asked only when the door's `strong` param names it |
 | `splitter` | `code` | as in `cogny`: the sidecar block, sections `window`, `gap`, `memory`; a short id leaves the answer in every form, a footnote mark `[^<12 hex>]` and its definition line included ([#1345](https://github.com/mmeyerlein/meclaw/issues/1345)) |
@@ -63,6 +63,7 @@ Every rim lane carries the body slot of its own name.
 | `pack_ack` | out | `error_code`, `pack_slots` (context `pack_sub`, `pack_hash`) | the receipt of an `in_pack` |
 | `brief` | out | `turn_id` (context `audience_set`, the round) | `{subject, channel, slots}` about the turn's counterpart |
 | `affinity_propose` | out | `agent_id`, the round keys, `tool_call_id` | one write of the affinity tool, as affinity's `in_propose` takes it |
+| `note_receipt` | out | `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at` | the curator's answer to the sender of a shown `once` note with a `receipt` (D58 note, GH #1477), `messages: []` |
 
 **Client tools.** `tools[]` of a turn is a list of provider schemas, `{name, description,
 parameters}` or the OpenAI form `{type: "function", function: {...}}`. They are the client's
@@ -140,9 +141,12 @@ loop goes on; a result that arrives after its timeout is dropped.
 
 **Two stages.** `hop.stage: strong` runs the turn on `./strong` when the door's `strong` param
 is set, else on `./brain` and the answer says `stage: fast`. Both share the collector, the
-curator, the memory and the identity; the curator keeps each stage's package (`input_soft`,
-`input_hard`) from the answers of that stage's model (`context.sa_stage`) and sizes a call by
-the package of its own stage, never by the other stage's last answer. Before a stage's model
+curator, the memory and the identity. The door names the turn's model cell itself (`sa_target`, `brain`
+or `strong`, D58 proof); the composite lifts it into the context, and the collector's edge into the curator
+passes it on as the target of the curate (`hop.target`) -- past the door no stage is told apart. The curator keeps each target's package (`input_soft`, `input_hard`) from the
+answers of that target's model and sizes a call by the package of its own target, never by the other
+target's last answer. Both cells report their package line and their window profile on `package`
+and answer the curator's ask (`catalog_ask`, with and without a handle). Before a stage's model
 has answered once, its first call takes the last answer's package.
 
 **The loop.** The brain calls tools until it answers in text. At `max_iter` (16, the
@@ -248,6 +252,7 @@ refuses the edge (`hive_port_boundary`). The embedder at the colony's level draw
 | `affinity_propose` | out | the rim, from `./door` | -- | to the colony affinity's `in_propose`, `actor` stamped from `hop.agent_id` |
 | `in_propose_ack` | in | the rim, to `./door` | -- | affinity's `ack` and `error` back, `propose_outcome` stamped |
 | `in_note` | in | `./curator` | -- | notes for the window (`notes[]`, curator `in_note`), with the round in `context.audience_set` |
+| `note_receipt` | out | the rim, from `./curator` | -- | the answer to the sender of a shown `once` note with a `receipt` (D58 note, GH #1477); the sender of the notes draws where it goes |
 | `in_conversations` / `conversations` | in / out | announced (A4): to `./memory-hive` | -- | the conversations a reader may see |
 | `affinity_propose` with `context.sa_enrol` | out | the rim, from `./enrol` | -- | the same edge as the affinity tool's; its `subscriber` is `agent:<agent_id>` for the step `subscribe`, `agent:<agent_id>/brain` for `subscribe_brain`, empty otherwise |
 

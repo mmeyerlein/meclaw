@@ -1,0 +1,18 @@
+{
+  "cell": {
+    "type": "ref",
+    "template": "lead@1.0.0"
+  },
+  "override_params": {
+    "lead": {
+      "path_routes": "talk:brain,simple:quick,complex:consult,research:research,*:brain",
+      "departures": "consult:10000,research:120000:240000",
+      "fallback": "quick:brain",
+      "spec_target": "quick_spec",
+      "bridge_target": "*:quick,spec:quick_bridge",
+      "bridge_wording": "consult:soon,research:later",
+      "errand_tool": "consult_cogny",
+      "errand_family": "consult"
+    }
+  }
+}

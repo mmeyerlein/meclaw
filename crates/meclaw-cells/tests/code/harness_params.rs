@@ -179,6 +179,9 @@ fn the_containment_keys_are_immutable_in_a_params_update() {
         startup_timeout_ms: 60_000,
         external_timeout_ms: 30_000,
         query_timeout_ms: 5_000,
+        session_idle_ms: 1_800_000,
+        session_max_context_tokens: None,
+        session_max_usd: None,
     };
     for key in [
         "adapter",
@@ -216,6 +219,9 @@ fn the_run_budget_and_timeouts_stay_tunable() {
         startup_timeout_ms: 60_000,
         external_timeout_ms: 30_000,
         query_timeout_ms: 5_000,
+        session_idle_ms: 1_800_000,
+        session_max_context_tokens: None,
+        session_max_usd: None,
     };
     let mut update = serde_json::Map::new();
     update.insert("max_turns".to_string(), json!(3));
@@ -233,4 +239,175 @@ fn the_run_budget_and_timeouts_stay_tunable() {
 fn a_non_object_params_slot_is_rejected() {
     let err = HarnessParams::parse(&json!("nope")).expect_err("must reject");
     assert!(err.contains("params"), "got: {err}");
+}
+
+/// D57 V4 / OR-57-8: the app id and an explicit `ANTHROPIC_CUSTOM_HEADERS`
+/// entry would both set the child's headers — one would silently lose, so the
+/// pair is refused, naming both keys. The app id itself is immutable.
+#[test]
+fn an_app_id_next_to_an_explicit_custom_header_env_is_refused() {
+    use meclaw_cells::harness::HarnessOverlay;
+    use meclaw_cells::params_overlay::OverlayParams;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = minimal(dir.path());
+    cfg["x_title"] = json!("meclaw-lab harness");
+    cfg["env"] = json!({"ANTHROPIC_CUSTOM_HEADERS": "X-Other: 1"});
+    let err = HarnessParams::parse(&cfg).expect_err("must refuse");
+    assert!(
+        err.contains("x_title") && err.contains("ANTHROPIC_CUSTOM_HEADERS"),
+        "{err}"
+    );
+
+    // Review d57 s1 Minor 6: the same variable passed through from the
+    // colony's environment is a second source just the same.
+    let mut cfg = minimal(dir.path());
+    cfg["http_referer"] = json!("https://meclaw.ai");
+    cfg["env_passthrough"] = json!(["PATH", "HOME", "ANTHROPIC_CUSTOM_HEADERS"]);
+    let err = HarnessParams::parse(&cfg).expect_err("must refuse the passthrough too");
+    assert!(
+        err.contains("http_referer")
+            && err.contains("env_passthrough")
+            && err.contains("ANTHROPIC_CUSTOM_HEADERS"),
+        "{err}"
+    );
+    let mut cfg = minimal(dir.path());
+    cfg["env_passthrough"] = json!(["PATH", "ANTHROPIC_CUSTOM_HEADERS"]);
+    HarnessParams::parse(&cfg).expect("the passthrough without an app id parses");
+
+    let mut cfg = minimal(dir.path());
+    cfg["http_referer"] = json!("https://meclaw.ai");
+    let p = HarnessParams::parse(&cfg).expect("the app id alone parses");
+    assert_eq!(p.http_referer.as_deref(), Some("https://meclaw.ai"));
+
+    for key in ["x_title", "http_referer"] {
+        assert!(HarnessOverlay::IMMUTABLE_KEYS.contains(&key), "{key}");
+    }
+}
+
+/// D57 V4: the life cycle defaults to one child per task; `persistent` is the
+/// other value, and anything else is refused by name. The session knobs have
+/// their defaults (idle 30 min, no rotation limits).
+#[test]
+fn the_session_mode_defaults_to_per_task_and_rejects_unknown_values() {
+    use meclaw_cells::harness::params::SessionMode;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let p = HarnessParams::parse(&minimal(dir.path())).expect("parse");
+    assert_eq!(p.session, SessionMode::PerTask);
+    assert_eq!(p.session_idle_ms, 1_800_000);
+    assert_eq!(p.session_max_context_tokens, None);
+    assert_eq!(p.session_max_usd, None);
+
+    for (value, mode) in [
+        ("per_task", SessionMode::PerTask),
+        ("persistent", SessionMode::Persistent),
+    ] {
+        let mut cfg = minimal(dir.path());
+        cfg["session"] = json!(value);
+        assert_eq!(HarnessParams::parse(&cfg).expect(value).session, mode);
+    }
+
+    let mut cfg = minimal(dir.path());
+    cfg["session"] = json!("forever");
+    cfg["session_idle_ms"] = json!(5);
+    let err = HarnessParams::parse(&cfg).expect_err("must refuse");
+    assert!(err.contains("session") && err.contains("forever"), "{err}");
+
+    let mut cfg = minimal(dir.path());
+    cfg["session"] = json!("persistent");
+    cfg["session_idle_ms"] = json!(5);
+    cfg["session_max_context_tokens"] = json!(100_000);
+    cfg["session_max_usd"] = json!(2.5);
+    let p = HarnessParams::parse(&cfg).expect("parse");
+    assert_eq!(p.session_idle_ms, 5);
+    assert_eq!(p.session_max_context_tokens, Some(100_000));
+    assert_eq!(p.session_max_usd, Some(2.5));
+}
+
+/// D57 V4 β line: idle and rotation limits are tuning and move at runtime;
+/// the life cycle itself and the app id do not.
+#[test]
+fn the_session_knobs_are_tunable_and_the_mode_and_app_id_are_not() {
+    use meclaw_cells::harness::HarnessOverlay;
+    use meclaw_cells::params_overlay::apply_update;
+
+    let current = HarnessOverlay {
+        model: None,
+        max_turns: None,
+        max_budget_usd: None,
+        startup_timeout_ms: 60_000,
+        external_timeout_ms: 30_000,
+        query_timeout_ms: 5_000,
+        session_idle_ms: 1_800_000,
+        session_max_context_tokens: None,
+        session_max_usd: None,
+    };
+    let mut update = serde_json::Map::new();
+    update.insert("session_idle_ms".to_string(), json!(60_000));
+    update.insert("session_max_context_tokens".to_string(), json!(150_000));
+    update.insert("session_max_usd".to_string(), json!(1.5));
+    let (new_ov, _) = apply_update(&current, &update).expect("tuning update must apply");
+    assert_eq!(new_ov.session_idle_ms, 60_000);
+    assert_eq!(new_ov.session_max_context_tokens, Some(150_000));
+    assert_eq!(new_ov.session_max_usd, Some(1.5));
+
+    for key in ["session", "x_title", "http_referer"] {
+        let mut update = serde_json::Map::new();
+        update.insert(key.to_string(), json!("persistent"));
+        let err = apply_update(&current, &update).expect_err("must reject");
+        assert!(err.detail().contains(key), "{key}: {}", err.detail());
+    }
+}
+
+/// Review d57 s1 Minor 3 (a): every mutable key travels between the params
+/// and the overlay through ONE pair of functions — the runtime params update
+/// (`cell.rs`) and the β restore (`factory.rs`) both use it, so no copy kept
+/// by hand can forget a key. The update below names every mutable key; a new
+/// one fails here until it is carried.
+#[test]
+fn every_tunable_reaches_the_params_through_the_one_overlay_path() {
+    use meclaw_cells::harness::HarnessOverlay;
+    use meclaw_cells::params_overlay::{OverlayParams, apply_update};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut params = HarnessParams::parse(&minimal(dir.path())).expect("parse");
+    let update = json!({
+        "model": "m-2",
+        "max_turns": 7,
+        "max_budget_usd": 2.5,
+        "startup_timeout_ms": 61_000,
+        "external_timeout_ms": 31_000,
+        "query_timeout_ms": 6_000,
+        "session_idle_ms": 5_000,
+        "session_max_context_tokens": 1_500,
+        "session_max_usd": 0.5,
+    });
+    let update = update.as_object().expect("object").clone();
+    let mut named: Vec<&str> = update.keys().map(|k| k.as_str()).collect();
+    let mut mutable: Vec<&str> = HarnessOverlay::KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !HarnessOverlay::IMMUTABLE_KEYS.contains(k))
+        .collect();
+    named.sort_unstable();
+    mutable.sort_unstable();
+    assert_eq!(named, mutable, "the update must name every mutable key");
+
+    let (overlay, _) = apply_update(&HarnessOverlay::of(&params), &update).expect("tuning applies");
+    overlay.apply_to(&mut params);
+    assert_eq!(params.model.as_deref(), Some("m-2"));
+    assert_eq!(params.max_turns, Some(7));
+    assert_eq!(params.max_budget_usd, Some(2.5));
+    assert_eq!(params.startup_timeout_ms, 61_000);
+    assert_eq!(params.external_timeout_ms, 31_000);
+    assert_eq!(params.query_timeout_ms, 6_000);
+    assert_eq!(params.session_idle_ms, 5_000);
+    assert_eq!(params.session_max_context_tokens, Some(1_500));
+    assert_eq!(params.session_max_usd, Some(0.5));
+    // And back: the overlay of the tuned params is exactly the update.
+    assert_eq!(
+        serde_json::to_value(HarnessOverlay::of(&params)).expect("serialize"),
+        serde_json::Value::Object(update)
+    );
 }

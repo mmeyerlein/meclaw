@@ -17,6 +17,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -64,10 +67,18 @@ fn spec_answer(h: &mut Hive, call: &Msg, text: &str) {
     );
 }
 
+/// The entry talky's curator node sets for its class `clarify` in the
+/// policy's `class_notes` (GH #1478: the class is the composition's, the
+/// curator ships none).
+fn talky_class_notes() -> Value {
+    let node = read_json(&repo("templates/talky/curator/config.json"));
+    node["override_params"]["policy"]["class_notes"].clone()
+}
+
 fn note_text() -> String {
-    cell_config("policy")["params"]["clarify_note"]
+    talky_class_notes()["clarify"]["text"]
         .as_str()
-        .expect("the shipped clarify note")
+        .expect("talky's clarify note")
         .to_string()
 }
 
@@ -136,10 +147,11 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
         return;
     }
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
+        ("policy", "class_notes", talky_class_notes()),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("web")),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     let spec = spec_curate(&mut h, "t1", "the choir in Dresden, search please");
     spec_answer(&mut h, &spec, "SPECGUESS the choir sings on Friday");
@@ -190,7 +202,7 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
         h.state("turn_system:s1:t1").is_empty(),
         "no frozen system part of the turn"
     );
-    let marks = h.rows("SELECT value FROM marks WHERE kind = 'quick_spec'");
+    let marks = h.rows("SELECT value FROM marks WHERE kind = 'spec'");
     assert_eq!(marks.len(), 1, "{marks:?}");
     let m: Value = sj::from_str(marks[0][0].as_str().unwrap()).unwrap();
     assert_eq!(m["verdict"], json!("dropped"));
@@ -198,7 +210,8 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
 
     // The channel's deny stays on the empty menu.
-    let mut d = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut d =
+        Hive::with(&[("policy", "class_notes", talky_class_notes())]).reporting_composite("talky");
     d.out.clear();
     d.lane(
         "in_curate",
@@ -220,7 +233,8 @@ fn clarify_answer_becomes_affinity_hint() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h =
+        Hive::with(&[("policy", "class_notes", talky_class_notes())]).reporting_composite("talky");
     h.check_emits = true;
     curate_on(
         &mut h,
@@ -292,23 +306,53 @@ fn clarify_answer_becomes_affinity_hint() {
     assert!(h.routed("propose").is_empty(), "{:?}", h.out);
 }
 
+/// The fast cells of talky with `instructions.only` and `frame` on: what
+/// the knob `quick_instructions_slot` "1" did before (OR-d58-2.target.53).
+fn only_on() -> Vec<(&'static str, Value)> {
+    let on = json!({"instructions": {"only": true}, "frame": true});
+    vec![
+        ("quick", on.clone()),
+        ("quick_spec", on.clone()),
+        ("quick_bridge", on),
+    ]
+}
+
 #[test]
 fn quick_reads_instructions_quick_slot() {
     if !shipped() {
         return;
     }
-    // Off (the default): the quick voice's leaves as before.
-    let mut off = Hive::with(&[("policy", "role", json!("talky"))]);
+    // Off (the default, no `instructions.only`): the family stays and the
+    // fast cell's own slot stands beside it. OR-d58-2.target.50: the
+    // profile's text holds only while the slot is empty -- the composite
+    // brings the slot here, so its words stand (the knob of before put the
+    // fixed text over them).
+    let mut off = Hive::with(&[]).reporting_composite("talky");
     curate_on(&mut off, "t1", "simple", "weather in Berlin?", prompts());
     let q = off.routed("quick");
     assert_eq!(q.len(), 1, "{:?} {:?}", off.out, off.stderr);
     let ins = &system_of(&q[0])["instructions"];
     assert_eq!(ins["speaker"]["text"], json!("BRAIN PROMPT"), "{ins}");
+    assert_eq!(
+        ins["quick"]["text"],
+        json!("QUICK PROMPT"),
+        "the slot beside the family: {ins}"
+    );
+    // Without the slot in the system part the profile's text fills it.
+    let mut bare = Hive::with(&[]).reporting_composite("talky");
+    let mut no_slot = prompts();
+    if let Some(i) = no_slot["instructions"].as_object_mut() {
+        i.remove("quick");
+    }
+    curate_on(&mut bare, "t1", "simple", "weather in Berlin?", no_slot);
+    let q = bare.routed("quick");
+    assert_eq!(q.len(), 1, "{:?} {:?}", bare.out, bare.stderr);
+    let ins = &system_of(&q[0])["instructions"];
     assert!(
         ins["quick"]["text"]
             .as_str()
             .is_some_and(|t| t.starts_with("When you call a tool")),
-        "the fixed leaf, as before: {ins}"
+        "the profile's text in the empty slot: {ins}"
     );
     assert!(
         system_of(&q[0]).get("frame").is_none(),
@@ -316,12 +360,13 @@ fn quick_reads_instructions_quick_slot() {
     );
 
     // On: the slot is the quick voice's instructions.
+    // OR-d58-2.target.62: the switch of before is the profile's
+    // `instructions.only` and `frame` on the fast cells.
     let mut on = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "quick_instructions_slot", json!("1")),
         ("policy", "place", json!("Berlin")),
         ("policy", "timezone", json!("Europe/Berlin")),
-    ]);
+    ])
+    .reporting_composite_with("talky", &only_on());
     curate_on(&mut on, "t1", "simple", "weather in Berlin?", prompts());
     let q = on.routed("quick");
     assert_eq!(q.len(), 1, "{:?} {:?}", on.out, on.stderr);
@@ -345,7 +390,7 @@ fn quick_reads_instructions_quick_slot() {
     curate_on(&mut on, "t2", "complex", "plan my week", prompts());
     let b = on.routed("quick");
     assert_eq!(b.len(), 1, "{:?} {:?}", on.out, on.stderr);
-    assert_eq!(b[0].hop["bridge"], json!("consult"));
+    assert_eq!(b[0].hop["call_kind"], json!("side"));
     let bins = &system_of(&b[0])["instructions"];
     assert_eq!(bins["quick"]["text"], json!("QUICK PROMPT"), "{bins}");
     assert!(bins.get("speaker").is_none(), "{bins}");
@@ -358,11 +403,9 @@ fn brain_never_sees_instructions_quick() {
         return;
     }
     for switch in ["0", "1"] {
-        let mut h = Hive::with(&[
-            ("policy", "role", json!("talky")),
-            ("policy", "quick_instructions_slot", json!(switch)),
-            ("policy", "timezone", json!("Europe/Berlin")),
-        ]);
+        let patches = if switch == "1" { only_on() } else { Vec::new() };
+        let mut h = Hive::with(&[("policy", "timezone", json!("Europe/Berlin"))])
+            .reporting_composite_with("talky", &patches);
         for (turn, path) in [("t1", "talk"), ("t2", ""), ("t3", "clarify")] {
             curate_on(&mut h, turn, path, "hello there", prompts());
             let brain = h.routed("brain");
@@ -400,11 +443,18 @@ fn fu2_policy_defaults_byte_identical() {
     }
     // The params ship at today's behaviour and say so in the contract.
     let policy = cell_config("policy");
+    // OR-d58-2.target.62: the switch `quick_instructions_slot` left the
+    // curator (the profile's `instructions.only` took its place).
+    assert!(policy["params"].get("quick_instructions_slot").is_none());
+    assert!(
+        policy["contract"]["settings"]
+            .get("quick_instructions_slot")
+            .is_none()
+    );
     for (k, v) in [
-        ("quick_instructions_slot", json!("0")),
         ("place", json!("")),
         ("timezone", json!("")),
-        ("clarify_note", json!(note_text())),
+        ("class_notes", json!({})),
     ] {
         assert_eq!(policy["params"][k], v, "{k}");
         assert_eq!(policy["contract"]["settings"][k]["default"], v, "{k}");
@@ -412,7 +462,7 @@ fn fu2_policy_defaults_byte_identical() {
     // A run without a clarify stamp: the same calls with the knobs shipped and
     // with the knobs absent (null), and nothing of #1279 in the ledger.
     let run = |over: &[(&str, &str, Value)]| {
-        let mut h = Hive::with(over);
+        let mut h = Hive::with(over).reporting_composite("talky");
         let mut seen = Vec::new();
         for (turn, path) in [
             ("t1", "talk"),
@@ -436,13 +486,11 @@ fn fu2_policy_defaults_byte_identical() {
         assert!(h.routed("propose").is_empty());
         seen
     };
-    let shipped_run = run(&[("policy", "role", json!("talky"))]);
+    let shipped_run = run(&[]);
     let absent_run = run(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "quick_instructions_slot", Value::Null),
         ("policy", "place", Value::Null),
         ("policy", "timezone", Value::Null),
-        ("policy", "clarify_note", Value::Null),
+        ("policy", "class_notes", Value::Null),
     ]);
     // A consult's pending line names its fresh id and its start: the two
     // runs differ there by construction, nowhere else.
@@ -456,17 +504,23 @@ fn fu2_policy_defaults_byte_identical() {
     );
 }
 
-/// live-2 #1370: `quick_instructions_slot` set as JSON `true` (the set's form)
-/// is on -- one rule for every switch of the wave, the presenter's `knob()`.
+/// live-2 #1370: the switch set as JSON `true` (the set's form) is on -- one
+/// rule for every switch of the wave, the presenter's `knob()`. Since
+/// OR-d58-2.target.62 the switch is the profile's `instructions.only`.
 #[test]
 fn quick_instructions_slot_reads_json_true() {
     if !shipped() {
         return;
     }
-    let mut on = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "quick_instructions_slot", json!(true)),
-    ]);
+    let on = json!({"instructions": {"only": true}});
+    let mut on = Hive::with(&[]).reporting_composite_with(
+        "talky",
+        &[
+            ("quick", on.clone()),
+            ("quick_spec", on.clone()),
+            ("quick_bridge", on),
+        ],
+    );
     curate_on(&mut on, "t1", "simple", "weather in Berlin?", prompts());
     let q = on.routed("quick");
     assert_eq!(q.len(), 1, "{:?} {:?}", on.out, on.stderr);
@@ -475,5 +529,9 @@ fn quick_instructions_slot_reads_json_true() {
         ins["quick"]["text"],
         json!("QUICK PROMPT"),
         "true is on: {ins}"
+    );
+    assert!(
+        ins.get("speaker").is_none(),
+        "true is on: the slot replaces the family: {ins}"
     );
 }

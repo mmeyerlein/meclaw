@@ -1,4 +1,4 @@
-# `talky@6.18.1`
+# `talky@7.0.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- one hundred and thirty-three edges,
+dispatcher for the fan-out, the close batch out to the write port -- one hundred and forty-two edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -46,6 +46,7 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | `session-keeper/{stamp,close,sessions,night,porter}` | `code`, `code`, `store`, `timer`, `code` | `session-keeper` **(sealed)** |
 | `collector/{assemble,window}` | `code`, `store` | `collector` **(sealed)** |
 | `curator/{intake,policy,writer,ledger,summarizer,clock,schemas,history,push,handover}` | `code`, `code`, `code`, `store`, `llm`, `timer`, `code`, `code`, `code`, `code` | `curator` **(sealed)**, since `6.0.0`; `schemas`, `history`, `push` and `handover` since `6.1.0` (GH #892, GH #893, GH #895, GH #896) |
+| `lead/{lead,state}` | `code`, `store` | `lead` **(sealed)**, since GH #1474 -- the switch beside the curator: way, target and speculation of each call |
 | `dispatcher` | `code` | `dispatcher` (a single-cell template) |
 | `brain` | `llm` | this template |
 | `quick` | `llm` | this template, since GH #1248 -- the quick voice behind the curator |
@@ -59,8 +60,8 @@ composite: a recurring unit that should be instantiated, not re-derived. Here it
 | `screen_judge` | `code` | this template, since #1279 -- the screen form of a turn, off as shipped |
 | `screen_model` | `llm` | this template, since #1279 -- `./screen_judge`'s structured model |
 
-**The braces are an inventory, not an address list.** The three sealed sub-units declare
-`params.ports: []`, so `./session-keeper`, `./collector` and `./curator` are the only sub-unit
+**The braces are an inventory, not an address list.** The four sealed sub-units declare
+`params.ports: []`, so `./session-keeper`, `./collector`, `./curator` and `./lead` are the only sub-unit
 addresses an edge from outside may name; `./session-keeper/stamp` and
 `./collector/assemble` are refused with `hive_port_boundary`. Which cell inside picks the
 message up is decided by the `in_` lane the edge sets, by the hive's own door edges. That
@@ -68,17 +69,17 @@ is what lets the inside of a sub-unit change without touching a caller.
 
 ### How the sub-units are referenced: by name and version (GH #277)
 
-The four sub-units are **references**, not copies. Each of the four directories holds
+The five sub-units are **references**, not copies. Each of the five directories holds
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.10.0"}}
+{"cell": {"type": "ref", "template": "collector@6.0.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@6.18.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@7.0.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -162,13 +163,15 @@ The rest, each optional and each still at the same address:
 | `in_tool` | in | one tool result coming back |
 | `in_advice` | in | an advisor's answer coming back |
 | `in_delegation` | in | an errand the voice model handed the backend of its own accord, in a duplex call. It comes STRAIGHT from the channel, not through a firewall -- a firewall's exit stamps `in_turn`, and this is no turn of the conversation. Promote `context.delegation_id` (the correlation the answer travels back under) and `context.engine`. Since 5.2.0 |
-| `in_renewed` | in | a duplex voice session of a running call was renewed at its provider's limit (GH #896): `hop.call_id`, `hop.renewal_n`. It goes to `./curator` only -- no round, no model -- and comes back out as ONE `sidecar` section `context` carrying `hop.renewal_n`, with `context.call_id` set on the way in, so the member's advice edge hands the running conversation to the call's new session |
+| `in_renewed` | in | a duplex voice session of a running call was renewed at its provider's limit (GH #896): `hop.call_id`, `hop.engine`, `hop.renewal_n`. It goes to `./curator` only -- no round, no model -- and comes back out as ONE `sidecar` section `context` carrying `hop.renewal_n`, with the curator's handle `context.live` set on the way in (`hop.call_id` when `hop.engine` is `duplex`, else empty; D58 live), so the member's advice edge hands the running conversation to the call's new session with `context.call_id` back from the handle |
 | `in_bundle` | in | a memory bundle coming back |
 | `in_sweep` | in | an operator-forced session sweep |
 | `in_round_sweep` | in | the operator lane of the collector's round table: a round that ran out of iterations |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `identity_short`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.4.0 |
 | `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
-| `in_note` | in | notes of another hive for the brain's window, `{notes: [{id, source, text, scope, until?, priority?}]}`, handed to `./curator`'s own `in_note` (`templates/curator/README.md`), which shows the live ones as one block opening the newest message of the person. Nothing answers it. Since GH #1303 |
+| `in_note` | in | notes of another hive for the brain's window, `{notes: [{id, source, text, scope, until?, priority?, item?, receipt?}]}`, handed to `./curator`'s own `in_note` (`templates/curator/README.md`), which shows the live ones as one block opening the newest message of the person. A shown `once` note with a `receipt` answers on `note_receipt` (with the curator's `note_once` "1", D58 note, GH #1477); every other note answers nothing. Since GH #1303 |
+| `in_feed` | in | an order of another hive that something goes into this agent's running session now, without waiting for a turn's end: head `live` (the curator's handle of the session), `session_id`, `turn_id`, `section` (the orderer's name -- what the voice takes is its own matter and the parent's edge), `sender`, optionally `once` and `at_turn_end`; the body leaves as the feed's body, its field `mark` goes into the mark `feed`. Handed to `./curator`'s own `in_feed` (`templates/curator/README.md`, "A feed on order"); this composite turns the curator's `feed_in` on ("1"), so the order leaves at once as ONE `live_feed` on the exit every live feed takes, or is booked with its reason. Nothing answers it. Since D58 feed (GH #1481) |
+| `note_receipt` | out | the curator's answer to the sender of a shown `once` note that carried a `receipt`, handed out from `./curator` unchanged: hop `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`, `messages: []`. Where it goes is wired by whoever sends the notes. Since D58 note (GH #1477) |
 | `pack_ack` | out | the receipt `in_pack` answers with, accepted and refused alike: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.4.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 6.0.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). See "The model door". Since 5.4.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |
 | `model_refused` | out | a model push the brain refused: its error, with `hop.refused_subscriber` (the brain's path) and `hop.refused_model`, instead of on `error`. Draw it back to the registry beside the push edge, or it dead-letters `no_route`. See "The model door". Since 5.4.2 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
@@ -182,18 +185,18 @@ The rest, each optional and each still at the same address:
 | `answer_check` | out | the sent answer for the checker the splitter's knob `answer_check` names: one message per named section after every answer, `hop.section`, `hop.turn_id`, `hop.section_written` (`"1"`/`"0"`), body `{messages: [], section, verify_answer}` -- also when the model wrote the section empty or not at all. Nothing travels while the knob is empty; set, wire it to the checker. With `answer_check_sources` `turn+recall` the body also carries `verify_turn` and `verify_recall` (`[{ref, text}]`), added by `./curator`, and `hop.answer_check_sources`; a failed read of the round says `hop.sources_error` `store_error` instead ([#1306](https://github.com/mmeyerlein/meclaw/issues/1306)). See "The sent answer reaches its declared checker" ([#1255](https://github.com/mmeyerlein/meclaw/issues/1255)) |
 | `stamp` | out | the route stamp of every turn for a reader outside, raised by `./route` only with its knob `stamp_out` `"1"`: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}` -- no text, no turn notes --, hop `turn_id`, `path`, `fallback` on a fallback stamp. Nothing travels while the knob is `"0"` (shipped). See "A product's own questions" ([#1304](https://github.com/mmeyerlein/meclaw/issues/1304)). Since #1279 also `screen` and `screen_form` when present; such a stamp leaves on `verdict` as well (the copy on `stamp` without `hop.verdict`) |
 | `verdict` | out | the stamp for the presenter's `in_verdict`: the rim copy of a route stamp that carries `screen` or `screen_form` (`hop.verdict` `"1"`, the same stamp also leaves on `stamp`; with `./route`'s `judge_context` `"1"` every route stamp, so a clarify turn, topic `none` or an unsure topic closes as `no_topic` at the presenter), and with `./screen_judge`'s `enabled` `"1"` the second stamp of the same turn, `{stamp: {turn_id, audience_set, screen_form}}`, which leaves only here. Hop `turn_id`. The route's copy needs `stamp_out` `"1"`; the judge's second stamp needs only `enabled` and leaves with `stamp_out` `"0"` as well. Nothing travels with both off; see "Screen and partials". Since #1279 |
-| `in_delta` | in | a partial of a voice call (lane `partial`): the cumulative text as `messages`, `hop.turn_id` `<session_id>#<n>`. To `./route` as `in_turn` with `context.delta` `"1"`; its stamp goes to `./curator` only. Nothing answers it. Since #1279 |
-| `in_screen_topics` | in | the presenter's `screen_topics`, `{topics: [{name, purpose, candidates?}]}`, to `./curator`, which keeps them for the judge context. Nothing answers it. Since #1279 |
-| `in_seed_ask` | in | the voice channel's ask for a live session's seed (`hop.call_id`, `session_id`, `reason`, `renewal_n`); the edge MUST promote `context.audience_set` and `context.call_id`. Answered on `seed`. Since #1279 |
-| `in_seed_line` | in | one line for the next seed of a call, `{session_id\|call_id, kind: wind_down\|hint, text}`, held by `./curator` per call and kind (a new line replaces only its own kind) until that seed, which ends on all of them. Since #1279 |
-| `seed` | out | the answer to `in_seed_ask`: `{messages: [{role, text}], est_tokens, judge}`, hop `call_id`, `session_id` and `renewal_n` as the ask named them, or `messages: []` with `hop.refused` `no_round`, or with `hop.degraded` `store` when the ledger refused the read (the call opens without a seed, a held line waits for the next one); `./curator`'s rim sets `context.call_id`, by which the voice cell finds the session. To the voice channel's `in_seed`. Since #1279 |
-| `in_call_end` | in | the end of a voice call (the voice cell's final `usage`, `hop.call_id`, `hop.session_id`); the edge MUST promote `context.audience_set` and `context.call_id`. To `./curator`, answered on `call_facts`. Since #1369. Since #1401 also to `./session-keeper`, which seals the open generation of `context.channel_node` at once (`close_reason` `call_ended`; a generation still owing its last answer closes on that answer). The edge that brings the call end in MUST promote `context.channel_node` as well -- the voice cell does not set it, and without it the keeper closes nothing before the night |
-| `live_feed` | out | the curator's feed of a duplex session after a closed turn (`hop.section`), only with its knob `live_feed`; to the voice channel's `in_advise`. Since #1279 |
-| `call_facts` | out | the answer to `in_call_end`: `{messages: [], call_id, session_id, seed_used, facts: [{source, id, text}], delegations: [{turn_id, text}]}`, `hop.call_id`/`hop.session_id` back, `hop.refused` `no_round`/`no_call` or `hop.degraded` `store` with empty lists. Since #1369 |
+| `in_delta` | in | a partial of a voice call (lane `partial`): the cumulative text as `messages`, `hop.turn_id` `<session_id>#<n>`. To `./route` as `in_turn` with `context.delta` `"1"` and the curator's handle `context.live` (`hop.call_id` when `hop.engine` is `duplex`, else empty; D58 live); its stamp goes to `./curator` only. Nothing answers it. Since #1279 |
+| `in_part` | in | a contribution to the section of a target, `{target, source, value, subject?, until?}` -- today the presenter's `part` (its topic table, source `presenter`) --, to `./curator`, which keeps it unread for every view of the target (`./route` reads the leaf `presenter` of its view). Nothing answers it. Since #1279; D58 judge (#1480) renamed it from `in_screen_topics` `{topics}` |
+| `in_seed_ask` | in | the voice channel's ask for a live session's seed (`hop.call_id`, `engine`, `session_id`, `reason`, `renewal_n`); the edge MUST promote `context.audience_set`. To `./curator` with its handle `context.live` (`hop.call_id` when `hop.engine` is `duplex`, else empty; D58 live). Answered on `seed`. Since #1279 |
+| `in_seed_line` | in | one line of the start window, `{live\|session_id, position: head\|tail, order?, lasts: session\|always, text}` (no kind since D58 judge #1480), held by `./curator` per place (a new line replaces only the one in its place) and put in its place into the next seed; a `session` line goes with that seed, an `always` line stays. Since #1279 |
+| `seed` | out | the answer to `in_seed_ask`: `{messages: [{role, text}], est_tokens, judge}`, hop `live`, `session_id` and `renewal_n` as the ask named them, or `messages: []` with `hop.refused` `no_live` (an ask without a handle) or `no_round`, or with `hop.degraded` `store` when the ledger refused the read (the call opens without a seed, a held line waits for the next one); `./curator`'s rim sets `context.live`, and this composite's exit `context.call_id` from it, by which the voice cell finds the session. To the voice channel's `in_seed`. Since #1279 |
+| `in_call_end` | in | the end of a voice call (the voice cell's final `usage`, `hop.call_id`, `hop.engine`, `hop.session_id`); the edge MUST promote `context.audience_set`. To `./curator` as its lane `in_live_end` with the handle `context.live` (as on `in_seed_ask`, D58 live), answered on `live_facts`. Since #1369. Since #1401 also to `./session-keeper`, which seals the open generation of `context.channel_node` at once (`close_reason` `call_ended`; a generation still owing its last answer closes on that answer). The edge that brings the call end in MUST promote `context.channel_node` as well -- the voice cell does not set it, and without it the keeper closes nothing before the night |
+| `live_feed` | out | the curator's feed of a duplex session after a closed turn (`hop.section`), only with its knob `live_feed`; `context.call_id` set from the curator's handle on the way out; to the voice channel's `in_advise`. Since #1279 |
+| `live_facts` | out | the answer to `in_call_end`: `{messages: [], live, session_id, seed_used, facts: [{source, id, text}], delegations: [{turn_id, text}]}`, `hop.live`/`hop.session_id` back and `context.call_id` set from the handle, `hop.refused` `no_round`/`no_live` or `hop.degraded` `store` with empty lists. Since #1369; named `call_facts` until D58 live (GH #1482), the curator's name passed on |
 | `propose` | out | the curator's proposal out of a `clarify` question and its answer; to affinity's `in_propose`. Since #1279 |
 | `opened` | out | a conversation began (GH #1305): ONE per session generation, out of `./session-keeper` when its stamp's knob `conversation_events` is `"1"` -- hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, body `messages: []`, no text. Off (the shipped `"0"`) nothing leaves |
 | `closed` | out | a conversation ended (GH #1305): ONE per close, out of `./curator` right behind its `write` in the same emission when the curator writer's knob `conversation_events` is `"1"` -- hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason` (`round`, `night`, `idle`), `turns_person`, `turns_assistant`, `last_turn_id`, `degraded` (`store` when the store refused the close's reads twice and no `write` left, the counts then 0), body `messages: []`, never a word. Off nothing leaves |
-| `inner_silent` | out | an inner turn answered with silence (GH #1305): nothing went to the channel; hop `inner_source`, `turn_id`, body `messages: []`. Only when the dispatcher's knob `conversation_events` is `"1"`; off, the silence ends the round and a stderr line of the dispatcher is all that is said. The silence reaches the dispatcher because the edges into `./brain` and `./quick` set `hop.silence_ok` "1" for an inner turn (`context.inner_source`, which the round-trip exits `recall`, `consult`/`research` and `tool` keep, and every other exit clears), so the llm cell lets an answer without text through instead of `empty_answer` (GH #1320); a person's turn carries no such key |
+| `inner_silent` | out | an inner turn answered with silence (GH #1305): nothing went to the channel; hop `inner_source`, `turn_id`, body `messages: []`. Only when the dispatcher's knob `conversation_events` is `"1"`; off, the silence ends the round and a stderr line of the dispatcher is all that is said. The silence reaches the dispatcher because the edges into `./brain` and `./quick` set `hop.silence_ok` "1" for an inner turn (`context.inner_source`, which the round-trip exits `recall`, `errand` (D58 target: one route for either errand class) and `tool` keep, and every other exit clears), so the llm cell lets an answer without text through instead of `empty_answer` (GH #1320); a person's turn carries no such key |
 
 ### The sessions leave, and come back (`in_export` / `in_import`, GH #475)
 
@@ -509,7 +512,13 @@ a turn without text all stamp `fallback_class` (`talk`) with `p` 0, no needs and
 families, and say which of the four it was in `hop.fallback` (`unsure`, `error`, `late`,
 `no_text`). `unsure_families` `"1"` ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)) lets an
 `unsure` stamp keep the families the decider said yes to -- they are their own yes/no questions, like
-`choices` -- while its needs stay empty; off as shipped. As shipped `./decide` has no model, so every turn is stamped `talk` until the model
+`choices` -- while its needs stay empty; off as shipped. `stamp_needs_yes` `"1"`
+([#1466](https://github.com/mmeyerlein/meclaw/issues/1466)) adds an eighth key to a judged stamp,
+`needs_yes` -- `{"memory": 0.05, "tool": 0.9}`, the yes-value of every asked need the decider
+answered with a number, also below `yes_threshold`; a need it did not answer is absent, never 0.
+`needs` and `p` cannot tell a need that was nearly named from one that surely is none (`p` is the
+confidence of the path), and the curator's `recall_skip_sure` reads the yes-value of `memory`. A
+fallback stamp and the rim copy never carry it; off as shipped, the seven keys. As shipped `./decide` has no model, so every turn is stamped `talk` until the model
 registry's overlay or the installing set's `override_params` names one.
 
 `./decide` is an `llm` cell on `provider: decisions`, the form of `presenter/decide`:
@@ -546,8 +555,9 @@ off, and off the stamp and the decide call are the bytes above.
   an empty one) raises no rim copy at all -- fail-closed, as the round is everywhere else;
   `[]` is a round, the person alone.
 - `context_turns` above 0 lets the decider read the person's last turns of the running
-  generation and round, in a block before the turn. `./route` first asks the curator's wall
-  (`turns_ask` -> `in_turns_ask`, answered as `turns` -> `in_turns`, the same round rule as
+  generation and round, in a block before the turn. `./route` first orders a view without a
+  target from the curator (`view_ask` -> `in_view_ask`, answered as `view` -> `in_view`, D58
+  [#1480](https://github.com/mmeyerlein/meclaw/issues/1480); the same round rule as
   `history_read`), bounded by `context_budget_tokens` (1 500 as shipped, never above 4 000);
   the turn's text rides out and back in `context.route_state`. The read hop counts in
   `late_ms`. At 0 there is no read hop.
@@ -559,17 +569,24 @@ shipped, and off every message is the bytes above. A switch here and in the sect
 `"1"`, `"true"` or `"on"` and off with anything else -- the presenter's rule
 ([#1370](https://github.com/mmeyerlein/meclaw/issues/1370)).
 
-- With `judge.hints` in the answer (the curator keeps them per person, [#1279](https://github.com/mmeyerlein/meclaw/issues/1279)),
+- With the person's how-questions in the view (the leaf `view_sources.hints` of the target's
+  family, `affinity` in talky; the curator keeps them per person, [#1279](https://github.com/mmeyerlein/meclaw/issues/1279)),
   `./route` renders them in the decide state as `How this person meant earlier requests
   when asked`, one line per how-question, its answer and its class; no hints, no block.
   The hints count against `context_budget_tokens` beside the turns the wall already put in the
   window ([#1363](https://github.com/mmeyerlein/meclaw/issues/1363)): the newest that fit stay
   whole, older ones go whole, and a cut ends the block on
   `...[cut: <k> of <n> hints shown, <t> of <total> tokens; budget of the window]`.
-- `./route`'s `judge_context` `"1"` asks the wall with `turns_ask.judge` true (with `context_turns`
-  as `n`, also at 0) and renders the curator's judge context before the turn: the earlier turns of
-  both sides, the topic, what stands on the screen, now and place.
-  When `judge.screen.topics` is not empty, the SAME decide call asks the screen question:
+- `./route`'s `judge_context` `"1"` orders a view for the target its `view_target` names (with
+  `context_turns` as `turns`, also at 0; D58 [#1480](https://github.com/mmeyerlein/meclaw/issues/1480))
+  and folds it into the decide state before the turn: the view's messages (the earlier turns of
+  both sides), the leaf `topic`, the screen line, and now and place from the leaf `frame`.
+  `./decide` takes no window (provider `decisions`), so the route folds the view itself, byte for
+  byte the text of before. talky sets `view_target` to `decide` on `./route` and
+  `./screen_judge` alike -- one family for the judgement of the composite, where the presenter's
+  screen topics (source `presenter`) and the person's how-questions (source `affinity`) arrive;
+  `view_sources` names those two leaves. A cell ships no built-in target.
+  When the screen leaf holds topics, the SAME decide call asks the screen question:
   `screen.topic` over every topic plus `none`, ONE `screen.lead` over the candidates of every topic
   with two or more and ONE `screen.further` over the candidates of every topic with one or more (plus
   `none`), each candidate as `<topic>/<key>` -- three questions however many topics stand, so the call
@@ -592,8 +609,9 @@ shipped, and off every message is the bytes above. A switch here and in the sect
 - Do not set both: a product choice `screen_form` and `./screen_judge`'s `enabled` `"1"` give
   the form twice (the first stamp from the decider, the second from the judge; the presenter
   keeps the later one).
-- `./screen_judge`'s `enabled` `"1"` hears the keeper's turn beside `./route`, reads the judge
-  context (`context.judge_for` `screen_judge` takes the answer back to it, not to `./route`), asks
+- `./screen_judge`'s `enabled` `"1"` hears the keeper's turn beside `./route`, orders a view for
+  its `view_target` (`context.judge_for` `screen_judge` takes the answer back to it, not to
+  `./route`) and folds it as the route does, asks
   `./screen_model` once -- an `llm` cell whose answer is held to `{screen_form}` by
   `provider_extra.response_format` (json_schema, `active`, `accompanying`, `referring`, `none`), its
   model empty as shipped like `./decide`'s, with its own model door, refusal exit and credential
@@ -608,11 +626,11 @@ shipped, and off every message is the bytes above. A switch here and in the sect
   is read as for a turn (`context_turns`, `judge_context`; the curator answers a delta from the
   round's newest rows, the call has no generation yet, #1369), then one decide call whose text
   rides out and back in `context.route_state` on its own decide pair, and the stamp leaves as `delta_stamp` -> `./curator` `in_delta_stamp` with `text_norm`
-  and, since #1404, the partial's `call_id` and `session_id` (carried on every hop of the partial)
+  and, since #1404, the partial's handle `live` (D58 live; set on the way in) and `session_id`
   (one space between words, lower case, trailing `.!?…,;:` and space cut) -- never the collector,
   never the rim. Every exit clears `context.delta` and `context.judge_for`.
 
-**The curator decides the way (GH #1247).** `./collector -> ./curator` lifts the seam's `hop.path` into `context.path`, and beside it `hop.tools_folded` into `context.tools_folded` -- the families of the folded menu, the only names `./dispatcher` unfolds (GH #1260; every edge out to `.` deletes both). The curator's `path_routes` picks the way: `brain` (`talk`, the conversation model with its whole sidecar, GH #1260); `quick` (`simple`: the short window with the sidecar contract, the class's tools `quick_tools` callable and the stamp's other families as hints) reaches `./quick` (below); `consult` and `research` (`complex`, `research`) leave the composite as `consult` with `hop.consult_id` and the whole window, without a call of `./brain` -- the parent routes it to its backend like a `consult_cogny` call, and the answer comes back on `in_advice`. The collector ships `route_wait_ms` `0`, so no turn has a path and every call takes `brain` until an instance switches the wait on.
+**The lead decides the way (GH #1247; since GH #1474 the hive `./lead` beside the curator).** `./collector -> ./curator` names the main model, `hop.target` `brain`, the target of every call the lead names none for, and lifts the seam's `hop.path` into `context.path`, and beside it `hop.tools_folded` into `context.tools_folded` -- the families of the folded menu, the only names `./dispatcher` unfolds (GH #1260; every edge out to `.` deletes both). The lead's `path_routes` (set at `./lead`, with `departures`, `fallback`, `spec_target`, `bridge_target`, `errand_tool` and `errand_family`; the template ships them empty) picks the way: `brain` (`talk`, the conversation model with its whole sidecar, GH #1260); `quick` (`simple`: the short window with the sidecar contract, the class's tools `quick_tools` callable and the stamp's other families as hints) reaches `./quick` (below); `consult` and `research` (`complex`, `research`) leave the composite as `consult` with `hop.consult_id` and the whole window, without a call of `./brain` -- the parent routes it to its backend like a `consult_cogny` call, and the answer comes back on `in_advice`. The collector ships `route_wait_ms` `0`, so no turn has a path and every call takes `brain` until an instance switches the wait on.
 
 ### The quick voice (`./quick`, GH #1248)
 
@@ -651,7 +669,7 @@ flight, the tool round behind the bridge, and a drop the stamp already knew wait
 speculation's end. So the speculation and the bridge run on two cells of their own, both copies
 of `./quick` (the same params: model, app id, reasoning off, timeouts): `./curator ->
 ./quick_spec` takes the calls with `hop.spec` "1", `./curator -> ./quick_bridge` the bridge of a
-speculating talky (`hop.spec` "bridge", which the curator sets only with `quick_speculative` on),
+speculating talky (`hop.target` `quick_bridge`, the lead's `bridge_target` under speculation),
 and `./curator -> ./quick` everything else -- each road in a person's and an inner turn's copy,
 with the same modifiers. `./quick_spec` has exactly three edges out: its answer into `./curator`
 on `in_spec_llm`, its partials into `./curator` on `in_spec_partial` (#1411) and a refused push to `.`; no edge reaches the splitter, so a speculation only
@@ -672,7 +690,14 @@ the tool runs.
 
 ## The internal wiring, edge by edge
 
-Sixty-five edges of round in this hive's `params.graph` (the sixty-second to sixty-fifth GH #1450's: the
+Seventy-two edges of round in this hive's `params.graph` (the seventy-second D58 moveout's, GH #1476:
+the lead's orders to the curator `./lead -> ./curator` on `in_feed` -- the early interrupt of a crisis heard
+on a partial, which the curator takes because this composite sets its `feed_in` "1"; the seventieth and
+seventy-first D58 lead's, GH #1474: the curator's three lanes to its lead `./curator -> ./lead` on
+`lead_ask`, `lead_spec` and `lead_note`, and the verdict home `./lead -> ./curator` on `in_lead`; the sixty-sixth to sixty-ninth D58 target's: the
+curator's ask without a handle (`catalog_ask` without `hop.catalog_for`) onto `./brain`, `./quick`,
+`./quick_spec` and `./quick_bridge`, which it sends when it holds no profile for the target of a call;
+the sixty-second to sixty-fifth GH #1450's: the
 curator's catalogue ask `./curator -> ./brain`, `./quick`, `./quick_spec` and `./quick_bridge` on
 `catalog_ask`, each bound to its cell by `hop.catalog_for`; the fifty-eighth to sixty-first GH #1449's: the
 package lines of `./brain`, `./quick`, `./quick_spec` and `./quick_bridge` into `./curator` on `in_catalog`;
@@ -689,9 +714,9 @@ route stamp's read of the curator's wall and its answer, GH #1304, the thirty-fi
 asks for its words on its way to `./curator`, GH #1306, the thirty-sixth and thirty-seventh the
 inner turn's copies of the rounds into `./brain` and `./quick`, which set `hop.silence_ok`,
 GH #1320, the thirty-eighth and thirty-ninth a speculative quick answer's lane `in_spec_llm`
-into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the sixty-eight that ARE the
-boundary (twenty-nine door edges from `.`, thirty-nine leaving towards it, and those are the lanes
-above; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
+into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the seventy that ARE the
+boundary (thirty door edges from `.`, forty leaving towards it, and those are the lanes
+above; D58 note (GH #1477) adds the exit `note_receipt` out of `./curator`; D58 feed (GH #1481) adds the door `in_feed` into `./curator`; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
 and their two refused pushes; #1411 adds the `partial` exits of `./brain` and `./quick`, and GH #1415 the speculation's partial road `./quick_spec -> ./curator` on `in_spec_partial` and its exit `partial` out of `./curator`; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics`, `in_seed_ask` and
 `in_seed_line` into `./curator`, the screen model's door `in_model` into `./screen_model` -- and six
 exits -- `seed`, `live_feed` and `propose` out of `./curator`, `verdict` out of `./route` (a rim stamp
@@ -731,14 +756,14 @@ session-keeper --(turn, session_id -> context)-->  route       in_turn   <- besi
 route --(decide, asked_at -> context.route_asked_at)--> decide          <- one call per turn, GH #1247
 decide --(!credential_request, !refused_subscriber)--> route  in_decision  <- asked_at back on the hop
 route --(stamp)----------------> collector  in_route   <- THE ROUTE STAMP, GH #1247
-route --(turns_ask, asked_at + state -> context)--> curator  in_turns_ask  <- context_turns above 0, GH #1304
-curator --(turns, !refused_subscriber, !judge_for)--> route  in_turns  <- the person's last turns, the state back on the hop
+route --(view_ask, asked_at + state -> context)--> curator  in_view_ask  <- context_turns above 0 or judge_context, D58 #1480
+curator --(view, !refused_subscriber, !judge_for)--> route  in_view  <- the view, the state back on the hop
 route --(decide, has(state) -> context.route_state)--> decide   <- a partial's call, #1279
 decide --(context.delta '1')--> route  in_decision  <- the partial's text back on the hop, #1279
 route --(delta_stamp)----------> curator  in_delta_stamp  <- a partial's stamp, #1279
 session-keeper --(turn, session_id -> context)-->  screen_judge  in_turn  <- beside route, #1279
-screen_judge --(turns_ask, judge_for + state -> context)--> curator  in_turns_ask  <- #1279
-curator --(turns, judge_for 'screen_judge')--> screen_judge  in_turns  <- #1279
+screen_judge --(view_ask, judge_for + state -> context)--> curator  in_view_ask  <- #1279, D58 #1480
+curator --(view, judge_for 'screen_judge')--> screen_judge  in_view  <- #1279, D58 #1480
 screen_judge --(screen_model)--> screen_model   <- one structured call, #1279
 screen_model --(!credential_request, !refused_subscriber)--> screen_judge  in_verdict  <- #1279
 session-keeper --(close, session_id + channel + audience_set -> context)->  curator   in_close
@@ -764,6 +789,7 @@ curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept
    .      --(in_pack)-----------> curator    <- THE DOOR IN THE WALL, GH #458
    .      --(in_pin)------------> curator    <- another hive's pin, GH #916
    .      --(in_note)-----------> curator    <- another hive's notes, GH #1303
+   .      --(in_feed)-----------> curator    <- an order to feed a running session now, D58 feed (GH #1481)
    .      --(in_stats)----------> curator    <- an observer's question, GH #926
    .      --(in_model)----------> brain      <- THE MODEL DOOR, past the collector, GH #855
    .      --(in_model, subscriber ends /curator/summarizer)--> curator   <- GH #889
@@ -772,7 +798,7 @@ curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept
    .      --(in_model, subscriber ends /quick_spec | /quick_bridge)--> quick_spec | quick_bridge  <- the siblings' doors, #1398
    .      --(in_model, subscriber ends /screen_model)--> screen_model  <- the screen model's door, #1279
    .      --(in_delta)----------> route   in_turn, context.delta '1'  <- a voice partial, #1279
-   .      --(in_screen_topics | in_seed_ask | in_seed_line)--> curator  <- #1279
+   .      --(in_part | in_seed_ask | in_seed_line)--> curator  <- #1279, in_part D58 judge #1480
    .      --(in_bundle, context.gap_ask)--> curator  in_gap_bundle  <- a gap's find, never the collector's, GH #895
 schemas --(operation == schemas)-> collector  in_menu   <- this agent's own sidecar offer, GH #783
 brain --(stop | tool_calls | length)--> splitter  <- the sidecar cut, GH #379; length since 5.4.0, GH #843
@@ -800,6 +826,9 @@ dispatcher --(answer)--> collector   in_answer
 dispatcher --(tool, history_*)--> curator    in_history_call   <- the model's own wall, GH #893
 curator --(tool_result)----------> collector  in_tool
 curator --(consult|research)----> collector  in_depart   <- the departure of the curator's consult, so its answer finds the turn, GH #1247
+curator --(lead_ask | lead_spec | lead_note, !refused_subscriber)--> lead  <- the question of each call, the speculation's events, the notes, GH #1474
+lead --(lead_verdict)--> curator  in_lead   drops cur_origin   <- the verdict of each call, GH #1474
+lead --(in_feed)------> curator  in_feed   drops cur_origin   <- the lead's orders (the early interrupt), D58 moveout GH #1476
 
 curator --(write)------------>  .            <- the close batch, out of the write port
 curator --(pack_ack)--------->  .            <- the pack receipt, GH #458
@@ -819,7 +848,7 @@ screen_judge --(verdict)------->  .            <- the second stamp, screen_form 
 route --(stamp_out, has(verdict))--> .   route := 'verdict'  <- a rim stamp with the screen, for the presenter, #1279
 curator --(seed | live_feed | propose)-->  .   <- #1279
 
-[sealed]  session-keeper  collector  curator   [plain]  brain  quick  quick_spec  quick_bridge  schemas  splitter  dispatcher  errors  route  decide  screen_judge  screen_model
+[sealed]  session-keeper  collector  curator  lead   [plain]  brain  quick  quick_spec  quick_bridge  schemas  splitter  dispatcher  errors  route  decide  screen_judge  screen_model
 ```
 
 **A self summary is never spoken (GH #1440).** With the curator's `summarizer_self` `1` a rebuild sends the brain one call with `hop.summarize` `1`. `./curator -> ./brain` lifts `summarize`, `summary_call` and `summary_token` into the context (empty on every other call); every edge out of `./brain` -- to the splitter, the partial exit, the tap, the errors and the refusal exit -- is closed to a context with `summarize` `1`, and the answer or refusal of such a call goes to the curator on `in_summary_self` alone, the three keys dropped. Every exit's `delete_context` drops them as well, so no next turn carries them. Speculation (`./quick_spec`) and the quick voice are not touched.
@@ -827,7 +856,7 @@ curator --(seed | live_feed | propose)-->  .   <- #1279
 **The edges inside the sealed sub-units are not drawn here, and that is the point.** A sealed sub-unit takes its
 lane at its own `{"from": "."}` door edges and distributes behind them -- `session-keeper`
 alone brings eighteen edges, `collector` five, `curator` its own
-([`../curator/README.md`](../curator/README.md)) -- and none of that is
+([`../curator/README.md`](../curator/README.md)), `lead` four ([`../lead/README.md`](../lead/README.md)) -- and none of that is
 visible to, or wireable by, the hive above. What the edges above state is the
 whole of talky's own topology.
 
@@ -995,7 +1024,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@6.18.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@7.0.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1271,7 +1300,8 @@ What a `memory` section carries is the memory hive's contract (`memory-hive/inli
 not this template's: a fact names subject, predicate, claim, quote, `fact_kind`, `valid_from` and
 `source`, optionally `stance`/`via` and, since [#1456](https://github.com/mmeyerlein/meclaw/issues/1456),
 the closed class `wellbeing: true` for a fact that says how the person is doing right now -- the
-key the curator's wellbeing line reads, set by the model, never inferred from a predicate.
+key `assistant/followup` reads (since [#1479](https://github.com/mmeyerlein/meclaw/issues/1479); the
+curator kept a wellbeing line before), set by the model, never inferred from a predicate.
 
 **This used to be a TOOL, and that instruction is retracted rather than reworded**
 (owner ruling 2026-08-24 on [#373](https://github.com/mmeyerlein/meclaw/issues/373),
@@ -1368,14 +1398,15 @@ form the check does not know as `source_unknown`, a quote not in the rows of the
 as `quote_not_in_source` -- never moved to another source. The splitter stamps the section's
 rule on `hop.sidecar_verify` (and, for an `answer` or `source` field, hands the answer text
 along as `verify_answer`), the
-`./splitter -> ./curator` edge takes every stamped section, and `./curator` checks each item of
-the section's array (`items`, else its first list): both sides casefolded, NFC, curly quotes and
+`./splitter -> ./curator` edge takes every stamped section, and `./curator` checks a section its
+`sections` registers (GH #1473; a stamped section nobody registered is dropped and named, the
+talky registers `memory`) -- each item of the section's array (`items`, else its first list): both sides casefolded, NFC, curly quotes and
 dashes folded, whitespace collapsed, punctuation at the edges stripped, then the quote has to
 stand in one source at word boundaries -- under three words only as a whole source, and no fuzzy
 match counts. A passing item gains `"verified": [<fields>]`; a failing one is dropped, or with
 `"mode": "mark"` kept with `"failed": [{"field", "reason"}]` -- the memory hive files such a fact
-nowhere and receipts it as `verify_failed`. The section leaves on `sidecar`
-as before, without the rule and the answer text, even when no item survived -- "annotated,
+nowhere and receipts it as `verify_failed`. The section leaves on its registered lane
+(`sidecar` for `memory`) as before, without the rule and the answer text, even when no item survived -- "annotated,
 nothing proven" is not "not annotated". Every failed item leaves as one report on `error`
 (`hop.error_source` `sidecar_verify`, `hop.reject_reason` `quote_missing`,
 `quote_not_in_source`, `source_missing`, `source_unknown` or `store_error`, `hop.section`, `hop.field`, `hop.session_id`, `hop.turn_id`,
@@ -1702,7 +1733,7 @@ below names the CELL the knob belongs to, because that is what an
 | `memory_tier` | param | `""` | collector -- empty = no memory leg at all |
 | `memory_form` | param | `"readable"` | collector -- `readable` / `json` / `both` |
 | `turn_write` | param | `"1"` | curator/writer (the collector's until `6.0.0`, GH #889) -- **on by default** (GH #298): one message per unwritten turn leaves on route `turn_write` after every stored turn and every stored answer. `""` or `"0"` switch it off, and off means nothing said in this session reaches a memory at all |
-| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window` | param | `role` `"talky"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889), by the talky role's presets since GH #892; the full table is in the curator's README |
+| `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `short_ids`, `context_window` | param | the value set of the former role `talky` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `6.0.0` (GH #889). D58 target: the curator has no role any more; the value set stands in `./brain`'s `window_profile` alone (the target that holds its tree, so its values are the wall's too), none as knobs of `./curator`; the fast targets `./quick`, `./quick_spec` and `./quick_bridge` report every value their call's cut reads (`keep_recent` 4, `notes_share` 0, `window_target`, `state_lines`, `short_ids`, `identity_budget`, `broadcast_mode` as `./brain`'s, their tools, the slot `instructions.quick`) and no value of the wall |
 | `tools` | param | `["web_search", "web_fetch", "history_search", "history_read", "history_outline"]` | collector -- the tool names this agent **declares** it uses (GH #464). Set at this template since `4.5.0`: a channel voice wants a small, named surface, so the shipped list is two search tools and not `["*"]`, plus the model's own wall, which `./curator` answers inside (since `6.1.0`, GH #893). The schemas behind the names are asked for on the `schemas` lane and written into the brain as `system.tools`; an empty list asks nothing at all. A level that puts a reasoning core beside this surface overrides the list to add `consult_cogny` (GH #529) -- the errand is the level's, not this template's. See [The menu is asked for](#the-menu-is-asked-for-not-typed-schemas--in_menu-gh-464) |
 | `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the word-for-word check of quoted fields, per section (GH #1079): `{"<section>": {"<field>": "turn" | "turn+recall" | "answer" | "source", "mode"?, "items"?}}` (`source`, GH #1225: the rows of the source the item names itself); a section named here goes through `./curator`, which drops (or marks) every item whose quote does not stand in its source and reports each on `error`. Empty checks nothing. See [Quotes are checked word for word](#the-sidecar-inline-extraction) |
 | `answer_check` | param | `[]` | splitter -- the sections whose checker gets the sent answer on the lane `answer_check`, on every answer, written section or not (GH #1255); an array or one comma-separated string. Empty sends nothing. See [The sent answer reaches its declared checker](#the-sidecar-inline-extraction) |
@@ -1713,6 +1744,7 @@ below names the CELL the knob belongs to, because that is what an
 | `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `late_ms`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `1500`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `choices`, `stamp_out`, `context_turns`, `context_budget_tokens` | param | `{}`; `"0"`; `0`; `1500` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `unsure_families` | param | `"0"` | route -- `"1"` lets an unsure stamp keep the families the decider said yes to, its needs stay empty ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `stamp_needs_yes` | param | `"0"` | route -- `"1"` adds `needs_yes` to a judged stamp: the yes-value of every asked need the decider answered, also below `yes_threshold` ([#1466](https://github.com/mmeyerlein/meclaw/issues/1466)); never on a fallback stamp or the rim copy; off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `partial_unit`, `partial_min_chars` | param | `"off"`; `12` | quick, brain -- `sentence` streams the answer and emits each finished sentence on the lane `partial` before the final answer, a sentence shorter than `partial_min_chars` waits for the next boundary (GH #1410); declared so a set can switch it on ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes |
 | `notes_class` | param | `"talk"` | route -- the class a stamp with a choice's note leaves on, since only the `brain` way shows turn notes (GH #1340); `""` keeps the decider's path. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `fold_tools` | param | `"1"` (collector default `"0"`, GH #1248, T5-11) | collector -- talky and talky-chat see their menu folded: one tool per name-prefix family with two or more members (`web{op, args}`, `history{op, args}`, `file{op, args}`), `help` answered from the collector's menu store; a lone tool (`consult_cogny`) stays as it is. The quick voice's `tool_scope` names these families (`allow` and `hint`, GH #1248). `"0"` on the ref marker's `override_params` (`collector/assemble`) is the way back (R-WM-6) |
@@ -1747,7 +1779,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all thirty-three cells (plus four hive markers); the two `timer`s
+The composite comes up with all thirty-three cells (plus five hive markers); the two `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:

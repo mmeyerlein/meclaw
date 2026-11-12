@@ -6,26 +6,38 @@
 //!
 //! The one behaviour to keep in mind when reading this file is what happens on
 //! `Exited`. In `mcp` that event is a panic — a dead child means the cell can
-//! no longer answer anything. Here it is the ORDINARY end of a task, and
-//! panicking would restart a cell that is perfectly healthy while losing the
-//! outcome of the run. See `mcp/cell.rs` for the other side of that decision.
+//! no longer answer anything. Here it is ORDINARY, and panicking would restart
+//! a cell that is perfectly healthy. See `mcp/cell.rs` for the other side of
+//! that decision.
+//!
+//! A child and a task are not the same thing (D57 V6): a task is one TURN of a
+//! child, and it ends at the child's `result` frame, not at its exit. The
+//! handler therefore keeps three things apart — `child` (the live process),
+//! `closing` (children sent a `Shutdown` whose `Exited` is still due, oldest
+//! first) and `active` (the running turn). Because the I/O sub-task runs
+//! children strictly one after the other, every `Exited` belongs to the oldest
+//! closing child before the live one, and every frame that arrives while
+//! `closing` is not empty comes from a closing child.
 
-use crate::harness::claude_code::{self, HarnessSignal};
+use crate::harness::claude_code::{self, ChildStart, HarnessSignal};
 use crate::harness::db;
 use crate::harness::emit::{self, TaskOutcome};
 use crate::harness::io::{HarnessEvent, HarnessIo, HarnessReconfig, StartTask};
-use crate::harness::params::{ApprovalMode, HarnessOverlay, HarnessParams};
+use crate::harness::params::{
+    ApprovalMode, CUSTOM_HEADERS_ENV, HarnessOverlay, HarnessParams, SessionMode,
+};
 use crate::harness::parse::parse_tool_call;
 use crate::harness::task::{AnswerRequest, HarnessCommand, TaskRequest};
 use crate::stdio_child::{ChildCommand, ChildEvent, ChildSpec, ServeConfig};
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-/// The task currently being run, as far as the handler knows.
+/// The turn currently being run, as far as the handler knows.
 #[derive(Debug)]
 struct ActiveTask {
     task_id: String,
@@ -34,19 +46,57 @@ struct ActiveTask {
     session_id: Option<String>,
     model: Option<String>,
     started: Instant,
-    /// Set once a result frame arrived: what the harness said about itself.
-    reported: Option<ReportedOutcome>,
-    /// Set by a cancel, so the exit is classified as deliberate.
+    /// Set by a cancel: the turn then ends at its child's exit, as cancelled.
     cancelled: bool,
+    /// Context of this turn's last top-level model call (D57 V3).
+    context_tokens: Option<u64>,
 }
 
-/// What the harness reported about its own run.
-#[derive(Debug, Clone)]
-struct ReportedOutcome {
-    ok: bool,
-    num_turns: Option<u64>,
-    cost_usd: Option<f64>,
-    text: String,
+/// The live child process.
+#[derive(Debug)]
+struct LiveChild {
+    /// The task whose start spawned it — the key of a `TaskFailed`.
+    spawned_for: String,
+    /// What it was started with (model, turns, budget, resume).
+    start: ChildStart,
+    /// The process-wide `total_cost_usd` at the last `result`: the CLI
+    /// counts per process, so a turn costs the difference (OR-57-7).
+    last_total_cost_usd: Option<f64>,
+    /// Absolute workspace it runs in.
+    workspace: String,
+    /// The session its init event reported; `None` before the first.
+    session_id: Option<String>,
+}
+
+/// The open vendor session of a `persistent` cell (D57 V9), mirrored from
+/// `harness_sessions`.
+#[derive(Debug)]
+struct OpenSession {
+    session_id: String,
+    workspace: String,
+    /// Sum of its turn costs, for the cost rotation.
+    cost_usd: f64,
+}
+
+/// A session that closed and whose `session_closed` emission is still due:
+/// (session, reason, task that caused it). The close may happen in `handle`,
+/// which has no origin lane; it goes out with the next event (OR-d57.s1.6).
+type Unannounced = (String, &'static str, String);
+
+/// "Same start" for a live child (D57 V9 table, OR-57-26): model, turn and
+/// money budget are on its command line; the resume id is not compared.
+fn same_start(a: &ChildStart, b: &ChildStart) -> bool {
+    a.model == b.model && a.max_turns == b.max_turns && a.max_budget_usd == b.max_budget_usd
+}
+
+/// A child that was sent `Shutdown` and whose `Exited` is still due.
+#[derive(Debug)]
+struct ClosingChild {
+    /// The task whose start spawned it.
+    spawned_for: String,
+    /// The turn that ends with this exit — set when a cancel closed the
+    /// child under a running turn, `None` when the turn already ended.
+    turn: Option<String>,
 }
 
 /// The `harness` cell. Single-threaded state in the handler sub-task.
@@ -54,6 +104,12 @@ pub struct HarnessCell {
     params: HarnessParams,
     initial_io: Option<HarnessIo>,
     active: Option<ActiveTask>,
+    child: Option<LiveChild>,
+    closing: VecDeque<ClosingChild>,
+    /// `persistent` only: the open session.
+    session: Option<OpenSession>,
+    /// Closed sessions whose emission is still due, oldest first.
+    unannounced: Vec<Unannounced>,
     /// Cloned from the first `handle` call, so `handle_event` can talk to the
     /// child too (the trait hands the reconfig sender to `handle` only).
     ///
@@ -70,6 +126,10 @@ impl HarnessCell {
             params,
             initial_io: Some(HarnessIo),
             active: None,
+            child: None,
+            closing: VecDeque::new(),
+            session: None,
+            unannounced: Vec::new(),
             reconfig: None,
         }
     }
@@ -94,18 +154,23 @@ impl HarnessCell {
         Ok(canonical)
     }
 
-    /// Build the child spec for one task: the adapter's argv plus the whole
+    /// Build the child spec for one child: the adapter's argv plus the whole
     /// containment configuration.
-    fn child_spec(&self, task: &TaskRequest, cwd: std::path::PathBuf) -> ChildSpec {
+    fn child_spec(&self, start: &ChildStart, cwd: std::path::PathBuf) -> ChildSpec {
         let mut env = self.params.env.clone();
         for key in &self.params.env_passthrough {
             if let Ok(value) = std::env::var(key) {
                 env.push((key.clone(), value));
             }
         }
+        // AGENTS rule 15: the child's LLM requests carry the app id. Parse
+        // refuses an explicit env entry next to it, so there is one source.
+        if let Some(headers) = self.params.custom_headers() {
+            env.push((CUSTOM_HEADERS_ENV.to_string(), headers));
+        }
         ChildSpec {
             program: self.params.command.clone(),
-            args: claude_code::build_argv(&self.params, task),
+            args: claude_code::build_argv(&self.params, start),
             env,
             cwd: Some(cwd),
             kill_grace_ms: self.params.kill_grace_ms,
@@ -233,6 +298,9 @@ impl LongRunningCell for HarnessCell {
         db: &'a mut DbConn,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // A session closed while handling a message is announced here,
+            // before anything the new turn says (D57 V10, OR-d57.s1.6).
+            self.announce_closed_sessions(sink).await;
             match event {
                 // Liveness only. Recovery happened in `on_start`, before any
                 // message was served; there is nothing left to do here.
@@ -242,7 +310,7 @@ impl LongRunningCell for HarnessCell {
                     error_code,
                     detail,
                 } => {
-                    self.close_task(&task_id, "error", Some(error_code), detail, sink, db)
+                    self.on_task_failed(&task_id, error_code, detail, sink, db)
                         .await
                 }
                 HarnessEvent::Child(ChildEvent::Frame(v)) => self.on_frame(v, sink, db).await,
@@ -251,11 +319,14 @@ impl LongRunningCell for HarnessCell {
                     // emission — the operator can read the child's stderr.
                     tracing::debug!(line = %raw, "harness: non-json line from child");
                 }
-                // The ordinary end of a task. NOT a panic: unlike `mcp`, this
-                // cell survives its child by design — it exists to run the
-                // next task, and panicking would also lose this one's outcome.
+                // NOT a panic: unlike `mcp`, this cell survives its child by
+                // design — it exists to run the next task.
                 HarnessEvent::Child(ChildEvent::Exited(exit)) => {
                     self.on_exit(exit.detail(), sink, db).await
+                }
+                HarnessEvent::IdleExpired => self.on_idle().await,
+                HarnessEvent::WriteFailed { detail } => {
+                    self.on_write_failed(detail, sink, db).await
                 }
             }
         }
@@ -285,14 +356,7 @@ impl HarnessCell {
             return;
         };
 
-        let current = HarnessOverlay {
-            model: self.params.model.clone(),
-            max_turns: self.params.max_turns,
-            max_budget_usd: self.params.max_budget_usd,
-            startup_timeout_ms: self.params.startup_timeout_ms,
-            external_timeout_ms: self.params.external_timeout_ms,
-            query_timeout_ms: self.params.query_timeout_ms,
-        };
+        let current = HarnessOverlay::of(&self.params);
         let (new_overlay, persisted) = match crate::params_overlay::apply_update(&current, &update)
         {
             Ok(pair) => pair,
@@ -334,12 +398,7 @@ impl HarnessCell {
             }
         }
 
-        self.params.model = new_overlay.model;
-        self.params.max_turns = new_overlay.max_turns;
-        self.params.max_budget_usd = new_overlay.max_budget_usd;
-        self.params.startup_timeout_ms = new_overlay.startup_timeout_ms;
-        self.params.external_timeout_ms = new_overlay.external_timeout_ms;
-        self.params.query_timeout_ms = new_overlay.query_timeout_ms;
+        new_overlay.apply_to(&mut self.params);
         db.set_query_timeout(Some(Duration::from_millis(self.params.query_timeout_ms)));
     }
 
@@ -407,10 +466,41 @@ impl HarnessCell {
             }
         }
 
-        let spec = self.child_spec(&task, cwd);
+        let mut start = ChildStart::for_task(&self.params, &task);
+        let to_live_child = self.params.session == SessionMode::Persistent
+            && self.decide(&task, &workspace, &mut start, db).await;
+        if to_live_child {
+            // A follow-up turn: no spawn, the prompt goes to the live child
+            // (V2). Its tombstone is already written, before the send (V8).
+            self.active = Some(ActiveTask {
+                task_id: task.task_id.clone(),
+                workspace,
+                session_id: None,
+                model: None,
+                started: Instant::now(),
+                cancelled: false,
+                context_tokens: None,
+            });
+            let line = claude_code::build_user_turn(&task.prompt);
+            if !self
+                .to_io(HarnessReconfig::Child(ChildCommand::Send {
+                    line,
+                    correlate: None,
+                    reply: None,
+                }))
+                .await
+            {
+                tracing::error!("harness: io task unreachable, turn recorded but not sent");
+            }
+            emit::accepted(sink, msg, &task.task_id, call_id).await;
+            return;
+        }
+        let spec = self.child_spec(&start, cwd);
         let started = StartTask {
             task_id: task.task_id.clone(),
             spec,
+            // The prompt travels as the first turn, never on the argv (V1/V2).
+            first_turn: Some(claude_code::build_user_turn(&task.prompt)),
             startup_timeout: Duration::from_millis(self.params.startup_timeout_ms),
             serve: ServeConfig {
                 write_timeout: Duration::from_millis(self.params.external_timeout_ms),
@@ -419,12 +509,26 @@ impl HarnessCell {
         };
         self.active = Some(ActiveTask {
             task_id: task.task_id.clone(),
-            workspace,
+            workspace: workspace.clone(),
             session_id: None,
             model: None,
             started: Instant::now(),
-            reported: None,
             cancelled: false,
+            context_tokens: None,
+        });
+        // A new child for every task (`per_task`), or for a turn the live
+        // child cannot take (`persistent`, D57 V9 table). Should one still be alive,
+        // it is closed first; the I/O sub-task holds this `Start` until that
+        // child's exit, so the order on the channel is the order of events.
+        if self.child.is_some() {
+            self.close_child(None).await;
+        }
+        self.child = Some(LiveChild {
+            spawned_for: task.task_id.clone(),
+            start,
+            last_total_cost_usd: None,
+            workspace,
+            session_id: None,
         });
         if !self.to_io(HarnessReconfig::Start(started)).await {
             // The I/O side is gone; the tombstone stays, and the supervisor
@@ -523,14 +627,22 @@ impl HarnessCell {
             .await;
             return;
         }
+        if active.cancelled {
+            // Already on its way out; a second Shutdown could only ever reach
+            // a child that is not this turn's.
+            emit::accepted(sink, msg, task_id, call_id).await;
+            return;
+        }
         active.cancelled = true;
 
         let (id, detail, now) = (task_id.to_string(), reason.to_string(), now_rfc3339());
         let _ = db
             .call_with_timeout(move |c| db::finish_task(c, &id, "cancelled", &detail, &now))
             .await;
-        self.to_io(HarnessReconfig::Child(ChildCommand::Shutdown))
-            .await;
+        // The turn stays in `active` until exactly this child's exit — even if
+        // that child has not even been spawned yet because an older one is
+        // still closing (OR-57-24).
+        self.close_child(Some(task_id.to_string())).await;
         emit::accepted(sink, msg, task_id, call_id).await;
     }
 
@@ -586,6 +698,20 @@ impl HarnessCell {
             tracing::error!("harness: restart recovery could not read the task table");
             return;
         };
+        // V12: the open session survives the restart; the next task resumes
+        // it. Only the turn that was running is a tombstone.
+        if self.params.session == SessionMode::Persistent {
+            match db.call_with_timeout(|c| db::load_open_session(c)).await {
+                Ok(Ok(row)) => {
+                    self.session = row.map(|r| OpenSession {
+                        session_id: r.session_id,
+                        workspace: r.workspace,
+                        cost_usd: r.cost_usd,
+                    })
+                }
+                _ => tracing::error!("harness: restart recovery could not read the session table"),
+            }
+        }
         for row in orphans {
             emit::result(
                 sink,
@@ -596,15 +722,34 @@ impl HarnessCell {
         }
     }
 
-    /// One frame from the running child.
+    /// One frame from a child.
     async fn on_frame(
         &mut self,
         frame: meclaw_core::serde_json::Value,
         sink: &OriginSink,
         db: &mut DbConn,
     ) {
+        if !self.closing.is_empty() {
+            // The I/O sub-task runs children one after the other, so this
+            // frame is the closing child's — a late `result` of a replaced
+            // child must never close the next turn (OR-57-31 M4).
+            tracing::debug!("harness: frame of a closing child, not booked");
+            return;
+        }
+        // V3: the turn remembers the context of its last top-level call.
+        if let Some(tokens) = claude_code::call_context_tokens(&frame)
+            && let Some(active) = &mut self.active
+        {
+            active.context_tokens = Some(tokens);
+        }
         match claude_code::classify(&frame) {
             HarnessSignal::Started { session_id, model } => {
+                if let Some(child) = &mut self.child {
+                    child.session_id = Some(session_id.clone());
+                }
+                if self.params.session == SessionMode::Persistent {
+                    self.open_session(&session_id, sink, db).await;
+                }
                 let Some(active) = &mut self.active else {
                     return;
                 };
@@ -660,17 +805,296 @@ impl HarnessCell {
                 cost_usd,
                 text,
             } => {
-                if let Some(active) = &mut self.active {
-                    active.reported = Some(ReportedOutcome {
-                        ok,
-                        num_turns,
-                        cost_usd,
-                        text: text.unwrap_or_default(),
-                    });
-                }
+                self.on_finished(ok, num_turns, cost_usd, text, sink, db)
+                    .await
             }
             HarnessSignal::Ignored => {}
         }
+    }
+
+    /// The turn reported its own end: close it here, not at the exit (V7).
+    ///
+    /// The child does not end on its own any more — its stdin stays open for
+    /// the next turn — so `per_task` closes it right after the turn; the exit
+    /// that follows is silent.
+    async fn on_finished(
+        &mut self,
+        ok: bool,
+        num_turns: Option<u64>,
+        total_cost_usd: Option<f64>,
+        text: Option<String>,
+        sink: &OriginSink,
+        db: &mut DbConn,
+    ) {
+        // A cancelled turn ends at its child's exit; a late result changes
+        // nothing.
+        if self.active.as_ref().is_none_or(|a| a.cancelled) {
+            return;
+        }
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        let cost_usd = match self.child.as_mut() {
+            Some(child) => {
+                let turn = turn_cost(total_cost_usd, child.last_total_cost_usd);
+                child.last_total_cost_usd = total_cost_usd.or(child.last_total_cost_usd);
+                turn
+            }
+            None => total_cost_usd,
+        };
+        let (status, error_code) = if ok {
+            ("ok", None)
+        } else {
+            ("error", Some("harness_crashed"))
+        };
+        let persistent = self.params.session == SessionMode::Persistent;
+        let ended = if persistent {
+            self.book_turn(ok, &active, cost_usd, sink, db).await
+        } else {
+            false
+        };
+        self.finish_turn(
+            active,
+            status,
+            error_code,
+            text.unwrap_or_default(),
+            num_turns,
+            cost_usd,
+            true,
+            sink,
+            db,
+        )
+        .await;
+        if !persistent || !ok || ended {
+            // `per_task`: the child has done its one task. `persistent`: a
+            // failed turn closes the child, the session stays open (an
+            // expired login or a spent process budget fails every later turn
+            // on the same process, OR-57-26); a rotated session closes it too.
+            self.close_child(None).await;
+        } else {
+            self.to_io(HarnessReconfig::ArmIdle(Duration::from_millis(
+                self.params.session_idle_ms,
+            )))
+            .await;
+        }
+    }
+
+    /// `persistent`: book a finished turn on its session and decide whether
+    /// the session ends (D57 V7/V9/V10). The `session_closed` emission goes
+    /// out here — BEFORE the turn's `result`, which stays the last word of a
+    /// task (OR-57-31). Returns whether the session ended.
+    async fn book_turn(
+        &mut self,
+        ok: bool,
+        active: &ActiveTask,
+        cost_usd: Option<f64>,
+        sink: &OriginSink,
+        db: &mut DbConn,
+    ) -> bool {
+        // A lost session (OR-57-25): the child was to resume one, failed, and
+        // never said hello — the CLI does not know the session any more.
+        let lost = self
+            .child
+            .as_ref()
+            .filter(|c| !ok && c.session_id.is_none())
+            .and_then(|c| c.start.resume_session_id.clone());
+        if let Some(lost) = lost {
+            if self.session.as_ref().is_some_and(|s| s.session_id == lost) {
+                self.session = None;
+            }
+            let (id, now) = (lost.clone(), now_rfc3339());
+            let _ = db
+                .call_with_timeout(move |c| db::close_session(c, &id, "lost", &now))
+                .await;
+            self.unannounced
+                .push((lost, "lost", active.task_id.clone()));
+            self.announce_closed_sessions(sink).await;
+            return true;
+        }
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        let cost = cost_usd.unwrap_or(0.0);
+        session.cost_usd += cost;
+        let (id, context) = (session.session_id.clone(), active.context_tokens);
+        let _ = db
+            .call_with_timeout(move |c| db::record_turn(c, &id, cost, context))
+            .await;
+        let reason = if self
+            .params
+            .session_max_context_tokens
+            .is_some_and(|max| context.is_some_and(|t| t >= max))
+        {
+            Some("context")
+        } else if self
+            .params
+            .session_max_usd
+            .is_some_and(|max| session.cost_usd >= max)
+        {
+            Some("cost")
+        } else {
+            None
+        };
+        let Some(reason) = reason else {
+            return false;
+        };
+        self.end_session(reason, &active.task_id, db).await;
+        self.announce_closed_sessions(sink).await;
+        true
+    }
+
+    /// `persistent`: which child a task's turn goes to (D57 V9 table). Returns
+    /// `true` when the live child takes it; otherwise `start` is what the new
+    /// child is started with, and the sessions the table ends are closed.
+    async fn decide(
+        &mut self,
+        task: &TaskRequest,
+        workspace: &str,
+        start: &mut ChildStart,
+        db: &mut DbConn,
+    ) -> bool {
+        let fits = |c: &LiveChild| c.workspace == workspace && same_start(&c.start, start);
+        if task.new_session {
+            start.resume_session_id = None;
+            self.end_session("new_session", &task.task_id, db).await;
+            return false;
+        }
+        if let Some(wanted) = &task.resume_session_id {
+            if self
+                .child
+                .as_ref()
+                .is_some_and(|c| c.session_id.as_ref() == Some(wanted) && fits(c))
+            {
+                return true;
+            }
+            if self
+                .session
+                .as_ref()
+                .is_some_and(|s| &s.session_id != wanted)
+            {
+                self.end_session("replaced", &task.task_id, db).await;
+            }
+            return false;
+        }
+        if self.child.as_ref().is_some_and(fits) {
+            return true;
+        }
+        match &self.session {
+            // Another model or budget, same tree: a new child continues the
+            // session (OR-57-16).
+            Some(open) if open.workspace == workspace => {
+                start.resume_session_id = Some(open.session_id.clone());
+            }
+            // A session never carries the context of another tree.
+            Some(_) => self.end_session("workspace", &task.task_id, db).await,
+            None => {}
+        }
+        false
+    }
+
+    /// `persistent`: a child said hello — its session is the open one now.
+    /// The key is the id it reported, not the one that was asked for; any
+    /// other open session is replaced (OR-57-31).
+    async fn open_session(&mut self, session_id: &str, sink: &OriginSink, db: &mut DbConn) {
+        let Some(workspace) = self.child.as_ref().map(|c| c.workspace.clone()) else {
+            return;
+        };
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.session_id != session_id)
+        {
+            let task = self
+                .active
+                .as_ref()
+                .map(|a| a.task_id.clone())
+                .unwrap_or_default();
+            if let Some(old) = self.session.take() {
+                // The table row is closed by `open_session` below.
+                self.unannounced.push((old.session_id, "replaced", task));
+            }
+            self.announce_closed_sessions(sink).await;
+        }
+        let (id, ws, now) = (session_id.to_string(), workspace.clone(), now_rfc3339());
+        let cost = match db
+            .call_with_timeout(move |c| db::open_session(c, &id, &ws, &now))
+            .await
+        {
+            Ok(Ok(cost)) => cost,
+            _ => {
+                tracing::error!("harness: the session table could not be written");
+                0.0
+            }
+        };
+        self.session = Some(OpenSession {
+            session_id: session_id.to_string(),
+            workspace,
+            cost_usd: cost,
+        });
+    }
+
+    /// Close the open session, if any, for `reason`; the emission follows.
+    async fn end_session(&mut self, reason: &'static str, task_id: &str, db: &mut DbConn) {
+        let Some(open) = self.session.take() else {
+            return;
+        };
+        let (id, now) = (open.session_id.clone(), now_rfc3339());
+        let _ = db
+            .call_with_timeout(move |c| db::close_session(c, &id, reason, &now))
+            .await;
+        self.unannounced
+            .push((open.session_id, reason, task_id.to_string()));
+    }
+
+    /// Emit `session_closed` for every closed session not yet announced.
+    async fn announce_closed_sessions(&mut self, sink: &OriginSink) {
+        for (session_id, reason, task_id) in std::mem::take(&mut self.unannounced) {
+            emit::progress(
+                sink,
+                self.params.emit_to.clone(),
+                &task_id,
+                Some(&session_id),
+                "session_closed",
+                None,
+                Some(reason),
+            )
+            .await;
+        }
+    }
+
+    /// The idle deadline passed (D57 V10): an idle live child closes; the
+    /// session stays open and the next task resumes it. Silent.
+    async fn on_idle(&mut self) {
+        if self.active.is_some() || self.child.is_none() {
+            return;
+        }
+        tracing::info!("harness: idle child closed, the session stays open");
+        self.close_child(None).await;
+    }
+
+    /// A follow-up turn could not be written to the live child: the turn
+    /// ends as `harness_crashed` and the child closes (OR-57-31 M5).
+    async fn on_write_failed(&mut self, detail: String, sink: &OriginSink, db: &mut DbConn) {
+        if !self.closing.is_empty() || self.child.is_none() {
+            // The write belonged to a child that is already on its way out.
+            return;
+        }
+        let Some(active) = self.active.take_if(|a| !a.cancelled) else {
+            return;
+        };
+        self.finish_turn(
+            active,
+            "crashed",
+            Some("harness_crashed"),
+            format!("the turn could not be written to the harness: {detail}"),
+            None,
+            None,
+            true,
+            sink,
+            db,
+        )
+        .await;
+        self.close_child(None).await;
     }
 
     /// A permission question. With the channel off it is denied immediately —
@@ -711,37 +1135,142 @@ impl HarnessCell {
         }
     }
 
-    /// The child is gone: decide what that means and close the task out.
+    /// A child is gone. It is the oldest closing child, or else the live one.
     async fn on_exit(&mut self, exit_detail: String, sink: &OriginSink, db: &mut DbConn) {
-        let Some(active) = self.active.take() else {
-            // A child died that we were not tracking — a cancel already closed
-            // the books, or the exit arrived twice.
-            return;
-        };
-        let duration_ms = active.started.elapsed().as_millis() as u64;
-        let (status, error_code, text) = match (&active.reported, active.cancelled) {
-            (_, true) => (
+        if let Some(closed) = self.closing.pop_front() {
+            // Closed on purpose. Silent — unless a cancel bound a turn to
+            // exactly this exit.
+            let Some(turn) = closed.turn else { return };
+            let Some(active) = self.active.take_if(|a| a.task_id == turn) else {
+                return;
+            };
+            self.finish_turn(
+                active,
                 "cancelled",
                 Some("cancelled"),
                 format!("cancelled by the topology ({exit_detail})"),
-            ),
-            (Some(r), false) if r.ok => ("ok", None, r.text.clone()),
-            (Some(r), false) => ("error", Some("harness_crashed"), r.text.clone()),
-            (None, false) => (
-                "crashed",
-                Some("harness_crashed"),
-                format!("the harness ended without reporting a result ({exit_detail})"),
-            ),
+                None,
+                None,
+                // A cancel already wrote its tombstone; do not overwrite it.
+                false,
+                sink,
+                db,
+            )
+            .await;
+            return;
+        }
+        if self.child.take().is_none() {
+            // A child died that we were not tracking, or the exit arrived twice.
+            return;
+        }
+        // The live child died. A turn still running never got its result.
+        let Some(active) = self.active.take() else {
+            return;
         };
+        self.finish_turn(
+            active,
+            "crashed",
+            Some("harness_crashed"),
+            format!("the harness ended without reporting a result ({exit_detail})"),
+            None,
+            None,
+            true,
+            sink,
+            db,
+        )
+        .await;
+    }
 
-        // A cancel already wrote its tombstone; do not overwrite it.
-        if !active.cancelled {
+    /// A child never got going (spawn, first write, startup). It ends without
+    /// an `Exited`, so it leaves the books here.
+    async fn on_task_failed(
+        &mut self,
+        task_id: &str,
+        error_code: &'static str,
+        detail: String,
+        sink: &OriginSink,
+        db: &mut DbConn,
+    ) {
+        if self
+            .child
+            .as_ref()
+            .is_some_and(|c| c.spawned_for == task_id)
+        {
+            self.child = None;
+        } else if let Some(i) = self.closing.iter().rposition(|c| c.spawned_for == task_id) {
+            self.closing.remove(i);
+        }
+        let Some(active) = self.active.take_if(|a| a.task_id == task_id) else {
+            return;
+        };
+        if active.cancelled {
+            // The cancel already wrote its tombstone and was promised a
+            // `cancelled` outcome; the failed start does not change that.
+            self.finish_turn(
+                active,
+                "cancelled",
+                Some("cancelled"),
+                format!("cancelled by the topology ({detail})"),
+                None,
+                None,
+                false,
+                sink,
+                db,
+            )
+            .await;
+            return;
+        }
+        self.finish_turn(
+            active,
+            "error",
+            Some(error_code),
+            detail,
+            None,
+            None,
+            true,
+            sink,
+            db,
+        )
+        .await;
+    }
+
+    /// Send the live child a `Shutdown` and book it as closing. `turn` names
+    /// the turn that ends with its exit (a cancel), if any.
+    async fn close_child(&mut self, turn: Option<String>) {
+        let Some(child) = self.child.take() else {
+            tracing::error!("harness: no live child to close");
+            return;
+        };
+        self.closing.push_back(ClosingChild {
+            spawned_for: child.spawned_for,
+            turn,
+        });
+        self.to_io(HarnessReconfig::Child(ChildCommand::Shutdown))
+            .await;
+    }
+
+    /// Close a turn: tombstone (unless already written), then the `result`
+    /// emission — always the last word of a task.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_turn(
+        &mut self,
+        active: ActiveTask,
+        status: &'static str,
+        error_code: Option<&'static str>,
+        text: String,
+        num_turns: Option<u64>,
+        cost_usd: Option<f64>,
+        write_tombstone: bool,
+        sink: &OriginSink,
+        db: &mut DbConn,
+    ) {
+        let duration_ms = active.started.elapsed().as_millis() as u64;
+        if write_tombstone {
             let (id, detail, now) = (active.task_id.clone(), text.clone(), now_rfc3339());
             let _ = db
                 .call_with_timeout(move |c| db::finish_task(c, &id, status, &detail, &now))
                 .await;
         }
-
         emit::result(
             sink,
             self.params.emit_to.clone(),
@@ -751,8 +1280,8 @@ impl HarnessCell {
                 status,
                 workspace: active.workspace,
                 duration_ms,
-                num_turns: active.reported.as_ref().and_then(|r| r.num_turns),
-                cost_usd: active.reported.as_ref().and_then(|r| r.cost_usd),
+                num_turns,
+                cost_usd,
                 model: active.model,
                 error_code,
                 text,
@@ -760,54 +1289,35 @@ impl HarnessCell {
         )
         .await;
     }
+}
 
-    /// Close a task that never got a child, from an I/O-side failure.
-    async fn close_task(
-        &mut self,
-        task_id: &str,
-        status: &'static str,
-        error_code: Option<&'static str>,
-        detail: String,
-        sink: &OriginSink,
-        db: &mut DbConn,
-    ) {
-        let active = self.active.take();
-        let workspace = active
-            .as_ref()
-            .filter(|a| a.task_id == task_id)
-            .map(|a| a.workspace.clone())
-            .unwrap_or_default();
-        let duration_ms = active
-            .as_ref()
-            .map(|a| a.started.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-
-        let (id, text, now) = (task_id.to_string(), detail.clone(), now_rfc3339());
-        let _ = db
-            .call_with_timeout(move |c| db::finish_task(c, &id, status, &text, &now))
-            .await;
-
-        emit::result(
-            sink,
-            self.params.emit_to.clone(),
-            &TaskOutcome {
-                task_id: task_id.to_string(),
-                session_id: active.and_then(|a| a.session_id),
-                status,
-                workspace,
-                duration_ms,
-                num_turns: None,
-                cost_usd: None,
-                model: None,
-                error_code,
-                text: detail,
-            },
-        )
-        .await;
+/// What one turn cost, from the process-wide counter (OR-57-7): the
+/// difference to the last turn's total; a total below it means a new counter,
+/// and the total is then the turn's cost.
+fn turn_cost(total: Option<f64>, last: Option<f64>) -> Option<f64> {
+    match (total, last) {
+        (Some(t), Some(l)) if t >= l => Some(t - l),
+        (t, _) => t,
     }
 }
 
 /// Second-precision UTC timestamp, the format the other cell types persist.
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::turn_cost;
+
+    /// OR-57-7: a turn costs its share of the process-wide counter; a total
+    /// below the last one is a fresh counter (a new process), and then the
+    /// total itself is the turn's cost — never a negative difference.
+    #[test]
+    fn a_falling_total_is_a_fresh_counter() {
+        assert_eq!(turn_cost(Some(0.75), Some(0.25)), Some(0.5));
+        assert_eq!(turn_cost(Some(0.1), Some(0.25)), Some(0.1));
+        assert_eq!(turn_cost(Some(0.1), None), Some(0.1));
+        assert_eq!(turn_cost(None, Some(0.25)), None);
+    }
 }

@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -55,7 +58,7 @@ fn plan_of(rows: Vec<Value>) -> Value {
     // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
     // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (got, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
+        curator_profiles::set_knobs("talky", json!({"keep_recent": 1, "keep_recent_tokens": 0})),
         "window_plan(ARGS['rows'], [], [], [], {}, ARGS['as_of'], [], [], 0, '[\"member:e\"]')",
         json!({"rows": rows, "as_of": AS_OF_MS}),
     );
@@ -109,11 +112,13 @@ fn a_replayed_week_ages_by_turn_time() {
 fn an_unstamped_wall_keeps_the_plan_of_before() {
     // The plan curator 1.11.5 made of the same rows without `turn_at`: one
     // ingest day, everything raw, nothing to condense -- byte for byte.
+    // R-58-15 (D58 target): the plan names no role any more; its field
+    // `role` ("talky") is taken out of the record, nothing else.
     let golden = json!({"chain": false, "notes": [], "pin_add": [], "pin_audience": [],
         "pin_drop": [], "pin_drop_audience": [],
         "plan": {"as_of_ms": 1_791_795_720_000i64, "cover": 1_791_795_599_999_999i64,
                  "keep": [], "marks_on": {}, "marks_to": 0,
-                 "marks_to_by": {"[\"member:e\"]": 0}, "released": [], "role": "talky",
+                 "marks_to_by": {"[\"member:e\"]": 0}, "released": [],
                  "round": "[\"member:e\"]", "shrunk": [], "stubs": [], "sum_from": 0,
                  "sum_to": 0, "summary": "", "v": 1},
         "todo": []});
@@ -147,7 +152,7 @@ fn a_replay_ahead_of_the_wall_clock_expires_nothing_early() {
     // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
     // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (shown, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
+        curator_profiles::set_knobs("talky", json!({"keep_recent": 1, "keep_recent_tokens": 0})),
         "[el['text'] for _, el, _, _ in render(blocks_of_rows(ARGS['rows'], [], None), ARGS['rows'], {}, window_plan(ARGS['rows'], [], \
          [], [], {}, ARGS['as_of'], [], [], 0, '[\"member:e\"]')['plan'], None, None, \
          '[\"member:e\"]')]",
@@ -186,7 +191,7 @@ fn plan_after(rows: Vec<Value>, prev: &Value) -> Value {
     // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
     // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (got, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
+        curator_profiles::set_knobs("talky", json!({"keep_recent": 1, "keep_recent_tokens": 0})),
         "window_plan(ARGS['rows'], [], [], [], ARGS['prev'], ARGS['as_of'], [], [], 0, \
          '[\"member:e\"]')",
         json!({"rows": rows, "prev": prev, "as_of": AS_OF_MS}),
@@ -246,10 +251,7 @@ fn a_chained_summary_is_dated_by_its_first_turn() {
 /// (`row_time`), not the replay's ingest minute (KD § 1 K-1, review M-5).
 #[test]
 fn the_summary_leaf_names_the_turn_time_of_its_rows() {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(1)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]).reporting_composite("talky");
     let base = chrono::Utc::now() - chrono::Duration::seconds(50);
     for i in 0..4i64 {
         let at = base + chrono::Duration::milliseconds(100 * i);

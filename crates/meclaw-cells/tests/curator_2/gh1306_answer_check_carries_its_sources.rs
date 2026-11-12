@@ -623,3 +623,64 @@ fn gh1306_answer_check_reads_every_word_of_its_turn_in_order() {
         );
     }
 }
+
+// ------------------------------------------------------------ 7. the window is the turn's
+
+/// GH #1471: the window of the checked call is the one its turn keeps. With
+/// the form on, the first call of `t2` lays the row its turn is cut by; a
+/// plan written in the middle of the turn (its cover past `t1`) changes the
+/// plan that stands and not the window of the call, so the check still
+/// carries `t1`'s recall. Once the row is gone (the turn ended), the check
+/// reads the plan that stands.
+#[test]
+fn gh1471_answer_check_reads_what_its_turn_is_cut_by() {
+    if !shipped() {
+        return;
+    }
+    let mut h = Hive::with(&[
+        ("policy", "recall_in_wall", json!("1")),
+        ("policy", "snapshot_window", json!("1")),
+    ]);
+    let call = two_rounds(&mut h);
+    let row = format!("pending:turn_cut:{}:s1:t2", round_key(ROUND_E));
+    assert_ne!(
+        h.state(&row),
+        "",
+        "check of the setup: the turn keeps what its first call was cut by: {:?}",
+        h.stderr
+    );
+    let block = r#"{"claims": {"claims": [{"said": "ripe soon"}]}, "memory": {"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}}"#;
+    let out = split("stop", &answer_with(PROSE, block), Some(json!(SOURCES)));
+    let check = the_check(&out);
+
+    let t1_last = h.rows("SELECT max(seq) FROM wall WHERE turn_id = 't1'")[0][0]
+        .as_i64()
+        .expect("t1 on the wall");
+    h.db.execute(
+        "INSERT OR REPLACE INTO state (key, value) VALUES (?1, ?2)",
+        [
+            &format!("window_plan:{}", round_key(ROUND_E)),
+            &canonical(&json!({"cover": t1_last})),
+        ],
+    )
+    .expect("the plan");
+    hand_in(&mut h, &call, &check);
+    let got = h.routed("answer_check");
+    assert_eq!(got.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert_eq!(
+        recall_texts(&got[0]),
+        vec![EARLIER_RECALL, RECALL],
+        "the check reads the window its turn keeps, not the plan written since"
+    );
+
+    h.db.execute("DELETE FROM state WHERE key = ?1", [&row])
+        .expect("the row of the turn");
+    hand_in(&mut h, &call, &check);
+    let got = h.routed("answer_check");
+    assert_eq!(got.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert_eq!(
+        recall_texts(&got[0]),
+        vec![RECALL],
+        "without a row of the turn the check reads the plan that stands"
+    );
+}

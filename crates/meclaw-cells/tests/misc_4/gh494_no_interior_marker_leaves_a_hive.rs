@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 37] = [
+const SHARED: [&str; 38] = [
     "actor",
     "asker",
     "audience_now",
@@ -122,6 +122,14 @@ const SHARED: [&str; 37] = [
     "episode_turn_id",
     "happened_at",
     "iter",
+    // D58 live (GH #1482) -- the handle of a running session of its own, the
+    // one key the curator knows such a session by. The member's and talky's
+    // edges set it off the voice's `call_id` (only for a duplex call), it rides
+    // into the curator, and the curator's answers (`sidecar`, `seed`,
+    // `live_facts`, `live_feed`) leave under it, so the composition can give
+    // the voice its `call_id` back on the way out. Cleared at a rim, no answer
+    // would find its session.
+    "live",
     "memory_call_id",
     // The five recall keys below (`memory_tier`, `recall_as_of`, `recall_query`,
     // `recall_window_from`, `recall_window_to`) are shared between the member and

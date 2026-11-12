@@ -151,7 +151,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
              "condition": "has(hop.route) && hop.route == 'curate'",
              "modifier": {"set_hop": {"route": "'in_curate'"}}},
             {"from": "./curator", "to": "./brain",
-             "condition": "has(hop.route) && hop.route == 'brain'",
+             "condition": "has(hop.route) && hop.route == 'model_call'",
              "modifier": {"set_context": {"curator_call": "hop.curator_call",
                                           "turn_id": "hop.turn_id",
                                           "session_id": "hop.session_id",
@@ -161,7 +161,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
              "condition": "has(hop.route) && hop.route == 'tap'",
              "modifier": {"set_hop": {"route": "'in_llm'"}}},
             {"from": "./curator", "to": "/sink",
-             "condition": "has(hop.route) && hop.route != 'brain'"}
+             "condition": "has(hop.route) && hop.route != 'model_call'"}
         ]}}}),
     );
     write(

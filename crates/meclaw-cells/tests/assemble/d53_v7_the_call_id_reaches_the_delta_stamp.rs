@@ -68,12 +68,11 @@ fn a_delta_stamp_of_a_call_carries_its_call_id() {
     // ... the wall ask too, and the decide call after it.
     let over = [("context_turns", json!(3))];
     let out = run_cell(ROUTE, &over, lane("in_turn", call(), ctx(true), said())).0;
-    assert_eq!(on(&out, "turns_ask")["header"]["call_id"], "call-7");
+    assert_eq!(on(&out, "view_ask")["header"]["call_id"], "call-7");
     let mut hop = call();
     hop["state"] = json!("I do not want to go on.");
     hop["asked_at"] = json!(in_time());
-    let mut back = lane("in_turns", hop, ctx(true), json!([]));
-    back["turns"] = json!([]);
+    let back = lane("in_view", hop, ctx(true), json!([]));
     let out = run_cell(ROUTE, &over, back).0;
     assert_eq!(on(&out, "decide")["header"]["call_id"], "call-7");
 

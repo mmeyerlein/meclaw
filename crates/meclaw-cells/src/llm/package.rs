@@ -14,7 +14,9 @@
 //!   a model answer or dead-letter it as `no_route` (OR-SN.L2.1); with it on,
 //!   [`package_line`] is the one emission (GH #1449).
 
-use crate::llm::params::{CacheMode, LlmParams, MODEL_PACKAGE_KEYS, WireDialect};
+use crate::llm::params::{
+    CacheMode, LlmParams, MODEL_PACKAGE_KEYS, PACKAGE_LINE_TRIGGER_KEYS, WireDialect,
+};
 use crate::params_overlay::RESET_KEY;
 use meclaw_core::serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -66,11 +68,29 @@ pub const PACKAGE_LINE_KEYS: &[&str] = &[
     "chars_per_token",
 ];
 
+/// D58 target (GH #1483): true iff `update` sets or resets a key the line
+/// carries beside the package ([`PACKAGE_LINE_TRIGGER_KEYS`]).
+fn touches_line_slot(update: &Map<String, Value>) -> bool {
+    update.iter().any(|(key, value)| {
+        if key == RESET_KEY {
+            return value.as_array().is_some_and(|names| {
+                names.iter().any(|n| {
+                    n.as_str()
+                        .is_some_and(|n| PACKAGE_LINE_TRIGGER_KEYS.contains(&n))
+                })
+            });
+        }
+        PACKAGE_LINE_TRIGGER_KEYS.contains(&key.as_str())
+    })
+}
+
 /// GH #1449: whether a params-only update gets the package line: the cell has
 /// `package_line` on, and the slot touched a package key -- or is empty, the
-/// question (one round trip, no polling).
+/// question (one round trip, no polling). D58 target (GH #1483): or the slot
+/// set or reset a key the line carries beside the package.
 pub(crate) fn wants_package_line(params: &LlmParams, update: &Map<String, Value>) -> bool {
-    params.package_line && (update.is_empty() || touches_package(update))
+    params.package_line
+        && (update.is_empty() || touches_package(update) || touches_line_slot(update))
 }
 
 /// GH #1449: the package line of `params`, sent by the cell at `own` (the
@@ -117,10 +137,15 @@ pub(crate) fn package_line(own: &str, params: &LlmParams) -> Value {
             Value::Null
         },
     );
+    // D58 target (GH #1483, OR-d58-2.target.2): the profile and the order of
+    // the system part travel in slots of their own beside `package`, whose
+    // keys stay the registry's.
     meclaw_core::serde_json::json!({
         "header": {"route": PACKAGE_ROUTE, "package_of": own},
         "messages": [],
         "package": Value::Object(package),
+        "window_profile": params.window_profile.clone(),
+        "system_order": params.system_order.clone(),
     })
 }
 

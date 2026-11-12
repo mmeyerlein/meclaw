@@ -48,6 +48,7 @@
 //! rather than judged.
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
 use meclaw_colony::api_dto::ReadGraphReply;
 use meclaw_colony::{
     CellFactory, CellFactoryRegistry, ColonyMsg, MutationOutcome, bootstrap_from_filesystem,
@@ -701,10 +702,15 @@ async fn start() -> Colony {
     build_tree(&td, &member, &assistant);
 
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![(
-            "code".to_string(),
-            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-        )]
+        // The shipped `assistant` level owns a store since `followup` (GH #1479): its
+        // `followup_store` boots as the real store, like the member's stores elsewhere.
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            ("store".to_string(), Arc::new(StoreCellFactory)),
+        ]
     };
     let h = ColonyHandle::new_with_factories_at(&td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(256);

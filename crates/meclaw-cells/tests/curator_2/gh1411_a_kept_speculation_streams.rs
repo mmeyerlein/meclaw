@@ -26,6 +26,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
@@ -41,10 +44,10 @@ const BASE: &str = "/t";
 
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!(spec_tools)),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -488,7 +491,49 @@ fn gh1411_the_spec_partial_reaches_only_the_rim() {
 /// on `in_summary_self`, the `summarize` exclusion on the brain's edges, the
 /// three keys in the exits' `delete_context`) -- a wanted edge change, old
 /// `3dfb4ed81595e8f5c08dfb86c6e2979392884e4656fc5f01523faf4f097406da`.
-const TALKY_EDGES_SHA256: &str = "70d98405aa07b68977d889968b501bd08326935b11bc4c89b43d0a7623f29ae2";
+/// Re-blessed for D58 target (contract points 8 and 10, OR-d58-2.target.48:
+/// the curator's roads onto the model cells on `model_call` by `hop.target`,
+/// `curator_target` and `bridge` lifted into the context and dropped at every
+/// exit, the errand on `errand`, the error edges know a bridge by
+/// `context.bridge`) -- a wanted edge change, old
+/// `70d98405aa07b68977d889968b501bd08326935b11bc4c89b43d0a7623f29ae2`.
+/// Re-blessed for D58 lead (GH #1474, contract point 5: the curate edge
+/// `./collector -> ./curator` names talky's main model, `hop.target`
+/// `'brain'`; the lead leaves the target to the curate) -- a wanted edge
+/// change, old
+/// `9a10a92432c19de7f5dcf957de6e8d4bf2606722484dcecf5562346a760ec0a4`.
+/// Re-blessed for D58 live (GH #1482: the voice's lanes into `./curator` set
+/// `context.live`, `in_call_end` reaches it as `in_live_end`, the exits give
+/// the voice its `context.call_id` back from the handle; that strand left
+/// the hash at `25f3fa01...`, measured `87ffc1ca...` on its tree) and D58
+/// judge (GH #1480, contract points 1, 7 and 8: the asks of `./route` and
+/// `./screen_judge` on `view_ask` / `in_view_ask`, their answers on `view` /
+/// `in_view`, the rim's contribution into `./curator` on `in_part` instead
+/// of `in_screen_topics` -- five edges renamed, nothing else of them moved)
+/// -- a wanted edge change, old
+/// `25f3fa012b2424ae10090e2179ad63485051aef6966f09f25e6c9369d73dcb6f`.
+///
+/// Re-blessed for D58 note (GH #1477, contract point 6: the receipt of a
+/// shown note leaves talky on `./curator -> .` `note_receipt`) over D58 lead
+/// -- a wanted edge change, old (lead alone)
+/// `25f3fa012b2424ae10090e2179ad63485051aef6966f09f25e6c9369d73dcb6f`.
+/// Live and note together (D58 live GH #1482 merged over note GH #1477, master
+/// e587bc0fd): both edge changes at once, old (note alone) `5d2d2a71aa7594e9ea71e63127f6e89492a3696071f8e35b5f26078f8a138d43`.
+/// Re-blessed for D58 moveout (GH #1476, contract points 3 and 4: the kind of
+/// a call travels in `hop.call_kind`, lifted into the context and dropped at
+/// every exit where `bridge` was; the edges onto the quick cells lift
+/// `hop.round_open` "1" onto `context.interim` "1"; the error edges know a
+/// side call by `context.call_kind` "side") -- a wanted edge change, old
+/// `6260b2c51418055ae94a69eea80ec3d9ed027c96ec790dadc1ef2cb622ebbe60`. The
+/// lead's new edge on `in_feed` is the lead's (`lead_edge`), not counted here.
+/// Bundle B (D58 GH #1478, #1479, #1481 beside #1480): the edges of frame, followup and feed
+/// joined this tree; the hash is the one of their union, measured on it, old
+/// `d16cbfab66089c7af0e95c3da095162e3cfa5f9d3761c340bbe9f45f8e3ed71b`.
+/// Merge of master ac23674e66 (Bundle B) into D58 moveout (GH #1476): both
+/// edge changes at once, measured on the union, old (moveout)
+/// `96409ad0235c1cc92a4aa81e5b46986cac38f398903258fe21e6b2c861974284`, old (Bundle B)
+/// `21bdc2f1efeece5fc97d5afd4bbd134d2232cb03f2acd80cc1bae696fe07bac6`.
+const TALKY_EDGES_SHA256: &str = "8055d12c8e5285ed69d9df50941fe1a08d12668a18938be38401ee95feef685e";
 /// `quick_spec/config.json` without the partial declarations and without its
 /// prose (`description`), before A1.
 const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee20264201b661567494";
@@ -500,7 +545,46 @@ const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee2
 /// Re-blessed for GH #1451 (D38 V1: the lane `in_note` names its optional
 /// `item?`) -- a wanted contract text change, old
 /// `72a5a36ab7f1398f0b58a60406431c8380d1335958e5206cc510bd4f45cd0da9`.
-const CURATOR_SHA256: &str = "8b68263bac338d0ad3e6e463948f6c0fe791fd7243df2d1079d4f9f34bad864b";
+/// Re-blessed for D58 target (contract point 8: the hive's way out and its
+/// `contract.emits` name one route `model_call` for every model call and
+/// `errand` for an errand, no ways) -- a wanted edge and contract change, old
+/// `8b68263bac338d0ad3e6e463948f6c0fe791fd7243df2d1079d4f9f34bad864b`.
+/// Re-blessed for D58 target (N10: the push's ask leaves `./policy` after a
+/// read of the profiles, so the edge `./policy -> ./push` drops the store's
+/// `cur_*` context keys) -- a wanted edge change, old
+/// `97818131cc9133c8d4b5f0b88f532e712b9dc2a5d17d778b025ca226e71f8349`.
+/// Re-blessed for GH #1473 (the hive contract names registered sections,
+/// `sections` `{lane?, cap_share?, mark?}`, instead of `memory` and `things`)
+/// -- a wanted contract text change, old
+/// `8b68263bac338d0ad3e6e463948f6c0fe791fd7243df2d1079d4f9f34bad864b`.
+/// Re-blessed on the merge of D58 target over GH #1473: both changes above
+/// together; target alone `5a181bef768bf19d8537bc74dca93c39d4cc44fb5ff3f93dbcf0fa966413c571`,
+/// sections alone `8d1ced44fecc231876366ee06e207eb777223f9756ab7926454b96c8af197658`.
+/// Re-blessed for D58 live (GH #1482: the hive emits `live_facts` instead of
+/// `call_facts`, and the voice's lanes and exits name the handle `live`) and
+/// D58 judge (GH #1480, contract points 1 to 4: the door `. -> ./history`
+/// takes `in_view_ask` and `in_part` instead of `in_turns_ask` and
+/// `in_screen_topics`, the exit `./history -> .` passes `view` instead of
+/// `turns`, the accepts and emits of the hive say the same, `in_seed_line`
+/// names place, order and lifetime instead of a kind, `seed` carries the read
+/// context under `context` and `live_facts` the target's contributions) -- a
+/// wanted contract change, old
+/// `42e159b0537a6a09eb0d834f5905364b5552f30390f8bd29730e88c50d3745cf`.
+/// Live and note together (D58 live GH #1482 merged over note GH #1477, master
+/// e587bc0fd): both edge changes at once, old (note alone) `c0b8aa535eb07ba63f1d402e9cdea9673bde506edd154a2d901f5c746ecc8ca7`.
+/// Re-blessed for D58 moveout (GH #1476, contract point 3: the hive clears
+/// `call_kind`, the kind of a call it lifts beside `curator_call`, at every
+/// exit where it clears `curator_call`, and the spec tap sets it empty with
+/// `interim`) -- a wanted edge change, old
+/// `1332074a4e9e30e141e049b07b313106f59bd838743732118fd76c1980fb1a70`.
+/// Bundle B (D58 GH #1478, #1479, #1481 beside #1480): the curator hive's edges and ports of frame,
+/// followup and feed joined this tree; the hash is the one of their union, measured on it, old
+/// `38e1414655d598e1196683451f32dcc47de34b07a40d7f0574747266f754d9da`.
+/// Merge of master ac23674e66 (Bundle B) into D58 moveout (GH #1476): both
+/// edge changes at once, measured on the union, old (moveout)
+/// `f9e1c439f3b62effeebbeb7b976ccdcbf4810b1936ba06c82c18c0e44cbb1f5d`, old (Bundle B)
+/// `39e2786fe27be44f9930bfbd543cfceaf86c59620185325029b324a942e72f63`.
+const CURATOR_SHA256: &str = "e37dba7e0e9eaf11087f9f469a9313a8551d4f4425035880272ae123b92cce83";
 
 fn sorted(v: &Value) -> Value {
     match v {
@@ -549,9 +633,32 @@ fn gh1411_speculation_off_moves_no_byte() {
     // on `catalog_ask` is the catalog's own lane (OR-D53-53).
     let catalog_ask =
         |e: &Value| e["from"] == "./curator" && cond(e).contains("hop.route == 'catalog_ask'");
+    // D58 lead (GH #1474): the lead is a hive of its own beside the curator;
+    // the edges between them (the lanes to it, the verdict back on
+    // `in_lead`, and since D58 moveout, GH #1476, its orders on `in_feed`)
+    // are the lead's, not the speculation's.
+    let lead_edge = |e: &Value| e["from"] == "./lead" || e["to"] == "./lead";
+    assert_eq!(
+        all.iter().filter(|e| lead_edge(e)).count(),
+        3,
+        "the three edges between talky's curator and its lead"
+    );
+    // D58 feed (GH #1481, contract point 7): talky hands an order to feed a
+    // running session from its rim to the curator -- the feed's door, not
+    // the speculation's.
+    let feed_door = |e: &Value| {
+        e["from"] == "." && e["to"] == "./curator" && cond(e).contains("hop.route == 'in_feed'")
+    };
+    assert_eq!(
+        all.iter().filter(|e| feed_door(e)).count(),
+        1,
+        "talky's one door for an order to feed"
+    );
     let old: Vec<Value> = all
         .iter()
-        .filter(|e| !new(e) && !package_line(e) && !catalog_ask(e))
+        .filter(|e| {
+            !new(e) && !package_line(e) && !catalog_ask(e) && !lead_edge(e) && !feed_door(e)
+        })
         .cloned()
         .collect();
     assert_eq!(
@@ -620,6 +727,28 @@ fn gh1411_speculation_off_moves_no_byte() {
     if let Some(values) = qs["contract"]["emits"]["hop"]["route"]["values"].as_array_mut() {
         values.retain(|v| v != "partial" && v != "package");
     }
+    // D58 target (GH #1483): the window profile the package line carries
+    // (`window_profile` in params and settings, the body slots
+    // `window_profile` and `system_order`) -- not the speculation's.
+    // Its value is the fast target's profile (Bauer 6, OR-d58-2.target.16):
+    // an object that names the cell's own instruction slot.
+    assert_eq!(
+        qs["params"]["window_profile"]["instructions"]["slot"],
+        json!("quick"),
+        "window_profile"
+    );
+    qs["params"]
+        .as_object_mut()
+        .expect("params")
+        .remove("window_profile");
+    qs["contract"]["settings"]
+        .as_object_mut()
+        .expect("settings")
+        .remove("window_profile");
+    if let Some(body) = qs["contract"]["emits"]["body"].as_object_mut() {
+        body.remove("window_profile");
+        body.remove("system_order");
+    }
     qs.as_object_mut().expect("config").remove("description");
     assert_eq!(
         digest(&qs),
@@ -643,10 +772,17 @@ fn gh1411_speculation_off_moves_no_byte() {
                 && !cond(e).contains("'catalog_ask'")
         })
         // GH #1447: the lead's four edges (policy <-> lead <-> lead_state) --
-        // a new cell of the hive, not the speculation's.
+        // a new cell of the hive, not the speculation's. GH #1474: the lead
+        // is a hive of its own; its two rim edges (the lanes to it out of
+        // `./policy`, the verdict `in_lead` back in) stand in their place.
         .filter(|e| {
             !["./lead", "./lead_state"].contains(&e["from"].as_str().unwrap_or(""))
                 && !["./lead", "./lead_state"].contains(&e["to"].as_str().unwrap_or(""))
+                && !cond(e).contains("'lead_ask'")
+                && !cond(e).contains("'in_lead'")
+                // D58 feed (GH #1481): the door of an order to feed a running
+                // session -- the feed's, not the speculation's.
+                && !cond(e).contains("'in_feed'")
         })
         .cloned()
         .collect();
@@ -664,7 +800,20 @@ fn gh1411_speculation_off_moves_no_byte() {
     // GH #1449: the lane of the package line.
     let (acc, n_cat) = lane(&Value::Array(acc), "in_catalog");
     assert_eq!(n_cat, 1, "the package line's lane");
+    // GH #1474: the lead's verdict lane and its three lanes out -- the
+    // lead's, not the speculation's.
+    let (acc, n_lead) = lane(&Value::Array(acc), "in_lead");
+    assert_eq!(n_lead, 1, "the lead's verdict lane");
+    // D58 feed (GH #1481): the lane of an order to feed a running session.
+    let (acc, n_feed) = lane(&Value::Array(acc), "in_feed");
+    assert_eq!(n_feed, 1, "the feed's lane");
     let (emi, n_emi) = lane(&p["contract"]["emits"], "partial");
+    let mut emi = emi;
+    for route in ["lead_ask", "lead_spec", "lead_note"] {
+        let (rest, n) = lane(&Value::Array(emi), route);
+        assert_eq!(n, 1, "the lane to the lead {route}");
+        emi = rest;
+    }
     assert_eq!((n_acc, n_emi), (1, 1), "the new lane and the new route");
     assert_eq!(
         digest(&json!({"edges": c_edges, "accepts": acc, "emits": emi})),
@@ -673,7 +822,7 @@ fn gh1411_speculation_off_moves_no_byte() {
     );
 
     // Speculation off: a spec partial that arrives anyway sends nothing.
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     h.check_emits = true;
     let ctx = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "channel": "test",
                      "curator_call": "c-spec", "spec": "1"});

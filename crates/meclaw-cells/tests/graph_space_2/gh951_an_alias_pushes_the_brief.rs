@@ -70,7 +70,6 @@ use meclaw_core::{Body, MESSAGE_DEFAULT_TTL, Message, MessageBuilder, Path};
 use meclaw_testing::mock_http::{
     CapturedRequest, MockResponse, RequestValidator, start_mock_server_capturing_with_validator,
 };
-use meclaw_testing::override_params_on_disk;
 use mock_openai::{MockOpenAI, canned_chat_completion, canned_tool_calls};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
@@ -244,18 +243,12 @@ fn build(td: &tempfile::TempDir, stubs: &road::Stubs, embed: &str) {
         &json!({"cell": {"type": "hive"},
                 "params": {"graph": {"edges": grown["diff"]["add_edges"].clone()}}}),
     );
-    // K.3 as built: a curator offers the section `things` (`./schemas`) and
-    // hands it on as `thing_seen` (`./intake`) only with the param
-    // `things_section` "1" on both cells; every shipped curator says "0". Set
-    // on every curator of the generation.
-    for surface in ["talky", "talky-chat", "cogny"] {
-        for cell in ["schemas", "intake"] {
-            let at = main.join(format!("assistants/scribe/{surface}/curator/{cell}"));
-            if at.join("config.json").is_file() {
-                override_params_on_disk(&at, &json!({"things_section": "1"}));
-            }
-        }
-    }
+    // K.3 as built: the objects hive offers the section `things` and every
+    // curator of the generation hands it on as `thing_seen`, because the
+    // shipped compositions register it at `./intake` (`sections`, lane
+    // `thing_seen`, GH #1473) -- `copy_resolved` applies it from the markers.
+    // Until curator 1.25 the param `things_section` "1" was set here on both
+    // cells of every curator.
     let mut edges = member_edges();
     edges.push(json!({"from": "./assistants", "to": "/sink",
                       "condition": "has(hop.route) && hop.route == 'answer'"}));

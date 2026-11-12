@@ -17,7 +17,7 @@
 //!    `recall` cell as `in_query` with the member's stamps, the bundle walks home
 //!    into the surface's collector -- and a gap's own ask comes home to the
 //!    curator's `push` and never into the collector, which has no round for it.
-//!    A gap's find in a duplex call leaves the surface ONCE and reaches the
+//!    A gap's find in a running session leaves the surface ONCE and reaches the
 //!    channel as advice.
 //! 2. **The conversation** (a colony of the shipped member road, generation and
 //!    memory hive, with stub models): a fact said in session one stands in the
@@ -37,6 +37,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/composite_packages.rs"]
+#[allow(unused_imports)]
+use crate::composite_packages; // harness_fold: mod composite_packages;
 
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
@@ -448,7 +451,7 @@ fn a_gaps_bundle_finds_the_curator_and_never_the_collector() {
     }
 }
 
-/// A gap's find in a duplex call is said, and said ONCE (review I-4): the
+/// A gap's find in a running session (`live`) is said, and said ONCE (review I-4): the
 /// section `fact` leaves the curator, crosses the surface on exactly one edge
 /// -- a second edge would say it twice -- and reaches the member, whose channel
 /// takes it as advice. The gap's mark stays inside the surface.
@@ -460,7 +463,7 @@ fn a_duplex_find_is_said_once_on_its_channel() {
     let t = shipped_table();
     let from = format!("{GEN}/talky/curator/push");
     let mut ctx = turn_context("talky");
-    ctx["engine"] = json!("duplex");
+    ctx["live"] = json!("call-9");
     ctx["channel_node"] = json!("phone");
     ctx["gap_ask"] = json!("g-895");
     let hop = as_map(&json!({"route": "sidecar", "section": "fact"}));
@@ -1019,6 +1022,14 @@ async fn a_fact_crosses_two_sessions(surface: &str) {
         "{surface}: the brain under test talks to the scripted stub; pointed: {pointed:?}"
     );
     let (h, mut ports) = boot(&td).await;
+    // OR-d58-2.target.69: the registry's push after the birth -- every
+    // model cell reports its package before the first turn.
+    composite_packages::report_packages(
+        &h,
+        &td.path().join("main"),
+        &format!("/assistants/scribe/{surface}"),
+    )
+    .await;
     let memory = td.path().join("main/memory-hive/store/cell.db");
 
     // Session one: the fact, and it is in the memory before the session ends.

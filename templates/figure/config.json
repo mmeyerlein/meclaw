@@ -205,6 +205,10 @@
         {
           "route": "conversations",
           "because": "the answer to `in_conversations`: the conversations the reader may see"
+        },
+        {
+          "route": "note_receipt",
+          "because": "D58 note (GH #1477): the answer of its simple-agent's curator to the sender of a shown `once` note that carried a `receipt` (`note_once` \"1\"), handed out unchanged -- every field in the head: `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`. Where it goes from here is wired by whoever sends the notes"
         }
       ]
     },
@@ -521,6 +525,18 @@
           "from": "./phone",
           "to": "./world",
           "condition": "has(hop.route) && hop.route == 'phone_in'"
+        },
+        {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'note_receipt'",
+          "modifier": {
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
         }
       ]
     }

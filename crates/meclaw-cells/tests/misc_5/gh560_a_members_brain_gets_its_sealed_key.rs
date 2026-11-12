@@ -209,7 +209,14 @@ impl CellFactory for BrainUnderTest {
         // swallows the question and the colony never settles; the real cell,
         // shipped without a model, answers with an error at once (no socket),
         // and `./route` stamps the turn `talk`.
-        if path.as_str() == self.real_at || path.as_str().ends_with("/talky/decide") {
+        // D58 target (OR-d58-2.target.15): the curator asks every model cell of
+        // talky for its profile beside the first call (`catalog_ask` without a
+        // handle, an empty params slot). The double would swallow that too; the
+        // real cell answers it with its package line and calls no provider.
+        let asked = ["/talky/quick", "/talky/quick_spec", "/talky/quick_bridge"]
+            .iter()
+            .any(|c| path.as_str().ends_with(c));
+        if path.as_str() == self.real_at || path.as_str().ends_with("/talky/decide") || asked {
             return Arc::new(LlmCellFactory).spawn_cell(
                 path,
                 params,
@@ -469,7 +476,7 @@ fn member_manifest() -> Value {
     json!({"manifest": [{
         "scope": "/members",
         "diff": {
-            "add_nodes": [{"name": MEMBER, "template": "member@2.9.6",
+            "add_nodes": [{"name": MEMBER, "template": "member@2.10.0",
                            "override_params": {
                                "access/vault": {"unlock_env": UNLOCK_ENV},
                                "memory-hive/clock": quiet_night(),
@@ -552,7 +559,7 @@ fn assistant_manifest(base_url: &str) -> Value {
                 "model_surface": "gpt-4o-mini"},
         "diff": {
             "add_nodes": [{"name": format!("assistants/{AGENT}"),
-                           "template": "assistant@3.12.6",
+                           "template": "assistant@4.0.0",
                            "override_params": {
                                // The brain under test: no bearer of its own
                                // (an empty string is not a bearer, GH #271), a

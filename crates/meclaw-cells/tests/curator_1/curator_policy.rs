@@ -27,6 +27,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
@@ -59,7 +62,9 @@ fn hive_of(composite: &str, more: &[(&str, &str, Value)]) -> Hive {
         .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
         .collect();
     over.extend(more.iter().cloned());
-    Hive::with(&over)
+    // D58 target (contract point 13): the composite's model cells report
+    // their profiles, as the registry's push after the birth does.
+    Hive::with(&over).reporting_composite(composite)
 }
 
 fn id(el: &Value) -> String {
@@ -74,6 +79,17 @@ fn released(i: &str) -> String {
 
 const KNOBS: &str = "[KEEP_RECENT, COMPRESS_AT, REBUILD_TO, HORIZON, TIERS, KEEP_ROUNDS, \
                      STUB_TOOLS_AFTER, BROADCAST_MODE, RECALL_PUSH, RECALL_BUDGET, SHORT_IDS]";
+
+/// [`KNOBS`] as the curator reads them from the profile `ARGS` (R-58-15:
+/// the former presets of the roles are profile values; a value the profile
+/// does not name is the instance's knob, else the shipped one). The empty
+/// profile is a target that reported none: the instance's values.
+const PROFILE_KNOBS: &str = "(lambda m: [int(number_of(m, 'keep_recent')), \
+     number_of(m, 'compress_at'), number_of(m, 'rebuild_to'), horizon_of(m), tiers_of(m), \
+     int(number_of(m, 'keep_rounds')), int(number_of(m, 'stub_tools_after')), \
+     str(knob_of(m, 'broadcast_mode')).strip(), flag_of(m, 'recall_push'), \
+     int(number_of(m, 'recall_budget')), flag_of(m, 'short_ids')])\
+     (profile_params(ARGS, bool(ARGS)))";
 
 #[test]
 fn each_role_has_its_presets() {
@@ -163,40 +179,54 @@ fn each_role_has_its_presets() {
             ]),
         ),
     ];
+    // R-58-15: the sets are the profiles' values now (the role "" is a
+    // target without a profile: the window of 1.0.0).
+    let sets = curator_profiles::profiles_by_set();
     for (role, knobs) in want {
-        let (got, err) = policy_scope(json!({"role": role}), KNOBS, Value::Null);
-        assert_eq!(got, knobs, "the presets of role {role:?}");
+        let (got, err) = policy_scope(json!({}), PROFILE_KNOBS, sets[role].clone());
+        assert_eq!(got, knobs, "the values of set {role:?}");
         assert!(err.is_empty(), "{role:?}: {err}");
+        // A target without a profile reads the instance's own values.
+        if role.is_empty() {
+            let (module, _) = policy_scope(json!({}), KNOBS, Value::Null);
+            assert_eq!(module, knobs, "the instance's values");
+        }
     }
-    // The shipped instances run their roles.
-    assert_eq!(
-        instance("talky")
-            .iter()
-            .find(|(c, k, _)| c == "policy" && k == "role")
-            .map(|(_, _, v)| v.clone()),
-        Some(json!("talky"))
+    // The shipped composites carry the sets in their main cells' profiles
+    // (contract point 13) and set no role on the curator instance.
+    for (composite, set) in [("talky", "talky"), ("cogny", "consult")] {
+        assert!(
+            !instance(composite)
+                .iter()
+                .any(|(c, k, _)| c == "policy" && k == "role"),
+            "{composite}: no role on the instance"
+        );
+        let main = read_json(&repo(&format!("templates/{composite}/brain/config.json")))["params"]
+            ["window_profile"]
+            .clone();
+        for (k, v) in curator_profiles::value_set(set)
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+        {
+            if !v.is_null() {
+                assert_eq!(main[&k], v, "{composite}: {k}");
+            }
+        }
+    }
+    // The knob `role` itself is gone (R-58-15): a set cannot name one.
+    let cfg = cell_config("policy");
+    assert!(cfg["params"].get("role").is_none(), "params");
+    assert!(
+        cfg["contract"]["settings"].get("role").is_none(),
+        "settings"
     );
-    assert_eq!(
-        instance("cogny")
-            .iter()
-            .find(|(c, k, _)| c == "policy" && k == "role")
-            .map(|(_, _, v)| v.clone()),
-        Some(json!("consult"))
-    );
-    // A name nobody knows runs as none, and says so.
-    let (got, err) = policy_scope(json!({"role": "nobody"}), KNOBS, Value::Null);
-    assert_eq!(got[0], json!(12));
-    assert!(err.contains("unknown role 'nobody'"), "{err}");
     // GH #1085 (R-IG-1): no role types a window of its own. The usable
     // window is the catalog row of the answering model (`input_soft`, the
     // llm cell's stamp, GH #1037); `quality_cap` (talky 120000, consult
     // 80000, coding 70000, research 80000 tokens, GH #892) is gone from the
     // presets, the params and the contract's settings.
-    let (keys, _) = policy_scope(
-        json!({}),
-        "sorted(set(k for r in ROLES.values() for k in r))",
-        Value::Null,
-    );
+    let (keys, _) = policy_scope(json!({}), "sorted(ROLE_KEYS)", Value::Null);
     assert!(
         !keys
             .as_array()
@@ -217,25 +247,35 @@ fn a_set_knob_beats_the_preset() {
     if !shipped() {
         return;
     }
-    let (got, _) = policy_scope(
-        json!({"role": "talky", "keep_recent": 5, "compress_at": "0.6", "tiers": "raw,none",
-               "short_ids": "0", "horizon": ""}),
-        KNOBS,
-        Value::Null,
-    );
+    // R-58-15: the set's values stand in the profile; a value written there
+    // is read with the knobs' rules, and an empty one is not set -- the
+    // instance's knob stands (contract point 3, precedence).
+    let mut set = curator_profiles::profile("talky");
+    for (k, v) in [
+        ("keep_recent", json!(5)),
+        ("compress_at", json!("0.6")),
+        ("tiers", json!("raw,none")),
+        ("short_ids", json!("0")),
+        ("horizon", json!("")),
+    ] {
+        set[k] = v;
+    }
+    let (got, _) = policy_scope(json!({"horizon": "task"}), PROFILE_KNOBS, set);
     assert_eq!(got[0], json!(5), "a set number wins");
     assert_eq!(got[1], json!(0.6), "a numeric string is a number");
     assert_eq!(got[4], json!(["raw", "none"]), "a set tier list wins");
     assert_eq!(got[10], json!(false), "\"0\" switches a flag off");
-    assert_eq!(got[3], json!("day"), "empty is not set: the preset stands");
-    // GH #1430 (R-38-2): talky's `keep_rounds` preset is 1 (was 2).
-    assert_eq!(got[5], json!(1), "what is not set is the role's");
-    // A form nobody knows keeps the preset, and says so.
-    let (got, err) = policy_scope(
-        json!({"role": "consult", "tiers": "raw,shredded"}),
-        "TIERS",
-        Value::Null,
+    assert_eq!(
+        got[3],
+        json!("task"),
+        "empty is not set: the instance's knob stands"
     );
+    // GH #1430 (R-38-2): talky's `keep_rounds` is 1 (was 2).
+    assert_eq!(got[5], json!(1), "what is not set is the set's");
+    // A form nobody knows keeps the shipped value, and says so.
+    let mut set = curator_profiles::profile("consult");
+    set["tiers"] = json!("raw,shredded");
+    let (got, err) = policy_scope(json!({}), "tiers_of(profile_params(ARGS, True))", set);
     assert_eq!(got, json!(["raw", "summary"]));
     assert!(err.contains("not understood"), "{err}");
 }
@@ -425,7 +465,7 @@ fn the_day_horizon_counts_calendar_days() {
     // GH #1427: the day rule alone -- the raw token budget (talky 80 000) would keep
     // yesterday raw; the budget is pinned in `gh_d38_k6_*`.
     let (got, _) = policy_scope(
-        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 0}),
+        curator_profiles::set_knobs("talky", json!({"keep_recent": 1, "keep_recent_tokens": 0})),
         probe,
         json!({"rows": rows, "as_of": as_of}),
     );
@@ -467,7 +507,7 @@ fn a_task_segment_ends_at_the_day_change_without_marks() {
     ]);
     let probe = "window_plan(ARGS['rows'], [], [], [], {}, ARGS['as_of'])";
     let (got, _) = policy_scope(
-        json!({"role": "consult", "keep_recent": 1}),
+        curator_profiles::set_knobs("consult", json!({"keep_recent": 1})),
         probe,
         json!({"rows": rows, "as_of": as_of}),
     );
@@ -1537,8 +1577,8 @@ fn cognys_splitter_is_talkys() {
         cogny["params"]["nothing_block"]
     );
     assert!(
-        curator["override_params"]["intake"]
-            .get("pass_sections")
+        curator["override_params"]["intake"]["sections"]["memory"]
+            .get("lane")
             .is_none(),
         "a core keeps no memory: nothing passes"
     );
@@ -2798,31 +2838,48 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
     // the lead gives on this seam, riding on the reason (`leadv:`) as the
     // read once more of a child without the join's RAM carries it.
     let reason = format!("leadv:{}cache", lead_verdict_on(session, &hop));
-    let (out, err) = policy_step_as("win", aud, json!({}), &legs, &reason);
+    // GH #1474: a policy reads the verdict only where a lead is wired --
+    // here as talky ships it (`lead_wired` of its curator marker).
+    let wired = lead_wired_shipped().expect("talky wires a lead beside its curator");
+    let (out, err) = policy_step_as("win", aud, json!({ "lead_wired": wired }), &legs, &reason);
+    // D58 target (contract point 8): every call to a model leaves on
+    // `model_call`; the way of before is read off its `target` (the lead
+    // wired as the harness wires it, `LEAD_WIRING`).
     let route = ledger["route"].as_str().unwrap_or("brain");
+    let way = |m: &Value| match m["header"]["target"].as_str().unwrap_or("") {
+        "quick" | "quick_spec" | "quick_bridge" => "quick".to_string(),
+        "" => "brain".to_string(),
+        t => t.to_string(),
+    };
     let brain = out
         .iter()
-        .find(|m| m["header"]["route"] == route)
+        .find(|m| m["header"]["route"] == "model_call" && way(m) == route)
         .cloned()
         .unwrap_or_else(|| panic!("a call leaves for the model: {out:?} {err}"));
     (brain, out.first().map(ops_of).unwrap_or_default())
 }
 
-/// GH #1447 (D38 C1): the verdict `./lead` gives on the seam `hop` of call
-/// `c1` (turn `t9`, iteration 0) with no rows of its own -- its phase `ask`
-/// on an empty store answer, the way a real call is decided.
+/// GH #1447 (D38 C1): the verdict the lead (`templates/lead` since GH #1474)
+/// gives on the seam `hop` of call `c1` (turn `t9`, iteration 0) with no rows
+/// of its own -- its phase `ask` on an empty store answer, the way a real
+/// call is decided.
 fn lead_verdict_on(session: &str, hop: &Value) -> String {
     let s = |k: &str| hop[k].as_str().unwrap_or("").to_string();
     let ask = json!({"call": "c1", "session": session, "turn": "t9", "iter": "0",
                      "path": s("path"), "needs": hop["needs"].clone(),
                      "families": hop["families"].clone(), "consult_id": s("consult_id"),
-                     "spec": s("spec"), "engine": s("engine"), "call_id": s("call_id"),
+                     "spec": s("spec"), "live": s("live"),
                      "at": "2026-09-30T00:00:00.000000Z", "on": ""});
-    let mut params = cell_config("lead")["params"]
+    let mut params = lead_config("lead")["params"]
         .as_object()
         .cloned()
         .unwrap_or_default();
     params.remove("script_inline");
+    for (key, value) in LEAD_WIRING {
+        if params.contains_key(key) {
+            params.insert(key.to_string(), json!(value));
+        }
+    }
     let doc = json!({
         "envelope": {"header": {"context": {"cur_phase": "ask", "cur_reason": ask.to_string()},
                                 "hop": {"operation": "bundle"}}},
@@ -2830,7 +2887,7 @@ fn lead_verdict_on(session: &str, hop: &Value) -> String {
                                "text": "[]"}]},
         "params": params,
     });
-    let out = run_python(&script_of("lead"), &doc.to_string());
+    let out = run_python(&lead_script(), &doc.to_string());
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "lead ask: {err}");
     let got: Value = meclaw_core::serde_json::from_slice(&out.stdout).expect("JSON out");
@@ -3190,7 +3247,7 @@ fn a_quick_turn_of_another_round_never_sees_the_gated_leaves_of_the_last() {
     );
     let (b, _) = win_step(&eb, "sb", &ledger("simple"));
     let (bridge, _) = win_step(&eb, "sb", &ledger("complex"));
-    assert_eq!(bridge["header"]["bridge"], json!("consult"), "{bridge}");
+    assert_eq!(bridge["header"]["call_kind"], json!("side"), "{bridge}");
     for (what, call) in [("quick call", &b), ("bridge", &bridge)] {
         for fam in ["history", "pinned"] {
             assert_eq!(
@@ -3690,7 +3747,7 @@ fn a_read_mark_of_another_round_survives_a_rebuild_of_this_one() {
                  (window_plan(ARGS['rows'], [], [], [], ARGS['prev'], ARGS['as_of'], \
                  round_value=ARGS['ea'])['plan'])";
     let (got, _) = policy_scope(
-        json!({"role": "talky", "keep_recent": 12}),
+        curator_profiles::set_knobs("talky", json!({"keep_recent": 12})),
         probe,
         json!({"rows": rows, "prev": prev, "as_of": 1_790_668_800_000i64, "ea": EA, "eb": EB}),
     );

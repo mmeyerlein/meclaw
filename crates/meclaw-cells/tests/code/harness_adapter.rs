@@ -5,7 +5,7 @@
 //! about this cell type is a translation between one JSON dialect and this
 //! package's own vocabulary. Nothing here spawns, waits or emits.
 
-use meclaw_cells::harness::claude_code::{self, HarnessSignal};
+use meclaw_cells::harness::claude_code::{self, ChildStart, HarnessSignal};
 use meclaw_cells::harness::{HarnessParams, TaskRequest};
 use serde_json::json;
 
@@ -31,31 +31,138 @@ fn task(prompt: &str) -> TaskRequest {
         resume_session_id: None,
         model: None,
         max_turns: None,
+        new_session: false,
     }
 }
 
-/// The minimum every run needs: print mode, the streaming dialect, and the
-/// prompt. `--verbose` comes along because the streaming format is only fully
-/// populated with it.
+fn argv_for(p: &HarnessParams, t: &TaskRequest) -> Vec<String> {
+    claude_code::build_argv(p, &ChildStart::for_task(p, t))
+}
+
+/// The minimum every child needs: print mode, the streaming dialect in both
+/// directions, permission questions on stdio, no MCP server nobody named and
+/// only the workspace's project settings (without `--setting-sources project`
+/// the child loaded the account's user settings and instruction file, #1489) —
+/// and NOT the prompt, which travels as the first `user` frame (D57 V1).
 #[test]
 fn the_baseline_argv_asks_for_print_mode_and_the_streaming_dialect() {
     let (_dir, p) = params(json!({}));
-    let argv = claude_code::build_argv(&p, &task("do the thing"));
+    let argv = argv_for(&p, &task("do the thing"));
 
-    assert_eq!(argv[0], "-p");
-    assert_eq!(argv[1], "do the thing");
-    assert!(
-        argv.windows(2)
-            .any(|w| w[0] == "--output-format" && w[1] == "stream-json")
+    assert_eq!(
+        argv,
+        vec![
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-prompt-tool",
+            "stdio",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "project",
+        ],
+        "nothing is invented, and the prompt is not on the command line"
     );
-    assert!(argv.contains(&"--verbose".to_string()));
 
-    // Nothing is invented: no model, no budget, no permission mode unless the
-    // operator configured one.
-    assert!(!argv.contains(&"--model".to_string()));
-    assert!(!argv.contains(&"--max-turns".to_string()));
-    assert!(!argv.contains(&"--permission-mode".to_string()));
-    assert!(!argv.contains(&"--resume".to_string()));
+    // With everything configured, the flag order is pinned: the fixed head,
+    // then model, permission mode, turns, budget, tools, resume, and the
+    // operator's extra arguments last.
+    let (_dir, p) = params(json!({
+        "model": "m", "permission_mode": "acceptEdits", "max_turns": 3,
+        "max_budget_usd": 0.5, "allowed_tools": ["Bash"], "extra_args": ["--x"],
+    }));
+    let mut t = task("go");
+    t.resume_session_id = Some("s-1".to_string());
+    let full = argv_for(&p, &t);
+    assert_eq!(
+        full[11..],
+        [
+            "--model",
+            "m",
+            "--permission-mode",
+            "acceptEdits",
+            "--max-turns",
+            "3",
+            "--max-budget-usd",
+            "0.5",
+            "--allowedTools",
+            "Bash",
+            "--resume",
+            "s-1",
+            "--x",
+        ]
+    );
+}
+
+/// D57 V13 / OR-57-9/10: the control lane and the MCP fence do not depend on
+/// the approval mode. With `off` the CLI must still ask (the cell then refuses
+/// at once and reports); without the flag the CLI refuses on its own and the
+/// cell never sees the question.
+#[test]
+fn the_control_lane_and_the_mcp_fence_hold_in_both_approval_modes() {
+    for mode in ["off", "channel"] {
+        let (_dir, p) = params(json!({"approval": mode}));
+        let argv = argv_for(&p, &task("go"));
+        let at = argv
+            .iter()
+            .position(|a| a == "--permission-prompt-tool")
+            .unwrap_or_else(|| panic!("{mode}: no prompt tool"));
+        assert_eq!(argv[at + 1], "stdio", "{mode}");
+        assert!(
+            argv.contains(&"--strict-mcp-config".to_string()),
+            "{mode}: account connectors would load"
+        );
+    }
+}
+
+/// D57 V2: a task is one `user` frame of the input dialect.
+#[test]
+fn the_prompt_travels_as_the_first_user_frame() {
+    assert_eq!(
+        claude_code::build_user_turn("do the thing"),
+        json!({"type": "user", "message": {"role": "user", "content": "do the thing"}})
+    );
+}
+
+/// D57 V3: the context of a call is input plus both cache counters of that
+/// call; frames without usage, of a sub-agent, or of another type say nothing.
+#[test]
+fn an_assistant_frame_reports_the_context_of_its_call() {
+    let f = json!({"type": "assistant", "parent_tool_use_id": null,
+                   "message": {"content": [], "usage": {
+                       "input_tokens": 10, "cache_creation_input_tokens": 200,
+                       "cache_read_input_tokens": 3000, "output_tokens": 5}}});
+    assert_eq!(claude_code::call_context_tokens(&f), Some(3210));
+
+    let no_usage = json!({"type": "assistant", "message": {"content": []}});
+    assert_eq!(claude_code::call_context_tokens(&no_usage), None);
+
+    let mut sub_agent = f.clone();
+    sub_agent["parent_tool_use_id"] = json!("toolu_1");
+    assert_eq!(claude_code::call_context_tokens(&sub_agent), None);
+
+    let result = json!({"type": "result", "usage": {"input_tokens": 10}});
+    assert_eq!(claude_code::call_context_tokens(&result), None);
+}
+
+/// D57 V3 / OR-57-25: a result without text reports its first error.
+#[test]
+fn a_result_without_text_reports_its_first_error() {
+    let f = json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                   "num_turns": 0, "errors": ["No conversation found with session ID: x"]});
+    match claude_code::classify(&f) {
+        HarnessSignal::Finished { ok, text, .. } => {
+            assert!(!ok);
+            assert_eq!(
+                text.as_deref(),
+                Some("No conversation found with session ID: x")
+            );
+        }
+        other => panic!("expected Finished, got {other:?}"),
+    }
 }
 
 #[test]
@@ -68,7 +175,7 @@ fn configured_limits_and_the_model_are_passed_through() {
         "allowed_tools": ["Bash", "Write"],
         "extra_args": ["--strict-mcp-config"],
     }));
-    let argv = claude_code::build_argv(&p, &task("go"));
+    let argv = argv_for(&p, &task("go"));
 
     let pairs: Vec<(String, String)> = argv
         .windows(2)
@@ -92,7 +199,7 @@ fn the_task_overrides_the_cell_configuration() {
     t.max_turns = Some(2);
     t.resume_session_id = Some("sess-9".to_string());
 
-    let argv = claude_code::build_argv(&p, &t);
+    let argv = argv_for(&p, &t);
     let pairs: Vec<(String, String)> = argv
         .windows(2)
         .map(|w| (w[0].clone(), w[1].clone()))

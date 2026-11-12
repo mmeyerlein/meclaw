@@ -8,27 +8,35 @@
 //! (`./curator -> ./quick_bridge` on `catalog_ask`) never carried a message.
 //! One place cuts (T3-core § C3b): the bridge's window is the cut's, its
 //! snapshot names target, ids and dropped blocks like every other call, and
-//! with `catalog_ask` on the curator asks its cell for the row.
+//! while its cell has not reported (the ask is no knob since D58 target,
+//! OR-d58-2.target.15) the curator asks its cell for the row.
 //!
 //! Runs the shipped curator hive (`support/curator_hive.rs`); no model.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
 
 fn hive(spec: bool, ask: bool) -> Hive {
-    let mut over = vec![("policy", "role", json!("talky"))];
+    let mut over = Vec::<(&str, &str, Value)>::new();
     if spec {
         over.push(("lead", "quick_speculative", json!("1")));
         over.push(("lead", "spec_tools", json!("web,weather")));
     }
+    let h = Hive::with(&over);
+    // `ask`: no model cell has reported its package yet, so the curator
+    // asks; else the composite's cells reported (contract point 13).
     if ask {
-        over.push(("policy", "catalog_ask", json!("1")));
+        h
+    } else {
+        h.reporting_composite("talky")
     }
-    Hive::with(&over)
 }
 
 fn spec_call(h: &mut Hive, turn: &str, text: &str) {
@@ -88,7 +96,10 @@ fn a_speculating_bridge_is_cut_for_quick_bridge() {
     spec_call(&mut h, "t1", "plan my trip to Rome");
     seam(&mut h, "t1", "complex", "plan my trip to Rome");
     let b = bridge(&h);
-    assert_eq!(b.hop["spec"], json!("bridge"), "{:?}", b.hop);
+    // D58 moveout (contract point 4): `spec` "bridge" is done with the
+    // target -- the side call reaches its own cell by `hop.target`.
+    assert!(b.hop.get("spec").is_none(), "{:?}", b.hop);
+    assert_eq!(b.hop["target"], json!("quick_bridge"), "{:?}", b.hop);
     let cut = cut_of(&h, &b);
     assert_eq!(cut["target"], json!("quick_bridge"), "{cut}");
     let ids: Vec<String> = cut["ids"]
@@ -134,7 +145,8 @@ fn the_curator_asks_the_bridge_cell_for_its_row() {
         "the bridge's cell is asked for its row once: {asks:?}"
     );
     assert_eq!(
-        h.state("catalog_asked:quick_bridge"),
+        // D58 target: the key of a target's state is `catalog:<target>:<field>`.
+        h.state("catalog:quick_bridge:asked"),
         "s1",
         "the question is marked for the session"
     );
@@ -147,10 +159,7 @@ fn snapshot_keep_one_with_a_bridge_keeps_one() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "snapshot_keep", json!(1)),
-    ]);
+    let mut h = Hive::with(&[("policy", "snapshot_keep", json!(1))]).reporting_composite("talky");
     for t in ["t1", "t2", "t3"] {
         seam(&mut h, t, "complex", "plan my trip to Rome");
         bridge(&h);

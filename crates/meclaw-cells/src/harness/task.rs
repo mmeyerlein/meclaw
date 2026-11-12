@@ -28,6 +28,9 @@ pub struct TaskRequest {
     pub model: Option<String>,
     /// Per-task turn budget override.
     pub max_turns: Option<u64>,
+    /// `persistent` mode: end the open session and start a fresh one
+    /// (D57 V5). Accepted and without effect in `per_task` mode.
+    pub new_session: bool,
 }
 
 /// Answer a permission question the harness asked.
@@ -78,6 +81,7 @@ impl HarnessCommand {
                 resume_session_id: opt_str(args, "resume_session_id"),
                 model: opt_str(args, "model"),
                 max_turns: args["max_turns"].as_u64(),
+                new_session: args["new_session"].as_bool().unwrap_or(false),
             })),
             "answer" => Ok(Self::Answer(AnswerRequest {
                 task_id: non_empty(args, "task_id")?,

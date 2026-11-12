@@ -85,7 +85,8 @@ CLASSES (a path can carry several)
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
                   scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py,
-                  scripts/stop_watch.py, scripts/release_matches_battery.py,
+                  scripts/stop_watch.py, scripts/curator_bank.py, scripts/corpus_compare.py,
+                  scripts/release_matches_battery.py,
                   scripts/release.py, scripts/release.sh,
                   scripts/check_required_pins.py,
                   .config/required-pins.toml (the strand kit, the receipt builder, the stop
@@ -93,6 +94,7 @@ CLASSES (a path can carry several)
                   `gate-selftest`), scripts/cargo-target.sh, scripts/lane_sync.sh,
                   scripts/strand-gate.sh, scripts/harness_fold.py,
                   scripts/check_roadmap_anchors.py, scripts/git_merge_display_sync.py,
+                  scripts/git_merge_script_inline.py,
                   scripts/display_sheet_strip.py (rule: a script a test under
                   scripts/tests/ imports, runs or copies into a fixture tree and
                   runs is gate_infra -- its solo diff plans that test, GH #1199;
@@ -1400,6 +1402,10 @@ def _classes_of_path(path):
                  "scripts/strand-gate.sh", "scripts/harness_fold.py",
                  "scripts/check_roadmap_anchors.py", "scripts/git_merge_display_sync.py",
                  "scripts/display_sheet_strip.py",
+                 # d58-2 mergedrv (#1470): the merge driver of the cells with an
+                 # inline script runs in fixture repositories of its own test
+                 # and of the strand kit's (`new` installs it)
+                 "scripts/git_merge_script_inline.py",
                  "scripts/gate_plan.py", "scripts/precheck.py",
                  "scripts/pipeline.py",
                  "scripts/pipeline/pre.py", "scripts/pipeline/locks.py",
@@ -1409,6 +1415,12 @@ def _classes_of_path(path):
                  "scripts/flake_triage.py", "scripts/testing_bans.py",
                  "scripts/wall_clock.py",
                  "scripts/stop_watch.py",
+                 # d58-2 bank (#1465): the capture of the requests to the summarizer,
+                 # its test in gate-selftest
+                 "scripts/curator_bank.py",
+                 # d58-2 target (#1483): the window corpus compare of the stage, its test in
+                 # gate-selftest
+                 "scripts/corpus_compare.py",
                  # live-2 bat-hash (#1358): the release lock against the battery candidate
                  "scripts/release_matches_battery.py",
                  # release-tempo rt4 (#1387): the release chain, its test in gate-selftest
@@ -4575,6 +4587,8 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_lane_browser_deps",
               "scripts.tests.test_wave_retro",
               "scripts.tests.test_git_merge_display_sync",
+              # d58-2 mergedrv (#1470): the merge driver of the cells with an inline script
+              "scripts.tests.test_git_merge_script_inline",
               "scripts.tests.test_precheck",
               "scripts.tests.test_precheck_testing_bans",
               "scripts.tests.test_precheck_wall_clock",
@@ -4586,6 +4600,10 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_nextest_quarantine",
               "scripts.tests.test_slow_tests",
               "scripts.tests.test_flake_triage",
+              # d58-2 bank (#1465): the capture script of the bank of constructed walls
+              "scripts.tests.test_curator_bank",
+              # d58-2 target (#1483): the compare of the window corpus before and after
+              "scripts.tests.test_corpus_compare",
               "scripts.tests.test_clock_bans",
               "scripts.tests.test_roadmap_anchors",
               "scripts.tests.test_required_pins",

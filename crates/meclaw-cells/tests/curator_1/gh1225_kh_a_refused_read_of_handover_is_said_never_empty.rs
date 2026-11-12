@@ -29,13 +29,13 @@ fn close(h: &mut Hive, session: &str) {
     );
 }
 
-fn renew(h: &mut Hive, session: &str, call_id: &str) -> Vec<Msg> {
+fn renew(h: &mut Hive, session: &str, live: &str) -> Vec<Msg> {
     h.out.clear();
     h.lane(
         "in_renewed",
-        json!({"session_id": session, "call_id": call_id, "channel": "test",
+        json!({"session_id": session, "live": live, "channel": "test",
                "audience_set": ROUND_E}),
-        json!({"call_id": call_id, "session_id": session, "renewal_n": 1}),
+        json!({"live": live, "session_id": session, "renewal_n": 1}),
         json!({"messages": []}),
     );
     h.routed("sidecar")

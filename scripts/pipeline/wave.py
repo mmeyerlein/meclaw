@@ -420,6 +420,10 @@ def check_end_tip_coverage(root, out, map_dir=None):
         return False, "MISSING"
     verdict = coverage.verdict_of(cov) if cov.get("rev") == tip else "MISSING"
     detail = "; ".join(cov.get("incomplete") or []) or "complete"
+    origin = cov.get("carried_from")
+    if isinstance(origin, dict):  # GH #1461 review M4: carried, not measured -- said so
+        detail += "; carried from %s (measured %s on %s)" % (
+            str(origin.get("rev"))[:9], origin.get("built_at"), origin.get("runner"))
     out("COVERAGE end-tip=%s verdict=%s map=%s -- %s" % (tip[:9], verdict, path, detail))
     reds = list(cov.get("red_tests") or [])
     for name in reds[:50]:

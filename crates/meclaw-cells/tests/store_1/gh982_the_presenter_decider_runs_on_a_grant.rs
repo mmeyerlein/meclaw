@@ -274,7 +274,7 @@ fn a_grant_follows_the_templates_contract_not_the_app_name() {
     if !shipped() {
         return;
     }
-    let refused = render_from("presenter", "objects@1.0.4", credential());
+    let refused = render_from("presenter", "objects@1.1.0", credential());
     assert_eq!(
         refused["header"]["error_code"],
         json!("app_declaration_invalid"),
@@ -284,7 +284,7 @@ fn a_grant_follows_the_templates_contract_not_the_app_name() {
         refused["manifest"].is_null(),
         "nothing is rendered for a refused grant: {refused}"
     );
-    let deck = render_from("deck", "presenter@1.4.2", credential());
+    let deck = render_from("deck", "presenter@2.0.0", credential());
     assert!(deck["header"]["error_code"].is_null(), "{deck}");
     assert_eq!(
         deck["manifest"][0]["diff"]["add_nodes"][0]["override_params"]["decide"]["credential_grant_id"],

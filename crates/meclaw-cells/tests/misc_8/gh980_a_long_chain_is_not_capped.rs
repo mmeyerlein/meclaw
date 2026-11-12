@@ -706,7 +706,7 @@ fn the_core_bounds_agree() {
     let needle = "int(hop.iter) < ";
     for (from, to, lane) in [
         ("./collector", "./curator", "curate"),
-        ("./curator", "./brain", "brain"),
+        ("./curator", "./brain", "model_call"),
     ] {
         let condition = edges
             .iter()

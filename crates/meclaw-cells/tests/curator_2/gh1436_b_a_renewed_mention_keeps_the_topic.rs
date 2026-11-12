@@ -49,9 +49,9 @@ fn a_topic_named_again_in_the_new_session_carries() {
         &topic("crisis", "continue"),
     );
     said_turn(&mut h, 13, "voice-1", "v3", "yes", "");
-    let a = only(&delta_judge_ask(&h, &p, "call-1", "v4"), "turns");
+    let a = only(&delta_judge_ask(&h, &p, "call-1", "v4"), "view");
     assert_eq!(judged_topic(&a), "crisis");
-    let a = only(&judge_ask(&h, &p, "voice-1", "v4"), "turns");
+    let a = only(&judge_ask(&h, &p, "voice-1", "v4"), "view");
     assert_eq!(judged_topic(&a), "crisis");
     let seed = only(&seed_ask_for(&h, &p, "call-1", "renew", 1), "seed");
     let facts = fact_line(&seed);
@@ -78,6 +78,6 @@ fn a_renewed_mention_starts_the_count_again() {
     for i in 7..=9 {
         said_turn(&mut h, i, "text-1", &format!("t{i}"), "and now", "");
     }
-    let a = only(&judge_ask(&h, &p, "text-1", "t10"), "turns");
+    let a = only(&judge_ask(&h, &p, "text-1", "t10"), "view");
     assert_eq!(judged_topic(&a), "crisis");
 }

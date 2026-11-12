@@ -1,0 +1,217 @@
+{
+  "source": "by hand from the follow-up's contract (lanes sidecar with section memory, write, note_receipt, and the answers of its own store; GH #1479), the cell switched on and its clock fixed",
+  "overlay": {
+    "enabled": "1",
+    "now_utc": "2026-11-08T11:20:00Z"
+  },
+  "probes": [
+    {
+      "hop": {
+        "route": "sidecar",
+        "section": "memory",
+        "session_id": "s-1",
+        "turn_id": "t-1"
+      },
+      "context": {
+        "session_id": "s-1",
+        "turn_id": "t-1",
+        "audience_set": "[\"member:e\"]"
+      },
+      "body": {
+        "messages": [],
+        "section": "memory",
+        "payload": {
+          "nothing_new": false,
+          "facts": [
+            {
+              "subject": "Ada",
+              "predicate": "has_symptom",
+              "claim": "Ada feels unwell.",
+              "confidence": 0.9,
+              "wellbeing": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "hop": {
+        "operation": "select"
+      },
+      "context": {
+        "audience_set": "[\"member:e\"]",
+        "cur_origin": "followup",
+        "cur_phase": "f-read",
+        "cur_carry": "{\"concern\":{\"claim\":\"Ada feels unwell.\",\"predicate\":\"has_symptom\",\"subject\":\"Ada\"},\"day\":\"2026-11-08\",\"key\":\"open:2026-11-08:0123456789\",\"tag\":\"0123456789\",\"until\":\"2026-11-09T00:00:00Z\"}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "read",
+            "text": "[]"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "operation": "insert",
+        "rows_affected": 1
+      },
+      "context": {
+        "audience_set": "[\"member:e\"]",
+        "cur_origin": "followup",
+        "cur_phase": "f-write",
+        "cur_carry": "{\"gone\":\"\",\"note\":{\"claim\":\"Ada feels unwell.\",\"id\":\"fu-2026-11-08-0123456789-1\",\"n\":1,\"receipt\":\"r-1\",\"state\":\"open\",\"text\":\"Ada feels unwell.\",\"until\":\"2026-11-09T00:00:00Z\"}}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "write",
+            "text": "{\"rows_affected\":1}"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "note_receipt",
+        "note_source": "assistant",
+        "note_id": "fu-2026-11-08-0123456789-1",
+        "receipt": "r-1",
+        "session_id": "call-2",
+        "turn_id": "",
+        "target": "",
+        "at": "2026-11-08T12:00:00Z"
+      },
+      "context": {
+        "audience_set": "[\"member:e\"]"
+      },
+      "body": {
+        "messages": []
+      }
+    },
+    {
+      "hop": {
+        "route": "write",
+        "phase": "",
+        "turn_id": "close-s-1",
+        "session_id": "s-1",
+        "iter": "0",
+        "turn_count": "0",
+        "round_count": "0"
+      },
+      "context": {
+        "session_id": "s-1",
+        "audience_set": "[\"member:e\"]"
+      },
+      "body": {
+        "messages": [],
+        "rounds": []
+      }
+    },
+    {
+      "hop": {
+        "operation": "select"
+      },
+      "context": {
+        "audience_set": "[\"member:e\"]",
+        "cur_origin": "followup",
+        "cur_phase": "w-read",
+        "cur_carry": "{\"key\":\"open:2026-11-08:0123456789\",\"session\":\"s-1\"}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "read",
+            "text": "[{\"key\": \"open:2026-11-08:0123456789\", \"value\": \"{\\\"claim\\\":\\\"Ada feels unwell.\\\",\\\"id\\\":\\\"fu-2026-11-08-0123456789-1\\\",\\\"n\\\":1,\\\"receipt\\\":\\\"r-1\\\",\\\"session\\\":\\\"s-1\\\",\\\"state\\\":\\\"held\\\",\\\"text\\\":\\\"Ada feels unwell.\\\",\\\"until\\\":\\\"2026-11-09T00:00:00Z\\\"}\"}]"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "operation": "bundle"
+      },
+      "context": {
+        "audience_set": "[\"member:e\"]",
+        "cur_origin": "followup",
+        "cur_phase": "f-write",
+        "cur_carry": "{\"gone\":\"fu-2026-11-08-0123456789-1\",\"note\":{\"claim\":\"Ada feels unwell.\",\"id\":\"fu-2026-11-08-0123456789-2\",\"n\":2,\"node\":\"chat\",\"receipt\":\"r-2\",\"session\":\"s-1\",\"state\":\"held\",\"text\":\"Ada feels unwell.\",\"until\":\"2026-11-09T00:00:00Z\"}}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "write",
+            "text": "[]"
+          },
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "sweep",
+            "text": "[]"
+          }
+        ],
+        "results": [
+          {
+            "tool_call_id": "write",
+            "rows_affected": 1,
+            "error_code": ""
+          },
+          {
+            "tool_call_id": "sweep",
+            "rows_affected": 0,
+            "error_code": ""
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "operation": "bundle"
+      },
+      "context": {
+        "audience_set": "[\"member:e\"]",
+        "cur_origin": "followup",
+        "cur_phase": "w-write",
+        "cur_carry": "{\"note\":{\"claim\":\"Ada feels unwell.\",\"id\":\"fu-2026-11-08-0123456789-2\",\"n\":2,\"node\":\"chat\",\"receipt\":\"r-2\",\"session\":\"s-1\",\"state\":\"open\",\"text\":\"Ada feels unwell.\",\"until\":\"2026-11-09T00:00:00Z\"}}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "write",
+            "text": "[]"
+          },
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "sweep",
+            "text": "[]"
+          }
+        ],
+        "results": [
+          {
+            "tool_call_id": "write",
+            "rows_affected": 1,
+            "error_code": ""
+          },
+          {
+            "tool_call_id": "sweep",
+            "rows_affected": 0,
+            "error_code": ""
+          }
+        ]
+      }
+    }
+  ]
+}

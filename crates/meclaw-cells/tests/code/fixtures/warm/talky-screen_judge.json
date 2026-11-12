@@ -1,5 +1,5 @@
 {
-  "source": "hand: the keeper's turn (in_turn -> turns_ask), the judge context (in_turns -> screen_model), the model's form (in_verdict -> stamp), with the judge switched on",
+  "source": "hand: the keeper's turn (in_turn -> view_ask), the curator's view (in_view -> screen_model), the model's form (in_verdict -> stamp), with the judge switched on",
   "overlay": {
     "enabled": "1"
   },
@@ -24,7 +24,7 @@
     },
     {
       "hop": {
-        "route": "in_turns",
+        "route": "in_view",
         "state": "Show me the weather."
       },
       "context": {
@@ -32,33 +32,22 @@
         "audience_set": "[\"m-1\"]"
       },
       "body": {
-        "messages": [],
-        "turns": [],
-        "judge": {
-          "turns": [
-            {
-              "turn_id": "turn-0",
-              "role": "user",
-              "text": "Good morning."
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "Good morning."
+          }
+        ],
+        "system": {
+          "frame": {
+            "text": "now: 2026-01-01T09:00:00+01:00\nweekday: Thursday\ntimezone: Europe/Berlin\nplace: "
+          },
+          "decide": {
+            "presenter": {
+              "text": "[{\"name\":\"weather\",\"purpose\":\"the weather today and the next days\"}]"
             }
-          ],
-          "topic": "",
-          "hints": [],
-          "screen": {
-            "topics": [
-              {
-                "name": "weather",
-                "purpose": "the weather today and the next days"
-              }
-            ],
-            "state": []
-          },
-          "now": {
-            "iso": "2026-01-01T09:00:00+01:00",
-            "weekday": "Thursday",
-            "timezone": "Europe/Berlin"
-          },
-          "place": ""
+          }
         }
       }
     },

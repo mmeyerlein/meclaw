@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -50,7 +53,8 @@ fn a_complex_turn_goes_straight_to_cogny() {
     }
     let talky = read_json(&repo("templates/talky/config.json"));
     let t_edges = talky["params"]["graph"]["edges"].as_array().expect("edges");
-    let out = edge(t_edges, "./curator", ".", "'consult'").expect("talky hands a consult out");
+    let out = edge(t_edges, "./curator", ".", "hop.route == 'errand'")
+        .expect("talky hands a consult out");
     assert_eq!(out["modifier"]["set_hop"]["route"], json!("'consult'"));
     let assistant = read_json(&repo("templates/assistant/config.json"));
     let a_edges = assistant["params"]["graph"]["edges"]
@@ -66,10 +70,8 @@ fn a_complex_turn_goes_straight_to_cogny() {
 
     // A day of `consult_pending_ms`: the mark outlives any test, so no
     // duration between two calls decides this test (dev-rules § 11).
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("lead", "consult_pending_ms", json!(86_400_000)),
-    ]);
+    let mut h = Hive::with(&[("lead", "consult_pending_ms", json!(86_400_000))])
+        .reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     curate_with(
@@ -135,7 +137,7 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     curate_with(
         &mut h,

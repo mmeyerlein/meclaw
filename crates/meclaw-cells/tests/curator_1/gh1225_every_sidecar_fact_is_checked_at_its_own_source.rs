@@ -48,7 +48,11 @@ fn knob() -> Value {
 
 /// The curator of a talky: the memory section passes it (talky's override).
 fn talky_curator() -> Hive {
-    Hive::with(&[("intake", "pass_sections", json!("memory"))])
+    Hive::with(&[(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )])
 }
 
 fn fact(claim: &str, quote: &str, source: Option<&str>) -> Value {

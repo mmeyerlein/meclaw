@@ -79,6 +79,9 @@ const KNOBS: &[(&str, &str)] = &[
     ("brief_slots", "_list"),
     // #1279 -- the hints of the round's person on every turn's brief (`"0"` shipped).
     ("brief_hints", "_str"),
+    // D58 judge (GH #1480) -- the target the hints are a contribution to
+    // (`parts` on the curate); "" shipped, no built-in name.
+    ("part_target", "_str"),
     // GH #1244 -- the folded menu: the switch (`"0"` shipped, the way back) and
     // the family names longer than a first name segment.
     ("fold_tools", "_str"),

@@ -1188,10 +1188,11 @@ const NOT_CARRIED: [(&str, &str); 12] = [
          `seed_ask` and `in_seed` at `./channels`; this template wires no producer of it",
     ),
     (
-        "in_screen_topics",
-        "the screen's topics (GH #1279). Its producer is the presenter the set installs, and \
-         the set draws the edge to `<member>/assistants/<agent>` only where a screen exists; \
-         a door at this level would let any caller outside rewrite the topics every judge \
+        "in_part",
+        "a contribution to a target's section (GH #1279; D58 judge GH #1480, formerly \
+         `in_screen_topics`). Its producer is the presenter the set installs, and the set \
+         draws the edge to `<member>/assistants/<agent>` only where a screen exists; a door \
+         at this level would let any caller outside rewrite what every view of a target \
          reads",
     ),
     (
@@ -1228,8 +1229,9 @@ const SET_BOUND_EXITS: [(&str, &str); 5] = [
     ("live_feed", "the voice channel's feed of a running session"),
     ("verdict", "the presenter's `in_verdict`"),
     ("propose", "affinity's `in_propose`"),
-    // #1369: what a call carried, to whoever the set names as its reader.
-    ("call_facts", "the reader of what a call carried"),
+    // #1369: what a call carried, to whoever the set names as its reader
+    // (`call_facts` until D58 live, GH #1482).
+    ("live_facts", "the reader of what a call carried"),
 ];
 
 /// A lane the assistant raises whose holder inside this member lands in a later

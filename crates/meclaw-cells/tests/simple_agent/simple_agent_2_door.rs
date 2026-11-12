@@ -16,6 +16,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/composite_packages.rs"]
+#[allow(unused_imports)]
+use crate::composite_packages; // harness_fold: mod composite_packages;
 #[allow(unused_imports)]
 use crate::simple_agent_loop; // harness_fold: mod simple_agent_loop;
 use meclaw_core::serde_json::{Map, Value, json};
@@ -525,11 +528,14 @@ async fn sa2_in_note_reaches_the_window_before_the_newest_turn() {
         .cloned()
         .expect("the rim takes `in_note`");
     assert_eq!(lane["at"], json!(["./curator"]), "{lane}");
-    let (_td, stubs, h, mut ports) = boot(
+    let (td, stubs, h, mut ports) = boot(
         vec![canned_chat_completion("Slowly, then.", "stop")],
         json!({}),
     )
     .await;
+    // OR-d58-2.target.69: the registry's push after the birth -- every
+    // model cell reports its package before the first turn.
+    composite_packages::report_packages(&h, &td.path().join("main"), "/agent").await;
     let note = MessageBuilder::new(Path::new("/agent/curator"))
         .hop(as_map(&json!({"route": "in_note"})))
         .context(as_map(

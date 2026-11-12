@@ -17,6 +17,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -49,14 +52,11 @@ fn mimo_like() -> Value {
     row("test/mimo-like", 300, 400, "", 0)
 }
 
+/// The cell `cell` of talky reports its package: `row`, and the profile its
+/// template writes beside it (D58 target, contract point 13).
 fn catalog(h: &mut Hive, cell: &str, row: Value) {
     h.out.clear();
-    h.lane(
-        "in_catalog",
-        json!({}),
-        json!({"package_of": format!("/talky/{cell}")}),
-        json!({"messages": [], "package": row}),
-    );
+    h.report_row("talky", cell, row);
 }
 
 fn turn_on(h: &mut Hive, turn: &str, path: &str, way: &str, ask: &str, reply: &str) -> Msg {
@@ -75,7 +75,7 @@ fn turn_on(h: &mut Hive, turn: &str, path: &str, way: &str, ask: &str, reply: &s
         .routed(way)
         .into_iter()
         .find(|m| {
-            m.hop.get("bridge").is_none()
+            m.hop.get("call_kind").is_none_or(|v| *v != "side")
                 && !m.hop["curator_call"]
                     .as_str()
                     .unwrap_or("")
@@ -89,10 +89,7 @@ fn turn_on(h: &mut Hive, turn: &str, path: &str, way: &str, ask: &str, reply: &s
 /// Six rounds of talk with words of some length, then the seventh call --
 /// in a hive whose brain row is `brain_row`; the same knobs for every hive.
 fn seventh_brain_call(brain_row: Value) -> (Hive, Msg) {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(2)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(2))]).reporting_composite("talky");
     catalog(&mut h, "brain", brain_row);
     let long = "the person tells a long story about the garden and the weather ".repeat(4);
     for i in 0..6 {
@@ -145,7 +142,7 @@ fn the_brain_and_the_quick_voice_are_cut_for_their_own_rows() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(&mut h, "brain", haiku_like());
     catalog(
         &mut h,

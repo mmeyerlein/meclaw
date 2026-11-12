@@ -267,6 +267,30 @@ fn word(n: usize) -> &'static str {
         // quick_spec|quick_bridge` on `catalog_ask` -- one hundred and
         // thirty-three, sixty-five of round, the boundary unchanged.
         (133, "one hundred and thirty-three"),
+        // D58 target (OR-d58-2.target.15): the curator's ask without a handle
+        // `./curator -> ./brain|quick|quick_spec|quick_bridge` on `catalog_ask`
+        // without `hop.catalog_for` -- one hundred and thirty-seven, sixty-nine
+        // of round, the boundary unchanged.
+        (69, "sixty-nine"),
+        (137, "one hundred and thirty-seven"),
+        // D58 lead (GH #1474): the curator's three lanes to its lead
+        // `./curator -> ./lead` and the verdict home `./lead -> ./curator` --
+        // seventy-one of round, the boundary unchanged. D58 note (GH #1477):
+        // the curator's receipt `./curator -> .` on `note_receipt` -- the
+        // boundary sixty-nine, forty leaving. Both together: one hundred and
+        // forty.
+        (71, "seventy-one"),
+        (140, "one hundred and forty"),
+        // D58 feed (GH #1481): an order to feed a running session, the door
+        // `in_feed` into `./curator` -- one hundred and forty-one (with D58
+        // note's exit `note_receipt`), the boundary seventy, thirty doors.
+        (70, "seventy"),
+        (141, "one hundred and forty-one"),
+        // D58 moveout (GH #1476): the lead's orders to the curator
+        // `./lead -> ./curator` on `in_feed` (the early interrupt) -- one
+        // hundred and forty-two, seventy-two of round, the boundary unchanged.
+        (72, "seventy-two"),
+        (142, "one hundred and forty-two"),
     ]
     .into_iter()
     .collect();

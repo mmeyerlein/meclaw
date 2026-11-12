@@ -71,6 +71,14 @@ them), a file of the diff it cannot read, a config.json of the diff that does
 not parse, and, with a Rust file in the diff, a clock-bans list that is
 missing, broken or names no `wall:` read.
 
+A file that `git diff -C -C` against the merge base finds as a 100 % copy
+(`C100`) of a file of the base is stock as a whole and is not graded: a frozen
+template copy (`templates/<name>@<version>/`, byte-identical to the live
+template at the base) brings no new read, only the stock lines of the live
+template (d58-2 sections, OR-58-116: 15 RED lines that were all stock). A copy
+with any changed line is no `C100` and is graded as a new file. When git cannot
+answer, no file counts as a copy (nothing turns green by a failed git).
+
 A `script_inline` is one JSON line: a change anywhere in the script changes
 that line. Its added lines are the added lines of the decoded script against
 the script at the merge base (difflib), reported as
@@ -186,6 +194,29 @@ def _added(repo, base, paths):
     named = {ln[6:] for ln in text.splitlines() if ln.startswith("+++ b/")}
     named.update(untracked.splitlines())
     return added if named <= set(added) else None
+
+
+def _exact_copies(repo, base, paths):
+    """The paths of `paths` that `git diff -C -C` against `base` finds as a
+    100 % copy (`C100`) of a file of the base -- stock as a whole. An empty set
+    when git cannot answer (fail-closed: a failed git grades every file)."""
+    roots = sorted({p.split("/", 1)[0] for p in paths})
+    text = tb._git(repo, "diff", "-C", "-C", "--name-status", "-z", "--no-color",
+                   "--no-ext-diff", base, "--", *roots)
+    if not text:
+        return set()
+    fields = text.split("\0")
+    out = set()
+    i = 0
+    while i < len(fields) and fields[i]:
+        status = fields[i]
+        if status[:1] in ("C", "R"):
+            if status == "C100" and i + 2 < len(fields):
+                out.add(fields[i + 2])
+            i += 3
+        else:
+            i += 2
+    return out & set(paths)
 
 
 def _read(repo, rel):
@@ -355,9 +386,10 @@ def scan(files, repo, base=tb._UNSET):
         except ValueError as exc:
             out.append(tb.Finding("RED", CHECK, "cannot read the Rust wall-clock reads from %s (%s) "
                                   "-- the clock bans are their one list" % (CLOCK_BANS_REL, exc)))
+    copies = _exact_copies(repo, base, sorted(units))
     for path, (kind, lang) in sorted(units.items()):
-        if path not in added or lang not in reads:
-            continue                      # unchanged/deleted, or Rust without its list (RED above)
+        if path not in added or lang not in reads or path in copies:
+            continue                      # unchanged/deleted, Rust without its list (RED above), or a C100 copy
         text = _read(repo, path)
         if text is None:
             out.append(tb.Finding("RED", CHECK, "%s: cannot read the file (not UTF-8 or gone) -- "

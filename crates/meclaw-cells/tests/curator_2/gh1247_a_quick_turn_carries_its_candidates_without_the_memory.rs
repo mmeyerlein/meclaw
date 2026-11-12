@@ -12,6 +12,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -46,10 +49,8 @@ fn a_quick_turn_carries_its_candidates_without_the_memory() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("push", "candidate_cooldown", json!(0)),
-    ]);
+    let mut h =
+        Hive::with(&[("push", "candidate_cooldown", json!(0))]).reporting_composite("talky");
     sow(&mut h, "fw", "ticket 7 is open");
 
     // The round alone: no `recall` of the collector before it, no memory leg.

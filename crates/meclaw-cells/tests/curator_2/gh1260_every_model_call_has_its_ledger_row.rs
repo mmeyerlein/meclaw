@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -34,7 +37,9 @@ fn curate_on(h: &mut Hive, turn_id: &str, iter: &str, path: &str, ask: &str) -> 
     );
     h.out
         .iter()
-        .filter(|m| WAYS.contains(&m.route()))
+        // D58 target (contract point 8): one route for the calls; the way
+        // of before is read off `hop.target` (`way_of`).
+        .filter(|m| WAYS.contains(&way_of(m).as_str()))
         .cloned()
         .collect()
 }
@@ -60,10 +65,8 @@ fn every_model_call_has_its_ledger_row() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("lead", "consult_pending_ms", json!(86_400_000)),
-    ]);
+    let mut h = Hive::with(&[("lead", "consult_pending_ms", json!(86_400_000))])
+        .reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     // (turn, iter, path, the ways that leave, the way of the window)
@@ -78,7 +81,8 @@ fn every_model_call_has_its_ledger_row() {
     let mut bridge = None;
     for (turn_id, iter, path, ways, window_way) in cases {
         let out = curate_on(&mut h, turn_id, iter, path, "a question");
-        let mut got: Vec<&str> = out.iter().map(Msg::route).collect();
+        let left: Vec<String> = out.iter().map(way_of).collect();
+        let mut got: Vec<&str> = left.iter().map(String::as_str).collect();
         got.sort_unstable();
         let mut want = ways.clone();
         want.sort_unstable();
@@ -87,8 +91,8 @@ fn every_model_call_has_its_ledger_row() {
             let call = m.hop["curator_call"].as_str().unwrap_or_default();
             assert!(!call.is_empty(), "{path}: every call is named: {:?}", m.hop);
             let row = call_row(&h, call);
-            if m.hop.get("bridge").is_some() {
-                assert_eq!(row[0], json!("bridge"), "{path}: the bridge's own row");
+            if m.hop.get("call_kind").is_some_and(|v| *v == "side") {
+                assert_eq!(row[0], json!("side"), "{path}: the side call's own row");
                 bridge = Some(m.clone());
             } else {
                 assert_eq!(row[0], json!("curate"), "{path}: the window's row");

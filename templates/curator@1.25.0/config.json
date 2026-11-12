@@ -1,0 +1,971 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "in_curate",
+          "because": "one call of the model this hive serves: `messages[]` is the whole running round as it stands (the opening turn, the evidence pairs, every tool iteration so far), never history; `system` the per-round slots; `tool_scope` passes through; `hop.session_id`, `hop.turn_id`, `hop.iter` name the round. Answered by exactly one `brain`. Every row the round leaves in the ledger carries its `context.audience_set` (GH #925), and the window shows a row of another session only when the round is a subset of that row's audience (or it names `*`); a round that declares none sees only the rows of its own session that declare none either (or name `*`), and the call is marked `missing_audience`"
+        },
+        {
+          "route": "in_slots",
+          "because": "durable system slots of the caller's own making (the tool menu, the sidecar contract): kept as the caller's slots and sent to the model with the next call whose system changed, never on their own"
+        },
+        {
+          "route": "in_llm",
+          "because": "the tap: every output of the model this hive serves, raw, with its usage and the four keys the parent's edge promoted onto `brain` (`context.curator_call`, `context.session_id`, `context.turn_id`, `context.iter`); without a session it is session `default`, without a turn the round of its call. A final answer (`stop`, `length`) enters the ledger from here and from nowhere else; the usage fills the call record and a stamped `cache_expires_at` sets the clock. An output without `context.curator_call` is dropped and said"
+        },
+        {
+          "route": "in_spec_llm",
+          "because": "GH #1275: the quick voice's answer to a spec call (`hop.spec` \"1\", policy `quick_speculative`), with the call's context (`context.curator_call`, `session_id`, `turn_id`). Held in the ledger, never on the wall: the normal curate of the turn keeps it (out on `spec_release`, into the tap as `in_llm`) or drops it"
+        },
+        {
+          "route": "in_spec_partial",
+          "because": "GH #1411: a partial (a sentence while it streams) of a spec call of the quick voice, with the call's context (`context.curator_call`, `session_id`, `turn_id`). Never on the wall, never held: `./policy` passes it on `partial` unchanged when the turn's spec row is `await` for this call and the stored `needs` carries no `tool`, else it goes nowhere (one stderr line)"
+        },
+        {
+          "route": "in_pack",
+          "because": "an identity pack: `system.{identity,identity_short,persona,handover,instructions}` and nothing else, answered on `pack_ack` with the context passed through untouched. An unknown family refuses the whole pack (`slot_unknown`), an empty one is `pack_empty`"
+        },
+        {
+          "route": "in_close",
+          "because": "a closed session (`context.session_id`), in the round its generation was opened in (`context.audience_set`, which the session keeper recorded from the turn that opened it): answered by one `write` batch in the collector's close contract that carries only the rows whose audience holds that round (GH #925) -- a row without an audience never, and a close without a round reads nothing and leaves an empty batch, like a session that left nothing. The note it prepares for the next session carries the intersection of the audiences of every row of the session (GH #925), and a new session receives it only when its own round passes that set"
+        },
+        {
+          "route": "in_model",
+          "because": "a model package for `./summarizer`, pushed by the colony's llm-registry (GH #858): a params-only body the llm cell merges into its live params and answers with nothing; it goes from this path straight to that cell and past every other"
+        },
+        {
+          "route": "in_section",
+          "because": "one section of the sidecar block of an answer of the model this hive serves, cut by the parent's splitter (OR-KY-G2): `hop.section` names it, the body is the splitter's `{messages: [], section, payload}`, the context the one the answer came with (`session_id`, `turn_id`). `window` (`release`/`pin`, block ids) leaves `marks` rows, `gap` goes to `./push` (through `./policy`), which marks it once and looks it up; `memory` leaves a `topic` mark and, when `./intake` `pass_sections` names it, leaves again unchanged on `sidecar`; `things` leaves as one `thing_seen` when `./intake` `things_section` is \"1\" and the turn has a round (GH #949), and is dropped otherwise; any other section is dropped and said. Since GH #1079 a section whose hop carries `sidecar_verify` (the parent splitter's rule for it, canonical JSON) and is none of `window`, `gap`, `things` is checked first: each item of its array, its quoted fields word for word against the round's `user`/`peer` turns (`turn`), those and the memory bundle (`turn+recall`) or the body's `verify_answer` (`answer`), and leaves on `sidecar` whatever its name"
+        },
+        {
+          "route": "in_answer_check",
+          "because": "GH #1306: the parent splitter's `answer_check` stamped `answer_check_sources` (`turn+recall`): `./intake` reads the user and peer rows of the turn and the recall rows of the window of this answer (earlier turns too, never past the answer) through the audience gate and hands the check on on `answer_check`."
+        },
+        {
+          "route": "in_pin",
+          "because": "the door other hives pin through (GH #892): `pins[]`, each `{text, source, until?}` -- `source` the pinning hive's name (one path segment, never `model`), `until` RFC 3339 or absent; optional `replace_sources[]` (at most 16 names by the same rule) ends every live pin of those sources first (`until` = now, no row deleted; a hash of the new set that lives stays alive; `pins: []` with it empties them). Each pin becomes a block of kind `pin` and a `pins` row, and stands in the window under `system.pinned.<source>.<id>` (at the next rebuild; until then as a message where it arrived, `broadcast_mode tail`). Nothing else of this hive is written through it. A pin without `context.audience_set` is refused (`missing_audience`, a stderr line like every pin refusal, nothing written); a kept pin carries a round and reaches only a window whose round passes it (GH #925). Since GH #972 a pin may name its own `audience_set`: it is kept when it is the round of the turn the message belongs to (`context.turn_round`, stamped by the edge that raised the turn, never settable by a config's own edge) or lies inside `context.audience_set` (the ceiling the builder's pin edge stamps); otherwise the pin is not placed (`pin:held`, a stderr line with the reason) and the source pins it again in a turn of that round. A pin without one takes `context.audience_set`. So every audience group of one source travels in ONE message with ONE `replace_sources`, which ends every live pin of the source in any round except those the message carries, held ones included"
+        },
+        {
+          "route": "in_schemas",
+          "because": "the menu question of the collector in front of the model (OR-KY-G1): `tools[]` the names it declares. Answered by `./schemas` on `tool_schemas` like a tools hive answers it"
+        },
+        {
+          "route": "in_history_call",
+          "because": "a `history_*` tool call of the model this hive serves (GH #893), in the dispatcher's shape: one `tool_call` turn with the arguments as its text, `hop.tool_call_id`, `hop.tool_name`, and the round's context (`session_id`, `turn_id`). Answered by exactly one `tool_result` out of this hive's own ledger. The round's `context.audience_set` is required (GH #925): without it the answer is the refusal `missing_audience` and nothing is read; with it the tools see only rows whose audience holds the round (or names `*`), and a row that does not pass leaves no hit, id, count or gap"
+        },
+        {
+          "route": "in_recall_ask",
+          "because": "the collector's per-turn memory ask (its route `recall`, GH #895): the hop keys `phase`, `turn_id`, `session_id`, `iter`, `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to` and the person's words as `messages[]`. Answered by exactly one `recall` with the same keys and a question built from the wall; with `recall_push` \"0\" the ask as it came. It is never held back: the collector's fan-in waits for its bundle"
+        },
+        {
+          "route": "in_gap_bundle",
+          "because": "the memory's answer to a gap's own ask (GH #895), recognised by `context.gap_ask`, which the parent's edge lifted off the ask's hop on the way out and reads on the way back in -- it belongs to no round of the collector's and never reaches it. A find is kept as an addendum for the next round of the session; `hop.recall_empty`, a reject or the empty-state sentence is no find, and nothing is written"
+        },
+        {
+          "route": "in_renewed",
+          "because": "a duplex session of a running call was renewed at its provider's limit (GH #896, `voice` route `renewed`): `hop.call_id` names the call and `hop.renewal_n` counts the renewals. Answered by one `sidecar` section `context` -- the running conversation put together without a model -- for the call's new session"
+        },
+        {
+          "route": "in_stats",
+          "because": "a question an observer asks about this hive (GH #926), all hop: `stats_tag` (1 to 64 characters, echoed), `stats_from` and `stats_to` (RFC 3339; `from` counts, `to` does not; `from` before `to`, at most 31 days apart), `stats_kinds` (a JSON array as text, not empty, out of `calls`, `gap`, `reread`, `ask`, `correction`, `tool_error`), `stats_samples` (0 to 50, default 0); the body `{messages: []}`. `./stats` counts it out of the ledger alone, in one round trip and without writing, and answers it exactly once on `stats` -- a question that does not hold too"
+        },
+        {
+          "route": "in_catalog",
+          "because": "GH #1449: the package line of a model cell this hive serves: `{messages: [], package: {model, input_soft, input_hard, max_output, price_tiers, cache_mode, cache_ttl_s, wire_dialect, supported_params, chars_per_token}}`, every key present and `null` where the package states none, `hop.package_of` the cell's path. Sent once per push that touches the model's package and as the answer to an empty params slot, so the catalogue row is here before the first call. Handed to `./policy`"
+        },
+        {
+          "route": "in_candidate",
+          "because": "push candidates of another hive or an app (GH #949), one door for every sender: `{source, candidates: [{id, text, audience_set?, triggers?, until?, once?, priority?}], withdraw?: [id]}` -- `source` one path segment by the pin rule (never `model`), at most 32 candidates, `id` 1 to 64 characters, `text` 1 to 600, at most 16 `triggers` of 1 to 64 characters with a letter or digit in each, `priority` 0 to 9 (default 5), `once` (default true without triggers, false with them), `until` RFC 3339 or absent; a repeated `id` is its last entry. Each kept candidate becomes a block of kind `candidate` and one `candidates` row per `(source, id)`, written again in place (a new text, `once` or triggers start the push's marks over), and `withdraw` ends the named ones now (`until` = now). Fail-closed on the round, `context.audience_set`: without one nothing is written (`missing_audience`); a candidate without `audience_set` takes the round, one with it must name only members of the round -- `*` only when the round holds `*`, the empty set only in an empty round -- or it alone is refused (`audience_widened`); a field out of bounds refuses it alone (`invalid_input`), a broken body the whole message. Answered on `candidate_ack` only when `hop.ack` is \"1\""
+        },
+        {
+          "route": "in_note",
+          "because": "notes for the window (GH #1303): `notes[{id, source, text, scope, until?, priority?, item?}]` (`item`, 1 to 64 characters, names the thing a note speaks about and is kept in the row, D38 V1, GH #1451) -- `source` one path segment, never `model`; `scope` `turn` (the next window of the round, and every later call of that turn), `session` (until the close of the generation it came in) or `until` (until that RFC 3339 time, or until withdrawn); `priority` 0 to 9, 0 first, default 5; the same id with text \"\" withdraws it. At most 32 per body, a repeated id counts by its last entry. Each becomes one `notes` row in the round of `context.audience_set`, which is required: a body without one is refused (`missing_audience`, a stderr line, nothing written), a note out of its bounds alone (a stderr line). The window shows the live ones as ONE block that opens the newest message of the person, never in the system part, within the role's `notes_share`. Nothing answers it"
+        },
+        {
+          "route": "in_read",
+          "because": "an app's read of its own round off this hive's wall (GH #949), answered by `./reader`: `hop.read_tag` (1 to 64 characters, echoed), the body `{what, session_id?, since?, limit?}` -- `turns`, the wall rows of the round oldest first after the cursor `since` (a `seq`), optionally of one session, with the text of their blocks, at most `limit` (default 20, at most 100) a page; or `sessions`, the round's sessions with their first and last row. Fail-closed on the round, `context.audience_set`: without one, or with the declared empty one, nothing is read and the answer is `missing_audience`; with one, the store selects through `covers`, so only rows whose own audience holds the round (or names `*`) are read at all and a row without an audience never is. Answered exactly once on `read`"
+        },
+        {
+          "route": "in_sealed",
+          "at": [
+            "./summarizer"
+          ],
+          "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
+        },
+        {
+          "route": "in_turns_ask",
+          "because": "GH #1304 (OR-EP-4): `talky/route` asks for the person's last turns before its decide call, `{messages: [], turns_ask: {n, budget_tokens}}` with the turn's context (`session_id` the running generation, `turn_id` the running turn, `audience_set` the round). Answered by `./history` out of this hive's wall with exactly one `turns`. Fail-closed on the round like `history_read` (GH #925): without `context.audience_set` nothing is read and the answer is empty with `hop.refused` `no_round`"
+        },
+        {
+          "route": "in_screen_topics",
+          "because": "GH #1279: the presenter's screen topics (its `screen_topics` lane, contract GR), `{topics: [{name, purpose, candidates?: [{key, describe}]}]}`. `./history` keeps the list as it came -- it replaces the one before, `topics: []` empties it; a topic without a name or a candidate without a key is left out and said -- and every judge context carries it under `judge.screen.topics`. Nothing answers it"
+        },
+        {
+          "route": "in_seed_ask",
+          "because": "GH #1279: the voice cell's `seed_ask` -- `hop.call_id`, `hop.session_id` (the call), `hop.reason`, `hop.renewal_n`; the composition promotes `context.audience_set` and `context.call_id`. Answered by `./history` with exactly one `seed` out of this hive's wall; without a round with `messages: []` and `hop.refused` `no_round`, never silence"
+        },
+        {
+          "route": "in_seed_line",
+          "because": "GH #1279: one line for the next seed of a call, `{session_id|call_id, kind: wind_down|hint|identity, text}`. `./history` holds one per call AND kind (a new line replaces only its own kind) and ends the next `seed` of that call on every held line as the last messages -- the `hint` first, the `wind_down` last -- then drops them; an `identity` line (#1402) is the member's, not a call's: it needs no call (a sent one is ignored), stands in the head of every seed right after the facts line instead and holds for every call until a newer one replaces it. Nothing answers it; an unknown `kind`, no call (except `identity`) or no text is dropped and said"
+        },
+        {
+          "route": "in_call_end",
+          "because": "live-2 (#1369): the end of a voice call -- the set draws the voice cell's final `usage` (`final` true) here: `hop.call_id`, `hop.session_id`; the composition promotes `context.audience_set` and `context.call_id`. Answered by `./history` with exactly one `call_facts` read out of this hive's ledger, which it leaves as it was; without a round `hop.refused` `no_round`, never silence"
+        },
+        {
+          "route": "in_delta_stamp",
+          "because": "GH #1279: the stamp `talky/route` gave a DELTA of a turn (`context.delta` \"1\", the cumulative text so far), with `stamp.text_norm`. With `./policy` `delta_speculation` on, the turn's speculative curate (#1275) becomes its normal curate under the delta stamp's path when the final text normalises to the same `text_norm` (collapsed whitespace, lower case, trailing `.!?…,;:` cut), and the later normal curate parks; a different text is fired anew as in #1275. Off (the default) it is parked. Never a model call of its own"
+        }
+      ],
+      "emits": [
+        {
+          "route": "brain",
+          "because": "the call: `messages[]` the window, `system` only when a family changed (each changed family one `$replace` root), `tool_scope` unchanged, the hop of `in_curate` unchanged plus `curator_call`. The parent's edge onto the model promotes `curator_call`, `turn_id`, `session_id` and `iter` into context, so the tap comes back with them"
+        },
+        {
+          "route": "quick",
+          "because": "the call of a turn stamped `simple` (GH #1247; `talk` goes to `brain` since GH #1260): the short window of the role `quick` -- the last four elements, no memory rows, the sidecar contract, every system family whole -- and `tool_scope` with the class's tools `quick_tools` at the ops stage and the stamp's other `families` at the hint stage. In the tool round of a turn whose stamp needs a `tool` (GH #1260): `tool_scope.require`, no contract, and the bridge beside it with `hop.bridge` `tool` and `hop.interim` `1`. The hop as on `brain`, plus `curator_call`; one `route` mark beside the call record"
+        },
+        {
+          "route": "spec_release",
+          "because": "GH #1275: a held spec answer of the quick voice that the normal curate kept -- the model's messages and `hop.finish_reason`, its usage, `hop.curator_call` (the spec call), `session_id`, `turn_id`, `iter`, `episode_turn_id`; the composite hands it to its splitter like a quick answer. Never two answers for one turn"
+        },
+        {
+          "route": "partial",
+          "because": "GH #1411: a spec partial the turn awaits -- hop `seq`, `final`, `partial_of` and the body exactly as they came in on `in_spec_partial`; the parent draws it to its rim and nowhere else"
+        },
+        {
+          "route": "consult",
+          "because": "the call of a turn stamped `complex` (GH #1247, R-WP-5): the whole errand for the backend, no system part, `hop.consult_id` (`k-<curator_call>`) and `hop.consult_class` = `consult`. The answer comes back on the parent's `in_advice` and leaves on `brain`; until then the session's calls carry `system.consult.pending`"
+        },
+        {
+          "route": "research",
+          "because": "as `consult`, for a turn stamped `research` (R-WP-9: one mechanism), `hop.consult_class` = `research`"
+        },
+        {
+          "route": "turn_write",
+          "because": "one participant turn (the person's, the model's final answer, a peer's) for whoever keeps episodes, one per message, in the collector's per-turn contract: `hop.turn_id` `<session_id>#<tag>-<index>` (`tag` the first 8 hex of sha256 over the turn's canonical round, `[]` for none; the index counts from 0 per session and round, so it neither reveals turns of other rounds nor collides between them, GH #932), `hop.turn_index`, `hop.happened_at`. Off with `./writer` `turn_write` = \"0\""
+        },
+        {
+          "route": "write",
+          "because": "a closed session as ONE batch in the collector's close contract: `messages[]` the participant turns, `rounds` everything else raw, `hop.turn_count`/`hop.round_count`, only the rows whose audience holds the close round (GH #925)"
+        },
+        {
+          "route": "closed",
+          "because": "GH #1305: ONE per close, right behind its `write` in the same emission, from `./writer` when its knob `conversation_events` is \"1\": hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, body `messages: []` -- no text. Off (the shipped \"0\") nothing leaves."
+        },
+        {
+          "route": "pack_ack",
+          "because": "the receipt of one pack: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown`, `pack_empty`), `hop.pack_unknown`; the context of the pack rides on"
+        },
+        {
+          "route": "model_refused",
+          "because": "a model package pushed through `in_model` that `./summarizer` refused (GH #863): its error, with the cell's own path in `hop.refused_subscriber`, leaves here for the registry's way back"
+        },
+        {
+          "route": "sidecar",
+          "because": "a section of the model's block the intake passes on unchanged (`pass_sections`, a talky's `memory`): the splitter's body and hop, `hop.section` naming it, for the door that section always had; and a gap's find in a duplex call (`context.engine` \"duplex\"), as the section `fact` the voice model paraphrases: `hop.section` \"fact\", the body `{messages: [], section, payload: {payload}}` the splitter writes for a section; and the handover block for a renewed live session (GH #896): `hop.section` `context`, `hop.call_id`, `hop.renewal_n`, the words under `payload` -- the splitter's section shape, so the member's advise edge turns it into the call's `in_advise` like any `context` section. `context.call_id` is set from `hop.call_id` on the way out. Since GH #1079 also a checked section: the splitter's hop without `sidecar_verify`, its body without `verify_answer`, each item that passed with `verified`, each that failed dropped -- or kept with `failed` under the rule's `mode` mark"
+        },
+        {
+          "route": "answer_check",
+          "because": "GH #1306: a check of the sent answer that came in on `in_answer_check`, handed on with the words of its turn (`verify_turn`) and the recall answers of its round (`verify_recall`, `[{ref, text}]`) -- or with `hop.sources_error` `store_error` and neither, when the round's rows could not be read. Only the round's own rows count."
+        },
+        {
+          "route": "tool_schemas",
+          "because": "the answer to `in_schemas`: `schemas[]`, `unknown[]`, `sidecar[]` (the curator's own tools and sections), `hop.operation` `schemas`. The parent draws it into its collector as `in_menu` with `context.tool_answerer` `curator`"
+        },
+        {
+          "route": "tool_result",
+          "because": "the answer to one `in_history_call`: one `tool_result` turn under the call id, its text a JSON object, `hop.tool_call_id`, `hop.tool_name` and `hop.error_code` (empty, or the refusal the text names too). The context of the call rides on, so the parent's edge hands it to its collector's `in_tool` like any tool result. A call whose round declares no audience is answered with `hop.error_code` `missing_audience` (GH #925)"
+        },
+        {
+          "route": "recall",
+          "because": "a memory ask: the collector's, with its hop keys unchanged and the question built here, or a gap's own, with the same keys, the gap as its question and `gap_ask`, which the parent's edge lifts into context so the answer comes back on `in_gap_bundle`"
+        },
+        {
+          "route": "stats",
+          "because": "the answer to one `in_stats`: `{messages: [], stats: {from, to, counts, samples, truncated}}`. `counts` holds exactly the asked kinds: `calls` the `calls` rows started in the window, every other kind the `marks` rows of that kind stamped in it (`correction` counts the model rewriting a standing instruction in its sidecar, not a person correcting it). `samples` are the newest of the counted marks (under `truncated` the newest of the window's counted, oldest part), metadata only -- `at`, `kind`, `session_id`, `turn_id`, `value`, where a gap's value is its `searched` flag and a correction's is empty, and `session_id`/`turn_id` are references this answer hands out (`s1`, `s2`, ... in the order the samples first name a session, `s1#1`, `s1#2`, ... for its turns the same way), never the ledger's ids, which carry the channel -- a phone number, a chat id: no text, no audience, no identity. `truncated` is true when the window held more rows than `./stats` `scan_budget`; the count is then partial and meant to be thrown away. `hop.stats_tag` echoed, `hop.error_code` empty, `invalid_input` or `store_error`, `hop.detail` the hop key a refused question failed on (`invalid_input`) or the ledger table whose read the store refused (`store_error`: `calls`, `marks`, both comma-joined, or `ledger` when its answer names neither); a refusal carries empty `counts` and `samples`"
+        },
+        {
+          "route": "candidate_ack",
+          "because": "the receipt of one `in_candidate`, only when its `hop.ack` was \"1\" -- every curator behind a fan-out answers, and receipts nobody drains would be dead letters: `{messages: [], source, stored, refused: [{id, error_code}]}`, `stored` the number of candidates kept, `refused` each refused one (`invalid_input`, `audience_widened`), `hop.error_code` empty, or `missing_audience`/`invalid_input` when the whole body was refused and nothing written. The context of the push rides on"
+        },
+        {
+          "route": "thing_seen",
+          "because": "the named things of the person's world one turn mentions (GH #949), out of the model's sidecar section `things`: `{messages: [], items: [{name, kind?, note?}], turn_id, episode_turn_id?, session_id}` -- the entries in their checked form (`name` a non-empty string, `kind`/`note` strings; an entry out of form is left out whole, a name counts once), no count and no length of their own: the section takes a tenth of the served model's window, the first entry alone over it is clipped with a mark and the rest named in `cut` (GH #1085), `episode_turn_id` the person's episode of the turn when the call named one (GH #941). The round rides in `context.audience_set`; a section without a round is never handed on (dropped and marked `missing_audience`). Off unless `./intake` and `./schemas` `things_section` are \"1\""
+        },
+        {
+          "route": "read",
+          "because": "the answer to one `in_read`: `{messages: [], rows, next, truncated}` -- `rows` the turns (`seq`, `session_id`, `turn_id`, `kind`, `origin`, `final`, `at`, `text`; a first row larger than the page's share of the asker's window (`hop.input_soft` of the read) is cut with the mark `...[cut: <shown> of <total> chars shown; ...]`, flagged `cut` and its whole length in `chars`) or the sessions (`session_id`, `first_seq`, `last_seq`, `first_at`, `last_at`, `turns`), `next` the cursor of the rest or '' at the end. `hop.read_tag` and `hop.read_what` echoed, `hop.error_code` always present -- empty, `missing_audience`, `invalid_input` or `store_error` -- and `hop.detail` the key a refused question failed on, or the store's code; a refused or failed read carries no rows and is never an empty page of an answer. The context of the question rides on"
+        },
+        {
+          "route": "credential_request",
+          "at": [
+            "./summarizer"
+          ],
+          "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
+        },
+        {
+          "route": "reject",
+          "because": "one item of a checked section that failed (GH #1079): `hop.reject_reason` `quote_missing` (the field is absent or holds no words) or `quote_not_in_source`, `hop.section`, `hop.field` (the first that failed), `hop.session_id`, `hop.turn_id`, `hop.episode_turn_id`, `messages: []` -- never the item's words, so a drain counts refusals by class and files no claim. A talky hands it to its `error` drain"
+        },
+        {
+          "route": "turns",
+          "because": "the answer to one `in_turns_ask`: `{messages: [], turns: [{turn_id, text}], truncated}` -- the person's words alone (wall rows of kind `user`, a turn's messages joined by a line break), of the running generation and of rows the round may see, never the running turn, the newest `n` oldest first, within `budget_tokens` (at most 4000; at or below 0, or none, 1500) by the templates' one token estimate, the oldest dropped first and `truncated` then true. `hop.refused` `no_round` or `bad_arguments`, `hop.degraded` `store` when the ledger refused a read -- each with `turns: []`. The context rides on"
+        },
+        {
+          "route": "seed",
+          "because": "GH #1279: the answer to one `in_seed_ask`, `{messages: [{role, text}], est_tokens, judge}` -- `messages` one `developer` line of facts (now, place, topic, screen topics; never an instruction), the held `identity` line of the member as `developer` (#1402), a `developer` line of the session and until notes (at most `seed_entries_max` of `./history`, the best ranked), the round's newest turns as `user`/`assistant` and its inner turns as `developer` lines within 8192 tokens (the oldest dropped first), and the held `in_seed_line`s of the call last as `developer`, one per kind (`hint` before `wind_down`), with `seed_anchor` of `./history` set its line after the turns and the `hint`, right before `wind_down` (with `seed_anchor_first` \"1\" at the end of the head instead), and on a `renew`/`recover` ask with `seed_renew_line` set that line last of all (#1402); `est_tokens` the token estimate the budget counts with; `judge` the judge context the turns came from. `hop.renewal_n` given back, `hop.call_id` the call, set into `context.call_id` on the way out; `hop.refused` `no_round` or `hop.degraded` `store` with `messages: []`. The composition draws it to the voice cell's `in_seed`"
+        },
+        {
+          "route": "call_facts",
+          "because": "live-2 (#1369): the answer to one `in_call_end`, `{messages: [], call_id, session_id, seed_used, facts, delegations}` -- `seed_used` whether a seed or live feed gave the call facts (the state row `seed_facts:<call>` stands; a yes or no, the row counts nothing), `facts` what that row says it was given, `{source, id, text}` each (the notes, `topic`, the screen topics while the kept list is the one it hashed), `delegations` the call's inner turns of kind `delegation`, `{turn_id, text}` oldest first. `hop.call_id`, `hop.session_id` given back, `hop.call_id` set into `context.call_id` on the way out; `hop.refused` `no_round`/`no_call` or `hop.degraded` `store` with `seed_used` false and empty lists. Read only: the call's facts row stays"
+        },
+        {
+          "route": "live_feed",
+          "because": "GH #1279: with `./policy` `live_feed` on, after each closed turn of a duplex session (`hop.engine` \"duplex\") ONE section of the facts a seed of the call carries that moved since its last seed or feed (`seed_facts:<call>`) -- `hop.section` `renew` (the param `live_feed_section`, the one way built) with `hop.at_turn_end` \"1\", `hop.call_id` set into `context.call_id` on the way out; facts only, nothing when nothing moved. The composition draws it to the voice cell's `in_advise`"
+        },
+        {
+          "route": "propose",
+          "because": "(#1279, change 3): the pair of a `clarify` turn -- the assistant's one how-question and the person's answer, with the class the next stamp resolved to -- as ONE proposal in the shape of `templates/affinity/README.md` `in_propose`. The composition draws it to the affinity's `in_propose`"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./intake",
+          "condition": "has(hop.route) && (hop.route == 'in_curate' || hop.route == 'in_slots' || hop.route == 'in_llm' || hop.route == 'in_pack' || (hop.route == 'in_section' && (!has(hop.section) || hop.section != 'gap')) || hop.route == 'in_pin' || hop.route == 'in_candidate' || hop.route == 'in_note' || hop.route == 'in_answer_check' || hop.route == 'in_close')"
+        },
+        {
+          "from": ".",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'in_close'"
+        },
+        {
+          "from": ".",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'in_model' && (!has(hop.subscriber) || hop.subscriber.endsWith('/summarizer'))"
+        },
+        {
+          "from": ".",
+          "to": "./schemas",
+          "condition": "has(hop.route) && hop.route == 'in_schemas'"
+        },
+        {
+          "from": ".",
+          "to": "./history",
+          "condition": "has(hop.route) && (hop.route == 'in_history_call' || hop.route == 'in_turns_ask' || hop.route == 'in_screen_topics' || hop.route == 'in_seed_ask' || hop.route == 'in_seed_line' || hop.route == 'in_call_end')"
+        },
+        {
+          "from": "./intake",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./writer",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason",
+              "cur_close": "has(hop.cur_close) ? hop.cur_close : ''"
+            }
+          }
+        },
+        {
+          "from": "./history",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./intake",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-intake'"
+        },
+        {
+          "from": "./ledger",
+          "to": "./policy",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-policy'"
+        },
+        {
+          "from": "./ledger",
+          "to": "./writer",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-writer'"
+        },
+        {
+          "from": "./ledger",
+          "to": "./history",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-history'"
+        },
+        {
+          "from": "./intake",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'episode'"
+        },
+        {
+          "from": "./policy",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'clock'"
+        },
+        {
+          "from": "./clock",
+          "to": "./policy",
+          "condition": "has(hop.schedule_name) && hop.schedule_name == 'cache'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_cache_expired'"
+            },
+            "set_context": {
+              "audience_set": "has(hop.audience_set) ? hop.audience_set : ''"
+            }
+          }
+        },
+        {
+          "from": "./clock",
+          "to": "./policy",
+          "condition": "has(hop.msg_type) && hop.msg_type == 'timer_op_error'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_clock_error'"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'summarize'"
+        },
+        {
+          "from": "./summarizer",
+          "to": "./policy",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !(has(context.cur_origin) && context.cur_origin == 'curator-handover')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_summary'"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'brain' || hop.route == 'quick' || hop.route == 'consult' || hop.route == 'research')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'pack_ack'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'turn_write' || hop.route == 'write' || hop.route == 'closed')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./history",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'tool_result' || hop.route == 'turns')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./summarizer",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'sidecar'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'answer_check'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./schemas",
+          "to": ".",
+          "condition": "has(hop.operation) && hop.operation == 'schemas'",
+          "modifier": {
+            "set_hop": {
+              "route": "'tool_schemas'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && (hop.route == 'in_recall_ask' || (hop.route == 'in_section' && has(hop.section) && hop.section == 'gap'))"
+        },
+        {
+          "from": ".",
+          "to": "./push",
+          "condition": "has(hop.route) && hop.route == 'in_gap_bundle'"
+        },
+        {
+          "from": "./policy",
+          "to": "./push",
+          "condition": "has(hop.route) && (hop.route == 'push_ask' || hop.route == 'push_gap')"
+        },
+        {
+          "from": "./intake",
+          "to": "./push",
+          "condition": "has(hop.route) && hop.route == 'push_round'"
+        },
+        {
+          "from": "./push",
+          "to": "./intake",
+          "condition": "has(hop.route) && hop.route == 'in_addendum'"
+        },
+        {
+          "from": "./push",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./push",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-push'"
+        },
+        {
+          "from": "./push",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'recall' || hop.route == 'sidecar')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./handover",
+          "condition": "has(hop.route) && (hop.route == 'in_close' || hop.route == 'in_renewed')"
+        },
+        {
+          "from": "./policy",
+          "to": "./handover",
+          "condition": "has(hop.route) && hop.route == 'handover'"
+        },
+        {
+          "from": "./handover",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./handover",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-handover'"
+        },
+        {
+          "from": "./handover",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'summarize'"
+        },
+        {
+          "from": "./summarizer",
+          "to": "./handover",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && has(context.cur_origin) && context.cur_origin == 'curator-handover'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_summary'"
+            }
+          }
+        },
+        {
+          "from": "./handover",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'sidecar'",
+          "modifier": {
+            "set_context": {
+              "call_id": "has(hop.call_id) ? hop.call_id : ''"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./stats",
+          "condition": "has(hop.route) && hop.route == 'in_stats'"
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_catalog'"
+        },
+        {
+          "from": "./stats",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./stats",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-stats'"
+        },
+        {
+          "from": "./stats",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'stats'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'candidate_ack' || hop.route == 'thing_seen')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./reader",
+          "condition": "has(hop.route) && hop.route == 'in_read'"
+        },
+        {
+          "from": "./reader",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": "./reader",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-reader'"
+        },
+        {
+          "from": "./reader",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'read'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./intake",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'reject'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_spec_llm'"
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_spec_partial'"
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'spec_release'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason)",
+          "modifier": {
+            "set_hop": {
+              "route": "'partial'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./policy",
+          "to": "./intake",
+          "condition": "has(hop.route) && hop.route == 'spec_tap'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_llm'"
+            },
+            "set_context": {
+              "curator_call": "hop.curator_call",
+              "session_id": "hop.session_id",
+              "turn_id": "hop.turn_id",
+              "iter": "hop.iter",
+              "interim": "''"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close"
+            ]
+          }
+        },
+        {
+          "from": "./history",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'seed'",
+          "modifier": {
+            "set_context": {
+              "call_id": "has(hop.call_id) && hop.call_id != '' ? hop.call_id : (has(context.call_id) ? context.call_id : '')"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./history",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'call_facts'",
+          "modifier": {
+            "set_context": {
+              "call_id": "has(hop.call_id) && hop.call_id != '' ? hop.call_id : (has(context.call_id) ? context.call_id : '')"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_delta_stamp'"
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_summary_self'"
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'live_feed'",
+          "modifier": {
+            "set_context": {
+              "call_id": "has(hop.call_id) && hop.call_id != '' ? hop.call_id : (has(context.call_id) ? context.call_id : '')"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'propose'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        },
+        {
+          "from": "./policy",
+          "to": "./lead",
+          "condition": "has(hop.route) && (hop.route == 'lead_ask' || hop.route == 'lead_spec' || hop.route == 'lead_note')"
+        },
+        {
+          "from": "./lead",
+          "to": "./lead_state",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./lead_state",
+          "to": "./lead",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'curator-lead'"
+        },
+        {
+          "from": "./lead",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'lead_verdict'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_lead'"
+            },
+            "set_context": {
+              "cur_origin": "''"
+            }
+          }
+        },
+        {
+          "from": "./policy",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'catalog_ask'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "interim"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got, by the policy of the model's role. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
+    "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
+    "not_in_scope": "No retrieval of its own (memory answers; `./push` only builds the question) and no tool fan-out -- the one tool family it serves is its own wall (`history_*`, GH #893) -- no persona of its own. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
+    "contract_in": "Twenty-eight lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_spec_partial, in_pack, in_close, in_model, in_section, in_answer_check, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_catalog, in_candidate, in_note, in_read, in_sealed, in_turns_ask, in_screen_topics, in_seed_ask, in_seed_line, in_call_end, in_delta_stamp.",
+    "contract_out": "Twenty-eight routes on `hop.route`, leaving through the hive path: brain, quick, spec_release, partial, consult, research, turn_write, write, closed, pack_ack, model_refused, sidecar, answer_check, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, turns, seed, call_facts, live_feed, propose, catalog_ask."
+  }
+}

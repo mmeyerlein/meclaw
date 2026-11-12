@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -30,11 +33,11 @@ const LEAD_KEYS: [&str; 5] = [
 fn hive(over: &[(&str, &str, Value)]) -> Hive {
     assert!(
         lead_shipped(),
-        "templates/curator/lead/config.json is missing: the lead cell is not shipped (GH #1447)"
+        "templates/lead/lead/config.json is missing: the lead is not shipped (GH #1447, GH #1474)"
     );
-    let mut all = vec![("policy", "role", json!("talky"))];
+    let mut all = Vec::<(&str, &str, Value)>::new();
     all.extend_from_slice(over);
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 /// One curate of turn `turn_id`, iteration `iter`, stamped `path`/`needs`.

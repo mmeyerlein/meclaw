@@ -33,6 +33,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -73,7 +76,7 @@ fn pure(script: &str, probe: &str, args: Value) -> Value {
 }
 
 fn talky() -> Hive {
-    Hive::with(&[("policy", "role", json!("talky"))])
+    Hive::with(&[]).reporting_composite("talky")
 }
 
 fn put_state(h: &Hive, key: &str, value: &str) {
@@ -138,10 +141,7 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     assert_eq!(luna["input_soft"], json!(250000), "the row this lock names");
     // An answer with the model's window alone: 70 000 tokens are far under
     // half of it, nothing is ordered.
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "window_target", json!(0)),
-    ]);
+    let mut h = Hive::with(&[("policy", "window_target", json!(0))]).reporting_composite("talky");
     turn(
         &mut h,
         "s1",
@@ -154,10 +154,7 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     // With the row on the answer: a measured window of 120 000 tokens -- the
     // role's whole window of before -- orders nothing, and the window kept
     // for every producer is the row's `input_soft`.
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "window_target", json!(0)),
-    ]);
+    let mut h = Hive::with(&[("policy", "window_target", json!(0))]).reporting_composite("talky");
     let mut usage = luna.clone();
     usage["tokens_prompt"] = json!(120000);
     turn(&mut h, "s1", "t1", &"x".repeat(360_003), "a", usage);
@@ -167,7 +164,7 @@ fn talky_under_luna_rebuilds_at_the_catalog_line() {
     // GH #1427: the cost line of the rule at `rebuild_to` 0.35 (talky ships 0.45 now,
     // its preset is pinned in `gh1272_a_role_rebuilds_at_its_window_target`).
     let (marks, err) = policy_scope(
-        json!({"role": "talky", "window_target": 0, "rebuild_to": 0.35}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 0, "rebuild_to": 0.35})),
         "[curate_mark(w, ARGS)['mark'] for w in (120000, 175000, 175001, 249999, 250000)]",
         luna,
     );

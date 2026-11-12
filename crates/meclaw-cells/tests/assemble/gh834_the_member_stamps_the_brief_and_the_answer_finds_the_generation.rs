@@ -202,7 +202,8 @@ body = doc["body"]
 out = []
 if hop.get("route") == "in_curate":
     head = dict(hop)
-    head["route"] = "brain"
+    head["route"] = "model_call"
+    head["target"] = "brain"
     head["curator_call"] = "call-%s-%s" % (hop.get("turn_id") or "", hop.get("iter") or "0")
     one = {"header": head, "messages": body.get("messages") or []}
     for k in ("system", "tool_scope"):
@@ -340,6 +341,10 @@ fn stage_generation(root: &std::path::Path, who: &str) {
         // GH #1279: the screen judge's model is an `llm` cell this road
         // never reaches -- the judge ships off (`enabled` "0").
         inerts.push(format!("{talky}/screen_model"));
+        // D58 lead: the lead is its own hive (`lead@1.0.0`), a `ref` a
+        // filesystem boot cannot resolve; the curator double above never
+        // asks it, so it stands inert like the other nodes off this road.
+        inerts.push(format!("{talky}/lead"));
     }
     inerts.push(format!("{base}/cogny"));
     inerts.push(format!("{base}/tools"));

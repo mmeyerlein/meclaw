@@ -47,6 +47,7 @@
 //! ship the templates is skipped, never judged.
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
@@ -120,7 +121,7 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
 fn wish(scope: &str, name: &str, door: bool) -> Value {
     let mut params = json!({
         "scope": scope, "level": "assistant", "name": name,
-        "template": "assistant@3.12.6",
+        "template": "assistant@4.0.0",
         "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                 "model_surface": "${MODEL_SURFACE}"},
         "override_params": {"cogny/brain": {"temperature": 0.2}}
@@ -434,10 +435,15 @@ fn build_tree(
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![(
-            "code".to_string(),
-            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-        )]
+        // The shipped `assistant` level owns a store since `followup` (GH #1479): its
+        // `followup_store` boots as the real store, like the member's stores elsewhere.
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            ("store".to_string(), Arc::new(StoreCellFactory)),
+        ]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(32);

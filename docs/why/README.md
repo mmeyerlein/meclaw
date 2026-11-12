@@ -6,6 +6,7 @@ of the decision rather than the code.
 - [Everything is a file](everything-is-a-file.md) answers why the harness lives in the file system and why there is no SDK.
 - [An operating system for agents](an-os-for-agents.md) answers what meclaw-os is and what its four nested levels are for.
 - [Memory that outlives the window](memory.md) answers where a conversation is kept once the context window is not the place.
+- [A window cut to the model](curator.md) answers how large a model's context window should be, and how the curator cuts it out of a record that is never deleted.
 - [One assistant, two brains](two-brains.md) answers why the shipped assistant runs two models.
 - [Why Rust, why Linux only](rust-and-linux.md) answers what the single binary and the kernel sandbox buy, and what they cost.
 - [Ontology, in the meclaw sense](ontology.md) answers which typed vocabulary a colony is composed out of, and which meaning of the word is not meant here.

@@ -1146,10 +1146,11 @@ fn talky_edges() -> Vec<Value> {
 /// The exits of talky that carry `inner_source` out: the round trips whose
 /// answer comes back through a door that does not set it again (the CARRIED
 /// row `talky/inner_source` of gh494). A pair (from, route).
-const INNER_SOURCE_ROUND_TRIPS: [(&str, &str); 4] = [
+/// D58 target (contract point 8): an errand of either class leaves on the one
+/// route `errand`, no longer on `consult` or `research`.
+const INNER_SOURCE_ROUND_TRIPS: [(&str, &str); 3] = [
     ("./curator", "recall"),
-    ("./curator", "consult"),
-    ("./curator", "research"),
+    ("./curator", "errand"),
     ("./dispatcher", "tool"),
 ];
 
@@ -1183,7 +1184,7 @@ fn gh1320_inner_source_leaves_talky_only_on_its_round_trips() {
         }
     }
     assert!(leaks.is_empty(), "{leaks:#?}");
-    // recall twice (with and without a gap ask), consult/research, tool.
+    // recall twice (with and without a gap ask), errand, tool.
     assert_eq!(kept.len(), 4, "{kept:#?}");
 }
 

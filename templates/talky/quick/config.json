@@ -34,7 +34,33 @@
     ],
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
-    "package_line": true
+    "package_line": true,
+    "window_profile": {
+      "window": "wall",
+      "system": "full",
+      "tools": "scoped",
+      "allow": [
+        "web",
+        "weather"
+      ],
+      "must_call": true,
+      "speaks": true,
+      "instructions": {
+        "slot": "quick",
+        "side_slot": "bridge",
+        "text": "When you call a tool, say one short sentence beside the call, in your own words, so the person hears you while it runs. Keep answers short. If you are unsure how the person means a request even with the conversation so far, ask one short question about it instead of guessing."
+      },
+      "frame": true,
+      "closes_turn": true,
+      "recall": false,
+      "keep_recent": 4,
+      "notes_share": 0,
+      "window_target": 100000,
+      "state_lines": 8,
+      "short_ids": "1",
+      "identity_budget": "full",
+      "broadcast_mode": "tail"
+    }
   },
   "contract": {
     "version": "1.0.0",
@@ -92,6 +118,12 @@
         "secret": false,
         "default": "openai/gpt-6-luna",
         "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from: the row it is born on, the start value of `./brain`. After a registry push the cell derives `external_timeout_ms` from the pushed row (its `output_tps`, GH #1350) because it carries `external_timeout_from_chain`, held under this backstop, which keeps the value of the born row. An instance that names its own `external_timeout_ms` in `override_params` sets `external_timeout_from_chain: false` beside it, or the next push derives over it."
+      },
+      "window_profile": {
+        "type": "object",
+        "secret": false,
+        "default": {},
+        "description": "D58 target (GH #1483): what this composite uses the cell's model for, as its curator cuts the windows of this cell by it -- an uninterpreted JSON object the cell only reports, in the slot `window_profile` of its package line, beside `package` and `system_order`. Shipped empty (no profile: the curator cuts with its instance knobs). A set or reset of it by a params-only message announces the line again. The fields are the curator's (templates/curator/README.md)."
       }
     },
     "emits": {
@@ -106,6 +138,14 @@
         },
         "package": {
           "type": "object",
+          "required": false
+        },
+        "window_profile": {
+          "type": "object",
+          "required": false
+        },
+        "system_order": {
+          "type": "array",
           "required": false
         }
       },

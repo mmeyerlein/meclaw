@@ -4,7 +4,10 @@
 //! WHY this file exists: `route` is stateless and its decide call saw only the
 //! running turn (`text_of`). With `context_turns` above 0 it now asks the
 //! curator on the internal lane `in_turns_ask` and gets exactly one `turns`
-//! back. The source is the curator's own wall -- no second copy of the text in
+//! back. Since D58 GH #1480 that is a VIEW without a target: the lane
+//! `in_view_ask` (`view_ask: {turns, budget_tokens}`) answered by one `view`
+//! whose `messages` are the person's words in the universal form
+//! `{origin: "user", type: "text", text}` and which carries no system part. The source is the curator's own wall -- no second copy of the text in
 //! `route` -- under the round rule of `history_read` (GH #925): only rows the
 //! round may see, only the running generation (`context.session_id`), and a
 //! question without a round reads nothing and is answered `no_round`.
@@ -112,7 +115,8 @@ fn ledger_answer(db: &rusqlite::Connection, msg: &Msg, refuse: bool) -> Msg {
     }
 }
 
-/// The answer to one `in_turns_ask` and the number of ledger reads it took.
+/// The answer to one `in_view_ask` without a target and the number of ledger
+/// reads it took.
 struct Answer {
     hop: Map<String, Value>,
     context: Map<String, Value>,
@@ -121,21 +125,25 @@ struct Answer {
 }
 
 impl Answer {
-    fn turns(&self) -> Vec<(String, String)> {
-        self.body["turns"]
+    /// The texts of the view's messages, each the person's (`origin` `user`).
+    fn turns(&self) -> Vec<String> {
+        self.body["messages"]
             .as_array()
-            .unwrap_or_else(|| panic!("`turns` is a list: {:?}", self.body))
+            .unwrap_or_else(|| panic!("`messages` is a list: {:?}", self.body))
             .iter()
             .map(|t| {
-                (
-                    t["turn_id"].as_str().expect("turn_id").to_string(),
-                    t["text"].as_str().expect("text").to_string(),
-                )
+                assert_eq!(t["origin"], "user", "only the person's words: {t}");
+                assert_eq!(t["type"], "text", "a text message: {t}");
+                t["text"].as_str().expect("text").to_string()
             })
             .collect()
     }
+    /// The first word of each message: the tag the wall's texts start with.
     fn ids(&self) -> Vec<String> {
-        self.turns().into_iter().map(|(id, _)| id).collect()
+        self.turns()
+            .into_iter()
+            .map(|t| t.split_whitespace().next().unwrap_or("").to_string())
+            .collect()
     }
     fn truncated(&self) -> bool {
         self.body["truncated"]
@@ -144,9 +152,10 @@ impl Answer {
     }
 }
 
-/// One question on `in_turns_ask` during turn `t-now` of session `s-now`, in
+/// One question on `in_view_ask` during turn `t-now` of session `s-now`, in
 /// the round `round` (`None`: the context names none), asking `ask` (the
-/// body's `turns_ask`). With `refuse_store`, every ledger read is refused.
+/// body's `view_ask`, no target). With `refuse_store`, every ledger read is
+/// refused.
 fn ask(h: &Hive, round: Option<&str>, ask: Value, refuse_store: bool) -> Answer {
     let cfg = cell_config("history");
     let script = cfg["params"]["script_inline"]
@@ -162,8 +171,8 @@ fn ask(h: &Hive, round: Option<&str>, ask: Value, refuse_store: bool) -> Answer 
     }
     let first = Msg {
         context: obj(context),
-        hop: obj(json!({"route": "in_turns_ask"})),
-        body: obj(json!({"messages": [], "turns_ask": ask})),
+        hop: obj(json!({"route": "in_view_ask"})),
+        body: obj(json!({"messages": [], "view_ask": ask})),
         reply_to: String::new(),
     };
     let mut queue = VecDeque::from([first]);
@@ -195,7 +204,7 @@ fn ask(h: &Hive, round: Option<&str>, ask: Value, refuse_store: bool) -> Answer 
                     }
                     queue.push_back(ledger_answer(&h.db, &req, refuse_store));
                 }
-                "turns" => answers.push(out),
+                "view" => answers.push(out),
                 other => panic!("history emitted on `{other}`: {:?}", out.hop),
             }
         }
@@ -206,10 +215,11 @@ fn ask(h: &Hive, round: Option<&str>, ask: Value, refuse_store: bool) -> Answer 
         "one question, exactly one answer: {answers:?}"
     );
     let a = answers.remove(0);
-    assert_eq!(
-        a.body["messages"],
-        json!([]),
-        "the answer carries no turn of its own: {:?}",
+    assert!(
+        a.body
+            .get("system")
+            .is_none_or(|s| s.as_object().is_some_and(|o| o.is_empty())),
+        "a view without a target carries no system part: {:?}",
         a.body
     );
     Answer {
@@ -237,7 +247,7 @@ fn words(tag: &str, tokens: usize) -> String {
 }
 
 /// The hive's edges and contract carry the lane: in onto `./history`, out on
-/// `turns` with the interior keys cleared (GH #494).
+/// `view` with the interior keys cleared (GH #494).
 fn the_hive_carries_the_lane() {
     let hive = read_json(&repo("templates/curator/config.json"));
     let routes = |k: &str| -> Vec<String> {
@@ -248,20 +258,20 @@ fn the_hive_carries_the_lane() {
             .map(|l| l["route"].as_str().unwrap().to_string())
             .collect()
     };
-    assert!(routes("accepts").contains(&"in_turns_ask".to_string()));
-    assert!(routes("emits").contains(&"turns".to_string()));
+    assert!(routes("accepts").contains(&"in_view_ask".to_string()));
+    assert!(routes("emits").contains(&"view".to_string()));
     let edges = hive["params"]["graph"]["edges"].as_array().unwrap();
     let cond = |e: &Value| e["condition"].as_str().unwrap_or("").to_string();
     assert!(
         edges.iter().any(|e| e["from"] == "."
             && e["to"] == "./history"
-            && cond(e).contains("hop.route == 'in_turns_ask'")),
+            && cond(e).contains("hop.route == 'in_view_ask'")),
         "the door onto ./history"
     );
     let exit = edges
         .iter()
-        .find(|e| e["from"] == "./history" && e["to"] == "." && cond(e).contains("'turns'"))
-        .expect("the exit of `turns`");
+        .find(|e| e["from"] == "./history" && e["to"] == "." && cond(e).contains("'view'"))
+        .expect("the exit of `view`");
     let cleared: Vec<&str> = exit["modifier"]["delete_context"]
         .as_array()
         .expect("delete_context")
@@ -359,19 +369,19 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 2, "budget_tokens": 2500}),
+        json!({"turns": 2, "budget_tokens": 2500}),
         false,
     );
-    assert_eq!(a.hop["route"], "turns");
-    assert_eq!(names(&a), ["t4", "t5"], "{:?}", a.body);
+    assert_eq!(a.hop["route"], "view");
+    assert_eq!(names(&a), ["person-4", "person-5"], "{:?}", a.body);
     assert!(!a.truncated(), "n, not the budget, cut it: {:?}", a.body);
-    for (_, text) in a.turns() {
+    for text in a.turns() {
         assert!(
             text.starts_with("person-"),
             "only the person's words: {text}"
         );
     }
-    assert_eq!(a.turns()[1].1, words("person-5", 1000), "a turn whole");
+    assert_eq!(a.turns()[1], words("person-5", 1000), "a turn whole");
     // The context rides on untouched, the interior keys are the edge's.
     assert_eq!(a.context["route_state"], "asked");
     assert_eq!(a.context["route_asked_at"], "17");
@@ -382,36 +392,41 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 10, "budget_tokens": 2500}),
+        json!({"turns": 10, "budget_tokens": 2500}),
         false,
     );
-    assert_eq!(names(&a), ["t4", "t5"], "{:?}", a.body);
+    assert_eq!(names(&a), ["person-4", "person-5"], "{:?}", a.body);
     assert!(a.truncated(), "the budget cut it: {:?}", a.body);
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 10, "budget_tokens": 5000}),
+        json!({"turns": 10, "budget_tokens": 5000}),
         false,
     );
-    assert_eq!(names(&a), ["t2", "t3", "t4", "t5"], "{:?}", a.body);
+    assert_eq!(
+        names(&a),
+        ["person-2", "person-3", "person-4", "person-5"],
+        "{:?}",
+        a.body
+    );
     assert!(a.truncated(), "a budget over 4000 is 4000: {:?}", a.body);
     for b in [json!(0), json!(-3), Value::Null] {
-        let mut q = json!({"n": 10});
+        let mut q = json!({"turns": 10});
         if !b.is_null() {
             q["budget_tokens"] = b.clone();
         }
         let a = ask(&h, Some(ROUND_E), q, false);
-        assert_eq!(names(&a), ["t5"], "budget {b} is 1500: {:?}", a.body);
+        assert_eq!(names(&a), ["person-5"], "budget {b} is 1500: {:?}", a.body);
         assert!(a.truncated(), "{:?}", a.body);
     }
     // Everything fits: every turn of the person, the running one never.
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 3, "budget_tokens": 4000}),
+        json!({"turns": 3, "budget_tokens": 4000}),
         false,
     );
-    assert_eq!(names(&a), ["t3", "t4", "t5"]);
+    assert_eq!(names(&a), ["person-3", "person-4", "person-5"]);
     assert!(!a.truncated());
 
     // Two messages of the person in one turn are one turn, in their order.
@@ -423,19 +438,16 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 1, "budget_tokens": 100}),
+        json!({"turns": 1, "budget_tokens": 100}),
         false,
     );
-    assert_eq!(
-        a.turns(),
-        [("t1".to_string(), "first line\nsecond line".to_string())]
-    );
+    assert_eq!(a.turns(), ["first line\nsecond line".to_string()]);
     // A wall that holds nothing of the person yet answers with nothing.
     let h = Hive::new();
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 3, "budget_tokens": 100}),
+        json!({"turns": 3, "budget_tokens": 100}),
         false,
     );
     assert!(a.turns().is_empty() && !a.truncated(), "{:?}", a.body);
@@ -496,15 +508,12 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "budget_tokens": 4000}),
         false,
     );
     assert_eq!(
         a.turns(),
-        [
-            ("t1".to_string(), "in the round".to_string()),
-            ("w1".to_string(), "a wider audience".to_string())
-        ],
+        ["in the round".to_string(), "a wider audience".to_string()],
         "only the round's rows of the running generation"
     );
     assert!(!a.truncated());
@@ -512,18 +521,26 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(other),
-        json!({"n": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "budget_tokens": 4000}),
         false,
     );
-    assert_eq!(a.ids(), ["x1", "w1", "x2"]);
+    assert_eq!(
+        a.turns(),
+        ["another round", "a wider audience", "another round again"]
+    );
 
     // Without a round nothing is read: an empty answer, refused, never silence.
-    let a = ask(&h, None, json!({"n": 10, "budget_tokens": 4000}), false);
-    assert_eq!(a.hop["route"], "turns");
+    let a = ask(&h, None, json!({"turns": 10, "budget_tokens": 4000}), false);
+    assert_eq!(a.hop["route"], "view");
     assert_eq!(a.hop["refused"], "no_round", "{:?}", a.hop);
     assert!(a.turns().is_empty() && !a.truncated(), "{:?}", a.body);
     assert_eq!(a.reads, 0, "not one ledger read without a round");
-    let a = ask(&h, Some(""), json!({"n": 10, "budget_tokens": 4000}), false);
+    let a = ask(
+        &h,
+        Some(""),
+        json!({"turns": 10, "budget_tokens": 4000}),
+        false,
+    );
     assert_eq!(a.hop["refused"], "no_round", "an empty round is none");
     assert_eq!(a.reads, 0);
 
@@ -531,10 +548,10 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"n": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "budget_tokens": 4000}),
         true,
     );
-    assert_eq!(a.hop["route"], "turns");
+    assert_eq!(a.hop["route"], "view");
     assert_eq!(a.hop["degraded"], "store", "{:?}", a.hop);
     assert!(a.turns().is_empty(), "{:?}", a.body);
 }

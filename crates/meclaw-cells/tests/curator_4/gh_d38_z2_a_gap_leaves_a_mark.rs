@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -24,7 +27,7 @@ fn push_shipped() -> bool {
 }
 
 fn talky() -> Hive {
-    Hive::with(&[("policy", "role", json!("talky"))])
+    Hive::with(&[]).reporting_composite("talky")
 }
 
 /// One round with the collector's ask first, so the push knows the tier of
@@ -56,7 +59,7 @@ fn gap(h: &mut Hive, session: &str, turn: &str, text: &str) -> Vec<Msg> {
     h.lane(
         "in_section",
         json!({"session_id": session, "turn_id": turn, "iter": "0", "curator_call": "c-1",
-               "channel": "test", "engine": "", "audience_set": ROUND_E}),
+               "channel": "test", "live": "", "audience_set": ROUND_E}),
         json!({"section": "gap"}),
         json!({"messages": [], "section": "gap", "payload": {"payload": text}}),
     );

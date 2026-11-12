@@ -76,11 +76,13 @@ fn repo(rel: &str) -> std::path::PathBuf {
 /// Every template this file reads, next to the path it really reads — spelled
 /// out rather than formatted, so the export's R2b check can see the names
 /// (GH #9).
-const NEEDED: [&str; 7] = [
+const NEEDED: [&str; 8] = [
     "templates/talky",
     "templates/collector",
     // GH #889: talky refs the curator hive between its collector and its brain.
     "templates/curator",
+    // GH #1474: and the lead hive beside its curator.
+    "templates/lead",
     "templates/session-keeper",
     "templates/dispatcher",
     "templates/colony-view",
@@ -255,6 +257,7 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     for (name, rel) in [
         ("collector", "templates/collector"),
         ("curator", "templates/curator"),
+        ("lead", "templates/lead"),
         ("session-keeper", "templates/session-keeper"),
         ("dispatcher", "templates/dispatcher"),
     ] {

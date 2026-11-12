@@ -6,6 +6,8 @@
 #         (as `git -C`: a `cd <worktree>` first, for every subcommand)
 #     scripts/strand.sh new [<wave>/]<name> --issue <nr> [options]
 #         (the prefix names the wave when section Live runs several; GH #1226)
+#         (sets the clone's merge driver for cell configs with an inline script,
+#         scripts/git_merge_script_inline.py --install; once, then no change)
 #     scripts/strand.sh pre [--strand <S>] [--no-lane] [--host <lane>] [--holder <n>] [--allow-bump <reason>]
 #         (the pre-run before a strand gate: form, locks, cargo check; writes the stamp)
 #     scripts/strand.sh gate [<mode>] [--host <lane>] [--holder <n>] [--no-pre --reason <text>] [gate.sh options]
@@ -647,6 +649,14 @@ cmd_new() {
         foreign=$("${KIT_PY[@]}" "$(kit_dir)/pipeline/turnaround.py" foreign "$root" "master..$base" 2>&1) \
             || die "base $base carries commits not by the owner -- start from master: $(printf '%s' "$foreign" | tr '\n' ';')"
     fi
+
+    # OR-58-57 (d58-2 mergedrv, GH #1470): `.gitattributes` names the merge
+    # driver of the cell configs that carry their script as one JSON line, and
+    # git runs a driver only where the clone's config names it. All worktrees
+    # share that config, so this is the clone's; a second run changes nothing.
+    # Before the worktree exists: a refusal here leaves nothing behind.
+    "${KIT_PY[@]}" "$(kit_dir)/git_merge_script_inline.py" --install "$root" >/dev/null \
+        || die "could not install the script-inline merge driver in $root"
 
     git -C "$root" worktree add -b "$branch" "$tree" "$base" >/dev/null 2>&1 \
         || die "could not create the worktree $tree on $branch"

@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -73,7 +76,7 @@ fn a_quick_call_without_an_answer_goes_to_the_brain() {
         ("t2", "error", json!({"error_code": "timeout"})),
         ("t3", "content_filter", json!({})),
     ] {
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         h.check_emits = true;
         let call = quick_call(&mut h, turn);
         h.out.clear();
@@ -120,7 +123,7 @@ fn a_quick_call_with_an_answer_stays_quick_and_drops_its_copy() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let call = quick_call(&mut h, "t1");
     assert_eq!(
         parked_copies(&h).len(),
@@ -148,7 +151,7 @@ fn a_failed_bridge_does_not_escalate() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     seam(
         &mut h,
         "t1",
@@ -157,7 +160,12 @@ fn a_failed_bridge_does_not_escalate() {
     );
     let quick = h.routed("quick");
     assert_eq!(quick.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    assert!(quick[0].hop.get("bridge").is_some(), "{:?}", quick[0].hop);
+    assert_eq!(
+        quick[0].hop["call_kind"],
+        json!("side"),
+        "{:?}",
+        quick[0].hop
+    );
     h.out.clear();
     h.tap(
         &quick[0],
@@ -191,10 +199,14 @@ fn talky_leaves_a_quick_calls_error_to_the_brain() {
         .find(|e| e["from"] == "./quick" && e["to"] == "./errors")
         .unwrap_or_else(|| panic!("no ./quick -> ./errors edge"));
     let cond = edge["condition"].as_str().unwrap_or_default();
+    // D58 target (OR-d58-2.target.48): a bridge is known by its head, not by
+    // the call id's ending; since D58 moveout (GH #1476, contract point 3) by
+    // `context.call_kind` "side", which the composite lifts from
+    // `hop.call_kind`.
     assert!(
         cond.contains(
             "!(has(context.curator_call) && context.curator_call != '' \
-             && !context.curator_call.endsWith('-bridge'))"
+             && !(has(context.call_kind) && context.call_kind == 'side'))"
         ),
         "a curator call's error goes to the brain, a bridge's to ./errors: {cond}"
     );

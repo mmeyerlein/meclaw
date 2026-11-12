@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -59,7 +62,7 @@ fn the_tool_rounds_bridge_names_the_running_lookup_and_forbids_denials() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     // The quick class's tools (`web`, `weather`) run in every tool round,
     // whatever the stamp says -- the lab stamped its weather turns `web`.
     for (turn, families, ask) in [
@@ -119,7 +122,7 @@ fn the_consult_and_research_bridges_forbid_denials_too() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for (turn, path, way) in [("t1", "complex", "consult"), ("t2", "research", "research")] {
         h.out.clear();
         let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
@@ -166,7 +169,7 @@ fn the_consult_and_tool_bridges_see_only_the_persons_turn() {
         ("t2", "simple", "tool", "tool", 1),
         ("t3", "research", "", "research", 3),
     ] {
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
                          "path": path, "families": "weather", "needs": needs});
         let ctx = json!({"session_id": "s1", "turn_id": turn, "iter": "0",
@@ -218,7 +221,7 @@ fn a_pin_is_never_the_persons_turn_and_a_split_turn_stays_whole() {
         ("t2", "simple", "tool", "tool"),
         ("t3", "research", "", "research"),
     ] {
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         h.lane(
             "in_pin",
             json!({}),
@@ -295,7 +298,7 @@ fn a_window_without_the_persons_text_still_carries_no_pin() {
         ("t2", "simple", "tool", "tool"),
     ] {
         for window in [json!([]), json!([earlier.clone()])] {
-            let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+            let mut h = Hive::with(&[]).reporting_composite("talky");
             h.lane(
                 "in_pin",
                 json!({}),
@@ -343,10 +346,16 @@ fn a_family_without_a_place_is_never_named_by_its_code_name() {
         ),
         ("calendar", "already running right now; it was started"),
     ] {
-        let mut h = Hive::with(&[
-            ("policy", "role", json!("talky")),
-            ("policy", "quick_tools", json!(class)),
-        ]);
+        // OR-d58-2.target.62: the class's tools are the fast cells' `allow`.
+        let allow = json!({"allow": class.split(',').collect::<Vec<_>>()});
+        let mut h = Hive::with(&[]).reporting_composite_with(
+            "talky",
+            &[
+                ("quick", allow.clone()),
+                ("quick_spec", allow.clone()),
+                ("quick_bridge", allow),
+            ],
+        );
         let (bridge, _) = tool_round(&mut h, "t1", "calendar", "when is my next appointment?");
         let text = bridge_text(&bridge);
         assert!(text.contains(running), "{class}: {text}");

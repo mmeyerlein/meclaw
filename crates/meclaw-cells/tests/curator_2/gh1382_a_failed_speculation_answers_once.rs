@@ -16,16 +16,19 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
 
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("")),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -85,7 +88,7 @@ fn escalations(h: &Hive) -> Vec<Value> {
 }
 
 fn spec_marks(h: &Hive) -> Vec<Value> {
-    h.rows("SELECT value FROM marks WHERE kind = 'quick_spec' ORDER BY seq")
+    h.rows("SELECT value FROM marks WHERE kind = 'spec' ORDER BY seq")
         .iter()
         .map(|r| sj::from_str(r[0].as_str().unwrap_or("{}")).expect("JSON"))
         .collect()
@@ -213,7 +216,11 @@ fn gh1382_b_failed_speculation_falls_back_to_the_stored_quick_call_once() {
 }
 
 /// The `./quick` edges of talky 6.13.0, byte for byte (Review Focus 2: a turn
-/// without speculation is untouched by #1382).
+/// without speculation is untouched by #1382). D58 target (OR-d58-2.target.48)
+/// moved one word on purpose: the error edge knows a bridge by `context.bridge`,
+/// not by the ending `-bridge` of the call id. D58 moveout (GH #1476, contract
+/// point 3) moved it once more: a side call is known by `context.call_kind`
+/// "side".
 const QUICK_EDGES_6_13_0: [(&str, &str); 5] = [
     (
         "./splitter",
@@ -229,7 +236,7 @@ const QUICK_EDGES_6_13_0: [(&str, &str); 5] = [
     ),
     (
         "./errors",
-        "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !context.curator_call.endsWith('-bridge')) && !(has(context.spec) && context.spec == '1')",
+        "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side')) && !(has(context.spec) && context.spec == '1')",
     ),
     (".", "has(hop.refused_subscriber)"),
 ];
@@ -373,10 +380,8 @@ fn gh1382_e_a_plain_quick_call_whose_projection_fell_still_escalates_once() {
         ("error", sj::from_str::<Value>(TIMEOUT).unwrap(), None),
         ("stop", json!({}), Some("Who should I call?")),
     ] {
-        let mut h = Hive::with(&[
-            ("policy", "role", json!("talky")),
-            ("lead", "quick_speculative", json!("0")),
-        ]);
+        let mut h =
+            Hive::with(&[("lead", "quick_speculative", json!("0"))]).reporting_composite("talky");
         h.check_emits = true;
         seam(&mut h, "t1", "simple", "please call my daughter");
         let quick = h.routed("quick");
@@ -424,10 +429,7 @@ fn gh1382_e_a_plain_quick_call_whose_projection_fell_still_escalates_once() {
             assert!(escalations(&h).is_empty(), "{:?}", escalations(&h));
         }
         assert_eq!(h.state(&format!("pending:{call}-esc")), "", "the copy goes");
-        assert!(
-            spec_marks(&h).is_empty(),
-            "no speculation, no quick_spec mark"
-        );
+        assert!(spec_marks(&h).is_empty(), "no speculation, no spec mark");
         assert_eq!(h.emit_violations, Vec::<String>::new());
     }
 }

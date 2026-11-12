@@ -1,0 +1,312 @@
+{
+  "messages": [
+    {
+      "origin": "user",
+      "text": "[#77ec7bd5d041] Good morning. (turn 0)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 0) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#d56e441f844f] My sister visits today. (turn 1)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 1) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#62561fb0d8f0] She brings her dog. (turn 2)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice. (turn 2) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#3ada7e4b83f5] We will walk by the river. (turn 3)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk. (turn 3) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#4dbb52a23df5] Good morning. (turn 4)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 4) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#1f9f005efdc4] My sister visits today. (turn 5)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 5) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#f1a6ec696e7b] She brings her dog. (turn 6)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice. (turn 6) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#3d0ee7d355af] We will walk by the river. (turn 7)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk. (turn 7) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#ae55e783ba93] Good morning. (turn 8)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 8) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#91d06f0012eb] My sister visits today. (turn 9)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 9) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#4c97f2083256] She brings her dog. (turn 10)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice. (turn 10) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#0686f630beb6] We will walk by the river. (turn 11)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk. (turn 11) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#a0f6a25d46ff] Good morning. (turn 12)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 12) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#f78818e13bd1] My sister visits today. (turn 13)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 13) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#1a6f55dc77fa] She brings her dog. (turn 14)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice. (turn 14) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#ff63ac18cc68] We will walk by the river. (turn 15)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk. (turn 15) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#6e2132f55464] Good morning. (turn 16)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 16) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#3da165a0e33a] My sister visits today. (turn 17)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 17) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#250fb4279a36] She brings her dog. (turn 18)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice. (turn 18) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#63200d8ef26e] We will walk by the river. (turn 19)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk. (turn 19) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#c034523c6aa9] Good morning. (turn 20)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 20) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#bddd3ffeca0f] My sister visits today. (turn 21)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 21) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#207abce392d9] She brings her dog. (turn 22)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "A dog, how nice. (turn 22) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#9045630af417] We will walk by the river. (turn 23)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Enjoy the walk. (turn 23) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#5853080a0e70] Good morning. (turn 24)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Good morning to you. (turn 24) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#ef90e798d74a] My sister visits today. (turn 25)",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "That sounds lovely. (turn 25) I keep that in mind.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[#3f69618026e0] What should we cook tonight?",
+      "type": "text"
+    },
+    {
+      "origin": "assistant",
+      "text": "Soup.",
+      "type": "text"
+    },
+    {
+      "origin": "user",
+      "text": "[notes for this turn -- from probe; guidance, not something the person said]\n- bring the blue umbrella to the river\n\n[#c2602215fb43] [the person, now -- their own words to you]\nAnd what about tomorrow?",
+      "type": "text"
+    }
+  ],
+  "system": {
+    "consult": {
+      "$replace": true
+    },
+    "history": {
+      "$replace": true
+    },
+    "instructions": {
+      "$replace": true,
+      "mode": {
+        "text": "Be brief."
+      }
+    },
+    "persona": {
+      "$replace": true,
+      "name": {
+        "text": "A patient companion."
+      }
+    },
+    "pinned": {
+      "$replace": true
+    },
+    "roster": {
+      "$replace": true
+    },
+    "tools": {
+      "$replace": true,
+      "web_search": {
+        "text": "{\"name\":\"web_search\",\"description\":\"Search.\"}"
+      }
+    }
+  },
+  "tool_scope": null
+}

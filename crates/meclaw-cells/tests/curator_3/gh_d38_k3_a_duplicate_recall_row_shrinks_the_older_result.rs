@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -96,7 +99,10 @@ fn plan_of(over: Value, rows: &[Value]) -> Value {
 #[test]
 fn a_duplicate_recall_row_shrinks_the_older_result() {
     let rows = wall(&["h1", "h2"], &["h2", "h3"]);
-    let got = plan_of(json!({"role": "talky", "gc": "1", "keep_rounds": 2}), &rows);
+    let got = plan_of(
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "keep_rounds": 2})),
+        &rows,
+    );
     assert_eq!(
         got["shrunk"],
         json!([id_of(&rows[2])]),
@@ -111,14 +117,14 @@ fn a_duplicate_recall_row_shrinks_the_older_result() {
 #[test]
 fn without_a_shared_row_or_with_gc_off_nothing_shrinks() {
     let got = plan_of(
-        json!({"role": "talky", "gc": "1", "keep_rounds": 2}),
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "keep_rounds": 2})),
         &wall(&["h1", "h2"], &["h3", "h4"]),
     );
     assert_eq!(got["shrunk"], json!([]), "no shared row: {got}");
     assert_eq!(got["gc"]["classes"]["dup_recall"], json!(0), "{got}");
 
     let got = plan_of(
-        json!({"role": "talky", "gc": "0", "keep_rounds": 2}),
+        curator_profiles::set_knobs("talky", json!({"gc": "0", "keep_rounds": 2})),
         &wall(&["h1", "h2"], &["h2", "h3"]),
     );
     assert_eq!(got["shrunk"], json!([]), "gc off: {got}");

@@ -14,7 +14,8 @@
 //! * a find becomes a `recall` pair and an `addendum` mark, and the next round
 //!   of the same session begins with that pair in its window, once, written
 //!   into the wall by `./intake` -- the wall's one writer; nothing found,
-//!   nothing written; a duplex turn also says it as a `fact`;
+//!   nothing written; a turn of a running session (`live`) also says it as a
+//!   `fact`;
 //! * the prompt hygiene stands in the model's `system.instructions`;
 //! * what leaves the hive is only what the round was present for (GH #925):
 //!   the entities, the topic and a short id's words in the question come from
@@ -34,6 +35,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -44,12 +48,17 @@ fn push_shipped() -> bool {
     repo("templates/curator/push/config.json").is_file()
 }
 
-/// The curator of a talky: the shipped hive under the role its instance runs,
-/// with `(cell, param, value)` overrides on top.
+/// The curator of a talky: the shipped hive under the role its instance runs
+/// and with the `memory` section its marker registers (GH #1473), with
+/// `(cell, param, value)` overrides on top.
 fn talky(over: &[(&str, &str, Value)]) -> Hive {
-    let mut all = vec![("policy", "role", json!("talky"))];
+    let mut all = vec![(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )];
     all.extend(over.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 /// The hop of the collector's ask (collector `head` + `recall_ask`).
@@ -140,8 +149,8 @@ fn round_as(
 
 /// The section `gap` of the answer of `turn`, as the splitter cuts it and the
 /// parent hands it in (`in_section`); `payload` is the splitter's slot.
-fn gap_of(h: &mut Hive, session: &str, turn: &str, payload: Value, engine: &str) -> Vec<Msg> {
-    gap_in(h, &test_round(), session, turn, payload, engine)
+fn gap_of(h: &mut Hive, session: &str, turn: &str, payload: Value, live: &str) -> Vec<Msg> {
+    gap_in(h, &test_round(), session, turn, payload, live)
 }
 
 /// The same section of an answer spoken in `round`.
@@ -151,13 +160,13 @@ fn gap_in(
     session: &str,
     turn: &str,
     payload: Value,
-    engine: &str,
+    live: &str,
 ) -> Vec<Msg> {
     h.out.clear();
     h.lane(
         "in_section",
         json!({"session_id": session, "turn_id": turn, "iter": "0",
-               "curator_call": "c-1", "channel": "test", "engine": engine,
+               "curator_call": "c-1", "channel": "test", "live": live,
                "audience_set": round}),
         json!({"section": "gap"}),
         json!({"messages": [], "section": "gap", "payload": payload}),
@@ -167,8 +176,8 @@ fn gap_in(
 
 /// A gap the model wrote as a string: the splitter hands it on as
 /// `{payload: <text>}`.
-fn gap(h: &mut Hive, session: &str, turn: &str, text: &str, engine: &str) -> Vec<Msg> {
-    gap_of(h, session, turn, json!({"payload": text}), engine)
+fn gap(h: &mut Hive, session: &str, turn: &str, text: &str, live: &str) -> Vec<Msg> {
+    gap_of(h, session, turn, json!({"payload": text}), live)
 }
 
 /// The same gap in an answer spoken in `round`.
@@ -600,7 +609,10 @@ fn the_push_follows_the_role() {
         return;
     }
     for (role, pushes) in [("talky", true), ("consult", false), ("", false)] {
-        let mut h = Hive::with(&[("policy", "role", json!(role))]);
+        let mut h = Hive::with(&[]);
+        if !role.is_empty() {
+            h.report_profile(curator_profiles::profile(role));
+        }
         let call = round(
             &mut h,
             "s1",
@@ -642,7 +654,7 @@ fn the_talky_budget_keeps_the_query_whole_at_the_memory() {
         .parse()
         .expect("a number");
     let (budget, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         "number_of(P, 'recall_budget')",
         Value::Null,
     );
@@ -869,7 +881,7 @@ fn no_hit_no_addendum() {
     assert!(!window(&call).iter().any(|x| x.starts_with(ADDENDUM)));
 }
 
-/// A duplex call's find is said at once, as a `fact` -- and a `fact` leaves
+/// A running session's find (`live` in the context) is said at once, as a `fact` -- and a `fact` leaves
 /// the colony: the member hands it to the channel as advice and the voice
 /// reads it out, over edges only (`a_duplex_find_is_said_once_on_its_channel`
 /// in `gh895_…` walks that road; no cell on it could clean the words). So the
@@ -888,7 +900,7 @@ fn a_duplex_turn_speaks_the_addendum() {
         "s1",
         "t1",
         "whether [#0123456789ab] was the ferry",
-        "duplex",
+        "call-9",
     )[0]
     .clone();
     gap_bundle(
@@ -1129,7 +1141,7 @@ fn the_question_names_only_what_the_round_was_present_for() {
     assert_eq!(q, "where again?", "{{e,a,b,c}} was present for neither");
 }
 
-/// A duplex find is said at once only to a round that may hear it (review
+/// A running session's find is said at once only to a round that may hear it (review
 /// M-10, R2-I-14). The gap's round rides the ask out and home, but the call on
 /// the line may have widened since: the find goes to the voice as a `fact`
 /// only when the round of the session's newest call may see the addendum --
@@ -1149,7 +1161,7 @@ fn a_duplex_find_is_said_only_to_a_round_that_may_hear_it() {
             "s1",
             "t1",
             json!({"payload": "whether the ferry left"}),
-            "duplex",
+            "call-9",
         )[0]
         .clone();
         if live != EA {

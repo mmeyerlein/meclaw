@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::mutation::subtree::{check_override_params, parse_subtree};
@@ -68,14 +71,16 @@ fn the_knobs_are_declared_and_a_set_override_passes_the_door() {
     }
 }
 
-/// The presets per role, and `keep_rounds` 1 for talky alone.
+/// The values per example set (the former presets per role, R-58-15: they
+/// live in the profiles now), as the curator reads them from a profile, and
+/// `keep_rounds` 1 for talky alone.
 #[test]
 fn talky_collects_with_keep_rounds_1_and_the_other_roles_stay() {
     let (got, err) = policy_scope(
         json!({}),
-        "dict((r, [ROLES[r].get('gc'), ROLES[r].get('gc_scaffold'), ROLES[r].get('keep_rounds')]) \
-         for r in ROLES)",
-        Value::Null,
+        "dict((r, [knob_of(profile_params(p, bool(p)), k) \
+         for k in ('gc', 'gc_scaffold', 'keep_rounds')]) for r, p in ARGS.items())",
+        curator_profiles::profiles_by_set(),
     );
     assert_eq!(
         got,
@@ -91,20 +96,60 @@ fn talky_collects_with_keep_rounds_1_and_the_other_roles_stay() {
 #[test]
 fn the_switches_resolve_like_every_switch() {
     for (over, want_gc, want_scaffold, want_rounds) in [
-        (json!({"role": "talky"}), true, true, 1),
-        (json!({"role": "talky", "gc": null}), true, true, 1),
-        (json!({"role": "talky", "gc": "0"}), false, true, 1),
-        (json!({"role": "talky", "gc_scaffold": "0"}), true, false, 1),
         (
-            json!({"role": "talky", "gc_scaffold": false}),
+            curator_profiles::set_knobs("talky", json!({})),
+            true,
+            true,
+            1,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"gc": null})),
+            true,
+            true,
+            1,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"gc": "0"})),
+            false,
+            true,
+            1,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"gc_scaffold": "0"})),
             true,
             false,
             1,
         ),
-        (json!({"role": "talky", "keep_rounds": 3}), true, true, 3),
-        (json!({"role": "consult"}), false, true, 2),
-        (json!({"role": "consult", "gc": true}), true, true, 2),
-        (json!({"role": "consult", "gc": "on"}), true, true, 2),
+        (
+            curator_profiles::set_knobs("talky", json!({"gc_scaffold": false})),
+            true,
+            false,
+            1,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"keep_rounds": 3})),
+            true,
+            true,
+            3,
+        ),
+        (
+            curator_profiles::set_knobs("consult", json!({})),
+            false,
+            true,
+            2,
+        ),
+        (
+            curator_profiles::set_knobs("consult", json!({"gc": true})),
+            true,
+            true,
+            2,
+        ),
+        (
+            curator_profiles::set_knobs("consult", json!({"gc": "on"})),
+            true,
+            true,
+            2,
+        ),
         (json!({"role": ""}), false, true, 0),
     ] {
         let (got, err) = policy_scope(over.clone(), "[GC, GC_SCAFFOLD, KEEP_ROUNDS]", Value::Null);

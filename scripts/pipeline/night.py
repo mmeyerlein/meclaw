@@ -37,7 +37,11 @@ journal; it sends nothing to anybody. A Grafana annotation follows when
 
 Coverage. If a `merge_done` is newer than the newest `coverage_built`, the
 harness or binary list of the tree no longer matches the newest map
-(`binaries_changed`, review Z-I1), or master moved past its `rev`, and W6 (`scripts/pipeline/coverage.py`) exists and
+(`binaries_changed`, review Z-I1), or master moved past its `rev`, the night
+first tries `coverage.carry` (GH #1461): when the diff from the newest clean
+GREEN map to master selects no test, that map is carried to master without a
+run, lane or no lane, and the report says so. Not carried, the report names
+why, and if W6 (`scripts/pipeline/coverage.py`) exists and
 a build lane is on (a `runners` row whose state is set and not `off`, not the
 owner's machine), the night
 runs `pipeline coverage build --lane <that runner>` before the report and writes its
@@ -568,11 +572,11 @@ def report(db, now=None, out_root=None, runner=subprocess.run, date=None):
     red = [r["run"] for r in ended if r["data"].get("verdict") in RED_VERDICTS]
     classes = classify(db, red)
     due, merges, cov_since = coverage_due(db, runner)
-    if not due:
-        coverage = "not due"
-    elif coverage_cli() and lane_name(db):
+    # GH #1461: a due map is carried first; only a diff that selects tests books a lane
+    coverage, not_carried = carry_coverage(db) if due else ("not due", None)
+    if coverage is None and coverage_cli() and lane_name(db):
         coverage = build_coverage(db, coverage_cli(), lane_name(db), runner)
-    else:
+    elif coverage is None:
         coverage = "skipped, " + ("no build lane on" if coverage_cli() else "W6 coverage.py missing")
         open_now = [f for f in _safe(retro.open_findings, db)
                     if f.get("rule") == COVERAGE_RULE and f.get("subject") == "coverage"]
@@ -580,6 +584,8 @@ def report(db, now=None, out_root=None, runner=subprocess.run, date=None):
             _events.emit(db, "process_finding", "finding",
                          {"rule": COVERAGE_RULE, "subject": "coverage", "value": merges,
                           "threshold": 0, "since": cov_since or at}, at=at)
+    if not_carried:
+        coverage += " (not carried: %s)" % not_carried
     findings = sorted(_safe(retro.open_findings, db), key=lambda f: (f.get("seq") or 0))
     proposals = sorted(_safe(retro.proposal_lines, findings))
     lane, cache = _station_stats(db, [r["run"] for r in ended])
@@ -597,6 +603,20 @@ def report(db, now=None, out_root=None, runner=subprocess.run, date=None):
                   "findings": len(findings), "red": counts, "lost": len(lost)}, at=at)
     annotate(day.isoformat(), path, len(ended), len(findings))
     return path
+
+
+def carry_coverage(db):
+    """`(line, None)` when the due map was carried to master without a run
+    (`coverage.carry`, GH #1461), else `(None, why)` -- the night then builds as
+    before. HEAD of this tree must be master: the resolver judges the diff
+    against the checked-out files; a changed binary list refuses inside the
+    carry. A broken carry is a reason, never a stop."""
+    from . import coverage as _coverage
+    try:
+        cov, line = _coverage.carry(str(REPO), branch="master", db=db)
+    except Exception as exc:  # noqa: BLE001 -- the lane build stays the way back
+        return None, "carry failed: %s" % exc
+    return (line, None) if cov is not None else (None, line)
 
 
 def build_coverage(db, cli, lane, runner):

@@ -31,7 +31,11 @@ const RULE: &str = r#"{"items":"facts","quote":"source"}"#;
 const ADVICE: &str = "[advice from your reasoning core, consult c1]\nThe person might enjoy a trip to the Baltic Sea this summer.";
 
 fn hive() -> Hive {
-    Hive::with(&[("intake", "pass_sections", json!("memory"))])
+    Hive::with(&[(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )])
 }
 
 /// The `memory` section of the answer to `call`, stamped with [`RULE`] and

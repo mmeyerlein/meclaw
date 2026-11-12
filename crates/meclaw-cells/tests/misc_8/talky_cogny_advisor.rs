@@ -92,18 +92,21 @@ fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// The `override_params` of the talky's `curator` marker, applied to the
-/// copied curator cells they name (GH #892).
+/// copied curator cells they name (GH #892), and of its `lead` marker
+/// (GH #1474: the lead's knobs stand at talky's own `lead` hive).
 fn curator_overrides(root: &std::path::Path) {
-    let marker = templates_root().join("talky/curator/config.json");
-    let raw =
-        std::fs::read_to_string(&marker).unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
-    let cfg: Value = meclaw_core::serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
-    let over = cfg["override_params"]
-        .as_object()
-        .expect("the talky's curator marker carries its overrides");
-    for (cell, params) in over {
-        override_params_on_disk(&root.join("main/talky/curator").join(cell), params);
+    for unit in ["curator", "lead"] {
+        let marker = templates_root().join(format!("talky/{unit}/config.json"));
+        let raw = std::fs::read_to_string(&marker)
+            .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+        let cfg: Value = meclaw_core::serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+        let over = cfg["override_params"]
+            .as_object()
+            .unwrap_or_else(|| panic!("the talky's {unit} marker carries its overrides"));
+        for (cell, params) in over {
+            override_params_on_disk(&root.join("main/talky").join(unit).join(cell), params);
+        }
     }
 }
 
@@ -337,8 +340,8 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, silent_advisor: bool, idle
     );
     copy_cells(&templates_root().join("talky"), &root.join("main/talky"));
     // GH #892: the talky's curator is what its marker's `override_params`
-    // make it -- role `talky` (short ids in the window) and `pass_sections
-    // memory` (the memory section leaves again on `sidecar`, which is the
+    // make it -- role `talky` (short ids in the window) and `sections`
+    // registering `memory` on `sidecar`, GH #1473 (the memory section leaves again on `sidecar`, which is the
     // only way it reaches a parent since the splitter hands it to the
     // curator). `copy_cells` resolves the reference but not its overrides,
     // so they are applied here, the way the mutation door applies them to

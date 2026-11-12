@@ -63,15 +63,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
             "episode_turn_id": "s1#bd1794fa-0",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1 talk Round 1: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -85,6 +86,13 @@
           "session_id": "s1",
           "turn_id": "t1",
           "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":589,\"window_estimate\":631,\"window_tokens\":631}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "feed",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"section\":\"renew\",\"sender\":\"\"}"
         }
       ],
       "out": [
@@ -108,12 +116,12 @@
         {
           "body": {
             "messages": [],
-            "screen_topics": []
+            "parts": {}
           },
           "hop": {
             "at_turn_end": "1",
             "audience_set": "[\"member:e\"]",
-            "call_id": "call-1",
+            "live": "call-1",
             "section": "renew",
             "session_id": "s1",
             "turn_id": "t1"
@@ -196,15 +204,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-2",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t2"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "03 say t2 talk Round 2: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -324,15 +333,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a790-4500-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-4",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t3"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "05 say t3 talk Round 3: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -484,15 +494,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a875-46c0-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-6",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t4"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "08 say t4 talk Round 4: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -625,15 +636,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a90d-4d40-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-8",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t5"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "10 say t5 talk And now?",
@@ -795,15 +807,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a9f2-4f00-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-10",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t6"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "13 say t6 talk What did we talk about?",

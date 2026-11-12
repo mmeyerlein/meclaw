@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -27,7 +30,7 @@ fn the_answer_leaves_the_turn_in_the_plan() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let call = h.curate("s1", "t1", 0, json!([user("q1")]), mode("Be brief."));
     let before = block_ids(&plan_blocks(&h, ROUND_E));
     assert!(
@@ -90,7 +93,7 @@ fn before_the_first_rebuild_the_plan_holds_blocks_only() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
     let plan = h.plan_in(ROUND_E);
     assert!(plan["blocks"].is_array(), "the plan is written: {plan}");

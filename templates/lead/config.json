@@ -1,0 +1,94 @@
+{
+  "cell": {
+    "type": "hive"
+  },
+  "params": {
+    "ports": [],
+    "contract": {
+      "accepts": [
+        {
+          "route": "lead_ask",
+          "because": "the question of one call of the curator beside it: `body.ask` the route stamp (`path`, `needs`, `families`) and the turn's head (call, turn, iteration, `spec`, the consult it answers, the scope, the folded tools, `live` -- the handle of the running session the turn belongs to, \"\" without one); with `read: \"errand\"` the rebuild's bundle, which the lead gives back unread with the session's errand state. Answered by exactly one verdict"
+        },
+        {
+          "route": "lead_spec",
+          "because": "an event of the turn's speculation (`body.event`: a spec answer or partial, a stored fallback, a delta stamp, and what a spec call's window showed, `spec_go`, D58 note): the lead moves its rows in `./state` by compare-and-set and answers with what the move means for the curator's ledger and sends (`spec_act`); a delta stamp may also bring the order of the early interrupt, which leaves on `in_feed`"
+        },
+        {
+          "route": "lead_note",
+          "because": "a note of what only the curator's window saw (`body.note`: an escalation the wall showed, an errand the model started, the end of a turn): it lands in `./state`; no answer"
+        }
+      ],
+      "emits": [
+        {
+          "route": "lead_verdict",
+          "because": "the verdict of one `lead_ask` or the act of one `lead_spec`, with `hop.handle_ms` and the call it answers: `body.verdict` (`target`, `fallback`, `departs` with class and wait, `side` (the side calls, D58 moveout), `reason`, `spec`, `escalate` and the target it fell `from`, `speak_check`, `pending`, `deny`, the speculation rows), `body.spec_act`, `body.fwd`/`body.errand`, `body.again`. The composite draws it to its curator, where it arrives on `in_lead`; the station keys of the lead (`cur_origin`, `cur_phase`, `cur_call`, `cur_reason`, the same names as the curator's) never leave the hive"
+        },
+        {
+          "route": "in_feed",
+          "because": "an order of the lead to the curator beside it (D58 moveout, GH #1476): the early interrupt of a crisis heard on a partial -- `hop.section` `interrupt`, `hop.once` `interrupt`, `hop.sender` `lead`, the handle `live`, `session_id`, `turn_id` and the round `audience_set` in the head, the question as the assistant's text and `body.mark {delta_n}`. The composite draws it to its curator, where it arrives on the curator's lane `in_feed` (opened there by `feed_in` \"1\"); the curator sends it once per turn and books it. The station keys of the lead never leave the hive"
+        }
+      ]
+    },
+    "graph": {
+      "edges": [
+        {
+          "from": ".",
+          "to": "./lead",
+          "condition": "has(hop.route) && (hop.route == 'lead_ask' || hop.route == 'lead_spec' || hop.route == 'lead_note')"
+        },
+        {
+          "from": "./lead",
+          "to": "./state",
+          "condition": "has(hop.route) && hop.route == 'lstore'",
+          "modifier": {
+            "set_context": {
+              "cur_origin": "hop.reply_cell",
+              "cur_phase": "hop.phase",
+              "cur_call": "hop.cur_call",
+              "cur_reason": "hop.cur_reason"
+            }
+          }
+        },
+        {
+          "from": "./state",
+          "to": "./lead",
+          "condition": "has(context.cur_origin) && context.cur_origin == 'lead'"
+        },
+        {
+          "from": "./lead",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'lead_verdict'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        },
+        {
+          "from": "./lead",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'in_feed'",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "description": {
+    "purpose": "Scope marker of the lead hive: the switch of a composite that chooses between targets -- which way a call of its curator leaves on, to which target, what becomes of the turn's speculation, whether an errand is pending -- in a code cell `./lead` with its own store `./state`. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
+    "use_when": "Beside a curator whose composite chooses between several targets (talky: the brain, the quick voice, an errand that leaves the composite). The composite draws `./curator -> ./lead` on the three lanes in, `./lead -> ./curator` setting `in_lead` and passing `in_feed` on (the lead's orders, with the curator's `feed_in` \"1\"), and sets the curator's `./policy` `lead_wired` \"1\". A composite with one target needs none: its curate names the target (`hop.target`).",
+    "not_in_scope": "No window, no ledger and no model call: the lead reads only what the curator hands it and its own store, and the curator's ledger and wall stay the curator's (cell boundary). It names no target by itself: every target and errand class is a knob of the composite, shipped empty.",
+    "contract_in": "Three lanes on `hop.route`: lead_ask, lead_spec, lead_note.",
+    "contract_out": "Two routes on `hop.route`, leaving through the hive path: lead_verdict, in_feed (the lead's orders to its curator)."
+  }
+}

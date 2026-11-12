@@ -13,7 +13,8 @@ fn a_full_start_task_parses_into_a_task_request() {
         "start_task",
         &json!({
             "task_id": "t-1", "prompt": "fix the bug", "workspace": "wt-1",
-            "resume_session_id": "s-9", "model": "m", "max_turns": 5
+            "resume_session_id": "s-9", "model": "m", "max_turns": 5,
+            "new_session": true
         }),
     )
     .expect("parse");
@@ -27,6 +28,7 @@ fn a_full_start_task_parses_into_a_task_request() {
             resume_session_id: Some("s-9".to_string()),
             model: Some("m".to_string()),
             max_turns: Some(5),
+            new_session: true,
         })
     );
 }

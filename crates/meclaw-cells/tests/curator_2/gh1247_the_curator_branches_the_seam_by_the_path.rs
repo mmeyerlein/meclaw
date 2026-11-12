@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -41,16 +44,28 @@ fn the_curator_branches_the_seam_by_the_path() {
     if !shipped() {
         return;
     }
-    let (keep, _) = policy_scope(json!({}), "ROLES['quick']['keep_recent']", Value::Null);
+    // R-58-15: the value set of the fast cells lives in their profile
+    // (`templates/talky/quick`), read as the curator reads a profile.
+    let quick =
+        read_json(&repo("templates/talky/quick/config.json"))["params"]["window_profile"].clone();
+    let (keep, _) = policy_scope(
+        json!({}),
+        "knob_of(profile_params(ARGS, True), 'keep_recent')",
+        quick.clone(),
+    );
     assert_eq!(
         keep,
         json!(4),
         "the role quick keeps four elements before the running round"
     );
-    let (recall, _) = policy_scope(json!({}), "ROLES['quick']['recall_push']", Value::Null);
+    let (recall, _) = policy_scope(
+        json!({}),
+        "knob_of(profile_params(ARGS, True), 'recall_push')",
+        quick,
+    );
     assert_eq!(recall, json!(""), "the role quick pushes no recall");
 
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..4 {
         turn(
             &mut h,

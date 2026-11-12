@@ -458,6 +458,36 @@ class TheStockIsNotGraded(unittest.TestCase):
         self.assertEqual(repo.findings(RS), [])
 
 
+class ACopyOfTheStockIsStock(unittest.TestCase):
+    """A file that `git diff -C -C` finds as a 100 % copy of a file of the
+    merge base is stock: it brings no new read. A frozen template copy
+    (`templates/<name>@<version>/`, byte-identical to the live template at the
+    base) carried 15 RED lines that were all stock lines of the live template
+    (d58-2 sections, OR-58-116)."""
+
+    COPY = "templates/keeper@1.0.0/close/config.json"
+
+    def commit(self, repo):
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "strand")
+
+    def test_a_byte_identical_copy_of_a_stock_file_is_green(self):
+        repo = Repo(self, {CFG: config(SCRIPT_STOCK)})
+        repo.write(self.COPY, config(SCRIPT_STOCK))
+        self.commit(repo)
+        self.assertEqual(repo.findings(self.COPY), [])
+
+    def test_a_copy_with_one_changed_line_is_red(self):
+        repo = Repo(self, {CFG: config(SCRIPT_STOCK)})
+        repo.write(self.COPY, config(SCRIPT_STOCK.replace(
+            "datetime.datetime.now(datetime.timezone.utc)", "datetime.datetime.now()")))
+        self.commit(repo)
+        found = repo.findings(self.COPY)
+        self.assertEqual([f.level for f in found], ["RED"], found)
+        self.assertIn(self.COPY + ":", found[0].message)
+        self.assertIn("datetime.now(", found[0].message)
+
+
 class WhatIsNotProductCode(unittest.TestCase):
     """Test code has the testing bans; comments and strings are no reads."""
 

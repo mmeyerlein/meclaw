@@ -24,6 +24,11 @@
 //! program runs behind `PRELUDE`, which replaces the three with a clock the
 //! test sets per step (`Hive::set_clock`, `T0_S` + `STEP_S` per step, plus
 //! `CLOCK_STEP_US` per cell run); nothing of the shipped text changes.
+//!
+//! GH #1474: the lead is a hive of its own. talky's cases run with it wired
+//! beside the curator as talky ships it (the harness's bridge from talky's
+//! edges; what the bridge takes is no message to the parent), cogny's cases
+//! without one -- they ask no lead and write no `lead` mark.
 //! Envelope ids are not compared, only the hop keys an edge selects on; the
 //! one normalisation is `sub_ms` (the microseconds of a reading below its
 //! millisecond).
@@ -47,10 +52,16 @@ const FIXTURES: &str = "crates/meclaw-cells/tests/fixtures/d38_c0";
 /// the corpus never recorded (C1: a `lead` mark of its own, C2: the plan
 /// snapshot). A recorded kind here (`route`, say) turns its cases red: a
 /// mark that moves to another cell must come back unchanged, and a new field
-/// such as `handle_ms` belongs in a new kind. Empty at the recording.
+/// such as `handle_ms` belongs in a new kind. A recording leaves these kinds
+/// out (`recorded`): `lead` carries `handle_ms`, the lead's own time, which no
+/// corpus clock fixes.
 const EXTRA_MARKS: &[&str] = &["lead"];
 
-/// The knobs C1 moved from `curator/policy` to `curator/lead` (GH #1447): a
+/// talky's marker of the lead hive it wires beside its curator (GH #1474).
+const TALKY_LEAD_MARKER: &str = "templates/talky/lead/config.json";
+
+/// The knobs C1 moved from `curator/policy` to `curator/lead` (GH #1447, the
+/// lead hive `templates/lead` since GH #1474): a
 /// set or case override of `policy.<knob>` lands on `lead.<knob>`. The place
 /// moves, the value does not.
 const LEAD_KNOBS: &[&str] = &[
@@ -60,8 +71,12 @@ const LEAD_KNOBS: &[&str] = &[
     "spec_tools",
     "quick_max_iter",
     "consult_pending_ms",
-    "bridge_wait_ms",
-    "research_wait_ms",
+    "departures",
+    "fallback",
+    "spec_target",
+    "bridge_target",
+    "errand_tool",
+    "errand_family",
     "delta_speculation",
     "interrupt_on_delta",
     "interrupt_questions",
@@ -76,7 +91,8 @@ const LEAD_KNOBS: &[&str] = &[
 /// (`interim`, `summarize`, `summary_call`, `summary_token`,
 /// `episode_turn_id`, `recall_input_soft`), the keys talky's port
 /// names for the errand (`consult_id`, `consult_class`) and for the live feed
-/// (`section`, `at_turn_end`, `call_id`, `fact_source`), and the turn's
+/// (`section`, `at_turn_end`, `live`, `fact_source`; D58 live: the handle
+/// `live` in place of `call_id`), and the turn's
 /// identity the hop repeats (`session_id`, `turn_id`, `audience_set`). A key
 /// a message does not carry is not recorded; any other hop key is free.
 const HOP_KEYS: &[&str] = &[
@@ -94,9 +110,12 @@ const HOP_KEYS: &[&str] = &[
     "recall_input_soft",
     "consult_id",
     "consult_class",
+    // D58 target (contract point 8): the target of a model call; free in the
+    // corpus comparison of the strand (`corpus-free-target.json`).
+    "target",
     "section",
     "at_turn_end",
-    "call_id",
+    "live",
     "fact_source",
     "session_id",
     "turn_id",
@@ -234,6 +253,29 @@ fn overrides(
     {
         put(&cell, params);
     }
+    match composite {
+        // GH #1474: talky wires a lead hive beside its curator (its curator
+        // marker sets `policy.lead_wired`) and names the lead's knobs at its
+        // own marker `talky/lead` -- the targets of every way, `*:brain` for
+        // a turn without a path entry of its own (OR-d58-2.target.39 / .41).
+        // The harness builds the lead hive and the bridge from talky's
+        // shipped edges.
+        Composite::Talky => {
+            for (cell, params) in read_json(&repo(TALKY_LEAD_MARKER))["override_params"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+            {
+                put(&cell, params);
+            }
+        }
+        // GH #1474: cogny wires no lead; its curator keeps the curator's own
+        // `lead_wired` (the harness otherwise wires the lead as talky does).
+        Composite::Cogny => put(
+            "policy",
+            json!({"lead_wired": cell_config("policy")["params"]["lead_wired"].clone()}),
+        ),
+    }
     if knobs == Knobs::Set056 && composite == Composite::Talky {
         let (policy, history) = match channel {
             Channel::Phone => (set_policy_phone(), set_history_phone()),
@@ -246,6 +288,93 @@ fn overrides(
         put(cell, json!({ *k: v }));
     }
     over
+}
+
+/// The window values a set or a case puts on the curator instance.
+const VALUE_KEYS: [&str; 18] = [
+    "compress_at",
+    "rebuild_to",
+    "keep_recent",
+    "keep_recent_tokens",
+    "horizon",
+    "tiers",
+    "keep_rounds",
+    "gc",
+    "gc_scaffold",
+    "stub_tools_after",
+    "broadcast_mode",
+    "recall_push",
+    "recall_budget",
+    "short_ids",
+    "identity_budget",
+    "window_target",
+    "notes_share",
+    "state_lines",
+];
+
+/// The values a call's cut reads beside the short window and the notes
+/// (contract point 3, Nachtrag 11.11. Nr. 1).
+const CALL_KEYS: [&str; 5] = [
+    "window_target",
+    "state_lines",
+    "short_ids",
+    "identity_budget",
+    "broadcast_mode",
+];
+
+/// The profiles of the composite's model cells as the composite writes
+/// them, with what the case puts on the curator moved in (contract point 3,
+/// "precedence": every window value a composite sets on its curator moves
+/// into the profile of its main model; OR-d58-2.target.60): the main cell
+/// takes every window value, a fast cell the call's values its cut read
+/// from the instance before, and `quick_tools` becomes its list `allow`.
+/// Returns the overrides left for the instance and `(cell, profile, order)`.
+#[allow(clippy::type_complexity)]
+fn moved_into_profiles<'a>(
+    composite: Composite,
+    over: Vec<(&'a str, &'a str, Value)>,
+) -> (Vec<(&'a str, &'a str, Value)>, Vec<(String, Value, Value)>) {
+    let mut moved = json!({});
+    let mut allow: Option<Value> = None;
+    let mut left = Vec::new();
+    for (cell, k, v) in over {
+        if cell == "policy" && k == "quick_tools" {
+            allow = Some(json!(
+                v.as_str()
+                    .unwrap_or("")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            ));
+            continue;
+        }
+        if cell == "policy" && VALUE_KEYS.contains(&k) {
+            moved[k] = v.clone();
+        }
+        left.push((cell, k, v));
+    }
+    let (comp, cells): (&str, &[&str]) = match composite {
+        Composite::Talky => ("talky", &["brain", "quick", "quick_spec", "quick_bridge"]),
+        Composite::Cogny => ("cogny", &["brain"]),
+    };
+    let mut out = Vec::new();
+    for cell in cells {
+        let params =
+            read_json(&repo(&format!("templates/{comp}/{cell}/config.json")))["params"].clone();
+        let mut profile = params["window_profile"].clone();
+        let main = profile["system"] == json!("delta");
+        for (k, v) in moved.as_object().cloned().unwrap_or_default() {
+            if main || CALL_KEYS.contains(&k.as_str()) {
+                profile[k] = v;
+            }
+        }
+        if let (false, Some(a)) = (main, &allow) {
+            profile["allow"] = a.clone();
+        }
+        out.push((cell.to_string(), profile, params["system_order"].clone()));
+    }
+    (left, out)
 }
 
 /// One case of the corpus: the hive, what it said so far, the steps.
@@ -274,6 +403,34 @@ fn usage(tokens_prompt: i64) -> Value {
            "input_soft": 90000, "input_hard": 200000})
 }
 
+/// The target the composite's curate edge (`./collector -> ./curator`, route
+/// `in_curate`) sets on `hop.target`, without the CEL quotes.
+fn curate_target(composite: Composite) -> String {
+    let root = match composite {
+        Composite::Talky => "templates/talky/config.json",
+        Composite::Cogny => "templates/cogny/config.json",
+    };
+    let cfg = read_json(&repo(root));
+    let targets: Vec<String> = cfg["params"]["graph"]["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .filter(|e| {
+            e["from"] == "./collector"
+                && e["to"] == "./curator"
+                && e["modifier"]["set_hop"]["route"] == "'in_curate'"
+        })
+        .filter_map(|e| e["modifier"]["set_hop"]["target"].as_str())
+        .map(|t| t.trim_matches('\'').to_string())
+        .collect();
+    assert_eq!(
+        targets.len(),
+        1,
+        "{root}: one curate edge names hop.target: {targets:?}"
+    );
+    targets[0].clone()
+}
+
 impl Run {
     fn new(
         name: &str,
@@ -287,8 +444,30 @@ impl Run {
             .iter()
             .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
             .collect();
+        let (over, profiles) = moved_into_profiles(composite, over);
+        let mut h = Hive::with_prelude(&over, PRELUDE);
+        // GH #1474 (u-lead contract point 3 and 5): a curate names its target
+        // the way the composite's curate edge sets it (`hop.target`); without
+        // a lead nothing else names one. Read off the shipped edge, not
+        // written here.
+        h.target = Some(curate_target(composite));
+        // OR-d58-2.target.60 (c): every model cell of the composite reports
+        // its package with its profile before the first step, as the
+        // registry's push after the birth does -- the corpus measures the
+        // profile path. The row names its model only: the window stays the
+        // one the answers report.
+        for (cell, profile, order) in profiles {
+            h.lane(
+                "in_catalog",
+                json!({}),
+                json!({"package_of": format!("/comp/{cell}")}),
+                json!({"messages": [], "package": {"model": format!("test/{cell}")},
+                       "window_profile": profile, "system_order": order}),
+            );
+        }
+        h.out.clear();
         Run {
-            h: Hive::with_prelude(&over, PRELUDE),
+            h,
             name: name.to_string(),
             channel,
             steps: Vec::new(),
@@ -374,8 +553,9 @@ impl Run {
                              "audience_set": ROUND_E, "path": path});
         match self.channel {
             Channel::Phone => {
-                hop["engine"] = json!("duplex");
-                hop["call_id"] = json!("call-1");
+                // D58 live: the edges of the composition translate the
+                // voice's keys into the handle; the curator reads `live`.
+                hop["live"] = json!("call-1");
                 ctx["channel"] = json!("phone");
             }
             Channel::Text => ctx["channel"] = json!("chat"),
@@ -412,9 +592,11 @@ impl Run {
         let calls: Vec<&Msg> = self
             .last_out
             .iter()
-            .filter(|m| m.route() == route)
+            // D58 target (contract point 8): a call is found under its way
+            // of before too (`way_of`, read off `hop.target`).
+            .filter(|m| m.route() == route || way_of(m) == route)
             .filter(|m| {
-                m.hop.get("bridge").is_none()
+                m.hop.get("call_kind").is_none_or(|v| *v != "side")
                     && !m.hop["curator_call"]
                         .as_str()
                         .unwrap_or("")
@@ -504,6 +686,16 @@ impl Run {
         for s in &self.steps {
             for o in s["out"].as_array().into_iter().flatten() {
                 r.push(o["route"].as_str().unwrap_or("").to_string());
+                // D58 target (contract point 8): the way of before of a model
+                // call or an errand, as `way_of` reads it.
+                let mut hop = o["hop"].as_object().cloned().unwrap_or_default();
+                hop.insert("route".into(), o["route"].clone());
+                r.push(way_of(&Msg {
+                    context: Default::default(),
+                    hop,
+                    body: Default::default(),
+                    reply_to: String::new(),
+                }));
             }
             if !s["summarizer"].as_array().is_none_or(Vec::is_empty) {
                 r.push("summarize".to_string());
@@ -529,7 +721,7 @@ impl Run {
         let path = repo(&format!("{FIXTURES}/{}.json", self.name));
         if std::env::var(BLESS).as_deref() == Ok("1") {
             std::fs::create_dir_all(path.parent().expect("a fixture dir")).expect("fixture dir");
-            let text = sj::to_string_pretty(&got).expect("json") + "\n";
+            let text = sj::to_string_pretty(&recorded(&got)).expect("json") + "\n";
             std::fs::write(&path, text).expect("the fixture is written");
             return;
         }
@@ -601,6 +793,20 @@ fn masked(v: &Value) -> Value {
         Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), masked(x))).collect()),
         other => other.clone(),
     }
+}
+
+/// A run as the fixture records it: every step without the marks of a kind in
+/// `EXTRA_MARKS`, which the comparison never asks of the recording.
+fn recorded(run: &Value) -> Value {
+    let mut run = run.clone();
+    if let Some(steps) = run["steps"].as_array_mut() {
+        for step in steps {
+            if let Some(marks) = step["marks"].as_array_mut() {
+                marks.retain(|m| !EXTRA_MARKS.contains(&m["kind"].as_str().unwrap_or("")));
+            }
+        }
+    }
+    run
 }
 
 fn sorted_marks(step: &Value, drop_extra: bool) -> Vec<String> {
@@ -814,7 +1020,7 @@ fn way_tool(mut r: Run) {
     r.finish(&["quick", "brain"]);
 }
 
-/// live / duplex feed: closed turns of a call (phone, `live_feed` on) send
+/// live feed: closed turns of a running session (phone, `live_feed` on) send
 /// the live feed; a text session and the template (`live_feed` off) send
 /// none -- the same steps record that. Before the last turn the memory names
 /// a topic (a `topic` mark in the ledger, the form OR-KY-71 writes), so the

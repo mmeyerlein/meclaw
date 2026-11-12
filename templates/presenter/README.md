@@ -1,4 +1,4 @@
-# `presenter@1.4.2`
+# `presenter@2.0.0`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -10,7 +10,7 @@ the screen stays as it is and the answer stays text.
 ```text
 presenter/          hive, an app (tag `app`): screen out [view, withdraw], back [event, receipt],
                     listens [turn, mutation_committed], in [in_verdict] (the turn's stamp),
-                    out [screen_topics] (the topic table, off by default)
+                    out [part] (the topic table as a contribution, off by default)
   stage             code, resident, max_concurrency 1 -- the one decision maker
   decide            llm, provider "decisions" -- one call per turn, one `decision` back
   store             store -- tables shows, pending, journal, work
@@ -107,7 +107,7 @@ after `data_wait_ms` the view is withdrawn.
 | `verdict_source` | `selector` | where a turn's verdict comes from: `selector` is the one call above; `stamp` takes it from the talky's stamp on `in_verdict` and makes no call (see below); anything else is `selector` |
 | `form_rungs` | `{active: focus, accompanying: relevant, referring: relevant, none: none}` | the stamp's screen form to a rung; a value other than `focus`, `relevant` or `none` keeps the shipped entry, `urgent` cannot be named |
 | `settle_ms` | 600 | how long the frame of a window that is done takes to come to rest, once |
-| `screen_topics` | `false` | on, the topic table leaves on the lane `screen_topics` (see below); off, the lane is silent |
+| `part_target` | `""` | a target, and the topic table leaves on the lane `part` as a contribution to its section (see below); `""`, the lane is silent |
 
 The built-in topics `digest` and `research` (GH #976) show the last result of the daily
 digest (standard `last`, a `display-card`; variant `recent`, a list) and of the research
@@ -248,21 +248,24 @@ both only before done. A later stamp of the same turn with another topic withdra
 window and opens the new one; with other candidates it rebuilds the skeleton. Without
 `verdict_source: stamp` an `in_verdict` is heard and answered with nothing.
 
-## The topic table on `screen_topics`
+## The topic table on `part`
 
-With `screen_topics: true` the presenter says which topics a screen can show: the table the
-decider is asked over -- its own topics, then the apps' accepted ones, filtered exactly as for
-the decider -- leaves `stage` and the hive as `screen_topics {topics: [{name, purpose,
-candidates}]}`, sorted by name, `purpose` being the manifest's `describe` and `candidates`
-the topic's candidates as `[{key, describe}]` in the manifest's order (#1368) -- the
-talky's `in_screen_topics` contract, which asks its lead question over them. A topic
-without candidates leaves the field out. It leaves once on boot and again
-whenever the table changes (an app's topics accepted, changed or withdrawn), never per turn;
-a refused topic is no change. Its taker is the talky's curator, which needs the screen's
-topics for its stamp; the parent draws that edge. Shipped off, the lane is silent, so a
-parent without an edge for it sees nothing dead-letter, and the selector way emits what it
-emitted before. The lane is not in `template.json`'s `app` block: that block is the
-builder's closed vocabulary (`APP_KEYS`), and the builder draws no edge for it.
+With `part_target` set (D58 judge, GH #1480; formerly the switch `screen_topics`) the
+presenter says which topics a screen can show, as a contribution to the section of that
+target: the table the decider is asked over -- its own topics, then the apps' accepted ones,
+filtered exactly as for the decider -- leaves `stage` and the hive as `part {target, source:
+"presenter", value: [{name, purpose, candidates}]}`, sorted by name, `purpose` being the
+manifest's `describe` and `candidates` the topic's candidates as `[{key, describe}]` in the
+manifest's order (#1368). A topic without candidates leaves the field out. It leaves once on
+boot and again whenever the table changes (an app's topics accepted, changed or withdrawn),
+never per turn, and without a round or a subject: the screen is the same for everybody in
+front of it; a refused topic is no change. Its taker is the curator of the composition whose
+model reads the screen, on its lane `in_part`: it keeps the value unread and hands it to
+every view of the target as the leaf `presenter` (talky's `./route` asks its lead question
+over it); the parent draws that edge and names the target in the set. Shipped `""`, the lane
+is silent, so a parent without an edge for it sees nothing dead-letter, and the selector way
+emits what it emitted before. The lane is not in `template.json`'s `app` block: that block is
+the builder's closed vocabulary (`APP_KEYS`), and the builder draws no edge for it.
 
 ## The journal
 

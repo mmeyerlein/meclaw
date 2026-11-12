@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::mutation::subtree::{check_override_params, parse_subtree};
@@ -65,10 +68,12 @@ fn the_knobs_are_declared_with_their_shipped_defaults() {
 
 #[test]
 fn state_lines_is_preset_per_role() {
+    // R-58-15: the values per example set live in the profiles; read as the
+    // curator reads a profile.
     let (got, err) = policy_scope(
         json!({}),
-        "dict((r, ROLES[r].get('state_lines')) for r in ROLES)",
-        Value::Null,
+        "dict((r, knob_of(profile_params(p, bool(p)), 'state_lines')) for r, p in ARGS.items())",
+        curator_profiles::profiles_by_set(),
     );
     assert_eq!(
         got,
@@ -76,16 +81,32 @@ fn state_lines_is_preset_per_role() {
         "{err}"
     );
     for (over, want_on, want_lines) in [
-        (json!({"role": "talky"}), false, 8),
-        (json!({"role": "talky", "state_block": "1"}), true, 8),
-        (json!({"role": "talky", "state_block": true}), true, 8),
+        (curator_profiles::set_knobs("talky", json!({})), false, 8),
         (
-            json!({"role": "talky", "state_block": "1", "state_lines": 3}),
+            curator_profiles::set_knobs("talky", json!({"state_block": "1"})),
+            true,
+            8,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"state_block": true})),
+            true,
+            8,
+        ),
+        (
+            curator_profiles::set_knobs("talky", json!({"state_block": "1", "state_lines": 3})),
             true,
             3,
         ),
-        (json!({"role": "talky", "state_lines": null}), false, 8),
-        (json!({"role": "consult", "state_block": "on"}), true, 0),
+        (
+            curator_profiles::set_knobs("talky", json!({"state_lines": null})),
+            false,
+            8,
+        ),
+        (
+            curator_profiles::set_knobs("consult", json!({"state_block": "on"})),
+            true,
+            0,
+        ),
     ] {
         let (got, err) = policy_scope(over.clone(), "[STATE_BLOCK, STATE_LINES]", Value::Null);
         assert_eq!(got, json!([want_on, want_lines]), "{over}: {err}");

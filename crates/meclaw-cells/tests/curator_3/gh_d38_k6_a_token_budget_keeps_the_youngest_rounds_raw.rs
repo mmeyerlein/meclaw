@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -80,7 +83,10 @@ fn plan_of(over: Value, rows: &[Value]) -> Value {
 fn a_token_budget_keeps_the_youngest_rounds_raw() {
     let rows = wall(59, 1, 3000);
     let got = plan_of(
-        json!({"role": "talky", "keep_recent": 10, "keep_recent_tokens": 80_000}),
+        curator_profiles::set_knobs(
+            "talky",
+            json!({"keep_recent": 10, "keep_recent_tokens": 80_000}),
+        ),
         &rows,
     );
     assert_eq!(
@@ -98,7 +104,7 @@ fn a_token_budget_keeps_the_youngest_rounds_raw() {
 
     // 0 = off: the floor alone, as before the knob.
     let got = plan_of(
-        json!({"role": "talky", "keep_recent": 10, "keep_recent_tokens": 0}),
+        curator_profiles::set_knobs("talky", json!({"keep_recent": 10, "keep_recent_tokens": 0})),
         &rows,
     );
     assert_eq!(
@@ -116,12 +122,18 @@ fn a_token_budget_keeps_the_youngest_rounds_raw() {
 fn a_round_fits_the_budget_whole_or_not_at_all() {
     let rows = wall(59, 1, 3000);
     let got = plan_of(
-        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 81_999}),
+        curator_profiles::set_knobs(
+            "talky",
+            json!({"keep_recent": 1, "keep_recent_tokens": 81_999}),
+        ),
         &rows,
     );
     assert_eq!(got["cover"], json!(seq_of(20, 0, 59) - 1), "{got}");
     let got = plan_of(
-        json!({"role": "talky", "keep_recent": 1, "keep_recent_tokens": 82_000}),
+        curator_profiles::set_knobs(
+            "talky",
+            json!({"keep_recent": 1, "keep_recent_tokens": 82_000}),
+        ),
         &rows,
     );
     assert_eq!(got["cover"], json!(seq_of(19, 0, 59) - 1), "{got}");
@@ -140,7 +152,7 @@ fn the_curate_stamp_names_the_raw_part() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     // Five earlier rounds of today, 600 characters a row: at least 200 tokens
     // a row, 2 000 in all.
     let base = chrono::Utc::now() - chrono::Duration::seconds(50);

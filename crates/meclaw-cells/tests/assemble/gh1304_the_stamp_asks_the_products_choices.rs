@@ -476,10 +476,11 @@ fn gh1304_context_turns_ask_the_wall_before_the_decide_call() {
     ];
     let out = run_cell(ROUTE, &over, turn()).0;
     assert_eq!(out.len(), 1, "{out:?}");
-    let ask = on(&out, "turns_ask");
+    // D58 GH #1480: the read is a view without a target (the person's words).
+    let ask = on(&out, "view_ask");
     assert_eq!(
-        ask["turns_ask"],
-        json!({"n": 3, "budget_tokens": 4000}),
+        ask["view_ask"],
+        json!({"turns": 3, "budget_tokens": 4000}),
         "capped: {ask}"
     );
     assert_eq!(hop_str(ask, "state"), "My knee hurts again.");
@@ -487,13 +488,12 @@ fn gh1304_context_turns_ask_the_wall_before_the_decide_call() {
     assert!(!asked_at.is_empty(), "{ask}");
 
     // the wall's answer comes back: the earlier words before the turn
-    let mut back = lane(
-        "in_turns",
+    let back = lane(
+        "in_view",
         json!({"state": "My knee hurts again.", "asked_at": asked_at}),
         json!({"turn_id": "c-1"}),
-        json!([]),
+        json!([{"origin": "user", "type": "text", "text": "I went hiking on Sunday."}]),
     );
-    back["turns"] = json!([{"turn_id": "c-0", "text": "I went hiking on Sunday."}]);
     let out = run_cell(ROUTE, &over, back).0;
     let d = &on(&out, "decide")["decide"];
     let state = d["state"].as_str().expect("state");
@@ -509,25 +509,24 @@ fn gh1304_context_turns_ask_the_wall_before_the_decide_call() {
     );
 
     // an empty or broken wall: the call goes on with the turn alone
-    let mut empty = lane(
-        "in_turns",
+    let empty = lane(
+        "in_view",
         json!({"state": "My knee hurts again.", "asked_at": now_ms().to_string(),
                "degraded": "store"}),
         json!({"turn_id": "c-1"}),
         json!([]),
     );
-    empty["turns"] = json!([]);
     let d = on(&run_cell(ROUTE, &over, empty).0, "decide")["decide"].clone();
     assert_eq!(d["state"], "My knee hurts again.", "{d}");
 
     // talky draws the read hop through the curator and carries the text
     let edges = edges_of(TALKY);
-    let to = edge(&edges, "./route", "./curator", "'turns_ask'");
-    assert_eq!(to["modifier"]["set_hop"]["route"], "'in_turns_ask'", "{to}");
+    let to = edge(&edges, "./route", "./curator", "'view_ask'");
+    assert_eq!(to["modifier"]["set_hop"]["route"], "'in_view_ask'", "{to}");
     assert!(
         to["modifier"]["set_context"]["route_state"].is_string(),
         "{to}"
     );
-    let from = edge(&edges, "./curator", "./route", "'turns'");
-    assert_eq!(from["modifier"]["set_hop"]["route"], "'in_turns'", "{from}");
+    let from = edge(&edges, "./curator", "./route", "'view'");
+    assert_eq!(from["modifier"]["set_hop"]["route"], "'in_view'", "{from}");
 }

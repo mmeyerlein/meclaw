@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -22,7 +25,13 @@ fn push_shipped() -> bool {
 }
 
 fn talky() -> Hive {
-    Hive::with(&[("policy", "role", json!("talky"))])
+    // GH #1473: a talky's curator registers its `memory` section.
+    Hive::with(&[(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )])
+    .reporting_composite("talky")
 }
 
 fn ask(h: &mut Hive, session: &str, turn: &str, text: &str) -> Vec<Msg> {

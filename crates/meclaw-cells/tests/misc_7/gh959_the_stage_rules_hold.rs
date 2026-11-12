@@ -14,8 +14,9 @@
 //! skeletons from the manifest, blocks in their place until done, done settles once, no
 //! data withdraws, the screen form maps to the rung, and the default selector way emits
 //! byte for byte what presenter 1.3.1 emitted (`selector_golden.json`). The table `TOPICS`
-//! holds the lane `screen_topics`: off by default, on it says the decider's topic table on
-//! boot and on every change, never per turn.
+//! holds the lane `part` (D58 judge, GH #1480; formerly `screen_topics`): no target by
+//! default, with one it says the decider's topic table as a contribution on boot and on
+//! every change, never per turn.
 //!
 //! SKIPs where the template does not travel (R2b, the guard of every tool-bound test).
 

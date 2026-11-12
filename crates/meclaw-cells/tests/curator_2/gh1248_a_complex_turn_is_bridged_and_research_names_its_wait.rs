@@ -20,6 +20,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -50,7 +53,7 @@ fn bridge_of(h: &Hive, way: &str) -> Msg {
         h.stderr
     );
     let b = quick[0].clone();
-    assert_eq!(b.hop["bridge"], json!(way), "{:?}", b.hop);
+    assert_eq!(b.hop["call_kind"], json!("side"), "{way}: {:?}", b.hop);
     assert!(
         b.hop.get("consult_id").is_none(),
         "the bridge is no consult: {:?}",
@@ -95,7 +98,7 @@ fn a_complex_turn_is_bridged_and_research_names_its_wait() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
 
     curate_on(&mut h, "t1", "complex", "plan my week around the move");
     let consult = h.routed("consult");

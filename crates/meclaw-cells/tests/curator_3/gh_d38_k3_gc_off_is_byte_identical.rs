@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -61,10 +64,13 @@ fn wall() -> Vec<Value> {
 /// The plan of master 86d44d853 for `wall()` and a window of 2 000 tokens:
 /// over the aim, the oldest result (r0) shrunk with `keep_rounds` 2, nothing
 /// condensed (three rounds under the floor).
-const TALKY_BEFORE: &str = r#"{"chain":false,"notes":["the plan stays over rebuild_to of the usable window with only the rounds it keeps raw (8130 > 900)"],"over_aim":{"aim":900,"estimate":8130},"plan":{"as_of_ms":1772416800000,"cover":1772413199999999,"keep":[],"marks_to":0,"released":[],"role":"talky","shrunk":["35c3b606e90d"],"stubs":[],"sum_from":0,"sum_to":0,"summary":"","v":1},"todo":0}"#;
+/// R-58-15 (D58 target): the plan names no role any more (`window_plan` wrote
+/// the former role's name in `role`); that one field is taken out of the
+/// record of before, nothing else.
+const TALKY_BEFORE: &str = r#"{"chain":false,"notes":["the plan stays over rebuild_to of the usable window with only the rounds it keeps raw (8130 > 900)"],"over_aim":{"aim":900,"estimate":8130},"plan":{"as_of_ms":1772416800000,"cover":1772413199999999,"keep":[],"marks_to":0,"released":[],"shrunk":["35c3b606e90d"],"stubs":[],"sum_from":0,"sum_to":0,"summary":"","v":1},"todo":0}"#;
 
 /// The same for consult (`rebuild_to` 0.35, `keep_rounds` 2).
-const CONSULT_BEFORE: &str = r#"{"chain":false,"notes":["the plan stays over rebuild_to of the usable window with only the rounds it keeps raw (8130 > 700)"],"over_aim":{"aim":700,"estimate":8130},"plan":{"as_of_ms":1772416800000,"cover":1772413199999999,"keep":[],"marks_to":0,"released":[],"role":"consult","shrunk":["35c3b606e90d"],"stubs":[],"sum_from":0,"sum_to":0,"summary":"","v":1},"todo":0}"#;
+const CONSULT_BEFORE: &str = r#"{"chain":false,"notes":["the plan stays over rebuild_to of the usable window with only the rounds it keeps raw (8130 > 700)"],"over_aim":{"aim":700,"estimate":8130},"plan":{"as_of_ms":1772416800000,"cover":1772413199999999,"keep":[],"marks_to":0,"released":[],"shrunk":["35c3b606e90d"],"stubs":[],"sum_from":0,"sum_to":0,"summary":"","v":1},"todo":0}"#;
 
 fn plan_now(over: Value) -> Value {
     let probe = "(lambda r: {'plan': r['plan'], 'todo': len(r['todo']), 'notes': r['notes'], \
@@ -79,13 +85,16 @@ fn plan_now(over: Value) -> Value {
 fn gc_off_is_byte_identical() {
     let before: Value = meclaw_core::serde_json::from_str(TALKY_BEFORE).unwrap();
     assert_eq!(
-        plan_now(json!({"role": "talky", "gc": "0", "keep_rounds": 2})),
+        plan_now(curator_profiles::set_knobs(
+            "talky",
+            json!({"gc": "0", "keep_rounds": 2})
+        )),
         before,
         "talky, collection off"
     );
     let before: Value = meclaw_core::serde_json::from_str(CONSULT_BEFORE).unwrap();
     assert_eq!(
-        plan_now(json!({"role": "consult"})),
+        plan_now(curator_profiles::set_knobs("consult", json!({}))),
         before,
         "consult, no collection"
     );

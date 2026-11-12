@@ -1,4 +1,4 @@
-# `collector@5.10.0`
+# `collector@6.0.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -206,7 +206,8 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `memory_tier` | `""` | empty = no memory leg at all, and the assembly waits for the window leg alone. `"0"` / `"1"` / `"2"` request that recall tier once per turn, and **the ambient leg arrives as a synthetic `memory_recall` result** at the end of the round -- never as durable system state (`collector@2.1.0`, GH #278). |
 | `memory_form` | `"readable"` | which form of the bundle reaches the brain **in that tool result**: `readable` (the rendered block a model reads), `json` (the machine-readable bundle), `both` (the two joined by a newline, under one call id and one cap). Applies to the AMBIENT leg alone since `4.0.0` -- a model's own `memory_recall` call is rendered by `memory-hive/tool`, which has a `form` of its own ([#552](https://github.com/mmeyerlein/meclaw/issues/552)). Whatever the form, `system.memory` carries only the revocation -- the empty leaf on the fixed path `recall` plus the `$replace` marker on the node above it (see the `curate` lane, `collector@2.0.4`) -- and both halves are sent unconditionally, no longer chosen by this knob: an instance retuned from `readable` to `json` would otherwise carry its last leaf, or its last keys, for the rest of its life. |
 | `brief_slots` | `[]` | slots to brief affinity about the counterpart of a turn; empty = no brief leg ([#834](https://github.com/mmeyerlein/meclaw/issues/834)). Set (`["peer", "channel"]`), a turn whose context carries `counterpart` raises ONE `brief` at its opening and the fan-in waits for `leg-brief`; a turn without one parks the leg empty and waits for nothing. See "The brief leg" below. |
-| `brief_hints` | `"0"` | [#1279](https://github.com/mmeyerlein/meclaw/issues/1279): `"1"` asks the brief for affinity's slot `hints` on every turn -- how the person meant earlier requests -- about the counterpart (beside `brief_slots`), else about the round's ONE person (its one `audience_set` entry that is no `agent:`, the subject the curator proposes a clarify pair under), and the fan-in waits for `leg-brief`; a round with no single person parks the leg empty. The answer's `hints` list rides on `curate` as the slot `hints`; a brief of the hints alone renders no `affinity_brief` pair. See "The brief leg" below. |
+| `brief_hints` | `"0"` | [#1279](https://github.com/mmeyerlein/meclaw/issues/1279): `"1"` asks the brief for affinity's slot `hints` on every turn -- how the person meant earlier requests -- about the counterpart (beside `brief_slots`), else about the round's ONE person (its one `audience_set` entry that is no `agent:`, the subject the curator proposes a clarify pair under), and the fan-in waits for `leg-brief`; a round with no single person parks the leg empty. The answer's `hints` list rides on `curate` as a contribution to the section of `part_target` (`parts`, D58 judge #1480); a brief of the hints alone renders no `affinity_brief` pair. See "The brief leg" below. |
+| `part_target` | `""` | D58 judge ([#1480](https://github.com/mmeyerlein/meclaw/issues/1480)): the target the person's hints are a contribution to. What the brief brought leaves on `curate` as `parts: [{target, source: "affinity", value: <the hints as they came>, subject: <whom the brief was about>}]`, kept by the curator like a contribution on `in_part` (no message of its own) and handed to every view of `target`. No built-in name: the composition names its judge's model cell (talky: `decide`). `""`: no contribution, whatever the brief brought. |
 | `async_tools` | -- | **not a collector knob.** The async class is declared once, at the dispatcher (its own `async_tools` param since `dispatcher@1.2.0`), and travels as `hop.async_calls`. |
 | `sidecar` | `""` | **the block contract this collector asks its brain for** (GH #606, and GH #525 before it). Non-empty composes the sections OFFERED on the menu lane into ONE contract and writes it beside `system.tools` on `system.instructions.sidecar` -- one write per change and nothing per turn. **What is IN the block is not this cell's business**; what it owns is the frame: one fence, one JSON object, one key per section, required before optional ("One block, several offers" below). It ships OFF: what takes the block back OUT of the answer is a `splitter` between the brain and the dispatcher, and this cell cannot see whether one stands behind it -- asking with nothing cutting leaves a json block in the reader's face on every turn. So the COMPOSITE decides: `talky` and, since GH #892, `cogny` cut the block and switch it on; a composite without a splitter leaves it off. Nobody offering anything writes the slot **empty** rather than not writing it -- durable state is revoked, never abandoned. The write carries no `$replace` marker, so a person's charter in `instructions.reply` is untouched, and the leaf name sorts AFTER it on purpose -- an `llm` cell walks a family's leaves alphabetically and the block belongs after the answer it follows. |
 | `tools` | `[]` | the tool names this agent **declares** it uses (GH #464), e.g. `["web_search", "web_fetch"]`; `["*"]` asks for everything the tools hive has. A comma string reads the same way. Empty is the shipped default and asks nothing at all -- a collector standing in a colony with no tools hive is silent rather than noisy. |
@@ -254,7 +255,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@5.10.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@6.0.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -490,7 +491,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@5.10.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@6.0.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -536,7 +537,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@5.10.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@6.0.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -626,6 +627,11 @@ the stamp is a leg of the turn, parked beside the window, memory and brief legs,
 - with `needs_no_recall` on, a stamp whose `needs` do not name `memory` does not wait for the memory leg
   on any path; a fallback stamp waits, and its fallback rides the seam as `hop.fallback` (absent for a
   judged stamp), so the curator can fold the recall of an unsure `talk` turn (#1441).
+- a stamp that carries `needs_yes` (the route cell's `stamp_needs_yes`,
+  [#1466](https://github.com/mmeyerlein/meclaw/issues/1466)) has it parked with the leg, and the seam
+  carries it as `hop.needs_yes`: the JSON text of the object, keys sorted, only when the parked field is
+  a non-empty object. The curator's `recall_skip_sure` reads the yes-value of `memory` there. No knob of
+  this cell: without the field the seam is the one of before, byte for byte.
 - no stamp yet, and the window leg is older than `route_wait_ms`: the turn stops waiting for it. The check
   runs when a leg lands, so the route cell answers every turn (`talk` when unsure, failed or late) and its
   stamp is the occasion that ends a longer wait.
@@ -902,9 +908,11 @@ The brief is the THIRD leg of a turn, built the way the memory leg is:
   counterpart asks about the round's one person for `hints` alone (the curator proposes
   every clarify pair under that subject, so the read names the same one). The answer's
   body list `hints` (`[{question, answer, class}]`, newest first) is parked with the leg and
-  leaves on `curate` as the slot `hints`, beside `hints_of` (the subject the brief was about;
-  the curator keeps the hints only for the round's own person) -- absent when the answer
-  carried none (a refusal, an error), so the curator keeps what it had. A brief of the hints alone is no evidence for
+  leaves on `curate` as a contribution to the section of `part_target` (D58 judge, #1480:
+  `parts: [{target, source: "affinity", value, subject}]`, `subject` the subject the brief
+  was about; the curator keeps it only for the round's own person; formerly the slots `hints`
+  and `hints_of`) -- absent when the answer carried none (a refusal, an error) or no target
+  is set, so the curator keeps what it had. A brief of the hints alone is no evidence for
   the model: its leg keeps no text and renders no pair.
 - **Answer and error both come home.** `in_briefing` parks affinity's answer as text; an
   `error` (`hop.brief_outcome == 'error'`, stamped by the member) parks the leg empty and

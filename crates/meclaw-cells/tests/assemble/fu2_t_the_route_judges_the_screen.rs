@@ -13,7 +13,8 @@
 //!    on `verdict`; a rim stamp that carries `screen` or `screen_form` --
 //!    with `judge_context` "1" every rim stamp -- leaves on `stamp` as before
 //!    and a second time on `verdict`, the presenter's `in_verdict`;
-//! 2. `judge_context` "1" asks the wall with `judge: true`, renders the judge
+//! 2. `judge_context` "1" orders a view for the route's `view_target` (D58
+//!    GH #1480; it was the wall's `judge: true`), renders it as the judge
 //!    context and asks `screen.topic`/`screen.lead`/`screen.further` (one each,
 //!    candidates as `<topic>/<key>`, #1371);
 //!    the stamp carries `screen`, never for `clarify`;
@@ -27,7 +28,7 @@
 #[allow(unused_imports)]
 use crate::assemble_cell; // harness_fold: mod assemble_cell;
 
-use assemble_cell::{config_of, hop_str, lane, now_ms, run_cell, run_cell_stdout};
+use assemble_cell::{config_of, hop_str, lane, now_ms, run_cell, run_cell_stdout, talky_view_of};
 use meclaw_colony::cel_eval::{evaluate_condition, parse_condition};
 use serde_json::{Value, json};
 
@@ -84,8 +85,7 @@ fn judge() -> Value {
             {"name": "weather", "purpose": "the weather today and the next days",
              "candidates": [{"key": "today", "describe": "today's weather"},
                             {"key": "week", "describe": "the week ahead"}]},
-            {"name": "calendar", "purpose": "the person's appointments"}],
-            "state": [{"name": "calendar", "focus": true}]},
+            {"name": "calendar", "purpose": "the person's appointments"}]},
         "now": {"iso": "2026-10-30T09:00:00+01:00", "weekday": "Friday",
                 "timezone": "Europe/Berlin"},
         "place": "Berlin"
@@ -93,14 +93,14 @@ fn judge() -> Value {
 }
 
 fn judged_turns() -> Value {
+    let (messages, system) = talky_view_of(&judge());
     let mut doc = lane(
-        "in_turns",
+        "in_view",
         json!({"state": "How is the weather tomorrow?", "asked_at": in_time()}),
         ctx(),
-        json!([]),
+        messages,
     );
-    doc["turns"] = json!([]);
-    doc["judge"] = judge();
+    doc["system"] = system;
     doc
 }
 
@@ -166,10 +166,10 @@ fn screen_form_from_judge_when_enabled_else_decider() {
     let out = run_cell(ROUTE, &[], decision(sure(), ctx(), json!({}))).0;
     let first = &on(&out, "stamp")["stamp"];
     assert!(first.get("screen_form").is_none(), "{first}");
-    // ... and the switched-on judge reads the turn's judge context.
+    // ... and the switched-on judge orders the turn's view for its target.
     let ask = run_cell(JUDGE, &[("enabled", json!("1"))], turn()).0;
-    let ask = on(&ask, "turns_ask");
-    assert_eq!(ask["turns_ask"]["judge"], true, "{ask}");
+    let ask = on(&ask, "view_ask");
+    assert_eq!(ask["view_ask"]["target"], "decide", "{ask}");
     assert_eq!(hop_str(ask, "state"), "How is the weather tomorrow?");
     assert_eq!(hop_str(ask, "turn_id"), "c-1");
 }
@@ -241,7 +241,7 @@ fn screen_form_follows_as_second_stamp() {
         1,
         "one exit, never `stamp`"
     );
-    let to = edge(&es, "./screen_judge", "./curator", "'turns_ask'");
+    let to = edge(&es, "./screen_judge", "./curator", "'view_ask'");
     assert_eq!(
         to["modifier"]["set_context"]["judge_for"], "'screen_judge'",
         "{to}"
@@ -252,7 +252,7 @@ fn screen_form_follows_as_second_stamp() {
         "./screen_judge",
         "context.judge_for == 'screen_judge'",
     );
-    let back = edge(&es, "./curator", "./route", "'turns'");
+    let back = edge(&es, "./curator", "./route", "'view'");
     assert!(
         back["condition"]
             .as_str()
@@ -360,9 +360,9 @@ fn route_stamp_with_screen_is_also_the_verdict() {
 #[test]
 fn route_judge_context_asks_the_screen_question() {
     let jc = [("judge_context", json!("1"))];
-    // The wall read asks for the judge context.
+    // The wall read orders the view for the route's target.
     let ask = run_cell(ROUTE, &jc, turn()).0;
-    assert_eq!(on(&ask, "turns_ask")["turns_ask"]["judge"], true);
+    assert_eq!(on(&ask, "view_ask")["view_ask"]["target"], "decide");
 
     // The judge context renders before the turn, both sides, the screen, now.
     let out = run_cell(ROUTE, &jc, judged_turns()).0;
@@ -372,7 +372,7 @@ fn route_judge_context_asks_the_screen_question() {
         "- person: Good morning.",
         "- companion: Good morning to you.",
         "The conversation is about: the trip on Sunday",
-        "- calendar, in focus",
+        "On the screen right now:\n- nothing",
         "Now: Friday, 2026-10-30T09:00:00+01:00 (Europe/Berlin)",
         "Place: Berlin",
     ] {
@@ -484,19 +484,13 @@ fn delta_stamp_goes_to_the_curator_not_the_collector() {
     let over = [("context_turns", json!(3)), ("judge_context", json!("1"))];
     let out = run_cell(ROUTE, &over, partial).0;
     assert_eq!(out.len(), 1, "{out:?}");
-    let ask = on(&out, "turns_ask");
+    let ask = on(&out, "view_ask");
     assert_eq!(hop_str(ask, "state"), "How is the weather tomorrow?");
-    assert_eq!(ask["turns_ask"]["judge"], json!(true));
+    assert_eq!(ask["view_ask"]["target"], json!("decide"));
     // ... and the answer's decide call keeps the raw text on the hop, so the
     // delta stamp is compared on the words the person said, not the block.
-    let mut back = lane(
-        "in_turns",
-        json!({"state": "How is the weather tomorrow?", "asked_at": in_time()}),
-        dctx.clone(),
-        json!([]),
-    );
-    back["turns"] = json!([]);
-    back["judge"] = judge();
+    let mut back = judged_turns();
+    back["header"]["context"] = dctx.clone();
     let out = run_cell(ROUTE, &over, back).0;
     let call = on(&out, "decide");
     assert_eq!(hop_str(call, "state"), "How is the weather tomorrow?");
@@ -506,14 +500,7 @@ fn delta_stamp_goes_to_the_curator_not_the_collector() {
         "the block"
     );
     // A turn (no delta) keeps today's hop: no `state` on its decide call.
-    let mut plain = lane(
-        "in_turns",
-        json!({"state": "How is the weather tomorrow?", "asked_at": in_time()}),
-        ctx(),
-        json!([]),
-    );
-    plain["turns"] = json!([]);
-    plain["judge"] = judge();
+    let plain = judged_turns();
     let out = run_cell(ROUTE, &over, plain).0;
     assert!(
         on(&out, "decide")["header"].get("state").is_none(),
@@ -545,8 +532,8 @@ fn delta_stamp_goes_to_the_curator_not_the_collector() {
         }
     }
     for (from, to, needle) in [
-        ("./route", "./curator", "'turns_ask'"),
-        ("./curator", "./route", "'turns'"),
+        ("./route", "./curator", "'view_ask'"),
+        ("./curator", "./route", "'view'"),
     ] {
         let e = edge(&es, from, to, needle);
         let dc = e["modifier"]["delete_context"]
@@ -619,7 +606,7 @@ fn talky_fu2_defaults_byte_identical() {
     // A judge body without the knob: the person's words alone, no screen
     // question.
     let mut back = judged_turns();
-    back["turns"] = json!([{"turn_id": "c-0", "text": "Good morning."}]);
+    back["messages"] = json!([{"origin": "user", "type": "text", "text": "Good morning."}]);
     let d = on(&run_cell(ROUTE, &[], back).0, "decide")["decide"].clone();
     assert!(d["questions"].get("screen.topic").is_none(), "{d}");
     assert!(
@@ -658,12 +645,7 @@ fn the_assistant_carries_the_fu2_lanes() {
         .expect("edges")
         .clone();
     let stamp_exit = edge(&es, "./talky", ".", "'stamp'");
-    for route in [
-        "in_delta",
-        "in_screen_topics",
-        "in_seed_ask",
-        "in_seed_line",
-    ] {
+    for route in ["in_delta", "in_part", "in_seed_ask", "in_seed_line"] {
         assert!(declared("accepts", route), "assistant accepts {route}");
         for surface in ["./talky", "./talky-chat"] {
             let door = edge(&es, ".", surface, &format!("'{route}'"));
@@ -688,8 +670,9 @@ fn the_assistant_carries_the_fu2_lanes() {
                 .map(|e| e["to"].as_str().unwrap_or("").to_string())
                 .collect()
         };
-        if route == "in_screen_topics" {
-            // Both curators keep the topic table: either surface may judge.
+        if route == "in_part" {
+            // Both curators keep the contribution (D58 judge, GH #1480: the
+            // presenter's topic table): either surface may judge.
             for node in [Some("freeswitch"), Some("chat"), None] {
                 assert_eq!(
                     reached(node),
@@ -720,7 +703,7 @@ fn the_assistant_carries_the_fu2_lanes() {
     let t = config_of(TALKY);
     for (side, route) in [
         ("accepts", "in_delta"),
-        ("accepts", "in_screen_topics"),
+        ("accepts", "in_part"),
         ("accepts", "in_seed_ask"),
         ("accepts", "in_seed_line"),
         ("emits", "seed"),
@@ -790,10 +773,18 @@ fn talky_switches_read_json_true_as_on() {
     let yes = json!(true);
     // screen_judge `enabled`
     let ask = run_cell(JUDGE, &[("enabled", yes.clone())], turn()).0;
-    assert_eq!(on(&ask, "turns_ask")["turns_ask"]["judge"], true, "{ask:?}");
+    assert_eq!(
+        on(&ask, "view_ask")["view_ask"]["target"],
+        "decide",
+        "{ask:?}"
+    );
     // route `judge_context`
     let ask = run_cell(ROUTE, &[("judge_context", yes.clone())], turn()).0;
-    assert_eq!(on(&ask, "turns_ask")["turns_ask"]["judge"], true, "{ask:?}");
+    assert_eq!(
+        on(&ask, "view_ask")["view_ask"]["target"],
+        "decide",
+        "{ask:?}"
+    );
     // route `clarify`
     let out = run_cell(ROUTE, &[("clarify", yes.clone())], turn()).0;
     let opts = &on(&out, "decide")["decide"]["questions"]["path"]["options"];
@@ -856,7 +847,7 @@ fn many_screen_topics_ask_three_screen_questions() {
         })
         .collect();
     let mut doc = judged_turns();
-    doc["judge"]["screen"]["topics"] = Value::Array(topics);
+    doc["system"]["decide"]["presenter"]["text"] = json!(Value::Array(topics).to_string());
     let jc = [("judge_context", json!("1"))];
     let out = run_cell(ROUTE, &jc, doc).0;
     let qs = on(&out, "decide")["decide"]["questions"]

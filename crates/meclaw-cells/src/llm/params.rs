@@ -22,6 +22,13 @@ pub const DEFAULT_MAX_TOKENS: u32 = 32_768;
 /// finish. A bound, so a model that never stops cannot loop a cell forever.
 pub const LENGTH_CONTINUATIONS_MAX: u32 = 8;
 
+/// GH #1478 (D58 frame): the rest marker of `system_order`. The entry stands
+/// for every family of the system part the list does not name, in
+/// alphabetical order; the families named after it are laid after that rest,
+/// in their listed order. Without it the unnamed families come last, as
+/// before. At most one per list (`LlmParams::parse` refuses a second).
+pub const SYSTEM_ORDER_REST: &str = "*";
+
 /// GH #1099: the default operation timeout (A) of one provider call, in ms.
 ///
 /// The phase-8 figure (`cell-types.md`, llm A-default), kept and now named:
@@ -300,6 +307,19 @@ pub struct LlmParams {
     /// whether anyone listens is the topology's choice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub package_line: bool,
+    /// D58 target (GH #1483): what the composite uses this cell's model for,
+    /// as the curator cuts its windows by it -- an uninterpreted JSON value,
+    /// like `reasoning` or `provider_extra`: the cell never reads it, it only
+    /// reports it in the body slot `window_profile` of its package line, and
+    /// a params-only update that sets or resets it announces the line again
+    /// ([`PACKAGE_LINE_TRIGGER_KEYS`]). Default `{}` (no profile). Not a
+    /// package key: the registry knows what a model can do, the composite
+    /// what a cell does with it.
+    #[serde(
+        default = "default_window_profile",
+        skip_serializing_if = "is_empty_window_profile"
+    )]
+    pub window_profile: Value,
     /// T6-06 (GH #1232): how long a twin waits for its original's handover
     /// before it runs its parked turns without the inheritance, in
     /// milliseconds; default 0 = the cell expects no handover and parks
@@ -362,7 +382,10 @@ pub struct LlmParams {
     #[serde(default)]
     pub max_tokens: u32,
     /// Ordered list of UBF `system`-subtree paths to concatenate into the
-    /// system prompt; default `[]`.
+    /// system prompt; default `[]`. At most one entry may be
+    /// [`SYSTEM_ORDER_REST`] (`"*"`): it stands for every family not named,
+    /// alphabetically, and the families after it come after that rest
+    /// (GH #1478).
     #[serde(default)]
     pub system_order: Vec<String>,
     /// GH #118: cap on the number of distinct slots the persistent `system`
@@ -1193,6 +1216,19 @@ impl LlmParams {
                 }
             }
         }
+        // GH #1478: one rest marker splits the order into head, rest and tail;
+        // a second would leave the place of the families between them open.
+        if p.system_order
+            .iter()
+            .filter(|k| k.as_str() == SYSTEM_ORDER_REST)
+            .count()
+            > 1
+        {
+            return Err(format!(
+                "system_order names the rest marker '{SYSTEM_ORDER_REST}' more than once; \
+                 at most one is allowed"
+            ));
+        }
         for prefix in &p.system_writable {
             if prefix.is_empty() {
                 return Err(
@@ -1535,6 +1571,23 @@ impl crate::params_overlay::OverlayParams for LlmParams {
     }
 }
 
+/// D58 target (GH #1483): the default of `window_profile`, the empty object.
+fn default_window_profile() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+/// D58 target (GH #1483): an unset profile is not serialized, so a params
+/// dump of a cell without one stays what it was.
+fn is_empty_window_profile(v: &Value) -> bool {
+    v.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
+/// D58 target (GH #1483): the keys outside [`MODEL_PACKAGE_KEYS`] whose set or
+/// reset by a params-only update announces the package line again: what the
+/// line carries beside the package (`window_profile`, `system_order`). A
+/// second list, not package keys: a turn may name them as before.
+pub const PACKAGE_LINE_TRIGGER_KEYS: &[&str] = &["window_profile", "system_order"];
+
 /// Top-level param keys recognized by the `llm` cell (the `LlmParams` fields).
 /// A params-update key outside this set is rejected (no silent no-op).
 pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
@@ -1552,6 +1605,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "credential_late_notice",
     // GH #1449: the package line to the curator.
     "package_line",
+    // D58 target (GH #1483): the window profile the line carries.
+    "window_profile",
     // T6-06 (GH #1232): the twin's wait for its original's handover.
     "handover_wait_ms",
     "base_url",

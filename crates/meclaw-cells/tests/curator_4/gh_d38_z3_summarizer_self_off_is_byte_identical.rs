@@ -258,7 +258,7 @@ fn the_self_summary_is_never_spoken() {
         &t,
         "/t/curator",
         json!({"session_id": "s1", "turn_id": "t3"}),
-        json!({"route": "brain", "iter": "0", "curator_call": "k", "session_id": "s1",
+        json!({"route": "model_call", "target": "brain", "iter": "0", "curator_call": "k", "session_id": "s1",
                "turn_id": "t3", "summarize": "1", "summary_call": "rb", "summary_token": "tok"}),
     );
     let to_brain: Vec<_> = out.iter().filter(|(to, _, _)| to == "/t/brain").collect();

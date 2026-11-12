@@ -128,7 +128,7 @@
         },
         {
           "route": "thing_seen",
-          "because": "the things the model named in the section `things` of an answer (GH #949): `{items: [{name, kind?, note?}], turn_id, episode_turn_id?, session_id}`, checked by `./curator` and raised only when its `things_section` is \"1\" and the turn carries a round, which rides along in `context.audience_set`. The section itself never leaves on `sidecar`: the splitter hands `things` to the curator like `window`, `gap` and `memory`, so one answer yields one `thing_seen` and no copy of it"
+          "because": "the things the model named in the section `things` of an answer (GH #949), which the objects hive offers and checks: `./curator` hands the section on as this composition registered it (`sections`, lane `thing_seen`, `cap_share` 0.1, GH #1473) -- the splitter's `{messages: [], section, payload: {items: [{name, kind?, note?}]}}`, `hop.turn_id` the turn it answered, the round in `context.audience_set`. The section itself never leaves on `sidecar`: the splitter hands `things` to the curator like `window`, `gap` and `memory`, so one answer yields one `thing_seen` and no copy of it"
         },
         {
           "route": "candidate_ack",
@@ -137,6 +137,10 @@
         {
           "route": "read",
           "because": "the curator's answer to one `in_read`, unchanged: `{messages: [], rows, next, truncated}` with `hop.read_tag` and `hop.read_what` echoed, `hop.error_code` (empty, `missing_audience`, `invalid_input`, `store_error`) and `hop.detail` (`templates/curator/README.md`). One answer per question; the asker matches it by its tag, and the corridor back to it is the asker's own edge, drawn at this rim (`install_app` `reads`)"
+        },
+        {
+          "route": "note_receipt",
+          "because": "D58 note (GH #1477): the answer of its curator to the sender of a shown `once` note that carried a `receipt` (`note_once` \"1\"), handed out unchanged -- every field in the head: `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`. Where it goes from here is wired by whoever sends the notes"
         }
       ]
     },
@@ -208,7 +212,8 @@
           "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_hop": {
-              "route": "'in_curate'"
+              "route": "'in_curate'",
+              "target": "'brain'"
             },
             "restore_ttl": true,
             "set_context": {
@@ -219,14 +224,16 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && (!has(hop.target) || hop.target == 'brain') && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
               "iter": "hop.iter",
-              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -293,6 +300,8 @@
               "col_phase",
               "tool_answerer",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "recall_input_soft",
               "input_soft",
               "tools_folded"
@@ -367,6 +376,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -389,6 +400,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "tools_folded"
@@ -413,6 +426,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "gap_ask",
               "recall_input_soft",
@@ -435,6 +450,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -450,6 +467,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -468,6 +487,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -483,6 +504,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -500,6 +523,8 @@
             },
             "delete_context": [
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -518,6 +543,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -536,6 +563,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -605,6 +634,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -625,6 +656,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -640,6 +673,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -655,6 +690,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -666,6 +703,28 @@
           "from": "./curator",
           "to": "./brain",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'brain'"
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'note_receipt'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "call_kind",
+              "curator_target",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "tools_folded"
+            ]
+          }
         }
       ]
     },

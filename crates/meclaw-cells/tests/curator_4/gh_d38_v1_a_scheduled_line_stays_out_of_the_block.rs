@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -38,7 +41,7 @@ fn the_fact_mark_carries_the_kind_of_its_item() {
     let probe = "fact_marks('memory', {'items': [ARGS]}, 'items')";
     let (on, err) = cell_scope(
         "intake",
-        json!({"fact_mark_kind": "1"}),
+        json!({"fact_mark_kind": "1", "sections": {"memory": {"lane": "sidecar", "mark": "topic"}}}),
         probe,
         item.clone(),
     );
@@ -46,7 +49,12 @@ fn the_fact_mark_carries_the_kind_of_its_item() {
         .expect("the mark value is JSON");
     assert_eq!(v["fact_kind"], json!("foresight"), "{on} {err}");
     assert_eq!(v["valid_from"], json!("2026-11-07T17:00:00Z"), "{on}");
-    let (off, _) = cell_scope("intake", json!({"fact_mark_kind": "0"}), probe, item);
+    let (off, _) = cell_scope(
+        "intake",
+        json!({"fact_mark_kind": "0", "sections": {"memory": {"lane": "sidecar", "mark": "topic"}}}),
+        probe,
+        item,
+    );
     let v: Value = meclaw_core::serde_json::from_str(off[0][1].as_str().unwrap_or("{}"))
         .expect("the mark value is JSON");
     assert!(
@@ -57,10 +65,10 @@ fn the_fact_mark_carries_the_kind_of_its_item() {
 
 fn hive() -> Hive {
     Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "state_block", json!("1")),
         ("policy", "state_scheduled_on_need", json!("1")),
     ])
+    .reporting_composite("talky")
 }
 
 fn sow(h: &mut Hive) {
@@ -135,7 +143,7 @@ fn a_turn_that_asks_sees_the_scheduled_line() {
 }
 
 /// Pin (OR-d38-3.o15.1): with `fact_mark_kind` "1" the mark also carries the
-/// item's `confidence`, which the wellbeing line (D38 V2) weighs; an item
+/// item's `confidence`, which a reader of the mark weighs; an item
 /// without one leaves a mark without one (OR-d38-3.v.9 reads it as passing),
 /// and off the mark of before.
 #[test]
@@ -148,7 +156,12 @@ fn the_fact_mark_carries_the_confidence_of_its_item() {
                       "verified": ["claim"]});
     let probe = "fact_marks('memory', {'items': [ARGS]}, 'items')";
     let mark = |knob: &str, item: Value| -> Value {
-        let (got, err) = cell_scope("intake", json!({"fact_mark_kind": knob}), probe, item);
+        let (got, err) = cell_scope(
+            "intake",
+            json!({"fact_mark_kind": knob, "sections": {"memory": {"lane": "sidecar", "mark": "topic"}}}),
+            probe,
+            item,
+        );
         meclaw_core::serde_json::from_str(got[0][1].as_str().unwrap_or("{}"))
             .unwrap_or_else(|_| panic!("the mark value is JSON: {got} {err}"))
     };

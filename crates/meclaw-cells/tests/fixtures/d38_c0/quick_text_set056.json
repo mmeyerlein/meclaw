@@ -68,9 +68,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1 talk Good morning!",
@@ -197,9 +198,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t2"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "03 say t2 simple What day is it today?",
@@ -324,9 +326,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t3"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "05 say t3 talk Thanks, that helps.",

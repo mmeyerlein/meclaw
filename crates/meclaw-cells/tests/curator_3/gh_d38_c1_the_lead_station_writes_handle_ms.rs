@@ -10,6 +10,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -21,9 +24,9 @@ fn every_call_books_the_lead_station_with_its_handle_ms() {
     }
     assert!(
         lead_shipped(),
-        "templates/curator/lead/config.json is missing: the lead cell is not shipped (GH #1447)"
+        "templates/lead/lead/config.json is missing: the lead is not shipped (GH #1447, GH #1474)"
     );
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let call = turn(&mut h, "s1", "t1", "hello", "hi", json!({}));
     let id = call.hop["curator_call"]
         .as_str()

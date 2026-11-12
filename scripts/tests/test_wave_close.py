@@ -253,6 +253,22 @@ class WaveClose(unittest.TestCase):
         self.assertEqual(0, self.close(gh), self.lines)
         self.assertIn("COVERAGE end-tip=%s verdict=GREEN" % self.tip[:9], "\n".join(self.lines))
 
+    def test_wave_close_names_a_carried_end_tip_map(self):
+        # GH #1461 review M4: who closes sees that the end tip was carried, not measured
+        from scripts.pipeline import coverage
+        gh = FakeGh({11: ("CLOSED", []), 12: ("CLOSED", []), 13: ("CLOSED", [])})
+        self.write_map(self.tip, "GREEN")
+        path = self.maps / ("coverage-%s.json" % self.tip)
+        cov = json.loads(path.read_text(encoding="utf-8"))
+        cov["carried_from"] = {"rev": "a" * 40, "built_at": "2026-11-09T01:56:24Z",
+                               "runner": "lane-a", "secs": 1620.0}
+        path.write_text(json.dumps(cov), encoding="utf-8")
+        self.assertEqual(0, self.close(gh), self.lines)
+        line = [ln for ln in self.lines if ln.startswith("COVERAGE end-tip=")][0]
+        self.assertIn("verdict=GREEN", line)
+        self.assertIn("carried from aaaaaaaaa (measured 2026-11-09T01:56:24Z on lane-a)", line)
+        self.assertEqual(coverage.verdict_of(cov), "GREEN")
+
     def test_wave_close_refuses_a_report_without_orga_inputs(self):
         (self.wdir / "berichte" / "s3.md").write_text(report("s3", [], "nothing about Orga"),
                                                       encoding="utf-8")

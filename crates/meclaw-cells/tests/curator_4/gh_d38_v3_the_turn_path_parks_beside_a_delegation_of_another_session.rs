@@ -8,13 +8,17 @@
 //! (`phone-...`), so the keys never meet -- no such row in any R039 blob, no
 //! "parks beside delegation" line in the journal since 06:00. The pin of #1407
 //! (`d53_fx_the_turn_path_parks_beside_its_delegation`) runs both rounds under
-//! one session and cannot see it. With `delegation_park_by_call` "1" the park
-//! is keyed by the duplex call and the turn label, both rounds carry the
-//! call id. Shipped "0": the key of before.
+//! one session and cannot see it. The park is keyed by the running session's
+//! handle and the turn label, both rounds carry the handle (`live`); a round
+//! without a handle keeps its session. D58 live (contract point 7): the knob
+//! `delegation_park_by_call` fell, every composition parks so.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -28,8 +32,7 @@ const PHONE: &str = "phone-2026-11-07T09:06:50Z";
 fn seam(h: &mut Hive, session: &str, turn: &str, iter: &str, extra: Value, body: Value) {
     h.out.clear();
     let mut hop = json!({"session_id": session, "turn_id": turn, "iter": iter, "phase": "",
-                         "path": "simple", "needs": "", "families": "",
-                         "engine": "duplex", "call_id": CALL});
+                         "path": "simple", "needs": "", "families": ""});
     for (k, v) in obj(extra) {
         hop[k] = v;
     }
@@ -49,16 +52,19 @@ fn parked(h: &Hive) -> usize {
         .count()
 }
 
-fn run(knob: &str) -> (usize, usize) {
-    let (calls, parked, _) = run_rows(knob);
+/// Both rounds with the handle `CALL` (`live`), or both without one.
+fn run(handle: bool) -> (usize, usize) {
+    let (calls, parked, _) = run_rows(handle);
     (calls, parked)
 }
 
-fn run_rows(knob: &str) -> (usize, usize, Vec<Value>) {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "delegation_park_by_call", json!(knob)),
-    ]);
+fn run_rows(handle: bool) -> (usize, usize, Vec<Value>) {
+    let mut h = Hive::with(&[]).reporting_composite("talky");
+    let keys = if handle {
+        json!({"live": CALL})
+    } else {
+        json!({})
+    };
     let label = format!("{CALL}#1");
     // The delegation round: its own session (the call id), keyed `<label>~<deadline>~<hex8>`.
     seam(
@@ -66,7 +72,7 @@ fn run_rows(knob: &str) -> (usize, usize, Vec<Value>) {
         CALL,
         &format!("{label}~{OPEN_UNTIL}~ab12cd34"),
         "0",
-        json!({"path": "", "delegation_id": "item_d1"}),
+        with(&keys, json!({"path": "", "delegation_id": "item_d1"})),
         json!({"messages": [user(&format!("[delegation item_d1 from the voice channel] {ASK}"))]}),
     );
     assert_eq!(
@@ -81,7 +87,7 @@ fn run_rows(knob: &str) -> (usize, usize, Vec<Value>) {
         PHONE,
         &label,
         "0",
-        json!({}),
+        keys.clone(),
         json!({"messages": [user(ASK)]}),
     );
     let rows = h
@@ -98,32 +104,41 @@ fn the_turn_path_parks_beside_a_delegation_of_another_session() {
     if !shipped() {
         return;
     }
-    assert_eq!(run("1"), (0, 1), "one answer per delegation");
+    assert_eq!(run(true), (0, 1), "one answer per delegation");
 }
 
-/// Lock: shipped off, the key of before -- the turn path goes (the R039 defect).
+/// Lock (D58 live): without a handle the park is the session's -- the turn
+/// path of another session knows no delegation of its turn and goes.
 #[test]
-fn off_the_key_of_before_stays() {
+fn without_a_handle_the_park_stays_the_sessions() {
     if !shipped() {
         return;
     }
-    assert_eq!(run("0"), (1, 0));
+    assert_eq!(run(false), (1, 0));
 }
 
 /// Pin (OR-d38-3.o15.8): the park carries the round's audience, so a rebuild
-/// that knows no call can still tell the member's row; off, the row of before.
+/// that knows no handle can still tell the member's row -- with a handle and
+/// without one (D58 live: always).
 #[test]
 fn the_park_carries_its_audience() {
     if !shipped() {
         return;
     }
-    for (knob, want) in [("1", json!(ROUND_E)), ("0", Value::Null)] {
-        let (_, _, rows) = run_rows(knob);
-        assert_eq!(rows.len(), 1, "{knob}: {rows:?}");
+    for handle in [true, false] {
+        let (_, _, rows) = run_rows(handle);
+        assert_eq!(rows.len(), 1, "{handle}: {rows:?}");
         assert_eq!(
             rows[0].get("audience_set").cloned().unwrap_or(Value::Null),
-            want,
-            "{knob}: {rows:?}"
+            json!(ROUND_E),
+            "{handle}: {rows:?}"
         );
     }
+}
+
+/// `extra` with the keys of `keys` beside it.
+fn with(keys: &Value, extra: Value) -> Value {
+    let mut out = obj(extra);
+    out.extend(obj(keys.clone()));
+    Value::Object(out)
 }

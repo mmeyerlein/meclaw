@@ -14453,7 +14453,7 @@ mod tests {
         };
         assert_eq!(
             receipt_paths_of(&json!({"scope": "/os/orgs/o/members/m",
-                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.0.20"}],
+                "diff": {"add_nodes": [{"name": "figure", "template": "figure@2.1.0"}],
                          "add_edges": [{"from": "./figure", "to": "./access"}]}})),
             own(&["/os/orgs/o/members/m"], &["/os/orgs/o/members/m/figure"])
         );

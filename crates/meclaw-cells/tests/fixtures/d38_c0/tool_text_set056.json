@@ -68,13 +68,13 @@
           "hop": {
             "curator_call": "00064c07-a65f-4800-8000-0000000002c0-bridge",
             "episode_turn_id": "s1#bd1794fa-0",
-            "interim": "1",
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         },
         {
           "body": {
@@ -123,9 +123,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1 simple Who won the match yesterday?",
@@ -219,9 +220,10 @@
             "iter": "1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "03 tool result t1 1",
@@ -348,9 +350,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t2"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "05 say t2 talk Great news!",

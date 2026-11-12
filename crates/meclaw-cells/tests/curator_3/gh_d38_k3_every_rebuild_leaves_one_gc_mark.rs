@@ -19,6 +19,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -87,7 +90,7 @@ fn gc_on_collects_at_every_rebuild_and_the_value_names_every_class() {
                  window_plan(ARGS['rows'], [], [], [], {}, ARGS['as_of'], [], [], 0, None))";
     for (gc, want_shrunk) in [("1", json!([id_of(&wall[6])])), ("0", json!([]))] {
         let (got, err) = policy_scope(
-            json!({"role": "talky", "gc": gc, "keep_rounds": 1}),
+            curator_profiles::set_knobs("talky", json!({"gc": gc, "keep_rounds": 1})),
             probe,
             json!({"rows": wall, "as_of": AS_OF_MS}),
         );
@@ -251,10 +254,8 @@ fn every_rebuild_leaves_one_gc_mark() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("intake", "replay_channel_prefix", json!("replay-")),
-    ]);
+    let mut h = Hive::with(&[("intake", "replay_channel_prefix", json!("replay-"))])
+        .reporting_composite("talky");
     let marks = two_rebuilds(&mut h);
     assert_eq!(
         marks.len(),
@@ -310,10 +311,8 @@ fn the_stats_lane_counts_the_mark_the_policy_wrote() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("intake", "replay_channel_prefix", json!("replay-")),
-    ]);
+    let mut h = Hive::with(&[("intake", "replay_channel_prefix", json!("replay-"))])
+        .reporting_composite("talky");
     let marks = two_rebuilds(&mut h);
     assert_eq!(marks.len(), 2, "{marks:?}");
     let mut classes = meclaw_core::serde_json::Map::new();

@@ -172,14 +172,14 @@ struct Hive {
     stderr: Vec<String>,
     /// The held wall clock of every cell run, `None` = the machine's own.
     wall: Option<&'static str>,
-    /// GH #1447 (OR-d38-3.o9.5): the lead's own store `./lead_state`, a
-    /// second in-memory SQLite from its params, when the tree ships the lead.
-    lead_db: Option<rusqlite::Connection>,
     /// `./policy` the way it ships, `runner_mode: resident`: one child whose
     /// globals live from message to message, booted under the held clock it
     /// runs with (a new clock boots a new child). A document the child cannot
     /// take (`warm_python`) runs in a fresh process, as a restarted child would.
     policy_child: Option<(Option<&'static str>, warm_python::Resident)>,
+    /// D58 target (contract point 1): the target a curate that names none
+    /// names, once [`Hive::name_main_target`] reported it.
+    target: Option<String>,
 }
 
 impl Hive {
@@ -223,13 +223,10 @@ impl Hive {
         ] {
             cells.insert(name.to_string(), cell_config(name));
         }
-        // GH #1447: `./policy` asks `./lead` beside its ledger reads; the
-        // lead keeps its rows in `./lead_state`.
-        if curator_hive::lead_shipped() {
-            for name in curator_hive::LEAD_CELLS {
-                cells.insert(name.to_string(), cell_config(name));
-            }
-        }
+        // GH #1474: the lead left this hive for one of its own
+        // (`templates/lead`); this harness runs the curator as it ships,
+        // `policy.lead_wired` off -- no lead is asked. `curator_hive.rs`
+        // runs the curator with the lead a composite wires beside it.
         for (cell, key, value) in over {
             let params = cells
                 .get_mut(*cell)
@@ -255,14 +252,6 @@ impl Hive {
             &ledger.schema,
         )
         .expect("seed");
-        let lead_db = cells.get("lead_state").map(|cfg| {
-            let p = meclaw_cells::store::StoreParams::parse(&cfg["params"])
-                .expect("the lead_state params parse");
-            let db = rusqlite::Connection::open_in_memory().expect("sqlite");
-            meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &p).expect("lead ddl");
-            meclaw_cells::store::ddl::apply_index_ddl(&db, &p.indexes).expect("lead index ddl");
-            db
-        });
         Self {
             edges,
             cells,
@@ -272,8 +261,8 @@ impl Hive {
             summ: VecDeque::new(),
             stderr: Vec::new(),
             wall: None,
-            lead_db,
             policy_child: None,
+            target: None,
         }
     }
 
@@ -454,10 +443,6 @@ impl Hive {
                         let answer = self.store(&m);
                         queue.push_back(("./ledger".to_string(), answer));
                     }
-                    "./lead_state" if self.lead_db.is_some() => {
-                        let answer = store_on(self.lead_db.as_ref().expect("lead db"), &m);
-                        queue.push_back(("./lead_state".to_string(), answer));
-                    }
                     "./clock" => self.clock.push(m),
                     "./summarizer" => self.summ.push_back(m),
                     cell => {
@@ -471,6 +456,22 @@ impl Hive {
         }
     }
 
+    /// D58 target (contract point 1): the model cell `brain` reports its
+    /// package without a profile, and every curate that names no target
+    /// names it -- the composite names the target of its curates (no
+    /// `target_unknown` mark), cut as before on the shipped fields and the
+    /// instance's values.
+    fn name_main_target(&mut self) {
+        self.lane(
+            "in_catalog",
+            json!({}),
+            json!({"package_of": "/comp/brain"}),
+            json!({"messages": [], "package": {"model": "test/brain"},
+                   "window_profile": {}, "system_order": []}),
+        );
+        self.target = Some("brain".to_string());
+    }
+
     /// A message arriving on the hive path on lane `route`.
     fn lane(&mut self, route: &str, context: Value, hop: Value, body: Value) {
         self.lane_from(route, context, hop, body, "");
@@ -479,6 +480,12 @@ impl Hive {
     fn lane_from(&mut self, route: &str, context: Value, hop: Value, body: Value, reply_to: &str) {
         let mut hop = obj(hop);
         hop.insert("route".into(), json!(route));
+        if let Some(t) = &self.target
+            && route == "in_curate"
+            && !hop.contains_key("target")
+        {
+            hop.insert("target".into(), json!(t));
+        }
         // GH #925: every lane message of a colony carries the audience of its
         // round. A test that names none gets the standard round; one that sets
         // the key to `null` keeps it null -- a round that declares nothing.
@@ -572,10 +579,25 @@ impl Hive {
         self.state(&format!("{key}:{}", curator_hive::round_key(round)))
     }
 
+    /// D58 target (OR-d58-2.target.39): a call by its route, or by the way
+    /// it left on before every model call took one route (as
+    /// `curator_hive::way_of` reads it off `hop.target`).
     fn routed(&self, route: &str) -> Vec<Msg> {
         self.out
             .iter()
-            .filter(|m| m.route() == route)
+            .filter(|m| {
+                let field = |k: &str| m.hop.get(k).and_then(Value::as_str).unwrap_or("");
+                let way = match m.route() {
+                    "model_call" => match field("target") {
+                        "quick" | "quick_spec" | "quick_bridge" => "quick",
+                        "" => "brain",
+                        t => t,
+                    },
+                    "errand" => field("consult_class"),
+                    r => r,
+                };
+                m.route() == route || way == route
+            })
             .cloned()
             .collect()
     }
@@ -748,6 +770,16 @@ fn curator_template_shape() {
             "{composite}"
         );
     }
+    // GH #1474: the lead left this hive; talky pins it beside its curator
+    // at the version the template carries, as it pins the curator.
+    let lead = read_json(&repo("templates/lead/template.json"));
+    assert_eq!(lead["name"], "lead");
+    let lead_v = lead["version"].as_str().expect("a lead version");
+    assert_eq!(
+        read_json(&repo("templates/talky/lead/config.json"))["cell"]["template"],
+        format!("lead@{lead_v}"),
+        "talky"
+    );
     let hive = read_json(&repo("templates/curator/config.json"));
     assert_eq!(hive["cell"]["type"], "hive");
     assert_eq!(hive["params"]["ports"], json!([]), "sealed");
@@ -795,30 +827,39 @@ fn curator_template_shape() {
             // GH #1061 (#801): the summarizer's sealed key, answered by the
             // member's broker over a v-lane.
             "in_sealed",
-            // GH #1304: talky/route's question for the person's last turns.
-            "in_turns_ask",
-            // GH #1279: the screen topics, the seed question and line of a
-            // call, and the stamp of a delta.
-            "in_screen_topics",
+            // D58 GH #1480: a composition's view for its target (formerly
+            // GH #1304's `in_turns_ask`).
+            "in_view_ask",
+            // D58 judge (GH #1480): a domain's contribution to a target's
+            // section; GH #1279: the seed question and line of a call, and
+            // the stamp of a delta.
+            "in_part",
             "in_seed_ask",
             "in_seed_line",
-            // #1369: the end of a call, answered by what it carried.
-            "in_call_end",
-            "in_delta_stamp"
+            // #1369: the end of a running session, answered by what it
+            // carried (D58 GH #1482: by the handle `live`, no call key).
+            "in_live_end",
+            "in_delta_stamp",
+            // GH #1474: the verdict of the lead the composite wires beside
+            // this hive, home through the rim.
+            "in_lead",
+            // D58 feed (GH #1481): an order to feed a running session now,
+            // taken by `./policy` with its `feed_in` on.
+            "in_feed"
         ]
     );
     assert_eq!(
         lanes("emits"),
         [
-            "brain",
-            // GH #1247: the ways a stamped path leaves on besides the brain.
-            "quick",
+            // D58 target (contract point 8): one route for every call to a
+            // model, whatever its target (`hop.target`); the ways are gone.
+            "model_call",
             // GH #1275: a held spec answer the normal curate kept.
             "spec_release",
             // GH #1411 / #1415: a spec partial the turn awaits, to the rim.
             "partial",
-            "consult",
-            "research",
+            // D58 target: an errand that leaves the composite (`departs`).
+            "errand",
             "turn_write",
             "write",
             // GH #1305: a conversation's end, right behind its `write`.
@@ -838,15 +879,23 @@ fn curator_template_shape() {
             "credential_request",
             // GH #1079: one per item of a section that failed its word-for-word check.
             "reject",
-            // GH #1304: the answer to `in_turns_ask`.
-            "turns",
+            // D58 GH #1480: the answer to `in_view_ask`.
+            "view",
             // GH #1279: the seed of a call, the live feed of a duplex call
             // and the proposal of a clarify pair.
             "seed",
-            // #1369: what a call carried.
-            "call_facts",
+            // D58 note (GH #1477): the answer to the sender of a shown
+            // `once` note that carried a `receipt`.
+            "note_receipt",
+            // #1369: what a running session carried (D58 GH #1482).
+            "live_facts",
             "live_feed",
-            "propose"
+            "propose",
+            // GH #1474: the question, the speculation's events and the notes
+            // for that lead, out through the rim.
+            "lead_ask",
+            "lead_spec",
+            "lead_note"
         ]
     );
     let types: Vec<(&str, &str)> = vec![
@@ -877,7 +926,7 @@ fn curator_template_shape() {
     let expect = json!({
         "blocks": ["hash", "kind", "chars", "body", "first_seen"],
         "wall": ["seq", "session_id", "turn_id", "iter", "kind", "hash", "nth", "final",
-                 "episode_idx", "at", "audience_set", "turn_at"],
+                 "episode_idx", "at", "audience_set", "turn_at", "failed"],
         "calls": ["call_id", "session_id", "turn_id", "iter", "trigger", "started_at", "model",
                   "tokens_prompt", "tokens_completion", "tokens_cached", "tokens_cache_write",
                   "cost", "cache_expires_at", "system_hash", "actions", "audience_set"],
@@ -890,13 +939,16 @@ fn curator_template_shape() {
         "candidates": ["source", "cand_id", "hash", "triggers", "until", "once", "used_at",
                        "last_seq", "priority", "audience_set", "at"],
         "notes": ["source", "note_id", "text", "scope", "until", "priority",
-                  "audience_set", "session_id", "at", "used_turn", "item"],
-        "snapshots": ["seq", "call_id", "session_id", "turn_id", "body", "cut", "at", "audience_set"],
+                  "audience_set", "session_id", "at", "used_turn", "item", "receipt"],
+        "snapshots": ["seq", "call_id", "session_id", "turn_id", "body", "cut", "sent", "at",
+                      "audience_set"],
     });
     // GH #892: `marks` and `pins` joined the seven of 1.0.0; GH #949
     // `candidates`; GH #1303 `notes`; GH #1448 `snapshots` (the plan of each call),
-    // GH #1450 its column `cut` (the second half: the cut of the call);
-    // GH #1451 `notes.item`.
+    // GH #1450 its column `cut` (the second half: the cut of the call),
+    // GH #1462 its column `sent` (the window as sent, `snapshot_window`);
+    // GH #1451 `notes.item`; GH #1477 `notes.receipt` (D58 note, a `once`
+    // note's sender value, written only when a note carries one).
     assert_eq!(schema.as_object().unwrap().len(), 12, "twelve tables");
     // The llm cell stamps `cost` as a fraction; the store knows `int`, `text`
     // and `json`, and only `json` says what the column holds (review M4).
@@ -1024,11 +1076,8 @@ fn the_shared_helpers_are_one_text() {
         "topic_of",
         "topic_now",
         "epoch_ms",
-        // GH #1451 (D38 V2): the open wellbeing, seed and feed one rule.
-        "wellbeing_line",
-        "with_wellbeing",
-        // Review o15-Rv1 m2/m3: one clock and one notes rule, seed and feed.
-        "wellbeing_day",
+        // Review o15-Rv1 m2: one notes rule, seed and feed. (The open
+        // wellbeing and its clock left the curator, GH #1479.)
         "rows_latest_per_item",
     ] {
         assert_eq!(body(&h, name), body(&p, name), "{name}: history vs policy");
@@ -2765,6 +2814,9 @@ fn the_round_is_written_on_every_row_it_causes() {
         return;
     }
     let mut h = Hive::new();
+    // D58 target (contract point 1): the composite names the target of its
+    // curates, so no `target_unknown` mark stands beside what this round causes.
+    h.name_main_target();
     let call = h.curate_as(
         json!(ROUND_EA),
         "s1",
@@ -2850,6 +2902,9 @@ fn a_round_without_an_audience_writes_the_empty_set() {
         return;
     }
     let mut h = Hive::new();
+    // D58 target (contract point 1): the composite names the target of its
+    // curates, so no `target_unknown` mark stands beside what this round causes.
+    h.name_main_target();
     h.lane(
         "in_curate",
         json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "audience_set": null}),
@@ -2968,6 +3023,9 @@ fn a_failed_tool_result_is_one_tool_error_mark() {
         return;
     }
     let mut h = Hive::new();
+    // D58 target (contract point 1): the composite names the target of its
+    // curates, so no `target_unknown` mark stands beside what this round causes.
+    h.name_main_target();
     // (call id, the tool it calls -- "" for no call --, the result, the mark).
     let table: [(&str, &str, &str, Option<&str>); 22] = [
         (
@@ -3159,6 +3217,9 @@ fn an_ask_and_a_correction_are_marked_once_off_the_tap() {
         return;
     }
     let mut h = Hive::new();
+    // D58 target (contract point 1): the composite names the target of its
+    // curates, so no `target_unknown` mark stands beside what this round causes.
+    h.name_main_target();
     let call = h.curate(
         "s1",
         "t1",
@@ -3384,6 +3445,21 @@ fn checked_section(
     (h.routed("sidecar"), h.routed("reject"))
 }
 
+/// A curator whose composition registered the sections these checks stamp
+/// (GH #1473: a stamped section is checked only when it is registered; the
+/// names are the tests', on `sidecar` like a talky's `memory`).
+fn checking_hive() -> Hive {
+    Hive::with(&[(
+        "intake",
+        "sections",
+        json!({
+            "needs": {"lane": "sidecar"},
+            "notes": {"lane": "sidecar"},
+            "claims": {"lane": "sidecar"}
+        }),
+    )])
+}
+
 /// The one section a checked section leaves as: the splitter's hop without the
 /// rule, the splitter's body without the answer text.
 fn the_checked_section(sides: &[Msg], name: &str) -> Value {
@@ -3421,7 +3497,7 @@ fn sidecar_verify_drops_item_whose_quote_is_not_in_the_turn() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3466,7 +3542,7 @@ fn sidecar_verify_keeps_verbatim_quote_after_normal_form() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3522,7 +3598,7 @@ fn sidecar_verify_folds_every_apostrophe_form() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3570,7 +3646,7 @@ fn sidecar_verify_a_rule_with_a_typo_is_said() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3629,7 +3705,7 @@ fn sidecar_verify_reason_quote_missing() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3666,7 +3742,7 @@ fn sidecar_verify_turn_plus_recall_accepts_memory_text() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3719,7 +3795,7 @@ fn sidecar_verify_answer_source_checks_answer_text() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3756,7 +3832,7 @@ fn sidecar_verify_mark_mode_keeps_item_with_failed_and_still_rejects() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let call = h.curate(
         "s1",
         "t1",
@@ -3806,7 +3882,7 @@ fn sidecar_verify_peer_turn_counts_as_source() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    let mut h = checking_hive();
     let peer = json!({"origin": "peer", "type": "text",
                       "text": "I will bring the cake on Sunday.",
                       "speaker": "North", "speaker_ref": "dc365e79"});

@@ -23,6 +23,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -45,7 +48,7 @@ fn talky(more: &[(&str, &str, Value)]) -> Hive {
         .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
         .collect();
     all.extend(more.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 /// A round answered with a measured window of `window` tokens: its user turn
@@ -73,7 +76,7 @@ fn usage(tokens_prompt: i64) -> Value {
 /// package.
 fn preset() -> (i64, i64) {
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         "[WINDOW_TARGET, target_aim_of({})]",
         Value::Null,
     );
@@ -116,12 +119,14 @@ fn a_role_rebuilds_at_its_window_target() {
         aim.to_string(),
         "window_target x rebuild_to / compress_at"
     );
-    // The rebuild plans the window by the role: its tiers and keep_recent.
+    // The rebuild plans the window by the main target's profile (the value
+    // set of the former role talky): its tiers and keep_recent. R-58-15: the
+    // plan names no role any more.
     h.fire(&order);
     let plan = h.plan_in(ROUND_E);
-    assert_eq!(
-        plan["role"], "talky",
-        "a plan of the role: {plan} {:?}",
+    assert!(
+        plan.get("role").is_none(),
+        "a plan names no role: {plan} {:?}",
         h.stderr
     );
     // The round is inside talky's keep_recent (40) and of today's tier
@@ -153,35 +158,36 @@ fn a_role_rebuilds_at_its_window_target() {
     assert_eq!(stamp(&h)["curate_mark"], "none");
 }
 
-/// The mark as a pure function: the presets of every role (talky 100 000
-/// since GH #1427, the owner's guide value), the aim (talky 90 000: 100 000
-/// x `rebuild_to` 0.45 / `compress_at` 0.5, OR-38-18), and the window
-/// without a package.
+/// The mark as a pure function: the values of every example set (the
+/// former presets of the roles, R-58-15: profile values now, read as the
+/// curator reads a profile -- talky 100 000 since GH #1427, the owner's
+/// guide value), the aim (talky 90 000: 100 000 x `rebuild_to` 0.45 /
+/// `compress_at` 0.5, OR-38-18), and the window without a package.
 #[test]
 fn every_role_names_its_window_target() {
     if !shipped() {
         return;
     }
-    for (role, target) in [
-        ("talky", 100_000),
-        ("quick", 12_000),
-        ("consult", 0),
-        ("coding", 0),
-        ("research", 0),
-        ("", 0),
-    ] {
-        let (got, err) = policy_scope(json!({"role": role}), "WINDOW_TARGET", Value::Null);
-        assert_eq!(got, json!(target), "{role:?}: {err}");
-    }
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
-        "[REBUILD_TO, COMPRESS_AT, KEEP_RECENT]",
-        Value::Null,
+        json!({}),
+        "dict((r, wall_values(p)[10]) for r, p in ARGS.items())",
+        curator_profiles::profiles_by_set(),
+    );
+    assert_eq!(
+        got,
+        json!({"talky": 100_000, "quick": 12_000, "consult": 0, "coding": 0,
+               "research": 0, "": 0}),
+        "{err}"
+    );
+    let (got, err) = policy_scope(
+        json!({}),
+        "[wall_values(ARGS)[i] for i in (3, 2, 0)]",
+        curator_profiles::profile("talky"),
     );
     assert_eq!(got, json!([0.45, 0.5, 40]), "talky's presets: {err}");
     // Without a package (no `input_soft`) the target is read all the same.
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         "[curate_mark(101000, {}), curate_mark(99000, {})]",
         Value::Null,
     );
@@ -190,7 +196,7 @@ fn every_role_names_its_window_target() {
     assert_eq!(got[1]["mark"], "none", "{got}");
     // Over soft the soft line rules, as before.
     let (got, _) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         "curate_mark(60000, {'input_soft': 50000})",
         Value::Null,
     );

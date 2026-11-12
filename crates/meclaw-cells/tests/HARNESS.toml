@@ -15,6 +15,117 @@ harness = "presenter"
 uses = "^support/display_colony\\.rs$"
 harness = "display"
 
+# The bank of constructed walls (GH #1465) is one binary of its own: folded into
+# `curator` its 22 files would shift every later file one part further.
+[[rule]]
+match = "^gh_d58_bank_"
+harness = "curator_walls"
+
+# D58 plant (GH #1490): the two pins of the planted kinds of the wall
+# `over_aim` sit beside the bank's pins in the same binary.
+[[rule]]
+match = "^gh_d58_plant_"
+harness = "curator_walls"
+
+# The pins of an errand that ends without an answer (GH #1469), for the same
+# reason: `curator_4` holds 57 files, nine more would open a fifth part and
+# move files of other strands into it.
+[[rule]]
+match = "^gh_d58_errand_"
+harness = "curator_errands"
+
+# D58 target (GH #1483): the four pins of the llm cell's profile go to `llm`,
+# the other pins of the strand to a binary of their own -- nineteen more files
+# in `curator` would shift every later file one part further.
+[[rule]]
+match = "^gh_d58_target_(an_llm_cell_carries|a_changed_profile_is_announced|a_set_override_of_the_profile_param|a_twin_announces)"
+harness = "llm"
+
+[[rule]]
+match = "^gh_d58_target_"
+harness = "curator_targets"
+
+# D58 target, builder 5c: the pins of the intake's and the push's names sit
+# beside the strand's pins, outside the fixed set the plan counts.
+[[rule]]
+match = "^d58_target_"
+harness = "curator_targets"
+
+# D58 judge (GH #1480): the route's two pins go to a binary of their own
+# beside `assemble` (`assemble` holds 60 files; two more would split it into
+# `assemble_1`/`assemble_2` and rename the binary other strands filter on);
+# `binary(/assemble/)` still finds them. The other ten get a binary of their
+# own for the same reason in `curator`; without these rules their stems would
+# fall to `round` (`judge`).
+[[rule]]
+match = "^gh_d58_judge_(the_state_route_sends|off_sends_no_ask|a_refused_view)"
+harness = "assemble_judge"
+
+[[rule]]
+match = "^gh_d58_judge_"
+harness = "curator_judge"
+
+# The pins of the registered sidecar sections (GH #1473): one binary of their
+# own, so no curator part moves; one of them drives the objects hive too.
+[[rule]]
+match = "^gh_d58_sections_"
+harness = "curator_sections"
+
+# D58 live (GH #1482): the nine pins of the live handle, one binary of their
+# own for the same reason -- nine more files in `curator` would shift every
+# later file one part further.
+[[rule]]
+match = "^gh_d58_live_"
+harness = "curator_live"
+
+# D58 followup (GH #1479): the pins of the open concern in the hive
+# `assistant`, one binary of their own, so no curator part moves.
+[[rule]]
+match = "^gh_d58_followup_"
+harness = "curator_followup"
+
+# The pins of a note shown once with a receipt to its sender (GH #1477): one
+# binary of their own, so no curator part moves.
+[[rule]]
+match = "^gh_d58_note_"
+harness = "curator_notes"
+
+# D58 lead (GH #1474): the pins of the switch as a hive of its own, one
+# binary of their own, so no curator part moves.
+[[rule]]
+match = "^gh_d58_lead_"
+harness = "curator_lead"
+
+# D58 frame (GH #1478): the ten pins of the frame slot and the note per stamp
+# class, one binary of their own for the same reason -- no curator part moves.
+[[rule]]
+match = "^gh_d58_frame_"
+harness = "curator_frame"
+
+# D58 feed (GH #1481): the eleven pins of a feed ordered into a running
+# session, one binary of their own, so no curator part moves.
+[[rule]]
+match = "^gh_d58_feed_"
+harness = "curator_feed"
+
+# D58 moveout (GH #1476): the twelve pins of the side call, the conditional
+# feed and the interrupt ordered by the lead, one binary of their own, so no
+# curator part moves.
+[[rule]]
+match = "^gh_d58_moveout_"
+harness = "curator_moveout"
+
+# D58 proof (GH #1475): the pin of simple-agent beside the template's own pins
+# (it grows the agent with `simple_agent_loop`); the pin of a fifth model cell
+# in a binary of its own, so no curator part moves.
+[[rule]]
+match = "^gh_d58_proof_simple_agent_"
+harness = "simple_agent"
+
+[[rule]]
+match = "^gh_d58_proof_"
+harness = "curator_proof"
+
 [[rule]]
 uses = "^support/curator_hive\\.rs$"
 harness = "curator"
@@ -102,7 +213,15 @@ match = "^figure_"
 harness = "figure"
 
 [[rule]]
-# the watcher pins of GH #1444 (calendar line, stats way, role figures): a
-# harness of their own, so misc keeps its eight parts
-match = "^gh_d38_w1_"
+# the watcher pins of GH #1444 (calendar line, stats way, role figures) and
+# of GH #1463 (the window watch as role figures): a harness of their own, so
+# misc keeps its eight parts
+match = "^(gh_d38_w1_|gh_d58_form_the_argus_)"
+harness = "watcher"
+
+[[rule]]
+# the argus door's role and goal filter (GH #1493): beside the other argus
+# pins in `watcher`, so no misc part moves (in misc it shifted 334 files one
+# part further and left 209 doc links dangling)
+match = "^gh1493_"
 harness = "watcher"

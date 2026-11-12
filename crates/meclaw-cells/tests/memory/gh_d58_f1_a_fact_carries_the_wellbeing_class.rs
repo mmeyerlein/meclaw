@@ -1,8 +1,10 @@
 //! GH #1456 (D58 F1) -- a sidecar fact may carry the closed class `wellbeing`.
 //!
-//! WHY this file exists: the curator's wellbeing line keyed on the predicate
-//! `health`, which the sidecar never writes (its predicates are open keys).
-//! The model classifies the fact itself instead: `wellbeing: true` when the
+//! WHY this file exists: the wellbeing line (the curator's until GH #1479,
+//! since then the hive `assistant`'s) keyed on the predicate `health`, which
+//! the sidecar never writes (its predicates are open keys). The model
+//! classifies the fact itself instead (the curator carries the class
+//! unnamed, by the section's registration): `wellbeing: true` when the
 //! fact says how the person is doing right now, in body or mind. The offered
 //! schema declares the field OPTIONAL (an old payload without it stays valid,
 //! and missing reads as false); the contract names it; the ingress

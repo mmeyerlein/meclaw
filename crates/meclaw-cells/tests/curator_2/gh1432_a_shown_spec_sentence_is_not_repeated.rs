@@ -28,6 +28,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Map, Value, json};
@@ -39,10 +42,10 @@ const S2: &str = "For four people you need about 300 grams of rice. Rinse it fir
 
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("web,weather")),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }

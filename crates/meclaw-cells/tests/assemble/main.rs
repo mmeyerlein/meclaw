@@ -5,6 +5,8 @@ pub use road::organism_assistant;
 #[path = "../support/assemble_cell.rs"]
 pub mod assemble_cell;
 pub mod builder_brief_mutation_grammar;
+#[path = "../support/composite_packages.rs"]
+pub mod composite_packages;
 pub mod d53_a5_the_screen_form_is_told_by_the_request;
 pub mod d53_v2_a_delegation_opens_its_round_beside_an_open_one;
 pub mod d53_v7_the_call_id_reaches_the_delta_stamp;
@@ -63,6 +65,7 @@ pub mod gh949_an_app_candidate_reaches_the_push;
 pub mod gh_d38_k7_a_memory_need_waits_for_the_recall_leg;
 pub mod gh_d38_k7_the_stamp_carries_memory_when_configured;
 pub mod gh_d38_z2_no_memory_need_ends_the_wait;
+pub mod gh_d58_recall_the_stamp_carries_the_yes_values;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../support/gh929_member_road.rs"]

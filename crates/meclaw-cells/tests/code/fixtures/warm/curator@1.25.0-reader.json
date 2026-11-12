@@ -1,0 +1,62 @@
+{
+  "source": "tests: the message shapes of the template's own tests (the lanes of the reader's contract, GH #949), ids and text as placeholders",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_read",
+        "read_tag": "q-1"
+      },
+      "context": {
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "what": "turns",
+        "limit": 5
+      }
+    },
+    {
+      "hop": {
+        "route": "in_read",
+        "read_tag": "q-2"
+      },
+      "context": {
+        "audience_set": "[\"member-1\"]"
+      },
+      "body": {
+        "what": "sessions",
+        "since": "7"
+      }
+    },
+    {
+      "hop": {
+        "operation": "select"
+      },
+      "context": {
+        "audience_set": "[\"member-1\"]",
+        "cur_phase": "turns",
+        "cur_call": "q-1",
+        "cur_reason": "{\"limit\": 5, \"session_id\": \"\", \"since\": 0, \"soft\": \"\", \"what\": \"turns\"}"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "t-wall",
+            "text": "[]"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_read",
+        "read_tag": "q-3"
+      },
+      "context": {},
+      "body": {
+        "what": "turns"
+      }
+    }
+  ]
+}

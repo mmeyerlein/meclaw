@@ -17,6 +17,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -25,10 +28,10 @@ const TOPIC: &str = "the garden";
 
 fn hive(aging: &str) -> Hive {
     Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "state_block", json!("1")),
         ("policy", "topic_aging", json!(aging)),
     ])
+    .reporting_composite("talky")
 }
 
 fn named(h: &mut Hive, session: &str, turn_id: &str) {
@@ -166,7 +169,7 @@ fn another_session_carries_no_today() {
                    (ARGS['wall'], 0, False))['today'] for s in ('s2', 's1')] \
                  + [state_of_rows(ARGS['marks'], [], {}, {}, ARGS['round'], 's2', 0, '')['today']]";
     let (on, err) = policy_scope(
-        json!({"role": "talky", "topic_aging": "1"}),
+        curator_profiles::set_knobs("talky", json!({"topic_aging": "1"})),
         probe,
         args.clone(),
     );
@@ -175,6 +178,10 @@ fn another_session_carries_no_today() {
         json!(["", TOPIC, TOPIC]),
         "another session: no today; its own session one turn on: today; no age: as read: {err}"
     );
-    let (off, err) = policy_scope(json!({"role": "talky", "topic_aging": "0"}), probe, args);
+    let (off, err) = policy_scope(
+        curator_profiles::set_knobs("talky", json!({"topic_aging": "0"})),
+        probe,
+        args,
+    );
     assert_eq!(off, json!([TOPIC, TOPIC, TOPIC]), "off: as before: {err}");
 }

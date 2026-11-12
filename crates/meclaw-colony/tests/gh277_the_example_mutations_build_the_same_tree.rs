@@ -526,12 +526,18 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 103 -> 109 with GH #1447: every shipped curator grew `lead` and
 /// `lead_state`, the switch and its own store. Measured red in the strand's
 /// gate (109 against 103).
-const TEMPLATE_BORN_ROWS: usize = 109;
+///
+/// Moved 109 -> 107 with GH #1474 (the lead leaves the curator): every
+/// `curator` lost `lead` and `lead_state` (3 x -2), every `talky` grew the
+/// hive `lead` with its cells `lead` and `state` (2 x 2; the hive root is a
+/// scope marker and holds no row). Measured green in the strand's gate
+/// (107, gate on 6f36dc1).
+const TEMPLATE_BORN_ROWS: usize = 107;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
 /// `door`/`terminal`/`talky` — and larger than the six templates the
-/// declarations actually NAME, by exactly the four sub-units the composites
+/// declarations actually NAME, by exactly the five sub-units the composites
 /// REFERENCE rather than carry. That difference is the whole point of the wave;
 /// [`REFERENCED_SUB_UNITS`] pins it by name.
 /// MEASURED, not assumed: read off the first green run.
@@ -546,7 +552,10 @@ const TEMPLATE_BORN_ROWS: usize = 109;
 /// `cogny`'s ref cell.
 ///
 /// Moved 10 -> 11 with GH #1061: `access`, grown by `examples/meclaw-os`.
-const DISTINCT_TEMPLATES: usize = 11;
+///
+/// Moved 11 -> 12 with GH #1474: `lead` arrives through the `talky`s' ref
+/// cell.
+const DISTINCT_TEMPLATES: usize = 12;
 
 /// The sub-units that appear in the registry although NO declaration names
 /// them: they arrive through `talky`'s and `cogny`'s `cell.type: "ref"` cells.
@@ -559,7 +568,16 @@ const DISTINCT_TEMPLATES: usize = 11;
 ///
 /// Moved from three to four with GH #889: `talky` and `cogny` reference a
 /// `curator` between their collector and their brain.
-const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "session-keeper"];
+///
+/// Moved from four to five with GH #1474: `talky` references a `lead` beside
+/// its curator.
+const REFERENCED_SUB_UNITS: [&str; 5] = [
+    "collector",
+    "curator",
+    "dispatcher",
+    "lead",
+    "session-keeper",
+];
 
 /// Rows in `colony.db`'s `edges` table after all five declarations — the
 /// declarations' own wiring plus every edge the instantiated composites draw
@@ -996,7 +1014,37 @@ const REFERENCED_SUB_UNITS: [&str; 4] = ["collector", "curator", "dispatcher", "
 /// on `catalog_ask`) and the one `cogny` one more (`./curator -> ./brain`).
 /// Two talkies, three curators, one cogny: 2 x 4 + 3 x 1 + 1 x 1.
 /// Measured red in the strand's run (684 against 672).
-const EDGES: usize = 684;
+/// Moved 684 -> 693 with D58 target (OR-d58-2.target.15, the curator's ask
+/// without a handle): every `talky` four edges more (`./curator` -> `./brain`,
+/// `./quick`, `./quick_spec` and `./quick_bridge` on `catalog_ask` without
+/// `hop.catalog_for`, 133 -> 137 in `templates/talky/README.md`) and the one
+/// `cogny` one more (`./curator -> ./brain`). Two talkies, one cogny:
+/// 2 x 4 + 1 x 1. Measured red in the strand's run (693 against 684).
+/// Moved 693 -> 699 with GH #1474 (the lead leaves the curator): every
+/// `curator` two edges fewer (the four inner edges of the switch out,
+/// `./policy -> .` on the three lanes to the lead and `. -> ./policy` on
+/// `in_lead` in), every `talky` two more (`./curator -> ./lead`,
+/// `./lead -> ./curator`, 137 -> 139 in `templates/talky/README.md`) and the
+/// four inner edges of its hive `lead`. Two talkies, three curators:
+/// 3 x -2 + 2 x 2 + 2 x 4. Measured green in the strand's gate (699, gate
+/// on 6f36dc1).
+/// Moved 699 -> 708 with D58 note (GH #1477, the receipt of a shown note on
+/// `note_receipt`) on top of the lead: every `curator` two edges more
+/// (`./policy -> .` and `./history -> .`), every `talky` and the one `cogny`
+/// one more (`./curator -> .`). Three curators, two talkies, one cogny:
+/// 3 x 2 + 2 x 1 + 1 x 1. Lead and note together: 693 - 6 + 4 + 8 + 9 = 708.
+/// Moved 708 -> 713 with D58 feed (GH #1481, an order to feed a running
+/// session): every `curator` one edge more (`. -> ./policy` on `in_feed`)
+/// and every `talky` one more (`. -> ./curator` on `in_feed`, 140 -> 141 in
+/// `templates/talky/README.md`). Three curators, two talkies: 3 x 1 + 2 x 1.
+/// Measured red in the strand's gate (713 against 708, gate on dbc0abe).
+/// Moved 713 -> 717 with D58 moveout (GH #1476, the lead orders on the
+/// curator's lane `in_feed`): every `talky` one edge more (`./lead ->
+/// ./curator` on `in_feed`, 141 -> 142 in `templates/talky/README.md`) and
+/// every hive `lead` one more (its rim edge `./lead -> .`, inner edges 4 -> 5).
+/// Two talkies, two leads: 2 x 1 + 2 x 1. Measured red in the strand's run
+/// (717 against 713, run on ae8e044c).
+const EDGES: usize = 717;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,
@@ -1053,7 +1101,7 @@ async fn the_example_mutations_build_the_same_tree_twice() {
         "distinct registry.template values: {:?}",
         a.distinct_templates()
     );
-    // The four sub-units NO declaration names are in the registry anyway: the
+    // The five sub-units NO declaration names are in the registry anyway: the
     // composites reference them, and staging resolved the references. If a ref
     // silently stopped resolving, this is where it shows.
     let declared: BTreeSet<String> = DECLARATIONS

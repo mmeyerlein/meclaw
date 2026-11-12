@@ -1,15 +1,36 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@1.24.1"
+    "template": "curator@2.0.0"
   },
   "override_params": {
     "intake": {
       "nothing_block": "{\"memory\":{\"nothing_new\":true,\"facts\":[],\"topic\":{\"movement\":\"continue\"}}}",
-      "pass_sections": "memory"
+      "sections": {
+        "memory": {
+          "lane": "sidecar",
+          "mark": "topic",
+          "classes": [
+            "wellbeing"
+          ]
+        },
+        "things": {
+          "lane": "thing_seen",
+          "cap_share": 0.1
+        }
+      },
+      "errand_tool": "consult_cogny"
     },
     "policy": {
-      "role": "talky"
+      "lead_wired": "1",
+      "class_notes": {
+        "clarify": {
+          "text": "The person's words of this turn can be meant in more than one way. Answer with one short question about how they mean it -- guess nothing and answer nothing yet.",
+          "tools": "none",
+          "pair": "mx.hints.clarify"
+        }
+      },
+      "feed_in": "1"
     }
   }
 }

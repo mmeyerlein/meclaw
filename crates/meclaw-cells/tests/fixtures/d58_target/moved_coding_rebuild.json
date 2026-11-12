@@ -1,0 +1,40 @@
+{
+  "plan": {
+    "as_of_ms": 1772618675000,
+    "at": "2026-03-04T10:04:35.000025Z",
+    "cover": 1772532075000009,
+    "keep": [],
+    "marks_on": {},
+    "marks_to": 0,
+    "marks_to_by": {
+      "[\"member:e\"]": 0
+    },
+    "released": [],
+    "role": "coding",
+    "round": "[\"member:e\"]",
+    "session": "s1",
+    "shrunk": [],
+    "stubs": [],
+    "sum_from": 1772445605000010,
+    "sum_shown": 1772532070000010,
+    "sum_to": 1772532070000010,
+    "summary": "00064c2f-f272-42f0-8000-0000000001c0",
+    "v": 1
+  },
+  "summarizer": [
+    {
+      "messages": [
+        {
+          "origin": "user",
+          "text": "user: Good morning. (turn 0)\nassistant: Good morning to you. (turn 0) I keep that in mind.\nuser: My sister visits today. (turn 1)\nassistant: That sounds lovely. (turn 1) I keep that in mind.\nuser: She brings her dog. (turn 2)\nassistant: A dog, how nice. (turn 2) I keep that in mind.\nuser: We will walk by the river. (turn 3)\nassistant: Enjoy the walk. (turn 3) I keep that in mind.\nuser: Good morning. (turn 4)\nassistant: Good morning to you. (turn 4) I keep that in mind.\nuser: My sister visits today. (turn 5)\nassistant: That sounds lovely. (turn 5) I keep that in mind.\nuser: She brings her dog. (turn 6)\nassistant: A dog, how nice. (turn 6) I keep that in mind.",
+          "type": "text"
+        }
+      ],
+      "system": {
+        "instructions": {
+          "text": "You condense the earlier part of an exchange with a model so that a short text can stand in for it. Write down what was said, in the order it was said: questions, answers, decisions, open points, names and numbers as they were given. Report, do not judge: a statement is not true because it was made, and when a later turn contradicts an earlier one, keep both. Write in the language of the exchange; quote names, numbers and promises verbatim. A line marked as a memory lookup is what the model looked up, not what anybody said: never present a memory lookup as something said. Leave out any identity, persona or standing instructions of the model; those are kept elsewhere. Answer with the summary text only. Keep it as short as useful and as long as needed."
+        }
+      }
+    }
+  ]
+}

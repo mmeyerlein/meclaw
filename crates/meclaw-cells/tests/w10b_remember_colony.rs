@@ -125,18 +125,21 @@ fn resolve_template_ref(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// The `override_params` of the talky's `curator` marker, applied to the
-/// copied curator cells they name (GH #892).
+/// copied curator cells they name (GH #892), and of its `lead` marker
+/// (GH #1474: the lead's knobs stand at talky's own `lead` hive).
 fn curator_overrides(root: &std::path::Path) {
-    let marker = repo("templates/talky/curator/config.json");
-    let raw =
-        std::fs::read_to_string(&marker).unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
-    let cfg: Value = meclaw_core::serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
-    let over = cfg["override_params"]
-        .as_object()
-        .expect("the talky's curator marker carries its overrides");
-    for (cell, params) in over {
-        override_params_on_disk(&root.join("main/talky/curator").join(cell), params);
+    for unit in ["curator", "lead"] {
+        let marker = repo(&format!("templates/talky/{unit}/config.json"));
+        let raw = std::fs::read_to_string(&marker)
+            .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+        let cfg: Value = meclaw_core::serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("{}: {e}", marker.display()));
+        let over = cfg["override_params"]
+            .as_object()
+            .unwrap_or_else(|| panic!("the talky's {unit} marker carries its overrides"));
+        for (cell, params) in over {
+            override_params_on_disk(&root.join("main/talky").join(unit).join(cell), params);
+        }
     }
 }
 
@@ -440,7 +443,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     copy_cells(&repo("templates/talky"), &root.join("main/talky"));
     // GH #892: the memory section reaches this memory hive only through the
     // talky's curator, which hands it back on `sidecar` because its marker's
-    // `override_params` say `pass_sections memory`. `copy_cells` resolves the
+    // `override_params` register `memory` on `sidecar` (`sections`, GH #1473). `copy_cells` resolves the
     // reference but not its overrides, so they are applied here, the way the
     // mutation door applies them to a staged tree (GH #140).
     curator_overrides(root);

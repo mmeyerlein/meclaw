@@ -3,7 +3,7 @@
 //! WHY this file exists: on the phone the live model keeps the talk going
 //! while a tool round or a delegation runs, and without a sense of time it
 //! fills the wait blindly (plan d53 T2 § V3, R-D53-2). With `horizon_advise`
-//! on, a duplex call's turn that gets a tool round or a delegation sends ONE
+//! on, a running session's turn (`live`, D58 live) that gets a tool round or a delegation sends ONE
 //! `live_feed` with `hop.section` `horizon` (the voice's
 //! `horizon_text` says it): how many seconds the answer will take -- the
 //! `horizon_quantile` (p75) of the rounds of the turn's family booked so far,
@@ -11,10 +11,23 @@
 //! words: `seconds`, `way`, `family` -- the voice's text is the set's. A turn
 //! the voice answers from its seed gets none; every closed round of a horizon
 //! turn books its duration; `0` (the default) moves no byte.
+//!
+//! D58 moveout (GH #1476, contract points 6, 7, 9): the same statements at
+//! the new place. The knobs are the lead's; the advise is an entry of the
+//! verdict's `feed` the curator sends with the round, its mark is `feed`
+//! (section `horizon`, `mark` `{planned, family}`) instead of `horizon_sent`;
+//! the durations (`horizon_rounds`) and what the round took
+//! (`horizon_last:<session>` `{planned, actual}`, was the mark `horizon_hit`)
+//! live in the lead's own store, the turn's clock in `horizon_turn:<session>`
+//! (was the ledger's `pending:horizon:<session>#<turn>`). talky's fast cells
+//! report their profiles first: the tool round is the cut's (`must_call`).
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -23,16 +36,16 @@ const ASK: &str = "What is the weather in Berlin?";
 
 fn hive(defaults: Value) -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "horizon_advise", json!("1")),
-        ("policy", "horizon_defaults_ms", json!(defaults.to_string())),
-    ]);
+        ("lead", "horizon_advise", json!("1")),
+        ("lead", "horizon_defaults_ms", json!(defaults.to_string())),
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
 
 fn duplex() -> Value {
-    json!({"engine": "duplex", "call_id": "call-9"})
+    json!({"live": "call-9"})
 }
 
 fn seam(h: &mut Hive, turn: &str, iter: &str, hop_extra: Value, body: Value) {
@@ -48,7 +61,7 @@ fn seam(h: &mut Hive, turn: &str, iter: &str, hop_extra: Value, body: Value) {
     h.lane("in_curate", ctx, hop, body);
 }
 
-/// The tool stamp of a duplex turn: `simple`, needs a tool, family `web`.
+/// The tool stamp of a running session's turn: `simple`, needs a tool, family `web`.
 fn tool_stamp() -> Value {
     let mut hop = duplex();
     hop["path"] = json!("simple");
@@ -71,6 +84,21 @@ fn marks(h: &Hive, kind: &str) -> Vec<Value> {
     .iter()
     .map(|r| sj::from_str(r[0].as_str().unwrap_or("{}")).expect("the mark is JSON"))
     .collect()
+}
+
+/// The orderer's `mark` of every mark `feed` of section `horizon` (D58
+/// moveout: was the mark `horizon_sent`).
+fn advise_marks(h: &Hive) -> Vec<Value> {
+    marks(h, "feed")
+        .into_iter()
+        .filter(|m| m["section"] == json!("horizon"))
+        .map(|m| m["mark"].clone())
+        .collect()
+}
+
+/// A JSON row of the lead's own store, `Null` for none.
+fn lead_json(h: &Hive, key: &str) -> Value {
+    sj::from_str(&h.lead_state(key)).unwrap_or(Value::Null)
 }
 
 /// The required call of the tool round (not its bridge).
@@ -121,7 +149,7 @@ fn finish_round(h: &mut Hive, turn: &str) {
     );
 }
 
-/// Pin 1: a duplex turn whose stamp needs a tool gets ONE horizon, its
+/// Pin 1: a running session's turn whose stamp needs a tool gets ONE horizon, its
 /// seconds from the table (no round booked yet).
 #[test]
 fn a_live_turn_with_a_tool_stamp_gets_one_horizon_advise() {
@@ -146,7 +174,7 @@ fn a_live_turn_with_a_tool_stamp_gets_one_horizon_advise() {
         "the voice decides when, not the turn: {:?}",
         f.hop
     );
-    assert_eq!(f.hop["call_id"], json!("call-9"));
+    assert_eq!(f.hop["live"], json!("call-9"));
     assert_eq!(f.hop["turn_id"], json!("t1"));
     assert_eq!(f.body["seconds"], json!(4));
     assert_eq!(f.body["family"], json!("web"));
@@ -154,22 +182,28 @@ fn a_live_turn_with_a_tool_stamp_gets_one_horizon_advise() {
     // The round itself still goes: the required call and its bridge.
     assert_eq!(h.routed("quick").len(), 2, "{:?}", h.out);
     assert_eq!(
-        marks(&h, "horizon_sent"),
-        vec![json!({"family": "web", "seconds": 4})]
+        advise_marks(&h),
+        vec![json!({"family": "web", "planned": 4})]
     );
+    assert!(marks(&h, "horizon_sent").is_empty(), "the old mark is gone");
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
 
     finish_round(&mut h, "t1");
-    let hit = marks(&h, "horizon_hit");
-    assert_eq!(hit.len(), 1, "{:?}", h.stderr);
-    assert_eq!(hit[0]["planned"], json!(4));
-    assert!(hit[0]["actual"].is_number(), "{hit:?}");
-    // The round is booked under its family.
-    let rounds: Value = sj::from_str(&h.state("horizon_rounds")).expect("booked");
+    let hit = lead_json(&h, "horizon_last:s1");
+    assert_eq!(hit["turn"], json!("t1"), "{:?}", h.stderr);
+    assert_eq!(hit["planned"], json!(4));
+    assert!(hit["actual"].is_number(), "{hit:?}");
+    assert!(marks(&h, "horizon_hit").is_empty(), "the old mark is gone");
+    // The round is booked under its family, in the lead's store.
+    let rounds = lead_json(&h, "horizon_rounds");
     assert_eq!(rounds["web"].as_array().map(Vec::len), Some(1), "{rounds}");
     assert!(
-        h.state("pending:horizon:s1#t1").is_empty(),
+        h.lead_state("horizon_turn:s1").is_empty(),
         "the turn row ends with its round"
+    );
+    assert!(
+        h.state("horizon_rounds").is_empty() && h.state("pending:horizon:s1#t1").is_empty(),
+        "nothing of it in the curator's ledger"
     );
 }
 
@@ -207,11 +241,10 @@ fn a_turn_answered_from_the_seed_gets_no_horizon() {
     assert!(horizons(&h).is_empty(), "no tool round: {:?}", h.out);
 
     let mut text = tool_stamp();
-    text.as_object_mut().unwrap().remove("engine");
-    text.as_object_mut().unwrap().remove("call_id");
+    text.as_object_mut().unwrap().remove("live");
     seam(&mut h, "t3", "0", text, json!({"messages": [user(ASK)]}));
     assert!(horizons(&h).is_empty(), "a text turn: {:?}", h.out);
-    assert!(marks(&h, "horizon_sent").is_empty());
+    assert!(advise_marks(&h).is_empty());
 }
 
 /// Pin 3: with rounds of the family booked, the horizon is their p75 -- not
@@ -222,11 +255,14 @@ fn the_horizon_uses_the_p75_of_measured_rounds_when_present() {
         return;
     }
     let mut h = hive(json!({"web": 9000}));
-    h.db.execute(
-        "INSERT INTO state (key, value) VALUES ('horizon_rounds', ?1)",
-        [json!({"web": [1000, 5000, 2000, 4000, 3000]}).to_string()],
-    )
-    .unwrap();
+    h.lead_db
+        .as_ref()
+        .expect("the tree ships the lead")
+        .execute(
+            "INSERT INTO state (key, value) VALUES ('horizon_rounds', ?1)",
+            [json!({"web": [1000, 5000, 2000, 4000, 3000]}).to_string()],
+        )
+        .unwrap();
     seam(
         &mut h,
         "t1",
@@ -239,7 +275,7 @@ fn the_horizon_uses_the_p75_of_measured_rounds_when_present() {
     assert_eq!(feeds[0].body["seconds"], json!(4), "p75 of 1..5 s, not 9 s");
 
     finish_round(&mut h, "t1");
-    let rounds: Value = sj::from_str(&h.state("horizon_rounds")).expect("booked");
+    let rounds = lead_json(&h, "horizon_rounds");
     assert_eq!(rounds["web"].as_array().map(Vec::len), Some(6), "{rounds}");
 
     // An unknown family: no table row, no booked round -- nothing is said.
@@ -279,7 +315,7 @@ fn the_horizon_body_carries_no_text() {
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
 }
 
-/// Default byte-identical: with `horizon_advise` "0" a duplex tool round
+/// Default byte-identical: with `horizon_advise` "0" a live tool round
 /// sends, writes and reads exactly what it did without the knobs.
 #[test]
 fn horizon_off_moves_no_byte() {
@@ -287,7 +323,7 @@ fn horizon_off_moves_no_byte() {
         return;
     }
     let run = |over: &[(&str, &str, Value)]| {
-        let mut h = Hive::with(over);
+        let mut h = Hive::with(over).reporting_composite("talky");
         seam(
             &mut h,
             "t1",
@@ -300,16 +336,16 @@ fn horizon_off_moves_no_byte() {
             .iter()
             .map(|m| (m.route().to_string(), Value::Object(m.body.clone())))
             .collect();
-        let state = h.rows("SELECT key FROM state WHERE key LIKE 'horizon%'");
+        let mut state = h.rows("SELECT key FROM state WHERE key LIKE 'horizon%'");
+        state.extend(h.lead_rows("SELECT key FROM state WHERE key LIKE 'horizon%'"));
         let ops = h.ledger_ops.len();
         (out, state, ops)
     };
-    let plain = run(&[("policy", "role", json!("talky"))]);
+    let plain = run(&[]);
     let off = run(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "horizon_advise", json!("0")),
-        ("policy", "horizon_defaults_ms", json!("{\"web\": 4000}")),
-        ("policy", "horizon_quantile", json!("75")),
+        ("lead", "horizon_advise", json!("0")),
+        ("lead", "horizon_defaults_ms", json!("{\"web\": 4000}")),
+        ("lead", "horizon_quantile", json!("75")),
     ]);
     assert_eq!(plain.1, off.1);
     assert!(off.1.is_empty());

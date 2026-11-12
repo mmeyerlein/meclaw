@@ -20,7 +20,7 @@
 //! (`templates/talky/curator`), and the run reads that off the hop instead of
 //! setting it. The other half of the
 //! issue rides the same road the other way: a model that writes the section
-//! `things` (offered when the curator's `things_section` is "1") gives exactly
+//! `things` (registered by the composition at its curator, GH #1473) gives exactly
 //! one `thing_seen` at the generation's rim, and the section never leaves a
 //! second time on `sidecar`. `candidate_ack` exists only on request
 //! (`hop.ack` "1"): three curators per push must not leave three dead letters.
@@ -85,6 +85,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/composite_packages.rs"]
+#[allow(unused_imports)]
+use crate::composite_packages; // harness_fold: mod composite_packages;
 
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
@@ -529,15 +532,9 @@ fn build_member(td: &tempfile::TempDir, talky: &str, background: &str) {
         &main.join("assistants/config.json"),
         &json!({"cell": {"type": "hive"}, "params": {"graph": {"edges": container}}}),
     );
-    for brain in BRAINS {
-        // The section is offered and taken by every curator of the generation.
-        for cell in ["schemas", "intake"] {
-            override_params_on_disk(
-                &main.join(format!("assistants/{GENERATION}/{brain}/curator/{cell}")),
-                &json!({"things_section": "1"}),
-            );
-        }
-    }
+    // The section is taken by every curator of the generation: since GH #1473
+    // the shipped compositions register `things` at their curator (`sections`,
+    // lane `thing_seen`), which `copy_resolved` applies from the markers.
     for s in ["talky", "talky-chat"] {
         // No member affinity stands here: the brief leg is not this road.
         override_params_on_disk(
@@ -976,6 +973,16 @@ async fn an_app_candidate_reaches_the_push_of_a_covered_turn_and_things_leave_on
     build_member(&td, &talky.base_url, &background.base_url);
     let root = td.path().to_path_buf();
     let (h, mut ports) = boot(&td).await;
+    // OR-d58-2.target.69: the registry's push after the birth -- every
+    // model cell reports its package before the first turn.
+    for brain in BRAINS {
+        composite_packages::report_packages(
+            &h,
+            &root.join("main"),
+            &format!("/assistants/{GENERATION}/{brain}"),
+        )
+        .await;
+    }
     let mut rim: Vec<Message> = Vec::new();
 
     // (1) The app pushes one candidate with a trigger, no receipt asked for.
@@ -1188,19 +1195,26 @@ async fn an_app_candidate_reaches_the_push_of_a_covered_turn_and_things_leave_on
         "the voice that answered raised it: {:?}",
         thing.reply_to
     );
-    let items = body_of(thing)["items"]
+    // The curator hands the registered section on in the splitter's form
+    // (GH #1473): the entries under `payload.items`.
+    let items = body_of(thing)["payload"]["items"]
         .as_array()
         .cloned()
         .unwrap_or_default();
     assert_eq!(items.len(), 1, "{}", body_of(thing));
     assert_eq!(items[0]["name"], json!(THING), "{}", body_of(thing));
-    for key in ["turn_id", "session_id"] {
-        assert!(
-            body_of(thing)[key].as_str().is_some_and(|s| !s.is_empty()),
-            "`thing_seen` names its {key}: {}",
-            body_of(thing)
-        );
-    }
+    // The turn and the session ride where the splitter and the brain edge
+    // put them (GH #1473: the curator hands the body on unchanged).
+    assert!(
+        !hop_str(thing, "turn_id").is_empty(),
+        "`thing_seen` names its turn_id: {:?}",
+        thing
+    );
+    assert!(
+        !ctx_str(thing, "session_id").is_empty(),
+        "`thing_seen` names its session_id: {:?}",
+        thing
+    );
     let copies: Vec<&Message> = rim
         .iter()
         .filter(|m| hop_str(m, "route") == "sidecar" && hop_str(m, "section") == "things")

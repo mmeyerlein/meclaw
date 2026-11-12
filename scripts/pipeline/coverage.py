@@ -429,6 +429,8 @@ def built(cov, db=None, db_path=None):
             "granularity": cov["granularity"]}
     if cov.get("browsers_opt_out") is not None:  # re-check tv-bn M7c M1: the hole is named
         data["browsers_opt_out"] = cov["browsers_opt_out"]
+    if cov.get("carried_from"):  # GH #1461: a carried map names the run that measured it
+        data["carried_from"] = cov["carried_from"]
     try:
         with store.tx(db):
             events.emit(db, "coverage_built", "status", data)
@@ -436,6 +438,117 @@ def built(cov, db=None, db_path=None):
         if own:
             store.close(db)
     return data
+
+
+# --- carry (GH #1461) ---------------------------------------------------------
+# The night of 2026-11-10 re-measured the whole suite on a lane for 41 min
+# (2 447 s, 45 min with sync and export) because master had moved -- by 324 files under `plans/`, a diff the
+# resolver selects no test for (`gate_plan.test_terms` -> {}). When no test is
+# selected, no test part can execute anything else than it did at the map's
+# rev: the newest clean GREEN map is carried to HEAD without a run. Every doubt
+# -- no clean GREEN base, a rev outside the repository, HEAD not the named
+# branch, one selected term -- carries nothing and the caller builds as before.
+
+def _rev(repo, name):
+    """The commit `name` names in `repo`, or None."""
+    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", name + "^{commit}"],
+                       capture_output=True, text=True)
+    return (r.stdout.strip() or None) if r.returncode == 0 else None
+
+
+def _tree_metadata(repo):
+    """The cached `cargo metadata` of `repo` (`gate.metadata_path`), or None --
+    without it `night.binaries_changed` claims nothing and `map_fits` still
+    refuses a map whose binaries HEAD lacks."""
+    from pipeline import gate as _gate
+    try:
+        with open(_gate.metadata_path(str(repo)), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def carry(repo, map_dir=None, db=None, db_path=None, now=None, branch=None, metadata=None):
+    """`(map, line)` of the map on HEAD of `repo`, carried from the newest clean
+    GREEN map when the diff between them selects no test, or `(None, why)`.
+
+    `branch`: HEAD must be that branch's tip -- the resolver reads the
+    checked-out tree, so a diff to any other rev would be judged against files
+    it never looked at. `metadata`: the tree's `cargo metadata` (default: the
+    cached one); a binary list that no longer matches the base is measured.
+    The carried map keeps the parts of its base, says `runner` "carry" and
+    `secs` 0, names the measuring run in `carried_from` and is journaled
+    `coverage_built`; a map already on HEAD is returned as it is, nothing written."""
+    from pipeline import narrow
+    base, why = narrow.newest_map(map_dir)
+    if base is None:
+        return None, why
+    verdict = verdict_of(base)
+    if verdict != "GREEN":
+        return None, "the newest map %s is %s -- no base to carry" % (str(base["rev"])[:9], verdict)
+    head = _rev(repo, "HEAD")
+    if head is None:
+        return None, "no HEAD in %s" % repo
+    if branch and _rev(repo, branch) != head:
+        return None, ("HEAD of %s is not %s -- the resolver reads the checked-out tree, "
+                      "no carry to another rev" % (repo, branch))
+    if base["rev"] == head:
+        return base, "map %s is already on HEAD -- nothing to carry" % head[:9]
+    from pipeline import night as _night  # noqa: PLC0415 -- night imports this module
+    _changed, gone, _new = _night.binaries_changed(
+        base, metadata if metadata is not None else _tree_metadata(repo))
+    # review M1: a binary the map names and the tree lacks (a fold, a deleted
+    # test) is measured, never carried. `new` does not refuse: a test file added
+    # since the base selects its own binary in the resolver, and the tree holds
+    # binaries no map ever measures (the three `*_measure` perf binaries, probe
+    # of 2026-11-10 against 21a4766d1) -- refusing on them would never carry.
+    if gone:
+        return None, "the binary list changed since map %s (gone %s)" % (
+            str(base["rev"])[:9], ", ".join(gone[:3]))
+    # `--no-renames` (review I1): with git's rename detection a moved file named its
+    # target only -- `templates/access/config.json` moved under `plans/` selected
+    # nothing, its old place 240 terms. The gate diffs the same way (plan.py).
+    # The tracked changes of the checked-out tree join the diff (review M2): the
+    # resolver reads that tree, so a reader edited there is judged, not assumed.
+    def _names(*argv):
+        r = subprocess.run(["git", "-C", str(repo), "diff", "--no-renames", "--name-only", "-z"]
+                           + list(argv) + ["--"], capture_output=True)
+        if r.returncode != 0:
+            return None
+        return {p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p}
+    paths = _names(base["rev"], head)
+    if paths is None:
+        return None, "map rev %s is not in %s -- no diff to judge" % (str(base["rev"])[:9], repo)
+    overlay, gone_here = _names("HEAD"), _names("--diff-filter=D", "HEAD")
+    if overlay is None or gone_here is None:
+        return None, "the tracked changes of %s cannot be read -- no carry" % repo
+    if gone_here:
+        # re-check N1: a file deleted in the tree is invisible to the resolver,
+        # which reads the tree -- a test reader gone there would select nothing
+        return None, "the checked-out tree deletes tracked files (%s) -- no carry" % (
+            _shown(sorted(gone_here), 3))
+    committed = len(paths)
+    paths |= overlay
+    import gate_plan  # noqa: PLC0415 -- the resolver only when there is a diff to judge
+    terms = gate_plan.test_terms(sorted(paths), repo=str(repo))
+    if terms:
+        return None, "the diff %s..%s selects tests: %s" % (str(base["rev"])[:9], head[:9],
+                                                             _shown(sorted(terms), 3))
+    # review M3: a carry is no lane run; the measuring run lives on in `carried_from`
+    origin = base.get("carried_from") or {"rev": base["rev"], "built_at": base.get("built_at"),
+                                          "runner": base.get("runner"), "secs": base.get("secs")}
+    cov = dict(base, rev=head, carried_from=origin, runner="carry", secs=0.0,
+               built_at=now or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    final = map_path(head, map_dir)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    tmp = final.with_name(final.name + ".tmp")
+    tmp.write_text(json.dumps(cov, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, final)
+    built(cov, db=db, db_path=db_path)
+    return cov, ("carried from %s to %s without a run (%d files changed%s, the resolver selects "
+                 "no test)" % (str(origin["rev"])[:9], head[:9], committed,
+                               " + %d in the tree" % len(overlay) if overlay else ""))
 
 
 # --- lanes ------------------------------------------------------------------
@@ -541,6 +654,18 @@ def _cmd_coverage(args):
                                               "binaries_expected", "binaries_measured",
                                               "errors", "incomplete")}))
         return 0
+    if args.op == "carry":   # GH #1461: no run when the diff selects no test
+        try:
+            cov, line = carry(getattr(args, "repo", None) or os.path.dirname(_SCRIPTS),
+                              map_dir=getattr(args, "map_dir", None), db_path=args.db,
+                              branch=getattr(args, "branch", None))
+        except Exception as exc:  # noqa: BLE001 -- review M6: a reason, never a traceback
+            cov, line = None, "carry failed: %s" % exc
+        if cov is None:
+            print("coverage: not carried: %s" % line, file=sys.stderr)
+            return 1
+        print("coverage: %s" % line)
+        return 0
     if args.op in ("stale", "journal"):
         cov, why = load_map(args.map)
         if why:
@@ -632,9 +757,13 @@ def _cmd_coverage(args):
 
 
 def register(sub):
-    """`pipeline coverage build --lane <name>|aggregate|stale|journal` (V0 section 9)."""
+    """`pipeline coverage build --lane <name>|aggregate|stale|journal|carry` (V0 section 9)."""
     p = sub.add_parser("coverage", help="the coverage map (test part -> files it executes)")
-    p.add_argument("op", choices=("build", "aggregate", "stale", "journal"))
+    p.add_argument("op", choices=("build", "aggregate", "stale", "journal", "carry"))
+    p.add_argument("--repo", default=None,
+                   help="carry: the tree whose HEAD gets the map (default: this tree)")
+    p.add_argument("--branch", default=None,
+                   help="carry: refuse unless HEAD is this branch's tip (the night passes master)")
     p.add_argument("--lane", help="build: the lane (a name from the host file)")
     p.add_argument("--strand", default="coverage", help="build: the strand name on the lane")
     p.add_argument("--out-dir", default=os.path.expanduser("~/.local/state/meclaw/pipeline/graph"))

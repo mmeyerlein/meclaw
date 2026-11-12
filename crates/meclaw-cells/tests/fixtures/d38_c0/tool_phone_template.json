@@ -66,16 +66,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a65f-4800-8000-0000000002c0-bridge",
             "episode_turn_id": "s1#bd1794fa-0",
-            "interim": "1",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         },
         {
           "body": {
@@ -116,16 +116,17 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
             "episode_turn_id": "s1#bd1794fa-0",
             "interim": "tool",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1 simple Who won the match yesterday?",
@@ -212,15 +213,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-0",
             "iter": "1",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "03 tool result t1 1",
@@ -342,15 +344,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a790-4500-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-2",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t2"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "05 say t2 talk Great news!",

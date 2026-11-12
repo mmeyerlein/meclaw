@@ -37,6 +37,8 @@ takes them over line by line with ``ingest``.
     night_report           status          date path runs findings
     graph_built            note            rev nodes edges secs
     coverage_built         status          rev runner secs tests files edges granularity
+                                           (carried_from: optional, the measuring run of
+                                           a map carried without a run, GH #1461)
     satellite_pin_needed   finding         merge repo template version
     minimum_measured       status          stage runner seconds critical_path overhead_s x
     lane_power_requested   finding         lane reason eta_s

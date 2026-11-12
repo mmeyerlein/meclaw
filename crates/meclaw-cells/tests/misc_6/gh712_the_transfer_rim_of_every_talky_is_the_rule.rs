@@ -46,8 +46,18 @@ fn shipped(rel: &str) -> Option<Value> {
 const TRANSFER: [&str; 4] = ["in_export", "in_import", "export_done", "dump"];
 
 /// The `delete_context` every exit of the assistant level carries — the working
-/// keys of the level's own rounds, which must not leak one level up.
-const EXIT_SCRUB: [&str; 4] = ["col_phase", "consult_class", "consult_id", "tool_answerer"];
+/// keys of the level's own rounds, which must not leak one level up. The last three
+/// are the store round trip of `./followup` (GH #1479), cleared at every exit like
+/// any interior marker (GH #494).
+const EXIT_SCRUB: [&str; 7] = [
+    "col_phase",
+    "consult_class",
+    "consult_id",
+    "tool_answerer",
+    "cur_origin",
+    "cur_phase",
+    "cur_carry",
+];
 
 /// **The rendering rule.** The four transfer edges of one talky node of the
 /// assistant level.

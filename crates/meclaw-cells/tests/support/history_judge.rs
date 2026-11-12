@@ -170,7 +170,9 @@ pub fn only(run: &Run, route: &str) -> Msg {
     run.out[0].clone()
 }
 
-/// A judge ask of the route in `session` for `turn` (the turn running).
+/// The view the route stamp asks for its judge in `session` for `turn` (the
+/// turn running): a view for the target `decide` of the last two turns (D58
+/// GH #1480: the lane `in_view_ask` replaced `in_turns_ask` with `judge`).
 pub fn judge_ask(
     h: &Hive,
     params: &(String, Map<String, Value>),
@@ -180,16 +182,18 @@ pub fn judge_ask(
     drive(
         h,
         params,
-        "in_turns_ask",
+        "in_view_ask",
         json!({"session_id": session, "turn_id": turn}),
         json!({}),
-        json!({"messages": [], "turns_ask": {"n": 2, "budget_tokens": 1500, "judge": true}}),
+        json!({"messages": [], "view_ask": {"target": "decide", "turns": 2, "budget_tokens": 1500}}),
     )
 }
 
-/// A judge ask of a voice DELTA: `context.session_id` is the call's id, the
+/// The view of a voice DELTA: `context.session_id` is the call's id, the
 /// turns stand under the generation's session (live-2 K3) -- the round-wide
-/// read the route stamp of a call gets.
+/// read the route stamp of a call gets. The delta belongs to a running
+/// session, so its context carries the handle `live` (D58 live, contract
+/// point 1; talky's edge 121 sets it), which the opening is read under.
 pub fn delta_judge_ask(
     h: &Hive,
     params: &(String, Map<String, Value>),
@@ -199,10 +203,10 @@ pub fn delta_judge_ask(
     drive(
         h,
         params,
-        "in_turns_ask",
-        json!({"session_id": call, "turn_id": turn, "delta": "1"}),
+        "in_view_ask",
+        json!({"session_id": call, "turn_id": turn, "delta": "1", "live": call}),
         json!({}),
-        json!({"messages": [], "turns_ask": {"n": 2, "budget_tokens": 1500, "judge": true}}),
+        json!({"messages": [], "view_ask": {"target": "decide", "turns": 2, "budget_tokens": 1500}}),
     )
 }
 
@@ -224,8 +228,8 @@ pub fn seed_ask_for(
         h,
         params,
         "in_seed_ask",
-        json!({"call_id": call}),
-        json!({"call_id": call, "session_id": call, "reason": reason,
+        json!({"live": call}),
+        json!({"live": call, "session_id": call, "reason": reason,
                "renewal_n": renewal_n}),
         json!({"messages": []}),
     )
@@ -277,12 +281,21 @@ pub fn markless_turn(h: &mut Hive, minute: u32, session: &str, turn: &str, words
     );
 }
 
-/// The topic a judge answer carries.
+/// The topic a view carries: the text of its leaf `topic`, "" when the view
+/// holds none (a view names a topic only when there is one).
 pub fn judged_topic(a: &Msg) -> String {
-    a.body["judge"]["topic"]
-        .as_str()
-        .unwrap_or_else(|| panic!("judge.topic is a string: {:?}", a.body))
-        .to_string()
+    assert!(
+        a.body["system"].is_object(),
+        "a view for a target carries a system tree: {:?}",
+        a.body
+    );
+    match a.body["system"].get("topic") {
+        None => String::new(),
+        Some(leaf) => leaf["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the leaf `topic` is {{\"text\": ...}}: {leaf}"))
+            .to_string(),
+    }
 }
 
 /// The fact line a seed opens with.

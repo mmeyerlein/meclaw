@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -47,14 +50,18 @@ fn a_simple_turn_carries_its_class_tools_at_ops() {
     if !shipped() {
         return;
     }
+    // OR-d58-2.target.62: the knob `quick_tools` left the curator; the
+    // class's tools are the list `allow` of the fast cell's profile.
     let policy = cell_config("policy");
-    assert_eq!(policy["params"]["quick_tools"], json!("web,weather"));
+    assert!(policy["params"].get("quick_tools").is_none());
+    assert!(policy["contract"]["settings"].get("quick_tools").is_none());
+    let quick = read_json(&repo("templates/talky/quick/config.json"));
     assert_eq!(
-        policy["contract"]["settings"]["quick_tools"]["default"],
-        json!("web,weather")
+        quick["params"]["window_profile"]["allow"],
+        json!(["web", "weather"])
     );
 
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     assert_eq!(
         quick_scope_of(&mut h, "t1", "", Value::Null),
         json!({"allow": ["web", "weather"], "hint": []}),
@@ -81,10 +88,17 @@ fn a_simple_turn_carries_its_class_tools_at_ops() {
         "the channel's allow cuts the class (no weather) and its deny stays"
     );
 
-    let mut none = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "quick_tools", json!("")),
-    ]);
+    // OR-d58-2.target.62: the empty class is an empty `allow` on the fast
+    // cells (the knob `quick_tools` "" of before).
+    let empty = json!({"allow": []});
+    let mut none = Hive::with(&[]).reporting_composite_with(
+        "talky",
+        &[
+            ("quick", empty.clone()),
+            ("quick_spec", empty.clone()),
+            ("quick_bridge", empty),
+        ],
+    );
     assert_eq!(
         quick_scope_of(&mut none, "t5", "web", Value::Null),
         json!({"allow": ["web"], "hint": ["web"]}),

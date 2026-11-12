@@ -362,6 +362,57 @@ class ReportTest(unittest.TestCase):
         self.assertIn("built on lane lane-a", text)
         self.assertNotIn("build started", text)
 
+    def test_night_carries_the_map_before_it_books_a_lane(self):
+        """GH #1461: a due map whose diff selects no test is carried, no lane
+        run; a diff that selects tests still builds on the lane."""
+        from scripts.pipeline import coverage
+        db, tmp = _store(self)
+        db.execute("INSERT INTO runners (name, state) VALUES ('lane-a', 'on')")
+        _run(db, "run-1", DAY + "T12:00:00Z", "GREEN", [("fmt", "GREEN", 5, 0, {})])
+        events.emit(db, "merge_done", "status", {"merge": "m-1", "strand": "s", "base": "b"},
+                    at=DAY + "T12:30:00Z")
+        line = "carried from aaaaaaaaa to bbbbbbbbb without a run (3 files, no test selected)"
+        asked = []
+
+        def carried(repo, **kw):
+            asked.append((repo, kw.get("branch"), kw.get("db") is db))
+            return {"rev": "b"}, line
+        fake = FakeRunner()
+        with mock.patch.object(night, "coverage_cli", lambda: REPO / "scripts/pipeline.py"), \
+                mock.patch.object(coverage, "carry", carried):
+            path = night.report(db, now=NOW, out_root=tmp / "nacht", runner=fake, date=DAY)
+        self.assertEqual(asked, [(str(night.REPO), "master", True)])
+        self.assertFalse([c for c in fake.calls if "coverage" in c])
+        self.assertIn(line, path.read_text())
+        # not carriable: the lane build runs as before, and the report says why
+        db, tmp = _store(self)
+        db.execute("INSERT INTO runners (name, state) VALUES ('lane-a', 'on')")
+        _run(db, "run-1", DAY + "T12:00:00Z", "GREEN", [("fmt", "GREEN", 5, 0, {})])
+        events.emit(db, "merge_done", "status", {"merge": "m-1", "strand": "s", "base": "b"},
+                    at=DAY + "T12:30:00Z")
+        fake = FakeRunner()
+        with mock.patch.object(night, "coverage_cli", lambda: REPO / "scripts/pipeline.py"), \
+                mock.patch.object(coverage, "carry",
+                                  lambda repo, **kw: (None, "the diff selects tests: all()")):
+            path = night.report(db, now=NOW, out_root=tmp / "nacht", runner=fake, date=DAY)
+        self.assertEqual(len([c for c in fake.calls if "coverage" in c]), 1)
+        text = path.read_text()
+        self.assertIn("built on lane lane-a", text)
+        self.assertIn("not carried: the diff selects tests: all()", text)
+
+    def test_a_broken_carry_is_a_reason_never_a_stop(self):
+        """GH #1461 review M7: an exception in the carry falls back to the lane
+        build, named in the report line."""
+        from scripts.pipeline import coverage
+        db, _tmp = _store(self)
+
+        def broken(repo, **kw):
+            raise RuntimeError("resolver exploded")
+        with mock.patch.object(coverage, "carry", broken):
+            line, why = night.carry_coverage(db)
+        self.assertIsNone(line)
+        self.assertEqual(why, "carry failed: resolver exploded")
+
     def test_night_coverage_reports_the_build_exit_truthfully(self):
         """Review Z-I gap I2: the night never reports a build it did not get."""
         for rc, err, want in ((3, "coverage: lane lane-a is not up -- skipped\n",

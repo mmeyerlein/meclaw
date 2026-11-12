@@ -74,6 +74,7 @@
 //! rather than judged.
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
@@ -172,6 +173,10 @@ fn stated_route(condition: Option<&str>) -> Option<String> {
 /// template at the same version, so "occupant" is still three templates.
 const SIBLINGS: [&str; 4] = ["./talky", "./talky-chat", "./cogny", "./tools"];
 
+/// The level's own follow-up pair (GH #1479): a `code` cell and its store, born with the
+/// level like the occupants, so neither is a node the level would have to be filled with.
+const OWN_CELLS: [&str; 2] = ["./followup", "./followup_store"];
+
 // ─────────────────────────────── (1) three children, all refs, no container
 
 #[test]
@@ -191,6 +196,8 @@ fn the_level_ships_four_refs_at_three_templates_and_no_container() {
         children,
         vec![
             "cogny".to_string(),
+            "followup".to_string(),
+            "followup_store".to_string(),
             "talky".to_string(),
             "talky-chat".to_string(),
             "tools".to_string()
@@ -198,11 +205,21 @@ fn the_level_ships_four_refs_at_three_templates_and_no_container() {
         "one generation is the conversation surface, the reasoning core and the tool \
          surface — and since GH #709 the first of the three is one node PER CHANNEL that \
          asks for its own voice (`display-hive.md` § 8.2). Four refs at three templates, \
-         and nothing else: a child that is not one of them is a sibling this level did not \
-         have to own — a memory, a firewall and an identity belong to the MEMBER (GH #122), \
-         and since GH #454 so do the CHANNELS, which is why the container that used to \
-         stand here is gone rather than empty."
+         plus the level's own follow-up cell and its store (GH #1479: the rule that \
+         asks after a person once lives in the companion domain, not in the curator), and \
+         nothing else: any other child is a sibling this level did not have to own — a \
+         memory, a firewall and an identity belong to the MEMBER (GH #122), and since \
+         GH #454 so do the CHANNELS, which is why the container that used to stand here is \
+         gone rather than empty."
     );
+    // The two own cells are cells, not refs: a `code` cell and its `store`.
+    for (name, want) in [("followup", "code"), ("followup_store", "store")] {
+        assert_eq!(
+            config_at(&root.join(name))["cell"]["type"].as_str(),
+            Some(want),
+            "templates/assistant/{name}: the level's own follow-up pair is a {want} cell"
+        );
+    }
 
     for (name, want) in [
         ("talky", "talky@"),
@@ -1423,10 +1440,15 @@ fn build_tree(td: &tempfile::TempDir, source: &std::path::Path) {
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![(
-            "code".to_string(),
-            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-        )]
+        // The shipped `assistant` level owns a store since `followup` (GH #1479): its
+        // `followup_store` boots as the real store, like the member's stores elsewhere.
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            ("store".to_string(), Arc::new(StoreCellFactory)),
+        ]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(32);
@@ -1773,9 +1795,12 @@ fn a_second_channel_costs_this_level_nothing_at_all() {
                 e.to
             );
             assert!(
-                endpoint == "." || SIBLINGS.contains(&endpoint.as_str()),
+                endpoint == "."
+                    || SIBLINGS.contains(&endpoint.as_str())
+                    || OWN_CELLS.contains(&endpoint.as_str()),
                 "the edge {} -> {} touches {endpoint:?}, which is neither this level's own \
-                 path nor one of its occupants {SIBLINGS:?}. A further endpoint is a node \
+                 path nor one of its occupants {SIBLINGS:?} or own cells {OWN_CELLS:?}. A \
+                 further endpoint is a node \
                  the level would have to be FILLED with — and the level is complete at \
                  birth, keepers included.",
                 e.from,

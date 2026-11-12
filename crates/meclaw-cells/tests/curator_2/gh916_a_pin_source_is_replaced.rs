@@ -42,7 +42,7 @@ fn talky_hive() -> Hive {
         .iter()
         .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
         .collect();
-    Hive::with(&over)
+    Hive::with(&over).reporting_composite("talky")
 }
 
 fn pin_el(text: &str, source: &str) -> Value {

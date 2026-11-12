@@ -15,15 +15,15 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
 
 fn hive() -> Hive {
-    Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "state_block", json!("1")),
-    ])
+    Hive::with(&[("policy", "state_block", json!("1"))]).reporting_composite("talky")
 }
 
 fn put_state(h: &Hive, key: &str, value: &str) {

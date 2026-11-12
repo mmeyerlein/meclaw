@@ -32,7 +32,7 @@ fn a_curator_consult_finds_its_turn_on_the_way_back() {
             && e["to"] == "./collector"
             && e["condition"]
                 .as_str()
-                .is_some_and(|c| c.contains("'consult'"))),
+                .is_some_and(|c| c.contains("hop.route == 'errand'"))),
         "talky hands the curator's consult to its collector"
     );
 

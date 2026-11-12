@@ -115,9 +115,6 @@ struct Hive {
     edges: Vec<Edge>,
     cells: BTreeMap<String, Value>,
     db: rusqlite::Connection,
-    /// GH #1447: the lead's own store `./lead_state`, a second in-memory
-    /// SQLite from its params; never counted in `reads` or `trips`.
-    lead_db: rusqlite::Connection,
     out: Vec<Msg>,
     clock: Vec<Msg>,
     summ: VecDeque<Msg>,
@@ -185,11 +182,11 @@ impl Hive {
             // GH #896: `./policy` hands the first call of every new session
             // through `./handover`, so a hive without it stops there.
             "handover",
-            // GH #1447: `./policy` asks `./lead` the way of every call.
-            "lead",
         ] {
             cells.insert(name.to_string(), cell_config(name));
         }
+        // GH #1474: the lead left the curator for a hive of its own; the
+        // curator ships `policy.lead_wired` off and asks none here.
         for (cell, key, value) in over {
             let params = cells
                 .get_mut(*cell)
@@ -211,19 +208,10 @@ impl Hive {
             &ledger.schema,
         )
         .expect("seed");
-        let lead_db = rusqlite::Connection::open_in_memory().expect("sqlite");
-        let lead_state =
-            meclaw_cells::store::StoreParams::parse(&cell_config("lead_state")["params"])
-                .expect("the lead_state params parse");
-        meclaw_cells::store::ddl::apply_declared_schema_ddl(&lead_db, &lead_state)
-            .expect("lead ddl");
-        meclaw_cells::store::ddl::apply_index_ddl(&lead_db, &lead_state.indexes)
-            .expect("lead index ddl");
         Self {
             edges,
             cells,
             db,
-            lead_db,
             out: Vec::new(),
             clock: Vec::new(),
             summ: VecDeque::new(),
@@ -397,14 +385,6 @@ impl Hive {
                     "./ledger" => {
                         let answer = self.store(&m);
                         queue.push_back(("./ledger".to_string(), answer));
-                    }
-                    "./lead_state" => {
-                        let (reads, trips) = (self.reads.clone(), self.trips);
-                        std::mem::swap(&mut self.db, &mut self.lead_db);
-                        let answer = self.store(&m);
-                        std::mem::swap(&mut self.db, &mut self.lead_db);
-                        (self.reads, self.trips) = (reads, trips);
-                        queue.push_back(("./lead_state".to_string(), answer));
                     }
                     "./clock" => self.clock.push(m),
                     "./summarizer" => self.summ.push_back(m),
@@ -1743,7 +1723,13 @@ fn a_topic_the_memory_section_names_reaches_the_outline() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    // GH #1473: the `memory` section registered as a talky's curator
+    // registers it, its `topic` mark with it.
+    let mut h = Hive::with(&[(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )]);
     sown(&mut h);
     h.lane(
         "in_section",
@@ -1827,6 +1813,8 @@ fn the_hive_takes_the_call_and_hands_back_the_result() {
         // GH #1305: `cur_close` (the facts of a close, writer to `closed`) is the
         // hive's bookkeeping too. GH #1275: the parent's call keys
         // `curator_call` and `interim`, which the spec tap sets inside the hive.
+        // D58 moveout (GH #1476, contract point 3): `call_kind`, the kind of a
+        // call the hive lifts beside `curator_call`.
         json!([
             "cur_origin",
             "cur_phase",
@@ -1834,6 +1822,7 @@ fn the_hive_takes_the_call_and_hands_back_the_result() {
             "cur_reason",
             "cur_close",
             "curator_call",
+            "call_kind",
             "interim"
         ]),
         "the hive's own bookkeeping never leaves it"
@@ -2020,7 +2009,8 @@ fn the_curator_hands_a_channel_scope_on_unchanged() {
             body["tool_scope"] = scope;
         }
         h.lane("in_curate", ctx, hop, body);
-        let calls = h.routed("brain");
+        // D58 target (contract point 8): every model call leaves on one route.
+        let calls = h.routed("model_call");
         assert_eq!(calls.len(), 1, "{:?}", h.out);
         calls[0]
             .body

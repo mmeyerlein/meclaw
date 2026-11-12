@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -49,14 +52,11 @@ fn row(model: &str, soft: i64, hard: i64, cache_mode: &str, ttl: i64) -> Value {
 }
 
 /// The package line of the model cell `cell` of the parent, on `in_catalog`.
+/// The cell `cell` of talky reports its package: `row`, and the profile its
+/// template writes beside it (D58 target, contract point 13).
 fn catalog(h: &mut Hive, cell: &str, row: Value) {
     h.out.clear();
-    h.lane(
-        "in_catalog",
-        json!({}),
-        json!({"package_of": format!("/talky/{cell}")}),
-        json!({"messages": [], "package": row}),
-    );
+    h.report_row("talky", cell, row);
 }
 
 fn turn_on(h: &mut Hive, turn: &str, path: &str, way: &str, ask: &str, reply: &str) -> Msg {
@@ -75,7 +75,7 @@ fn turn_on(h: &mut Hive, turn: &str, path: &str, way: &str, ask: &str, reply: &s
         .routed(way)
         .into_iter()
         .find(|m| {
-            m.hop.get("bridge").is_none()
+            m.hop.get("call_kind").is_none_or(|v| *v != "side")
                 && !m.hop["curator_call"]
                     .as_str()
                     .unwrap_or("")
@@ -91,7 +91,7 @@ fn the_cut_names_its_ids_budget_cache_boundary_and_time() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(
         &mut h,
         "brain",
@@ -154,7 +154,7 @@ fn every_block_of_the_plan_is_sent_or_named_with_its_reason() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..5 {
         turn_on(
             &mut h,
@@ -223,7 +223,7 @@ fn the_reader_hands_the_cut_on() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let call = turn_on(&mut h, "t0", "talk", "brain", "q", "a");
     h.out.clear();
     h.lane(

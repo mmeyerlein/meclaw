@@ -204,7 +204,7 @@ fn figure_is_three_children_and_refs_simple_agent() {
     let agent = figure("simple-agent/config.json");
     assert_eq!(agent["cell"]["type"], "ref", "the agent is referenced");
     assert_eq!(
-        agent["cell"]["template"], "simple-agent@2.2.18",
+        agent["cell"]["template"], "simple-agent@2.3.0",
         "the agent is the colony's simple-agent@2, never a copy and never the frozen v1"
     );
     // GH #1276: `world` caches its queue, open turn and call book
@@ -271,7 +271,9 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             "pack_ack",
             "brief",
             "affinity_propose",
-            "conversations"
+            "conversations",
+            // D58 note (GH #1477): the curator's answer to a note's sender.
+            "note_receipt"
         ]),
         "V-W out, the handset's turn, an extra tool's call, the contract lanes of simple-agent@2"
     );

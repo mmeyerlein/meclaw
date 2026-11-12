@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -28,10 +31,8 @@ const SAID: &str = "My sister Anna moved to Hamburg.";
 /// the request of `t2` as text, the `recall_in_wall` ids of its snapshot's
 /// cut and the `recall_in_wall` entries of its hop.
 fn sent(knob: &str) -> (String, Vec<String>, Vec<Value>) {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "recall_in_wall", json!(knob)),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "recall_in_wall", json!(knob))]).reporting_composite("talky");
     let pair = json!([
         user(SAID),
         tool_call(RECALL_ID, "memory_recall"),

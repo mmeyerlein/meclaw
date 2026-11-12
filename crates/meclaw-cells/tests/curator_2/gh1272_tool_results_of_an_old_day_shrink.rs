@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -63,10 +66,10 @@ fn tool_results_of_an_old_day_shrink() {
     // old day's lookups stay raw within the budget, and taking them out of a
     // raw day is the garbage collection's job (D38 K3), not the tier's.
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent_tokens", json!(0)),
         ("intake", "replay_channel_prefix", json!("replay-")),
-    ]);
+    ])
+    .reporting_composite("talky");
     round_at(&mut h, "d1-open", "2026-03-01T08:00:00Z");
     // The day's lookups: 40 recalls in one round, each a call and its result.
     let base = chrono::DateTime::parse_from_rfc3339("2026-03-01T09:00:00Z")

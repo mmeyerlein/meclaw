@@ -110,7 +110,8 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// thirty-one from `talky`, thirty-six in all. MEASURED.
 /// GH #1447: the curator's lead and its store (`lead`, `lead_state`) --
 /// thirty-three from `talky`, thirty-eight in all. MEASURED (38 against 36
-/// in the strand's gate).
+/// in the strand's gate). GH #1474 moves the two into a hive of their own
+/// beside the curator (`lead`, `state`): still thirty-eight.
 const CELLS_AFTER_GROW: usize = 38;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
@@ -118,11 +119,13 @@ const CELLS_AFTER_GROW: usize = 38;
 /// NOT `grow.json` entries -- the mutation still names `talky` alone, and the
 /// registry resolves the rest. The `summarizer` left the set with
 /// `talky@4.3.0` (GH #447); the `curator` joined it with GH #889.
-const REFERENCED_SUB_UNITS: [(&str, &str); 4] = [
+/// GH #1474: and `lead`, the hive `talky` wires beside its curator.
+const REFERENCED_SUB_UNITS: [(&str, &str); 5] = [
     ("collector", "templates/collector"),
     ("session-keeper", "templates/session-keeper"),
     ("dispatcher", "templates/dispatcher"),
     ("curator", "templates/curator"),
+    ("lead", "templates/lead"),
 ];
 
 /// The three months of the story live in `past.jsonl`, next to the seed -- the

@@ -12,6 +12,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -58,7 +61,7 @@ fn every_call_leaves_its_plan_ids_with_prio_and_tokens() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let call = turn_in(&mut h, ROUND_E, "s1", "q1", "a1");
     let snap = snapshot_of(&h, &call).expect("one snapshot row of the call");
     assert!(!snap.is_empty(), "the call's plan is listed");
@@ -78,7 +81,7 @@ fn the_reader_shows_a_round_its_own_snapshots_only() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let e = turn_in(&mut h, ROUND_E, "s1", "q in e", "a in e");
     let f = turn_in(&mut h, ROUND_F, "s2", "q in f", "a in f");
     let id = |c: &Msg| c.hop["curator_call"].clone();
@@ -127,10 +130,7 @@ fn the_snapshot_keep_is_a_knob_with_its_preset() {
         &cfg["contract"]["settings"]["snapshot_keep"]["default"], v,
         "the setting's default is the param"
     );
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "snapshot_keep", json!(2)),
-    ]);
+    let mut h = Hive::with(&[("policy", "snapshot_keep", json!(2))]).reporting_composite("talky");
     for i in 0..4 {
         let t = format!("t{i}");
         let call = h.curate(
@@ -157,10 +157,7 @@ fn the_snapshot_lists_the_system_part_the_state_line_and_the_notes() {
     }
     const PUSH_ID: &str = "call_candidates_00000000000000c1";
     const PUSH_TEXT: &str = "[addendum -- notes handed to this conversation for this round; not said by the person]\n[Bring the umbrella.]";
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "state_block", json!("1")),
-    ]);
+    let mut h = Hive::with(&[("policy", "state_block", json!("1"))]).reporting_composite("talky");
     turn(
         &mut h,
         "s1",

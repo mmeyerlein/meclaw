@@ -24,6 +24,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -38,10 +41,7 @@ fn head(sources: &str) -> String {
 }
 
 fn hive(state_block: &str) -> Hive {
-    Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "state_block", json!(state_block)),
-    ])
+    Hive::with(&[("policy", "state_block", json!(state_block))]).reporting_composite("talky")
 }
 
 fn last_text(c: &Msg) -> String {
@@ -79,7 +79,7 @@ fn the_block_function_renders_its_parts_in_order() {
     let state = json!({"today": TOPIC, "promised": [PROMISE],
                        "open": ["a delegation"], "set_today": ["Hannah lives in Porto."]});
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         "[list(STATE_PARTS), \
           state_block(ARGS, STATE_PARTS, 8), \
           state_block(ARGS, STATE_PARTS, 2), \
@@ -196,10 +196,10 @@ fn state_lines_caps_the_entries() {
     }
     clear_of_midnight();
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "state_block", json!("1")),
         ("policy", "state_lines", json!(1)),
-    ]);
+    ])
+    .reporting_composite("talky");
     turn(
         &mut h,
         "s1",

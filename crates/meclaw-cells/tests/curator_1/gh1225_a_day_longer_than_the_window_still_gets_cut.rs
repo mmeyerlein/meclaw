@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -51,7 +54,7 @@ fn a_day_longer_than_the_window_still_gets_cut() {
                  rebuild_to_of({'input_soft': 250000}))";
     for role in ["talky", "consult", "coding"] {
         let (got, err) = policy_scope(
-            json!({"role": role}),
+            curator_profiles::set_knobs(role, json!({})),
             probe,
             json!({"rows": wall, "as_of": (BASE_S + 3600) * 1000}),
         );
@@ -103,10 +106,7 @@ fn rounds_from(h: &mut Hive, base: chrono::DateTime<chrono::Utc>, n: i64, chars:
 
 #[test]
 fn a_call_over_input_hard_leaves_cut_and_marked() {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(2)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(2))]).reporting_composite("talky");
     // The model's hard line: 4 000 tokens, the guard's margin 3 600.
     turn(&mut h, "s", "t0", "hello", "hi", package(2000, 4000, 100));
     // About 16 000 tokens of wall, and no plan: no rebuild has run.
@@ -160,10 +160,10 @@ fn a_call_over_input_hard_leaves_cut_and_marked() {
 #[test]
 fn a_failing_summary_does_not_reorder_every_turn() {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent", json!(1)),
         ("policy", "amortise_turns", json!(3)),
-    ]);
+    ])
+    .reporting_composite("talky");
     earlier_rounds(&mut h, 4, 1000);
     let ask = "y".repeat(1200);
     // Over soft: a rebuild is ordered, and its summary fails.
@@ -196,10 +196,7 @@ fn a_failing_summary_does_not_reorder_every_turn() {
 /// that ordered it (KD § 1 K-2, review I-1).
 #[test]
 fn a_plan_over_its_aim_leaves_one_over_aim_mark() {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(10)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(10))]).reporting_composite("talky");
     earlier_rounds(&mut h, 4, 2000);
     let call = turn(
         &mut h,
@@ -237,10 +234,10 @@ fn a_plan_over_its_aim_leaves_one_over_aim_mark() {
 #[test]
 fn a_cold_cache_ends_the_backoff() {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent", json!(1)),
         ("policy", "amortise_turns", json!(3)),
-    ]);
+    ])
+    .reporting_composite("talky");
     // Yesterday's rounds: the summary tier, whatever the aim.
     rounds_from(&mut h, days_ago(1, 12), 4, 1000);
     // The line is the package's (`tokens_prompt` over soft); today's round

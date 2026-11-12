@@ -19,6 +19,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, json};
@@ -35,10 +38,8 @@ fn quote(text: &str) -> String {
 /// running turn `t3`'s own tool loop; the request of `t3` as text, and the
 /// cut of its snapshot.
 fn sent_in(knob: &str, quoted: &str, running: bool) -> (String, String) {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "recall_in_wall", json!(knob)),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "recall_in_wall", json!(knob))]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", SAID, "Hamburg is lovely.", json!({}));
     let pair = json!([
         user("Tell me about Anna."),

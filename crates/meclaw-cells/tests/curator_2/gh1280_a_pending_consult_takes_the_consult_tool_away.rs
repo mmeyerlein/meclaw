@@ -17,6 +17,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -78,7 +81,7 @@ fn a_pending_consult_takes_the_consult_tool_away() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     // Before any consult the brain keeps its whole menu.
@@ -186,7 +189,7 @@ fn a_channel_scope_keeps_its_own_deny_beside_the_consult_tool() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     curate_with(&mut h, "t1", "complex", json!({}), "plan my week");
     assert_eq!(h.routed("consult").len(), 1, "{:?}", h.out);
@@ -232,7 +235,7 @@ fn a_consult_the_brain_starts_itself_takes_the_tool_away_too() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     // Turn N: a talk turn, and the brain consults on its own (GH #1280,
@@ -287,7 +290,7 @@ fn the_brain_s_consult_never_overwrites_a_standing_mark() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     curate_with(&mut h, "t1", "complex", json!({}), "plan my week");
     let errand = h.routed("consult");
@@ -317,7 +320,7 @@ fn a_folded_consult_family_is_taken_away_and_marks_too() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     let folded = json!({"tools_folded": "consult,web"});
 
@@ -348,7 +351,7 @@ fn a_quick_call_loses_the_tool_only_when_its_allow_holds_it() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     curate_with(&mut h, "t1", "complex", json!({}), "plan my week");
     assert_eq!(h.routed("consult").len(), 1, "{:?}", h.out);
@@ -400,7 +403,7 @@ fn an_ask_back_of_the_backend_keeps_the_mark() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     curate_with(&mut h, "t1", "complex", json!({}), "plan my week");
     let errand = h.routed("consult");
@@ -448,7 +451,7 @@ fn a_follow_up_consult_is_marked_under_the_id_it_continues() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     curate_with(&mut h, "t1", "talk", json!({}), "and the cost?");
     let call = brain_call(&h);

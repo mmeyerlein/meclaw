@@ -248,7 +248,11 @@ fn sidecar_verify_empty_knob_is_byte_identical() {
         );
     }
     // The intake: a section without the hop key goes on exactly as before.
-    let mut h = Hive::with(&[("intake", "pass_sections", json!("memory"))]);
+    let mut h = Hive::with(&[(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )]);
     let call = h.curate(
         "s1",
         "t1",
@@ -597,7 +601,8 @@ fn sidecar_verify_reject_carries_no_text() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    // GH #1473: a stamped section is checked where it is registered.
+    let mut h = Hive::with(&[("intake", "sections", json!({"claims": {"lane": "sidecar"}}))]);
     let call = h.curate(
         "s1",
         "t1",
@@ -707,7 +712,8 @@ fn sidecar_verify_mini_three_turns() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::new();
+    // GH #1473: a stamped section is checked where it is registered.
+    let mut h = Hive::with(&[("intake", "sections", json!({"needs": {"lane": "sidecar"}}))]);
     turn(
         &mut h,
         "s1",

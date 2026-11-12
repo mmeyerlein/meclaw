@@ -78,8 +78,8 @@
           "because": "`{op: topics}` to every app with `shows`, `{op: data, topic, request, lead, also, turn_id, sets}` to the one app that owns the chosen topic (`hop.show_app`), `{op: refused, topic, reason}` to an app whose topic was refused"
         },
         {
-          "route": "screen_topics",
-          "because": "`{topics: [{name, purpose, candidates}]}` (`candidates` = `[{key, describe}]`, #1368): the table the decider is asked over -- the presenter's own topics and the apps' accepted ones, filtered as for the decider, `purpose` the manifest's `describe` -- once on boot and on every change of it, never per turn (live-2 GR). Its taker is the talky's curator, which needs the screen's topics for its stamp (live-2 FU2). Only with `stage`'s switch `screen_topics` on; shipped off, the lane is silent, so a parent that draws no edge for it sees nothing dead-letter"
+          "route": "part",
+          "because": "`{target, source: \"presenter\", value: [{name, purpose, candidates?}]}` (`candidates` = `[{key, describe}]`, #1368; D58 judge, GH #1480): the table the decider is asked over as a contribution to the section of `target` -- the presenter's own topics and the apps' accepted ones, filtered as for the decider, `purpose` the manifest's `describe` -- once on boot and on every change of it, never per turn (live-2 GR), without a round or a subject. Its taker is the curator of the composition whose model reads the screen (`in_part`), which keeps the value unread and hands it to every view of `target` (formerly the lane `screen_topics` `{topics}`). Only with `stage`'s `part_target` set; shipped \"\", the lane is silent, so a parent that draws no edge for it sees nothing dead-letter"
         },
         {
           "route": "error",
@@ -252,7 +252,7 @@
         {
           "from": "./stage",
           "to": ".",
-          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error' || hop.route == 'resident_read' || hop.route == 'screen_topics')",
+          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw' || hop.route == 'in_show' || hop.route == 'error' || hop.route == 'resident_read' || hop.route == 'part')",
           "modifier": {
             "delete_context": [
               "show_origin",

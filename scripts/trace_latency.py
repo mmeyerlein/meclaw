@@ -57,12 +57,13 @@ def leaf(path):
 
 
 def quick_spec(ledger):
-    """The `quick_spec` marks of a curator ledger, oldest first: (turn, decided after ms,
-    verdict, reason). A mark that names no times decides after `None`."""
+    """The speculation marks of a curator ledger, oldest first: (turn, decided after ms,
+    verdict, reason). A mark that names no times decides after `None`. The kind is `spec`
+    since the curator names no cell (D58 target); an older ledger holds `quick_spec`."""
     import json
     con = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
     rows = con.execute(
-        "select turn_id, value from marks where kind = 'quick_spec' order by seq"
+        "select turn_id, value from marks where kind in ('spec', 'quick_spec') order by seq"
     ).fetchall()
     con.close()
     out = []

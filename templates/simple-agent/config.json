@@ -158,6 +158,10 @@
         {
           "route": "conversations",
           "because": "the agent's memory hive's answer to `in_conversations`, to the reader named on `hop.reader`"
+        },
+        {
+          "route": "note_receipt",
+          "because": "D58 note (GH #1477): the answer of its curator to the sender of a shown `once` note that carried a `receipt` (`note_once` \"1\"), handed out unchanged -- every field in the head: `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`. Where it goes from here is wired by whoever sends the notes"
         }
       ]
     },
@@ -212,6 +216,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -227,7 +233,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -242,6 +248,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -257,7 +265,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -292,6 +300,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -307,7 +317,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -322,6 +332,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -337,7 +349,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -352,6 +364,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -367,7 +381,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -382,6 +396,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -397,7 +413,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -412,6 +428,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -427,7 +445,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -446,7 +464,7 @@
               "tool_require": "has(hop.tool_require) ? hop.tool_require : ''",
               "turn_max_iter": "has(hop.turn_max_iter) ? hop.turn_max_iter : ''",
               "counterpart": "has(hop.counterpart) ? hop.counterpart : ''",
-              "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
+              "sa_target": "has(hop.sa_target) ? hop.sa_target : 'brain'"
             },
             "restore_ttl": true
           }
@@ -468,7 +486,7 @@
               "tool_require": "has(hop.tool_require) ? hop.tool_require : ''",
               "turn_max_iter": "has(hop.turn_max_iter) ? hop.turn_max_iter : ''",
               "counterpart": "has(hop.counterpart) ? hop.counterpart : ''",
-              "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
+              "sa_target": "has(hop.sa_target) ? hop.sa_target : 'brain'"
             },
             "restore_ttl": true
           }
@@ -494,7 +512,7 @@
               "iter": "hop.iter",
               "channel": "hop.channel",
               "audience_set": "hop.audience_set",
-              "sa_stage": "has(hop.sa_stage) ? hop.sa_stage : 'fast'"
+              "sa_target": "has(hop.sa_target) ? hop.sa_target : 'brain'"
             },
             "restore_ttl": true
           }
@@ -623,7 +641,8 @@
           "condition": "has(hop.route) && hop.route == 'curate' && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_hop": {
-              "route": "'in_curate'"
+              "route": "'in_curate'",
+              "target": "has(context.sa_target) ? context.sa_target : 'brain'"
             },
             "restore_ttl": true,
             "set_context": {
@@ -634,14 +653,16 @@
         {
           "from": "./curator",
           "to": "./brain",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20 && !(has(context.sa_stage) && context.sa_stage == 'strong')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && (!has(hop.target) || hop.target == 'brain') && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
               "iter": "hop.iter",
-              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
@@ -649,17 +670,59 @@
         {
           "from": "./curator",
           "to": "./strong",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'brain' && has(hop.iter) && int(hop.iter) < 20 && has(context.sa_stage) && context.sa_stage == 'strong'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'model_call' && has(hop.target) && hop.target == 'strong' && has(hop.iter) && int(hop.iter) < 20",
           "modifier": {
             "set_context": {
               "curator_call": "hop.curator_call",
               "turn_id": "hop.turn_id",
               "session_id": "hop.session_id",
               "iter": "hop.iter",
-              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "curator_target": "has(hop.target) ? hop.target : ''",
+              "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
             "restore_ttl": true
           }
+        },
+        {
+          "from": "./brain",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'brain'"
+        },
+        {
+          "from": "./curator",
+          "to": "./brain",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./strong",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_catalog'"
+            }
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./strong",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'strong'"
+        },
+        {
+          "from": "./curator",
+          "to": "./strong",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
         },
         {
           "from": "./collector",
@@ -771,6 +834,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -786,7 +851,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -826,6 +891,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -841,7 +908,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -1001,6 +1068,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft"
@@ -1015,6 +1084,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -1030,7 +1101,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -1212,6 +1283,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -1227,7 +1300,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -1242,6 +1315,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -1257,7 +1332,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -1274,6 +1349,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -1287,7 +1364,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -1304,6 +1381,8 @@
             "delete_context": [
               "col_phase",
               "curator_call",
+              "call_kind",
+              "curator_target",
               "tool_answerer",
               "recall_input_soft",
               "input_soft",
@@ -1319,7 +1398,7 @@
               "tool_require",
               "turn_max_iter",
               "ds_kind",
-              "sa_stage"
+              "sa_target"
             ]
           }
         },
@@ -1337,6 +1416,33 @@
           "from": "./tool_gate",
           "to": "./door",
           "condition": "has(hop.route) && hop.route == 'tool'"
+        },
+        {
+          "from": "./curator",
+          "to": ".",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'note_receipt'",
+          "modifier": {
+            "delete_context": [
+              "col_phase",
+              "curator_call",
+              "call_kind",
+              "curator_target",
+              "tool_answerer",
+              "recall_input_soft",
+              "input_soft",
+              "gap_ask",
+              "tools_folded",
+              "sa_pack",
+              "sa_kind",
+              "agent_id",
+              "tools_allow",
+              "tools_deny",
+              "tool_require",
+              "turn_max_iter",
+              "ds_kind",
+              "sa_target"
+            ]
+          }
         }
       ]
     }

@@ -10,13 +10,16 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
 
 #[test]
 fn a_wall_row_without_its_block_is_cut_and_marked() {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     // A fixed instant: no plan stands, so the window shows the whole wall
     // (cover 0) whatever the day of the run.
     let seq: i64 = 1_792_051_200_000_000;

@@ -1,11 +1,12 @@
 //! Test harness `curator_2` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/composite_colony.rs"]
+pub mod composite_colony;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
-pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
-pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
-pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
 pub mod gh1225_kr_p_a_sweep_names_only_what_went;
 pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
 pub mod gh1225_kr_seq_never_falls_below_the_ledger;
@@ -55,6 +56,12 @@ pub mod gh901_a_broken_file_is_never_written;
 pub mod gh901_the_hook_register_parses_three_languages;
 pub mod gh904_the_curator_clock_keeps_one_row;
 pub mod gh916_a_pin_source_is_replaced;
+pub mod gh926_a_curator_counts_its_own_ledger;
+pub mod gh932_the_curator_pages_only_over_visible_rows;
+pub mod gh935_the_identity_budget_splits_the_pack;
+pub mod gh943_a_plan_per_round;
+pub mod gh949_a_candidate_never_widens_its_round;
+pub mod gh949_a_trigger_matches_on_word_boundaries;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
 #[path = "../mock_openai.rs"]

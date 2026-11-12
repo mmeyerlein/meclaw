@@ -4,10 +4,12 @@
 //! the same picture of the conversation -- the last turns of both roles, the
 //! topic, the screen topics, the time and the place. `./history` builds it on
 //! demand out of the ledger, so it is current after every turn the wall holds
-//! without a timer: on `in_turns_ask` with `turns_ask.judge: true` beside the
-//! unchanged `turns`, and on `in_seed_ask` as one `seed`. `in_screen_topics`
-//! and `in_seed_line` keep what the presenter and the colony tell the hive.
-//! Without `judge` the turns lane stays byte-identical to GH #1304.
+//! without a timer: on `in_view_ask` with a target as one `view` (D58 GH
+//! #1480: `messages` of both sides and the `system` tree -- `frame`, `topic`,
+//! the target's contributions), and on `in_seed_ask` as one `seed` (the read
+//! context under `context`). `in_part` (and the `parts` of a curate) and
+//! `in_seed_line` keep what the domains and the colony tell the hive. A view without a target reads
+//! as the turns lane of GH #1304 did.
 //!
 //! The history cell runs here the way `gh1304_the_curator_hands_the_persons_last_turns`
 //! runs it: the shipped script, its store messages answered by the store
@@ -16,6 +18,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 use curator_hive::*;
 // harness_fold: #[path = "support/assemble_cell.rs"]
 #[allow(unused_imports)]
@@ -217,15 +222,45 @@ fn the_answer(run: &Run, route: &str) -> Msg {
     a
 }
 
+/// The view the route stamp asks for its judge (target `decide`) of `turn`.
 fn ask_judge(h: &Hive, turn: &str, n: u64) -> Msg {
     let run = drive(
         h,
-        "in_turns_ask",
+        "in_view_ask",
         json!({"session_id": "s-now", "turn_id": turn}),
         json!({}),
-        json!({"messages": [], "turns_ask": {"n": n, "budget_tokens": 1500, "judge": true}}),
+        json!({"messages": [], "view_ask": {"target": "decide", "turns": n, "budget_tokens": 1500}}),
     );
-    the_answer(&run, "turns")
+    the_answer(&run, "view")
+}
+
+/// `(origin, text)` of a view's messages, in their order.
+fn said_of(view: &Msg) -> Vec<(String, String)> {
+    view.body["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a view carries `messages`: {:?}", view.body))
+        .iter()
+        .map(|m| {
+            assert_eq!(m["type"], "text", "{m}");
+            (
+                m["origin"].as_str().unwrap().to_string(),
+                m["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// One expected message of a view.
+fn s(origin: &str, text: &str) -> (String, String) {
+    (origin.to_string(), text.to_string())
+}
+
+/// The text of the leaf `name` of a view's system tree, "" when it holds none.
+fn leaf_text(view: &Msg, name: &str) -> String {
+    view.body["system"]
+        .get(name)
+        .map(|l| l["text"].as_str().unwrap().to_string())
+        .unwrap_or_default()
 }
 
 fn seed_ask(h: &Hive, call: &str, renewal_n: u64, round: Value) -> Msg {
@@ -244,18 +279,18 @@ fn seed_ask_with(
         h,
         over,
         "in_seed_ask",
-        json!({"call_id": call, "audience_set": round}),
-        json!({"call_id": call, "session_id": call, "reason": "start", "renewal_n": renewal_n}),
+        json!({"live": call, "audience_set": round}),
+        json!({"live": call, "session_id": call, "reason": "start", "renewal_n": renewal_n}),
         json!({"messages": []}),
     );
     the_answer(&run, "seed")
 }
 
-/// `(turn_id, role, text)` of a judge's turns.
+/// `(turn_id, role, text)` of a seed's read context's turns.
 fn turns_of(judge: &Value) -> Vec<(String, String, String)> {
     judge["turns"]
         .as_array()
-        .unwrap_or_else(|| panic!("judge.turns is a list: {judge}"))
+        .unwrap_or_else(|| panic!("context.turns is a list: {judge}"))
         .iter()
         .map(|t| {
             (
@@ -297,11 +332,6 @@ fn exchange(h: &mut Hive, minute: u32, session: &str, turn: &str, person: &str, 
     );
 }
 
-/// One expected judge turn.
-fn t(turn: &str, role: &str, text: &str) -> (String, String, String) {
-    (turn.to_string(), role.to_string(), text.to_string())
-}
-
 fn judge_keys(judge: &Value) -> Vec<String> {
     let mut k: Vec<String> = judge.as_object().unwrap().keys().cloned().collect();
     k.sort();
@@ -317,40 +347,34 @@ fn judge_context_updates_after_each_turn() {
     h.row(at(5), "s-now", "t3", "user", &user("the running turn"), 1);
 
     let a = ask_judge(&h, "t3", 2);
-    // The person's turns as they always were, the judge beside them.
-    let persons: Vec<&str> = a.body["turns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["text"].as_str().unwrap())
-        .collect();
-    assert_eq!(persons, ["how is the weather", "and tomorrow"]);
-    let judge = &a.body["judge"];
+    assert!(
+        a.body.get("judge").is_none() && a.body.get("turns").is_none(),
+        "the package `judge` and the list `turns` are gone: {:?}",
+        a.body
+    );
     assert_eq!(
-        turns_of(judge),
+        said_of(&a),
         [
-            t("t1", "user", "how is the weather"),
-            t("t1", "assistant", "sunny"),
-            t("t2", "user", "and tomorrow"),
-            t("t2", "assistant", "rain"),
+            s("user", "how is the weather"),
+            s("assistant", "sunny"),
+            s("user", "and tomorrow"),
+            s("assistant", "rain"),
         ],
         "both roles, oldest first, the sidecar block cut, never the running turn"
     );
-    assert_eq!(judge["topic"], "weather");
-    assert_eq!(judge["place"], "Berlin");
+    assert_eq!(leaf_text(&a, "topic"), "weather");
     assert_eq!(
-        judge["now"],
-        json!({"iso": "2026-10-30T02:00:00+01:00", "weekday": "Friday",
-               "timezone": "Europe/Berlin"})
+        leaf_text(&a, "frame"),
+        "now: 2026-10-30T02:00:00+01:00\nweekday: Friday\ntimezone: Europe/Berlin\n\
+         place: Berlin",
+        "the moment: one clock, one place, one fact per line"
     );
-    assert!(
-        judge.get("hints").is_none(),
-        "no hint source, no field: {judge}"
-    );
-    assert_eq!(judge["screen"], json!({"topics": [], "state": []}));
+    // No contribution, no family of the target; no hint source, no leaf.
     assert_eq!(
-        judge_keys(judge),
-        ["now", "place", "screen", "topic", "turns"]
+        judge_keys(&a.body["system"]),
+        ["frame", "topic"],
+        "{:?}",
+        a.body
     );
 
     // Turn 3 closes, turn 4 asks: the judge moves on by one turn, no timer.
@@ -364,21 +388,21 @@ fn judge_context_updates_after_each_turn() {
     );
     h.mark(at(7), "s-now", "t3", "topic", &topic("garden", "start"));
     h.row(at(8), "s-now", "t4", "user", &user("next"), 1);
-    let judge = ask_judge(&h, "t4", 2).body["judge"].clone();
+    let view = ask_judge(&h, "t4", 2);
     assert_eq!(
-        turns_of(&judge),
+        said_of(&view),
         [
-            t("t2", "user", "and tomorrow"),
-            t("t2", "assistant", "rain"),
-            t("t3", "user", "the running turn"),
-            t("t3", "assistant", "an umbrella"),
+            s("user", "and tomorrow"),
+            s("assistant", "rain"),
+            s("user", "the running turn"),
+            s("assistant", "an umbrella"),
         ],
         "the last k = 2 turns after turn n + 1"
     );
-    assert_eq!(judge["topic"], "garden");
-    // A topic that ended is no topic.
+    assert_eq!(leaf_text(&view, "topic"), "garden");
+    // A topic that ended is no topic: the view names none.
     h.mark(at(9), "s-now", "t3", "topic", &topic("garden", "end"));
-    assert_eq!(ask_judge(&h, "t4", 2).body["judge"]["topic"], "");
+    assert_eq!(leaf_text(&ask_judge(&h, "t4", 2), "topic"), "");
 }
 
 #[test]
@@ -404,15 +428,17 @@ fn judge_context_answers_seed_ask() {
         "in_seed_line",
         json!({}),
         json!({}),
-        json!({"call_id": "c-1", "kind": "wind_down", "text": "The call ends in two minutes."}),
+        json!({"live": "c-1", "position": "tail", "order": 2, "lasts": "session",
+               "text": "The call ends in two minutes."}),
     );
     assert!(run.out.is_empty(), "nothing answers a seed line");
 
     let a = seed_ask(&h, "c-1", 2, json!(ROUND_E));
     assert_eq!(a.hop["renewal_n"], 2, "the renewal_n given back");
-    assert_eq!(a.hop["call_id"], "c-1");
-    // call_id, session_id and renewal_n come back unchanged, or
-    // the voice cell refuses the seed (`missing_renewal_n`).
+    assert_eq!(a.hop["live"], "c-1");
+    // live, session_id and renewal_n come back unchanged: the composition
+    // addresses the seed by them, and the voice cell refuses a seed without
+    // its call and renewal_n (`missing_renewal_n`).
     assert_eq!(a.hop["session_id"], "c-1", "the session_id given back");
     assert!(!a.hop.contains_key("refused") && !a.hop.contains_key("degraded"));
     let msgs = a.messages();
@@ -458,17 +484,18 @@ fn judge_context_answers_seed_ask() {
         .map(|m| m["text"].as_str().unwrap().len().div_ceil(3))
         .sum();
     assert_eq!(a.body["est_tokens"], json!(est));
-    // The same structure as the route's judge.
-    let judge = &a.body["judge"];
+    // The read context the view is built out of, under a neutral key.
+    assert!(a.body.get("judge").is_none(), "{:?}", a.body);
+    let judge = &a.body["context"];
     assert_eq!(
         judge_keys(judge),
-        ["now", "place", "screen", "topic", "turns"]
+        ["now", "parts", "place", "topic", "turns"]
     );
     assert_eq!(turns_of(judge).len(), 4);
 
     // The line went with that seed.
     assert!(
-        h.state("judge:seed_line:c-1:wind_down").is_empty(),
+        h.state(r#"seed_line:["c-1","tail",2]"#).is_empty(),
         "the line is dropped"
     );
     let again = seed_ask(&h, "c-1", 3, json!(ROUND_E));
@@ -512,8 +539,8 @@ fn judge_context_answers_seed_ask() {
     let run = drive(
         &h,
         "in_seed_ask",
-        json!({"call_id": "c-1", "audience_set": null}),
-        json!({"call_id": "c-1", "renewal_n": 4}),
+        json!({"live": "c-1", "audience_set": null}),
+        json!({"live": "c-1", "renewal_n": 4}),
         json!({"messages": []}),
     );
     let a = the_answer(&run, "seed");
@@ -534,7 +561,7 @@ fn judge_context_answers_seed_ask() {
             )
         })
     };
-    for lane in ["in_seed_ask", "in_seed_line", "in_screen_topics"] {
+    for lane in ["in_seed_ask", "in_seed_line", "in_part"] {
         let hop = obj(json!({"route": lane}));
         let to: Vec<&str> = edges
             .iter()
@@ -547,7 +574,7 @@ fn judge_context_answers_seed_ask() {
         json!({"cur_origin": "curator-history", "cur_phase": "seed-blocks",
                          "audience_set": ROUND_E}),
     );
-    let hop = obj(json!({"route": "seed", "call_id": "c-9", "renewal_n": 1}));
+    let hop = obj(json!({"route": "seed", "live": "c-9", "renewal_n": 1}));
     let exits: Vec<&Value> = edges
         .iter()
         .filter(|e| e["from"] == "./history" && pass(e, &ctx, &hop))
@@ -560,7 +587,7 @@ fn judge_context_answers_seed_ask() {
         &Headers::from_parts(ctx.clone(), hop.clone()),
     )
     .expect("the modifier applies");
-    assert_eq!(out.context["call_id"], "c-9");
+    assert_eq!(out.context["live"], "c-9");
     for k in ["cur_origin", "cur_phase", "cur_call", "cur_reason"] {
         assert!(!out.context.contains_key(k), "{k} never leaves the hive");
     }
@@ -572,12 +599,7 @@ fn judge_context_answers_seed_ask() {
             .map(|l| l["route"].as_str().unwrap().to_string())
             .collect()
     };
-    for lane in [
-        "in_seed_ask",
-        "in_seed_line",
-        "in_screen_topics",
-        "in_delta_stamp",
-    ] {
+    for lane in ["in_seed_ask", "in_seed_line", "in_part", "in_delta_stamp"] {
         assert!(routes("accepts").contains(&lane.to_string()), "{lane}");
     }
     for route in ["seed", "live_feed", "propose"] {
@@ -593,14 +615,24 @@ fn judge_context_answers_seed_ask() {
     }
 }
 
+/// The place a line of today's senders names since D58 judge (GH #1480):
+/// `in_seed_line` knows no kind any more; the set's `identity` sender is a head
+/// line that lasts, its `hint` and `wind_down` senders are tail lines of the
+/// running session at orders 1 and 2 (the anchor's shipped order 1.5 between).
+fn place(kind: &str) -> Value {
+    match kind {
+        "identity" => json!({"position": "head", "lasts": "always"}),
+        "hint" => json!({"position": "tail", "order": 1, "lasts": "session"}),
+        "wind_down" => json!({"position": "tail", "order": 2, "lasts": "session"}),
+        other => panic!("no sender of kind {other}"),
+    }
+}
+
 fn seed_line(h: &Hive, call: &str, kind: &str, text: &str) {
-    let run = drive(
-        h,
-        "in_seed_line",
-        json!({}),
-        json!({}),
-        json!({"call_id": call, "kind": kind, "text": text}),
-    );
+    let mut body = place(kind);
+    body["live"] = json!(call);
+    body["text"] = json!(text);
+    let run = drive(h, "in_seed_line", json!({}), json!({}), body);
     assert!(run.out.is_empty(), "nothing answers a seed line");
 }
 
@@ -618,8 +650,8 @@ fn seed_lines_are_kept_per_kind() {
     seed_line(&h, "c-1", "hint", "Ask about the tulips.");
     seed_line(&h, "c-2", "wind_down", "Another call ends.");
     assert_eq!(
-        h.state("judge:seed_line:c-1:hint"),
-        r#"{"kind":"hint","text":"Ask about the tulips."}"#,
+        h.state(r#"seed_line:["c-1","tail",1]"#),
+        r#"{"lasts":"session","order":1,"position":"tail","text":"Ask about the tulips."}"#,
         "the newer hint replaced the older one"
     );
 
@@ -648,9 +680,9 @@ fn seed_lines_are_kept_per_kind() {
     assert_eq!(a.body["est_tokens"], json!(est));
 
     // Both went with that seed; another call's line stays for its own seed.
-    assert!(h.state("judge:seed_line:c-1:hint").is_empty());
-    assert!(h.state("judge:seed_line:c-1:wind_down").is_empty());
-    assert!(!h.state("judge:seed_line:c-2:wind_down").is_empty());
+    assert!(h.state(r#"seed_line:["c-1","tail",1]"#).is_empty());
+    assert!(h.state(r#"seed_line:["c-1","tail",2]"#).is_empty());
+    assert!(!h.state(r#"seed_line:["c-2","tail",2]"#).is_empty());
     let again = seed_ask(&h, "c-1", 2, json!(ROUND_E));
     let last = again.messages().last().cloned().unwrap();
     assert_eq!(last["role"], "assistant", "no line any more: {last}");
@@ -663,6 +695,43 @@ fn seed_lines_are_kept_per_kind() {
     assert_eq!(msgs[msgs.len() - 2]["role"], "assistant");
 }
 
+/// One contribution on `in_part` (D58 GH #1480): `value` None leaves the
+/// field out (a body out of form), `subject` "" none.
+fn put_part(h: &Hive, source: &str, value: Option<Value>, subject: &str) -> Run {
+    let mut body = json!({"messages": [], "target": "decide", "source": source});
+    if let Some(v) = value {
+        body["value"] = v;
+    }
+    if !subject.is_empty() {
+        body["subject"] = json!(subject);
+    }
+    drive(h, "in_part", json!({}), json!({}), body)
+}
+
+/// The leaf of `source` in the family `decide` of a view, Null when it holds
+/// none.
+fn decide_leaf(view: &Msg, source: &str) -> Value {
+    view.body["system"]["decide"]
+        .get(source)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// A structured leaf read back from its JSON text (the curator keeps the
+/// value as it came and hands it on as one text, never read).
+fn leaf_json(leaf: &Value) -> Value {
+    let text = leaf["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a leaf is {{\"text\": ...}}: {leaf}"));
+    sj::from_str(text).unwrap_or_else(|_| json!(text))
+}
+
+/// D58 GH #1480 (was the judge package's `screen.topics`): the presenter's
+/// screen topics reach the judge as the presenter's contribution to the
+/// target `decide` -- one leaf `system.decide.presenter` of the view, kept
+/// as told (the value is never read: a nameless topic is the route's to
+/// leave out, `kept_topics`), a new list replaces the old one whole, and the
+/// seed of a session whose target is `decide` names them as facts.
 #[test]
 fn judge_context_holds_the_screen_topics() {
     let mut h = Hive::new();
@@ -674,8 +743,8 @@ fn judge_context_holds_the_screen_topics() {
         "show me the photos",
         "here they are",
     );
-    let topics = |h: &Hive| ask_judge(h, "t2", 3).body["judge"]["screen"]["topics"].clone();
-    assert_eq!(topics(&h), json!([]), "nothing told, nothing held");
+    let topics = |h: &Hive| decide_leaf(&ask_judge(h, "t2", 3), "presenter");
+    assert_eq!(topics(&h), Value::Null, "nothing told, nothing held");
 
     let first = json!([
         {"name": "weather", "purpose": "the forecast"},
@@ -684,92 +753,72 @@ fn judge_context_holds_the_screen_topics() {
                         {"key": "p2", "describe": "the garden"}]},
         {"purpose": "a topic without a name"}
     ]);
-    let run = drive(
-        &h,
-        "in_screen_topics",
-        json!({}),
-        json!({}),
-        json!({"topics": first}),
-    );
+    let run = put_part(&h, "presenter", Some(first.clone()), "");
     assert!(run.out.is_empty(), "nothing answers the topics");
     assert_eq!(
-        topics(&h),
-        json!([
-            {"name": "weather", "purpose": "the forecast"},
-            {"name": "photos", "purpose": "family pictures",
-             "candidates": [{"key": "p1", "describe": "the lake"},
-                            {"key": "p2", "describe": "the garden"}]}
-        ]),
-        "kept as told, the nameless one left out"
+        leaf_json(&topics(&h)),
+        first,
+        "kept as told, whole and unread: {:?}",
+        run.stderr
     );
     // A new list replaces the old one whole.
-    drive(
-        &h,
-        "in_screen_topics",
-        json!({}),
-        json!({}),
-        json!({"topics": [{"name": "calendar", "purpose": "the week"}]}),
-    );
-    assert_eq!(
-        topics(&h),
-        json!([{"name": "calendar", "purpose": "the week"}])
-    );
-    // The seed names them as facts.
-    let seed = seed_ask(&h, "c-1", 0, json!(ROUND_E));
+    let calendar = json!([{"name": "calendar", "purpose": "the week"}]);
+    put_part(&h, "presenter", Some(calendar.clone()), "");
+    assert_eq!(leaf_json(&topics(&h)), calendar);
+    // The seed of a session for the target names them as facts.
+    let seed_of = |h: &Hive| {
+        seed_ask_with(
+            h,
+            &[("seed_target", json!("decide"))],
+            "c-1",
+            0,
+            json!(ROUND_E),
+        )
+    };
+    let seed = seed_of(&h);
     let fact = seed.messages()[0]["text"].as_str().unwrap().to_string();
-    assert!(fact.contains("screen topics: calendar"), "{fact}");
+    assert!(fact.contains("presenter: calendar"), "{fact}");
     assert_eq!(
-        seed.body["judge"]["screen"]["topics"],
-        json!([{"name": "calendar", "purpose": "the week"}])
+        leaf_json(&seed.body["context"]["parts"]["presenter"]),
+        calendar
     );
-    // A body without a list keeps the list; an empty list empties it.
-    drive(
-        &h,
-        "in_screen_topics",
-        json!({}),
-        json!({}),
-        json!({"topics": "calendar"}),
-    );
-    assert_eq!(
-        topics(&h),
-        json!([{"name": "calendar", "purpose": "the week"}])
-    );
-    drive(
-        &h,
-        "in_screen_topics",
-        json!({}),
-        json!({}),
-        json!({"topics": []}),
-    );
-    assert_eq!(topics(&h), json!([]));
+    // A body without a value keeps the list; an empty list empties it.
+    put_part(&h, "presenter", None, "");
+    assert_eq!(leaf_json(&topics(&h)), calendar);
+    put_part(&h, "presenter", Some(json!([])), "");
+    assert_eq!(leaf_json(&topics(&h)), json!([]));
+    let fact = seed_of(&h).messages()[0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!fact.contains("presenter:"), "no topic, no fact: {fact}");
 }
 
 #[test]
-fn turns_ask_without_judge_is_byte_identical() {
+fn a_view_without_a_target_reads_as_the_turns_ask_did() {
     let mut h = Hive::new();
     exchange(&mut h, 1, "s-now", "t1", "first", "one");
     exchange(&mut h, 3, "s-now", "t2", "second", "two");
     h.mark(at(4), "s-now", "t2", "topic", &topic("weather", "start"));
     h.row(at(5), "s-now", "t3", "user", &user("now"), 1);
-    drive(
+    put_part(
         &h,
-        "in_screen_topics",
-        json!({}),
-        json!({}),
-        json!({"topics": [{"name": "weather", "purpose": "the forecast"}]}),
+        "presenter",
+        Some(json!([{"name": "weather", "purpose": "the forecast"}])),
+        "",
     );
 
     let ask = |q: Value| {
         drive(
             &h,
-            "in_turns_ask",
+            "in_view_ask",
             json!({"session_id": "s-now", "turn_id": "t3"}),
             json!({}),
-            json!({"messages": [], "turns_ask": q}),
+            json!({"messages": [], "view_ask": q}),
         )
     };
-    let plain = ask(json!({"n": 2, "budget_tokens": 1500}));
-    let off = ask(json!({"n": 2, "budget_tokens": 1500, "judge": false}));
+    let plain = ask(json!({"turns": 2, "budget_tokens": 1500}));
+    let off = ask(json!({"turns": 2, "budget_tokens": 1500, "target": ""}));
     let text = |r: &Run| -> Vec<String> {
         r.store
             .iter()
@@ -783,7 +832,7 @@ fn turns_ask_without_judge_is_byte_identical() {
             })
             .collect()
     };
-    assert_eq!(text(&plain), text(&off), "judge false is no judge");
+    assert_eq!(text(&plain), text(&off), "an empty target is none");
     // The reads and the answer of GH #1304, nothing beside them.
     assert_eq!(plain.store.len(), 2, "rows, then blocks");
     let first = plain.store[0].messages();
@@ -802,43 +851,55 @@ fn turns_ask_without_judge_is_byte_identical() {
         plain.store[0].hop["cur_reason"],
         json!(r#"{"budget": 1500, "limit": 8, "n": 2}"#)
     );
-    let a = the_answer(&plain, "turns");
+    let a = the_answer(&plain, "view");
     let mut keys: Vec<&String> = a.body.keys().collect();
     keys.sort();
-    assert_eq!(keys, ["messages", "truncated", "turns"], "no `judge`");
+    assert_eq!(keys, ["messages", "truncated"], "no system part");
     assert_eq!(
         Value::Object(a.hop.clone()),
-        json!({"route": "turns"}),
-        "the hop of GH #1304"
+        json!({"route": "view"}),
+        "the hop of a view"
     );
     assert_eq!(
-        a.body["turns"],
-        json!([{"turn_id": "t1", "text": "first"}, {"turn_id": "t2", "text": "second"}])
+        a.body["messages"],
+        json!([{"origin": "user", "type": "text", "text": "first"},
+               {"origin": "user", "type": "text", "text": "second"}]),
+        "the person's words alone, as GH #1304 gave them"
     );
-    // With `judge` the person's turns are the same, `judge` beside them.
-    let with = ask(json!({"n": 2, "budget_tokens": 1500, "judge": true}));
-    let b = the_answer(&with, "turns");
-    assert_eq!(b.body["turns"], a.body["turns"]);
+    // With a target both sides speak and the system tree stands beside them.
+    let with = ask(json!({"turns": 2, "budget_tokens": 1500, "target": "decide"}));
+    let b = the_answer(&with, "view");
+    assert_eq!(
+        said_of(&b),
+        [
+            s("user", "first"),
+            s("assistant", "one"),
+            s("user", "second"),
+            s("assistant", "two")
+        ]
+    );
     assert_eq!(b.body["truncated"], a.body["truncated"]);
     assert_eq!(b.hop, a.hop);
-    assert!(b.body["judge"].is_object());
+    assert!(b.body["system"].is_object());
 }
 
-/// One curate of `turn` into the hive, `hints` the collector's slot when given
-/// (#1279: what the affinity brief brought back for the round's person).
+/// One curate of `turn` into the hive, `hints` the collector's contribution
+/// when given (#1279: what the affinity brief brought back for the round's
+/// person; D58 GH #1480: one entry of the curate's `parts`, source
+/// `affinity`, for the target `decide`, about the round's person).
 fn curate_with_hints(h: &mut Hive, turn: &str, iter: &str, hints: Option<Value>) {
     curate_with_hints_of(h, turn, iter, hints, "member:e");
 }
 
-/// [`curate_with_hints`] with the subject the brief was about (`hints_of`).
+/// [`curate_with_hints`] with the subject the brief was about.
 fn curate_with_hints_of(h: &mut Hive, turn: &str, iter: &str, hints: Option<Value>, of: &str) {
     let hop = json!({"session_id": "s-now", "turn_id": turn, "iter": iter, "phase": ""});
     let ctx = json!({"session_id": "s-now", "turn_id": turn, "iter": iter,
                      "channel": "test", "audience_set": ROUND_E});
     let mut body = json!({"messages": [user("the choir, search please")]});
     if let Some(v) = hints {
-        body["hints"] = v;
-        body["hints_of"] = json!(of);
+        body["parts"] = json!([{"target": "decide", "source": "affinity", "value": v,
+                                "subject": of}]);
     }
     h.lane("in_curate", ctx, hop, body);
 }
@@ -848,23 +909,32 @@ fn clarify_hints() -> Value {
             "class": "simple"}])
 }
 
-/// The person's kept hints row: the hints and the round they were brought in.
+/// The person's kept hints row: the contribution of `affinity` to `decide`
+/// about `member:e`, with the round it was brought in.
 fn kept_hints(h: &Hive) -> Value {
-    sj::from_str::<Value>(&h.state("judge:hints:member:e")).unwrap_or(Value::Null)
+    sj::from_str::<Value>(&h.state(r#"part:["decide","member:e","affinity"]"#))
+        .unwrap_or(Value::Null)
 }
 
-/// The judge of turn t3 in `round`.
-fn judge_in(h: &Hive, round: &str) -> Value {
+/// The judge's view (target `decide`) of turn t3 in `round`.
+fn judge_in(h: &Hive, round: &str) -> Msg {
     let run = drive(
         h,
-        "in_turns_ask",
+        "in_view_ask",
         json!({"session_id": "s-now", "turn_id": "t3", "audience_set": round}),
         json!({}),
-        json!({"messages": [], "turns_ask": {"n": 2, "budget_tokens": 1500, "judge": true}}),
+        json!({"messages": [], "view_ask": {"target": "decide", "turns": 2,
+                                            "budget_tokens": 1500}}),
     );
-    the_answer(&run, "turns").body["judge"].clone()
+    the_answer(&run, "view")
 }
 
+/// D58 GH #1480 (was the judge package's `hints` and the rows
+/// `judge:hints:<person>`): the person's how-questions ride on the curate as
+/// the collector's contribution about the round's person; the curator keeps
+/// them with the round, and the view of that person's next turn carries them
+/// as the leaf `system.decide.affinity` -- the view of another person, or of
+/// a round the hints were not brought in, does not.
 #[test]
 fn judge_context_carries_the_persons_hints() {
     let mut h = Hive::new();
@@ -880,57 +950,85 @@ fn judge_context_carries_the_persons_hints() {
     curate_with_hints(&mut h, "t2", "0", Some(clarify_hints()));
     assert_eq!(
         kept_hints(&h),
-        json!({"hints": clarify_hints(), "round": ["member:e"]}),
+        json!({"source": "affinity", "subject": "member:e", "round": ["member:e"],
+               "value": clarify_hints()}),
         "the curator keeps them for the person, with their round: {:?}",
         h.stderr
     );
-    // The next turn of the same person: the judge carries them.
-    let judge = ask_judge(&h, "t3", 2).body["judge"].clone();
-    assert_eq!(judge["hints"], clarify_hints(), "{judge}");
-    // Another person's turn: none of them.
-    let run = drive(
-        &h,
-        "in_turns_ask",
-        json!({"session_id": "s-now", "turn_id": "t3", "audience_set": "[\"member:f\"]"}),
-        json!({}),
-        json!({"messages": [], "turns_ask": {"n": 2, "budget_tokens": 1500, "judge": true}}),
+    // The next turn of the same person: the view carries them.
+    let view = ask_judge(&h, "t3", 2);
+    assert_eq!(
+        leaf_json(&decide_leaf(&view, "affinity")),
+        clarify_hints(),
+        "{:?}",
+        view.body
     );
-    let other = the_answer(&run, "turns").body["judge"].clone();
-    assert!(other.get("hints").is_none(), "{other}");
+    // Another person's turn: none of them.
+    let other = judge_in(&h, "[\"member:f\"]");
+    assert_eq!(
+        decide_leaf(&other, "affinity"),
+        Value::Null,
+        "{:?}",
+        other.body
+    );
     // The same person in a wider round (another agent beside): the hints were
     // brought for a round this one is no subset of, so none of them (R-AF-3).
     let wider = judge_in(&h, "[\"agent:x\",\"member:e\"]");
-    assert!(wider.get("hints").is_none(), "{wider}");
+    assert_eq!(
+        decide_leaf(&wider, "affinity"),
+        Value::Null,
+        "{:?}",
+        wider.body
+    );
     // A later iteration of a round writes nothing again; a curate without the
-    // slot (the knob off) keeps what stands and writes nothing.
+    // contribution (the knob off) keeps what stands and writes nothing.
     curate_with_hints(&mut h, "t3", "1", Some(json!([])));
     curate_with_hints(&mut h, "t4", "0", None);
-    assert_eq!(kept_hints(&h)["hints"], clarify_hints());
+    assert_eq!(kept_hints(&h)["value"], clarify_hints());
     // A brief about somebody else than the round's person (a counterpart
     // outside the round) is kept under nobody.
     curate_with_hints_of(&mut h, "t4", "0", Some(json!([])), "peer:north");
-    assert_eq!(kept_hints(&h)["hints"], clarify_hints());
-    // An empty list from the brief replaces them: no hint, no field.
+    assert_eq!(kept_hints(&h)["value"], clarify_hints());
+    assert!(
+        h.rows("SELECT key FROM state WHERE key LIKE 'part:%peer:north%'")
+            .is_empty(),
+        "nothing kept about the counterpart"
+    );
+    // An empty list from the brief replaces them: no hint reaches the judge.
     curate_with_hints(&mut h, "t5", "0", Some(json!([])));
-    let judge = ask_judge(&h, "t6", 2).body["judge"].clone();
-    assert!(judge.get("hints").is_none(), "{judge}");
+    let view = ask_judge(&h, "t6", 2);
+    assert_eq!(leaf_json(&decide_leaf(&view, "affinity")), json!([]));
+    assert!(
+        !chain_decide_state(&view).contains("How this person"),
+        "an empty list renders no hint"
+    );
 }
 
+/// D58 GH #1480 (was: the judge package holds exactly its five fields of
+/// before): a curate without the contribution keeps no row, and the view of
+/// the next turn carries the tree of before -- the moment, no topic without
+/// a topic mark, no family without a contribution -- so the route's decide
+/// text has no hint block.
 #[test]
 fn judge_without_hints_reads_as_before() {
     let mut h = Hive::new();
     exchange(&mut h, 1, "s-now", "t1", "hello", "hi");
     curate_with_hints(&mut h, "t2", "0", None);
     assert!(
-        h.rows("SELECT key FROM state WHERE key LIKE 'judge:hints:%'")
+        h.rows("SELECT key FROM state WHERE key LIKE 'part:%'")
             .is_empty(),
-        "no slot, no row"
+        "no contribution, no row"
     );
-    let judge = ask_judge(&h, "t3", 2).body["judge"].clone();
-    assert_eq!(
-        judge_keys(&judge),
-        ["now", "place", "screen", "topic", "turns"],
-        "{judge}"
+    let view = ask_judge(&h, "t3", 2);
+    let system = view.body["system"]
+        .as_object()
+        .unwrap_or_else(|| panic!("a view for a target carries a system tree: {:?}", view.body));
+    let mut keys: Vec<&String> = system.keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["frame"], "{:?}", view.body);
+    assert!(
+        !chain_decide_state(&view).contains("How this person"),
+        "no hint block"
     );
 }
 
@@ -1016,12 +1114,16 @@ fn chain_brief(raised: &Value) -> Value {
     panic!("the brief never answered");
 }
 
-/// The collector's whole turn with `brief_hints` "1": the turn raises the
-/// brief, the brief's answer comes home on `in_briefing`, and the fan-in
-/// opens the turn on `curate`.
+/// The collector's whole turn with `brief_hints` "1" and the hints a
+/// contribution to the judge's view (`part_target` `decide`, as talky sets
+/// it; D58 GH #1480): the turn raises the brief, the brief's answer comes home
+/// on `in_briefing`, and the fan-in opens the turn on `curate`.
 fn chain_curate() -> Value {
     use assemble_cell::{assemble, bundle_reply, calls_of, in_phase, lane};
-    let knob = [("brief_hints", json!("1"))];
+    let knob = [
+        ("brief_hints", json!("1")),
+        ("part_target", json!("decide")),
+    ];
     let ctx = json!({"turn_id": CHAIN_TURN, "channel": "tg:1",
                      "audience_set": CHAIN_ROUND, "assistant": "alpha"});
     let said = json!([{"origin": "user", "type": "text", "text": "the choir, search please"}]);
@@ -1065,17 +1167,18 @@ fn chain_curate() -> Value {
         .expect("the turn opens on curate")
 }
 
-/// `./route`'s decide state for the judge `./history` answered with.
-fn chain_decide_state(turns: &Msg) -> String {
+/// `./route`'s decide state for the view `./history` answered with (D58 GH
+/// #1480: the view comes back on `in_view`, its `messages` as the lane's and
+/// its `system` tree beside them, as the curator hive hands it on).
+fn chain_decide_state(view: &Msg) -> String {
     let mut doc = assemble_cell::lane(
-        "in_turns",
+        "in_view",
         json!({"state": "the choir, search please",
                "asked_at": (assemble_cell::now_ms() + 3_600_000).to_string()}),
         json!({"turn_id": "t3", "channel": "tg:1", "audience_set": CHAIN_ROUND}),
-        json!([]),
+        view.body.get("messages").cloned().unwrap_or(json!([])),
     );
-    doc["turns"] = turns.body.get("turns").cloned().unwrap_or(json!([]));
-    doc["judge"] = turns.body["judge"].clone();
+    doc["system"] = view.body["system"].clone();
     let (out, err) = assemble_cell::run_cell(
         "templates/talky/route/config.json",
         &[("judge_context", json!("1"))],
@@ -1101,7 +1204,14 @@ fn one_hint_travels_from_the_brief_to_the_route() {
     let curate = chain_curate();
     let expected = json!([{"question": "Its concerts or its website?",
                            "answer": "its concerts", "class": "simple"}]);
-    assert_eq!(curate["hints"], expected, "{curate}");
+    // D58 GH #1480: the hints ride on the curate as a contribution to the
+    // judge's view, about the round's one person.
+    assert_eq!(
+        curate["parts"],
+        json!([{"target": "decide", "source": "affinity", "value": expected,
+                "subject": "member:e"}]),
+        "{curate}"
+    );
 
     let mut h = Hive::new();
     exchange(
@@ -1124,18 +1234,21 @@ fn one_hint_travels_from_the_brief_to_the_route() {
     let ask = |round: &str| {
         let run = drive(
             &h,
-            "in_turns_ask",
+            "in_view_ask",
             json!({"session_id": "s-now", "turn_id": "t3", "audience_set": round}),
             json!({}),
-            json!({"messages": [], "turns_ask": {"n": 2, "budget_tokens": 1500, "judge": true}}),
+            json!({"messages": [], "view_ask": {"target": "decide", "turns": 2,
+                                                "budget_tokens": 1500}}),
         );
-        the_answer(&run, "turns")
+        the_answer(&run, "view")
     };
     let same = ask(CHAIN_ROUND);
     assert_eq!(
-        same.body["judge"]["hints"], expected,
-        "{:?} {:?}",
-        same.body, h.stderr
+        same.body["system"]["decide"]["affinity"]["text"],
+        json!(sj::to_string(&expected).expect("json")),
+        "the view of the person's next turn carries the hints as its leaf: {:?} {:?}",
+        same.body,
+        h.stderr
     );
     let state = chain_decide_state(&same);
     assert!(
@@ -1148,7 +1261,7 @@ fn one_hint_travels_from_the_brief_to_the_route() {
 
     let other = ask("[\"agent:alpha\",\"member:f\"]");
     assert!(
-        other.body["judge"].get("hints").is_none(),
+        other.body["system"]["decide"].get("affinity").is_none(),
         "{:?}",
         other.body
     );
@@ -1219,8 +1332,8 @@ fn seed_entries_max_keeps_the_best_ranked_notes() {
         &h,
         &[("seed_entries_max", json!(5))],
         "in_seed_ask",
-        json!({"call_id": "c-1", "audience_set": ROUND_E}),
-        json!({"call_id": "c-1", "session_id": "c-1", "reason": "start", "renewal_n": 0}),
+        json!({"live": "c-1", "audience_set": ROUND_E}),
+        json!({"live": "c-1", "session_id": "c-1", "reason": "start", "renewal_n": 0}),
         json!({"messages": []}),
     );
     // The cut is said, not silent (R-IG-1): how many notes stood out.
@@ -1381,13 +1494,17 @@ async fn seed_from_history_reaches_the_voice_session_unchanged() {
     let mut ask_hop = ask["header"].as_object().cloned().expect("a header");
     ask_hop.remove("route");
     let call = ask_hop["call_id"].clone();
+    // D58 live (GH #1482): the composition translates the voice's call into
+    // the handle `live` on the way in (plan `u-live.md` contract point 2) --
+    // the curator reads no `call_id`.
+    ask_hop.insert("live".into(), call.clone());
 
-    // The set lifts the call and the round into the context (its edge #11).
+    // The set lifts the handle and the round into the context (its edge #11).
     let a = tokio::task::block_in_place(|| {
         let run = drive(
             &h,
             "in_seed_ask",
-            json!({"call_id": call, "audience_set": ROUND_E}),
+            json!({"live": call, "audience_set": ROUND_E}),
             Value::Object(ask_hop.clone()),
             json!({"messages": []}),
         );
@@ -1397,10 +1514,16 @@ async fn seed_from_history_reaches_the_voice_session_unchanged() {
     let out = through_the_seed_exit(&a);
     let mut hop = out.hop.clone();
     hop.insert("route".into(), json!("in_seed"));
+    // ... and back on the way out: the voice cell keeps `call_id` (contract
+    // point 2), the composition sets it from the handle the seed carries.
+    assert_eq!(hop.get("live"), Some(&call), "the seed carries the handle");
+    hop.insert("call_id".into(), call.clone());
+    let mut back = out.context.clone();
+    back.insert("call_id".into(), call.clone());
     live.send(
         MessageBuilder::new(Path::new("/voice"))
             .hop(hop)
-            .context(out.context.clone())
+            .context(back)
             .body(Body::Inline(Value::Object(a.body.clone())))
             .build(),
     )
@@ -1430,11 +1553,11 @@ async fn seed_from_history_reaches_the_voice_session_unchanged() {
 }
 
 /// live-2 #1370 (K6): the `live_feed` seam. The collector's `curate` head carries
-/// neither `engine` nor `call_id`; the member promotes `engine` into the context
-/// (`templates/member/config.json`, edge onto `in_turn`) and the set puts the
-/// call there, and the policy reads both from the context. The collector's
-/// emission goes unchanged onto `in_curate`; after the closed duplex turn ONE
-/// `live_feed` leaves for the call.
+/// neither `engine`, `call_id` nor `live`; the composition's edges set the
+/// handle `live` into the context (D58 live: from `engine` "duplex" and the
+/// call), and the policy reads it from there. The collector's emission goes
+/// unchanged onto `in_curate`; after the closed turn of the running session
+/// ONE `live_feed` leaves for the handle.
 #[test]
 fn live_feed_from_a_collector_curate_with_the_members_context() {
     use assemble_cell::{assemble, bundle_reply};
@@ -1445,8 +1568,7 @@ fn live_feed_from_a_collector_curate_with_the_members_context() {
                                                   "text": "and then?"}],
                                        "deferred": 0, "deferred_turns": []}).to_string()});
     let mut reply = bundle_reply("collect", TURN, &[("c-collect-read", json!([window]))]);
-    reply["header"]["context"]["engine"] = json!("duplex");
-    reply["header"]["context"]["call_id"] = json!("call-9");
+    reply["header"]["context"]["live"] = json!("call-9");
     let ctx_in = reply["header"]["context"].clone();
     let curate = assemble(&[], reply)
         .into_iter()
@@ -1454,7 +1576,7 @@ fn live_feed_from_a_collector_curate_with_the_members_context() {
         .expect("the turn opens on curate");
     let mut hop = curate["header"].as_object().cloned().expect("a header");
     let carried = hop.remove("context");
-    for k in ["engine", "call_id"] {
+    for k in ["engine", "call_id", "live"] {
         assert!(
             !hop.contains_key(k),
             "the curate head carries no {k}: {hop:?}"
@@ -1472,10 +1594,7 @@ fn live_feed_from_a_collector_curate_with_the_members_context() {
     let mut body = curate.clone();
     body.as_object_mut().unwrap().remove("header");
 
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "live_feed", json!("1")),
-    ]);
+    let mut h = Hive::with(&[("policy", "live_feed", json!("1"))]).reporting_composite("talky");
     clear_of_midnight();
     h.mark(
         backdated(50),
@@ -1491,23 +1610,24 @@ fn live_feed_from_a_collector_curate_with_the_members_context() {
     h.tap(&calls[0], "stop", json!({}), json!([said("fine")]));
     let feeds = h.routed("live_feed");
     assert_eq!(feeds.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    assert_eq!(feeds[0].hop["call_id"], json!("call-9"));
+    assert_eq!(feeds[0].hop["live"], json!("call-9"));
     assert_eq!(feeds[0].hop["section"], json!("renew"));
 }
 
 // ═══════════════════ live-2 fx-call (#1369): what a call carried, at its end
 
-/// The end of a call (`in_call_end`, the final `usage` of the voice cell the
-/// set draws here) run to its one answer.
+/// The end of a call (`in_live_end` under the handle `live`, D58 GH #1482;
+/// the final `usage` of the voice cell the set draws here) run to its one
+/// answer.
 fn call_end(h: &Hive, call: &str, round: Value) -> Msg {
     let run = drive(
         h,
-        "in_call_end",
-        json!({"call_id": call, "audience_set": round}),
-        json!({"call_id": call, "session_id": call, "final": true, "seconds": 312}),
+        "in_live_end",
+        json!({"live": call, "audience_set": round}),
+        json!({"live": call, "session_id": call, "final": true, "seconds": 312}),
         json!({"messages": []}),
     );
-    the_answer(&run, "call_facts")
+    the_answer(&run, "live_facts")
 }
 
 /// A seed went out for `c-1` with a note and a topic, the voice delegated
@@ -1542,9 +1662,9 @@ fn call_facts_tell_the_seed_and_the_delegations_of_the_call() {
     );
 
     let a = call_end(&h, "c-1", json!(ROUND_E));
-    assert_eq!(a.hop["call_id"], "c-1");
+    assert_eq!(a.hop["live"], "c-1");
     assert_eq!(a.hop["session_id"], "c-1");
-    assert_eq!(a.body["call_id"], "c-1");
+    assert_eq!(a.body["live"], "c-1");
     assert_eq!(a.body["session_id"], "c-1");
     assert_eq!(a.body["seed_used"], true);
     assert_eq!(
@@ -1583,6 +1703,24 @@ fn call_facts_without_a_seed_are_empty() {
     let refused = call_end(&h, "c-1", json!(null));
     assert_eq!(refused.hop["refused"], "no_round");
     assert_eq!(refused.body["seed_used"], false);
+
+    // Without the handle `live` it is no running session (D58 GH #1482,
+    // OR-d58-2.live.1): the voice's `call_id` alone counts for nothing, the
+    // session is no fallback -- refused, nothing read, one answer all the same.
+    let run = drive(
+        &h,
+        "in_live_end",
+        json!({"call_id": "c-1", "audience_set": ROUND_E}),
+        json!({"call_id": "c-1", "session_id": "c-1", "final": true}),
+        json!({"messages": []}),
+    );
+    let a = the_answer(&run, "live_facts");
+    assert!(
+        run.store.is_empty(),
+        "not one ledger read without the handle"
+    );
+    assert_eq!(a.hop["refused"], "no_live");
+    assert_eq!(a.body["seed_used"], false);
 }
 
 /// The end of ANOTHER call reads nothing of `c-1`: neither its seed nor its
@@ -1602,7 +1740,7 @@ fn call_facts_of_a_foreign_call_carry_nothing_of_this_one() {
         1,
     );
     let a = call_end(&h, "c-9", json!(ROUND_E));
-    assert_eq!(a.body["call_id"], "c-9");
+    assert_eq!(a.body["live"], "c-9");
     assert_eq!(a.body["seed_used"], false);
     assert_eq!(a.body["facts"], json!([]));
     assert_eq!(a.body["delegations"], json!([]));
@@ -1638,34 +1776,26 @@ fn a_delta_reads_the_round_not_the_calls_session() {
         }
         let run = drive(
             &h,
-            "in_turns_ask",
+            "in_view_ask",
             ctx,
             json!({}),
-            json!({"messages": [], "turns_ask": {"n": 4, "budget_tokens": 1500, "judge": true}}),
+            json!({"messages": [], "view_ask": {"target": "decide", "turns": 4, "budget_tokens": 1500}}),
         );
-        the_answer(&run, "turns")
+        the_answer(&run, "view")
     };
     let d = ask(true);
-    let persons: Vec<&str> = d.body["turns"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["text"].as_str().unwrap())
-        .collect();
-    assert_eq!(persons, ["how is the weather"], "{:?}", d.body);
     assert_eq!(
-        turns_of(&d.body["judge"]),
-        [
-            t("t1", "user", "how is the weather"),
-            t("t1", "assistant", "sunny")
-        ]
+        said_of(&d),
+        [s("user", "how is the weather"), s("assistant", "sunny")],
+        "{:?}",
+        d.body
     );
-    assert_eq!(d.body["judge"]["topic"], "weather");
+    assert_eq!(leaf_text(&d, "topic"), "weather");
     let plain = ask(false);
     assert_eq!(
-        plain.body["turns"],
+        plain.body["messages"],
         json!([]),
         "no delta: the session filter stands"
     );
-    assert_eq!(plain.body["judge"]["topic"], "");
+    assert_eq!(leaf_text(&plain, "topic"), "");
 }

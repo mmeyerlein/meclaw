@@ -1,4 +1,4 @@
-# `figure@2.0.20`
+# `figure@2.1.0`
 
 A character in a shared world, built as an onion: inside, an unchanged
 [`simple-agent@2`](../simple-agent/), the agent of a colony (one model behind a curator, a
@@ -201,6 +201,7 @@ required of the figure. The colony's manifest draws them; the figure draws none 
 | `affinity_propose` | out | the rim | -- | to the affinity's `in_propose`, `actor` from `hop.agent_id`, the subscriber of the enrolment's `subscribe` steps |
 | `in_propose_ack` | in | the rim, on to the agent | -- | the affinity's `ack` and `error` back |
 | `in_note` | in | `./simple-agent/curator` | -- | notes for the window |
+| `note_receipt` | out | the rim, from `./simple-agent` | -- | the answer to the sender of a shown `once` note with a `receipt` (D58 note, GH #1477); the sender of the notes draws where it goes |
 | `in_conversations` / `conversations` | in / out | the rim, on to the agent | -- | the conversations a reader may see |
 | `mutation_committed` | in | the rim, on to the agent | -- | the colony's commit receipts (the menu and the enrolment) |
 

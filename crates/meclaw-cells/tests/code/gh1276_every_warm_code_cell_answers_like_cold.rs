@@ -239,6 +239,8 @@ warm_cells! {
     affinity_porter: "affinity/porter",
     affinity_push: "affinity/push",
     archive_bridge: "archive-bridge",
+    // D58 followup (GH #1479): the cell that asks after an open concern once.
+    assistant_followup: "assistant/followup",
     chat_channel: "chat-channel",
     coder_pipeline_coderprep: "coder-pipeline/coderprep",
     coder_pipeline_collector: "coder-pipeline/collector",
@@ -249,9 +251,13 @@ warm_cells! {
     coder_pipeline_taskarchive: "coder-pipeline/taskarchive",
     cogny_ask: "cogny/ask",
     collector_assemble: "collector/assemble",
-    curator_lead: "curator/lead",
     curator_reader: "curator/reader",
     curator_writer: "curator/writer",
+    // The frozen `curator@1.25.0` (GH #1473), byte-equal to 1.25.0 of the
+    // living line: the same fixtures under its own directory.
+    curator_1_lead: "curator@1.25.0/lead",
+    curator_1_reader: "curator@1.25.0/reader",
+    curator_1_writer: "curator@1.25.0/writer",
     dispatcher: "dispatcher",
     door: "door",
     egon_persona: "egon/persona",
@@ -264,6 +270,9 @@ warm_cells! {
     firewall_warden: "firewall/warden",
     freeswitch_dial: "freeswitch/dial",
     freeswitch_signal: "freeswitch/signal",
+    // The lead left the curator as a hive of its own (GH #1474): the same
+    // fixture under the cell's new path.
+    lead_lead: "lead/lead",
     librarian_index: "librarian/index",
     librarian_query: "librarian/query",
     librarian_tools: "librarian/tools",

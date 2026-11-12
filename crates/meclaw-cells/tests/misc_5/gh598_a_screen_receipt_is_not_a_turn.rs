@@ -39,6 +39,7 @@
 //! rather than judged.
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
@@ -428,10 +429,15 @@ fn build_tree(td: &tempfile::TempDir, member: &std::path::Path, assistant: &std:
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![(
-            "code".to_string(),
-            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-        )]
+        // The shipped `assistant` level owns a store since `followup` (GH #1479): its
+        // `followup_store` boots as the real store, like the member's stores elsewhere.
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            ("store".to_string(), Arc::new(StoreCellFactory)),
+        ]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(64);

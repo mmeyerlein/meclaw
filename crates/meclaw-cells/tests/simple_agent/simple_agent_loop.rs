@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 
 const AGENT: &str = "/agent";
 const VAULT_PASSPHRASE: &[u8] = b"simple-agent-test-passphrase";
-const BRAIN_MODEL: &str = "brain-stub";
+pub(crate) const BRAIN_MODEL: &str = "brain-stub";
 /// The model the second brain (`strong`, plan A2) is born with in a run.
 pub(crate) const STRONG_MODEL: &str = "strong-stub";
 pub(crate) const AUDIENCE: &str = "[\"member:caller\"]";

@@ -13,16 +13,19 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
 
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("")),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -196,7 +199,7 @@ fn dropped_spec_call_books_its_cost() {
     assert_eq!(row[0][1], json!(10));
     assert_eq!(row[0][2], json!(5));
     assert_eq!(number(&row[0][3]), Some(0.0021), "{row:?}");
-    let marks = h.rows("SELECT value FROM marks WHERE kind = 'quick_spec'");
+    let marks = h.rows("SELECT value FROM marks WHERE kind = 'spec'");
     assert_eq!(marks.len(), 1, "{marks:?}");
     let m: Value = sj::from_str(marks[0][0].as_str().unwrap()).unwrap();
     assert_eq!(m["verdict"], json!("dropped"));

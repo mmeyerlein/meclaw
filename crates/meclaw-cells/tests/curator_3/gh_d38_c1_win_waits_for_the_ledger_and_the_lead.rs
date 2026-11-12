@@ -10,10 +10,16 @@
 //! half is out, the call stays parked under `pending:<call>` meanwhile, and
 //! exactly one call leaves after -- the same call. And the join ends without
 //! the policy's RAM too (a fresh child for every message, OR-d38-3.o9.4).
+//! Since GH #1474 the lead is a hive of its own beside the curator, wired by
+//! talky's shipped edges; its verdict is held on its lane `in_lead` at the
+//! curator's rim.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -27,8 +33,9 @@ fn parked(h: &Hive) -> Vec<String> {
         .filter(|k| {
             ![
                 "pending:horizon:",
-                "pending:interrupt:",
-                "pending:fact_tool:",
+                // D58 feed (GH #1481): the one claim of a feed replaced the
+                // claims `pending:interrupt:` and `pending:fact_tool:`.
+                "pending:feed:",
                 "pending:delegation:",
             ]
             .iter()
@@ -38,20 +45,37 @@ fn parked(h: &Hive) -> Vec<String> {
         .collect()
 }
 
-/// One talk turn under `hold`; returns the brain call's messages after the
-/// held half was let through.
-fn joined(hold: (&str, Option<&str>), cold: bool) -> Value {
+/// The half of `win` a run holds back.
+#[derive(Clone, Copy, Debug)]
+enum Half {
+    /// The ledger's answer to the reads of `win`.
+    Ledger,
+    /// The lead's verdict, on its lane `in_lead` at the curator's rim
+    /// (GH #1474: the lead is a hive of its own, no inner edge carries it).
+    Verdict,
+}
+
+/// One talk turn with `hold` held back; returns the brain call's messages
+/// after the held half was let through.
+fn joined(hold: Half, cold: bool) -> Value {
     assert!(
         lead_shipped(),
-        "templates/curator/lead/config.json is missing: the lead cell is not shipped (GH #1447)"
+        "templates/lead/lead/config.json is missing: the lead is not shipped (GH #1447, GH #1474)"
     );
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
+    assert!(
+        h.wired,
+        "the harness wires the lead as talky ships it (GH #1474)"
+    );
     if cold {
         h.run_cold("policy");
     }
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
     h.out.clear();
-    h.hold = Some((hold.0.to_string(), hold.1.map(str::to_string)));
+    match hold {
+        Half::Ledger => h.hold = Some(("./ledger".to_string(), Some("win".to_string()))),
+        Half::Verdict => h.hold_lane = Some(VERDICT_LANE.to_string()),
+    }
     let hop = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "phase": "",
                      "path": "talk", "needs": [], "families": []});
     let ctx = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "channel": "test",
@@ -96,8 +120,8 @@ fn win_starts_once_the_ledger_and_the_lead_are_in_whichever_comes_first() {
     if !shipped() {
         return;
     }
-    let legs_first = joined(("./lead", None), false);
-    let verdict_first = joined(("./ledger", Some("win")), false);
+    let legs_first = joined(Half::Verdict, false);
+    let verdict_first = joined(Half::Ledger, false);
     assert_eq!(
         legs_first, verdict_first,
         "the join's order changes nothing in the call"
@@ -113,9 +137,9 @@ fn the_join_ends_without_the_policys_ram_in_either_order() {
     if !shipped() {
         return;
     }
-    let resident = joined(("./lead", None), false);
-    let legs_first = joined(("./lead", None), true);
-    let verdict_first = joined(("./ledger", Some("win")), true);
+    let resident = joined(Half::Verdict, false);
+    let legs_first = joined(Half::Verdict, true);
+    let verdict_first = joined(Half::Ledger, true);
     assert_eq!(
         legs_first, resident,
         "cold, legs first: the call of the resident child"

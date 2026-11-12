@@ -1,133 +1,94 @@
-//! GH #1451 (D38 V2, fix round 1, review o15-Rv1 I1) -- the call whose seed
-//! carried the open wellbeing keeps it in its facts: a closed turn of that
-//! call sends no `live_feed`.
+//! GH #1451 (D38 V2, fix round 1, review o15-Rv1 I1) -- the call whose start
+//! window carried the open wellbeing is not fed it again.
+//! Since D58 followup (GH #1479) against the hive `assistant` and the curator.
 //!
-//! WHY this file exists: the seed of a call carries the line and, in the same
-//! bundle, books it `closed` (OR-d38-3.v.2); it writes the digest WITH the
-//! line under `seed_facts:<call>`. The live feed of that call compared
-//! against a state that read the closing mark as closed for the call too --
-//! no line, another digest, one needless `live_feed` and, under `renew`, a
-//! seed rebuilt without the line (the cache head broken). The call's own
-//! closing mark does not close the line for the call; every later call is
-//! closed. Pattern of `gh1436_e_an_aged_seed_is_not_fed_back.rs`.
+//! WHY this file exists: the seed of a call carried the line and booked it
+//! closed in the same bundle; the live feed of that call once compared
+//! against a state that read the line as closed for the call too -- one
+//! needless `live_feed` and, under `renew`, a seed rebuilt without it (the
+//! cache head broken). The concern is now a note of scope `once` from the cell
+//! `./followup` of `assistant`. The statements stay: a closed turn of the
+//! carrying call sends no `live_feed` with the concern (a `once` note never
+//! rides a live feed, note strand point 4); a renewed start window of the same
+//! call carries it on and answers no second receipt; a later call does not
+//! see it. Off, nothing is sent and nothing is shown.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
-// harness_fold: #[path = "support/history_judge.rs"]
+// harness_fold: #[path = "support/assistant_followup.rs"]
 #[allow(unused_imports)]
-use crate::history_judge; // harness_fold: mod history_judge;
+use crate::assistant_followup; // harness_fold: mod assistant_followup;
 
+use assistant_followup::*;
 use curator_hive::*;
-use history_judge::{history_params, only, seed_ask};
 use meclaw_core::serde_json::{Value, json};
 
 const CALL: &str = "call-9";
+const CLAIM: &str = "Ada feels unwell and slept badly.";
 
-fn closed_turn(h: &mut Hive, turn: &str) {
-    h.out.clear();
-    let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
-                     "path": "talk", "needs": "", "families": "",
-                     "engine": "duplex", "call_id": CALL});
-    let ctx = json!({"session_id": "s1", "turn_id": turn, "iter": "0",
-                     "channel": "test", "audience_set": ROUND_E, "path": "talk"});
-    h.lane(
-        "in_curate",
-        ctx,
-        hop,
-        json!({"messages": [user("and then?")]}),
-    );
-    let calls = h.routed("brain");
-    assert_eq!(calls.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    h.out.clear();
-    h.tap(&calls[0], "stop", json!({}), json!([said("fine")]));
+fn unwell() -> Value {
+    json!([fact("Ada", "has_symptom", CLAIM, None, true)])
 }
 
-fn unwell_today(knob: &str) -> Hive {
-    clear_of_midnight();
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "live_feed", json!("1")),
-        ("policy", "wellbeing_line", json!(knob)),
-        ("history", "wellbeing_line", json!(knob)),
-    ]);
-    let at = backdated(30);
-    h.row(at, "text-1", "t1", "user", &user("I feel unwell"), 1);
-    h.mark(
-        at + chrono::Duration::seconds(1),
-        "text-1",
-        "t1",
-        "fact",
-        &canonical(&json!({"subject": "Ada", "predicate": "has_symptom",
-                           "claim": "Ada feels unwell and slept badly.",
-                           "source": "person", "stance": "asserted",
-                           "wellbeing": true})),
-    );
-    h
-}
-
-fn wellbeing_lines(seed: &Msg) -> usize {
-    seed.messages()
-        .iter()
-        .filter_map(|m| m["text"].as_str())
-        .filter(|t| t.starts_with("Wellbeing: "))
-        .count()
-}
-
-/// Pin: seed with the open line, then a closed turn of the same call -- no
-/// feed, the call's facts stay the seed's; a later call sees no line.
+/// Pin: seed with the concern, then a closed turn of the same call -- no
+/// feed carries it; the renewal carries it on without a second receipt; a
+/// later call sees none.
 #[test]
 fn the_carrying_call_is_not_fed_its_line_again() {
     if !shipped() {
         return;
     }
-    let mut h = unwell_today("1");
-    let on = history_params(&[("wellbeing_line", json!("1"))], &["now_utc"]);
-    let seed = only(&seed_ask(&h, &on, CALL), "seed");
-    assert_eq!(wellbeing_lines(&seed), 1, "{:?}", seed.messages());
-    let held = h.state(&format!("seed_facts:{CALL}"));
-    assert!(
-        held.contains("wellbeing"),
-        "the seed's facts carry it: {held}"
+    let mut a = Assistant::on_at(NOON);
+    a.leave("./talky", memory_out("text-1", "t1", unwell()));
+    session_ends(&mut a, "./talky", "text-1");
+    let mut h = curator(&[("policy", "live_feed", json!("1"))]);
+    deliver_notes(&a, "./talky", &mut h);
+    let first = seed(&mut h, CALL, "start", 0);
+    assert_eq!(count_in(&first, CLAIM), 1, "{:?}", first.messages());
+    assert_eq!(h.routed("note_receipt").len(), 1, "{:?}", h.out);
+    closed_turn_of(&mut h, CALL, "t5");
+    let fed: Vec<Msg> = h
+        .routed("live_feed")
+        .into_iter()
+        .filter(|m| count_in(m, CLAIM) > 0 || format!("{:?}", m.body).contains(CLAIM))
+        .collect();
+    assert!(fed.is_empty(), "no feed with the concern: {fed:?}");
+    let again = seed(&mut h, CALL, "renew", 1);
+    assert_eq!(
+        count_in(&again, CLAIM),
+        1,
+        "the renewal carries it on: {:?}",
+        again.messages()
     );
-    closed_turn(&mut h, "t5");
     assert!(
-        h.routed("live_feed").is_empty(),
-        "no feed for the line the call already has: {:?}",
-        h.routed("live_feed")
+        h.routed("note_receipt").is_empty(),
+        "no second receipt: {:?}",
+        h.out
     );
-    assert_eq!(h.state(&format!("seed_facts:{CALL}")), held);
-    let later = only(&seed_ask(&h, &on, "call-10"), "seed");
-    assert_eq!(wellbeing_lines(&later), 0, "{:?}", later.messages());
+    let later = seed(&mut h, "call-10", "start", 0);
+    assert_eq!(count_in(&later, CLAIM), 0, "{:?}", later.messages());
 }
 
-/// Lock: a renewed seed of the carrying call carries the line on and books
-/// no second closing mark.
-#[test]
-fn a_renewed_seed_of_the_call_books_once() {
-    if !shipped() {
-        return;
-    }
-    let h = unwell_today("1");
-    let on = history_params(&[("wellbeing_line", json!("1"))], &["now_utc"]);
-    let first = only(&seed_ask(&h, &on, CALL), "seed");
-    let again = only(&seed_ask(&h, &on, CALL), "seed");
-    assert_eq!(wellbeing_lines(&first), 1);
-    assert_eq!(wellbeing_lines(&again), 1, "{:?}", again.messages());
-    let marks: Vec<Vec<Value>> = h.rows("SELECT value FROM marks WHERE kind = 'wellbeing'");
-    assert_eq!(marks.len(), 1, "{marks:?}");
-}
-
-/// Lock: off (shipped) no line, no feed.
+/// Lock: off (shipped) nothing is sent, nothing shown, nothing fed.
 #[test]
 fn off_no_line_and_no_feed() {
     if !shipped() {
         return;
     }
-    let mut h = unwell_today("0");
-    let off = history_params(&[], &["now_utc"]);
-    let seed = only(&seed_ask(&h, &off, CALL), "seed");
-    assert_eq!(wellbeing_lines(&seed), 0);
-    closed_turn(&mut h, "t5");
-    assert!(h.routed("live_feed").is_empty());
+    let mut a = Assistant::with(&[(KNOB_CLOCK, json!(NOON))]);
+    a.leave("./talky", memory_out("text-1", "t1", unwell()));
+    session_ends(&mut a, "./talky", "text-1");
+    assert!(a.into.is_empty(), "{:?}", a.into);
+    let mut h = curator(&[("policy", "live_feed", json!("1"))]);
+    let s = seed(&mut h, CALL, "start", 0);
+    assert_eq!(count_in(&s, CLAIM), 0);
+    closed_turn_of(&mut h, CALL, "t5");
+    assert!(
+        h.routed("live_feed")
+            .iter()
+            .all(|m| !format!("{:?}", m.body).contains(CLAIM)),
+        "{:?}",
+        h.routed("live_feed")
+    );
 }

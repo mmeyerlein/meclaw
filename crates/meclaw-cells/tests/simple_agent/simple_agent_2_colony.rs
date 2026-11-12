@@ -195,6 +195,8 @@ fn sa2_has_no_access_and_no_affinity_child() {
                 "brief",
                 "affinity_propose",
                 "conversations",
+                // D58 note (GH #1477): the curator's answer to a note's sender.
+                "note_receipt",
             ]
             .map(str::to_string)
             .to_vec()
@@ -1121,7 +1123,7 @@ fn sa2_builder_block_renders_one_agent_the_door_accepts() {
     let diff = &decl["diff"];
     let nodes = diff["add_nodes"].as_array().expect("add_nodes");
     assert_eq!(nodes.len(), 1, "one agent");
-    assert_eq!(nodes[0]["template"], "simple-agent@2.2.18");
+    assert_eq!(nodes[0]["template"], "simple-agent@2.3.0");
     assert_eq!(
         decl["ctx"]["model"], "example-provider/brain-model",
         "ctx.model"
@@ -1729,7 +1731,7 @@ async fn wait_sealed(h: &meclaw_testing::ColonyHandle) -> usize {
 fn embedding_app_wish() -> Value {
     let example = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
     let figure = read_json(&repo("templates/figure/config.json"));
-    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.0.20",
+    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.1.0",
            "screen": "display", "ctx": {"model": "example-provider/brain-model"},
            "declaration": {}, "credential": example["credential"],
            "override_params": {"world": {"figure_id": "fig", "world_id": "w", "role": "npc"}},

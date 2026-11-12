@@ -91,10 +91,12 @@ DEFAULTS = {
     # live-2 GR (display-hive.md § 9b.14): how long the frame of a window that is done
     # takes to come to rest, a duration the sheet spends once (R-FU-1).
     "settle_ms": 600,
-    # live-2 GR: off, the lane `screen_topics` stays silent -- a presenter whose parent
-    # draws no edge for it says nothing that would dead-letter. On, the topic table leaves
-    # on boot and on every change of it (`topic_table`).
-    "screen_topics": False,
+    # D58 judge (GH #1480): the target the topic table is a contribution to (`part`,
+    # taken as `in_part` by the curator of the composition the parent wires it to). ""
+    # (shipped) is no contribution -- a presenter whose parent draws no edge for it says
+    # nothing that would dead-letter; a name, and the table leaves on boot and on every
+    # change of it (`topic_table`). No built-in name: the target is the set's (R-58-15).
+    "part_target": "",
 }
 
 PANE = "display-pane"
@@ -1333,8 +1335,9 @@ def topic_table(r, params):
     apps' accepted ones), as `[{name, purpose, candidates}]` by name. `purpose` is the
     manifest's `describe`, the words the decider reads for the topic too; `candidates` is
     `[{key, describe}]` in the manifest's order, the options `questions` offers for the
-    lead -- the talky's `in_screen_topics` contract (`{name, purpose, candidates?:
-    [{key, describe}]}`, curator/history `screen_topics_of`, talky/route `screen_topics`).
+    lead -- the value of the presenter's contribution (`part`, `{name, purpose, candidates?:
+    [{key, describe}]}` per topic), kept unread by the curator and read by talky/route
+    `screen_topics`.
     Without them talky's route never asks a lead question (#1368). A topic without
     candidates leaves the field out, as the contract's `candidates?` allows."""
     known = all_topics(r, params)
@@ -1349,16 +1352,23 @@ def topic_table(r, params):
     return table
 
 
+PART_SOURCE = "presenter"
+
+
 def say_topics(r, params, boot=False):
-    """`screen_topics {topics}` when the switch is on and the table changed since it was
-    last said -- or on boot, once, whatever it holds. Never per turn."""
-    if not knob(params, "screen_topics"):
+    """`part {target, source, value}` -- the topic table as a contribution to the section
+    of `part_target` (D58 judge, GH #1480: the curator's `in_part`) -- when a target is
+    set and the table changed since it was last said, or on boot, once, whatever it holds.
+    Never per turn. The value is the table itself; no round, no subject: the screen is
+    the same for everybody in front of it (what the topic lane carried before)."""
+    target = knob(params, "part_target").strip()
+    if not target:
         return []
     table = topic_table(r, params)
     if not boot and r.get("topics_said") == table:
         return []
     r["topics_said"] = table
-    return [emission("screen_topics", {"topics": table})]
+    return [emission("part", {"target": target, "source": PART_SOURCE, "value": table})]
 
 
 def lane_topics():
@@ -2612,7 +2622,7 @@ def handle(doc):
     if "_at" in doc:
         now = int(doc["_at"])
     # After the lane, so a lane that says the table itself (`show_topics`) is not said
-    # twice; a no-op unless the switch is on and the params changed the table.
+    # twice; a no-op unless a `part_target` is set and the params changed the table.
     out = live(body, params, hop, ctx, origin, route, now, r)
     return out + say_topics(r, params)
 

@@ -12,6 +12,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -44,7 +47,7 @@ fn keys_of(v: &Value, out: &mut Vec<String>) {
 
 /// Two turns, answered by a model with the catalog row `row`.
 fn blocks_under(row: Value) -> (Vec<Value>, Value) {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for (t, q, a) in [
         ("t1", "q1 about the garden", "a1"),
         ("t2", "q2", "a2 at length"),
@@ -86,11 +89,11 @@ fn the_blocks_are_the_same_under_any_catalog_row() {
 /// with the catalog row `row`: the blocks of the rebuilt plan.
 fn rebuilt_under(row: Value) -> (Vec<Value>, Value) {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent_tokens", json!(0)),
         ("policy", "summary_form", json!("brief")),
         ("intake", "replay_channel_prefix", json!("replay-")),
-    ]);
+    ])
+    .reporting_composite("talky");
     for (t, at) in [
         ("d1", "2026-03-01T09:00:00Z"),
         ("d2", "2026-03-02T08:00:00Z"),

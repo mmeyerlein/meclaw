@@ -22,6 +22,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Map, Value, json};
@@ -101,7 +104,7 @@ fn the_system_of_a_brain_turn_stands_over_its_tool_rounds() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     // The turn before was answered by a model with a small window (in
     // production the quick voice): its stamp stands in state.
     turn(&mut h, "s1", "t1", "q1", "a1", json!({"input_soft": 1000}));
@@ -212,14 +215,15 @@ fn system_rows(h: &Hive) -> Vec<String> {
 
 /// Review M1 of F2 -- the measured cause: the quick voice's answer stamped
 /// its small window into the state the brain's call read. Its window now
-/// stays its own (`input_soft:quick`); the brain's first call after it gets
+/// stays its own (`input_soft:quick`, D58 target contract point 7: the row of
+/// the target, `catalog:quick:input_soft`); the brain's first call after it gets
 /// the whole contract and is guarded at its own hard line.
 #[test]
 fn a_quick_answer_leaves_the_brain_its_own_window() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     slot(&mut h, &contract());
     let first = turn(
         &mut h,
@@ -240,8 +244,8 @@ fn a_quick_answer_leaves_the_brain_its_own_window() {
     );
     assert_eq!(h.state("input_soft"), "90000", "{:?}", h.stderr);
     assert_eq!(h.state("input_hard"), "100000");
-    assert_eq!(h.state("input_soft:quick"), "1000");
-    assert_eq!(h.state("input_hard:quick"), "40");
+    assert_eq!(h.state("catalog:quick:input_soft"), "1000");
+    assert_eq!(h.state("catalog:quick:input_hard"), "40");
 
     let call = h.curate("s1", "t3", 0, json!([user("q3")]), mode("Be brief."));
     apply(&mut held, &call.body["system"]);
@@ -271,7 +275,7 @@ fn the_earlier_answers_read_alike_over_the_rounds_of_a_turn() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let big = format!("a1.\n\n```sidecar\n{{\"a\": \"{}\"}}\n```", "x".repeat(600));
     let c = h.curate("s1", "t1", 0, json!([user("q1")]), mode("Be brief."));
     h.tap(&c, "stop", json!({"input_soft": 1000}), json!([said(&big)]));
@@ -316,7 +320,7 @@ fn a_kept_system_says_the_cuts_it_sends() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "q1", "a1", json!({"input_soft": 1000}));
     slot(&mut h, &contract());
     let call0 = h.curate("s1", "t2", 0, json!([user("q2")]), mode("Be brief."));
@@ -355,10 +359,8 @@ fn a_turn_keeps_its_own_system_row_and_takes_it_down() {
     }
     // The shortest sweep (60 s), so the row left behind can be placed past it
     // inside the lookback the midnight wait holds (`backdated`).
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "pending_sweep_s", json!(60)),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "pending_sweep_s", json!(60))]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "q1", "a1", json!({"input_soft": 1000}));
     slot(&mut h, &contract());
     let a0 = h.curate("s1", "tA", 0, json!([user("qa")]), mode("Be brief."));
@@ -510,7 +512,7 @@ fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
     let call0 = h.curate("s1", "t2", 0, json!([user("plan")]), mode("Be brief."));
     let mut held = Map::new();
@@ -563,10 +565,13 @@ fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
 // ======================================== agent-2 A2, review I1 (OR-AG-50)
 
 /// A call of session `s1` from a parent with stages (simple-agent 2): the
-/// collector's context carries `sa_stage`, the call leaves on `brain`.
+/// collector's context carries `sa_stage`; D58 target (contract point 1): the
+/// curate names the stage's cell as its target (`hop.target`), the call
+/// leaves as a model call to it.
 fn staged(h: &mut Hive, turn_id: &str, stage: &str, ask: &str) -> Msg {
     h.out.clear();
-    let hop = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0", "phase": ""});
+    let hop = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0", "phase": "",
+                     "target": stage});
     let ctx = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0",
                      "channel": "test", "audience_set": ROUND_E, "sa_stage": stage});
     h.lane(
@@ -575,7 +580,7 @@ fn staged(h: &mut Hive, turn_id: &str, stage: &str, ask: &str) -> Msg {
         hop,
         json!({"messages": [user(ask)], "system": mode("Be brief.")}),
     );
-    let calls = h.routed("brain");
+    let calls = h.routed(stage);
     assert_eq!(calls.len(), 1, "{:?} {:?}", h.out, h.stderr);
     calls[0].clone()
 }
@@ -589,7 +594,7 @@ fn each_stage_is_sized_by_the_package_of_its_own_model() {
     // contract fits a tenth of fast's window and not a tenth of strong's.
     let fast = json!({"input_soft": 90000, "input_hard": 180000, "tokens_prompt": 100});
     let strong = json!({"input_soft": 1000, "input_hard": 400000, "tokens_prompt": 100});
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     slot(&mut h, &contract());
     let first = staged(&mut h, "t0", "strong", "q0");
     h.tap(&first, "stop", strong.clone(), json!([said("a0")]));

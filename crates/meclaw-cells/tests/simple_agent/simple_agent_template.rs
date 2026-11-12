@@ -281,6 +281,8 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
                 "brief",
                 "affinity_propose",
                 "conversations",
+                // D58 note (GH #1477): the curator's answer to a note's sender.
+                "note_receipt",
             ]
             .map(str::to_string)
             .to_vec()

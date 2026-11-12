@@ -21,7 +21,7 @@ strict second key, `ctx.model_surface`, and spends it in the ref marker for the 
 (`templates/assistant/talky/config.json`, trimmed):
 
 ```json
-{ "cell": { "type": "ref", "template": "talky@6.18.1" },
+{ "cell": { "type": "ref", "template": "talky@7.0.0" },
   "override_params": { "brain": { "model": "${ctx.model_surface}" } } }
 ```
 

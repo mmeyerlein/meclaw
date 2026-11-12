@@ -75,6 +75,7 @@ async fn cancelling_a_stalled_task_reaps_the_harness_and_its_children() {
                 process_group: true,
                 ..ChildSpec::default()
             },
+            first_turn: None,
             startup_timeout: Duration::from_secs(5),
             serve: ServeConfig {
                 write_timeout: Duration::from_secs(5),
@@ -155,6 +156,7 @@ async fn the_cell_accepts_another_task_after_a_cancel() {
                 process_group: true,
                 ..ChildSpec::default()
             },
+            first_turn: None,
             startup_timeout: Duration::from_secs(5),
             serve: ServeConfig {
                 write_timeout: Duration::from_secs(5),

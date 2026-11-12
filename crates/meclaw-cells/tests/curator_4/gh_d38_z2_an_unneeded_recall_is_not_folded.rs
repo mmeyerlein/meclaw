@@ -26,6 +26,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -42,10 +45,7 @@ const SAID_BEFORE: &str = "WHAT WAS SAID\n  user: \"My sister Anna moved to Hamb
 const THE_ROW: &str = "My sister Anna moved to Hamburg.";
 
 fn hive(knob: &str) -> Hive {
-    Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "recall_by_needs", json!(knob)),
-    ])
+    Hive::with(&[("policy", "recall_by_needs", json!(knob))]).reporting_composite("talky")
 }
 
 /// The person's turn with the collector's recall pair ahead of the answer.

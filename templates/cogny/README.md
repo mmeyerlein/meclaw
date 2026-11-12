@@ -1,4 +1,4 @@
-# `cogny@5.14.1`
+# `cogny@5.15.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@5.10.0"},
+{"cell": {"type": "ref", "template": "collector@6.0.0"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@1.24.1"},
+{"cell": {"type": "ref", "template": "curator@2.0.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -111,7 +111,7 @@ standing order instead of adding one per call. Only the pin moved, so it is the 
 
 **`5.3.0` cuts its own block and can ask back** ([#892](https://github.com/mmeyerlein/meclaw/issues/892), [#893](https://github.com/mmeyerlein/meclaw/issues/893), [#894](https://github.com/mmeyerlein/meclaw/issues/894), [#895](https://github.com/mmeyerlein/meclaw/issues/895)). A splitter
 like talky's stands between `brain` and `dispatcher` and hands every section to the curator, which
-runs as role `consult`; the `history_*` tools are answered inside; the new cell `./ask` turns an
+runs as role `consult` (since D58 target: the value set `consult` in `./brain`'s profile); the `history_*` tools are answered inside; the new cell `./ask` turns an
 `ask_requester` call into the question that leaves on the new route `ask`, and the collector runs
 with `defer_turns` `"0"`, so an errand or a reply that arrives during an open tool round opens a
 round of its own; a recall question, where an instance sets a memory tier, goes through the
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.14.1` above it in its provenance chain.
+`cogny@5.15.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -537,7 +537,7 @@ reads:
 ```
 collector  ==(curate, iter < 20, restore_ttl)==========> curator   in_curate  <- the whole
                                                                     round, #889
-curator    ==(brain, iter < 20, restore_ttl)===========> brain       <- THE SEAM
+curator    ==(model_call, target brain, iter < 20, restore_ttl)==> brain   <- THE SEAM (D58 target: the curate names `hop.target` `brain`, the answer carries `context.curator_target`)
 collector  --(menu)------------------------------------> curator   in_slots   <- the answered
                                                                     menu, #464
 collector  --(schemas)----------------------------------> curator   in_schemas <- the curator
@@ -579,6 +579,7 @@ curator    --(model_refused)----> .                  <- the summarizer's refused
 curator    --(stats, !refused_subscriber)--> .       <- its answer, #926
 brain      --(package, !finish_reason)--> curator  in_catalog   <- the model's package line, #1449
 curator    --(catalog_ask, catalog_for == 'brain')--> brain   <- the curator asks for the row, #1450
+curator    --(catalog_ask, no catalog_for)--> brain   <- the ask without a handle, D58 target
 collector  --(schemas)----------> .
 schemas    --(operation == schemas, audience != 'core')--> .  route := 'tool_schemas'
 collector  --(schemas)----------> schemas  route := 'in_schemas', hop.tool_caller := 'cogny'  <- #894
@@ -681,9 +682,9 @@ once. Its fourth, `interim`, is a param like the collector's, and this template 
 | `tools` | param | `["*"]` | collector -- the tool names this core **declares** it uses (GH #464). Set at this template since `4.3.0`, and set to EVERYTHING on purpose: a reasoning core should reach whatever its surface can, and a list typed here would be a second copy of a catalogue that drifts on the first tool added to the hive. The declarations are asked for on the `schemas` lane and written into the brain as durable `system.tools`. `memory_recall` reaches this list the ordinary way since 5.0.0: `["*"]` asks every answerer the level wired, the member's memory among them ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `fold_tools` | param | `"1"` (collector default `"0"`, [#1246](https://github.com/mmeyerlein/meclaw/issues/1246)) | collector -- the core sees its menu folded: one tool per name-prefix family (`file{op, args}`), `help` answered from the collector's menu store, the op's schema in a `bad_request`/`invalid_input` error. The runner works with the `file`/`file_ws` families. `"0"` on the ref marker is the way back. |
 | `defer_turns` | param | `"0"` (#894) | collector -- a turn that lands in another errand's open tool round opens a round of its own instead of waiting for the next one: this core's session is the conversation that consults it, so a second errand or the asker's `reply_to_consult` would otherwise wait for a round nobody opens and come back under the other errand's `consult_id`. The collector's own default, `"1"`, is the telephone model of a channel voice |
-| `role`, `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `context_window` | param | `role` `"consult"` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889), by the consult role's presets since GH #892; the full table is in the curator's README |
+| `keep_recent`, `compress_at`, `rebuild_to`, `horizon`, `tiers`, `keep_rounds`, `stub_tools_after`, `context_window` | param | the value set of the former role `consult` (GH #892), the rest see [`curator`](../curator/#knobs) | curator/policy -- the window, since `5.2.0` (GH #889). D58 target: the curator has no role any more; the value set stands in `./brain`'s `window_profile` alone, none as knobs of `./curator` |
 | `max_calls` | param | `16` | cogny/dispatcher -- per-answer call budget |
-| `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079); since [#1225](https://github.com/mmeyerlein/meclaw/issues/1225) also the token `source`, the rows of the source each item names itself). The splitter, its knob and its edges are the talky's byte for byte, so the shipped rule stamps this core's `memory` section too -- and this core's curator does not check it: a core keeps no memory, its `memory` stays a topic mark at `./curator` (`pass_sections` empty there), and the intake says on stderr that the rule is ignored. A tree that names another section here gets it checked at `./curator`, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
+| `sidecar_verify` | param | `{"memory": {"items": "facts", "quote": "source"}}` (GH #1225) | splitter -- the talky's word-for-word check of quoted fields ([#1079](https://github.com/mmeyerlein/meclaw/issues/1079); since [#1225](https://github.com/mmeyerlein/meclaw/issues/1225) also the token `source`, the rows of the source each item names itself). The splitter, its knob and its edges are the talky's byte for byte, so the shipped rule stamps this core's `memory` section too -- and this core's curator does not check it: a core keeps no memory, its `memory` is registered at `./curator` without a lane (`{"mark": "topic"}`, GH #1473), so the intake books its topic mark, says on stderr that the section is not checked there, and sends it nowhere -- no `reject`, no `verify_reject` or `fact` mark. A tree that names another section here and registers it at `./curator` with a lane gets it checked there, but this core has no `./errors` and draws neither the curator's `reject` nor a checked section out of its curator -- both would dead-letter `no_route`, loud and classified, and the answer text never leaves the core |
 | `answer_check` | param | `[]` | splitter -- the talky's hand-over of the sent answer to a declared checker ([#1255](https://github.com/mmeyerlein/meclaw/issues/1255)), here only because the splitter is the talky's byte for byte. This core draws no `answer_check` lane: leave it empty, or every advice dead-letters one message `no_route` |
 | `answer_check_sources` | param | `""` | splitter -- the talky's ask for the sources of a check ([#1306](https://github.com/mmeyerlein/meclaw/issues/1306)), here only because the splitter is the talky's byte for byte; it stamps nothing while `answer_check` is empty. Leave it empty |
 | `async_tools` | param | `["ask_requester"]` (ref marker, #894) | cogny/dispatcher -- the core's OWN async tools, as a JSON array or one comma-separated string. The `consult_cogny` declaration belongs on the **asking** side, and since `dispatcher@1.2.0` it can stay there: the knob is a param of each dispatcher cell (GH #138), so the surface's list and this core's list are two statements instead of one shared key |
@@ -710,7 +711,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.14.1", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.15.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -917,7 +918,8 @@ rides on `hop.route`.
 | `error` | out | a failed inference on the brain. **Wire it** -- unwired it dead-letters, loudly |
 | `in_pack` | in | a durable `system.*` slot for the brain: `identity`, `identity_short`, `persona`, `handover` or `instructions`, and nothing else. **Paired**: see `pack_ack`. Since 4.2.0 |
 | `in_pin` | in | a pin of another hive for the brain's window, `{pins: [{text, source, until?}], replace_sources?}`, handed to `./curator`'s own `in_pin` (`templates/curator/README.md`). Nothing answers it. Since GH #916 |
-| `in_note` | in | notes of another hive for the brain's window, `{notes: [{id, source, text, scope, until?, priority?}]}`, handed to `./curator`'s own `in_note` (`templates/curator/README.md`), which shows the live ones as one block opening the newest message of the person. Nothing answers it. Since GH #1303 |
+| `in_note` | in | notes of another hive for the brain's window, `{notes: [{id, source, text, scope, until?, priority?, item?, receipt?}]}`, handed to `./curator`'s own `in_note` (`templates/curator/README.md`), which shows the live ones as one block opening the newest message of the person. A shown `once` note with a `receipt` answers on `note_receipt` (with the curator's `note_once` "1", D58 note, GH #1477); every other note answers nothing. Since GH #1303 |
+| `note_receipt` | out | the curator's answer to the sender of a shown `once` note that carried a `receipt`, handed out from `./curator` unchanged: hop `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`, `messages: []`. Where it goes is wired by whoever sends the notes. Since D58 note (GH #1477) |
 | `sidecar` | out | one section of the block the core's answer carried, `hop.section` and `hop.turn_id` (the round) beside it, the body `{messages: [], section, payload}`: every section but `window`, `gap` and `memory`, which `./curator` takes, as a talky does. Since GH #916 |
 | `pack_ack` | out | the receipt `in_pack` answers with -- ONE per pack, not one per brain: `hop.pack_owner`, `hop.pack_slots`, `hop.error_code` (empty, `slot_unknown` or `pack_empty`), `hop.pack_unknown`. Since 4.2.0 |
 | `in_model` | in | a model package for the brain: a **params-only** body (an empty `system` slot, no `messages`) the colony's `llm-registry` pushes. It goes straight to `./brain`, past the collector, and nothing answers it; since 5.2.0 a package whose `hop.subscriber` ends on `/curator/summarizer` goes to `./curator` instead (GH #889). Since 5.1.0 ([#855](https://github.com/mmeyerlein/meclaw/issues/855)) |

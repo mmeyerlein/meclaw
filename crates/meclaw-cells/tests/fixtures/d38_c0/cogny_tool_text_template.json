@@ -43,9 +43,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1  Find a moving company in Berlin.",
@@ -119,9 +120,10 @@
             "iter": "1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "03 tool result t1 1",

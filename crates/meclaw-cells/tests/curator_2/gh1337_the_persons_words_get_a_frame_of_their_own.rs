@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -31,7 +34,7 @@ const BRIEF_ID: &str = "call_brief_0123456789abcdef";
 const CAKE: &str = "I baked a plum cake.";
 
 fn talky() -> Hive {
-    Hive::with(&[("policy", "role", json!("talky"))])
+    Hive::with(&[]).reporting_composite("talky")
 }
 
 fn ambient_round(words: &str) -> Value {
@@ -200,10 +203,7 @@ fn gh1337_without_short_ids_the_frame_opens_the_words() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "short_ids", json!("0")),
-    ]);
+    let mut h = Hive::with(&[("policy", "short_ids", json!("0"))]).reporting_composite("talky");
     let c = h.curate("s1", "t1", 0, ambient_round(CAKE), mode("Be brief."));
     let text = last_text(&c);
     assert!(text.contains(RECALL_FRAME), "{text:?}");
@@ -263,11 +263,11 @@ fn gh1337_the_quick_way_and_its_bridge_carry_the_bare_turn() {
     );
     let bridge = quick
         .iter()
-        .find(|m| m.hop.contains_key("bridge"))
+        .find(|m| m.hop.get("call_kind").is_some_and(|v| *v == "side"))
         .expect("the bridge");
     let call = quick
         .iter()
-        .find(|m| !m.hop.contains_key("bridge"))
+        .find(|m| m.hop.get("call_kind").is_none())
         .expect("the required call");
     assert_eq!(last_text(call), bare);
     assert_eq!(texts(bridge), vec![bare.clone()], "the person's turn alone");

@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -26,20 +29,17 @@ const HARD: i64 = 8_000;
 /// One rebuild after two rounds of tool work; `row` the brain's catalogue
 /// row (none when `None`), `tap_rate` the rate the tap reports.
 fn rebuilt(row: Option<f64>, tap_rate: f64) -> Value {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "gc", json!("0")),
-    ]);
+    let mut h = Hive::with(&[("policy", "gc", json!("0"))]).reporting_composite("talky");
     if let Some(rate) = row {
-        h.lane(
-            "in_catalog",
-            json!({}),
-            json!({"package_of": "/talky/brain"}),
-            json!({"messages": [], "package": {
+        // D58 target (contract point 13): the row with the profile beside it.
+        h.report_row(
+            "talky",
+            "brain",
+            json!({
                 "model": "test/rated-row", "input_soft": SOFT, "input_hard": HARD,
                 "max_output": 100, "price_tiers": null, "cache_mode": null,
                 "cache_ttl_s": null, "wire_dialect": "chat_completions",
-                "supported_params": [], "chars_per_token": rate}}),
+                "supported_params": [], "chars_per_token": rate}),
         );
     }
     let extra = json!({"input_soft": SOFT, "input_hard": HARD, "chars_per_token": tap_rate,

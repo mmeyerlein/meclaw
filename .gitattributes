@@ -5,3 +5,36 @@
 # for the two `git config` lines.
 templates/display/compose/config.json merge=display-sync
 templates/presenter/stage/config.json merge=display-sync
+
+# A code cell's config.json carries its whole script as one
+# `params.script_inline` string, so two branches that edit the script collide
+# there as a single unreadable line. scripts/git_merge_script_inline.py merges
+# the script as text and the other fields beside it. The list is generated:
+#     python3 scripts/git_merge_script_inline.py --attributes --write
+# Git only runs a driver the clone itself configures:
+#     python3 scripts/git_merge_script_inline.py --install
+# script-inline: begin (generated list, see above)
+templates/assistant/followup/config.json merge=script-inline
+templates/collector/assemble/config.json merge=script-inline
+templates/curator/handover/config.json merge=script-inline
+templates/curator/history/config.json merge=script-inline
+templates/curator/intake/config.json merge=script-inline
+templates/curator/policy/config.json merge=script-inline
+templates/curator/push/config.json merge=script-inline
+templates/curator/reader/config.json merge=script-inline
+templates/curator/schemas/config.json merge=script-inline
+templates/curator/stats/config.json merge=script-inline
+templates/curator/writer/config.json merge=script-inline
+templates/lead/lead/config.json merge=script-inline
+templates/objects/brief/config.json merge=script-inline
+templates/objects/gate/config.json merge=script-inline
+templates/objects/push/config.json merge=script-inline
+templates/objects/schemas/config.json merge=script-inline
+templates/objects/source/config.json merge=script-inline
+templates/objects/tools/config.json merge=script-inline
+templates/talky/errors/config.json merge=script-inline
+templates/talky/route/config.json merge=script-inline
+templates/talky/schemas/config.json merge=script-inline
+templates/talky/screen_judge/config.json merge=script-inline
+templates/talky/splitter/config.json merge=script-inline
+# script-inline: end

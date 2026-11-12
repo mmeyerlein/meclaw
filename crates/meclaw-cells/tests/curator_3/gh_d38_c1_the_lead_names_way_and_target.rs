@@ -8,11 +8,37 @@
 //! 7612). R-38-4 takes it out into a cell of its own, `curator/lead`, with
 //! a narrow contract: in, the route stamp (`path`, `needs`, `families`) and
 //! the turn's head (channel, engine, session, call id, turn, tool iteration,
-//! consult id, spec, escalation); out, one verdict
-//! `{way, target, reason, spec, bridge, clarify, live}`. This table pins the
+//! consult id, spec, escalation); out, one verdict. This table pins the
 //! verdict of the pure decision `lead_verdict(stamp, head, state)` of the
 //! shipped lead script for every way the C0 corpus records -- the same cases
 //! the policy decided before the move, so the move changes no way.
+//!
+//! D58 target (contract point 9, OR-d58-2.target.36): the verdict names
+//! targets, not ways -- `target` (a name the composite wires), `fallback`,
+//! `departs` (`{class, wait_ms}` of an errand that leaves), `side_target`.
+//! The lead is wired here as talky's composite wires it ([`LEAD_WIRING`]
+//! plus `*:brain`); a case names the way of before, and [`verdict`] says
+//! what that way is under this wiring: `brain` the target `brain`, `quick`
+//! the target `quick` with its fallback `brain`, `consult`/`research` a
+//! departure of that class with no target.
+//!
+//! D58 live (GH #1482, contract point 4): the head carries the handle of the
+//! running session `live` instead of `engine` and `call_id`, and the verdict
+//! carries no `live` -- the curator keeps the turn's handle itself. Every
+//! case checks that the verdict names none.
+//!
+//! D58 moveout (GH #1476, contract point 1): `side_target` and `bridge` left
+//! the verdict; it carries `side`, the side calls beside the call, each under
+//! the condition the curator evaluates. The table pins each entry's
+//! condition, target, window and order (`when`, `target`, `window`,
+//! `first`); the texts are pinned by `curator_moveout`.
+//!
+//! GH #1478 (D58 frame, contract "note per stamp class" point 1): the lead
+//! names no class of its own. A `clarify` turn goes by `path_routes` like
+//! any other path -- under talky's wiring the `*` target `brain`, reason
+//! `no_route` (before: the fixed reason `clarify`, read by nobody but the
+//! lead's own `verdict:` row) -- and the verdict has no field `clarify`; what
+//! such a turn gets in its window is `./policy`'s `class_notes`.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -21,13 +47,11 @@ use crate::curator_hive; // harness_fold: mod curator_hive;
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
 
-/// The seven fields of the verdict the table pins, in this order.
-const FIELDS: [&str; 7] = [
-    "way", "target", "reason", "spec", "bridge", "clarify", "live",
-];
+/// The fields of the verdict the table pins, in this order.
+const FIELDS: [&str; 6] = ["target", "fallback", "departs", "side", "reason", "spec"];
 
 fn head(extra: Value) -> Value {
-    let mut h = json!({"channel": "text", "engine": "", "session": "s1", "call_id": "",
+    let mut h = json!({"channel": "text", "live": "", "session": "s1",
                        "turn": "t1", "iter": 0, "consult_id": "", "consult_class": "",
                        "spec": "", "escalate": ""});
     for (k, v) in extra.as_object().cloned().unwrap_or_default() {
@@ -52,9 +76,33 @@ fn state(extra: Value) -> Value {
     s
 }
 
+/// The verdict of a call on `way` under talky's wiring: `target` the way's
+/// own target (`quick_spec` for the spec call; `held` -- a kept answer -- is
+/// the fast target `quick` again), `departs` for an errand way. `bridge` is
+/// the side call beside it, as the way of before named it: `tool` under
+/// `must_call` and first, an errand class under `external` -- `consult`
+/// with the person's turn, `research` with the target's window
+/// (`bridge_wording` of talky).
 fn verdict(way: &str, target: &str, reason: &str, spec: &str, bridge: &str) -> Value {
-    json!({"way": way, "target": target, "reason": reason, "spec": spec, "bridge": bridge,
-           "clarify": false, "live": false})
+    let (t, fallback, departs) = match way {
+        "consult" => ("", "", json!({"class": "consult", "wait_ms": 10000})),
+        "research" => ("", "", json!({"class": "research", "wait_ms": 120000})),
+        "quick" if target == "quick_spec" => ("quick_spec", "", json!({})),
+        "quick" => ("quick", "brain", json!({})),
+        other => (other, "", json!({})),
+    };
+    let side = match bridge {
+        "" => json!([]),
+        "tool" => {
+            json!([{"when": "must_call", "target": "quick", "window": "turn", "first": true}])
+        }
+        "research" => {
+            json!([{"when": "external", "target": "quick", "window": "wall", "first": false}])
+        }
+        _ => json!([{"when": "external", "target": "quick", "window": "turn", "first": false}]),
+    };
+    json!({"target": t, "fallback": fallback, "departs": departs, "side": side,
+           "reason": reason, "spec": spec})
 }
 
 fn with(mut v: Value, k: &str, x: Value) -> Value {
@@ -66,13 +114,25 @@ fn with(mut v: Value, k: &str, x: Value) -> Value {
 fn lead(over: Value, stamp: Value, head: Value, state: Value) -> Value {
     assert!(
         lead_shipped(),
-        "templates/curator/lead/config.json is missing: the lead cell is not shipped (GH #1447)"
+        "templates/lead/lead/config.json is missing: the lead is not shipped (GH #1447, GH #1474)"
     );
+    let mut params = json!({});
+    for (k, v) in LEAD_WIRING {
+        params[k] = json!(v);
+    }
+    params["path_routes"] = json!(format!("{},*:brain", LEAD_WIRING[0].1));
+    for (k, v) in over.as_object().cloned().unwrap_or_default() {
+        params[k] = v;
+    }
     let (got, err) = cell_scope(
         "lead",
-        over,
+        params,
         "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
         json!([stamp, head, state]),
+    );
+    assert!(
+        got.get("live").is_none(),
+        "the verdict carries no `live` (D58 live): {got}"
     );
     let mut cut = json!({});
     for f in FIELDS {
@@ -82,6 +142,20 @@ fn lead(over: Value, stamp: Value, head: Value, state: Value) -> Value {
         );
         cut[f] = got[f].clone();
     }
+    // The texts of the side entries are the lead's knobs (pinned in
+    // `curator_moveout`); the table pins where each entry goes.
+    cut["side"] = Value::Array(
+        got["side"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|e| {
+                json!({"when": e["when"], "target": e["target"], "window": e["window"],
+                       "first": e["first"]})
+            })
+            .collect(),
+    );
     cut
 }
 
@@ -152,12 +226,13 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             verdict("brain", "brain", "no_route", "", ""),
         ),
         (
-            "a way path_routes names but nobody knows is the brain",
+            "a name path_routes gives is the target as it stands -- a target is any name the \
+             composite wires, there is no list of ways to check it against",
             json!({"path_routes": "simple:fly"}),
             stamp("simple", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("brain", "brain", "unknown_way", "", ""),
+            verdict("fly", "fly", "path", "", ""),
         ),
         (
             "the answer of a consult is spoken, never consulted again",
@@ -168,16 +243,12 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             verdict("brain", "brain", "answer", "", ""),
         ),
         (
-            "a clarify turn is the brain's and asks",
+            "a clarify turn goes by path_routes like any class without its own entry",
             json!({}),
             stamp("clarify", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            with(
-                verdict("brain", "brain", "clarify", "", ""),
-                "clarify",
-                json!(true),
-            ),
+            verdict("brain", "brain", "no_route", "", ""),
         ),
         (
             "memory_to_brain sends a simple memory turn to the brain",
@@ -228,16 +299,12 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             verdict("brain", "brain", "iterations", "", ""),
         ),
         (
-            "a duplex call's turn feeds the live line",
+            "a turn of a running session takes the way of its stamp",
             json!({"live_feed": "1"}),
             stamp("talk", none.clone(), none.clone()),
-            head(json!({"channel": "phone", "engine": "duplex", "call_id": "call-1"})),
+            head(json!({"channel": "phone", "live": "call-1"})),
             no_state(),
-            with(
-                verdict("brain", "brain", "path", "", ""),
-                "live",
-                json!(true),
-            ),
+            verdict("brain", "brain", "path", "", ""),
         ),
         (
             "a phone turn takes the way of its stamp",
@@ -286,7 +353,12 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["tool"]), json!(["orga"])),
             head(json!({})),
             state(fired.clone()),
-            verdict("quick", "quick", "path", "dropped:family:orga", "tool"),
+            with(
+                verdict("quick", "quick", "path", "dropped:family:orga", "tool"),
+                "side",
+                json!([{"when": "must_call", "target": "quick_bridge", "window": "turn",
+                        "first": true}]),
+            ),
         ),
     ];
     let mut wrong = Vec::new();

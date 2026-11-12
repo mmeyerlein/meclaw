@@ -19,6 +19,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -53,7 +56,7 @@ fn a_simple_turn_that_needs_a_tool_requires_the_call() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     // Every emission as the colony checks it: one outside the curator's
     // `contract.emits` is dead-lettered before it reaches `./quick`.
     h.check_emits = true;
@@ -81,7 +84,8 @@ fn a_simple_turn_that_needs_a_tool_requires_the_call() {
     // side. The bridge goes FIRST: the first sound comes after the bridge's
     // call, not after the required call plus the bridge's.
     assert!(
-        quick[0].hop.contains_key("bridge") && !quick[1].hop.contains_key("bridge"),
+        quick[0].hop.get("call_kind").is_some_and(|v| *v == "side")
+            && quick[1].hop.get("call_kind").is_none(),
         "the bridge leaves before the required call: {:?}",
         quick.iter().map(|m| &m.hop).collect::<Vec<_>>()
     );
@@ -97,12 +101,15 @@ fn a_simple_turn_that_needs_a_tool_requires_the_call() {
         "the answer comes in the next round, so no contract now: {:?}",
         call.body["system"]
     );
-    assert_eq!(bridge.hop["bridge"], json!("tool"));
+    assert_eq!(bridge.hop["call_kind"], json!("side"));
+    // D58 moveout (contract point 4): the neutral field; talky's edge lifts
+    // it onto `context.interim` "1".
     assert_eq!(
-        bridge.hop["interim"],
+        bridge.hop["round_open"],
         json!("1"),
         "the bridge does not end the round"
     );
+    assert!(bridge.hop.get("interim").is_none(), "{:?}", bridge.hop);
     assert_eq!(bridge.body["tool_scope"], json!({"allow": []}));
     assert!(contract_of(bridge).is_none(), "{:?}", bridge.body["system"]);
     assert!(
@@ -121,8 +128,8 @@ fn a_simple_turn_that_needs_a_tool_requires_the_call() {
     );
     assert_eq!(
         h.rows("SELECT trigger FROM calls WHERE call_id LIKE '%-bridge'"),
-        vec![vec![json!("bridge")]],
-        "the bridge books its own call row"
+        vec![vec![json!("side")]],
+        "the bridge books its own call row (trigger `side`, D58 moveout)"
     );
 
     // The formulation round: a result is there -- no require, the contract.
@@ -198,7 +205,9 @@ fn talky_carries_the_interim_mark_to_the_quick_voice() {
         .unwrap_or_else(|| panic!("no ./curator -> ./quick edge"));
     assert_eq!(
         edge["modifier"]["set_context"]["interim"],
-        json!("has(hop.interim) ? hop.interim : ''"),
+        json!(
+            "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')"
+        ),
         "{edge}"
     );
 }

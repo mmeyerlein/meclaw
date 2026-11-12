@@ -11,6 +11,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -51,7 +54,7 @@ fn a_quick_answer_keeps_the_sidecar_contract() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     curate_on(&mut h, "t1", "simple", "what time is it in Tokyo?");
@@ -73,7 +76,7 @@ fn a_quick_answer_keeps_the_sidecar_contract() {
     curate_on(&mut h, "t2", "complex", "plan my week around the move");
     let bridge = h.routed("quick");
     assert_eq!(bridge.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    assert_eq!(bridge[0].hop["bridge"], json!("consult"));
+    assert_eq!(bridge[0].hop["call_kind"], json!("side"));
     assert!(
         bridge[0].body["system"]["instructions"]
             .get("sidecar")

@@ -36,6 +36,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -59,7 +62,7 @@ fn talky(more: &[(&str, &str, Value)]) -> Hive {
         .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
         .collect();
     all.extend(more.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 /// The limits and prices of a model as the llm cell stamps them (GH #1037).
@@ -343,7 +346,7 @@ fn the_roles_compress_for_cost_under_soft_below_their_window_target() {
         ("research", 25_000, 62_500, 55_000, 45_000),
     ] {
         let (got, err) = policy_scope(
-            json!({"role": role, "window_target": 0}),
+            curator_profiles::set_knobs(role, json!({"window_target": 0})),
             &format!(
                 "[curate_mark({above}, {pkg}), curate_mark({below}, {pkg}), \
                  curate_mark(100000, {pkg})]"
@@ -385,7 +388,7 @@ fn above_a_price_step_the_cost_mark_is_weighed_as_below_it() {
         )
     };
     let (got, err) = policy_scope(
-        json!({"role": "talky", "window_target": 0}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 0})),
         &format!(
             "[curate_mark(200000, {}), curate_mark(200000, {})]",
             pkg(3.0, 0.6),
@@ -556,8 +559,11 @@ fn the_plan_counts_at_the_rows_rate() {
         row(9, "r3", "user", 3, 0),
     ]);
     let (got, err) = policy_scope(
-        json!({"role": "talky", "keep_recent": 2, "keep_rounds": 1,
+        curator_profiles::set_knobs(
+            "talky",
+            json!({"keep_recent": 2, "keep_rounds": 1,
                "context_window": 1_000_000, "gc": "0"}),
+        ),
         "[short_id(ARGS['rows'][2]['hash'])] + [window_plan(ARGS['rows'], [], [], [], {}, \
          ARGS['now'], (), (), 1000000, None, aim=1750, chars_per_token=r)['plan']['shrunk'] \
          for r in (4, 3, 0)]",

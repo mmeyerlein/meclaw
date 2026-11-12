@@ -5,14 +5,20 @@
 //! splitter's `sidecar section fact` took 2.8 to 6.7 s, and once the model
 //! wrote `context` instead and no fact came at all -- although the weather
 //! tool hands back its finished sentence as `summary`. With
-//! `fact_from_tool` naming a tool, the first result of that tool on a duplex
-//! call's turn sends ONE `live_feed` section `fact` (`hop.fact_source`
+//! `fact_from_tool` naming a tool, the first result of that tool on a running
+//! session's turn (its handle `live`, D58 live) sends ONE `live_feed` section `fact` (`hop.fact_source`
 //! "tool", the summary as `payload`) at once; round 2 still runs for the
-//! answer. `""` (the default) moves no byte.
+//! answer. `""` (the default) moves no byte. Since D58 feed (GH #1481,
+//! contract point 6) the fact takes the curator's one road of orders: its
+//! claim is `pending:feed:<live>#<turn>#tool_fact`, its mark `feed` with the
+//! section `fact` and the tool as `mark.tool` (was `fact_from_tool {tool}`).
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -21,10 +27,8 @@ const ASK: &str = "What is the weather tomorrow?";
 const SUMMARY: &str = "Tomorrow in Berlin: cloudy, 4 to 9 degrees.";
 
 fn hive(tools: &str) -> Hive {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "fact_from_tool", json!(tools)),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "fact_from_tool", json!(tools))]).reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -42,9 +46,9 @@ fn seam(h: &mut Hive, turn: &str, iter: &str, hop_extra: Value, body: Value) {
     h.lane("in_curate", ctx, hop, body);
 }
 
-/// The tool stamp of a duplex call's turn: `simple`, needs a tool.
+/// The tool stamp of a running session's turn: `simple`, needs a tool.
 fn tool_stamp(family: &str) -> Value {
-    json!({"engine": "duplex", "call_id": "call-9", "path": "simple",
+    json!({"live": "call-9", "path": "simple",
            "needs": "tool", "families": family})
 }
 
@@ -62,6 +66,21 @@ fn marks(h: &Hive, kind: &str) -> Vec<Value> {
     .iter()
     .map(|r| sj::from_str(r[0].as_str().unwrap_or("{}")).expect("the mark is JSON"))
     .collect()
+}
+
+/// The tool of every mark `feed` of a tool fact (section `fact`, the tool as
+/// `mark.tool`), in order -- D58 feed: the tool fact's mark is the one road's.
+fn tool_marks(h: &Hive) -> Vec<Value> {
+    marks(h, "feed")
+        .into_iter()
+        .filter(|v| v["section"] == json!("fact"))
+        .map(|v| v["mark"].clone())
+        .collect()
+}
+
+/// The claim of the tool fact of `turn` on the handle `call-9`.
+fn claim(turn: &str) -> String {
+    format!("pending:feed:call-9#{turn}#tool_fact")
 }
 
 fn result_text() -> String {
@@ -120,7 +139,7 @@ fn a_listed_tool_summary_becomes_a_fact_at_once() {
     assert_eq!(f.len(), 1, "{:?} {:?}", h.out, h.stderr);
     let f = &f[0];
     assert_eq!(f.hop["fact_source"], json!("tool"));
-    assert_eq!(f.hop["call_id"], json!("call-9"));
+    assert_eq!(f.hop["live"], json!("call-9"));
     assert_eq!(f.hop["turn_id"], json!("t1"));
     assert_eq!(f.hop["session_id"], json!("s1"));
     assert!(f.hop.get("at_turn_end").is_none(), "{:?}", f.hop);
@@ -128,15 +147,13 @@ fn a_listed_tool_summary_becomes_a_fact_at_once() {
     assert_eq!(f.body["section"], json!("fact"));
     // Round 2 still runs for the answer.
     assert_eq!(h.routed("quick").len(), 1, "{:?} {:?}", h.out, h.stderr);
-    assert_eq!(
-        marks(&h, "fact_from_tool"),
-        vec![json!({"tool": "weather"})]
+    assert_eq!(tool_marks(&h), vec![json!({"tool": "weather"})]);
+    assert!(
+        marks(&h, "fact_from_tool").is_empty(),
+        "the old mark is gone"
     );
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
-    assert!(
-        !h.state("pending:fact_tool:s1#t1").is_empty(),
-        "the turn's claim"
-    );
+    assert!(!h.state(&claim("t1")).is_empty(), "the turn's claim");
 
     // The same iteration once more (a re-read, a second iteration): no
     // second fact of the turn.
@@ -150,7 +167,7 @@ fn a_listed_tool_summary_becomes_a_fact_at_once() {
         json!({"messages": [tool_call("c1", "weather"), tool_result("c1", &result_text())]}),
     );
     assert!(facts(&h).is_empty(), "one fact per turn: {:?}", h.out);
-    assert_eq!(marks(&h, "fact_from_tool").len(), 1);
+    assert_eq!(tool_marks(&h).len(), 1);
 }
 
 /// Pin 2: an unlisted tool, a result without a summary and an error result
@@ -171,7 +188,7 @@ fn an_unlisted_tool_waits_for_round_two() {
         let mut h = hive("weather");
         to_the_result(&mut h, tool, tool.split('_').next().unwrap_or(tool), &text);
         assert!(facts(&h).is_empty(), "{tool} {text}: {:?}", h.out);
-        assert!(marks(&h, "fact_from_tool").is_empty());
+        assert!(tool_marks(&h).is_empty());
         assert_eq!(
             h.routed("quick").len() + h.routed("brain").len(),
             1,
@@ -179,7 +196,7 @@ fn an_unlisted_tool_waits_for_round_two() {
             h.out
         );
     }
-    // A text turn (no duplex call) gets none either.
+    // A turn without a handle gets none either.
     let mut h = hive("weather");
     seam(
         &mut h,
@@ -202,7 +219,7 @@ fn default_empty_is_byte_identical() {
         return;
     }
     let run = |over: &[(&str, &str, Value)]| {
-        let mut h = Hive::with(over);
+        let mut h = Hive::with(over).reporting_composite("talky");
         to_the_result(&mut h, "weather", "weather", &result_text());
         // Routes and sections: the calls carry fresh ids and times.
         let out: Vec<(String, Value)> = h
@@ -215,15 +232,12 @@ fn default_empty_is_byte_identical() {
                 )
             })
             .collect();
-        let state = h.rows("SELECT key FROM state WHERE key LIKE 'pending:fact_tool%'");
+        let state = h.rows("SELECT key FROM state WHERE key LIKE 'pending:feed:%'");
         let ops = h.ledger_ops.len();
         (out, state, ops, facts(&h).len())
     };
-    let plain = run(&[("policy", "role", json!("talky"))]);
-    let off = run(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "fact_from_tool", json!("")),
-    ]);
+    let plain = run(&[]);
+    let off = run(&[("policy", "fact_from_tool", json!(""))]);
     assert_eq!(plain.0, off.0);
     assert_eq!(plain.1, off.1);
     assert!(off.1.is_empty());
@@ -291,7 +305,7 @@ fn a_delegation_round_sends_no_tool_fact() {
         "no fact in a delegation round: {:?}",
         h.out
     );
-    assert!(marks(&h, "fact_from_tool").is_empty());
+    assert!(tool_marks(&h).is_empty());
     assert_eq!(
         h.routed("quick").len() + h.routed("brain").len(),
         1,

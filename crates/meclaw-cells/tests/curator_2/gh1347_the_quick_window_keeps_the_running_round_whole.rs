@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -67,14 +70,22 @@ fn the_formulation_round_keeps_the_question_and_every_pair() {
     if !shipped() {
         return;
     }
-    let (keep, _) = policy_scope(json!({}), "ROLES['quick']['keep_recent']", Value::Null);
+    // R-58-15: the value set of the fast cells lives in their profile
+    // (`templates/talky/quick`), read as the curator reads a profile.
+    let quick =
+        read_json(&repo("templates/talky/quick/config.json"))["params"]["window_profile"].clone();
+    let (keep, _) = policy_scope(
+        json!({}),
+        "knob_of(profile_params(ARGS, True), 'keep_recent')",
+        quick,
+    );
     assert_eq!(
         keep,
         json!(4),
         "the preset stays as it is: the fix is not a value"
     );
 
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..4 {
         turn(
             &mut h,
@@ -237,7 +248,7 @@ fn the_research_bridge_counts_before_its_running_round() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..4 {
         turn(
             &mut h,
@@ -268,8 +279,8 @@ fn the_research_bridge_counts_before_its_running_round() {
         h.stderr
     );
     assert_eq!(
-        quick[0].hop["bridge"],
-        json!("research"),
+        quick[0].hop["call_kind"],
+        json!("side"),
         "{:?}",
         quick[0].hop
     );

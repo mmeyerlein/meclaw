@@ -17,6 +17,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -91,7 +94,7 @@ fn an_error_result_is_never_shrunk() {
     ]
     .concat();
     let got = plan_of(
-        json!({"role": "talky", "gc": "1", "keep_rounds": 1}),
+        curator_profiles::set_knobs("talky", json!({"gc": "1", "keep_rounds": 1})),
         &wall,
         2000,
     );
@@ -151,7 +154,7 @@ fn the_window_shows_an_error_result_whole_even_when_the_plan_shrank_it() {
     let probe = "[e.get('text') for _, e, _, _ in render(blocks_of_rows(ARGS['rows'], [], None), ARGS['rows'], P, ARGS['plan'], \
                  tuple(ARGS['current'])) if e.get('type') == 'tool_result']";
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         probe,
         json!({"rows": rows, "plan": plan, "current": ["s", "r2"]}),
     );

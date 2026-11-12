@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::cel_eval::{
@@ -25,10 +28,10 @@ use meclaw_core::serde_json::{self as sj, Map, Value, json};
 
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!(spec_tools)),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -87,7 +90,7 @@ fn silent(h: &Hive) -> bool {
 }
 
 fn spec_marks(h: &Hive) -> Vec<Value> {
-    h.rows("SELECT value FROM marks WHERE kind = 'quick_spec' ORDER BY seq")
+    h.rows("SELECT value FROM marks WHERE kind = 'spec' ORDER BY seq")
         .iter()
         .map(|r| sj::from_str(r[0].as_str().unwrap_or("{}")).expect("JSON"))
         .collect()
@@ -367,8 +370,8 @@ fn spec_off_parks_a_spec_curate() {
     if !shipped() {
         return;
     }
-    // The knobs live in the lead since GH #1447.
-    let policy = cell_config("lead");
+    // The knobs live in the lead since GH #1447 (its own hive since GH #1474).
+    let policy = lead_config("lead");
     for (k, v) in [("quick_speculative", "0"), ("spec_tools", "")] {
         assert_eq!(policy["params"][k], json!(v), "{k}");
         assert_eq!(
@@ -377,7 +380,7 @@ fn spec_off_parks_a_spec_curate() {
             "{k}"
         );
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     spec_curate(&mut h, "t1", json!({"messages": [user("hi")]}));
     assert!(
         h.routed("quick").is_empty() && h.routed("brain").is_empty(),
@@ -494,7 +497,8 @@ fn spec_talky_edges_keep_a_spec_answer_inside() {
         passing(&through("./quick", "./errors", spec.clone(), err.clone())),
         0
     );
-    let err_ctx = json!({"curator_call": "c1-bridge"});
+    // D58 moveout (contract point 3): a side call says so in its context.
+    let err_ctx = json!({"curator_call": "c1-bridge", "call_kind": "side"});
     assert_eq!(
         passing(&through("./quick", "./errors", err_ctx, err)),
         1,
@@ -503,7 +507,8 @@ fn spec_talky_edges_keep_a_spec_answer_inside() {
 
     // The curator's quick call lifts `hop.spec`; a brain call clears it.
     let call = |extra: Value| {
-        let mut h = json!({"route": "quick", "iter": "0", "curator_call": "c1",
+        // D58 target (contract point 8): one route, the cell by `hop.target`.
+        let mut h = json!({"route": "model_call", "target": "quick", "iter": "0", "curator_call": "c1",
                            "turn_id": "t1", "session_id": "s1"});
         for (k, v) in obj(extra) {
             h[k] = v;
@@ -512,9 +517,9 @@ fn spec_talky_edges_keep_a_spec_answer_inside() {
     };
     for e in through(
         "./curator",
-        "./quick",
+        "./quick_spec",
         json!({}),
-        call(json!({"spec": "1"})),
+        call(json!({"spec": "1", "target": "quick_spec"})),
     ) {
         if e.0 {
             assert_eq!(e.1["spec"], json!("1"));
@@ -526,7 +531,7 @@ fn spec_talky_edges_keep_a_spec_answer_inside() {
         }
     }
     let mut brain = call(json!({}));
-    brain["route"] = json!("brain");
+    brain["target"] = json!("brain");
     for e in through("./curator", "./brain", json!({"spec": "1"}), brain) {
         if e.0 {
             assert_eq!(e.1["spec"], json!(""));
@@ -611,7 +616,8 @@ fn spec_quick_dropped_when_a_stamped_family_lies_outside_spec_tools() {
     assert!(
         a.routed("quick")
             .iter()
-            .any(|q| q.hop.get("spec") == Some(&json!("bridge"))),
+            .any(|q| q.hop.get("call_kind") == Some(&json!("side"))
+                && q.hop.get("target") == Some(&json!("quick_bridge"))),
         "the bridge goes with the call: {:?}",
         a.out
     );

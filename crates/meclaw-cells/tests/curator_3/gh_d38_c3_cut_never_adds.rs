@@ -21,6 +21,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -71,7 +74,7 @@ fn turn_with(h: &mut Hive, turn: &str, path: &str, way: &str, msgs: Value, reply
         .routed(way)
         .into_iter()
         .find(|m| {
-            m.hop.get("bridge").is_none()
+            m.hop.get("call_kind").is_none_or(|v| *v != "side")
                 && !m.hop["curator_call"]
                     .as_str()
                     .unwrap_or("")
@@ -195,7 +198,7 @@ fn the_brain_window_holds_only_blocks_of_its_plan() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let mut last = None;
     for i in 0..3 {
         last = Some(turn_on(
@@ -218,7 +221,7 @@ fn the_quick_window_holds_only_blocks_of_its_plan() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..4 {
         turn_on(
             &mut h,
@@ -254,7 +257,7 @@ fn a_recall_turn_keeps_the_send_order_in_the_cut() {
         return;
     }
     const RECALL: &str = "call_recall_00000000000000c3";
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn_on(&mut h, "t0", "talk", "brain", "question 0", "answer 0");
     let recall = "WHAT WAS SAID\n  user: \"An older turn.\"";
     let call = turn_with(

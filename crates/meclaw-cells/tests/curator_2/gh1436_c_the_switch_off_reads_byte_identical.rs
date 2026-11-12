@@ -31,7 +31,24 @@ fn bytes(run: &Run) -> Vec<(Value, Value)> {
 /// the new script with itself). Measured by this test against the history
 /// `config.json` of master; a later change that moves these bytes on purpose
 /// takes the digest the failure prints, with its reason in the commit.
-const MASTER_OFF_DIGEST: &str = "59dc3d70056151d230868babca5f96699d5d36531fc8cfd24022e3a5efc2f934";
+/// Re-blessed for D58 live (GH #1482, contract points 1 and 3): the seed ask
+/// and its answer carry the handle `live` instead of `call_id` -- a wanted
+/// change of the seed's keys, old
+/// `59dc3d70056151d230868babca5f96699d5d36531fc8cfd24022e3a5efc2f934`.
+/// Re-blessed for D58 judge (GH #1480, contract points 1, 2 and 5): the judge
+/// read is a view now -- the lane `in_view_ask`, the answer `view` with
+/// `messages` and the `system` tree instead of `turns` and `judge`, the seed's
+/// key `context` instead of `judge`, and the view reads no screen row (the
+/// contributions come by `part_reads`) -- a wanted change of lanes and keys
+/// (free by the plan part: lane names and the key `judge` of `seed`), old
+/// `6bba02af2c78ddd4aaecd4068b4cbd56049839051647767560f395bd79390828`. Contract point 4 moves the
+/// seed's reads too (the held start window lines as two key ranges, `seed_line:` keys without a kind)
+/// and the view and the seed read the target's contributions by `part_reads` -- the joined state of
+/// both, old `fa96af97ce4afececc9d59d0bd1d9a26b6ed9f873b80f41548fb459ec742f2db`. Review I2 of
+/// the strand renamed the seed's write phase `judge-write` to `state-write` (contract point 9:
+/// no role name in a phase) -- the only moved byte: the shipped history with the old phase name
+/// gives the old digest, old `d61ede91d26a2e1f08201a1dc36767697a30ba277f480808abdf124433b556e6`.
+const MASTER_OFF_DIGEST: &str = "7095d791f95210cd03fe967f56fa71b6fda641778f2773e99ba71f9497da1b48";
 
 fn digest(runs: &[&Run]) -> String {
     let all: Vec<Value> = runs
@@ -77,7 +94,7 @@ fn the_switch_off_reads_byte_identical() {
         "the shipped judge reads are not the bytes of master"
     );
     assert_eq!(
-        judged_topic(&only(&d, "turns")),
+        judged_topic(&only(&d, "view")),
         "crisis",
         "carries as before"
     );

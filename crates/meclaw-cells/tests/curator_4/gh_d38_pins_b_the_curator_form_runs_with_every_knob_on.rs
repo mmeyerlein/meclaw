@@ -1,24 +1,33 @@
 //! GH #1451 (D38 pins b) -- the curator form runs with every knob on.
 //!
-//! WHY this file exists: a set's `curator_form` "1" turns ten params of the
+//! WHY this file exists: a set's `curator_form` "1" turns the params of the
 //! curator on at once (`./intake` `fact_mark_kind`; `./policy`
-//! `catalog_ask`, `delegation_park_by_call`, `notes_latest_per_item`,
-//! `recall_in_wall`, `state_one_per_subject`, `state_scheduled_on_need`,
-//! `wellbeing_line`; `./history` `notes_latest_per_item`, `wellbeing_line`).
-//! Every knob had its own pin, none ran with the other nine on. Here every
-//! test starts from ONE configuration with all ten "1" (`form_hive`,
+//! `notes_latest_per_item`,
+//! `recall_in_wall`, `state_one_per_subject`, `state_scheduled_on_need`;
+//! `./history` `notes_latest_per_item`).
+//! Four former knobs are none since D58: `./policy` `catalog_ask`
+//! (OR-d58-2.target.15: the ask for a missing row always goes),
+//! `./policy` `delegation_park_by_call` (D58 live: its park is what every
+//! composition does, the pin below stays) and `wellbeing_line` of `./policy`
+//! and `./history` (D58 followup, GH #1479: the open concern of the day is
+//! the hive `assistant`'s, its pins run there).
+//! Every knob had its own pin, none ran with the others on. Here every
+//! test starts from ONE configuration with all of them "1" (`form_hive`,
 //! `form_history`): the overrides pass the door of a birth, the calls run
 //! with no traceback and no emission the colony would dead-letter
 //! (`check_emits`), and each knob keeps the effect its own pin claims.
-//! `state_scheduled_on_need` and the confidence of `wellbeing_line` read
-//! what `fact_mark_kind` writes, so their marks come out of the intake of
-//! the form here (`intake_mark`), never written by hand.
+//! `state_scheduled_on_need` reads what `fact_mark_kind` writes, so its
+//! marks come out of the intake of the form here (`intake_mark`), never
+//! written by hand.
 //!
 //! Runs the shipped curator hive (`support/curator_hive.rs`); no model.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 // harness_fold: #[path = "support/history_judge.rs"]
 #[allow(unused_imports)]
 use crate::history_judge; // harness_fold: mod history_judge;
@@ -29,18 +38,16 @@ use meclaw_colony::mutation::subtree::{check_override_params, parse_subtree};
 use meclaw_colony::templates::{TemplateEntry, TemplatesRegistry, scan_templates_dir};
 use meclaw_core::serde_json::{self as sj, Map, Value, json};
 
-/// The ten knobs of `curator_form` (soul2me `CURATOR_FORM_KNOBS`).
-const FORM: [(&str, &str); 10] = [
+/// The knobs of `curator_form` (soul2me `CURATOR_FORM_KNOBS`) the curator
+/// still has (`catalog_ask` left, OR-d58-2.target.15; `delegation_park_by_call`
+/// left, D58 live; `wellbeing_line` left both cells, D58 followup).
+const FORM: [(&str, &str); 6] = [
     ("intake", "fact_mark_kind"),
-    ("policy", "catalog_ask"),
-    ("policy", "delegation_park_by_call"),
     ("policy", "notes_latest_per_item"),
     ("policy", "recall_in_wall"),
     ("policy", "state_one_per_subject"),
     ("policy", "state_scheduled_on_need"),
-    ("policy", "wellbeing_line"),
     ("history", "notes_latest_per_item"),
-    ("history", "wellbeing_line"),
 ];
 
 /// The form's knobs of one cell, all "1".
@@ -51,10 +58,23 @@ fn form_of(cell: &str) -> Map<String, Value> {
         .collect()
 }
 
-/// The shipped hive with all ten knobs "1", the talky role and `extra`;
-/// every emission checked against its cell's contract.
+/// The shipped hive with all the form's knobs "1", the composite talky's
+/// profiles reported (contract point 13) and `extra`; every emission
+/// checked against its cell's contract.
 fn form_hive(extra: &[(&str, &str, Value)]) -> Hive {
-    let mut over: Vec<(&str, &str, Value)> = vec![("policy", "role", json!("talky"))];
+    let mut h = form_unreported(extra).reporting_composite("talky");
+    h.check_emits = true;
+    h
+}
+
+/// [`form_hive`] before any model cell reported its package.
+fn form_unreported(extra: &[(&str, &str, Value)]) -> Hive {
+    // GH #1473: a talky's curator registers its `memory` section.
+    let mut over: Vec<(&str, &str, Value)> = vec![(
+        "intake",
+        "sections",
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    )];
     over.extend(FORM.iter().map(|(c, k)| (*c, *k, json!("1"))));
     over.extend(extra.iter().cloned());
     let mut h = Hive::with(&over);
@@ -62,7 +82,7 @@ fn form_hive(extra: &[(&str, &str, Value)]) -> Hive {
     h
 }
 
-/// The params of `./history` with the form's two knobs "1".
+/// The params of `./history` with the form's knob "1".
 fn form_history() -> (String, Map<String, Value>) {
     let over: Vec<(&str, Value)> = FORM
         .iter()
@@ -89,7 +109,13 @@ fn clean(h: &Hive) {
 /// The value of the `fact` mark the form's `./intake` writes for `item`.
 fn intake_mark(item: Value) -> String {
     let probe = "fact_marks('memory', {'items': [ARGS]}, 'items')";
-    let (got, err) = cell_scope("intake", Value::Object(form_of("intake")), probe, item);
+    // GH #1473: the fact marks of a registered section, as a talky registers `memory`.
+    let mut params = form_of("intake");
+    params.insert(
+        "sections".into(),
+        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+    );
+    let (got, err) = cell_scope("intake", Value::Object(params), probe, item);
     assert!(!err.contains("Traceback"), "{err}");
     got[0][1]
         .as_str()
@@ -132,7 +158,7 @@ fn shipped_registry(root: &std::path::Path) -> TemplatesRegistry {
     )
 }
 
-/// Pin: a set's override of all ten knobs passes the door of a birth, one
+/// Pin: a set's override of all the form's knobs passes the door of a birth, one
 /// override object per cell as the set renders it.
 #[test]
 fn the_form_passes_the_door() {
@@ -249,7 +275,7 @@ fn the_form_keeps_one_line_per_subject_and_the_reminder_for_its_time() {
     assert!(asked.contains(SCHEDULED), "a turn that asks: {asked}");
 }
 
-// -- ./policy + ./history: notes_latest_per_item, wellbeing_line -----------
+// -- ./policy + ./history: notes_latest_per_item ---------------------------
 
 const ASKED: &str = "due: Question on T-2 (T-2); kind: hint:question";
 const DONE: &str = "due: T-2 was rescheduled to 18:00 (T-2); kind: hint:notify";
@@ -295,29 +321,13 @@ fn the_form_window_keeps_the_latest_note_of_an_item() {
     assert!(!text.contains(ASKED), "notes_latest_per_item: {text}");
 }
 
-fn unwell(h: &mut Hive) {
-    let at = backdated(30);
-    h.row(at, "text-1", "t1", "user", &user("I feel unwell"), 1);
-    h.mark(
-        at + chrono::Duration::seconds(1),
-        "text-1",
-        "t1",
-        "fact",
-        &intake_mark(item(
-            "Ada",
-            "has_symptom",
-            "Ada feels unwell and slept badly.",
-            json!({"confidence": 0.9, "wellbeing": true}),
-        )),
-    );
-}
-
-/// A closed turn of the duplex call `CALL`; the live feeds it sent.
+/// A closed turn of the running session `CALL` (its handle); the live feeds
+/// it sent.
 fn closed_turn(h: &mut Hive, turn: &str) -> Vec<Msg> {
     h.out.clear();
     let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
                      "path": "talk", "needs": "", "families": "",
-                     "engine": "duplex", "call_id": CALL});
+                     "live": CALL});
     let ctx = json!({"session_id": "s1", "turn_id": turn, "iter": "0",
                      "channel": "test", "audience_set": ROUND_E, "path": "talk"});
     h.lane(
@@ -334,60 +344,31 @@ fn closed_turn(h: &mut Hive, turn: &str) -> Vec<Msg> {
     h.routed("live_feed")
 }
 
-/// Pin (telephone rim, `./history`): the seed of a call carries the open
-/// wellbeing once and the latest note of an item; the call's own turn is not
-/// fed again -- the feed of `./policy` reads both knobs as the seed does.
+/// Pin (telephone rim, `./history`): the seed of a call carries the latest
+/// note of an item; the call's own turn is not fed again -- the feed of
+/// `./policy` reads the knob as the seed does. (Until GH #1479 it carried
+/// the open wellbeing of the day too; that moved to the hive `assistant`.)
 #[test]
-fn the_form_seed_carries_the_wellbeing_once_and_the_latest_note() {
+fn the_form_seed_carries_the_latest_note() {
     if !shipped() {
         return;
     }
     clear_of_midnight();
     let mut h = form_hive(&[("policy", "live_feed", json!("1"))]);
     notes(&mut h);
-    unwell(&mut h);
     let p = form_history();
     let seed = only(&seed_ask(&h, &p, CALL), "seed");
-    let well = texts_of(&seed, "Wellbeing: ");
-    assert_eq!(well.len(), 1, "wellbeing_line: {:?}", seed.messages());
-    assert!(well[0].contains("\"state\":\"open\""), "{}", well[0]);
     let n = texts_of(&seed, "Notes: ").concat();
     assert!(n.contains(DONE) && n.contains(OTHER), "{n}");
     assert!(!n.contains(ASKED), "notes_latest_per_item: {n}");
     let fed = closed_turn(&mut h, "t5");
     assert!(fed.is_empty(), "the call already has its facts: {fed:?}");
-    let later = only(&seed_ask(&h, &p, "call-10"), "seed");
-    assert!(
-        texts_of(&later, "Wellbeing: ").is_empty(),
-        "asked after once: {:?}",
-        later.messages()
-    );
 }
 
-/// Pin (telephone rim, `./policy`): a wellbeing said after the seed reaches
-/// the running call as a live feed, its state carrying the open line.
-#[test]
-fn the_form_feeds_a_wellbeing_said_after_the_seed() {
-    if !shipped() {
-        return;
-    }
-    clear_of_midnight();
-    let mut h = form_hive(&[("policy", "live_feed", json!("1"))]);
-    let p = form_history();
-    let seed = only(&seed_ask(&h, &p, CALL), "seed");
-    assert!(texts_of(&seed, "Wellbeing: ").is_empty());
-    unwell(&mut h);
-    let fed = closed_turn(&mut h, "t5");
-    assert_eq!(fed.len(), 1, "one feed: {fed:?} {:?}", h.stderr);
-    let held = h.state(&format!("seed_facts:{CALL}"));
-    let v: Value = sj::from_str(&held).unwrap_or_else(|_| panic!("a state: {held}"));
-    assert_eq!(v["wellbeing"]["state"], json!("open"), "{held}");
-}
+// -- ./policy: the park of a delegation (D58 live: the knob fell) ------------
 
-// -- ./policy: delegation_park_by_call ---------------------------------------
-
-/// Pin: the turn path of a call parks beside the delegation that runs under
-/// the call's own session -- one answer per delegation.
+/// Pin: the turn path of a running session parks beside the delegation that
+/// runs under the handle's own session -- one answer per delegation.
 #[test]
 fn the_form_parks_the_turn_beside_its_delegation() {
     if !shipped() {
@@ -401,7 +382,7 @@ fn the_form_parks_the_turn_beside_its_delegation() {
         h.out.clear();
         let mut hop = json!({"session_id": session, "turn_id": turn, "iter": "0",
                              "phase": "", "path": "simple", "needs": "", "families": "",
-                             "engine": "duplex", "call_id": CALL});
+                             "live": CALL});
         for (k, v) in obj(extra) {
             hop[k] = v;
         }
@@ -434,7 +415,7 @@ fn the_form_parks_the_turn_beside_its_delegation() {
     assert_eq!(
         (second, parked),
         (0, 1),
-        "delegation_park_by_call: one answer"
+        "the park by the handle: one answer"
     );
 }
 
@@ -533,11 +514,19 @@ fn the_form_asks_for_a_missing_row_once() {
     if !shipped() {
         return;
     }
-    let mut h = form_hive(&[]);
+    // No model cell has reported yet: the row of the target the composite
+    // names is missing.
+    let mut h = form_unreported(&[]);
+    h.target = Some(MAIN_TARGET.to_string());
     let c1 = h.curate("s1", "t1", 0, json!([user("q1")]), mode("Be brief."));
     let asks = h.routed("catalog_ask");
     assert_eq!(asks.len(), 1, "catalog_ask: {:?} {:?}", h.out, h.stderr);
-    assert_eq!(asks[0].hop["catalog_for"], json!("brain"));
+    // OR-d58-2.target.15: the first ask of a session goes to every cell.
+    assert!(
+        asks[0].hop.get("catalog_for").is_none(),
+        "{:?}",
+        asks[0].hop
+    );
     h.tap(&c1, "stop", json!({}), json!([said("a1")]));
     h.curate("s1", "t2", 0, json!([user("q2")]), mode("Be brief."));
     assert!(h.routed("catalog_ask").is_empty(), "{:?}", h.out);

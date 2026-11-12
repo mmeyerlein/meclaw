@@ -159,8 +159,10 @@ fn window_figure() -> Value {
 }
 
 fn rebuild_figure() -> Value {
+    // GH #1464: `cold`, the mark of a rebuild for an expired cache that only
+    // collected, is answered at zero like every order.
     json!({"n": 6, "by_mark": {"hard": 1, "soft": 0, "day": 0, "target": 1, "cost": 0,
-                               "none": 4, "target_hold": 1},
+                               "none": 4, "target_hold": 1, "cold": 0},
            // GH #1444: the cents of the two calls that rebuilt, target 2 + hard 10.
            "rate_pct": 33, "cost_cents_sum": 12})
 }
@@ -243,7 +245,7 @@ fn gh_d38_k1_a_ledger_without_the_marks_answers_zeros() {
     assert_eq!(
         counts["rebuild"],
         json!({"n": 0, "by_mark": {"hard": 0, "soft": 0, "day": 0, "target": 0, "cost": 0,
-                                   "none": 0, "target_hold": 0},
+                                   "none": 0, "target_hold": 0, "cold": 0},
                "rate_pct": 0, "cost_cents_sum": 0}),
         "{counts}"
     );

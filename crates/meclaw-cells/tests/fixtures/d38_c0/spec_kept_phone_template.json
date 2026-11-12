@@ -63,15 +63,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
             "episode_turn_id": "s1#bd1794fa-0",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t0"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t0 talk Hello.",
@@ -173,16 +174,17 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-2",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
             "spec": "1",
+            "target": "quick_spec",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "03 spec t1",
@@ -198,7 +200,7 @@
       "marks": [
         {
           "audience_set": "[\"member:e\"]",
-          "kind": "quick_spec",
+          "kind": "spec",
           "session_id": "s1",
           "turn_id": "t1",
           "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost\":null,\"done_ms\":1772445620000,\"fired_ms\":1772445610000,\"reason\":\"kept\",\"verdict\":\"kept\"}"

@@ -57,9 +57,9 @@ fn a_renewal_names_the_topic_after_sixty_quiet_turns() {
     h.out.clear();
     h.lane(
         "in_renewed",
-        json!({"session_id": "s-t", "call_id": "call-t", "channel": "test",
+        json!({"session_id": "s-t", "live": "call-t", "channel": "test",
                "audience_set": ROUND_E}),
-        json!({"call_id": "call-t", "session_id": "s-t", "renewal_n": 1}),
+        json!({"live": "call-t", "session_id": "s-t", "renewal_n": 1}),
         json!({"messages": []}),
     );
     let blocks = h.routed("sidecar");

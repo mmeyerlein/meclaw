@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -74,11 +77,11 @@ fn an_open_line_outlives_its_day_in_the_brief() {
         return;
     }
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent_tokens", json!(0)),
         ("policy", "summary_form", json!("brief")),
         ("intake", "replay_channel_prefix", json!("replay-")),
-    ]);
+    ])
+    .reporting_composite("talky");
     let d1 = "2026-03-01T09:00:00Z";
     round_at(&mut h, "d1-a", d1);
     round_at(&mut h, "d2-a", "2026-03-02T08:00:00Z");

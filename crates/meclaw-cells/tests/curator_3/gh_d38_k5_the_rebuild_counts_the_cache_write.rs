@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -43,7 +46,7 @@ fn the_rebuild_counts_the_cache_write() {
         return;
     }
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         &format!(
             "[amortise_after(120000, 90000, 50, 5, {}), \
              amortise_after(120000, 90000, 50, 5, {}), \
@@ -70,7 +73,7 @@ fn the_write_price_is_the_aims_step() {
     // keeping costs (300 000 - 150 000) x 5 = 0.75 c a turn more; the rebuild
     // writes 150 000 x 62.5 = 9.375 c -> paid back on the 13th turn.
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         &format!(
             "amortise_after(300000, 150000, 50, 5, {})",
             limits(Some(12.5))

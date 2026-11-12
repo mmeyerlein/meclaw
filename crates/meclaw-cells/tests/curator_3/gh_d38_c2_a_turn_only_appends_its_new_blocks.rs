@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -23,7 +26,7 @@ fn the_next_answer_keeps_the_blocks_of_before_in_place() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
     let first = plan_blocks(&h, ROUND_E);
     assert!(
@@ -52,7 +55,7 @@ fn the_call_is_the_plan_of_before_and_the_persons_words() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     turn(&mut h, "s1", "t1", "q1", "a1", json!({}));
     let before: BTreeSet<String> = block_ids(&plan_blocks(&h, ROUND_E)).into_iter().collect();
     assert!(!before.is_empty(), "{}", h.plan_in(ROUND_E));

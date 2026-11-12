@@ -20,6 +20,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -31,14 +34,11 @@ fn row(model: &str, soft: i64, hard: Value, rate: f64) -> Value {
            "chars_per_token": rate})
 }
 
+/// The cell `cell` of talky reports its package: `row`, and the profile its
+/// template writes beside it (D58 target, contract point 13).
 fn catalog(h: &mut Hive, cell: &str, row: Value) {
     h.out.clear();
-    h.lane(
-        "in_catalog",
-        json!({}),
-        json!({"package_of": format!("/talky/{cell}")}),
-        json!({"messages": [], "package": row}),
-    );
+    h.report_row("talky", cell, row);
 }
 
 /// The call one turn on `path` sends on `way` (never a bridge), not yet
@@ -58,7 +58,7 @@ fn call_on(h: &mut Hive, turn: &str, path: &str, way: &str, ask: &str) -> Msg {
     h.routed(way)
         .into_iter()
         .find(|m| {
-            m.hop.get("bridge").is_none()
+            m.hop.get("call_kind").is_none_or(|v| *v != "side")
                 && !m.hop["curator_call"]
                     .as_str()
                     .unwrap_or("")
@@ -83,7 +83,7 @@ fn cut_of(h: &Hive, call: &Msg) -> Value {
 /// then a brain call: its `window_est.raw_tokens`. The brain's row counts
 /// at `brain_rate`; the quick row and the quick answer at `quick_rate`.
 fn brain_raw_after_quick(brain_rate: f64, quick_rate: f64) -> i64 {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(
         &mut h,
         "brain",
@@ -150,7 +150,7 @@ fn the_rows_soft_is_cut_to_the_window_the_model_reported() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(
         &mut h,
         "brain",
@@ -179,7 +179,7 @@ fn the_rows_soft_is_cut_to_the_window_the_model_reported() {
 /// The second brain call's cut after a tap that stamped `input_hard`
 /// 9 000; the brain's row (without `input_hard`) when `with_row`.
 fn hard_after_tap(with_row: bool) -> Value {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     if with_row {
         catalog(
             &mut h,
@@ -223,7 +223,7 @@ fn the_rows_soft_is_never_cut_to_another_cells_window() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(
         &mut h,
         "brain",

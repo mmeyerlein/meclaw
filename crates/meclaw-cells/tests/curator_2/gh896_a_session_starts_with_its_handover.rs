@@ -47,7 +47,8 @@
 //!    `handover` and no summarizer request.
 //! 8. `a_renewed_call_gets_the_conversation_without_a_model`: `in_renewed`
 //!    leaves the hive as ONE `sidecar` section `context` with `renewal_n`,
-//!    `context.call_id` and the latest turns under `payload`, no model is
+//!    `context.live` (the handle, D58 GH #1482) and the latest turns under
+//!    `payload`, no model is
 //!    asked (OR-KY-U3), and no block short id is left in the words a live
 //!    voice will be told -- neither the bracket `[#<12 hex>]` nor a bare
 //!    `#<12..16 hex>` nor a released block's form (OR-KY-68, OR-KY-81).
@@ -246,8 +247,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, knobs: Knobs) {
     let root = td.path();
     std::fs::write(root.join(".env"), "OPENROUTER_API_KEY=test-key\n").expect("env file");
     let mut renewed = lane_edge("renewed", "in_renewed");
-    // The member's edge promotes the call onto context (templates/member).
-    renewed["modifier"]["set_context"] = json!({"call_id": "hop.call_id"});
+    // The member's edge translates the call into the handle `live` on the
+    // context (templates/member; D58 GH #1482, plan `u-live.md` point 2).
+    renewed["modifier"]["set_context"] = json!({"live": "hop.call_id"});
     write(
         root,
         "main/config.json",
@@ -259,7 +261,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, knobs: Knobs) {
             lane_edge("section", "in_section"),
             renewed,
             {"from": "./curator", "to": "./brain",
-             "condition": "has(hop.route) && hop.route == 'brain'",
+             "condition": "has(hop.route) && hop.route == 'model_call'",
              "modifier": {"set_context": {"curator_call": "hop.curator_call",
                                           "turn_id": "hop.turn_id",
                                           "session_id": "hop.session_id",
@@ -269,7 +271,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, knobs: Knobs) {
              "condition": "has(hop.route) && hop.route == 'tap'",
              "modifier": {"set_hop": {"route": "'in_llm'"}}},
             {"from": "./curator", "to": "/sink",
-             "condition": "has(hop.route) && hop.route != 'brain'"}
+             "condition": "has(hop.route) && hop.route != 'model_call'"}
         ]}}}),
     );
     write(
@@ -287,6 +289,11 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, knobs: Knobs) {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
         v["params"]["api_key"] = json!("sk-test");
+    });
+    // GH #1473: the `memory` section that names a topic is registered, as a
+    // talky's curator registers it.
+    patch(root, "main/curator/intake/config.json", |v| {
+        v["params"]["sections"] = json!({"memory": {"lane": "sidecar", "mark": "topic"}});
     });
     if let Some(n) = knobs.keep_recent {
         patch(root, "main/curator/policy/config.json", |v| {
@@ -1179,9 +1186,13 @@ async fn a_renewed_call_gets_the_conversation_without_a_model() {
     assert_eq!(hop.get("renewal_n").and_then(Value::as_u64), Some(1));
     let ctx = &side.headers.context;
     assert_eq!(
-        ctx.get("call_id").and_then(Value::as_str),
+        ctx.get("live").and_then(Value::as_str),
         Some("call-1"),
-        "the channel's in_advise finds the call by context.call_id"
+        "the composition finds the session by context.live (and translates it back)"
+    );
+    assert!(
+        !hop.contains_key("call_id") && !ctx.contains_key("call_id"),
+        "the curator sends no call key: {hop:?} {ctx:?}"
     );
     assert_eq!(
         ctx.get("channel_node").and_then(Value::as_str),

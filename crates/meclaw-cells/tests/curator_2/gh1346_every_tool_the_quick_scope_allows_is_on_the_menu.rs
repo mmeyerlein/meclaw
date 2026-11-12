@@ -18,6 +18,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -105,14 +108,16 @@ fn every_tool_the_quick_scope_allows_is_on_the_menu() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        (
-            "policy",
-            "quick_tools",
-            json!("web,weather,story_read,orga"),
-        ),
-    ]);
+    // OR-d58-2.target.62: the class's tools are the fast cells' `allow`.
+    let allow = json!({"allow": ["web", "weather", "story_read", "orga"]});
+    let mut h = Hive::with(&[]).reporting_composite_with(
+        "talky",
+        &[
+            ("quick", allow.clone()),
+            ("quick_spec", allow.clone()),
+            ("quick_bridge", allow),
+        ],
+    );
 
     // The stub run: the stamp names the op, the menu holds its family.
     let s = quick_scope_of(&mut h, "t1", "set_timer", Value::Null);

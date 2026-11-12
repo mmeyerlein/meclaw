@@ -12,6 +12,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -76,11 +79,11 @@ fn off_is_byte_identical() {
     );
     for knob in [None, Some(json!("0")), Some(json!(false))] {
         let over = |extra: &Option<Value>| -> Hive {
-            let mut o = vec![("policy", "role", json!("talky"))];
+            let mut o = Vec::<(&str, &str, Value)>::new();
             if let Some(v) = extra {
                 o.push(("policy", "state_block", v.clone()));
             }
-            Hive::with(&o)
+            Hive::with(&o).reporting_composite("talky")
         };
         // The same conversation and the same note, once with the state sown
         // into the ledger and once without.

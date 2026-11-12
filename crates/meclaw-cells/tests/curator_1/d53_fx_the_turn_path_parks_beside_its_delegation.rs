@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -27,7 +30,7 @@ const OPEN_UNTIL: u64 = 4_102_444_800_000;
 const LATE_SINCE: u64 = 1_000_000_000_000;
 
 fn hive() -> Hive {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -46,7 +49,7 @@ fn seam(h: &mut Hive, turn: &str, iter: &str, hop_extra: Value, body: Value) {
 }
 
 fn duplex(path: &str, needs: &str, families: &str) -> Value {
-    json!({"engine": "duplex", "call_id": "call-9", "path": path,
+    json!({"live": "call-9", "path": path,
            "needs": needs, "families": families})
 }
 
@@ -63,7 +66,7 @@ fn marks(h: &Hive, kind: &str) -> Vec<Value> {
     .collect()
 }
 
-/// Turn `turn` to its tool call: the stamp of a duplex call's turn that
+/// Turn `turn` to its tool call: the stamp of a running session's turn that
 /// needs `weather`, the quick tool round, the model's call on the tap.
 fn tool_round(h: &mut Hive, turn: &str) {
     seam(
@@ -138,8 +141,8 @@ fn a_turn_path_parks_beside_an_open_delegation_of_the_same_turn() {
     tool_round(&mut h, "t1");
     delegation(&mut h, "t1", OPEN_UNTIL, "d1");
     assert!(
-        !h.state("pending:delegation:s1#t1").is_empty(),
-        "the delegation marks its turn open: {:?}",
+        !h.state("pending:delegation:call-9#t1").is_empty(),
+        "the delegation marks its turn open (the handle's scope, D58 live): {:?}",
         h.stderr
     );
     round_two(&mut h, "t1");
@@ -181,7 +184,7 @@ fn a_turn_without_a_delegation_runs_as_before() {
         );
         assert!(marks(&h, "turn_parked").is_empty(), "{case:?}");
     }
-    // A text turn (no duplex call) reads no delegation row at all.
+    // A turn without a handle reads no delegation row at all.
     let mut h = hive();
     seam(
         &mut h,
@@ -209,10 +212,10 @@ fn a_parked_turn_ends_its_speculation() {
         return;
     }
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!("")),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     // The collector's early curate of the turn: `spec` "1", no path.
     h.out.clear();
@@ -271,7 +274,7 @@ fn a_parked_turn_ends_its_speculation() {
         h.lead_state("spec_held:s1#t1").is_empty(),
         "the held answer goes with it"
     );
-    let spec = marks(&h, "quick_spec");
+    let spec = marks(&h, "spec");
     assert_eq!(spec.len(), 1, "{spec:?}");
     assert_eq!(spec[0]["verdict"], json!("dropped"));
     assert_eq!(spec[0]["reason"], json!("parked:delegation"));

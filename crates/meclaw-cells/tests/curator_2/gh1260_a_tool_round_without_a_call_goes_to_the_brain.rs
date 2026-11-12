@@ -21,6 +21,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -69,10 +72,11 @@ fn the_required_call_is_marked_for_the_dispatcher() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     h.check_emits = true;
     let (bridge, call) = tool_round(&mut h, "t1");
-    assert_eq!(bridge.hop["interim"], json!("1"), "{:?}", bridge.hop);
+    assert_eq!(bridge.hop["round_open"], json!("1"), "{:?}", bridge.hop);
+    assert!(bridge.hop.get("interim").is_none(), "{:?}", bridge.hop);
     assert_eq!(
         call.hop["interim"],
         json!("tool"),
@@ -113,7 +117,7 @@ fn a_tool_round_answered_without_a_call_goes_to_the_brain() {
             json!([{"origin": "assistant", "type": "text", "text": "Tomorrow"}]),
         ),
     ] {
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         h.check_emits = true;
         let (_bridge, call) = tool_round(&mut h, turn);
         h.out.clear();
@@ -162,7 +166,7 @@ fn a_tool_round_that_calls_its_tool_does_not_escalate() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     let (bridge, call) = tool_round(&mut h, "t1");
     h.out.clear();
     h.tap(
@@ -189,7 +193,7 @@ fn the_bridge_states_no_content_and_sees_no_tool_result() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     // An earlier turn of the session looked something up.
     seam(
         &mut h,
@@ -237,7 +241,7 @@ fn the_consult_and_research_bridges_state_no_content_either() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for (turn, path, way) in [("t1", "complex", "consult"), ("t2", "research", "research")] {
         h.out.clear();
         let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
@@ -252,7 +256,12 @@ fn the_consult_and_research_bridges_state_no_content_either() {
         );
         let quick = h.routed("quick");
         assert_eq!(quick.len(), 1, "{way}: {:?} {:?}", h.out, h.stderr);
-        assert_eq!(quick[0].hop["bridge"], json!(way), "{:?}", quick[0].hop);
+        assert_eq!(
+            quick[0].hop["call_kind"],
+            json!("side"),
+            "{way}: {:?}",
+            quick[0].hop
+        );
         let text = quick[0].body["system"]["instructions"]["bridge"]["text"]
             .as_str()
             .unwrap_or_default()

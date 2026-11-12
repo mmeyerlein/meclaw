@@ -43,9 +43,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1  Plan the move for the person.",
@@ -117,9 +118,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t2"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "03 say t2  And the costs?",

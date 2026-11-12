@@ -177,20 +177,48 @@ const SEAMS: &[Row] = &[
     // GH #1320 (K-13): each round is two edges, a person's turn and an inner
     // turn (`context.inner_source`, which sets `hop.silence_ok`); both restore.
     split(
-        row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+        row(
+            TALKY,
+            "./curator",
+            "./brain",
+            "model_call",
+            None,
+            Seam::Round,
+        ),
         "&& !(has(context.inner_source)",
     ),
     split(
-        row(TALKY, "./curator", "./brain", "brain", None, Seam::Round),
+        row(
+            TALKY,
+            "./curator",
+            "./brain",
+            "model_call",
+            None,
+            Seam::Round,
+        ),
         "< 12 && has(context.inner_source)",
     ),
     // GH #1248 (T4-09): the quick voice's round, the brain's edge once more.
     split(
-        row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
+        row(
+            TALKY,
+            "./curator",
+            "./quick",
+            "model_call",
+            None,
+            Seam::Round,
+        ),
         "&& !(has(context.inner_source)",
     ),
     split(
-        row(TALKY, "./curator", "./quick", "quick", None, Seam::Round),
+        row(
+            TALKY,
+            "./curator",
+            "./quick",
+            "model_call",
+            None,
+            Seam::Round,
+        ),
         "< 12 && has(context.inner_source)",
     ),
     // #1398: the quick voice's siblings -- the speculation and the bridge on
@@ -200,7 +228,7 @@ const SEAMS: &[Row] = &[
             TALKY,
             "./curator",
             "./quick_spec",
-            "quick",
+            "model_call",
             None,
             Seam::Round,
         ),
@@ -211,7 +239,7 @@ const SEAMS: &[Row] = &[
             TALKY,
             "./curator",
             "./quick_spec",
-            "quick",
+            "model_call",
             None,
             Seam::Round,
         ),
@@ -222,7 +250,7 @@ const SEAMS: &[Row] = &[
             TALKY,
             "./curator",
             "./quick_bridge",
-            "quick",
+            "model_call",
             None,
             Seam::Round,
         ),
@@ -233,7 +261,7 @@ const SEAMS: &[Row] = &[
             TALKY,
             "./curator",
             "./quick_bridge",
-            "quick",
+            "model_call",
             None,
             Seam::Round,
         ),
@@ -283,7 +311,14 @@ const SEAMS: &[Row] = &[
         None,
         Seam::CuratorEntry,
     ),
-    row(COGNY, "./curator", "./brain", "brain", None, Seam::Round),
+    row(
+        COGNY,
+        "./curator",
+        "./brain",
+        "model_call",
+        None,
+        Seam::Round,
+    ),
     // The simple agent itself (GH #1292): its door hands a turn, a client
     // tool's result and a close to the round's owners; the round is the
     // curator's, the close pass enters the memory hive. A turn enters on one
@@ -338,7 +373,7 @@ const SEAMS: &[Row] = &[
         SIMPLE_AGENT,
         "./curator",
         "./brain",
-        "brain",
+        "model_call",
         None,
         Seam::Round,
     ),
@@ -347,7 +382,7 @@ const SEAMS: &[Row] = &[
         SIMPLE_AGENT,
         "./curator",
         "./strong",
-        "brain",
+        "model_call",
         None,
         Seam::Round,
     ),

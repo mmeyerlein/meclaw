@@ -1,10 +1,10 @@
 //! GH #1436 (fix round 1, review C2) -- a seed that aged the topic out is not
 //! undone by the live feed: after the seed of a call said no topic, a closed
-//! turn of that call sends no `live_feed` and leaves `seed_facts:<call>` as
+//! turn of that session sends no `live_feed` and leaves `seed_facts:<live>` as
 //! the seed wrote it.
 //!
 //! WHY this file exists: `./history` writes the facts of the seed it sent
-//! under `seed_facts:<call>`, `./policy` compares the facts of a closed duplex
+//! under `seed_facts:<live>`, `./policy` compares the facts of a closed live
 //! turn against that row and feeds what moved (#1279, "one source"). With the
 //! aging in `./history` alone the policy read the newest named topic of the
 //! round, ungated by age: the digests parted on every closed turn, the feed
@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 // harness_fold: #[path = "support/history_judge.rs"]
 #[allow(unused_imports)]
 use crate::history_judge; // harness_fold: mod history_judge;
@@ -43,9 +46,10 @@ fn seam(h: &mut Hive, turn: &str, extra: Value) {
     );
 }
 
-/// One closed duplex turn of the call: its curate and the model's answer.
+/// One closed turn of the running session (its handle `live`): its curate and
+/// the model's answer.
 fn closed_turn(h: &mut Hive, turn: &str) {
-    seam(h, turn, json!({"engine": "duplex", "call_id": CALL}));
+    seam(h, turn, json!({"live": CALL}));
     let calls = h.routed("brain");
     assert_eq!(calls.len(), 1, "{:?} {:?}", h.out, h.stderr);
     h.out.clear();
@@ -89,13 +93,13 @@ fn crisis_then_call(h: &mut Hive) {
 
 fn hive(aging: &str) -> Hive {
     Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "live_feed", json!("1")),
         ("policy", "topic_aging", json!(aging)),
         ("policy", "topic_age_turns", json!(4)),
         ("history", "topic_aging", json!(aging)),
         ("history", "topic_age_turns", json!(4)),
     ])
+    .reporting_composite("talky")
 }
 
 #[test]

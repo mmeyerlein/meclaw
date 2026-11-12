@@ -12,6 +12,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 // harness_fold: #[path = "support/history_judge.rs"]
 #[allow(unused_imports)]
 use crate::history_judge; // harness_fold: mod history_judge;
@@ -38,10 +41,8 @@ fn note(h: &mut Hive, id: &str, item: &str, text: &str) {
 }
 
 fn notes_text(knob: &str, item_a: &str) -> String {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "notes_latest_per_item", json!(knob)),
-    ]);
+    let mut h = Hive::with(&[("policy", "notes_latest_per_item", json!(knob))])
+        .reporting_composite("talky");
     turn(&mut h, "s1", "t1", "Move it to six.", "Shall I?", json!({}));
     note(&mut h, "on-000000000001", item_a, ASKED);
     note(&mut h, "on-000000000002", item_a, DONE);

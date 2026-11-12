@@ -4,6 +4,7 @@
 //! T6: `build_openai_request` — UBF -> OpenAI request JSON.
 //! T7: `parse_openai_response` — OpenAI response JSON -> UBF turn(s) + meta.
 
+use crate::llm::params::SYSTEM_ORDER_REST;
 use crate::llm::sanitize::strip_provider_annotations;
 use meclaw_core::serde_json::Value;
 
@@ -41,9 +42,11 @@ pub(crate) enum TranslateError {
 /// system-prompt string, joined by `"\n\n"`.
 ///
 /// Order: sub-slots from `system_order` first (in that order), then remaining
-/// top-level keys alphabetically. Inside each sub-tree, DFS in alphabetical key
-/// order. The `tools` sub-slot is skipped entirely (extracted separately by T6
-/// `build_openai_request`).
+/// top-level keys alphabetically. The entry [`SYSTEM_ORDER_REST`] (`"*"`,
+/// GH #1478) stands for that rest: the sub-slots named after it come after
+/// the rest, in their listed order; without it nothing moves. Inside each
+/// sub-tree, DFS in alphabetical key order. The `tools` sub-slot is skipped
+/// entirely (extracted separately by T6 `build_openai_request`).
 ///
 /// A leaf whose `text` is empty contributes NO part (GH #259): a slot cleared
 /// by re-sending it empty — the only way to revoke durable `system.*` state,
@@ -67,15 +70,26 @@ pub(crate) fn concat_system_prompt(tree: &Value, system_order: &[String]) -> Str
         .filter(|k| k.as_str() != "tools")
         .cloned()
         .collect();
-    // Order: system_order first (in given order), then remaining alphabetically.
+    // Order: system_order first (in given order), then remaining alphabetically;
+    // the families named after the rest marker after that rest (GH #1478).
     let mut ordered: Vec<String> = Vec::new();
+    let mut last: Vec<String> = Vec::new();
+    let mut after_rest = false;
     for k in system_order {
-        if let Some(pos) = top_keys.iter().position(|x| x == k) {
-            ordered.push(top_keys.remove(pos));
+        if k == SYSTEM_ORDER_REST {
+            after_rest = true;
+        } else if let Some(pos) = top_keys.iter().position(|x| x == k) {
+            let key = top_keys.remove(pos);
+            if after_rest {
+                last.push(key);
+            } else {
+                ordered.push(key);
+            }
         }
     }
     top_keys.sort();
     ordered.extend(top_keys);
+    ordered.extend(last);
 
     let mut parts: Vec<String> = Vec::new();
     for k in &ordered {
@@ -1681,6 +1695,83 @@ mod tests {
         });
         let out = concat_system_prompt(&tree, &["identity".to_string(), "facts".to_string()]);
         assert_eq!(out, "S\n\nF");
+    }
+
+    /// The system part of the GH #1478 tests: four families and the tool menu.
+    fn four_families() -> Value {
+        json!({
+            "facts":        {"x":    {"text": "F"}},
+            "frame":        {"now":  {"text": "T"}},
+            "identity":     {"soul": {"text": "I"}},
+            "instructions": {"mode": {"text": "N"}},
+            "tools":        {"calc": {"text": "{\"name\":\"calc\"}"}},
+        })
+    }
+
+    fn order(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// GH #1478 (D58 frame): a `system_order` without the rest marker lays
+    /// the system part exactly as before -- the named families first, as
+    /// listed, then every other one alphabetically.
+    #[test]
+    fn gh1478_without_the_rest_marker_the_order_is_unchanged() {
+        let tree = four_families();
+        assert_eq!(
+            concat_system_prompt(&tree, &order(&["identity", "instructions"])),
+            "I\n\nN\n\nF\n\nT"
+        );
+        assert_eq!(
+            concat_system_prompt(&tree, &order(&["instructions"])),
+            "N\n\nF\n\nT\n\nI"
+        );
+        assert_eq!(concat_system_prompt(&tree, &[]), "F\n\nT\n\nI\n\nN");
+    }
+
+    /// GH #1478 (D58 frame): `"*"` stands for every family the list does not
+    /// name, alphabetically; the families after it come after that rest, as
+    /// listed. A name after it that the tree lacks contributes nothing.
+    #[test]
+    fn gh1478_the_families_after_the_rest_marker_come_last() {
+        let tree = four_families();
+        assert_eq!(
+            concat_system_prompt(&tree, &order(&["identity", "*", "frame"])),
+            "I\n\nF\n\nN\n\nT"
+        );
+        assert_eq!(
+            concat_system_prompt(&tree, &order(&["*", "frame", "identity"])),
+            "F\n\nN\n\nT\n\nI"
+        );
+        assert_eq!(
+            concat_system_prompt(&tree, &order(&["*", "absent", "frame"])),
+            "F\n\nI\n\nN\n\nT"
+        );
+        assert_eq!(
+            concat_system_prompt(&tree, &order(&["identity", "*"])),
+            concat_system_prompt(&tree, &order(&["identity"])),
+            "a marker at the end is the rule without one"
+        );
+    }
+
+    /// GH #1478 (D58 frame): at most one rest marker. A second one is a
+    /// configuration error on the path every other invalid param takes
+    /// (`LlmParams::parse`: a loud reject at birth, `invalid_input` on a
+    /// params update, which re-parses the merge); one marker parses.
+    #[test]
+    fn gh1478_a_second_rest_marker_is_refused() {
+        let base = json!({"provider": "openai", "model": "gpt-4o", "api_key": "x"});
+        let with = |o: Value| {
+            let mut raw = base.clone();
+            raw["system_order"] = o;
+            LlmParams::parse(&raw)
+        };
+        assert!(with(json!(["identity", "*", "frame"])).is_ok());
+        let err = with(json!(["*", "identity", "*"])).expect_err("two markers parse");
+        assert!(
+            err.contains("system_order") && err.contains("'*'"),
+            "the reject names the param and the marker: {err}"
+        );
     }
 
     #[test]

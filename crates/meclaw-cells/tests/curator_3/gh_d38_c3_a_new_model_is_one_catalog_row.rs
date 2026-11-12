@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -28,14 +31,11 @@ fn cut_of(h: &Hive, call: &Msg) -> Option<Value> {
     sj::from_str::<Value>(&text).ok()
 }
 
+/// The cell `cell` of talky reports its package: `row`, and the profile its
+/// template writes beside it (D58 target, contract point 13).
 fn catalog(h: &mut Hive, cell: &str, row: Value) {
     h.out.clear();
-    h.lane(
-        "in_catalog",
-        json!({}),
-        json!({"package_of": format!("/talky/{cell}")}),
-        json!({"messages": [], "package": row}),
-    );
+    h.report_row("talky", cell, row);
 }
 
 /// A row no template, satz or test fixture ships: invented numbers, an
@@ -52,7 +52,7 @@ fn an_invented_row_sizes_the_first_call() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     catalog(&mut h, "brain", invented());
     let call = h.curate("s1", "t1", 0, json!([user("hello")]), mode("Be brief."));
     let cut = cut_of(&h, &call)

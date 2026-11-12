@@ -47,7 +47,7 @@ fn talky(more: &[(&str, &str, Value)]) -> Hive {
         .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
         .collect();
     all.extend(more.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 /// The turn's stamp the policy keeps for the round of the call.

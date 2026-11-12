@@ -167,8 +167,8 @@ fn seed(h: &Hive, over: &[(&str, Value)], call: &str, reason: &str, renewal_n: u
         h,
         over,
         "in_seed_ask",
-        json!({"call_id": call}),
-        json!({"call_id": call, "session_id": call, "reason": reason, "renewal_n": renewal_n}),
+        json!({"live": call}),
+        json!({"live": call, "session_id": call, "reason": reason, "renewal_n": renewal_n}),
         json!({"messages": []}),
     );
     assert_eq!(out.len(), 1, "exactly one answer: {out:?}");
@@ -176,15 +176,24 @@ fn seed(h: &Hive, over: &[(&str, Value)], call: &str, reason: &str, renewal_n: u
     out[0].clone()
 }
 
+/// The place a line of today's senders names since D58 judge (GH #1480):
+/// `in_seed_line` knows no kind any more; the set's `identity` sender is a head
+/// line that lasts, its `hint` and `wind_down` senders are tail lines of the
+/// running session at orders 1 and 2 (the anchor's shipped order 1.5 between).
+fn place(kind: &str) -> Value {
+    match kind {
+        "identity" => json!({"position": "head", "lasts": "always"}),
+        "hint" => json!({"position": "tail", "order": 1, "lasts": "session"}),
+        "wind_down" => json!({"position": "tail", "order": 2, "lasts": "session"}),
+        other => panic!("no sender of kind {other}"),
+    }
+}
+
 fn seed_line(h: &Hive, call: &str, kind: &str, text: &str) {
-    let out = drive(
-        h,
-        &[],
-        "in_seed_line",
-        json!({}),
-        json!({}),
-        json!({"call_id": call, "kind": kind, "text": text}),
-    );
+    let mut body = place(kind);
+    body["live"] = json!(call);
+    body["text"] = json!(text);
+    let out = drive(h, &[], "in_seed_line", json!({}), json!({}), body);
     assert!(out.is_empty(), "nothing answers a seed line");
 }
 
@@ -320,27 +329,21 @@ fn an_identity_line_leads_the_seed_after_the_facts() {
 #[test]
 fn an_identity_line_without_a_call_reaches_the_next_seed() {
     let h = garden();
-    let out = drive(
-        &h,
-        &[],
-        "in_seed_line",
-        json!({}),
-        json!({}),
-        json!({"kind": "identity", "text": "You are Lotte."}),
-    );
+    let out = drive(&h, &[], "in_seed_line", json!({}), json!({}), {
+        let mut body = place("identity");
+        body["text"] = json!("You are Lotte.");
+        body
+    });
     assert!(out.is_empty(), "nothing answers a seed line");
     let named = seed(&h, &[], "c-7", "start", 0);
     assert_eq!(lines(&named)[1], dev("You are Lotte."), "after the facts");
     assert_eq!(named.body["est_tokens"], est(&named), "counted");
     // A hint still needs its call: without one it reaches no seed.
-    drive(
-        &h,
-        &[],
-        "in_seed_line",
-        json!({}),
-        json!({}),
-        json!({"kind": "hint", "text": "Ask about the roses."}),
-    );
+    drive(&h, &[], "in_seed_line", json!({}), json!({}), {
+        let mut body = place("hint");
+        body["text"] = json!("Ask about the roses.");
+        body
+    });
     let again = seed(&h, &[], "c-7", "renew", 1);
     assert!(
         lines(&again)

@@ -1,19 +1,19 @@
 //! GH #1451 (D38 V1/V3, fix round 1, review o15-Rv1 I3) -- the rebuild's
-//! state list (`summary_state_cond`) follows the three knobs like the
+//! state list (`summary_state_cond`) follows the two knobs like the
 //! window's state block.
 //!
 //! WHY this file exists: V1 and V3 were built on the turn path AND in the
 //! rebuild (OR-d38-3.v.13, v.16: `state_of_rows` with the rebuild's
-//! `ctx.call_id` and `ctx.needs`), but no pin drove a rebuild ("lesson 4 of
+//! handle `live` and `ctx.needs`), but no pin drove a rebuild ("lesson 4 of
 //! c1: pin the rebuilt path too"). A rebuild starts on a strike of the clock:
 //! the edge `./clock -> ./policy` lifts only `audience_set` into the context,
-//! so the rebuild knows no `needs` and no duplex call. Hence: one line per
+//! so the rebuild knows no `needs` and no handle of a running session. Hence: one line per
 //! `(subject, predicate)` (V1 a); a scheduled (`foresight`) line stays out of
 //! the list (V1 b, nothing asks for it); the session's delegation row is
-//! "open: a delegation". A row parked under a call id stays in the list
-//! (OR-d38-3.o15.8): with `delegation_park_by_call` the rebuild reads the
-//! whole delegation prefix -- one colony, one member -- and keeps the rows
-//! whose own audience the round may see; off, the session's prefix as before.
+//! "open: a delegation". A row parked under a handle stays in the list
+//! (OR-d38-3.o15.8): the rebuild reads the whole delegation prefix -- one
+//! colony, one member -- and keeps the rows whose own audience the round may
+//! see (D58 live: always, the knob `delegation_park_by_call` fell).
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -61,11 +61,7 @@ fn rebuild_line(knobs: &str, scope: &str, audience: Option<&str>) -> String {
         ("policy", "summary_state_cond", json!("1")),
         ("policy", "state_lines", json!(8)),
     ];
-    for k in [
-        "state_one_per_subject",
-        "state_scheduled_on_need",
-        "delegation_park_by_call",
-    ] {
+    for k in ["state_one_per_subject", "state_scheduled_on_need"] {
         over.push(("policy", k, json!(knobs)));
     }
     let mut h = Hive::with(&over);
@@ -116,8 +112,8 @@ fn the_rebuild_lists_one_line_per_subject_and_no_schedule() {
     assert!(line.contains("open: a delegation"), "{line}");
 }
 
-/// Pin (OR-d38-3.o15.8): a rebuild knows no call (v.13), yet an open
-/// delegation parked under a call id stays in the list to keep -- the row's
+/// Pin (OR-d38-3.o15.8): a rebuild knows no handle (v.13), yet an open
+/// delegation parked under a handle stays in the list to keep -- the row's
 /// own audience is the round's.
 #[test]
 fn the_rebuild_keeps_an_open_delegation_of_a_call() {
@@ -128,7 +124,7 @@ fn the_rebuild_keeps_an_open_delegation_of_a_call() {
     assert!(line.contains("open: a delegation"), "{line}");
 }
 
-/// Lock: a call's row of another audience, or of before (no audience), is
+/// Lock: a handle's row of another audience, or of before (no audience), is
 /// not the round's.
 #[test]
 fn the_rebuild_keeps_no_row_of_another_audience() {
@@ -141,14 +137,19 @@ fn the_rebuild_keeps_no_row_of_another_audience() {
     }
 }
 
-/// Lock: off (shipped), a call's row is not read -- the session's prefix.
+/// Lock (D58 live, contract point 7): with the other knobs off (shipped) the
+/// rebuild reads the park all the same -- a row of the session and a row of a
+/// handle, each with the round's audience: there is no knob left that keys a
+/// park by the session alone.
 #[test]
-fn off_the_rebuild_reads_no_row_of_a_call() {
+fn off_the_rebuild_reads_the_park_of_the_session_and_of_a_handle() {
     if !shipped() {
         return;
     }
-    let line = rebuild_line("0", "call-9", Some(ROUND_E));
-    assert!(!line.contains("open: a delegation"), "{line}");
+    for scope in ["s1", "call-9"] {
+        let line = rebuild_line("0", scope, Some(ROUND_E));
+        assert!(line.contains("open: a delegation"), "{scope}: {line}");
+    }
 }
 
 /// Lock: off (shipped), the list of before -- both lines and the schedule.

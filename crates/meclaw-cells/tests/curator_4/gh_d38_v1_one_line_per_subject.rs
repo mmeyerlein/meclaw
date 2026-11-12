@@ -15,6 +15,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::json;
@@ -24,14 +27,11 @@ const OLD: &str = "Ada will call his mother tonight.";
 const NEW: &str = "Ada will call his mother at 8 pm.";
 
 fn hive(knob: Option<&str>) -> Hive {
-    let mut over = vec![
-        ("policy", "role", json!("talky")),
-        ("policy", "state_block", json!("1")),
-    ];
+    let mut over = vec![("policy", "state_block", json!("1"))];
     if let Some(k) = knob {
         over.push(("policy", "state_one_per_subject", json!(k)));
     }
-    Hive::with(&over)
+    Hive::with(&over).reporting_composite("talky")
 }
 
 fn fact(h: &mut Hive, back_s: i64, subject: &str, predicate: &str, claim: &str) {

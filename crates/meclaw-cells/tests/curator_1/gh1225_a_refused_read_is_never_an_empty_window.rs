@@ -16,6 +16,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -348,10 +351,7 @@ fn a_refused_relay_read_is_read_again() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "keep_recent", json!(1)),
-    ]);
+    let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]).reporting_composite("talky");
     h.ledger_may_refuse = true;
     let base = chrono::Utc::now() - chrono::Duration::seconds(50);
     for i in 0..4i64 {

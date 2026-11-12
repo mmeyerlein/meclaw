@@ -1,0 +1,53 @@
+{
+  "source": "by hand from the lead's contract (lanes lead_ask, lead_note, lead_spec; GH #1447), ids as placeholders; no probe whose answer carries handle_ms",
+  "probes": [
+    {
+      "hop": {
+        "route": "lead_ask",
+        "call": "c-1"
+      },
+      "context": {},
+      "body": {
+        "messages": [],
+        "ask": {
+          "read": "errand",
+          "call": "c-1",
+          "session": "s-1",
+          "fwd": {}
+        }
+      }
+    },
+    {
+      "hop": {
+        "route": "lead_note"
+      },
+      "context": {},
+      "body": {
+        "messages": [],
+        "note": {
+          "kind": "escalated",
+          "session": "s-1",
+          "turn": "t-1"
+        }
+      }
+    },
+    {
+      "hop": {
+        "route": "lead_ask",
+        "call": "c-2"
+      },
+      "context": {},
+      "body": {
+        "messages": [],
+        "ask": {
+          "read": "errand",
+          "call": "c-2",
+          "session": "s-2",
+          "fwd": {
+            "ops": []
+          }
+        }
+      }
+    }
+  ]
+}

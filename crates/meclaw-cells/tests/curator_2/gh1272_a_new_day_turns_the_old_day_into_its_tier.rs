@@ -24,6 +24,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -36,10 +39,10 @@ const DAY_2: &str = "2026-03-02";
 /// `keep_recent` rounds alone, the policy of before GH #1427).
 fn talky(budget: i64) -> Hive {
     Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("policy", "keep_recent_tokens", json!(budget)),
         ("intake", "replay_channel_prefix", json!("replay-")),
     ])
+    .reporting_composite("talky")
 }
 
 /// One round on the replay channel, said at `at`, and its answer on the
@@ -193,10 +196,8 @@ fn a_task_horizon_has_no_day_mark() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("consult")),
-        ("intake", "replay_channel_prefix", json!("replay-")),
-    ]);
+    let mut h = Hive::with(&[("intake", "replay_channel_prefix", json!("replay-"))])
+        .reporting(curator_profiles::profile("consult"));
     round_at(&mut h, "d1-a", &format!("{DAY_1}T09:00:00Z"));
     round_at(&mut h, "d2-a", &format!("{DAY_2}T09:00:00Z"));
     assert_eq!(mark(&h), "none", "{:?}", h.stderr);

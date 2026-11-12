@@ -14,6 +14,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -680,6 +681,223 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual([(f["rule"], f["subject"], f["value"]) for f in found],
                          [("coverage_red", "r9", 2)])
         self.assertEqual(found[0]["tests"], names)
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+class CarryTest(unittest.TestCase):
+    """GH #1461: the night of 2026-11-10 re-measured 41 min on a lane for a diff
+    of 324 files under `plans/` that the resolver selects no test for. A diff
+    without a selected test carries the newest clean GREEN map to HEAD, no run."""
+
+    BASE_AT = "2026-11-09T01:56:24Z"
+    NOW = "2026-11-10T01:00:05Z"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = pathlib.Path(tmp.name)
+        self.repo = d / "repo"
+        (self.repo / "crates/alpha/src").mkdir(parents=True)
+        _git(self.repo, "init", "-q", "-b", "master")
+        _git(self.repo, "config", "user.email", "t@example.invalid")
+        _git(self.repo, "config", "user.name", "t")
+        (self.repo / "crates/alpha/src/lib.rs").write_text("pub fn f() {}\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "base")
+        self.base = _git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "plans/w").mkdir(parents=True)
+        (self.repo / "plans/w/receipt.md").write_text("# receipt\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "close")
+        self.head = _git(self.repo, "rev-parse", "HEAD")
+        self.maps = d / "maps"
+        self.maps.mkdir()
+        self.db = store.open(d / "p.db")
+        self.addCleanup(store.close, self.db)
+        self.seen = []
+
+    def _map(self, rev, verdict="GREEN", complete=True, built_at=BASE_AT):
+        cov = coverage.coverage_map(rev, "build04",
+                                    [{"binary": "alpha", "module": None,
+                                      "files": {"crates/alpha/src/lib.rs": 3}}],
+                                    1620.0, 12, built_at=built_at)
+        cov["complete"], cov["verdict"] = complete, verdict
+        coverage.map_path(rev, self.maps).write_text(json.dumps(cov), encoding="utf-8")
+        return cov
+
+    def _carry(self, terms, **kw):
+        def fake(paths, repo=None):
+            self.seen.append(sorted(paths))
+            return terms
+        with mock.patch("gate_plan.test_terms", fake):
+            return coverage.carry(str(self.repo), map_dir=self.maps, db=self.db, now=self.NOW,
+                                  **kw)
+
+    def _built(self):
+        return [json.loads(r[0]) for r in self.db.execute(
+            "SELECT data FROM journal WHERE event='coverage_built'")]
+
+    def test_a_diff_that_selects_no_test_carries_the_map_to_head(self):
+        self._map(self.base)
+        cov, line = self._carry({})
+        self.assertEqual(self.seen, [["plans/w/receipt.md"]])
+        self.assertEqual(cov["rev"], self.head)
+        self.assertEqual(cov["built_at"], self.NOW)
+        self.assertEqual(cov["carried_from"], {"rev": self.base, "built_at": self.BASE_AT,
+                                               "runner": "build04", "secs": 1620.0})
+        on_disk, why = coverage.load_map(coverage.map_path(self.head, self.maps))
+        self.assertIsNone(why)
+        self.assertEqual(on_disk, cov)
+        self.assertEqual(coverage.verdict_of(on_disk), "GREEN")  # wave close reads this
+        self.assertIn("carried", line)
+        self.assertIn(self.base[:9], line)
+        # review M3: a carry is no lane run -- runner and secs say so, the
+        # measuring run's live on in carried_from
+        self.assertEqual((cov["runner"], cov["secs"]), ("carry", 0.0))
+        self.assertEqual((cov["carried_from"]["runner"], cov["carried_from"]["secs"]),
+                         ("build04", 1620.0))
+        built = self._built()
+        self.assertEqual([(b["rev"], b["runner"], b["secs"], b["carried_from"]["rev"])
+                          for b in built], [(self.head, "carry", 0.0, self.base)])
+
+    def test_a_rename_is_judged_on_both_sides(self):
+        # review I1: with git's rename detection the diff named the target only;
+        # a template moved under plans/ selected nothing and carried, while its
+        # old place selects 240 terms in the real tree
+        self._map(self.base)
+        _git(self.repo, "mv", "crates/alpha/src/lib.rs", "plans/w/lib.rs")
+        _git(self.repo, "commit", "-q", "-m", "move")
+        self._carry({})
+        self.assertEqual(self.seen, [sorted(["crates/alpha/src/lib.rs", "plans/w/lib.rs",
+                                             "plans/w/receipt.md"])])
+
+    def test_tracked_changes_in_the_tree_are_judged_too(self):
+        # review M2: the resolver reads the checked-out tree; a tracked file
+        # changed there (not committed) is judged with the diff
+        self._map(self.base)
+        (self.repo / "crates/alpha/src/lib.rs").write_text("pub fn g() {}\n")
+        (self.repo / "untracked.txt").write_text("x\n")
+        self._carry({})
+        self.assertEqual(self.seen, [["crates/alpha/src/lib.rs", "plans/w/receipt.md"]])
+
+    def test_a_file_deleted_in_the_tree_carries_nothing(self):
+        # re-check N1: the resolver reads the tree; a reader deleted there would
+        # select nothing, so a deletion in the tree is never judged, only refused
+        self._map(self.base)
+        (self.repo / "crates/alpha/src/lib.rs").unlink()
+        cov, why = self._carry({})
+        self.assertIsNone(cov)
+        self.assertIn("deletes tracked files (crates/alpha/src/lib.rs)", why)
+        self.assertEqual(self.seen, [])
+
+    def test_the_line_counts_commits_and_tree_apart(self):
+        # re-check N2: the count of the carry line separates the diff from the tree
+        self._map(self.base)
+        (self.repo / "crates/alpha/src/lib.rs").write_text("pub fn g() {}\n")
+        _cov, line = self._carry({})
+        self.assertIn("(1 files changed + 1 in the tree,", line)
+
+    def test_a_base_rev_outside_the_repository_carries_nothing(self):
+        self._map("f" * 40)
+        cov, why = self._carry({})
+        self.assertIsNone(cov)
+        self.assertIn("not in", why)
+        self.assertEqual(self.seen, [])
+
+    def test_a_changed_binary_list_carries_nothing(self):
+        # review M1: the check lives in carry itself, so the CLI has it too
+        # a binary the map names and the tree lacks: measured, never carried
+        self._map(self.base)
+        meta = {"workspace_members": ["alpha 0.1.0"],
+                "packages": [{"id": "alpha 0.1.0", "name": "alpha",
+                              "targets": [{"kind": ["test"], "name": "misc"}]}]}
+        cov, why = self._carry({}, metadata=meta)
+        self.assertIsNone(cov)
+        self.assertIn("binary list", why)
+        self.assertIn("gone alpha", why)
+        self.assertEqual(self.seen, [])
+        # a binary of the tree no map ever measured (the `*_measure` perf
+        # binaries of the real tree) does not refuse: never carrying would be the cost
+        meta["packages"][0]["targets"].insert(0, {"kind": ["lib"], "name": "alpha"})
+        cov, _line = self._carry({}, metadata=meta)
+        self.assertEqual(cov["rev"], self.head)
+
+    def test_a_resolver_error_is_a_reason_in_the_cli(self):
+        # review M6: a broken resolver input is exit 1 with the reason, no traceback
+        self._map(self.base)
+        args = types.SimpleNamespace(op="carry", map_dir=str(self.maps), db=None,
+                                     repo=str(self.repo), branch=None)
+        err = io.StringIO()
+
+        def broken(paths, repo=None):
+            raise ValueError("required-pins.toml: bad table")
+        with mock.patch("gate_plan.test_terms", broken), mock.patch.object(sys, "stderr", err):
+            self.assertEqual(coverage._cmd_coverage(args), 1)
+        self.assertIn("bad table", err.getvalue())
+
+    def test_a_diff_that_selects_tests_carries_nothing(self):
+        self._map(self.base)
+        cov, why = self._carry({"all()": ["rule:1 file:Cargo.lock"]})
+        self.assertIsNone(cov)
+        self.assertIn("all()", why)
+        self.assertFalse(coverage.map_path(self.head, self.maps).exists())
+        self.assertEqual(self._built(), [])
+
+    def test_only_the_newest_clean_green_map_is_a_base(self):
+        # a dirty map never: it names no commit (the night's own map of 10.11.)
+        self._map(self.base)
+        self._map(self.head + "-dirty", built_at="2026-11-10T01:45:51Z")
+        cov, _line = self._carry({})
+        self.assertEqual(cov["carried_from"]["rev"], self.base)
+        # a newer clean map that is not GREEN stops the carry: an older GREEN
+        # map never stands in for a measurement that found red tests
+        coverage.map_path(self.head, self.maps).unlink()
+        mid = _git(self.repo, "rev-parse", "HEAD~1")
+        self._map(mid, verdict="RED", built_at="2026-11-09T12:00:00Z")
+        cov, why = self._carry({})
+        self.assertIsNone(cov)
+        self.assertIn("RED", why)
+        self._map(mid, complete=False, verdict="GREEN", built_at="2026-11-09T12:00:00Z")
+        cov, why = self._carry({})
+        self.assertIsNone(cov)
+        self.assertIn("INCOMPLETE", why)
+
+    def test_head_must_be_the_named_branch(self):
+        # the resolver reads the checked-out tree: carrying to another rev would
+        # judge a diff against files it never looked at
+        self._map(self.base)
+        _git(self.repo, "branch", "other", self.base)
+        cov, why = self._carry({}, branch="other")
+        self.assertIsNone(cov)
+        self.assertIn("other", why)
+        self.assertEqual(self.seen, [])
+
+    def test_a_map_already_on_head_writes_nothing(self):
+        before = self._map(self.head)
+        cov, line = self._carry({})
+        self.assertEqual(cov, before)
+        self.assertIn("already", line)
+        self.assertEqual(self.seen, [])
+        self.assertEqual(self._built(), [])
+
+    def test_the_cli_carries_and_says_why_not(self):
+        self._map(self.base)
+        args = types.SimpleNamespace(op="carry", map_dir=str(self.maps), db=None,
+                                     repo=str(self.repo), branch=None)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("gate_plan.test_terms", lambda paths, repo=None: {"all()": ["x"]}), \
+                mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err):
+            self.assertEqual(coverage._cmd_coverage(args), 1)
+        self.assertIn("all()", err.getvalue())
+        with mock.patch("gate_plan.test_terms", lambda paths, repo=None: {}), \
+                mock.patch.object(sys, "stdout", out):
+            self.assertEqual(coverage._cmd_coverage(args), 0)
+        self.assertIn("carried", out.getvalue())
+        self.assertTrue(coverage.map_path(self.head, self.maps).is_file())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,76 @@
+{
+  "cell": {
+    "type": "store"
+  },
+  "params": {
+    "schema": {
+      "followup": {
+        "key": "text",
+        "value": "text"
+      }
+    },
+    "indexes": {
+      "followup_key": {
+        "table": "followup",
+        "on": [
+          "key"
+        ],
+        "unique": true
+      }
+    },
+    "write_surface": "internal",
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "results": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "operation": {
+          "type": "string",
+          "required": true
+        },
+        "rows_affected": {
+          "type": "number",
+          "required": false
+        },
+        "duration_ms": {
+          "type": "number",
+          "required": false
+        },
+        "bundle_errors": {
+          "type": "number",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The own store of `./followup` (D58 followup, GH #1479): one row `open:<day>:<round tag>` per person and day -- the concern's note id, claim, receipt, text, `until`, the session that heard it and its channel node, and its state (`held` while that session runs -- out at the surface that did not hear it, held for the hearing surface and `./cogny` --, `open` once the note is out everywhere, `closed` once asked after). The unique index on `followup.key` makes the first write an insert-if-absent and every later one a compare-and-set on the value read; every write deletes the rows of past days. Only `./followup` speaks to it."
+  }
+}

@@ -1,6 +1,8 @@
 //! Test harness `round_2` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/composite_packages.rs"]
+pub mod composite_packages;
 pub mod gh679_the_judge_speaks_only_on_a_content_change;
 pub mod gh694_the_judge_decides_only_what_is_large;
 pub mod gh702_the_judge_sees_no_geometry;

@@ -1024,11 +1024,17 @@ impl LlmCell {
     /// the budget is refused, so a wake never waits again. The parked turns go
     /// to the drain queue whatever the write did: a turn is never lost to a
     /// failed overlay write.
+    ///
+    /// D58 target (GH #1483): a twin that waited and has `package_line` on
+    /// announces its package line here, before a parked turn runs -- a swap
+    /// swings the original's `package` edge onto the twin, and nothing else
+    /// tells the reader that another model now stands behind it.
     async fn finish_handover(
         &mut self,
         budget: meclaw_core::serde_json::Map<String, Value>,
         db: &mut meclaw_colony::DbConn,
         path: &Path,
+        sink: &OutputSink,
     ) {
         let waited = self.handover.take();
         let update = if self.names_a_budget_key() {
@@ -1096,6 +1102,14 @@ impl LlmCell {
             }
         }
         if let Some(mut wait) = waited {
+            if self.params.package_line {
+                let _ = sink
+                    .push(meclaw_core::CellOutput {
+                        target: path.clone(),
+                        content: package::package_line(sink.sender_path().as_str(), &self.params),
+                    })
+                    .await;
+            }
             self.released.extend(wait.parked.drain(..));
         }
     }
@@ -1180,7 +1194,7 @@ impl LlmCell {
                     .await
                 {
                     Ok(_) => {
-                        self.finish_handover(budget, db, &msg.target).await;
+                        self.finish_handover(budget, db, &msg.target, sink).await;
                         return;
                     }
                     // OR-programm-tm.H2.10: a refused import changes nothing;
@@ -1196,8 +1210,13 @@ impl LlmCell {
                         "llm: no handover arrived in time; the twin runs on without its \
                          original's state"
                     );
-                    self.finish_handover(meclaw_core::serde_json::Map::new(), db, &msg.target)
-                        .await;
+                    self.finish_handover(
+                        meclaw_core::serde_json::Map::new(),
+                        db,
+                        &msg.target,
+                        sink,
+                    )
+                    .await;
                 }
                 return;
             }

@@ -63,15 +63,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a65f-4800-8000-0000000002c0",
             "episode_turn_id": "s1#bd1794fa-0",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t0"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t0 talk Hello.",
@@ -85,6 +86,13 @@
           "session_id": "s1",
           "turn_id": "t0",
           "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a65f-4800-8000-0000000002c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":1,\"raw_tokens\":2,\"window_estimate\":43,\"window_tokens\":43}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "feed",
+          "session_id": "s1",
+          "turn_id": "t0",
+          "value": "{\"section\":\"renew\",\"sender\":\"\"}"
         }
       ],
       "out": [
@@ -108,12 +116,12 @@
         {
           "body": {
             "messages": [],
-            "screen_topics": []
+            "parts": {}
           },
           "hop": {
             "at_turn_end": "1",
             "audience_set": "[\"member:e\"]",
-            "call_id": "call-1",
+            "live": "call-1",
             "section": "renew",
             "session_id": "s1",
             "turn_id": "t0"
@@ -173,17 +181,18 @@
             ]
           },
           "hop": {
-            "call_id": "call-1",
             "consult_class": "research",
             "consult_id": "k-00064c07-a6f7-4e80-8000-0000000001c0",
             "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-2",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "research"
+          "route": "errand"
         },
         {
           "body": {
@@ -232,15 +241,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a6f7-4e80-8000-0000000001c0-bridge",
             "episode_turn_id": "s1#bd1794fa-2",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "quick",
             "turn_id": "t1"
           },
-          "route": "quick"
+          "route": "model_call"
         }
       ],
       "step": "03 say t1 research Find everything on the choir.",
@@ -309,7 +319,7 @@
               "consult": {
                 "$replace": true,
                 "pending": {
-                  "text": "A consult is pending (id k-00064c07-a6f7-4e80-8000-0000000001c0, since 2026-03-02T10:00:10.000033Z): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked."
+                  "text": "A consult is pending (id k-00064c07-a6f7-4e80-8000-0000000001c0, since 2026-03-02T10:00:10.000026Z): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked."
                 }
               },
               "history": {
@@ -338,15 +348,16 @@
             }
           },
           "hop": {
-            "call_id": "call-1",
             "curator_call": "00064c07-a744-49c0-8000-0000000001c0",
             "episode_turn_id": "s1#bd1794fa-3",
             "iter": "0",
+            "live": "call-1",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t2"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "04 say t2 talk Is it done yet?",

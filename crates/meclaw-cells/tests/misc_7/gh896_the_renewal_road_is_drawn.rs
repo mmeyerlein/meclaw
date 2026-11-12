@@ -9,13 +9,15 @@
 //! hop by hop, the way the router would:
 //!
 //! * up: `voice` emits `renewed` -> `freeswitch` rim -> the member's
-//!   `./channels -> ./assistants` (re-stamped `in_renewed`, `context.call_id`
-//!   promoted) -> the assistant's `. -> ./talky` -> talky's `. -> ./curator`
-//!   -> the curator's `. -> ./handover`;
+//!   `./channels -> ./assistants` (re-stamped `in_renewed`, the handle of the
+//!   running session `context.live` promoted from the duplex call's
+//!   `call_id`, D58 live) -> the assistant's `. -> ./talky` -> talky's
+//!   `. -> ./curator` -> the curator's `. -> ./handover`;
 //! * down: the curator's `./handover -> .` (`sidecar`, section `context`,
-//!   `context.call_id` set) -> talky's `./curator -> .` -> the assistant's
+//!   `context.live` set) -> talky's `./curator -> .` -> the assistant's
 //!   `./talky -> .` -> the member's `./assistants -> ./channels`, re-stamped
-//!   `in_advise` -> the freeswitch rim's `. -> ./voice`.
+//!   `in_advise` with `context.call_id` back from the handle -> the
+//!   freeswitch rim's `. -> ./voice`.
 //!
 //! The container legs a builder renders per child (`./channels/<name>`,
 //! `./assistants/<generation>`) are the instantiating mutation's, exactly as
@@ -144,9 +146,9 @@ fn a_renewal_reaches_the_curator_and_its_handover_reaches_the_call() {
     let h = one("member", "./channels", "./assistants", &h.context, &h.hop);
     assert_eq!(h.hop["route"], "in_renewed");
     assert_eq!(
-        h.context.get("call_id").and_then(Value::as_str),
+        h.context.get("live").and_then(Value::as_str),
         Some("call-9"),
-        "the member promotes the call onto context"
+        "the member promotes the duplex call's handle onto context (D58 live)"
     );
     assert!(
         carried("member", "./channels", "./firewall", &h.context, &h.hop).is_empty(),
@@ -172,7 +174,7 @@ fn a_renewal_reaches_the_curator_and_its_handover_reaches_the_call() {
     // Down. What `./handover` emits for it (templates/curator/README.md,
     // route `sidecar`), under the context the renewal came with.
     let back_hop = obj(
-        json!({"route": "sidecar", "section": "context", "call_id": "call-9",
+        json!({"route": "sidecar", "section": "context", "live": "call-9",
                               "renewal_n": 1}),
     );
     let mut back_ctx = h.context.clone();
@@ -287,12 +289,14 @@ fn usage_and_call_mark_cross_the_freeswitch_rim_to_the_member_port() {
 }
 
 /// live-2 fx-call (#1369): the end of a call reaches the curator and its
-/// `call_facts` come back out of the generation. Up: the member hands the
-/// final `usage` to the generation as `in_call_end` (the satz's edge) ->
-/// the assistant's `. -> ./talky` -> talky's `. -> ./curator` -> the curator's
-/// `. -> ./history`. Down: `./history -> .` (`call_facts`, `context.call_id`
-/// set) -> talky's `./curator -> .` -> the assistant's `./talky -> .`. Drawn
-/// exactly like `in_seed_ask` / `seed`, the chat twin included.
+/// facts come back out of the generation. Up: the member hands the final
+/// `usage` to the generation as `in_call_end` (the satz's edge) -> the
+/// assistant's `. -> ./talky` -> talky's `. -> ./curator`, where it becomes
+/// the curator's `in_live_end` with `context.live` (D58 live) -> the
+/// curator's `. -> ./history`. Down: `./history -> .` (`live_facts`,
+/// `context.live` set) -> talky's `./curator -> .` (`context.call_id` back
+/// from the handle) -> the assistant's `./talky -> .`. Drawn exactly like
+/// `in_seed_ask` / `seed`, the chat twin included.
 #[test]
 fn the_call_end_reaches_the_curator_and_its_facts_leave_the_generation() {
     if !shipped() {
@@ -302,7 +306,8 @@ fn the_call_end_reaches_the_curator_and_its_facts_leave_the_generation() {
     let ctx = obj(json!({"session_id": "call-9", "call_id": "call-9",
                          "channel_node": "phone", "audience_set": ROUND}));
     let hop = obj(json!({"route": "in_call_end", "session_id": "call-9",
-                         "call_id": "call-9", "final": true, "seconds": 312}));
+                         "call_id": "call-9", "engine": "duplex", "final": true,
+                         "seconds": 312}));
     let h = one("assistant", ".", "./talky", &ctx, &hop);
     assert!(
         carried("assistant", ".", "./talky-chat", &ctx, &hop).is_empty(),
@@ -310,10 +315,13 @@ fn the_call_end_reaches_the_curator_and_its_facts_leave_the_generation() {
     );
     let h = one("talky", ".", "./curator", &h.context, &h.hop);
     let h = one("curator", ".", "./history", &h.context, &h.hop);
-    assert_eq!(h.hop["route"], "in_call_end");
-    assert_eq!(h.hop["call_id"], "call-9");
+    assert_eq!(h.hop["route"], "in_live_end");
+    assert_eq!(
+        h.context.get("live").and_then(Value::as_str),
+        Some("call-9")
+    );
 
-    let back = obj(json!({"route": "call_facts", "call_id": "call-9",
+    let back = obj(json!({"route": "live_facts", "live": "call-9",
                           "session_id": "call-9"}));
     let mut bctx = h.context.clone();
     bctx.insert("cur_origin".into(), json!("curator-history"));
@@ -323,21 +331,21 @@ fn the_call_end_reaches_the_curator_and_its_facts_leave_the_generation() {
         "the hive's own keys stay inside"
     );
     assert_eq!(
-        h.context.get("call_id").and_then(Value::as_str),
+        h.context.get("live").and_then(Value::as_str),
         Some("call-9")
     );
     let h = one("talky", "./curator", ".", &h.context, &h.hop);
+    assert_eq!(
+        h.context.get("call_id").and_then(Value::as_str),
+        Some("call-9"),
+        "talky gives the call its id back from the handle"
+    );
     let h = one("assistant", "./talky", ".", &h.context, &h.hop);
-    assert_eq!(h.hop["route"], "call_facts");
-    for (t, lanes) in [
-        ("curator", ("in_call_end", "call_facts")),
-        ("talky", ("in_call_end", "call_facts")),
-        ("assistant", ("in_call_end", "call_facts")),
-    ] {
+    assert_eq!(h.hop["route"], "live_facts");
+    for t in ["curator", "talky", "assistant"] {
         assert!(
-            emits_of(t).contains(&lanes.1.to_string()),
-            "{t} declares {}",
-            lanes.1
+            emits_of(t).contains(&"live_facts".to_string()),
+            "{t} declares live_facts"
         );
     }
     // The chat twin: the same lane, the other surface.

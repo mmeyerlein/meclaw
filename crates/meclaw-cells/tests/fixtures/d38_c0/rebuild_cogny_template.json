@@ -51,9 +51,10 @@
             "iter": "0",
             "recall_input_soft": "",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t1"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "01 say t1 talk Round 1: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -133,9 +134,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t2"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "03 say t2 talk Round 2: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -225,9 +227,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t3"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "05 say t3 talk Round 3: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -339,9 +342,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t4"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "08 say t4 talk Round 4: we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. we talked about the garden and the weather. ",
@@ -434,9 +438,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t5"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "10 say t5 talk And now?",
@@ -539,9 +544,10 @@
             "iter": "0",
             "recall_input_soft": "90000",
             "session_id": "s1",
+            "target": "brain",
             "turn_id": "t6"
           },
-          "route": "brain"
+          "route": "model_call"
         }
       ],
       "step": "12 say t6 talk What did we talk about?",

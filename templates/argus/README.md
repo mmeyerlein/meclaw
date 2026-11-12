@@ -1,4 +1,4 @@
-# `argus@1.6.1`
+# `argus@1.7.0`
 
 The colony's watcher and its control loop, as a hive of eight cells. It is what
 turns "the system can improve itself" from a claim into something you can check.
@@ -225,7 +225,14 @@ figures, read whole off the kind that carries them: `window_p95`
 (`window.cold_pct`, the share of the calls whose usage measured a cache that
 held under `cold_cached_share` of the window; unknown while `window.cached_n`,
 the count of those calls, is 0 or missing) and `rebuild_cost` (`rebuild.cost_cents_sum`, the cents of the calls
-that rebuilt). A figure over nothing counted is unknown, never zero.
+that rebuilt), and since
+[#1463](https://github.com/mmeyerlein/meclaw/issues/1463) the two sums of the
+curator's watch over its own window, both of which should read 0:
+`prefix_breaks` (`window.prefix_breaks`, the calls whose window did not begin
+with the one before) and `window_lost` (`window.window_lost`, the elements a
+window lost with no summary holding them). A curator that does not watch its
+window answers neither key, and the figure is then unknown. A figure over
+nothing counted is unknown, never zero.
 
 A role's number is a level, not a symptom, so it raises no alert by itself.
 The charter draws the line: the `goals` column `alert_at` (an `int`, NULL =
@@ -320,6 +327,8 @@ and it is named for what a caller asks for, never for the cell it lands on.
 |---|---|---|
 | `in_cycle` | in → the hive | run a cycle now (a cost alert, a DLQ spike, or the parent's own call after it switched a goal on). It is what starts a resting argus; the clock's watchdog only carries a loop with an enabled goal from one cycle to the next |
 | `in_model` | in → the hive | a model package for `./judge`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.2.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
+| `in_read` | in → the hive | read this hive's record: `hop.read_what` names the charter (`goals` and `rules` rows, each with its `table`), the cycle receipts (`cycles`) or the hints; `read_since` (RFC 3339) pages cycles and hints oldest first, `read_limit` is 1..100 (default 20), `read_tag` is echoed. For the cycles, `read_role` and `read_goal` narrow the read to the rows whose `role` or `goal` (a goal id, as `read_what` "charter" lists it) is that string; both together narrow to both. Each is 1..64 characters, blank or missing is no filter, anything else is refused as `invalid_input` with the key as `detail`; the charter and the hints do not look at them. The filter runs in the store, so `read_limit` and `next_since` count the narrowed rows and paging delivers every match once. `./door` only reads: a read starts no cycle. `read_role` and `read_goal` since [#1493](https://github.com/mmeyerlein/meclaw/issues/1493) |
+| `read` | out → the hive | the answer to `in_read`: body `{messages: [], rows, next_since}`, rows as stored with every column, `next_since` the `at` of the last row (empty for the charter and for an empty page); `hop.read_what`, `hop.read_tag`, and `hop.error_code`/`hop.detail` on a refusal (`invalid_input`) or a failed store call (`store_error`) |
 | `in_error` | in → the hive | an `error` message from another part of the colony, as it is: body `{messages: [], meta: {detail, provider_code}}`, `hop.error_code`, and the sender named by the edge that brings it (`error_sender` in the hop or the context -- a cell knows no topology). `./door` stores it as a hint `{origin: "error:<code>", confidence: 100, line: "<sender>: <detail>"}`; `<code>` is `meta.provider_code` when the error carries one, else `hop.error_code`, an identifier `[A-Za-z0-9_.-]{1,64}` or else `invalid_code`. Every `scheme://` URL in the line is redacted the way `web_fetch` redacts the URLs it outputs ([#1375](https://github.com/mmeyerlein/meclaw/issues/1375): userinfo and the values of secret-named parameters; a URL that cannot be split safely goes whole; what is no such URL -- userinfo without a scheme, a scheme-relative `//host`, a bearer token, a secret in a path -- stays as it is), and the line is folded to one line, not cut. A burst is throttled per code and sender: at most `error_hint_max_per_window` hints per `error_hint_window_ms` of the door's clock (fixed windows), and the throttle never swallows the first error of a window (a store that refuses the insert loses it, answered by nothing) -- the window's slots are hint ids written with an `if_absent` insert, so the store, not the door, counts. It answers nothing; a stored hint is told on `error_hint`. Like a hint it starts no cycle. Nothing draws it by default; a parent draws `<cell> error -> argus`, restamped `in_error`, with the sender set on the edge. Since [#1376](https://github.com/mmeyerlein/meclaw/issues/1376) |
 | `error_hint` | out → the hive | a hint `in_error` stored, told once: body `{messages: [], hint: {origin, confidence, line}}`, the fields as stored. An error the throttle held back sends nothing, nor does a refused insert. Nothing draws it by default; a parent that draws `in_error` but not `error_hint` gets one `hive_no_route` dead letter per stored hint at the rim (bounded by the throttle). Since [#1376](https://github.com/mmeyerlein/meclaw/issues/1376) |
 | `model_refused` | out → the hive | a model push `./judge` refused: its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of as a decision at `./mutator`. `meclaw-os` carries it back to its registry. Since 1.2.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
@@ -438,7 +447,7 @@ they share could not say -- and the manifest that grows one sets them with
 
 ```json
 {"op": "add_nodes", "scope": "/os",
- "nodes": [{"name": "argus", "template": "argus@1.6.1",
+ "nodes": [{"name": "argus", "template": "argus@1.7.0",
             "override_params": {
               "probe": {"probe_window_sec": 900, "probe_max_errors": 2},
               "mutator": {"numeric_param_keys": ["temperature", "top_p"]},

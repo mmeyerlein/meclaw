@@ -31,6 +31,7 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `argus/meter` | cold | rare | rarely called: an operation round (probe, meter, mutation); a warm child would stand 30 min after each call (GH #1294) |
 | `argus/mutator` | cold | rare | rarely called: an operation round (probe, meter, mutation); a warm child would stand 30 min after each call (GH #1294) |
 | `argus/probe` | cold | rare | rarely called: an operation round (probe, meter, mutation); a warm child would stand 30 min after each call (GH #1294) |
+| `assistant/followup` | warm | after | one slot (`max_concurrency: 1`) beside its own store `./followup_store`: it hears the section `memory` after every turn and moves its row by compare-and-set; it holds no cache of its own |
 | `builder-librarian/catalogue` | cold | rare | rarely called: the build path (a draft, a check, an apply); a warm child would stand 30 min after each call (GH #1294) |
 | `builder-librarian/retrieve` | cold | rare | rarely called: the build path (a draft, a check, an apply); a warm child would stand 30 min after each call (GH #1294) |
 | `builder/brief` | cold | rare | rarely called: the build path (a draft, a check, an apply); a warm child would stand 30 min after each call (GH #1294) |
@@ -63,7 +64,6 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `curator/intake` | resident | turn | caches its wall writes in flight and the episode floor it handed on; after a restart the ledger read decides |
 | `curator/policy` | resident | turn | caches the window forms it has put into `blocks`; a new child puts each once more |
 | `curator/push` | resident | turn | caches the recall writes it planned while they are in flight; after a restart the ledger read decides |
-| `curator/lead` | warm | turn | one slot (`max_concurrency: 1`) beside its own store `./lead_state`; it holds no cache of its own; keep 1 -- an instance that raises it gives up that serial order |
 | `curator/reader` | warm | after | one slot (`max_concurrency: 1`) beside the ledger; it holds no cache of its own; keep 1 -- an instance that raises it gives up that serial order |
 | `curator/schemas` | cold | rare | rarely called: it answers the collector's menu ask, at boot and after each apply (the `mutation_committed` broadcast); a warm child would stand 30 min after each call (GH #1294) |
 | `curator/stats` | cold | rare | rarely called: an observer's `in_stats`; a warm child would stand 30 min after each call (GH #1294); one slot (`max_concurrency: 1`) beside the ledger; it holds no cache of its own; keep 1 -- an instance that raises it gives up that serial order |
@@ -94,6 +94,7 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `freeswitch/signal` | warm | turn | |
 | `graph-space/index` | warm | after | |
 | `graph-space/query` | warm | tool | |
+| `lead/lead` | warm | turn | one slot (`max_concurrency: 1`) beside its own store `./state`; it holds no cache of its own; keep 1 -- an instance that raises it gives up that serial order |
 | `librarian/index` | warm | after | |
 | `librarian/query` | warm | tool | |
 | `librarian/schemas` | cold | rare | rarely called: it answers the collector's menu ask, at boot and after each apply (the `mutation_committed` broadcast); a warm child would stand 30 min after each call (GH #1294) |

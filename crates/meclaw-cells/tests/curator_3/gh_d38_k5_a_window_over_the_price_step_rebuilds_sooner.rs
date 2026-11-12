@@ -18,6 +18,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -61,7 +64,7 @@ fn a_window_over_the_price_step_rebuilds_sooner() {
         return;
     }
     let (got, err) = policy_scope(
-        json!({"role": "talky", "window_target": 0}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 0})),
         &format!(
             "[curate_mark(120000, {}), curate_mark(120000, {})]",
             limits(true),
@@ -84,7 +87,7 @@ fn the_turn_is_priced_at_the_step_of_its_window() {
         return;
     }
     let (got, err) = policy_scope(
-        json!({"role": "talky"}),
+        curator_profiles::set_knobs("talky", json!({})),
         &format!(
             "[turn_cost(120000, 120000, {l}), turn_cost(90000, 90000, {l}), \
              turn_cost(120000, 100000, {l}), \
@@ -124,7 +127,7 @@ fn talky(more: &[(&str, &str, Value)]) -> Hive {
         .map(|(c, k, v)| (c.as_str(), k.as_str(), v.clone()))
         .collect();
     all.extend(more.iter().cloned());
-    Hive::with(&all)
+    Hive::with(&all).reporting_composite("talky")
 }
 
 fn stamp(h: &Hive) -> Value {
@@ -220,7 +223,7 @@ fn a_held_window_is_not_rebuilt_for_its_price() {
         return;
     }
     let (got, err) = policy_scope(
-        json!({"role": "talky", "window_target": 100000}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 100000})),
         &format!(
             "[curate_mark(105000, {}, target_at=101000), curate_mark(105000, {}, target_at=101000)]",
             limits(true),
@@ -244,7 +247,7 @@ fn the_price_step_is_no_cap_under_the_target() {
         return;
     }
     let (got, err) = policy_scope(
-        json!({"role": "talky", "window_target": 150000}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 150000})),
         &format!("curate_mark(105000, {})", limits(true)),
         Value::Null,
     );
@@ -260,7 +263,7 @@ fn over_the_target_the_target_rebuilds() {
         return;
     }
     let (got, err) = policy_scope(
-        json!({"role": "talky", "window_target": 100000}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 100000})),
         &format!("curate_mark(120000, {})", limits(true)),
         Value::Null,
     );
@@ -280,7 +283,7 @@ fn without_a_ladder_the_cost_rule_is_the_rule_of_before() {
     }
     let l = limits(false);
     let (got, err) = policy_scope(
-        json!({"role": "talky", "window_target": 0}),
+        curator_profiles::set_knobs("talky", json!({"window_target": 0})),
         &format!(
             "[amortise_after(105000, 90000, 50, 5, {l}), amortise_after(105000, 90000, 50, 5), \
              amortise_after(190000, 90000, 50, 5, {l}), amortise_after(190000, 90000, 50, 5), \

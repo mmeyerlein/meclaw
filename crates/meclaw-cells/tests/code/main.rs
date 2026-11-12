@@ -23,6 +23,7 @@ pub mod harness_factory;
 pub mod harness_fixture_dialect;
 pub mod harness_io_loop;
 pub mod harness_params;
+pub mod harness_session;
 #[path = "../support/gh1276_runner_modes.rs"]
 pub mod runner_modes;
 pub mod sandbox_harness_child;

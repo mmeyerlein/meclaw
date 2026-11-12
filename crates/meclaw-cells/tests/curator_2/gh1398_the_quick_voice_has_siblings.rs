@@ -9,7 +9,8 @@
 //! (+1.3 s p50, t1 breakdown). A spec call cannot be cancelled inside the llm
 //! cell, so it gets a cell of its own instead: `./quick_spec` takes every call
 //! with `hop.spec` "1", `./quick_bridge` the bridge of a speculating talky
-//! (`hop.spec` "bridge", set by the curator only with `quick_speculative` on),
+//! (`hop.target` "quick_bridge", the lead's `bridge_target` under
+//! speculation; D58 moveout dropped the `spec` "bridge" of before),
 //! and `./quick` everything else. `./quick_spec` has no road to the splitter:
 //! a spec answer only ever speaks through the curator's `spec_release`.
 //!
@@ -22,6 +23,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
@@ -35,16 +39,16 @@ const BASE: &str = "/t";
 
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
         ("lead", "quick_speculative", json!("1")),
         ("lead", "spec_tools", json!(spec_tools)),
-    ]);
+    ])
+    .reporting_composite("talky");
     h.check_emits = true;
     h
 }
 
 fn plain_hive() -> Hive {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     h.check_emits = true;
     h
 }
@@ -317,7 +321,7 @@ fn gh1275_a_drop_known_at_the_stamp_releases_the_stored_call_at_once() {
         h.stderr
     );
     assert!(quick.iter().all(|q| q.hop.get("spec") != Some(&json!("1"))));
-    let m = marks(&h, "quick_spec");
+    let m = marks(&h, "spec");
     assert_eq!(m.len(), 1, "{m:?}");
     assert_eq!(m[0]["verdict"], json!("dropped"));
     assert_eq!(m[0]["reason"], json!("family:orga"));
@@ -340,7 +344,7 @@ fn gh1275_a_drop_known_at_the_stamp_releases_the_stored_call_at_once() {
     assert_eq!(late.len(), 1, "{late:?}");
     assert_eq!(late[0]["call"], spec.hop["curator_call"]);
     assert_eq!(late[0]["finish"], json!("tool_calls"));
-    assert_eq!(marks(&h, "quick_spec").len(), 1, "one decision per turn");
+    assert_eq!(marks(&h, "spec").len(), 1, "one decision per turn");
     assert_eq!(h.emit_violations, Vec::<String>::new());
 }
 
@@ -353,8 +357,51 @@ const CALL_END: &str = "has(hop.route) && hop.route == 'in_call_end'";
 /// brain's `summarize` exclusion, the three keys in the exits'
 /// `delete_context`) -- a wanted edge change, old
 /// `781c0dc7c4464d412a3943e0cd88016848bb11155b9044803c913c68bbc2290a`.
+/// Re-blessed for D58 target (contract points 8 and 10, OR-d58-2.target.48:
+/// the curator's roads onto the model cells on `model_call` by `hop.target`
+/// without the spec guard, `curator_target` and `bridge` lifted into the
+/// context and dropped at every exit, the errand on `errand`, the error edges
+/// know a bridge by `context.bridge`) -- a wanted edge change, old
+/// `c19ec872ed4c7da304f3e6fa5bf8cebe534db03574ad4f7e68f8e1e8172d34f3`.
+/// Re-blessed for D58 lead (GH #1474: the curator's two roads to and from
+/// `./lead`, `hop.target` "brain" on the collector's curate edge; the lead strand left
+/// the hash at `aa2584f3...`, measured `a1eeff98...` on its tree) and D58 live
+/// (GH #1482, contract point 2: the voice's lanes into `./curator` and its
+/// partial into `./route` set `context.live` only for a duplex session, `in_call_end` reaches it as
+/// `in_live_end`, the exits `seed`, `live_facts`, `live_feed` give the voice
+/// its `context.call_id` back from the handle) -- a wanted edge change, old
+/// `aa2584f318f3ed280cc6a756ab8080917ef20ab9616518ddad2e2569199a9afe`.
+/// Live and note together (D58 live GH #1482 merged over note GH #1477, master
+/// e587bc0fd): both edge changes at once, old (note alone) `12aacde483a51a287123b0db558b477535ec931df488445ed738e9e263bdc720`.
+/// Re-blessed for D58 feed (GH #1481, contract point 7: talky hands an order
+/// to feed a running session from its rim to the curator, `. -> ./curator`
+/// `in_feed`) on top of live and note -- a wanted edge change, old
+/// `c2a74ef51b9cb2dd7dcb08128fa665d4095e51fc4fdaa71db558441c7f5c7027`.
+/// Re-blessed for D58 moveout (GH #1476, contract points 3 and 4: the kind of
+/// a call travels in `hop.call_kind`, lifted into the context and dropped at
+/// every exit where `bridge` was; the edges onto the quick cells lift
+/// `hop.round_open` "1" onto `context.interim` "1"; the error edges know a
+/// side call by `context.call_kind` "side") -- a wanted edge change, old
+/// `e409ad70c5248f8f922619ae32f26a679844b28a36470bed872f7ff5a303f2bd`. The
+/// lead's new edge on `in_feed` is the lead's (`lead_edge`), not counted here.
+/// Re-blessed for D58 judge (GH #1480, contract points 1, 7 and 8): the two
+/// asks of `./route` and `./screen_judge` into `./curator` on `view_ask` /
+/// `in_view_ask` instead of `turns_ask` / `in_turns_ask`, the two answers
+/// back on `view` / `in_view` instead of `turns` / `in_turns`, and the rim's
+/// contribution into `./curator` on `in_part` instead of `in_screen_topics`
+/// -- five edges renamed, nothing else of them moved (the merged tree of lead
+/// and live this strand stands on already missed the old value) -- a wanted
+/// edge change, old
+/// `1bf25c764a8b433d2d4fa601890202653c0533a9c0a1a7cbbec70d6495a84a8a`.
+/// Bundle B (D58 GH #1478, #1479, #1481 beside #1480): the edges of frame, followup and feed
+/// joined this tree; the hash is the one of their union, measured on it, old
+/// `c7cbad6e5b9b0ed8daa3f9cbd5785a5674ee4075c6b8b239331c7fce2229e0aa`.
+/// Merge of master ac23674e66 (Bundle B) into D58 moveout (GH #1476): both
+/// edge changes at once, measured on the union, old (moveout)
+/// `b4a02126cced7b5373533568859ef20cd20c6eb3521213fa04ab97fb273855ea`, old (Bundle B)
+/// `7e33b6dbc3a1cd197316df9b016c69080477f7f11d2439b4e0ffd972d27b92fb`.
 const EDGES_6_13_1_SHA256: &str =
-    "c19ec872ed4c7da304f3e6fa5bf8cebe534db03574ad4f7e68f8e1e8172d34f3";
+    "e997157d9589c7fc5a0ae5a1f1c2a1f3dbcf08c79c15a5f405ff48e900457fd4";
 
 /// The guard #1398 adds to the brain's model door and to `./curator -> ./quick`.
 const DOOR_GUARD: &str =
@@ -440,22 +487,56 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
                 .as_str()
                 .is_some_and(|c| c.contains("hop.route == 'catalog_ask'"))
     };
+    // D58 lead (GH #1474): the lead is a hive of its own beside the curator;
+    // the edges between them (the three lanes to the lead, its verdict back
+    // on `in_lead`, and since D58 moveout, GH #1476, its orders on
+    // `in_feed`) are the lead's, not the siblings'.
+    let lead_edge = |e: &Value| e["from"] == "./lead" || e["to"] == "./lead";
+    let edges = cfg["params"]["graph"]["edges"].as_array().expect("edges");
+    assert_eq!(
+        edges.iter().filter(|e| lead_edge(e)).count(),
+        3,
+        "the three edges between talky's curator and its lead"
+    );
     let sibling = |e: &Value| {
         call_end_keeper(e)
             || partial_rim(e)
             || package_line(e)
             || catalog_ask(e)
+            || lead_edge(e)
             || ["./quick_spec", "./quick_bridge"]
                 .iter()
                 .any(|s| e["from"] == *s || e["to"] == *s)
     };
-    let mut old: Vec<Value> = cfg["params"]["graph"]["edges"]
-        .as_array()
-        .expect("edges")
-        .iter()
-        .filter(|e| !sibling(e))
-        .cloned()
-        .collect();
+    let mut old: Vec<Value> = edges.iter().filter(|e| !sibling(e)).cloned().collect();
+    // D58 lead (GH #1474, contract point 5): the lead leaves the target to the
+    // curate, so talky's curate edge names its main model (`hop.target`
+    // `'brain'`). That one key is the lead's, not the siblings'; without it
+    // the edge is the edge of 6.13.1.
+    let mut curate_target = 0;
+    for e in old.iter_mut() {
+        let curate = e["from"] == "./collector"
+            && e["to"] == "./curator"
+            && e["modifier"]["set_hop"]["route"] == "'in_curate'";
+        // `pointer_mut`, not `e["modifier"]["set_hop"]`: serde_json's
+        // `IndexMut` inserts a null `modifier.set_hop` into every edge that
+        // lacks one, which moved the digest (04257f8b... instead of the
+        // golden) without any edge having changed.
+        if !curate {
+            continue;
+        }
+        if let Some(set_hop) = e
+            .pointer_mut("/modifier/set_hop")
+            .and_then(Value::as_object_mut)
+            && set_hop.remove("target") == Some(json!("'brain'"))
+        {
+            curate_target += 1;
+        }
+    }
+    assert_eq!(
+        curate_target, 1,
+        "talky's curate edge names `hop.target` 'brain'"
+    );
     let mut guarded = 0;
     for e in old.iter_mut() {
         let c = e["condition"].as_str().unwrap_or_default().to_string();
@@ -469,10 +550,10 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
         e["condition"] = json!(bare);
         guarded += 1;
     }
-    assert_eq!(
-        guarded, 3,
-        "the brain's door and the curator's two roads onto ./quick"
-    );
+    // D58 target (contract point 8): the curator's roads onto `./quick` choose
+    // their cell by `hop.target`, so they carry the guard against a spec or a
+    // bridge no more; only the brain's model door keeps its guard.
+    assert_eq!(guarded, 1, "the brain's door");
     let text = sj::to_string(&canonical(&Value::Array(old))).expect("JSON");
     let got = format!("{:x}", Sha256::digest(text.as_bytes()));
     assert_eq!(

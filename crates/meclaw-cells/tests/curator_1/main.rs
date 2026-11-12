@@ -7,6 +7,8 @@ pub mod curator_cells;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
 pub mod curator_policy;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
 pub mod curator_push;
 pub mod d53_fx_the_fact_comes_from_the_tool;
 pub mod d53_fx_the_turn_path_parks_beside_its_delegation;
@@ -59,6 +61,9 @@ pub mod gh1225_kp_the_push_holds_what_the_ledger_holds;
 pub mod gh1225_kr_a_failed_read_is_never_an_answer;
 pub mod gh1225_kr_a_refused_read_of_intake_writes_nothing_blind;
 pub mod gh1225_kr_a_refused_write_is_written_by_the_next_message;
+pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
+pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
+pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

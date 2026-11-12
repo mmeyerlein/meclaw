@@ -13,6 +13,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
@@ -25,7 +28,7 @@ fn count(h: &Hive, kind: &str) -> i64 {
 
 #[test]
 fn without_a_package_the_curator_still_rebuilds() {
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..20 {
         turn(
             &mut h,
@@ -68,7 +71,7 @@ fn without_a_package_the_curator_still_rebuilds() {
     assert_ne!(h.plan_in(ROUND_E), json!({}), "{:?}", h.stderr);
 
     // With a package: no stand-in, no mark.
-    let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+    let mut h = Hive::with(&[]).reporting_composite("talky");
     for i in 0..2 {
         turn(
             &mut h,

@@ -28,6 +28,7 @@
 //! Guarded like every other template-reading test (GH #49).
 
 use meclaw_cells::code::CodeCellFactory;
+use meclaw_cells::store::StoreCellFactory;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
@@ -82,8 +83,13 @@ fn the_level_holds_a_second_talky_and_it_is_the_same_talky() {
     children.sort();
     assert_eq!(
         children,
+        // GH #1479: the level's follow-up `./followup` and its store
+        // `./followup_store` sit beside the conversation surfaces; neither is a
+        // talky, so the rule below still counts two talkies.
         vec![
             "cogny".to_string(),
+            "followup".to_string(),
+            "followup_store".to_string(),
             "talky".to_string(),
             "talky-chat".to_string(),
             "tools".to_string()
@@ -292,10 +298,14 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // each keeper and the `call_facts` exit out of each keeper.
     // GH #1411: one hundred and twenty-eight -- the `partial` exit out of each
     // keeper.
+    // GH #1479: one hundred and forty-four -- the follow-up: `sidecar` and
+    // `write` out of each keeper to `./followup`, `in_note`, `in_note_held`
+    // and `note_receipt` between it and each keeper (five around each), four
+    // around `./cogny` and two to and from `./followup_store`.
     assert_eq!(
         hp.graph.edges.len(),
-        128,
-        "one hundred and twenty-eight edges, fifty-three around each keeper. The number is asserted \
+        144,
+        "one hundred and forty-four edges, fifty-eight around each keeper. The number is asserted \
          so that an edge added on one side and forgotten on the other is loud"
     );
 }
@@ -527,10 +537,15 @@ fn build_tree(td: &tempfile::TempDir, source: &std::path::Path) {
 
 async fn boot(td: &tempfile::TempDir) -> (ColonyHandle, mpsc::Receiver<Message>) {
     let factories = || -> Vec<(String, Arc<dyn CellFactory>)> {
-        vec![(
-            "code".to_string(),
-            Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
-        )]
+        // The shipped `assistant` level owns a store since `followup` (GH #1479): its
+        // `followup_store` boots as the real store.
+        vec![
+            (
+                "code".to_string(),
+                Arc::new(CodeCellFactory) as Arc<dyn CellFactory>,
+            ),
+            ("store".to_string(), Arc::new(StoreCellFactory)),
+        ]
     };
     let h = ColonyHandle::new_with_factories_at(td, factories());
     let (sink_tx, sink_rx) = mpsc::channel::<Message>(32);

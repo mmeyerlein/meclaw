@@ -5,6 +5,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 #[allow(unused_imports)]
 use curator_hive::*;
@@ -424,7 +427,7 @@ mod recall {
         if !shipped() {
             return;
         }
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         h.lane(
             "in_note",
             json!({"session_id": "s1"}),
@@ -483,10 +486,7 @@ mod recall {
         if !shipped() {
             return;
         }
-        let mut h = Hive::with(&[
-            ("policy", "role", json!("talky")),
-            ("policy", "keep_recent", json!(2)),
-        ]);
+        let mut h = Hive::with(&[("policy", "keep_recent", json!(2))]).reporting_composite("talky");
         // The model's hard line: 4 000 tokens, the guard's margin 3 600.
         turn(&mut h, "s", "t0", "hello", "hi", package(2000, 4000, 100));
         // About 16 000 tokens of wall, an ambient pair in every round.
@@ -544,7 +544,7 @@ mod recall {
         if !shipped() {
             return;
         }
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         let hop = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "phase": "",
                          "path": "simple", "families": "web"});
         let ctx = json!({"session_id": "s1", "turn_id": "t1", "iter": "0",
@@ -610,7 +610,7 @@ mod session {
         clear_of_midnight();
         let mut h = match note {
             // The role whose preset gives notes their share (GH #1303).
-            Some(_) => Hive::with(&[("policy", "role", json!("talky"))]),
+            Some(_) => Hive::with(&[]).reporting_composite("talky"),
             None => Hive::new(),
         };
         let base = backdated(50);
@@ -833,7 +833,7 @@ mod session {
             return;
         }
         clear_of_midnight();
-        let mut h = Hive::with(&[("policy", "role", json!("talky"))]);
+        let mut h = Hive::with(&[]).reporting_composite("talky");
         let base = backdated(50);
         let at = |ms: i64| base + chrono::Duration::milliseconds(ms);
         h.row(at(0), "s1", "t1", "user", &user(DOCTOR), 0);

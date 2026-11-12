@@ -65,6 +65,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/composite_packages.rs"]
+#[allow(unused_imports)]
+use crate::composite_packages; // harness_fold: mod composite_packages;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -980,6 +983,13 @@ fn assert_collector_curator_brain(log: &[Logged], composite: &str, calls: usize)
         !to_brain.is_empty(),
         "{composite}: nothing was ever delivered to the brain"
     );
+    // D58 target (OR-d58-2.target.15): the curator's ask for the profiles
+    // (`catalog_ask`, an empty params slot, no call) reaches the brain too;
+    // it comes from the curator and is no model request.
+    let to_brain: Vec<&Logged> = to_brain
+        .into_iter()
+        .filter(|r| r.route() != "catalog_ask")
+        .collect();
     for r in &to_brain {
         assert!(
             r.from.starts_with(&curator),
@@ -1263,6 +1273,9 @@ async fn a_briefed_peer_turn_reaches_the_provider_framed_and_in_the_legend() {
     );
     // Held, not dropped: the answer and the drained lanes need a receiver.
     let (h, _ports) = boot(&td).await;
+    // OR-d58-2.target.69: the registry's push after the birth -- every
+    // model cell reports its package before the first turn.
+    composite_packages::report_packages(&h, &td.path().join("main"), "/talky").await;
 
     h.send(peer_turn()).await;
     let reqs = provider_requests(&brain, td.path(), 1).await;
@@ -1347,7 +1360,7 @@ fn the_talky_curator_renders_the_nothing_form_its_splitter_cuts() {
     assert!(!form.is_empty(), "talky's splitter speaks a sidecar");
     let curator = read_json(&repo("templates/talky/curator/config.json"));
     assert_eq!(
-        curator["cell"]["template"], "curator@1.24.1",
+        curator["cell"]["template"], "curator@2.0.0",
         "the ref this road boots: {curator}"
     );
     assert_eq!(

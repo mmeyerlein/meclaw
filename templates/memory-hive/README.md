@@ -1,4 +1,4 @@
-# `memory-hive@3.21.2`
+# `memory-hive@3.21.3`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -1087,8 +1087,9 @@ open keys, so no predicate could stand in for it -- the curator's wellbeing line
 the example every turn copies is unchanged and a missing class reads as false. `extract-glue`
 stages it only as the boolean `true` and interprets nothing: `false`, a word or a number stage
 the fact without the key, and no fact is dropped for it. The store keeps no column for it -- the
-curator reads the class off the sidecar item itself (`curator/intake` keeps it on the `fact`
-mark with `fact_mark_kind` "1"). The rules grew from 2,341 to 2,598 characters, under a bound
+reader takes the class off the sidecar item itself: since [#1479](https://github.com/mmeyerlein/meclaw/issues/1479)
+`assistant/followup`, which asks after the concern once; the curator only carries a class it
+is told to keep on the `fact` mark and knows no class by name. The rules grew from 2,341 to 2,598 characters, under a bound
 of 2,600.
 
 ### Both voices at the close: `counter`, a stance `sharpen`, the correction ([#1423](https://github.com/mmeyerlein/meclaw/issues/1423))
@@ -1537,7 +1538,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.21.2` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.21.3` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1943,7 +1944,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.9.6",
+{"add_nodes": [{"name": "alex", "template": "member@2.10.0",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```

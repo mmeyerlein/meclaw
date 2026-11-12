@@ -93,11 +93,15 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
         .clone();
     let to_quick = edge(&edges, "./curator", "./quick", "'quick'");
     assert_eq!(to_quick["modifier"]["restore_ttl"], true, "{to_quick}");
-    // GH #1260 (OR-WG-6): plus `interim`, the mark of the tool round's bridge.
+    // GH #1260 (OR-WG-6): plus `interim`, the mark of the tool round's bridge
+    // -- since D58 moveout (contract point 4) the side call's neutral
+    // `round_open` "1", lifted onto it, else the call's own `interim`.
     let mut quick_ctx = to_quick["modifier"]["set_context"].clone();
     assert_eq!(
         quick_ctx.as_object_mut().and_then(|c| c.remove("interim")),
-        Some(json!("has(hop.interim) ? hop.interim : ''")),
+        Some(json!(
+            "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')"
+        )),
         "{to_quick}"
     );
     // GH #1260 (OR-WG-9): the brain sets `interim` empty -- an escalated tool

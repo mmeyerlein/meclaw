@@ -14,6 +14,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, json};
@@ -24,10 +27,8 @@ const THE_ROW: &str = "My sister Anna moved to Hamburg.";
 
 /// A stamped `talk` turn with the collector's recall pair; the brain call.
 fn stamped(needs: &str) -> (Hive, Msg) {
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "recall_by_needs", json!("1")),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "recall_by_needs", json!("1"))]).reporting_composite("talky");
     let hop = json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "phase": "",
                      "path": "talk", "needs": needs, "families": ""});
     let ctx = json!({"session_id": "s1", "turn_id": "t1", "iter": "0",
@@ -129,10 +130,8 @@ fn a_later_turn_that_needs_memory_sees_the_recall_at_its_preset() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "recall_by_needs", json!("1")),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "recall_by_needs", json!("1"))]).reporting_composite("talky");
     let c1 = call_in(&mut h, "t1", "0", "", "I just got back from the lake.");
     assert_eq!(
         recall_prio(&h, &c1),
@@ -155,10 +154,8 @@ fn a_planned_recall_of_the_running_turn_is_lowered() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("policy", "recall_by_needs", json!("1")),
-    ]);
+    let mut h =
+        Hive::with(&[("policy", "recall_by_needs", json!("1"))]).reporting_composite("talky");
     let c1 = call_in(
         &mut h,
         "t1",

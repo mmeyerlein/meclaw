@@ -88,7 +88,7 @@ Long-running, bridging one MCP provider over `http` or `stdio`, with a tool-disc
 
 ### [`harness`](cell-types.md#harness-an-agent-harness-as-a-supervised-child-process)
 
-Long-running, operating a whole agent harness, Claude Code today, as a supervised child process. The harness prompts, loops and uses its own tools, because the job here is delegating a coding task rather than a model call. One child per task, with session continuity from the harness's own `--resume`. Parallelism is topology: several cells, each with its own worktree. No shipped template declares one.
+Long-running, operating a whole agent harness, Claude Code today, as a supervised child process. The harness prompts, loops and uses its own tools, because the job here is delegating a coding task rather than a model call. One child per task with continuity from the harness's own `--resume` (`session: per_task`, the default), or one child across many tasks, each a turn of the same session (`session: persistent`). Parallelism is topology: several cells, each with its own worktree. No shipped template declares one.
 
 ### [`subcolony`](cell-types.md#subcolony-a-child-colony-as-one-cell)
 

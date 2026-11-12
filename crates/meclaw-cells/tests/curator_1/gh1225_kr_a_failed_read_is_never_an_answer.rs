@@ -49,7 +49,11 @@ fn a_failed_read_of_the_round_is_store_error() {
     // Step A cannot read the round's rows (`a-src`, a query timeout), or
     // step v cannot fetch their words (`v-blocks`).
     for leg in ["a-src", "v-blocks"] {
-        let mut h = Hive::with(&[("intake", "pass_sections", json!("memory"))]);
+        let mut h = Hive::with(&[(
+            "intake",
+            "sections",
+            json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+        )]);
         let call = h.curate("s-ea3", "r1", 0, json!([user(WORDS)]), mode("Be brief."));
         h.ledger_may_refuse = true;
         h.refuse_legs = vec![(leg.to_string(), "query_timeout".to_string())];

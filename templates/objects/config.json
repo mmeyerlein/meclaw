@@ -15,7 +15,7 @@
       "accepts": [
         {
           "route": "thing_seen",
-          "because": "a sighting of things in a turn (the curator's sidecar `things`, carried by the assistants): body `{items: [{name (1..80), kind? (<= 32), note? (<= 200)}] (<= 8), turn_id, episode_turn_id?, session_id}`, the round in `context.audience_set`. Without a round it is dropped (stderr) and nothing is written. Never answered"
+          "because": "a sighting of things in a turn (the sidecar section `things` this hive offers, handed on by the curator as the composition registered it, GH #1473, carried by the assistants): body `{messages, section, payload: {items: [{name (1..80), kind? (<= 32), note? (<= 200)}] (<= 8)}}`, the turn in `hop.turn_id` or the context (`turn_id`, `episode_turn_id`) -- or, from a sender of its own, `{items, turn_id, episode_turn_id?, session_id}`; an entry whose `kind` or `note` is no string is left out whole, the round in `context.audience_set`. Without a round it is dropped (stderr) and nothing is written. Never answered"
         },
         {
           "route": "in_tool",

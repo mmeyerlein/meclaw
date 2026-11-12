@@ -1,8 +1,9 @@
 # Memory that outlives the window
 
 Where is a conversation kept, once the context window is not the place? In a member's own memory
-hive, as rows on disk. The window was never where the conversation was stored: it is assembled
-for the turn that is running, out of that record, and thrown away again.
+hive, as rows on disk. The window was never where the conversation was stored: it is assembled for
+the turn that is running, out of that record, and thrown away again; what a model reads of it the
+curator decides for each call ([A window cut to the model](curator.md)).
 
 ## Where the record lives
 

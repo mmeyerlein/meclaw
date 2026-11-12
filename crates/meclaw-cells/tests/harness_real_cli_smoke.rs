@@ -18,13 +18,14 @@
 //! report. Nothing here is asserted from configuration: every number is read
 //! back out of the harness's own result event.
 //!
-//! Two smokes live here, and they differ only in what the child was allowed to
-//! do: the first is the 0.1.8 acceptance run (grant `Write`, mode
-//! `acceptEdits`, no approval channel), the second the GH #46.1 probe that
-//! grants nothing and switches the approval channel on to find out whether the
-//! real CLI ever asks. Both are `#[ignore]`d; both spend money. The second one
-//! is a standing probe that is **expected red** — see its doc comment for what
-//! its redness measured.
+//! Three smokes live here. The first two differ only in what the child was
+//! allowed to do: the 0.1.8 acceptance run (grant `Write`, mode `acceptEdits`,
+//! no approval channel), and the GH #46.1 probe that grants nothing and
+//! switches the approval channel on to find out whether the real CLI asks. The
+//! third runs two tasks on one `persistent` cell and checks that they share a
+//! session. All are `#[ignore]`d; all spend money. The #46.1 probe was red until
+//! the adapter put the control lane on stdio; it is **expected green** since
+//! then — see its doc comment for both measurements.
 #![cfg(unix)]
 
 use meclaw_cells::harness::HarnessCellFactory;
@@ -49,6 +50,7 @@ async fn topology(
     permission_mode: &str,
     allowed_tools: serde_json::Value,
     approval: &str,
+    session: &str,
 ) -> (ColonyHandle, mpsc::Receiver<Message>, TempDir) {
     let h = ColonyHandle::new();
     let (recv_tx, recv_rx) = mpsc::channel::<Message>(64);
@@ -77,10 +79,19 @@ async fn topology(
                 "allowed_tools": allowed_tools,
                 "permission_mode": permission_mode,
                 "approval": approval,
+                "session": session,
                 "max_turns": 3,
+                // Every LLM request names where it comes from.
+                "x_title": "meclaw-lab harness-smoke",
+                "http_referer": "https://meclaw.ai",
                 // A real harness needs its own credentials and PATH; nothing
-                // else of this process's environment travels with it.
-                "env_passthrough": ["PATH", "HOME", "USER", "LANG", "TERM"],
+                // else of this process's environment travels with it. An
+                // Anthropic-compatible endpoint may come from the environment
+                // (names only); unset, the CLI keeps its own login.
+                "env_passthrough": [
+                    "PATH", "HOME", "USER", "LANG", "TERM",
+                    "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"
+                ],
                 "startup_timeout_ms": 120000,
                 "external_timeout_ms": 30000,
                 "query_timeout_ms": 5000,
@@ -117,7 +128,13 @@ async fn topology(
 /// (session `ba0c605f…`, 2 turns, $0.1500) each ran `Bash` and returned
 /// `hello`, with `--allowedTools` omitted entirely. See the test's doc comment
 /// for what that answers.
-const RESTRICTIVE_MODE: &str = "plan";
+///
+/// No question in either because `echo hello` is read-only, and the CLI
+/// approves those by itself (measured 2026-11-11, #1489).
+///
+/// `"default"` since the control lane went to stdio: it is the mode the
+/// 2026-11-08 measurement asked under.
+const RESTRICTIVE_MODE: &str = "default";
 
 fn tool_call(name: &str, arguments: serde_json::Value, call_id: &str) -> Message {
     let inner = json!({"name": name, "arguments": arguments}).to_string();
@@ -137,14 +154,16 @@ async fn smoke_the_real_cli_runs_a_task_and_reports_its_cost() {
     );
     // The values the acceptance smoke ran with, verbatim: file writing only,
     // `acceptEdits`, and no approval channel (the parse default this smoke
-    // relied on when the key was absent). The task below deliberately also
-    // asks for a shell command, so the run exercises what a harness does when
-    // it wants a tool it was not given.
-    let (h, mut sink, td) = topology(&model, "acceptEdits", json!(["Write"]), "off").await;
+    // relied on when the key was absent). The task below also asks for a
+    // shell command, but a read-only one: the CLI approves those by itself
+    // (measured 2026-11-11, CLI 2.1.322, #1489), so this run asks nobody. The
+    // case of a tool that was not granted is the next smoke's.
+    let (h, mut sink, td) =
+        topology(&model, "acceptEdits", json!(["Write"]), "off", "per_task").await;
 
-    // Two things in one task, on purpose: the first is trivial and allowed,
-    // the second needs a tool the cell did not grant. That is the cheapest way
-    // to find out what the real CLI does when it wants permission.
+    // Two things in one task: the first is the granted `Write`, the second a
+    // read-only `ls -la` the CLI runs without asking, though `Bash` is not
+    // granted. A `can_use_tool` question is only printed here, never asserted.
     h.send(tool_call(
         "start_task",
         json!({
@@ -252,24 +271,36 @@ async fn smoke_the_real_cli_runs_a_task_and_reports_its_cost() {
 /// without it` — stdin is read once at startup as a prompt lane and then
 /// abandoned, not held open as a control lane.
 ///
-/// So this test is a **standing probe, expected red** until the adapter learns
-/// `--input-format stream-json` — an open decision carried in the defer register
-/// (`docs/defer-register.md` § Cell-Factory-Robustness), not made here.
-/// Its value is that the day the CLI or the adapter changes, it turns green and
-/// says so. Do not "fix" it by weakening the assertion.
-#[ignore = "costs money: runs the real claude CLI — expected RED today, see doc comment"]
+/// **Expected green since the adapter speaks stream-json in both directions
+/// and passes `--permission-prompt-tool stdio`.** Measured 2026-11-08 against
+/// CLI 2.1.319 and again 2026-11-11 against CLI 2.1.322 (`haiku`, outside this
+/// test, same flags): the CLI sends
+/// `control_request`/`can_use_tool` with a `request_id`, and a
+/// `control_response` in the cell's shape works both ways — `deny` keeps the
+/// tool from running, `allow` (without `updatedInput`) lets it run. Without the
+/// prompt-tool flag the CLI refuses on its own and nobody is asked. A red run
+/// now means the CLI changed. Do not "fix" it by weakening the assertion.
+///
+/// **The task asks for a writing command.** The CLI approves read-only
+/// commands such as `echo hello` by itself, with or without user settings
+/// (measured 2026-11-11, CLI 2.1.322, `haiku`, #1489): no question is sent and
+/// the run proves nothing about the channel. `echo hi > probe.txt` is asked
+/// every time; after the `deny` the file must not exist.
+#[ignore = "costs money: runs the real claude CLI — expected green, see doc comment"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn smoke_the_real_cli_asks_before_a_tool_it_was_not_granted() {
     let model = std::env::var("HARNESS_SMOKE_MODEL").expect(
         "set HARNESS_SMOKE_MODEL (no model default in code — standing rule: models come from ${VAR})",
     );
-    let (h, mut sink, _td) = topology(&model, RESTRICTIVE_MODE, json!([]), "channel").await;
+    let (h, mut sink, td) =
+        topology(&model, RESTRICTIVE_MODE, json!([]), "channel", "per_task").await;
 
     h.send(tool_call(
         "start_task",
         json!({
             "task_id": "smoke-2",
-            "prompt": "Run `echo hello` and report its output verbatim. Do nothing else.",
+            "prompt": "Run `echo hi > probe.txt` with Bash and report its output verbatim. \
+                       Do nothing else.",
             "workspace": "wt-1"
         }),
         "call_1",
@@ -353,8 +384,8 @@ async fn smoke_the_real_cli_asks_before_a_tool_it_was_not_granted() {
     println!("================================\n");
 
     let (request_id, tool_name) = question.expect(
-        "the real CLI ran to its end without ever sending control_request/can_use_tool — \
-         GH #46.1 answered in the negative for this permission mode",
+        "the real CLI ran a writing Bash command to its end without ever sending \
+         control_request/can_use_tool — the approval channel is not reached in this permission mode",
     );
     assert!(
         !request_id.is_empty(),
@@ -374,5 +405,91 @@ async fn smoke_the_real_cli_asks_before_a_tool_it_was_not_granted() {
     assert!(
         hop.get("session_id").is_some(),
         "no session id — the audit trail depends on it: {hop:?}"
+    );
+    let probe = td.path().join("workspaces/wt-1/probe.txt");
+    assert!(
+        !probe.exists(),
+        "the question was denied, yet the writing command ran: {probe:?} exists"
+    );
+}
+
+/// D57: a `persistent` cell keeps ONE session across two tasks. The second
+/// task is a turn of the same session (same `session_id`), and its answer knows
+/// a word only the first task said.
+#[ignore = "costs money: runs the real claude CLI"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn smoke_the_real_cli_keeps_one_session_across_two_tasks() {
+    let model = std::env::var("HARNESS_SMOKE_MODEL").expect(
+        "set HARNESS_SMOKE_MODEL (no model default in code — standing rule: models come from ${VAR})",
+    );
+    let (h, mut sink, _td) = topology(&model, "default", json!([]), "off", "persistent").await;
+
+    let prompts = [
+        "Remember the word PELICAN. Reply with exactly: OK",
+        "Which word did I ask you to remember? Reply with that word only.",
+    ];
+    let mut results = Vec::new();
+    for (i, prompt) in prompts.iter().enumerate() {
+        let task_id = format!("smoke-3-{}", i + 1);
+        h.send(tool_call(
+            "start_task",
+            json!({"task_id": task_id, "prompt": prompt, "workspace": "wt-1"}),
+            &format!("call_{}", i + 1),
+        ))
+        .await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(240);
+        let mut result = None;
+        while std::time::Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(Some(m)) = tokio::time::timeout(left, sink.recv()).await else {
+                break;
+            };
+            let hop = &m.headers.hop;
+            let event = hop
+                .get("harness_event")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!("receipt {task_id}: {event} {hop:?}");
+            if event == "result" {
+                result = Some(m);
+                break;
+            }
+        }
+        results.push(result.unwrap_or_else(|| panic!("no result for {task_id} within 240s")));
+    }
+
+    println!("\n=== SMOKE RECEIPT (persistent) ===");
+    for m in &results {
+        let hop = &m.headers.hop;
+        println!("task_id:     {}", hop["task_id"]);
+        println!("status:      {}", hop["status"]);
+        println!("session_id:  {:?}", hop.get("session_id"));
+        println!("model:       {:?}", hop.get("model"));
+        println!("num_turns:   {:?}", hop.get("num_turns"));
+        println!("cost_usd:    {:?}", hop.get("cost_usd"));
+        println!("duration_ms: {:?}", hop.get("duration_ms"));
+        if let Body::Inline(body) = &m.body {
+            println!("summary:     {}", body["messages"][0]["text"]);
+        }
+    }
+    println!("==================================\n");
+
+    for m in &results {
+        assert_eq!(m.headers.hop["status"], "ok", "{:?}", m.headers.hop);
+    }
+    let first = results[0].headers.hop.get("session_id").cloned();
+    assert!(first.is_some(), "no session id on the first task");
+    assert_eq!(
+        results[1].headers.hop.get("session_id").cloned(),
+        first,
+        "the second task ran in another session"
+    );
+    let Body::Inline(body) = &results[1].body else {
+        panic!("no inline body on the second result")
+    };
+    let text = body["messages"][0]["text"].to_string().to_uppercase();
+    assert!(
+        text.contains("PELICAN"),
+        "the second task does not know the first: {text}"
     );
 }

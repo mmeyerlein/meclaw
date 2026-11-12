@@ -11,6 +11,9 @@
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
 use crate::curator_hive; // harness_fold: mod curator_hive;
+// harness_fold: #[path = "support/curator_profiles.rs"]
+#[allow(unused_imports)]
+use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
@@ -46,8 +49,8 @@ fn knob_off_is_byte_identical() {
     if !shipped() {
         return;
     }
-    // The knob lives in the lead since GH #1447.
-    let lead = cell_config("lead");
+    // The knob lives in the lead since GH #1447 (its own hive since GH #1474).
+    let lead = lead_config("lead");
     assert_eq!(lead["params"]["memory_to_brain"], json!("0"), "ships off");
     assert_eq!(
         lead["contract"]["settings"]["memory_to_brain"]["default"],
@@ -55,10 +58,7 @@ fn knob_off_is_byte_identical() {
         "the setting says the same"
     );
 
-    let mut h = Hive::with(&[
-        ("policy", "role", json!("talky")),
-        ("lead", "memory_to_brain", json!("0")),
-    ]);
+    let mut h = Hive::with(&[("lead", "memory_to_brain", json!("0"))]).reporting_composite("talky");
     seam(&mut h, "t1", "simple", "memory", "How is my sister doing?");
     assert!(
         h.routed("brain").is_empty(),
