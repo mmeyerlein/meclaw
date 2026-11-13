@@ -9,7 +9,7 @@
 # meet the warm strand target. The profiles go to `<parent>/profiles`, the
 # map to `<parent>/coverage.json` (parent = the directory of <target-dir>).
 # Push, hygiene, floor and sweep are the lane engine's (review I1), not this
-# script's.
+# script's. In scope `full`, <rev> is the full SHA the tree must be (V1).
 #
 # No cargo-llvm-cov: `-C instrument-coverage` in RUSTFLAGS plus nextest is the
 # whole build; `--cfg tokio_unstable` stays in the same RUSTFLAGS (RUSTFLAGS
@@ -43,6 +43,12 @@ kit=$(cd -- "${kit}.." && pwd) || exit 2
 T=$1 DEADLINE_S=$2 REV=$3
 SCOPE=${4:-full}
 case "$SCOPE" in full|browser) ;; *) echo "coverage: scope '$SCOPE' is not full|browser" >&2; exit 2 ;; esac
+# d59-2 local V1 (O6): scope `full` measures exactly the commit it was handed --
+# a tree that is not that commit is refused before the first cargo call, exit 5.
+if [ "$SCOPE" = full ]; then
+    here=$(git rev-parse HEAD 2>/dev/null) || here=""
+    [ "$here" = "$REV" ] || { echo "coverage: refused -- the tree is ${here:-no commit}, not commit $REV" >&2; exit 5; }
+fi
 LOCK_SEL=$("${KIT_PY[@]}" scripts/pipeline/browser_cover.py select)
 LOCK_FILTER=$("${KIT_PY[@]}" scripts/pipeline/browser_cover.py filter)
 # The test-hook feature (GH #1208, scripts/cargo-target.sh): the same flags as
@@ -104,8 +110,20 @@ else
     cargo nextest list $LOCK_SEL $FEAT_LOCK --message-format json >"$C/list.json"
 fi
 secs=$(( $(date +%s) - start ))
+rm -f "$C/coverage.json"
+arc=0
 "${KIT_PY[@]}" scripts/pipeline.py coverage aggregate --profiles "$C/profiles" --objects "$C/list.json" \
     --root "$PWD" --rev "$REV" --runner lane --secs "$secs" --out "$C/coverage.json" \
     --profdata "$TOOLS/llvm-profdata" --llvm-cov "$TOOLS/llvm-cov" --nextest-exit "$rc" \
-    --nextest-log "$C/nextest.log" --browser-junit "$BJ"
+    --nextest-log "$C/nextest.log" --browser-junit "$BJ" || arc=$?
+# d59-2 local V4: once the map is written the profiles go (11 G beside a 35 G
+# target, 11.11.); a failed aggregate keeps them, as before, and says so
+if [ "$arc" = 0 ] && [ -s "$C/coverage.json" ]; then
+    rm -rf "$C/profiles"
+else
+    echo "coverage: aggregate failed (exit $arc) -- the profiles stay in $C/profiles" >&2
+    [ "$arc" != 0 ] || arc=1
+fi
+# a subshell, not `exit`: the `exit $?` after the block stays reachable (SC2317)
+( exit "$arc" )
 }; exit $?

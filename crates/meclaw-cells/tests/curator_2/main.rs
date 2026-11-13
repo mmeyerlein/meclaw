@@ -7,9 +7,6 @@ pub mod composite_colony;
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
-pub mod gh1225_kr_p_a_sweep_names_only_what_went;
-pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
-pub mod gh1225_kr_seq_never_falls_below_the_ledger;
 pub mod gh1225_kr_the_set_sent_last_stands;
 pub mod gh1225_kr_two_turns_and_a_restart_never_share_an_episode_id;
 pub mod gh1225_without_a_package_the_curator_still_rebuilds;
@@ -62,7 +59,17 @@ pub mod gh935_the_identity_budget_splits_the_pack;
 pub mod gh943_a_plan_per_round;
 pub mod gh949_a_candidate_never_widens_its_round;
 pub mod gh949_a_trigger_matches_on_word_boundaries;
+pub mod gh949_an_app_reads_its_round_from_the_ledger;
+pub mod gh949_the_push_carries_covered_candidates_only;
+pub mod gh949_things_leave_as_thing_seen;
+pub mod gh955_the_loser_of_two_first_claims_backs_off;
+pub mod gh972_a_pin_carries_the_round_its_row_proves;
+pub mod gh972_two_groups_of_one_source_replace_in_one_message;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
+#[path = "../support/objects_hive.rs"]
+pub mod objects_hive;
+#[path = "../support/organism_assistant.rs"]
+pub mod organism_assistant;

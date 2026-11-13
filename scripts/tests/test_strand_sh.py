@@ -347,7 +347,12 @@ class TestNew(StrandShTestCase):
         # unreadable conflict -- so every `new` sets them, and only once.
         want = ["merge.script-inline.name cell script_inline three-way merge",
                 "merge.script-inline.driver "
-                "python3 scripts/git_merge_script_inline.py %O %A %B %P"]
+                "python3 scripts/git_merge_script_inline.py %O %A %B %P",
+                # OR-58-146: and the driver of git's internal merge of merge bases
+                "merge.script-inline.recursive script-inline-inner",
+                "merge.script-inline-inner.name cell script_inline merge of merge bases",
+                "merge.script-inline-inner.driver "
+                "python3 scripts/git_merge_script_inline.py --inner %O %A %B %P"]
         self.assertNotIn("merge.", _git(self.repo, "config", "--local", "--list").stdout)
         for name in ("kit", "kit2"):
             res = run_strand(self.repo, "new", name, "--issue", "756")
@@ -2990,6 +2995,17 @@ class TestLaneCoverage(HygieneTestCase):
         host.chmod(0o755)
         self.dfbin = tmp / "df-bin"
         self.dfbin.mkdir()
+        # d59-2 local V1: scope `full` pushes the commit, never the overlay --
+        # the stubs reach the lane only committed (a file `gone.txt` beside them)
+        (self.tree / "gone.txt").write_text("kept in the commit\n")
+        # the ignores of the real tree for what the kit writes into the lane
+        # tree itself (the lane `.env`, Python byte code)
+        ignore = self.tree / ".gitignore"
+        ignore.write_text((ignore.read_text() if ignore.is_file() else "")
+                          + "/.env\n__pycache__/\n/workshop/tools/node_modules\n")
+        _git(self.tree, "add", "gone.txt", ".gitignore", "scripts/pipeline/coverage_host.sh",
+             "scripts/pipeline/hygiene.py")
+        _git(self.tree, "commit", "-q", "-m", "coverage stubs")
 
     def host_stub(self, tail="", **paths):
         """The host stub with its paths in the body: @COVLOG@ and any
@@ -3000,25 +3016,64 @@ class TestLaneCoverage(HygieneTestCase):
         return body
 
     def coverage(self, target="builder@north.example.invalid", free_g=999, pre_path=None,
-                 out_dir=None, scope=None, **extra):
+                 out_dir=None, scope=None, rev=None, **extra):
         (self.dfbin / "df").write_text('#!/usr/bin/env bash\necho "Avail"\necho "%dG"\n' % free_g)
         (self.dfbin / "df").chmod(0o755)
-        env = dict(os.environ)
+        # The lane words of the calling run never reach the fixture: `pre` on a
+        # lane of class egon hands its children MECLAW_LANE_CLASS=egon, and the
+        # fake ssh lane of these tests was then refused as the owner's machine
+        # past its limits (29 reds in `pre --host <local lane>`, d59-2 local).
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("MECLAW_LANE_") and k != "MECLAW_CARGO_LOCK_HELD"}
         path = "%s:%s:%s" % (self.dfbin, self.bin, os.environ["PATH"])
         if pre_path:
             path = "%s:%s" % (pre_path, path)
-        env.update(self.env(PATH=path,
-                            MECLAW_LANE_FLOOR_G="7",
-                            MECLAW_LANE_NAME="north", **extra))
+        env.update(self.env(**dict({"PATH": path, "MECLAW_LANE_FLOOR_G": "7",
+                                    "MECLAW_LANE_NAME": "north"}, **extra)))
         env.setdefault("FAKE_SSH_IDENTITY",
                        "MID=0123456789abcdef0123456789abcdef\\nHOST=north-lane")
         if env["FAKE_SSH_IDENTITY"] == "":
             del env["FAKE_SSH_IDENTITY"]
         return subprocess.run([str(self.tree / "scripts" / "lane_sync.sh"), "coverage",
                                target, "dt-w6", "600"] + ([out_dir] if out_dir else [])
-                              + ([scope] if scope else []),
+                              + ([scope] if scope else []) + ([rev] if rev else []),
                               cwd=self.tree, env=env,
                               capture_output=True, text=True, timeout=4 * kit_time.HANG)
+
+    def test_coverage_push_leaves_exactly_the_commit_in_the_lane_tree(self):
+        """d59-2 local V1 (O6): the lane tree of a full run is the named commit
+        and nothing else -- no overlay of the calling tree (changed, untracked,
+        deleted), and a commit other than HEAD without checking it out here."""
+        base = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        (self.tree / "later.txt").write_text("later\n")
+        _git(self.tree, "add", "later.txt")
+        _git(self.tree, "commit", "-q", "-m", "later")
+        head = _git(self.tree, "rev-parse", "HEAD").stdout.strip()
+        (self.tree / "later.txt").write_text("changed here\n")
+        (self.tree / "overlay-only.txt").write_text("untracked\n")
+        (self.tree / "gone.txt").unlink()
+        out = pathlib.Path(self._tmp.name) / "out"
+        lane_tree = self.remote / "coverage" / "tree"
+        for rev, want in ((base, base), (None, head)):
+            with self.subTest(rev=rev):
+                res = self.coverage(out_dir=str(out), scope="full", rev=rev)
+                self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+                self.assertEqual(want, _git(lane_tree, "rev-parse", "HEAD").stdout.strip())
+                self.assertEqual("", _git(lane_tree, "status", "--porcelain",
+                                          "--untracked-files=all").stdout)
+                self.assertFalse((lane_tree / "overlay-only.txt").exists())
+                self.assertEqual("kept in the commit\n", (lane_tree / "gone.txt").read_text())
+                _cwd, *host_args = self.cov_log.read_text().splitlines()
+                self.assertEqual(want, host_args[2])
+        self.assertEqual("later\n", (lane_tree / "later.txt").read_text())
+        # the calling tree is never checked out: its HEAD and overlay stay
+        self.assertEqual(head, _git(self.tree, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("changed here\n", (self.tree / "later.txt").read_text())
+        # a rev the repository does not have is refused before anything runs
+        self.cov_log.unlink()
+        bad = self.coverage(out_dir=str(out), scope="full", rev="0" * 40)
+        self.assertNotEqual(0, bad.returncode)
+        self.assertFalse(self.cov_log.exists())
 
     def test_the_browser_scope_reaches_the_host_part(self):
         # welle-tb S1b (#1165): the probe of the browser locks alone; `full`
@@ -3117,6 +3172,357 @@ class TestLaneCoverage(HygieneTestCase):
                 self.assertEqual("", self.ssh_log.read_text())
                 self.assertFalse(self.cov_log.exists())
 
+
+    # --- d59-2 local V2-V5 (R-59-2, O7): the map on the owner's machine -------
+    # No test starts systemd-run, takes the machine's cargo lock or runs cargo:
+    # `systemd-run` and `systemctl` are stubs on PATH (their state is files),
+    # the cargo lock is a file in the temp directory, the host part a stub.
+
+    LOCAL_PROBE = r"""{ echo "nice $(cut -d' ' -f19 /proc/$$/stat)"
+  echo "io $(ionice -p $$)"
+  echo "held ${MECLAW_CARGO_LOCK_HELD:-}"
+  echo "jobs ${CARGO_BUILD_JOBS:-}"
+  echo "threads ${NEXTEST_TEST_THREADS:-}"
+  if flock -n "@LOCK@" true; then echo "lock free"; else echo "lock held"; fi
+  echo "fd $(ls -l /proc/$$/fd | grep -c "@LOCK@")"
+} >"@PROBE@"
+"""
+
+    SYSTEMD_RUN_STUB = r"""#!/usr/bin/env bash
+{ printf '%s' "$*" | tr '\n' ' '; echo; } >>"@SDLOG@"
+if [ -e "@SDKNOBS@/exists" ]; then
+    echo "Failed to start transient scope unit: Unit already exists." >&2
+    exit 1
+fi
+while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+"$@"
+rc=$?
+[ ! -e "@SDKNOBS@/exit" ] || rc=$(cat "@SDKNOBS@/exit")
+exit "$rc"
+"""
+
+    SYSTEMCTL_STUB = r"""#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"@SDLOG@"
+case " $* " in *" show "*) cat "@SDKNOBS@/result" 2>/dev/null || echo success ;; esac
+case " $* " in *" is-active "*) [ -e "@SDKNOBS@/active" ] || exit 3 ;; esac
+exit 0
+"""
+
+    def local_setup(self):
+        """The stubs, the probe in the committed host part and the fake cgroup;
+        `(env words for coverage(), probe file)`."""
+        tmp = pathlib.Path(self._tmp.name)
+        self.sd_bin, self.sd_knobs = tmp / "sd-bin", tmp / "sd-knobs"
+        self.sd_bin.mkdir(exist_ok=True)
+        self.sd_knobs.mkdir(exist_ok=True)
+        self.sd_log = tmp / "systemd.log"
+        self.lock = tmp / "cargo.lock"
+        self.probe = tmp / "probe.txt"
+        for name, body in (("systemd-run", self.SYSTEMD_RUN_STUB),
+                           ("systemctl", self.SYSTEMCTL_STUB)):
+            exe = self.sd_bin / name
+            exe.write_text(body.replace("@SDLOG@", str(self.sd_log))
+                           .replace("@SDKNOBS@", str(self.sd_knobs)))
+            exe.chmod(0o755)
+        host = self.tree / "scripts" / "pipeline" / "coverage_host.sh"
+        host.write_text(self.host_stub(self.LOCAL_PROBE, LOCK=self.lock, PROBE=self.probe))
+        _git(self.tree, "commit", "-q", "-m", "probe", "--", "scripts/pipeline/coverage_host.sh")
+        # the scope's cgroup: this process's own path below a fake root
+        self.cg_root = tmp / "cg"
+        own = pathlib.Path("/proc/self/cgroup").read_text().split("0::", 1)[-1].strip()
+        self.cg = self.cg_root / own.lstrip("/")
+        self.cg.mkdir(parents=True, exist_ok=True)
+        (self.cg / "memory.peak").write_text("3221225472\n")
+        (self.cg / "memory.events").write_text("low 0\nhigh 0\nmax 5\noom 0\noom_kill 0\n")
+        (self.cg / "memory.pressure").write_text(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=9000000\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=2500000\n")
+        self.local_words = {"MECLAW_LANE_CLASS": "egon", "MECLAW_LANE_NAME": "mm-os01",
+                            "MECLAW_GATE_LOCK": str(self.lock),
+                            "MECLAW_CGROUP_ROOT": str(self.cg_root),
+                            "MECLAW_COVERAGE_LOCK_WAIT_S": "30", "MECLAW_LANE_MEM_G": "6",
+                            "MECLAW_LANE_JOBS": ""}
+        return self.local_words
+
+    def local(self, pre_path=None, **extra):
+        """`lane_sync.sh coverage local ...` with the stubs of `local_setup`."""
+        if not hasattr(self, "local_words"):
+            self.local_setup()
+        pre = str(self.sd_bin) if pre_path is None else "%s:%s" % (pre_path, self.sd_bin)
+        return self.coverage(target="local", pre_path=pre, **dict(self.local_words, **extra))
+
+    def probed(self):
+        return dict(l.split(" ", 1) for l in self.probe.read_text().splitlines())
+
+    def scope_argv(self):
+        return next(l for l in self.sd_log.read_text().splitlines()
+                    if not l.startswith("systemctl "))
+
+    def egon_width(self, jobs=None):
+        t = min(4, max(1, int(subprocess.run(["nproc"], capture_output=True, text=True)
+                              .stdout.strip()) // 2))
+        return (min(t, jobs) if jobs else t), t
+
+    def test_the_local_run_holds_the_cargo_lock_from_the_first_cargo_call_to_the_aggregate(self):
+        # V3 a: the whole host part -- every cargo call up to `aggregate` --
+        # runs under the machine's cargo lock; children are told so and never
+        # inherit its descriptor; after the run the lock is free again.
+        res = self.local()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        got = self.probed()
+        self.assertEqual("held", got["lock"])
+        self.assertEqual("1", got["held"])
+        self.assertEqual("0", got["fd"])
+        fd = os.open(str(self.lock), os.O_WRONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+    def test_the_local_limits_wrap_the_host_call_and_do_not_depend_on_the_measured_tree(self):
+        # V3 f (REVIEW-fable B1): the host part runs from the measured commit,
+        # so a commit from before this wave would run unlimited if the limits
+        # lived there -- the committed stub carries none, the caller wraps it:
+        # scope -> nice/ionice -> lock -> env -> coverage_host.sh
+        res = self.local()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        argv = self.scope_argv()
+        tail = argv.split(" -- ", 1)[1]
+        self.assertTrue(tail.startswith("nice -n 19 ionice -c3 bash -c "), tail)
+        self.assertLess(tail.index(str(self.lock)), tail.index("env MECLAW_CARGO_LOCK_HELD=1"))
+        self.assertLess(tail.index("env MECLAW_CARGO_LOCK_HELD=1"),
+                        tail.index("scripts/pipeline/coverage_host.sh"))
+        got = self.probed()
+        self.assertEqual(("held", "19"), (got["lock"], got["nice"]))
+        host = (REPO / "scripts" / "pipeline" / "coverage_host.sh").read_text()
+        for word in ("flock", "systemd-run", "ionice", "MECLAW_CARGO_LOCK_HELD"):
+            self.assertNotIn(word, host)
+
+    def test_a_busy_cargo_lock_ends_the_local_run_with_exit_3_after_the_wait_cap(self):
+        # V3 a: at most the wait cap (MECLAW_COVERAGE_LOCK_WAIT_S), then exit 3
+        # and one line; no cargo call, the tree lock and the scope released
+        self.local_setup()
+        fd = os.open(str(self.lock), os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            res = self.local(MECLAW_COVERAGE_LOCK_WAIT_S="1")
+        finally:
+            os.close(fd)
+        self.assertEqual(3, res.returncode, res.stdout + res.stderr)
+        self.assertRegex(res.stderr, r"coverage: lock busy after \d+s")
+        self.assertFalse(self.probe.exists())
+        self.assertFalse(self.cov_log.exists())
+        self.assertIn("systemctl --user stop pipe-cov-mm-os01.scope", self.sd_log.read_text())
+
+    def test_a_local_run_that_ends_at_a_cap_installs_no_map(self):
+        # V3 d (REVIEW-fable I2): the end at the memory or runtime cap is an
+        # abort -- one line, exit 1, no map fetched (so none installed and no
+        # coverage_red), the scope stopped and reset
+        out = pathlib.Path(self._tmp.name) / "out"
+        for result, why in (("oom-kill", "memory cap"), ("timeout", "runtime cap")):
+            with self.subTest(result=result):
+                if out.exists():
+                    shutil.rmtree(out)
+                if not hasattr(self, "local_words"):
+                    self.local_setup()
+                (self.sd_knobs / "exit").write_text("137" if result == "oom-kill" else "143")
+                (self.sd_knobs / "result").write_text(result + "\n")
+                res = self.local(out_dir=str(out))
+                self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+                self.assertIn("coverage: aborted: %s" % why, res.stderr)
+                self.assertFalse((out / "coverage.json").exists())
+                log = self.sd_log.read_text()
+                self.assertIn("systemctl --user stop pipe-cov-mm-os01.scope", log)
+                self.assertIn("systemctl --user reset-failed pipe-cov-mm-os01.scope", log)
+
+    def test_a_second_local_run_is_refused_while_the_scope_of_the_first_lives(self):
+        # V3 d: one scope name per lane -- systemd refuses the second while the
+        # first lives; the refused run never touches the other run's scope
+        self.local_setup()
+        (self.sd_knobs / "exists").write_text("")
+        res = self.local()
+        self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+        self.assertIn("refused", res.stderr)
+        self.assertIn("pipe-cov-mm-os01", res.stderr)
+        self.assertFalse(self.probe.exists())
+        self.assertFalse(self.cov_log.exists())
+        # the whole log: the check before the push, the reset of a dead
+        # remnant, the one refused start -- then nothing (no stop, no reset)
+        lines = self.sd_log.read_text().splitlines()
+        self.assertEqual(["systemctl --user is-active --quiet pipe-cov-mm-os01.scope",
+                          "systemctl --user reset-failed pipe-cov-mm-os01.scope"], lines[:2])
+        self.assertEqual(3, len(lines), lines)
+        self.assertTrue(lines[2].startswith("--user --scope"), lines[2])
+
+    def test_a_live_scope_refuses_the_local_run_before_the_push(self):
+        # Review M1 a: the scope name is judged before the push -- a scope that
+        # outlived its caller (SIGKILL) still compiles in coverage/tree, so a
+        # second run must not check a new commit out under it; exit 5, the
+        # live scope neither started over, stopped nor reset
+        self.local_setup()
+        (self.sd_knobs / "active").write_text("")
+        res = self.local()
+        self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+        self.assertIn("refused", res.stderr)
+        self.assertIn("pipe-cov-mm-os01", res.stderr)
+        self.assertFalse((self.remote / "coverage" / "tree").exists())
+        self.assertFalse(self.probe.exists())
+        log = self.sd_log.read_text()
+        self.assertEqual("systemctl --user is-active --quiet pipe-cov-mm-os01.scope\n", log)
+        # the refusal names the way out for an orphaned scope (delta review D5)
+        self.assertIn("systemctl --user stop pipe-cov-mm-os01.scope", res.stderr)
+        # judged before run_guards: no hygiene ran under the live scope
+        self.assertEqual("", self.hyg_log.read_text())
+
+    def test_a_busy_tree_hold_leaves_a_failed_scope_alone(self):
+        # Delta review D1: the reset of a dead run's unit waits for the tree
+        # hold -- the holder may be a live run between the end of its scope
+        # and the read of its result; a run refused at the hold resets nothing
+        self.local_setup()
+        lock = self.remote / "coverage" / "tree.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            res = self.local()
+        finally:
+            os.close(fd)
+        self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+        self.assertIn("is in use", res.stderr)
+        self.assertEqual(["systemctl --user is-active --quiet pipe-cov-mm-os01.scope"],
+                         self.sd_log.read_text().splitlines())
+
+    def test_a_failed_scope_of_a_dead_run_is_reset_before_the_local_run(self):
+        # Review M1 b: a run that ended at a cap and lost its caller before the
+        # reset leaves a failed unit; the next run resets it before the push
+        # and runs, instead of being refused as "another run" forever
+        res = self.local()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        lines = self.sd_log.read_text().splitlines()
+        self.assertEqual(["systemctl --user is-active --quiet pipe-cov-mm-os01.scope",
+                          "systemctl --user reset-failed pipe-cov-mm-os01.scope"], lines[:2])
+        self.assertTrue(lines[2].startswith("--user --scope"), lines[2])
+
+    def test_the_local_run_uses_the_egon_width_and_idle_priority(self):
+        # V3 b/c: nice 19 + ionice idle around every cargo call; jobs and test
+        # threads from the one egon width of `lane_env` (half the cores, at
+        # most 4; `jobs=` lowers the jobs) -- no second number
+        res = self.local(MECLAW_LANE_JOBS="1")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        got = self.probed()
+        jobs, threads = self.egon_width(jobs=1)
+        self.assertEqual(("19", str(jobs), str(threads)),
+                         (got["nice"], got["jobs"], got["threads"]))
+        self.assertIn("idle", got["io"])
+
+    def test_the_local_run_is_a_scope_with_a_memory_cap_and_a_runtime_cap(self):
+        # V3 d/e: a user scope with a fixed name per lane, MemoryMax from the
+        # host file (`mem=`, else min(MemTotal/2, MemAvailable-4G)), no swap,
+        # OOMPolicy=kill, RuntimeMaxSec = lock cap + deadline + 120; stopped
+        # after the return so no stray process stays
+        res = self.local()
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        head = self.scope_argv().split(" -- ", 1)[0].split()
+        self.assertEqual(["--user", "--scope", "--quiet", "--unit=pipe-cov-mm-os01",
+                          "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=kill",
+                          "-p", "RuntimeMaxSec=%d" % (30 + 600 + 120)], head)
+        self.assertIn("systemctl --user stop pipe-cov-mm-os01.scope", self.sd_log.read_text())
+        self.sd_log.unlink()
+        res = self.local(MECLAW_LANE_MEM_G="")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        mem = re.search(r"MemoryMax=(\d+)G", self.scope_argv())
+        total_kb = int(re.search(r"MemTotal:\s+(\d+)", pathlib.Path("/proc/meminfo")
+                                 .read_text()).group(1))
+        self.assertTrue(mem and 1 <= int(mem.group(1)) <= total_kb // 2 // 1048576 + 1,
+                        self.scope_argv())
+
+    def test_a_lane_run_keeps_its_priority_and_width(self):
+        # Mutant against V3: a build lane inherits nothing of the local limits
+        # -- no scope, no cargo lock of this machine, its own nice 10 inside the
+        # host part, its own width
+        self.local_setup()
+        res = self.coverage(pre_path=str(self.sd_bin), MECLAW_GATE_LOCK=str(self.lock))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertFalse(self.sd_log.exists())
+        line = next(l for l in self.ssh_log.read_text().splitlines() if "coverage_host.sh" in l)
+        for word in ("nice -n 19", "ionice", "MECLAW_CARGO_LOCK_HELD", "CARGO_BUILD_JOBS",
+                     "systemd-run"):
+            self.assertNotIn(word, line)
+        got = self.probed()
+        self.assertEqual("free", got["lock"])
+        self.assertEqual(str(os.getpriority(os.PRIO_PROCESS, 0)), got["nice"])
+        self.assertEqual("", got["held"])
+        host = (REPO / "scripts" / "pipeline" / "coverage_host.sh").read_text()
+        self.assertEqual(2, host.count("nice -n 10 cargo nextest run"))
+
+    def test_a_local_run_below_the_floor_aborts_before_cargo_starts(self):
+        # V4: the local run starts only when 60 G (the floor) stay free after
+        # it -- expected 12 G with a warm `coverage/target` (>= 20 G), 47 G
+        # cold; short of that the hygiene check aborts: lane_sync exit 6, no
+        # scope, no cargo
+        self.local_setup()
+        for du, expected in ((None, 47), ("25", 12)):
+            with self.subTest(warm=du):
+                self.hyg_log.write_text("")
+                pre = None
+                if du:
+                    dubin = pathlib.Path(self._tmp.name) / "du-bin"
+                    dubin.mkdir(exist_ok=True)
+                    (dubin / "du").write_text('#!/usr/bin/env bash\nprintf "%sG\\t%%s\\n" "$4"\n'
+                                              % du)
+                    (dubin / "du").chmod(0o755)
+                    pre = str(dubin)
+                    (self.remote / "coverage" / "target").mkdir(parents=True, exist_ok=True)
+                res = self.local(pre_path=pre, FAKE_HYGIENE_RC_CHECK="2")
+                self.assertEqual(6, res.returncode, res.stdout + res.stderr)
+                args = [c for c in self.calls() if c["args"][:1] == ["check"]][0]["args"]
+                self.assertEqual(str(expected), args[args.index("--expected-g") + 1])
+                self.assertEqual(str(7 + expected), args[args.index("--abort-below-g") + 1])
+                # no scope started (the scope name is judged earlier, review M1)
+                started = [l for l in (self.sd_log.read_text().splitlines()
+                                       if self.sd_log.exists() else [])
+                           if not l.startswith("systemctl ")]
+                self.assertEqual([], started)
+                self.assertFalse(self.cov_log.exists())
+
+    def test_the_map_of_a_local_run_names_its_host_limits(self):
+        # V5: the map of a local run says under which limits it ran -- width,
+        # the memory cap, the scope's peak, events and pressure (read inside
+        # the scope before it ends), the lock wait; `coverage_built` keeps it
+        from scripts.pipeline import coverage
+        out = pathlib.Path(self._tmp.name) / "out"
+        res = self.local(out_dir=str(out))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        cov = json.loads((out / "coverage.json").read_text())
+        jobs, threads = self.egon_width()
+        self.assertEqual({"threads": threads, "jobs": jobs, "mem_max_g": 6, "mem_peak_g": 3.0,
+                          "mem_events_max": 5, "mem_oom_kill": 0, "mem_pressure_full_s": 2.5,
+                          "lock_wait_s": 0}, cov["host"])
+        cov.update({"rev": "r1", "runner": "mm-os01", "secs": 1.0, "tests": 1, "parts": [],
+                    "granularity": "binary"})
+        data = coverage.built(cov, db_path=str(pathlib.Path(self._tmp.name) / "p.db"))
+        self.assertEqual(cov["host"], data["host"])
+        # a lane map carries no `host`, and `coverage_built` adds none
+        res = self.coverage(out_dir=str(out))
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertNotIn("host", json.loads((out / "coverage.json").read_text()))
+
+    def test_an_ssh_lane_that_is_this_machine_stays_refused(self):
+        # V2: only transport `local` reaches the owner's machine (with V3); an
+        # ssh lane that proves to be this machine, or an ssh lane of class
+        # egon, is refused before anything runs -- never past the local limits
+        self.local_setup()
+        for name, extra in (("this machine", {"FAKE_SSH_IDENTITY": ""}),
+                            ("class egon", {"MECLAW_LANE_CLASS": "egon"})):
+            with self.subTest(name):
+                self.ssh_log.write_text("")
+                res = self.coverage(pre_path=str(self.sd_bin), **extra)
+                self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+                self.assertIn("refused", res.stderr)
+                self.assertFalse(self.cov_log.exists())
+                self.assertFalse(self.sd_log.exists())
+                self.assertNotIn(HYGIENE_STDIN + "check", self.ssh_log.read_text())
 
     def test_a_lane_that_is_this_machine_is_refused_by_identity(self):
         """I2 rest: the label says build lane, the host is this machine -- the

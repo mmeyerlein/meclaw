@@ -29,6 +29,28 @@ use crate::curator_profiles; // harness_fold: mod curator_profiles;
 use curator_hive::*;
 use meclaw_core::serde_json::{Map, Value, json};
 
+/// GH #1497: the text of the person's newest message as the model cell got
+/// it, when the pending consult's note opens it (the notes block, the tail of
+/// the window -- never a leaf of the system part); `None` otherwise.
+fn pending_note(call: &Msg) -> Option<String> {
+    call.messages()
+        .iter()
+        .rev()
+        .find(|m| m["origin"] == "user")
+        .and_then(|m| m["text"].as_str())
+        .filter(|t| t.contains("A consult is pending (id "))
+        .map(str::to_string)
+}
+
+/// GH #1497: whether any message of `call` carries the pending note.
+fn told_pending(call: &Msg) -> bool {
+    call.messages().iter().any(|m| {
+        m["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("A consult is pending (id "))
+    })
+}
+
 /// The collector's contract (`instructions.sidecar`): the frame the policy
 /// writes over the sections, one required section, two optional ones of 500
 /// characters -- over a tenth of 1000 tokens (300 characters), under a tenth
@@ -505,8 +527,8 @@ fn a_turn_keeps_its_own_system_row_and_takes_it_down() {
 /// the consult tool away from the next call at once (`tools` is not frozen;
 /// the llm cell's `drop_block` keeps the turn), while the system the turn
 /// began with stands byte for byte -- within the turn the tool result
-/// carries the consult; its `consult.pending` note joins the system from the
-/// next turn on.
+/// carries the consult; its `consult.pending` note joins the notes block
+/// from the next turn on (GH #1497: the tail, never the system part).
 #[test]
 fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
     if !shipped() {
@@ -528,16 +550,21 @@ fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
         json!([user("plan"), consult, tool_result("k1", "asked")]),
         mode("Be brief."),
     );
+    // GH #1497: the consult tool is refused at the call (`hop.tools_refused`,
+    // the composite's dispatcher), the menu -- and so `tools` -- stays.
     let denied: Vec<&str> = call1
-        .body
-        .get("tool_scope")
-        .and_then(|t| t.get("deny"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
+        .hop
+        .get("tools_refused")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .split(',')
         .collect();
-    assert!(denied.contains(&"consult_cogny"), "{:?}", call1.body);
+    assert!(denied.contains(&"consult_cogny"), "{:?}", call1.hop);
+    assert_eq!(
+        call1.body.get("tool_scope"),
+        call0.body.get("tool_scope"),
+        "the menu of the tool round is the one of its first call"
+    );
     let before = held.clone();
     apply(&mut held, &call1.body["system"]);
     assert_eq!(
@@ -547,17 +574,21 @@ fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
         call1.body["system"]
     );
     h.tap(&call1, "stop", json!({}), json!([said("asked")]));
+    assert!(
+        !told_pending(&call1),
+        "within the turn the note does not join: {:?}",
+        call1.messages()
+    );
     let call2 = h.curate("s1", "t3", 0, json!([user("and?")]), mode("Be brief."));
     apply(&mut held, &call2.body["system"]);
-    let note = held
-        .get("consult")
-        .and_then(|c| c.get("pending"))
-        .and_then(|p| p.get("text"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     assert!(
-        note.contains("A consult is pending (id "),
-        "the next turn carries the note: {}",
+        pending_note(&call2).is_some(),
+        "the next turn carries the note: {:?}",
+        call2.messages()
+    );
+    assert!(
+        held.get("consult").and_then(|c| c.get("pending")).is_none(),
+        "the note is no leaf of the system the model holds: {}",
         call2.body["system"]
     );
 }
@@ -565,15 +596,17 @@ fn a_consult_started_in_a_turn_denies_the_tool_and_keeps_the_system() {
 // ======================================== agent-2 A2, review I1 (OR-AG-50)
 
 /// A call of session `s1` from a parent with stages (simple-agent 2): the
-/// collector's context carries `sa_stage`; D58 target (contract point 1): the
-/// curate names the stage's cell as its target (`hop.target`), the call
-/// leaves as a model call to it.
+/// composition sets the curate's `hop.target` from its own context field
+/// `sa_target` at its edge (D58 proof; `sa_stage` is gone) -- the curator
+/// reads `hop.target` alone and sees no field of the composition. D58
+/// target (contract point 1): the curate names the stage's cell as its
+/// target, the call leaves as a model call to it.
 fn staged(h: &mut Hive, turn_id: &str, stage: &str, ask: &str) -> Msg {
     h.out.clear();
     let hop = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0", "phase": "",
                      "target": stage});
     let ctx = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0",
-                     "channel": "test", "audience_set": ROUND_E, "sa_stage": stage});
+                     "channel": "test", "audience_set": ROUND_E});
     h.lane(
         "in_curate",
         ctx,

@@ -3,13 +3,19 @@
 //! WHY this file exists: since GH #1468 `./intake` writes its verdict on a
 //! tool result beside the wall row (`wall.failed`) and the rebuild reads it.
 //! That verdict is no superset of the judgement the rebuild made before, by
-//! the text alone (`is_error_result`): a result with no text at all, and an
-//! error object whose `error` is no code and no object (`{"error": true}`),
-//! are no failure to `./intake` (`tool_failure` counts the forms the shipped
-//! tools answer in) -- it files both with the verdict 0. Read alone, that
-//! verdict would shrink two results the rebuild always kept whole. The fix of
-//! F2 must make nothing worse, so the rebuild takes a result for a failure
-//! when `./intake` filed it as failed OR the text says so. `tool_failure`
+//! the text alone (`is_error_result`). `./intake` (`tool_failure` counts the
+//! forms the shipped tools answer in) files two forms with the verdict 0: a
+//! result with no text at all, and an error object whose `error` is neither
+//! a string nor an object (`true`, a number, a list), is empty (`""` or
+//! `{}`), or is a string from `NO_ERROR` (and that carries no string
+//! `error_code` and no `ok: false`) -- as `tool_failure` in `curator/intake`
+//! reads it, and as the docstring of `result_failed` in `curator/policy`
+//! says it.
+//! A sentence as `error` is a failure to `./intake` too, only one without a
+//! code. This pin takes `{"error": true}` for the second form. Read alone,
+//! that verdict would shrink two results the rebuild always kept whole. The
+//! fix of F2 must make nothing worse, so the rebuild takes a result for a
+//! failure when `./intake` filed it as failed OR the text says so. `tool_failure`
 //! itself stays as it is: the mark `tool_error` and the count of tool
 //! failures hang on it.
 //!
@@ -205,13 +211,102 @@ fn an_error_by_its_text_alone_still_stays() {
             "{role}: the result with no text is sent as it came: {empty:?} in {shown}"
         );
         let error = result_text(&call, "c1");
+        // As strict as the empty result: the object itself, or the short id
+        // and the object -- nothing else (bankfix re-check, minor 2).
         assert!(
-            error.ends_with(&error_true()) && !error.contains("history_read"),
+            error == error_true() || error == format!("[#{error_id}] {}", error_true()),
             "{role}: the error object is sent whole: {error:?} in {shown}"
         );
         assert!(
             !shown.contains(&fine(2)),
             "{role}: the fine result of r2 is not sent whole: {shown}"
+        );
+    }
+}
+
+/// 2026-03-02T01:00:00Z in seconds, the hour of the rows of the render probe.
+const RENDER_HOUR_S: i64 = 1_772_413_200;
+
+/// A plan from before names both forms in `shrunk`, each filed with the
+/// verdict 0 (bankfix re-check, minor 3): the render (`render` ->
+/// `shrinkable` -> `result_failed`) still shows them whole, as the plan of
+/// today does; only the fine result beside them takes the one-line form.
+/// Mutant: `shrinkable` without the `result_failed` question -> red.
+#[test]
+fn the_render_shows_both_forms_whole_even_when_an_older_plan_shrank_them() {
+    let empty_el = json!({"type": "tool_result", "id": "call_x0", "text": ""});
+    let error_el = json!({"type": "tool_result", "id": "call_x1", "text": error_true()});
+    let fine_el = json!({"type": "tool_result", "id": "call_x2", "text": fine(2)});
+    let call_el = |id: &str| {
+        json!({"type": "tool_call", "id": id, "name": "lookup",
+               "text": json!({"name": "lookup"}).to_string()})
+    };
+    let turns: Vec<(&str, Vec<Value>)> = vec![
+        ("r0", vec![call_el("call_x0"), empty_el.clone()]),
+        ("r1", vec![call_el("call_x1"), error_el.clone()]),
+        ("r2", vec![call_el("call_x2"), fine_el.clone()]),
+        (
+            "r3",
+            vec![json!({"type": "text", "origin": "user", "text": "and now?"})],
+        ),
+    ];
+    let mut rows = Vec::new();
+    for (i, (turn, els)) in turns.iter().enumerate() {
+        for (j, el) in els.iter().enumerate() {
+            let t = RENDER_HOUR_S + 10 * i as i64 + j as i64;
+            let kind = match el["type"].as_str() {
+                Some("tool_result") => "tool_result",
+                Some("tool_call") => "tool_call",
+                _ => "user",
+            };
+            // The verdict `./intake` files for all three: 0.
+            let failed = if kind == "tool_result" {
+                json!(0)
+            } else {
+                Value::Null
+            };
+            rows.push(json!({
+                "seq": t * 1_000_000, "session_id": "s", "turn_id": turn, "iter": 0,
+                "kind": kind, "hash": sha256_hex(&canonical(el)), "nth": 0, "final": 0,
+                "at": chrono::DateTime::from_timestamp(t, 0).unwrap()
+                    .format("%Y-%m-%dT%H:%M:%S.000000Z").to_string(),
+                "audience_set": ROUND_E, "element": el, "failed": failed}));
+        }
+    }
+    let plan = json!({"v": 1, "cover": 0, "keep": [], "released": [],
+                      "shrunk": [short_id(&empty_el), short_id(&error_el), short_id(&fine_el)],
+                      "stubs": [], "summary": "", "sum_from": 0, "sum_to": 0, "marks_to": 0,
+                      "as_of_ms": (RENDER_HOUR_S + 3600) * 1000});
+    let probe = "[e.get('text') for _, e, _, _ in render(blocks_of_rows(ARGS['rows'], [], None), ARGS['rows'], P, ARGS['plan'], \
+                 tuple(ARGS['current'])) if e.get('type') == 'tool_result']";
+    for role in ["talky", "coding"] {
+        let (got, err) = policy_scope(
+            curator_profiles::set_knobs(role, json!({})),
+            probe,
+            json!({"rows": rows, "plan": plan, "current": ["s", "r3"]}),
+        );
+        assert!(!err.contains("Traceback"), "{role}: {err}");
+        let texts: Vec<String> = got
+            .as_array()
+            .unwrap_or_else(|| panic!("{role}: a list of texts: {got} {err}"))
+            .iter()
+            .map(|t| t.as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(texts.len(), 3, "{role}: three results: {got}");
+        // A role that shows short ids sets the id before the text; nothing
+        // else may stand there.
+        let (empty_id, error_id) = (short_id(&empty_el), short_id(&error_el));
+        assert!(
+            texts[0].is_empty() || texts[0] == format!("[#{empty_id}] "),
+            "{role}: the result with no text is shown as it came: {got}"
+        );
+        assert!(
+            texts[1] == error_true() || texts[1] == format!("[#{error_id}] {}", error_true()),
+            "{role}: the error object `error: true` is shown whole: {got}"
+        );
+        assert!(
+            texts[2].contains("history_read") && !texts[2].contains(&fine(2)),
+            "{role}: the fine result takes the one-line form: {got}"
         );
     }
 }

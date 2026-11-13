@@ -1453,6 +1453,12 @@ impl Hive {
         self.pump("./clock", msg);
     }
 
+    /// A message out of `./clock` other than a strike -- its refusal of an
+    /// order (`msg_type` `timer_op_error`), run to rest (D58 coldgc M2).
+    pub fn from_clock(&mut self, msg: Msg) {
+        self.pump("./clock", msg);
+    }
+
     fn strike_of(&self, order: &Msg) -> Msg {
         let id = order.body.get("schedule_id");
         let armed = self
@@ -1544,6 +1550,22 @@ impl Hive {
             aged.push((key, value));
         }
         aged
+    }
+
+    /// GH #1496: the day the summarizer's oldest pending transcript shows on
+    /// its first row line (`[#<id>] (<YYYY-MM-DD>) ...`). A stub brief dates
+    /// its lines with it: the policy drops a line dated with a day the
+    /// transcript never showed, and the rows carry the clock's day.
+    pub fn transcript_day(&self) -> String {
+        let req = self.summ.front().expect("a summarizer request");
+        let text = req
+            .messages()
+            .last()
+            .and_then(|m| m["text"].as_str())
+            .unwrap_or("")
+            .to_string();
+        transcript_day_of(&text)
+            .unwrap_or_else(|| panic!("a dated row line in the transcript: {text}"))
     }
 
     /// The summarizer's answer with `extra` hop keys -- the llm cell's stamp
@@ -2033,6 +2055,15 @@ pub fn summary_slot(round: &str) -> String {
     format!("history.summary:{}", round_key(round))
 }
 
+/// GH #1496: the day of the first dated row line (`[#<id>] (<YYYY-MM-DD>) `)
+/// of a brief transcript, None when it has none.
+pub fn transcript_day_of(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let (_, after) = l.strip_prefix("[#")?.split_once("] (")?;
+        (after.get(10..12) == Some(") ")).then(|| after[..10].to_string())
+    })
+}
+
 /// The short id of an element: the first 12 hex digits of its block hash.
 pub fn short_id(el: &Value) -> String {
     sha256_hex(&canonical(el))[..12].to_string()
@@ -2260,7 +2291,8 @@ pub struct SentWindow {
     pub carried: Vec<(String, String)>,
     /// The messages, in the order sent.
     pub messages: Vec<Value>,
-    /// The tool menu (the names the call may use), when the list holds one.
+    /// The tool menu (GH #1497: the menu part of the call's `tool_scope`,
+    /// `allow`/`deny`/`hint`), when the list holds one.
     pub tools: Option<Value>,
     /// The pieces listed beside the element that carries them (the state
     /// line, a note): `(kind, form, text)`, in their order.
@@ -2277,8 +2309,9 @@ pub struct SentWindow {
 /// `why` (GH #1463, see [`SentWindow::left_out`]); `hash` names a block the ledger
 /// holds, the sha256 of its body, and `bytes` is the length of that body in
 /// UTF-8. What a block is decides its body: an element with an `origin` is a
-/// message, one with a `path` a leaf of the system part, a list the tool
-/// menu, anything else a piece of the element that follows it.
+/// message, one with a `path` a leaf of the system part, the entry of kind
+/// `tools` the tool menu (GH #1497: an object, the menu part of the scope),
+/// anything else a piece of the element that follows it.
 pub fn sent_window(h: &Hive, sent: &[Value]) -> SentWindow {
     let mut w = SentWindow::default();
     for e in sent {
@@ -2320,7 +2353,7 @@ pub fn sent_window(h: &Hive, sent: &[Value]) -> SentWindow {
             "`bytes` is the length of the block: {e}"
         );
         let el: Value = sj::from_str(&body).unwrap_or_else(|x| panic!("{e}: {x}"));
-        let is_leaf = !el.is_array() && el.get("origin").is_none() && el.get("path").is_some();
+        let is_leaf = kind != "tools" && el.get("origin").is_none() && el.get("path").is_some();
         assert_eq!(
             e.get("carried").is_some_and(Value::is_boolean),
             is_leaf,
@@ -2342,7 +2375,7 @@ pub fn sent_window(h: &Hive, sent: &[Value]) -> SentWindow {
                 .push((kind, why.as_str().unwrap_or_default().to_string(), el));
             continue;
         }
-        if el.is_array() {
+        if kind == "tools" {
             assert!(w.tools.is_none(), "one tool menu: {sent:?}");
             w.tools = Some(el);
         } else if el.get("origin").is_some() {

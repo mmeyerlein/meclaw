@@ -32,12 +32,25 @@ fn hive() -> Hive {
     ])
 }
 
+/// The menu part of the call's `tool_scope` as the snapshot lists it
+/// (GH #1497, review I2 of the prefix strand: the watch judges the menu, so
+/// `deny` and `hint` belong to it): `allow` when the scope names one, `deny`
+/// and `hint` when not empty; None without a scope.
 fn tools_of(call: &Msg) -> Option<Value> {
-    call.body
-        .get("tool_scope")
-        .and_then(|s| s.get("allow"))
-        .filter(|a| a.is_array())
-        .cloned()
+    let scope = call.body.get("tool_scope")?.as_object()?;
+    let mut menu = meclaw_core::serde_json::Map::new();
+    if let Some(a) = scope.get("allow").filter(|a| a.is_array()) {
+        menu.insert("allow".into(), a.clone());
+    }
+    for k in ["deny", "hint"] {
+        if let Some(v) = scope
+            .get(k)
+            .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        {
+            menu.insert(k.into(), v.clone());
+        }
+    }
+    Some(Value::Object(menu))
 }
 
 #[test]
@@ -112,7 +125,7 @@ fn a_call_with_a_notes_block_and_a_call_with_its_bridge_are_rebuilt() {
     let (noted, _) = calls_out(&h);
     assert_eq!(
         tools_of(&noted),
-        Some(json!(["web", "orga"])),
+        Some(json!({"allow": ["web", "orga"]})),
         "this call sends a tool menu with names: {:?}",
         noted.body
     );

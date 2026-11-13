@@ -84,10 +84,49 @@ fn the_knob_is_declared_with_its_shipped_default() {
     );
 }
 
+/// Every key named `name` anywhere in `v`, as a path of keys.
+fn keys_named(v: &Value, name: &str, at: &str, found: &mut Vec<String>) {
+    match v {
+        Value::Object(o) => {
+            for (k, x) in o {
+                let here = format!("{at}.{k}");
+                if k == name {
+                    found.push(here.clone());
+                }
+                keys_named(x, name, &here, found);
+            }
+        }
+        Value::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                keys_named(x, name, &format!("{at}[{i}]"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every `config.json` under `dir`, depth first.
+fn configs_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            configs_under(&p, out);
+        } else if p.file_name().is_some_and(|f| f == "config.json") {
+            out.push(p);
+        }
+    }
+}
+
 /// The knob is no value of any profile (R-58-15: the former presets of the
-/// roles are profile values now): a profile cannot carry it and no example
-/// set names it, so every target reads the shipped "0" until a set says
-/// otherwise.
+/// roles are profile values now): a profile cannot carry it, no example set
+/// names it, and no shipped template sets it -- no composite's
+/// `override_params`, no model cell's profile, nothing but the declaration
+/// of the curator's own policy cell (target review R3 m4: the second part
+/// read the table of the test helper alone). So every target reads the
+/// shipped "0" until a set says otherwise.
 #[test]
 fn no_role_presets_the_knob() {
     if !shipped() {
@@ -107,6 +146,36 @@ fn no_role_presets_the_knob() {
             "{name}: {set}"
         );
     }
+    let templates = core_root().join("templates");
+    let mut configs = Vec::new();
+    configs_under(&templates, &mut configs);
+    assert!(
+        configs.len() > 10,
+        "check of the setup: the shipped templates are read: {}",
+        configs.len()
+    );
+    let mut set_by = Vec::new();
+    for path in &configs {
+        let rel = path.strip_prefix(&templates).unwrap_or(path);
+        let top = rel.iter().next().and_then(|t| t.to_str()).unwrap_or("");
+        // The declaration itself: the curator's policy cell, of this
+        // version or a frozen one.
+        if (top == "curator" || top.starts_with("curator@")) && rel.ends_with("policy/config.json")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let Ok(cfg) = meclaw_core::serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        for knob in ["gc_on_cold", "cold_to"] {
+            keys_named(&cfg, knob, &rel.display().to_string(), &mut set_by);
+        }
+    }
+    assert!(
+        set_by.is_empty(),
+        "no shipped template sets either knob: {set_by:?}"
+    );
 }
 
 #[test]

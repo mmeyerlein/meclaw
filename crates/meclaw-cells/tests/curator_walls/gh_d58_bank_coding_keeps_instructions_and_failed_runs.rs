@@ -102,6 +102,8 @@ fn coding_keeps_instructions_and_failed_runs() {
         let i = result(FAILED_CLOSED);
         let id = wall.pieces[i].id();
         let shown = o.shown(wall, i);
+        // A stub with its own way back: `Outcome::shown` gives
+        // `Form::Shortened` only to a line that ends `history_read("#<id>")]`.
         let stub = shown == Shown::Form(Form::Shortened);
         let condensed = !o.raw(i)
             && shown == Shown::Absent
@@ -115,12 +117,33 @@ fn coding_keeps_instructions_and_failed_runs() {
                 o.raw(i)
             ));
         }
-        let call = meclaw_core::serde_json::json!(o.next.body).to_string();
-        if !call.contains("history_read") {
-            found.note(format!(
-                "{who}: (b) the call after the rebuild names no way back history_read for the \
-                 failed test run of a closed part (#{id})"
-            ));
+        // The way back is bound to this result (review bank minor 1), never
+        // a word anywhere in the call: a stub is known as one only by its
+        // end `history_read("#<id>")]` with its own id (`Outcome::shown`); a
+        // result gone into the summary comes back through the summary that
+        // holds its turn -- the plan's range covers its row (above), and the
+        // call after the rebuild carries that very summary in its system
+        // part (`history.summary`), the leaf the turn range is read from:
+        // the head line of the policy (`SUMMARY_HEAD`, the ledger range of
+        // the summary) and below it that summary, byte for byte. The plan
+        // names its summary by id (`plan.summary`); its text is what the
+        // summarizer answered, the stub's `wall.summary`.
+        if condensed {
+            let leaf = &o.next.body["system"]["history"]["summary"]["text"];
+            let carried =
+                leaf.as_str()
+                    .and_then(|t| t.split_once('\n'))
+                    .is_some_and(|(head, text)| {
+                        head.starts_with("[earlier exchange, summarised") && text == wall.summary
+                    });
+            if !carried {
+                found.note(format!(
+                    "{who}: (b) the failed test run of a closed part (#{id}) went into the \
+                     summary, and the call after the rebuild does not carry that summary: \
+                     history {}, the summary {:?} (plan {})",
+                    o.next.body["system"]["history"], wall.summary, o.plan["summary"]
+                ));
+            }
         }
 
         // (c) The result of the tool that failed itself stays where it stands.

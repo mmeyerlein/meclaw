@@ -332,7 +332,9 @@ class LoudRefusal(FreshStore):
     def test_a_refused_coverage_build_says_so_on_both_streams(self):
         with tempfile.TemporaryDirectory() as tmp:
             hosts = pathlib.Path(tmp) / "lanes"
-            hosts.write_text("mm local\n")
+            # an ssh lane of class egon stays refused (R-59-2, d59-2 local V2);
+            # transport `local` is no longer a refusal
+            hosts.write_text("mm build@203.0.113.7 class=egon\n")
             out, err = io.StringIO(), io.StringIO()
             args = types.SimpleNamespace(op="build", lane="mm", strand="welle-x/c",
                                          out_dir=str(pathlib.Path(tmp) / "out"), db=None, scope="full")

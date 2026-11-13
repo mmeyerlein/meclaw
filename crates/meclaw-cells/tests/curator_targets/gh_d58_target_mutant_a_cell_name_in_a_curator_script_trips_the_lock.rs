@@ -41,6 +41,9 @@ fn gh_d58_target_mutant_a_cell_name_in_a_curator_script_trips_the_lock() {
         "def f(x):\n    return x.get('screen')\n",
         "KINDS = (\"wind_down\",)\n",
         "D = {\"hints\": []}\n",
+        // D58 close (GH #1494): the objects hive's section, registered by
+        // its composition (D58 sections, GH #1473).
+        "SECTION = \"things\"\n",
     ];
     for code in tripped {
         let found = lock_findings(&LOCKED_NAMES, &src(code), &none, &empty);
@@ -52,6 +55,7 @@ fn gh_d58_target_mutant_a_cell_name_in_a_curator_script_trips_the_lock() {
         "\"brain\"\nX = 2\n",
         "KEY = \"consult_id\"\nY = \"quick_tools\"\n",
         "K = \"judge_context\"\nH = \"hints_of\"\n",
+        "K = \"things_section\"\n",
     ];
     for code in quiet {
         let found = lock_findings(&LOCKED_NAMES, &src(code), &none, &empty);
@@ -71,6 +75,22 @@ fn gh_d58_target_mutant_a_cell_name_in_a_curator_script_trips_the_lock() {
     let contract = json!({"emits": {"hop": {"route": {"values": ["model", "talky"]}}}});
     let found = lock_findings(&LOCKED_NAMES, &[], &none, &contract);
     assert_eq!(found.len(), 1, "a name in the contract: {found:?}");
+    // D58 close (GH #1494, review 2 m8 of the target strand): a field name
+    // stands without quotes in a condition, and a key is a name as well.
+    let edges = json!([
+        {"from": "./a", "to": "./b", "condition": "has(context.sa_stage) && hop.route == 'x'"},
+        {"from": "./a", "to": "./c", "modifier": {"set_hop": {"sa_target": "x"}}},
+        {"from": "./a", "to": "./d", "condition": "has(hop.consult_id) && body.messages != []"}
+    ]);
+    let found = lock_findings(&LOCKED_NAMES, &[], &edges, &empty);
+    assert_eq!(
+        found.len(),
+        2,
+        "a field name in a condition and a key of a modifier: {found:?}"
+    );
+    let contract = json!({"emits": {"hop": {"wellbeing": {"because": "a class"}}}});
+    let found = lock_findings(&LOCKED_NAMES, &[], &none, &contract);
+    assert_eq!(found.len(), 1, "a key of the contract: {found:?}");
     // The shipped policy with one planted literal: the lock sees it.
     if !shipped() {
         return;

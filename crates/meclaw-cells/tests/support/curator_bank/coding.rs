@@ -139,6 +139,17 @@ pub fn register(bank: &mut Bank) {
         FAILED >= kept_whole && part_of(FAILED) == PARTS.len() - 1,
         "the failed run of the running part lies in the rounds kept whole"
     );
+    // The two other layers the statements (b) and (c) of the wall are made
+    // for (review bank minor 2): held by an assert, not by the constants
+    // alone, so a shift of the parts says the wall no longer tests them.
+    assert!(
+        part_of(FAILED_CLOSED) < PARTS.len() - 1 && FAILED_CLOSED < kept_whole,
+        "the failed run of a closed part lies in a closed part, outside the rounds kept whole"
+    );
+    assert!(
+        part_of(TIMEOUT) == PARTS.len() - 1 && TIMEOUT < kept_whole,
+        "the timeout lies in the running part, outside the rounds kept whole"
+    );
     for n in 1..=last {
         let t = turn(n);
         let part = part_of(n);

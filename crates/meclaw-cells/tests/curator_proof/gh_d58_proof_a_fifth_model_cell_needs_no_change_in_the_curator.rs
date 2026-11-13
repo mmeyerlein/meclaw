@@ -140,6 +140,21 @@ fn talky_with_a_fifth(td: &tempfile::TempDir) -> Value {
         sj::to_string_pretty(&comp).expect("json"),
     )
     .expect("write the composite");
+    // The lead's knob with the fifth's entry, where talky keeps it: the
+    // override of its `lead` cell.
+    let mut lead = read_json(&repo("templates/talky/lead/config.json"));
+    let routes = &mut lead["override_params"]["lead"]["path_routes"];
+    let shipped = routes
+        .as_str()
+        .expect("talky sets the lead's path_routes")
+        .to_string();
+    *routes = json!(format!("{shipped},{STAMP}:{FIFTH}"));
+    std::fs::create_dir_all(dir.join("lead")).expect("dir");
+    std::fs::write(
+        dir.join("lead").join("config.json"),
+        sj::to_string_pretty(&lead).expect("json"),
+    )
+    .expect("write the lead");
     comp
 }
 
@@ -185,16 +200,6 @@ fn reach(t: &EdgeTable, from: &str, ctx: Value, hop: Value) -> Vec<(String, Head
     out
 }
 
-/// The lead's `path_routes` as talky sets them, with the fifth's entry.
-fn routes_with_the_fifth() -> String {
-    let shipped = LEAD_WIRING
-        .iter()
-        .find(|(k, _)| *k == "path_routes")
-        .map(|(_, v)| v.to_string())
-        .unwrap_or_default();
-    format!("{shipped},{STAMP}:{FIFTH}")
-}
-
 #[test]
 fn gh_d58_proof_a_fifth_model_cell_needs_no_change_in_the_curator() {
     if !shipped() {
@@ -202,7 +207,13 @@ fn gh_d58_proof_a_fifth_model_cell_needs_no_change_in_the_curator() {
     }
     let curator_before = tree_bytes(&repo("templates/curator"));
     let td = tempfile::TempDir::new().expect("tempdir");
-    let comp = talky_with_a_fifth(&td);
+    let written = talky_with_a_fifth(&td);
+    // Everything below is read back from the tree as it lies on disk
+    // (review proof M1): the router holds the composite's edges, the lead
+    // runs with the `path_routes` of the composite's lead cell.
+    let comp = read_json(&td.path().join("talky").join("config.json"));
+    assert_eq!(comp, written, "the composite on disk is the one built");
+    let t = table(&comp);
     let cell = read_json(&td.path().join("talky").join(FIFTH).join("config.json"));
     let profile = cell["params"]["window_profile"].clone();
     assert!(
@@ -210,8 +221,18 @@ fn gh_d58_proof_a_fifth_model_cell_needs_no_change_in_the_curator() {
         "the fifth cell carries a profile of its own: {profile}"
     );
 
-    // The curator and the lead as talky ships them, one knob entry more.
-    let mut h = wired(&[("lead", "path_routes", json!(routes_with_the_fifth()))]);
+    // The curator and the lead as talky ships them, one knob entry more --
+    // the one the written lead cell carries.
+    let routes = read_json(&td.path().join("talky").join("lead").join("config.json"))
+        ["override_params"]["lead"]["path_routes"]
+        .clone();
+    assert!(
+        routes
+            .as_str()
+            .is_some_and(|r| r.split(',').any(|e| e == format!("{STAMP}:{FIFTH}"))),
+        "the written lead sends the stamp {STAMP} to the fifth: {routes}"
+    );
+    let mut h = wired(&[("lead", "path_routes", routes)]);
     announce(
         &mut h,
         MODEL,
@@ -221,12 +242,28 @@ fn gh_d58_proof_a_fifth_model_cell_needs_no_change_in_the_curator() {
             .clone(),
         json!([]),
     );
-    announce(
-        &mut h,
+    // The fifth tells the curator its package over the copied edge of the
+    // composite (`package` -> `in_catalog`), not by a helper (review proof
+    // M1): the headers the router hands on are the ones the curator gets.
+    let told = reach(
+        &t,
         FIFTH,
-        row("test/deep", FIFTH_SOFT, FIFTH_HARD),
-        profile,
-        json!([]),
+        json!({}),
+        json!({"route": "package", "package_of": format!("{BASE}/{FIFTH}")}),
+    );
+    assert_eq!(
+        told.iter().map(|(to, _)| to.as_str()).collect::<Vec<_>>(),
+        vec![format!("{BASE}/curator").as_str()],
+        "the package of the fifth reaches the curator and no other: {told:?}"
+    );
+    assert_eq!(told[0].1.hop.get("route"), Some(&json!("in_catalog")));
+    h.out.clear();
+    h.lane(
+        "in_catalog",
+        Value::Object(told[0].1.context.clone()),
+        Value::Object(told[0].1.hop.clone()),
+        json!({"messages": [], "package": row("test/deep", FIFTH_SOFT, FIFTH_HARD),
+               "window_profile": profile, "system_order": []}),
     );
 
     // A talk turn first, so the wall holds something to cut.
@@ -297,7 +334,6 @@ fn gh_d58_proof_a_fifth_model_cell_needs_no_change_in_the_curator() {
 
     // 2. The composite delivers it to the fifth cell and brings its answer
     //    back as the answer of that target.
-    let t = table(&comp);
     let got = reach(
         &t,
         "curator",
@@ -312,24 +348,32 @@ fn gh_d58_proof_a_fifth_model_cell_needs_no_change_in_the_curator() {
     );
     let ctx = got[0].1.context.clone();
     assert_eq!(ctx.get("curator_target"), Some(&json!(FIFTH)), "{ctx:?}");
-    let back = reach(
-        &t,
-        FIFTH,
-        Value::Object(ctx.clone()),
-        json!({"finish_reason": "stop", "model": "test/deep"}),
-    );
-    assert!(
-        back.iter().any(|(to, hs)| to == &format!("{BASE}/curator")
-            && hs.hop.get("route") == Some(&json!("in_llm"))
-            && hs.context.get("curator_target") == Some(&json!(FIFTH))),
+    let mut said_hop = json!({"finish_reason": "stop", "model": "test/deep"});
+    for (k, v) in obj(warm_usage()) {
+        said_hop[k] = v;
+    }
+    let back = reach(&t, FIFTH, Value::Object(ctx.clone()), said_hop);
+    let home: Vec<&(String, Headers)> = back
+        .iter()
+        .filter(|(to, hs)| {
+            to == &format!("{BASE}/curator")
+                && hs.hop.get("route") == Some(&json!("in_llm"))
+                && hs.context.get("curator_target") == Some(&json!(FIFTH))
+        })
+        .collect();
+    assert_eq!(
+        home.len(),
+        1,
         "the fifth's answer comes back to the curator as its own: {back:?}"
     );
-    answer(
-        &mut h,
-        &call,
-        "stop",
-        warm_usage(),
-        json!([said("The bridge is older than the town.")]),
+    // The answer enters the curator with the headers the edge delivered
+    // (review proof M1), not with a context built by a helper.
+    h.out.clear();
+    h.lane(
+        "in_llm",
+        Value::Object(home[0].1.context.clone()),
+        Value::Object(home[0].1.hop.clone()),
+        json!({"messages": [said("The bridge is older than the town.")]}),
     );
 
     // 3. The answer stands on the wall: the next window carries it.

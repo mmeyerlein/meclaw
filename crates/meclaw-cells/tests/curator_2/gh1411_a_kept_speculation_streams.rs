@@ -518,7 +518,8 @@ fn gh1411_the_spec_partial_reaches_only_the_rim() {
 /// -- a wanted edge change, old (lead alone)
 /// `25f3fa012b2424ae10090e2179ad63485051aef6966f09f25e6c9369d73dcb6f`.
 /// Live and note together (D58 live GH #1482 merged over note GH #1477, master
-/// e587bc0fd): both edge changes at once, old (note alone) `5d2d2a71aa7594e9ea71e63127f6e89492a3696071f8e35b5f26078f8a138d43`.
+/// e587bc0fd): both edge changes at once, old (note alone) `5d2d2a71aa7594e9ea71e63127f6e89492a3696071f8e35b5f26078f8a138d43`,
+/// old (live alone) `87ffc1cabe16f9a9cf3fe1ab2495c2decf77f64e665da6234e93b32cce154cca`.
 /// Re-blessed for D58 moveout (GH #1476, contract points 3 and 4: the kind of
 /// a call travels in `hop.call_kind`, lifted into the context and dropped at
 /// every exit where `bridge` was; the edges onto the quick cells lift
@@ -571,7 +572,8 @@ const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee2
 /// wanted contract change, old
 /// `42e159b0537a6a09eb0d834f5905364b5552f30390f8bd29730e88c50d3745cf`.
 /// Live and note together (D58 live GH #1482 merged over note GH #1477, master
-/// e587bc0fd): both edge changes at once, old (note alone) `c0b8aa535eb07ba63f1d402e9cdea9673bde506edd154a2d901f5c746ecc8ca7`.
+/// e587bc0fd): both edge changes at once, old (note alone) `c0b8aa535eb07ba63f1d402e9cdea9673bde506edd154a2d901f5c746ecc8ca7`,
+/// old (live alone) `004936a4775f0f95cd80fd9833286ca0d750acbed61c2cf8000a6f88d3ee7408`.
 /// Re-blessed for D58 moveout (GH #1476, contract point 3: the hive clears
 /// `call_kind`, the kind of a call it lifts beside `curator_call`, at every
 /// exit where it clears `curator_call`, and the spec tap sets it empty with
@@ -584,7 +586,12 @@ const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee2
 /// edge changes at once, measured on the union, old (moveout)
 /// `f9e1c439f3b62effeebbeb7b976ccdcbf4810b1936ba06c82c18c0e44cbb1f5d`, old (Bundle B)
 /// `39e2786fe27be44f9930bfbd543cfceaf86c59620185325029b324a942e72f63`.
-const CURATOR_SHA256: &str = "e37dba7e0e9eaf11087f9f469a9313a8551d4f4425035880272ae123b92cce83";
+/// Re-blessed for the close of wave d58-2 (judge review M4, live delta m1):
+/// the emit `view` says a target named `frame` or `topic` is refused with
+/// `bad_arguments`, and `note_receipt` names the running session by its handle
+/// `live` instead of the call -- wanted contract text, no edge moved, old
+/// `e37dba7e0e9eaf11087f9f469a9313a8551d4f4425035880272ae123b92cce83`.
+const CURATOR_SHA256: &str = "f28ba076b187976cf76a49727c30a54e47add7969442f29293178d8247fcc32f";
 
 fn sorted(v: &Value) -> Value {
     match v {
@@ -654,13 +661,43 @@ fn gh1411_speculation_off_moves_no_byte() {
         1,
         "talky's one door for an order to feed"
     );
-    let old: Vec<Value> = all
+    let mut old: Vec<Value> = all
         .iter()
         .filter(|e| {
             !new(e) && !package_line(e) && !catalog_ask(e) && !lead_edge(e) && !feed_door(e)
         })
         .cloned()
         .collect();
+    // GH #1497 (review I2 of the prefix strand): the model call edges lift
+    // the curator's refusal (`hop.tools_refused`) into the context for the
+    // dispatcher; that one key is the refusal's, not this pin's.
+    let mut lifted = 0;
+    for e in old.iter_mut() {
+        if let Some(ctx) = e
+            .pointer_mut("/modifier/set_context")
+            .and_then(Value::as_object_mut)
+            && ctx.remove("tools_refused")
+                == Some(json!("has(hop.tools_refused) ? hop.tools_refused : ''"))
+        {
+            lifted += 1;
+        }
+    }
+    assert_eq!(lifted, 8, "the model call edges that lift the refusal");
+    // GH #494 (gate of bundle D): the refusal is talky's interior key, so
+    // every exit edge drops it beside `tools_hinted`; that entry is the
+    // refusal's, not this pin's.
+    let mut dropped = 0;
+    for e in old.iter_mut() {
+        if let Some(keys) = e
+            .pointer_mut("/modifier/delete_context")
+            .and_then(Value::as_array_mut)
+        {
+            let before = keys.len();
+            keys.retain(|k| k != "tools_refused");
+            dropped += before - keys.len();
+        }
+    }
+    assert_eq!(dropped, 39, "the exit edges that drop the refusal");
     assert_eq!(
         digest(&Value::Array(old)),
         TALKY_EDGES_SHA256,

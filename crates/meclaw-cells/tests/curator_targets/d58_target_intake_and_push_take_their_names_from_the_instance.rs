@@ -25,6 +25,19 @@ use curator_hive::*;
 use curator_target::*;
 use meclaw_core::serde_json::{Value, json};
 
+/// GH #1497: the text of the person's newest message as the model cell got
+/// it, when the pending consult's note opens it (the notes block, the tail of
+/// the window -- never a leaf of the system part); `None` otherwise.
+fn pending_note(call: &Msg) -> Option<String> {
+    call.messages()
+        .iter()
+        .rev()
+        .find(|m| m["origin"] == "user")
+        .and_then(|m| m["text"].as_str())
+        .filter(|t| t.contains("A consult is pending (id "))
+        .map(str::to_string)
+}
+
 const TOOL: &str = "ask_helper";
 const SLOT: &str = "errand";
 
@@ -41,14 +54,32 @@ fn call_of(id: &str, name: &str) -> Value {
            "text": json!({"name": name, "arguments": "{\"goal\":\"plan\"}"}).to_string()})
 }
 
+/// The names the call refuses while the errand runs (`hop.tools_refused`,
+/// GH #1497: refused at the call by the composite's dispatcher; the menu the
+/// model is sent keeps the tool, so its deny never names it).
 fn denied(call: &Msg) -> Vec<String> {
-    call.body
+    let menu: Vec<String> = call
+        .body
         .get("tool_scope")
         .and_then(|s| s.get("deny"))
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !menu.iter().any(|n| n == TOOL),
+        "the menu keeps the errand tool, the call refuses it: {menu:?}"
+    );
+    call.hop
+        .get("tools_refused")
+        .and_then(Value::as_str)
+        .map(|s| {
+            s.split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default()
@@ -91,10 +122,16 @@ fn d58_target_the_intake_knows_the_errand_tool_by_its_knob() {
         next.body.get("tool_scope")
     );
     assert!(
-        next.body["system"][SLOT]["pending"]["text"]
-            .as_str()
-            .is_some_and(|t| t.contains("c1")),
+        pending_note(&next).is_some_and(|t| t.contains("c1")),
         "{:?}",
+        next.messages()
+    );
+    assert!(
+        next.body["system"]
+            .get(SLOT)
+            .and_then(|s| s.get("pending"))
+            .is_none(),
+        "the note is no leaf of the system part: {:?}",
         next.body["system"]
     );
     assert!(

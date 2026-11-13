@@ -250,3 +250,57 @@ async fn the_sandbox_leaves_the_process_group_alone() {
     );
     child.terminate(std::time::Duration::from_secs(2)).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sandboxed_child_still_reaches_a_unix_socket_outside_its_view() {
+    // GH #1491, the anchor of the documented limit in `docs/config.en.md`
+    // § `params.sandbox`: Landlock fences file access, not `connect()` on a
+    // pathname Unix socket. Both halves in one child, so "the cage holds"
+    // and "the socket is open" are proven together. When this test turns
+    // red on its second half one day, the documentation changes with it.
+    const T: &str = "a_sandboxed_child_still_reaches_a_unix_socket_outside_its_view";
+    if !have_landlock(T) {
+        return;
+    }
+    let allowed = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    let secret = outside.path().join("secret");
+    std::fs::write(&secret, b"secret").unwrap();
+    let sock = outside.path().join("s");
+    // Bound and listening; the backlog completes the child's connect without
+    // an accept. Held until the child has answered.
+    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind the socket");
+    let mut spec = read_probe_spec(
+        &secret,
+        Some(json!({
+            "trust": "restricted", "network": "allow",
+            "filesystem": {"read": [allowed.path().to_str().unwrap()]}
+        })),
+    );
+    let script = format!(
+        "import sys, json, socket\n\
+         try:\n    open({p}).read()\n    r = 'READ_OK'\n\
+         except Exception as e:\n    r = 'READ_DENIED:' + type(e).__name__\n\
+         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+         try:\n    s.connect({s})\n    c = 'CONNECT_OK'\n\
+         except Exception as e:\n    c = 'CONNECT_DENIED:' + type(e).__name__\n\
+         s.close()\n\
+         sys.stdout.write(json.dumps({{'r': r, 'c': c}}) + '\\n')\n\
+         sys.stdout.flush()\n",
+        p = json!(secret.to_str().unwrap()),
+        s = json!(sock.to_str().unwrap())
+    );
+    spec.args = vec!["-c".into(), script];
+    let mut child = StdioChild::spawn(&spec).expect("spawn");
+    let line = first_frame(&mut child).await;
+    assert!(
+        line.contains("READ_DENIED:PermissionError"),
+        "the cage must hold: no read in a directory the profile never named, got {line:?}"
+    );
+    assert!(
+        line.contains("CONNECT_OK"),
+        "a pathname Unix socket in that same directory stays reachable, got {line:?}"
+    );
+    child.terminate(std::time::Duration::from_secs(2)).await;
+    drop(listener);
+}

@@ -169,6 +169,40 @@ fn gh_d58_recall_the_stamp_carries_the_yes_values() {
         .expect("stamp object")
         .remove("needs_yes");
     assert_eq!(stripped, plain["stamp"], "additive: nothing else moved");
+
+    // The rim copy never carries it (talky README, `stamp_needs_yes`; review
+    // recall M3): with the knob on and `stamp_out` "1" in a round, the stamp
+    // inside has the field, its copy for the rim is the copy of before.
+    let rim_of = |over: &[(&str, Value)]| {
+        let mut doc = in_time(answers(0.91));
+        doc["header"]["context"]["audience_set"] = json!(["e"]);
+        let out = run_cell(ROUTE, over, doc).0;
+        let by = |route: &str| {
+            out.iter()
+                .find(|m| m["header"]["route"] == route)
+                .unwrap_or_else(|| panic!("an emission on {route}: {out:?}"))
+                .clone()
+        };
+        (by("stamp"), by("stamp_out"))
+    };
+    let with_rim = |knob: &str| {
+        vec![
+            ("needs", four_needs()),
+            ("stamp_needs_yes", json!(knob)),
+            ("stamp_out", json!("1")),
+        ]
+    };
+    let (inside, rim) = rim_of(&with_rim("1"));
+    assert!(inside["stamp"].get("needs_yes").is_some(), "{inside}");
+    assert!(
+        rim["stamp"].get("needs_yes").is_none(),
+        "the rim copy carries no yes-values: {rim}"
+    );
+    let (_, rim_off) = rim_of(&with_rim("0"));
+    assert_eq!(
+        rim["stamp"], rim_off["stamp"],
+        "the rim copy with the knob on is the one with it off"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -84,7 +84,9 @@ fn gh_d58_lead_a_rebuild_without_a_lead_reaches_the_ledger() {
         "the summarizer gets its request: {:?}",
         h.stderr
     );
-    let req = h.answer("- person (2026-11-05) garden/state: In bloom.", "stop");
+    // GH #1496: the line is dated with a day its transcript shows.
+    let day = h.transcript_day();
+    let req = h.answer(&format!("- person ({day}) garden/state: In bloom."), "stop");
     let transcript = req.messages()[0]["text"]
         .as_str()
         .expect("a transcript")

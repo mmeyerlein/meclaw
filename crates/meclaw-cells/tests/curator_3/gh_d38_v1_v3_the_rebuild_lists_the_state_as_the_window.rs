@@ -80,7 +80,9 @@ fn rebuild_line(knobs: &str, scope: &str, audience: Option<&str>) -> String {
         json!({"cache_expires_at": "2099-01-01T00:00:00Z"}),
     );
     h.fire(&last_add(&h));
-    let req = h.answer("- person (2026-11-07) x/y: kept. [asserted]", "stop");
+    // GH #1496: the line is dated with a day its transcript shows.
+    let day = h.transcript_day();
+    let req = h.answer(&format!("- person ({day}) x/y: kept. [asserted]"), "stop");
     let transcript = req.messages()[0]["text"]
         .as_str()
         .expect("a transcript")

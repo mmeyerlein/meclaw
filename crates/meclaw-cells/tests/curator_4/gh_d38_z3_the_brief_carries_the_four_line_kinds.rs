@@ -58,13 +58,15 @@ fn the_brief_carries_the_four_line_kinds() {
         short_id(&user("q2")),
         short_id(&said("a2")),
     );
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     let brief = format!(
-        "- topic (2026-11-05): whether the tomatoes survive the frost [#{q2}]\n\
-         - promised (2026-11-05) call/hannah: The companion calls Hannah on Sunday. [#{a1}]\n\
-         - open (2026-11-05) recipe/tomato: The tomato recipe is still to be found. [#{q2}]\n\
-         - dead_end (2026-11-05) offer/crossword: A crossword was offered and not wanted. [#{a2}]\n\
-         - intent (2026-11-05): ask how the tomatoes are doing [#{a2}]\n\
-         - person (2026-11-05) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"
+        "- topic ({day}): whether the tomatoes survive the frost [#{q2}]\n\
+         - promised ({day}) call/hannah: The companion calls Hannah on Sunday. [#{a1}]\n\
+         - open ({day}) recipe/tomato: The tomato recipe is still to be found. [#{q2}]\n\
+         - dead_end ({day}) offer/crossword: A crossword was offered and not wanted. [#{a2}]\n\
+         - intent ({day}): ask how the tomatoes are doing [#{a2}]\n\
+         - person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"
     );
     let req = h.answer(&brief, "stop");
     let prompt = req.body["system"]["instructions"]["text"]

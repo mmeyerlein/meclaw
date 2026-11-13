@@ -569,6 +569,60 @@ fn ledger_tools(root: &std::path::Path, composite: &str) -> Vec<String> {
     names
 }
 
+/// The catalogue row the curator of `composite` holds for its `brain`
+/// (`catalog:brain` in the ledger's state), None while it has none. Read-only
+/// and never created here, like `ledger_tools`.
+fn ledger_catalog_row(root: &std::path::Path, composite: &str) -> Option<String> {
+    let p = root.join(format!("main/{composite}/curator/ledger/cell.db"));
+    if !p.is_file() {
+        return None;
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    conn.query_row(
+        "SELECT value FROM state WHERE key = 'catalog:brain'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|v| !v.is_empty())
+}
+
+/// GH #1497 (setup): the brain's package line reaches the curator before the
+/// first turn, the way the registry's push does in a running colony -- a
+/// params-only message on the composite's `in_model` lane, which the brain
+/// answers with its row on `package` and the curator keeps (`in_catalog`).
+/// The window a round is cut from holds the rows of its first cut (D58 form,
+/// GH #1497); with the row in place before that cut, the round shows the
+/// role's own window (short ids) from its first call on. The hang mark is
+/// the abort, never a verdict.
+async fn await_catalog(h: &ColonyHandle, root: &std::path::Path, composite: &str) {
+    h.send(
+        MessageBuilder::new(Path::new(&format!("/{composite}")))
+            .hop(map(json!({"route": "in_model"})))
+            .body(Body::Inline(json!({"params": {}})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    let desc = format!("{composite}: the curator holds the brain's catalogue row");
+    wait::until_some_with(
+        &desc,
+        || {
+            let row = ledger_catalog_row(root, composite);
+            async move { row.map(|_| ()) }
+        },
+        || async move {
+            format!(
+                "no row yet. Dead letters: {:#?}",
+                unexpected_dead_letters(h).await
+            )
+        },
+    )
+    .await
+}
+
 /// Waits until the history tools (cogny: their family) stand in the curator's
 /// menu -- the boot receipt asks, the curator answers. The hang mark is the
 /// abort, never a verdict.
@@ -695,6 +749,7 @@ async fn a_model_reads_its_own_wall_and_never_another() {
     let (h, mut ports) = boot(&td).await;
     await_menu(&h, td.path(), "talky").await;
     await_menu(&h, td.path(), "cogny").await;
+    await_catalog(&h, td.path(), "talky").await;
 
     h.send(talky_turn(true)).await;
     answer_or_explain(&mut ports.talky, &h, "talky").await;

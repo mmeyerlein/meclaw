@@ -99,7 +99,9 @@ fn state_cond_keeps_the_listed_lines() {
     );
     h.fire(&last_add(&h));
     let a1 = short_id(&said("a1"));
-    let kept = format!("- promised (2026-11-05) call/hannah: {PROMISE} [#{a1}]");
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
+    let kept = format!("- promised ({day}) call/hannah: {PROMISE} [#{a1}]");
     let req = h.answer(&kept, "stop");
     let transcript = req.messages()[0]["text"]
         .as_str()
@@ -138,8 +140,10 @@ fn state_cond_keeps_the_listed_lines() {
     );
     h.fire(&last_add(&h));
     let q3 = short_id(&user("q3"));
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     h.answer(
-        &format!("- person (2026-11-05) garden/state: The garden is in bloom. [asserted] [#{q3}]"),
+        &format!("- person ({day}) garden/state: The garden is in bloom. [asserted] [#{q3}]"),
         "stop",
     );
     let text = stored_text(&h);

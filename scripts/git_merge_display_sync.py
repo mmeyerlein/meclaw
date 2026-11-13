@@ -46,7 +46,10 @@ code cell too and carries its own one-line script: every target in
 config (pinned in `scripts/tests/test_display_sync.py`). After any merge,
 `display_sync.py --check` says whether the copies still agree.
 
-Enable it once per clone -- `strand.sh new` does this for a fresh worktree:
+Enable it by hand, once per clone -- nothing in the kit does it: `strand.sh new`
+installs only the `script-inline` driver (`git_merge_script_inline.py --install`),
+and this one stays off on purpose (OR-58-57, plan u-mergedrv point 3; pinned by
+`test_new_installs_the_script_merge_driver` in `scripts/tests/test_strand_sh.py`):
 
     git config merge.display-sync.name 'display template sync'
     git config merge.display-sync.driver 'python3 scripts/git_merge_display_sync.py %O %A %B'

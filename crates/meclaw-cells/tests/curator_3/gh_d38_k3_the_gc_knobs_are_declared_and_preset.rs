@@ -150,7 +150,7 @@ fn the_switches_resolve_like_every_switch() {
             true,
             2,
         ),
-        (json!({"role": ""}), false, true, 0),
+        (json!({}), false, true, 0),
     ] {
         let (got, err) = policy_scope(over.clone(), "[GC, GC_SCAFFOLD, KEEP_ROUNDS]", Value::Null);
         assert_eq!(

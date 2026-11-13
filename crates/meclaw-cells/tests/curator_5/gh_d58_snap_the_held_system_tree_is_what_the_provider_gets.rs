@@ -30,8 +30,11 @@
 //! the system part by path, the provider gets it in the order of the model's
 //! cell (GH #1468, the reader orders): so this case too puts the entries
 //! together by the rule of that cell, text and tools, and compares them with
-//! the request byte for byte -- and it shows that the order is the
-//! `system_order` of the cell in the composite and not one this file brings:
+//! the request: the text byte for byte, the tools after a JSON round trip on
+//! both sides (`listed_tools`, `provider_tools`), so for the tools the content
+//! and the order are compared, not the raw bytes of the request -- and it
+//! shows that the order is the `system_order` of the cell in the composite
+//! and not one this file brings:
 //! the same entries without that parameter are NOT the provider's text.
 //!
 //! Guarded like every template-reading test (GH #49).
@@ -484,7 +487,9 @@ fn listed_tools(leaves: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
-/// The tool part of a request as the provider read it, one string per tool.
+/// The tool part of a request as the provider read it, one string per tool,
+/// written anew from its JSON like `listed_tools` does: the two compare in
+/// content and order, not in the raw bytes of the request.
 fn provider_tools(req: &OpenAiRequestSnapshot) -> Vec<String> {
     req.tools()
         .cloned()
@@ -749,8 +754,10 @@ async fn several_families_case() {
     // THE STATEMENT, last, so that a run that is not the described one never
     // reaches it: for every call, the entries of `sent`, ordered by the rule
     // of the model's cell with the cell's own `system_order`, are the system
-    // part the provider read -- text and tools --, byte for byte. Every call
-    // is looked at before the verdict.
+    // part the provider read: the text byte for byte; the tools in content
+    // and order, each read as JSON and written anew on both sides
+    // (`listed_tools`, `provider_tools`), not in the raw bytes of the
+    // request. Every call is looked at before the verdict.
     let mut findings = Vec::new();
     for (n, tree) in from_sent.iter().enumerate() {
         let text = system_prompt(&tree.leaves, &order);

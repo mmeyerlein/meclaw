@@ -494,6 +494,156 @@ fn the_dispatcher_declares_the_interim_context_it_reads() {
     assert_eq!(ctx["interim"]["required"], json!(false), "{ctx}");
     assert_eq!(ctx["tools_folded"]["type"], json!("string"), "{ctx}");
     assert_eq!(ctx["tools_folded"]["required"], json!(false), "{ctx}");
+    assert_eq!(ctx["tools_refused"]["type"], json!("string"), "{ctx}");
+    assert_eq!(ctx["tools_refused"]["required"], json!(false), "{ctx}");
+}
+
+/// GH #1497 (review I2 of the strand, K OR-58-197, OR-58-207): while a
+/// session's consult runs, the consult tool stays on the menu (a deny there
+/// changed the menu, which the provider sends before the system part, twice
+/// per consult) and the call that names it anyway is refused HERE:
+/// `context.tools_refused`, lifted by the composite from the curator's hop.
+/// The refused call is not sent -- no second consult -- and it comes back as
+/// a tool error under its own id (`tool_refused`): it is on neither list, so
+/// the fan-in waits for that result and the round re-enters the model, which
+/// speaks to the person instead of leaving the turn silent. A call beside it
+/// travels as before.
+#[test]
+fn a_refused_call_is_not_sent_and_comes_back_as_a_tool_error() {
+    let params = json!({"handoff_tools": ["consult_cogny"]});
+    let bundle = || {
+        brain_doc(
+            "tool_calls",
+            vec![
+                call_turn("c1", "consult_cogny", r#"{"goal":"plan"}"#),
+                call_turn("c2", "weather", "{}"),
+            ],
+        )
+    };
+    let refused_result = |out: &[Value], id: &str| -> Vec<Value> {
+        out.iter()
+            .filter(|m| route_of(m) == "result" && hop_str(m, "tool_call_id") == id)
+            .cloned()
+            .collect()
+    };
+    let mut doc = bundle();
+    doc["header"]["context"]["tools_refused"] = json!("consult_cogny");
+    let (out, err) = emit_and_stderr(params.clone(), doc);
+    assert_eq!(route_of(&out[0]), "calls", "{out:?}");
+    let tools: Vec<String> = out
+        .iter()
+        .filter(|m| route_of(m) == "tool")
+        .map(|m| hop_str(m, "tool_name"))
+        .collect();
+    assert_eq!(
+        tools,
+        vec!["weather".to_string()],
+        "the refused call is not sent, the other one is: {out:?}"
+    );
+    assert_eq!(
+        hop_str(&out[0], "async_calls"),
+        "",
+        "the fan-in waits for the refused call's result: {out:?}"
+    );
+    assert_eq!(
+        hop_str(&out[0], "handoff_calls"),
+        "",
+        "the round it is in re-enters the model: {out:?}"
+    );
+    let res = refused_result(&out, "c1");
+    assert_eq!(res.len(), 1, "one tool error for the refused id: {out:?}");
+    assert_eq!(hop_str(&res[0], "error_code"), "tool_refused", "{res:?}");
+    assert_eq!(turns_of(&res[0])[0]["id"], json!("c1"), "{res:?}");
+    assert!(
+        turns_of(&res[0])[0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("consult_cogny")),
+        "the error names the tool it refused: {res:?}"
+    );
+    assert!(
+        err.contains("c1") && err.contains("refused"),
+        "one stderr line names it: {err}"
+    );
+
+    // Folded, it is refused by its unfolded name.
+    let mut doc = folded(
+        "consult",
+        brain_doc(
+            "tool_calls",
+            vec![call_turn(
+                "c1",
+                "consult",
+                r#"{"op":"cogny","args":{"goal":"plan"}}"#,
+            )],
+        ),
+    );
+    doc["header"]["context"]["tools_refused"] = json!("consult_cogny,consult");
+    let out = emit_with(params.clone(), doc);
+    assert!(
+        out.iter().all(|m| route_of(m) != "tool"),
+        "the folded call is refused too: {out:?}"
+    );
+    assert_eq!(hop_str(&out[0], "handoff_calls"), "", "{out:?}");
+    assert_eq!(refused_result(&out, "c1").len(), 1, "{out:?}");
+
+    // Without a refusal (empty, as the edge sets it between consults) the
+    // consult leaves as the handoff it is.
+    for refused in [json!(""), Value::Null] {
+        let mut doc = bundle();
+        if !refused.is_null() {
+            doc["header"]["context"]["tools_refused"] = refused;
+        }
+        let out = emit_with(params.clone(), doc);
+        let consult: Vec<&Value> = out
+            .iter()
+            .filter(|m| route_of(m) == "tool" && hop_str(m, "tool_name") == "consult_cogny")
+            .collect();
+        assert_eq!(consult.len(), 1, "{out:?}");
+        assert_eq!(hop_str(consult[0], "async"), "1", "{out:?}");
+        assert!(refused_result(&out, "c1").is_empty(), "{out:?}");
+    }
+}
+
+/// GH #1497: the talky lifts the curator's `hop.tools_refused` into the
+/// context on every edge a model call takes, so the dispatcher behind any of
+/// its speaking cells sees the refusal -- and an edge without it, `''`, so a
+/// refusal never outlives the call it was made for.
+#[test]
+fn the_talky_lifts_the_refusal_onto_every_model_call() {
+    let raw = std::fs::read_to_string("../../templates/talky/config.json").expect("talky config");
+    let cfg: Value = meclaw_core::serde_json::from_str(&raw).expect("config json");
+    let mut seen = Vec::new();
+    let mut stack = vec![&cfg];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(o) => {
+                let is_call = o.get("from") == Some(&json!("./curator"))
+                    && o.get("condition")
+                        .and_then(Value::as_str)
+                        .is_some_and(|c| c.contains("hop.route == 'model_call'"));
+                if is_call {
+                    let lift = &o["modifier"]["set_context"]["tools_refused"];
+                    assert_eq!(
+                        lift,
+                        &json!("has(hop.tools_refused) ? hop.tools_refused : ''"),
+                        "{:?}",
+                        o.get("to")
+                    );
+                    seen.push(o["to"].as_str().unwrap_or_default().to_string());
+                }
+                stack.extend(o.values());
+            }
+            Value::Array(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+    seen.sort();
+    seen.dedup();
+    assert_eq!(
+        seen,
+        vec!["./brain", "./quick", "./quick_bridge", "./quick_spec"],
+        "every speaking cell's call edge"
+    );
 }
 
 #[test]

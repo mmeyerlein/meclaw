@@ -64,8 +64,8 @@ pub fn write_json(p: &std::path::Path, v: &Value) {
 /// The shipped template, laid out the way instantiation lays it out: a `ref`
 /// directory is replaced by the referenced template's tree, and the marker's
 /// `override_params` land on the cells they name (GH #140, GH #277) -- which
-/// is how the talky's curator arrives with `role talky` and the cogny's with
-/// `role consult`.
+/// is how the talky's and the cogny's curators arrive with the knobs their
+/// composite sets on them.
 pub fn copy_resolved(src: &std::path::Path, dst: &std::path::Path, depth: usize) {
     assert!(
         depth < 8,

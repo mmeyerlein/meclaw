@@ -55,6 +55,14 @@ fn a_stroke_during_the_first_call(preset: &str) {
         t.h.answer("What was said before, in short.", "stop");
     }
     t.answer(&c0, "tool_calls", json!([tool_call(id, "read_file")]));
+    // Roundpin review M-6: the rebuild wrote its plan while the first call
+    // was out -- without it the second call would keep its window for
+    // nothing.
+    assert!(
+        rebuilt(&t),
+        "{preset}: check of the setup: a plan was written before the second call: {:?}",
+        t.h.stderr
+    );
     let c1 = t.call(
         "t2",
         1,

@@ -11,6 +11,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 
 from pipeline import coverage, graph, store  # noqa: E402
-from scripts.tests import store_isolation  # noqa: E402
+from scripts.tests import kit_time, kit_tree, store_isolation  # noqa: E402
 
 RUNNER = SCRIPTS / "pipeline" / "coverage_runner.sh"
 
@@ -360,6 +361,42 @@ class CoverageTest(unittest.TestCase):
                 "t": {"ignored": False, "filter-match": {"status": "mismatch"}}}}}}
         self.assertEqual(coverage.expected_binaries(doc), ["a"])
 
+    def test_the_map_names_the_binaries_without_runnable_tests(self):
+        # d59-2 V8 (#1487): the two `*_measure` binaries carry ignored tests only;
+        # they stand in no map, and without this list the night was due every
+        # night (Dossier 59 section 7a). A binary that carries only browser locks
+        # is in the list too: the locks are `#[ignore]` in the main nextest call.
+        import argparse
+        from pipeline import browser_cover
+        import gate_plan
+        lock = browser_cover.binary_of(sorted(gate_plan.BROWSER_LOCKS)[0])
+        measure = "meclaw-cells::gh1004_viewport_event_measure"
+        doc = {"rust-suites": {
+            "alpha": {"binary-path": "/t/a", "testcases": {"m::t": {"ignored": False}}},
+            measure: {"binary-path": "/t/m", "testcases": {"measure": {"ignored": True}}},
+            lock: {"binary-path": "/t/l", "testcases": {"t": {"ignored": True}}},
+            "beta::empty": {"binary-path": "/t/e", "testcases": {}}}}
+        self.assertEqual(coverage.binaries_without_tests(doc),
+                         sorted(["beta::empty", lock, measure]))
+        self.assertNotIn("alpha", coverage.binaries_without_tests(doc))
+        objects = self.dir / "list.json"
+        objects.write_text(json.dumps(doc), encoding="utf-8")
+        (self.dir / "profiles").mkdir()
+        out = self.dir / "coverage.json"
+        parser = argparse.ArgumentParser()
+        coverage.register(parser.add_subparsers())
+        args = parser.parse_args(["coverage", "aggregate", "--profiles", str(self.dir / "profiles"),
+                                  "--objects", str(objects), "--root", str(self.dir),
+                                  "--rev", "r1", "--out", str(out)])
+        with mock.patch.object(coverage, "aggregate", return_value=([], [])), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            self.assertEqual(coverage._cmd_coverage(args), 0)
+        cov = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(cov["binaries_without_tests"], sorted(["beta::empty", lock, measure]))
+        # a map built without the list (older maps, the tests' maps) has no field
+        self.assertNotIn("binaries_without_tests",
+                         coverage.coverage_map("r", "lane-a", [], 1.0, 0))
+
     def test_coverage_aggregate_counts_missing_objects_and_export_errors(self):
         fake = self.dir / "llvm-profdata"
         fake.write_text(FAKE_PROFDATA)
@@ -400,14 +437,15 @@ class CoverageTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts)}):
             self.assertEqual(coverage.lane_ssh("lane-b"), "user@lane-b.invalid")
 
-    def test_coverage_build_refuses_the_owner_machine_hard(self):
-        # review I2: `local` and class egon are refused before anything runs.
+    def test_coverage_build_refuses_an_ssh_lane_of_class_egon_hard(self):
+        # review I2, narrowed by d59-2 local V2 (R-59-2): the owner's machine is
+        # reached only through transport `local`; an ssh lane of class egon
+        # would run the map beside the live colony without the local limits.
         hosts = self.dir / "lanes"
-        hosts.write_text("mm local\negon-x user@egon.invalid class=egon\n")
-        self.assertFalse(coverage.lane_up("local"))
+        hosts.write_text("egon-x user@egon.invalid class=egon\n")
         with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts)}), \
                 mock.patch.object(coverage.subprocess, "run") as run:
-            for lane in ("mm", "egon-x"):
+            for lane in ("egon-x",):
                 err = io.StringIO()
                 with self.subTest(lane=lane), mock.patch.object(sys, "stderr", err):
                     self.assertEqual(coverage._cmd_coverage(self.build_args(lane)), 5)
@@ -581,6 +619,7 @@ class CoverageTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts),
                                           "MECLAW_PIPELINE_COVERAGE_DIR": str(maps)}), \
                 mock.patch.object(coverage, "lane_up", return_value=True), \
+                mock.patch.object(coverage, "resolve_rev", return_value="7d75ec7"), \
                 mock.patch.object(coverage.subprocess, "run",
                                   side_effect=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0)), \
                 mock.patch.object(sys, "stdout", io.StringIO()), \
@@ -662,6 +701,7 @@ class CoverageTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts),
                                           "MECLAW_PIPELINE_COVERAGE_DIR": str(maps)}), \
                 mock.patch.object(coverage, "lane_up", return_value=True), \
+                mock.patch.object(coverage, "resolve_rev", return_value="r9"), \
                 mock.patch.object(coverage.subprocess, "run",
                                   side_effect=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0)), \
                 mock.patch.object(sys, "stdout", io.StringIO()), \
@@ -898,6 +938,230 @@ class CarryTest(unittest.TestCase):
             self.assertEqual(coverage._cmd_coverage(args), 0)
         self.assertIn("carried", out.getvalue())
         self.assertTrue(coverage.map_path(self.head, self.maps).is_file())
+
+
+class BuildRevTest(unittest.TestCase):
+    """d59-2 local V1 (O6, GH #1486): `coverage build` measures the commit `--rev`
+    names (default HEAD), resolved once to a full SHA before anything leaves
+    this tree; the map carries that SHA and is never `-dirty`. 25 of 72 maps in
+    the store were `-dirty` (the night builds from the main tree, which always
+    carries untracked files) and no reader ever took them."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = pathlib.Path(tmp.name)
+        self.repo = self.dir / "repo"
+        (self.repo / "scripts").mkdir(parents=True)
+        _git(self.repo, "init", "-q", "-b", "master")
+        _git(self.repo, "config", "user.email", "t@example.invalid")
+        _git(self.repo, "config", "user.name", "t")
+        (self.repo / "a.txt").write_text("one\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "one")
+        self.first = _git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "a.txt").write_text("two\n")
+        _git(self.repo, "commit", "-q", "-am", "two")
+        self.head = _git(self.repo, "rev-parse", "HEAD")
+        # the overlay of the calling tree: a changed tracked file, an untracked one
+        (self.repo / "a.txt").write_text("dirty\n")
+        (self.repo / "untracked.txt").write_text("x\n")
+        self.hosts = self.dir / "lanes"
+        self.hosts.write_text("lane-a user@lane-a.invalid\n")
+        self.out, self.maps = self.dir / "out", self.dir / "maps"
+        self.out.mkdir()
+
+    def build(self, *extra, lane_rev=None, lane="lane-a", env=None):
+        """`coverage build --lane <lane> [extra]` from `self.repo`; the fake lane
+        leaves a GREEN map whose rev is the SHA it was handed (or `lane_rev`).
+        `(rc, lane calls, stderr)`; the environment of each lane call lands in
+        `self.lane_envs`."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        coverage.register(parser.add_subparsers())
+        args = parser.parse_args(["coverage", "build", "--lane", lane, "--out-dir",
+                                  str(self.out), "--db", str(self.dir / "p.db")] + list(extra))
+        lanes = []
+        self.lane_envs = []
+
+        def run(cmd, **kw):
+            if any("coverage_lane.sh" in str(c) for c in cmd):
+                lanes.append(cmd)
+                self.lane_envs.append(kw.get("env"))
+                rev = lane_rev or (cmd[-1] if cmd[-2] == "full" else "probe")
+                cov = coverage.coverage_map(rev, "lane-a", [
+                    {"binary": "alpha", "module": None, "files": {"a.txt": 1}}],
+                    1.0, 1, built_at="2026-11-11T01:00:00Z", expected_ids=["alpha"])
+                (self.out / "coverage.json").write_text(json.dumps(cov), encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, dict({"MECLAW_LANES_FILE": str(self.hosts),
+                                               "MECLAW_PIPELINE_COVERAGE_DIR": str(self.maps)},
+                                              **(env or {}))), \
+                mock.patch.object(coverage, "_SCRIPTS", str(self.repo / "scripts")), \
+                mock.patch.object(coverage, "lane_up", return_value=True), \
+                mock.patch.object(coverage.subprocess, "run", side_effect=run), \
+                mock.patch.object(sys, "stdout", io.StringIO()), \
+                mock.patch.object(sys, "stderr", err):
+            rc = coverage._cmd_coverage(args)
+        return rc, lanes, err.getvalue()
+
+    def installed(self):
+        return sorted(p.name for p in self.maps.iterdir()) if self.maps.is_dir() else []
+
+    def test_build_measures_the_named_commit_and_never_a_dirty_tree(self):
+        # the default is HEAD of the calling tree, as a full SHA -- its overlay stays here
+        rc, lanes, err = self.build()
+        self.assertEqual(0, rc, err)
+        self.assertEqual(["full", self.head], lanes[0][-2:])
+        self.assertEqual(["coverage-%s.json" % self.head], self.installed())
+        # a named rev (short, as a person types it) is resolved before the push
+        rc, lanes, err = self.build("--rev", self.first[:9])
+        self.assertEqual(0, rc, err)
+        self.assertEqual(["full", self.first], lanes[0][-2:])
+        self.assertIn("coverage-%s.json" % self.first, self.installed())
+        self.assertFalse([n for n in self.installed() if "dirty" in n], self.installed())
+
+    def test_build_refuses_a_rev_the_repository_does_not_have(self):
+        for rev in ("0" * 40, "no-such-branch", "HEAD~9"):
+            with self.subTest(rev=rev):
+                rc, lanes, err = self.build("--rev", rev)
+                self.assertEqual(2, rc, err)
+                self.assertEqual([], lanes)
+                self.assertIn("rev %s" % rev, err)
+        self.assertEqual([], self.installed())
+
+    def test_the_browser_probe_refuses_a_rev(self):
+        # the probe measures the tree with its overlay; a rev would claim a commit
+        rc, lanes, err = self.build("--scope", "browser", "--rev", self.head)
+        self.assertEqual(2, rc, err)
+        self.assertEqual([], lanes)
+        self.assertIn("--rev", err)
+
+    def test_a_local_lane_is_not_refused_and_counts_as_up(self):
+        # d59-2 local V2 (R-59-2): the map may be built on the owner's machine
+        # when the host file names the lane with transport `local`; it answers
+        # without ssh. An ssh lane of class egon stays refused (it would run
+        # beside the live colony without the local limits of V3).
+        self.assertIsNone(coverage.lane_refused("local", {"class": "egon"}))
+        self.assertIsNone(coverage.lane_refused("local", {}))
+        self.assertIsNotNone(coverage.lane_refused("user@egon.invalid", {"class": "egon"}))
+        with mock.patch.object(coverage.subprocess, "run") as run:
+            self.assertTrue(coverage.lane_up("local"))
+            self.assertFalse(coverage.lane_up(None))
+        run.assert_not_called()
+        self.hosts.write_text("mm local %s class=egon threads=4 jobs=4\n" % (self.dir / "root"))
+        rc, lanes, err = self.build(lane="mm")
+        self.assertEqual(0, rc, err)
+        self.assertEqual("local", lanes[0][lanes[0].index("scripts/pipeline/coverage_lane.sh") + 1])
+        self.assertEqual(["coverage-%s.json" % self.head], self.installed())
+        cov = json.loads((self.maps / ("coverage-%s.json" % self.head)).read_text())
+        self.assertEqual("mm", cov["runner"])
+
+    def test_the_coverage_run_gets_root_class_and_width_from_the_host_file(self):
+        # d59-2 local V2: without the settings of the host file the engine fell
+        # back to the root /srv/target and class `box`, and `local_needs_egon`
+        # refused the local lane (exit 5) -- the same words as `strand.sh
+        # lane_settings` and `merge._lane`; `mem=` caps the scope (V3 d).
+        root = self.dir / "root"
+        self.hosts.write_text("mm local %s class=egon threads=4 jobs=2 mem=24G\n"
+                              "lane-a user@lane-a.invalid class=lane threads=6\n" % root)
+        rc, lanes, err = self.build(lane="mm")
+        self.assertEqual(0, rc, err)
+        env = self.lane_envs[0]
+        for name, want in (("MECLAW_LANE_ROOT", str(root)), ("MECLAW_LANE_CLASS", "egon"),
+                           ("MECLAW_LANE_NAME", "mm"), ("MECLAW_LANE_JOBS", "2"),
+                           ("MECLAW_LANE_THREADS", "4"), ("MECLAW_LANE_MEM_G", "24")):
+            self.assertEqual(want, (env or {}).get(name), name)
+        # V3 e: 4 h for `local`; the outer `timeout` carries the lock's wait
+        # cap and the scope's margin on top, so the deadline counts from the lock
+        self.assertEqual(["timeout", "--kill-after=60",
+                          str(coverage.LOCAL_DEADLINE_S + coverage.LOCK_WAIT_S + 120 + 200)],
+                         lanes[0][:3])
+        rc, lanes, err = self.build(lane="mm", env={"MECLAW_COVERAGE_DEADLINE_S": "900",
+                                                    "MECLAW_COVERAGE_LOCK_WAIT_S": "30"})
+        self.assertEqual(str(900 + 30 + 120 + 200), lanes[0][2])
+        self.assertEqual("900", self.lane_envs[0]["MECLAW_COVERAGE_DEADLINE_S"])
+        # a build lane: its own name and width, never a root (its engine's
+        # default) -- and the lane deadline of today
+        rc, lanes, err = self.build()
+        self.assertEqual(0, rc, err)
+        env = self.lane_envs[0]
+        self.assertEqual("lane-a", env["MECLAW_LANE_NAME"])
+        self.assertEqual("lane", env["MECLAW_LANE_CLASS"])
+        self.assertEqual("6", env["MECLAW_LANE_THREADS"])
+        self.assertNotIn("MECLAW_LANE_ROOT", env)
+        self.assertEqual(str(coverage.DEADLINE_S), lanes[0][2])
+
+    def test_profiles_are_removed_after_the_aggregate_and_kept_when_it_fails(self):
+        # d59-2 local V4: the profiles are 11 G of a 90 G disk (11.11.); once
+        # `aggregate` has written coverage.json they go (lane and local alike);
+        # a failed aggregate keeps them as before and one line says so
+        tree = self.dir / "host-tree"
+        pipe = tree / "scripts" / "pipeline"
+        pipe.mkdir(parents=True)
+        shutil.copy(SCRIPTS / "pipeline" / "coverage_host.sh", pipe / "coverage_host.sh")
+        kit_tree.seed(tree / "scripts", "pipeline/coverage_host.sh")
+        (pipe / "browser_cover.py").write_text(
+            "import sys\nprint({'select': '-p c1 --test l1', 'filter': 'binary_id(=c1::l1)'}"
+            "[sys.argv[1]])\n")
+        knob = self.dir / "aggregate-fails"
+        (tree / "scripts" / "pipeline.py").write_text(
+            "import os, sys\nif os.path.exists(%r):\n    sys.exit(1)\n"
+            "open(sys.argv[sys.argv.index('--out') + 1], 'w').write('{}')\n" % str(knob))
+        _git(tree, "init", "-q")
+        _git(tree, "config", "user.email", "t@example.invalid")
+        _git(tree, "config", "user.name", "t")
+        (tree / "kept.txt").write_text("x\n")
+        _git(tree, "add", "kept.txt")
+        _git(tree, "commit", "-q", "-m", "c")
+        rev = _git(tree, "rev-parse", "HEAD")
+        bindir, sysroot = self.dir / "bin", self.dir / "sysroot"
+        tools = sysroot / "lib" / "rustlib" / "x86_64-unknown-linux-gnu" / "bin"
+        tools.mkdir(parents=True)
+        bindir.mkdir()
+        for path, body in ((tools / "llvm-profdata", "#!/bin/sh\n"),
+                           (bindir / "rustc", "#!/bin/sh\necho %s\n" % sysroot),
+                           (bindir / "cargo", '#!/bin/sh\n[ "$2" != run ] || '
+                                              ': >"$MECLAW_COVERAGE_PROFILE_DIR/p.profraw"\n')):
+            path.write_text(body)
+            path.chmod(0o755)
+        env = dict(os.environ, PATH="%s:%s" % (bindir, os.environ.get("PATH", "")))
+        profiles = self.dir / "cov" / "profiles"
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                if fails:
+                    knob.write_text("")
+                res = subprocess.run(["bash", str(pipe / "coverage_host.sh"),
+                                      str(self.dir / "cov" / "target"), "600", rev],
+                                     cwd=str(tree), env=env, capture_output=True, text=True,
+                                     timeout=kit_time.HANG)
+                if fails:
+                    self.assertNotEqual(0, res.returncode, res.stderr)
+                    self.assertTrue((profiles / "p.profraw").exists())
+                    self.assertIn("the profiles stay in %s" % profiles, res.stderr)
+                else:
+                    self.assertEqual(0, res.returncode, res.stderr)
+                    self.assertTrue((self.dir / "cov" / "coverage.json").is_file())
+                    self.assertFalse(profiles.exists())
+
+    def test_the_map_is_installed_only_for_the_rev_the_lane_tree_holds(self):
+        # a map that names another commit (or the old `-dirty` form) is never installed
+        for lane_rev in (self.first, self.head + "-dirty"):
+            with self.subTest(lane_rev=lane_rev):
+                rc, lanes, err = self.build(lane_rev=lane_rev)
+                self.assertEqual(2, rc, err)
+                self.assertIn(self.head, err)
+                self.assertEqual([], self.installed())
+        # the host part refuses before its first cargo call when the tree is
+        # not the commit it was handed (scope full)
+        target = self.dir / "cov" / "target"
+        res = subprocess.run(["bash", str(SCRIPTS / "pipeline" / "coverage_host.sh"),
+                              str(target), "60", self.first], cwd=str(self.repo),
+                             capture_output=True, text=True, timeout=kit_time.HANG)
+        self.assertEqual(5, res.returncode, res.stdout + res.stderr)
+        self.assertIn("not commit %s" % self.first, res.stderr)
+        self.assertFalse((self.dir / "cov").exists())
 
 
 if __name__ == "__main__":

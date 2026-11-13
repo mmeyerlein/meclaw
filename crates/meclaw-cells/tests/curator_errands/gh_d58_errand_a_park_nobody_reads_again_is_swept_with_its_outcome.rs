@@ -102,6 +102,13 @@ fn a_park_under_a_call_nobody_curates_again_is_swept_with_its_outcome() {
         "the code stands beside the outcome: {:?}",
         outcome_rows(&h, &e)
     );
+    // Under a call the outcome stands in the session of its `(delegation)`
+    // row, never under the handle of the ended call (`errand_session`).
+    assert_eq!(
+        outcome_sessions(&h, &e),
+        vec![S.to_string()],
+        "the outcome stands in the session of the errand"
+    );
 
     strike(&mut h, start() + Duration::minutes(40), "b2");
     assert_eq!(outcome_rows(&h, &e).len(), 1, "one outcome row in the wall");

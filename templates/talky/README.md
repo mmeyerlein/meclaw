@@ -1,4 +1,4 @@
-# `talky@7.0.0`
+# `talky@7.0.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -79,7 +79,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@7.0.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@7.0.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -717,7 +717,7 @@ GH #1320, the thirty-eighth and thirty-ninth a speculative quick answer's lane `
 into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the seventy that ARE the
 boundary (thirty door edges from `.`, forty leaving towards it, and those are the lanes
 above; D58 note (GH #1477) adds the exit `note_receipt` out of `./curator`; D58 feed (GH #1481) adds the door `in_feed` into `./curator`; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
-and their two refused pushes; #1411 adds the `partial` exits of `./brain` and `./quick`, and GH #1415 the speculation's partial road `./quick_spec -> ./curator` on `in_spec_partial` and its exit `partial` out of `./curator`; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics`, `in_seed_ask` and
+and their two refused pushes; #1411 adds the `partial` exits of `./brain` and `./quick`, and GH #1415 the speculation's partial road `./quick_spec -> ./curator` on `in_spec_partial` and its exit `partial` out of `./curator`; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics` (since D58 judge #1480 `in_part`), `in_seed_ask` and
 `in_seed_line` into `./curator`, the screen model's door `in_model` into `./screen_model` -- and six
 exits -- `seed`, `live_feed` and `propose` out of `./curator`, `verdict` out of `./route` (a rim stamp
 that carries the screen) and out of `./screen_judge` (the second stamp), and the screen model's refused push; the thirteenth is the brief leg's request, GH #834, the fourteenth a refused model
@@ -1024,7 +1024,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@7.0.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@7.0.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

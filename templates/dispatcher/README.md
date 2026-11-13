@@ -1,4 +1,4 @@
-# `dispatcher@1.6.3`
+# `dispatcher@1.6.4`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the
@@ -295,6 +295,21 @@ consult_cogny: when you ask, add a coarse eta -- "seconds" for a lookup,
 
 Nothing in the tree reads the value. It rides on the hop, lands in the message log, and
 the first question it answers is how well the model estimates at all.
+
+### A call its caller refused ([#1497](https://github.com/mmeyerlein/meclaw/issues/1497))
+
+`context.tools_refused` (a comma list, optional) names tools the caller refuses on this
+call. A curator sets it while a session's errand runs -- the tool that would start a second
+one stays on the menu, because the provider sends the menu before the system part and a
+`deny` that came with the errand and went with its answer broke the cached prefix twice --
+and the composite lifts it from the curator's `hop.tools_refused` on every model call edge,
+`''` when the call names none. A call whose name (after unfolding) is on the list is **not
+sent**: no `tool` emission, no second errand. It comes back as a tool error under its own
+id (`error_code` `tool_refused`), like every call this cell answers in place, so the round
+re-enters the model once more and the model speaks to the person -- a talk turn whose only
+call was refused would otherwise stay silent until the running errand answers. One model
+call more; the refusal stays hard. A sentence beside it leaves as interim. One stderr line
+names each refused call. Absent or empty, nothing changes.
 
 ## Three things that belong on an edge, not in here
 

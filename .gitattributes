@@ -38,3 +38,8 @@ templates/talky/schemas/config.json merge=script-inline
 templates/talky/screen_judge/config.json merge=script-inline
 templates/talky/splitter/config.json merge=script-inline
 # script-inline: end
+
+# The names of the curator's lock: one per line, each strand appends its own.
+# Two strands that each add a name merge by keeping both lines; a name twice
+# is red in gh_d58_close_no_locked_name_twice (D58 close, GH #1494).
+crates/meclaw-cells/tests/support/curator_locked_names.txt merge=union

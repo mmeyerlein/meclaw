@@ -3,6 +3,9 @@
 
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
+pub mod gh1512_a_turn_note_reaches_the_target_that_speaks;
 pub mod gh_d58_note_a_discarded_call_uses_up_nothing;
 pub mod gh_d58_note_a_kept_speculation_receipts_what_it_showed;
 pub mod gh_d58_note_a_once_note_left_out_for_space_stays_open;

@@ -6,9 +6,12 @@
 //! brain -- told in `system.consult.pending` "Do not consult again" -- called
 //! `consult_cogny` once more, as a tool call without a word beside it
 //! (production log of 2026-10-20: two consults 9 s apart, 38 s and 42 s each,
-//! the second about 0.09 $). A prompt is a request; the menu is the rule. So
-//! while the session's consult is pending, every speaking call carries
-//! `tool_scope.deny: ["consult_cogny"]`, the pending note stays beside it as
+//! the second about 0.09 $). A prompt is a request; the call is the rule. So
+//! while the session's consult is pending, every speaking call refuses
+//! `consult_cogny` (`hop.tools_refused`; until GH #1497 a `tool_scope.deny`,
+//! which changed the menu -- sent before the system part -- twice per consult
+//! and broke the cached prefix; now the composite's dispatcher answers such a
+//! call without sending it), the pending note stays beside it as
 //! information, and the mark ends with the consult's advice -- or, as a
 //! backstop, at `consult_pending_ms`, now 120 s: the measured consults ran
 //! 38-42 s, and the old 30 s let the mark lapse while the first still ran.
@@ -23,6 +26,28 @@ use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
+
+/// GH #1497: the text of the person's newest message as the model cell got
+/// it, when the pending consult's note opens it (the notes block, the tail of
+/// the window -- never a leaf of the system part); `None` otherwise.
+fn pending_note(call: &Msg) -> Option<String> {
+    call.messages()
+        .iter()
+        .rev()
+        .find(|m| m["origin"] == "user")
+        .and_then(|m| m["text"].as_str())
+        .filter(|t| t.contains("A consult is pending (id "))
+        .map(str::to_string)
+}
+
+/// GH #1497: whether any message of `call` carries the pending note.
+fn told_pending(call: &Msg) -> bool {
+    call.messages().iter().any(|m| {
+        m["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("A consult is pending (id "))
+    })
+}
 
 fn curate_with(h: &mut Hive, turn_id: &str, path: &str, extra_ctx: Value, ask: &str) {
     h.out.clear();
@@ -55,8 +80,8 @@ fn span_ms(mark: &Value) -> i64 {
     (at("until") - at("at")).num_milliseconds()
 }
 
-/// The names the call's `tool_scope` denies.
-fn denied(call: &Msg) -> Vec<String> {
+/// The names the call's `tool_scope` denies -- the menu the model is sent.
+fn menu_denied(call: &Msg) -> Vec<String> {
     call.body
         .get("tool_scope")
         .and_then(|s| s.get("deny"))
@@ -64,6 +89,31 @@ fn denied(call: &Msg) -> Vec<String> {
         .map(|a| {
             a.iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The names the call refuses while the consult runs (`hop.tools_refused`,
+/// the composite lifts it for its dispatcher, which answers such a call
+/// without sending it). GH #1497 (review I2 of the strand): the menu stays --
+/// the provider sends it before the system part, and a deny that came with
+/// the consult and went with the advice broke the cached prefix twice -- so
+/// the menu of every call checked here names neither the consult tool nor
+/// its family.
+fn denied(call: &Msg) -> Vec<String> {
+    let menu = menu_denied(call);
+    assert!(
+        !menu.iter().any(|n| n == "consult_cogny" || n == "consult"),
+        "the menu never denies the consult tool, the call refuses it: {menu:?}"
+    );
+    call.hop
+        .get("tools_refused")
+        .and_then(Value::as_str)
+        .map(|s| {
+            s.split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default()
@@ -124,10 +174,13 @@ fn a_pending_consult_takes_the_consult_tool_away() {
         during.body.get("tool_scope")
     );
     assert!(
-        during.body["system"]["consult"]["pending"]["text"]
-            .as_str()
-            .is_some_and(|t| t.contains(&cid)),
+        pending_note(&during).is_some_and(|t| t.contains(&cid)),
         "the pending note stays as information: {:?}",
+        during.messages()
+    );
+    assert!(
+        during.body["system"]["consult"].get("pending").is_none(),
+        "the note is no leaf of the system part: {:?}",
         during.body["system"]
     );
 
@@ -178,8 +231,9 @@ fn a_pending_consult_takes_the_consult_tool_away() {
         lapsed.body.get("tool_scope")
     );
     assert!(
-        lapsed.body["system"]["consult"].get("pending").is_none(),
-        "{:?}",
+        !told_pending(&lapsed) && lapsed.body["system"]["consult"].get("pending").is_none(),
+        "{:?} {:?}",
+        lapsed.messages(),
         lapsed.body["system"]
     );
 }
@@ -211,8 +265,14 @@ fn a_channel_scope_keeps_its_own_deny_beside_the_consult_tool() {
     let during = brain_call(&h);
     assert_eq!(
         denied(&during),
-        vec!["weather".to_string(), "consult_cogny".to_string()],
+        vec!["consult_cogny".to_string()],
         "{:?}",
+        during.hop
+    );
+    assert_eq!(
+        menu_denied(&during),
+        vec!["weather".to_string()],
+        "the channel's own deny stays on the menu, alone: {:?}",
         during.body.get("tool_scope")
     );
 }
@@ -261,10 +321,13 @@ fn a_consult_the_brain_starts_itself_takes_the_tool_away_too() {
         during.body.get("tool_scope")
     );
     assert!(
-        during.body["system"]["consult"]["pending"]["text"]
-            .as_str()
-            .is_some_and(|t| t.contains("c1")),
+        pending_note(&during).is_some_and(|t| t.contains("c1")),
         "{:?}",
+        during.messages()
+    );
+    assert!(
+        during.body["system"]["consult"].get("pending").is_none(),
+        "the note is no leaf of the system part: {:?}",
         during.body["system"]
     );
 
@@ -301,8 +364,9 @@ fn the_brain_s_consult_never_overwrites_a_standing_mark() {
         .to_string();
     let before = pending(&h);
 
-    // A brain call that consults anyway (a menu without the deny, e.g. an
-    // older channel) leaves the curator's mark as it stands.
+    // A brain call that consults anyway (the menu keeps the tool since GH
+    // #1497; its dispatcher refuses the call, an older one sends it) leaves
+    // the curator's mark as it stands.
     curate_with(&mut h, "t2", "talk", json!({}), "and tomorrow?");
     let call = brain_call(&h);
     h.tap(

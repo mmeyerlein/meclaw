@@ -44,7 +44,6 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 // ═══════════════════════════════════════════════════════════════ the template
@@ -461,9 +460,15 @@ async fn read_cycles(
             .build(),
     )
     .await;
-    let m = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    let hang = meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG);
+    let m = tokio::time::timeout(hang, rx.recv())
         .await
-        .expect("the door answers within the failure marker")
+        .unwrap_or_else(|_| {
+            panic!(
+                "HANG: the door's answer to the read {tag} (waited {} s)",
+                hang.as_secs()
+            )
+        })
         .expect("the capture channel stays open");
     let body = match &m.body {
         Body::Inline(v) => v.clone(),

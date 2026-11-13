@@ -8,8 +8,10 @@
 //! window as the errand and its own `consult_id`, talky hands it out on
 //! `consult`, the assistant routes it to cogny like the tool call, and the
 //! answer comes back on `in_advice` as today. Until it does, the session's
-//! speaking calls carry `system.consult.pending` (#1198); the round that
-//! answers the consult leaves on `brain` and takes the mark down.
+//! speaking calls carry the `consult.pending` note (#1198; since GH #1497 in
+//! the notes block that opens the person's newest message, never in the
+//! system part); the round that answers the consult leaves on `brain` and
+//! takes the mark down.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -20,6 +22,28 @@ use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
+
+/// GH #1497: the text of the person's newest message as the model cell got
+/// it, when the pending consult's note opens it (the notes block, the tail of
+/// the window -- never a leaf of the system part); `None` otherwise.
+fn pending_note(call: &Msg) -> Option<String> {
+    call.messages()
+        .iter()
+        .rev()
+        .find(|m| m["origin"] == "user")
+        .and_then(|m| m["text"].as_str())
+        .filter(|t| t.contains("A consult is pending (id "))
+        .map(str::to_string)
+}
+
+/// GH #1497: whether any message of `call` carries the pending note.
+fn told_pending(call: &Msg) -> bool {
+    call.messages().iter().any(|m| {
+        m["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("A consult is pending (id "))
+    })
+}
 
 fn curate_with(h: &mut Hive, turn_id: &str, path: &str, extra_ctx: Value, ask: &str) {
     h.out.clear();
@@ -104,10 +128,14 @@ fn a_complex_turn_goes_straight_to_cogny() {
     curate_with(&mut h, "t2", "", json!({}), "are you still there?");
     let brain = h.routed("brain");
     assert_eq!(brain.len(), 1, "a plain turn meanwhile: {:?}", h.out);
-    let pending = &brain[0].body["system"]["consult"]["pending"]["text"];
     assert!(
-        pending.as_str().unwrap_or("").contains(&cid),
+        pending_note(&brain[0]).is_some_and(|t| t.contains(&cid)),
         "the voice model is told the consult is pending: {:?}",
+        brain[0].messages()
+    );
+    assert!(
+        brain[0].body["system"]["consult"].get("pending").is_none(),
+        "the note is no leaf of the system part: {:?}",
         brain[0].body["system"]
     );
 
@@ -121,8 +149,9 @@ fn a_complex_turn_goes_straight_to_cogny() {
     let back = h.routed("brain");
     assert_eq!(back.len(), 1, "the answer is spoken, not consulted again");
     assert!(
-        back[0].body["system"]["consult"].get("pending").is_none(),
-        "the answer takes the pending mark down: {:?}",
+        !told_pending(&back[0]) && back[0].body["system"]["consult"].get("pending").is_none(),
+        "the answer takes the pending mark down: {:?} {:?}",
+        back[0].messages(),
         back[0].body["system"]
     );
 }
@@ -172,8 +201,9 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
     let brain = h.routed("brain");
     assert_eq!(brain.len(), 1, "a plain turn: {:?} {:?}", h.out, h.stderr);
     assert!(
-        brain[0].body["system"]["consult"].get("pending").is_none(),
-        "past its until the voice model is not told of the consult: {:?}",
+        !told_pending(&brain[0]) && brain[0].body["system"]["consult"].get("pending").is_none(),
+        "past its until the voice model is not told of the consult: {:?} {:?}",
+        brain[0].messages(),
         brain[0].body["system"]
     );
     assert!(

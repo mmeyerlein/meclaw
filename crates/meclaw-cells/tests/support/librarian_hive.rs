@@ -641,7 +641,7 @@ pub fn table(root: &std::path::Path, sql: &str) -> Vec<Row> {
     let Ok(mut st) = conn.prepare(sql) else {
         return Vec::new();
     };
-    let names: Vec<String> = st.column_names().iter().map(|c| c.to_string()).collect();
+    let names: Vec<String> = st.column_names().map(|c| c.to_string()).collect();
     let out: Vec<Row> = st
         .query_map([], |r| {
             Ok(names

@@ -432,6 +432,66 @@ class LeaseTest(MergeCase):
             other.close()
         self.assertEqual("S1", row.get("holder"), "the committed lease is the merge's")
 
+    class _LockedRelease:
+        """The fixture's connection, but the release statements of the tree lease
+        are refused as locked `refuse` times (`None`: always)."""
+
+        def __init__(self, db, refuse):
+            self._db, self.refuse, self.refused = db, refuse, 0
+
+        def execute(self, sql, *args):
+            if sql.lstrip().startswith(("DELETE FROM leases", "UPDATE leases SET holder=''")) \
+                    and (self.refuse is None or self.refused < self.refuse):
+                self.refused += 1
+                raise sqlite3.OperationalError("database is locked")
+            return self._db.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._db, name)
+
+    def test_a_locked_store_at_the_end_still_releases_the_tree_lease(self):
+        # d58-2 Z (#1500): the close-kit merge died on `database is locked` in its
+        # `finally`; the tree lease stood for its TTL and the next run read
+        # `already_merging` from it (OR-58-187). The release outlasts the lock.
+        f = self.f
+        self.a_strand()
+        db = self._LockedRelease(f.db, 2)
+        with mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.001, 0.002)):
+            out, err = io.StringIO(), io.StringIO()
+            rc = merge.merge(["S1"], start=f.root, wave=WAVE, db=db, out_=out, err=err)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertEqual(2, db.refused)
+        self.assertIsNone(f.lease(), "the tree lease is released")
+        self.assertNotIn("NOT RELEASED", err.getvalue())
+
+    def test_a_store_locked_for_good_says_how_to_free_the_lease(self):
+        f = self.f
+        self.a_strand()
+        db = self._LockedRelease(f.db, None)
+        # Fix round 1 (review M1): the wait limit counts on an injected clock
+        # that moves only by the pauses of the retry -- never on the wall.
+        clock = kit_time.FakeClock()
+        real = merge.release_tree_surely
+        with mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.25, 0.25)), \
+                mock.patch.dict(os.environ, {"MECLAW_TREE_RELEASE_WAIT_SECS": "1"}), \
+                mock.patch.object(merge, "release_tree_surely",
+                                  lambda *a, **kw: real(*a, clock=clock, **kw)):
+            out, err = io.StringIO(), io.StringIO()
+            rc = merge.merge(["S1"], start=f.root, wave=WAVE, db=db, out_=out, err=err)
+        self.assertEqual(rc, 0, err.getvalue())
+        # Tries at 0, 0.25, 0.5, 0.75 and 1.0 s of the injected clock; the
+        # fifth reaches the limit and ends the wait.
+        self.assertEqual(5, db.refused, "the release was retried until the limit")
+        self.assertIn("merge: the tree lease NOT RELEASED", err.getvalue())
+        self.assertEqual("S1", f.lease()["holder"])
+        said = err.getvalue()
+        self.assertIn("tree lease NOT RELEASED", said)
+        cmd = said.split("Free it by hand:\n", 1)[1].strip().splitlines()[0]
+        self.assertIn("merge.release_tree(", cmd)
+        # The command it names frees the lease once the store answers again.
+        subprocess.run(["bash", "-c", cmd], check=True, capture_output=True, text=True)
+        self.assertIsNone(f.lease(), cmd)
+
     def test_release_offers_with_short_ttl(self):
         f = self.f
         self.a_strand()
@@ -2659,6 +2719,54 @@ class TrackedPlansTest(MergeCase):
         self.assertEqual(version_of(f.root, "a"), "1.1.0")
         self.assertIn("# Report S1", read(f.root, "plans/%s/berichte/S1.md" % WAVE))
         self.assertEqual(git(f.root, "status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_an_issue_an_open_strand_carries_only_on_its_branch_stays_open(self):
+        """d58-2 Z (#1500): close-kit closed #1494 with its merge while the strand
+        `close`, still open, carried it -- its strand file lived only on its
+        branch (plans tracked), so the main tree's `straenge/` never named it.
+        A strand file on an open branch of the wave counts as a carrier; once
+        that branch is in master, the issue closes with the next merge."""
+        f = self.f
+        self.a_strand(in_branch=True)
+        s2 = f.strand("S2", 101, {"templates/b/bar.txt": "bar\n"}, in_branch=True)
+        rc, out, err = f.merge(["S1"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([], [c for c in f.gh_calls() if c[:2] == ["issue", "close"]],
+                         "#101 stays open while S2 carries it")
+        self.assertIn("close: #101 left open -- the wave issue (strand S2 carries it too)", out)
+        # Fail-safe kept: a strand whose branch is gone counts as no carrier.
+        shared = merge.wave_issues(f.root, f.wdir, "S1", (), ["101"])
+        self.assertEqual({"101": "S2"}, shared)
+        git(f.root, "worktree", "remove", "--force", s2["wt"])
+        git(f.root, "branch", "-D", "welle-test/S2")
+        self.assertEqual({}, merge.wave_issues(f.root, f.wdir, "S1", (), ["101"]))
+
+    def test_a_strand_branch_already_in_master_carries_nothing_from_its_branch(self):
+        f = self.f
+        s = self.a_strand(in_branch=True)
+        rc, _, err = f.merge(["S1"], close=False)
+        self.assertEqual(rc, 0, err)
+        # Its strand file is on master now; the branch head is in master. A
+        # strand S3 on a branch of its own with the same issue reads S1 from the
+        # main tree (the wave issue, as before), never twice from the branch.
+        self.assertTrue(merge.on_branch(f.root, "master",
+                                        "plans/%s/straenge/S1.json" % WAVE), s["tip"])
+        self.assertEqual({"101": "S1"}, merge.wave_issues(f.root, f.wdir, "S3", (), ["101"]))
+
+    def test_a_merged_branch_whose_strand_file_left_the_main_tree_carries_nothing(self):
+        """Fix round 1 (review M2): the branch check reads a branch only while
+        its head is not in master. S1 is merged, its branch stays, and the main
+        tree no longer holds its strand file: the branch must not carry #101."""
+        f = self.f
+        self.a_strand(in_branch=True)
+        rc, _, err = f.merge(["S1"], close=False)
+        self.assertEqual(rc, 0, err)
+        rel = "plans/%s/straenge/S1.json" % WAVE
+        git(f.root, "rm", "-q", rel)
+        git(f.root, "commit", "-q", "-m", "drop the strand file of S1")
+        self.assertFalse(os.path.exists(os.path.join(f.root, rel)))
+        self.assertIn("welle-test/S1", git(f.root, "branch", "--list", "welle-test/S1"))
+        self.assertEqual({}, merge.wave_issues(f.root, f.wdir, "S3", (), ["101"]))
 
     def test_merge_sets_aside_byte_identical_untracked_copy(self):
         f = self.f

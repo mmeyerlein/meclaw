@@ -116,7 +116,7 @@ fn the_budget_knob_resolves_like_every_knob() {
         (curator_profiles::set_knobs("coding", json!({})), 0),
         (curator_profiles::set_knobs("research", json!({})), 0),
         (curator_profiles::set_knobs("quick", json!({})), 0),
-        (json!({"role": ""}), 0),
+        (json!({}), 0),
     ] {
         let (got, err) = policy_scope(over.clone(), "KEEP_RECENT_TOKENS", Value::Null);
         assert_eq!(got, json!(want), "{over}: {err}");

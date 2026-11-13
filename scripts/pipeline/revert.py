@@ -287,7 +287,7 @@ def revert(target, reason, repo="meclaw", start=None, wave=None, host=None, db=N
     finally:
         if cand:
             m.close_candidate(root, cand)
-        m.release_tree(db, repo, holder)
+        m.release_tree_surely(db, repo, holder, err, who="revert")
         m.untrap_term(term)
         if own_db:
             store.close(db)

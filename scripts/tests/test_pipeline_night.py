@@ -46,7 +46,10 @@ from scripts.pipeline import night  # noqa: E402
 # No push from this module may reach the metrics or Grafana target of the caller.
 _ENV = mock.patch.dict(os.environ, {"MECLAW_PIPELINE_METRICS_URL": "", "MECLAW_GRAFANA_URL": "",
                                     "GRAFANA_ADMIN_PASS": "",
-                                    "MECLAW_PIPELINE_NIGHT": "0"})
+                                    "MECLAW_PIPELINE_NIGHT": "0",
+                                    # d59-2 V6: the host file names the local lane; the
+                                    # machine's own file never reaches a test
+                                    "MECLAW_LANES_FILE": os.devnull})
 
 
 def setUpModule():
@@ -355,8 +358,8 @@ class ReportTest(unittest.TestCase):
         # The subprocess inherits the night's store, never the default one (review W11 M3),
         # and names the lane that is on (review Z-I gap I2: without it the build always
         # ended in exit 3 coverage_skipped_no_lane).
-        self.assertEqual(cov[0][-6:], ["coverage", "build", "--lane", "lane-a",
-                                       "--db", str(night.db_path(db))])
+        self.assertEqual(cov[0][-8:], ["coverage", "build", "--lane", "lane-a",
+                                       "--rev", "master", "--db", str(night.db_path(db))])
         self.assertFalse(any("cargo" in a for c in fake.calls for a in c))
         text = (tmp / "nacht" / "2026-10-08.md").read_text()
         self.assertIn("built on lane lane-a", text)
@@ -558,6 +561,152 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(night.annotate("2026-10-07", "x", 3, 1), "skipped")
 
 
+class NightLocalBuildTest(unittest.TestCase):
+    """d59-2 V6 (#1487): with no build lane on, the night builds the due map on
+    the local lane of the host file, `--rev master`; a build lane that is on
+    goes first, and one the store calls on but that is not up falls back to the
+    local lane in the same night. No test ever starts a build: the runner is fake."""
+
+    LOCAL = "mm-local"
+
+    def _night(self, results, lane_on=False, local=True, maps=None, journal_not_up=False):
+        """The report text and the coverage argvs; `results` maps a lane to `(rc, stdout, stderr)`.
+        `journal_not_up`: the fake journals `coverage_skipped_no_lane` on a build lane's
+        exit 3, as `coverage build` does; `self._open_rules` holds the open findings after."""
+        from scripts.pipeline import coverage
+        db, tmp = _store(self)
+        hosts = tmp / "lanes"
+        hosts.write_text(("%s local class=egon\n" % self.LOCAL if local else "")
+                         + "lane-a lane-a.example class=build\n")
+        if lane_on:
+            db.execute("INSERT INTO runners (name, state) VALUES ('lane-a', 'on')")
+        db.execute("INSERT INTO runners (name, state, transport, class)"
+                   " VALUES (?, 'idle', 'local', 'egon')", (self.LOCAL,))
+        _run(db, "run-1", DAY + "T12:00:00Z", "GREEN", [("fmt", "GREEN", 5, 0, {})])
+        events.emit(db, "merge_done", "status", {"merge": "m-1", "strand": "s", "base": "b"},
+                    at=DAY + "T12:30:00Z")
+        calls = []
+
+        def fake(argv, **kw):
+            if "coverage" in argv:
+                calls.append(list(argv))
+                lane = argv[argv.index("--lane") + 1]
+                rc, out, err = results.get(lane, (0, "", ""))
+                if journal_not_up and rc == 3 and lane != self.LOCAL:
+                    events.emit(db, "process_finding", "finding",
+                                {"rule": "coverage_skipped_no_lane", "subject": lane,
+                                 "value": 0, "threshold": 1, "since": DAY + "T12:30:00Z"})
+                return subprocess.CompletedProcess(argv, rc, out, err)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        env = {"MECLAW_LANES_FILE": str(hosts)}
+        if maps:
+            env["MECLAW_PIPELINE_COVERAGE_DIR"] = str(maps)
+        with mock.patch.object(night, "coverage_cli", lambda: REPO / "scripts/pipeline.py"), \
+                mock.patch.object(coverage, "carry",
+                                  lambda repo, **kw: (None, "the diff selects tests: all()")), \
+                mock.patch.dict(os.environ, env):
+            path = night.report(db, now=NOW, out_root=tmp / "nacht", runner=fake, date=DAY)
+        findings = [json.loads(r[0]).get("rule") for r in db.execute(
+            "SELECT data FROM journal WHERE event='process_finding'")]
+        self._open_rules = [f.get("rule") for f in retro.open_findings(db)]
+        self._notes = [json.loads(r[0]).get("note") for r in db.execute(
+            "SELECT data FROM journal WHERE event='finding_resolved'")]
+        return path.read_text(), calls, findings
+
+    @staticmethod
+    def _lanes(calls):
+        return [c[c.index("--lane") + 1] for c in calls]
+
+    def test_night_builds_locally_when_no_build_lane_is_on(self):
+        text, calls, findings = self._night({})
+        self.assertEqual(self._lanes(calls), [self.LOCAL])
+        self.assertIn("built on lane %s (local" % self.LOCAL, text)
+        self.assertNotIn("coverage_skipped_no_lane", findings)
+
+    def test_night_prefers_a_build_lane_that_is_on(self):
+        text, calls, _findings = self._night({}, lane_on=True)
+        self.assertEqual(self._lanes(calls), ["lane-a"])
+        self.assertIn("built on lane lane-a", text)
+        self.assertNotIn(self.LOCAL, text)
+
+    def test_night_passes_master_as_the_rev_of_the_build(self):
+        for lane_on in (True, False):
+            _text, calls, _findings = self._night({}, lane_on=lane_on)
+            self.assertEqual(1, len(calls))
+            argv = calls[0]
+            at = argv.index("--rev")
+            self.assertEqual(argv[at + 1], "master")
+            self.assertEqual(argv[argv.index("build") + 1:argv.index("build") + 5],
+                             ["--lane", "lane-a" if lane_on else self.LOCAL, "--rev", "master"])
+
+    def test_night_journals_skipped_no_lane_only_without_a_local_lane(self):
+        text, calls, findings = self._night({}, local=False)
+        self.assertEqual(calls, [])
+        # d59-2 fix round (review M2): the line names the build lane and the local one
+        self.assertIn("skipped, no build lane on and no local lane in the host file", text)
+        self.assertEqual(findings.count("coverage_skipped_no_lane"), 1)
+        text, calls, findings = self._night({}, local=True)
+        self.assertEqual(self._lanes(calls), [self.LOCAL])
+        self.assertNotIn("coverage_skipped_no_lane", findings)
+
+    def test_night_falls_back_to_the_local_lane_when_the_build_lane_is_not_up(self):
+        not_up = (3, "", "coverage: lane lane-a is not up -- skipped (process_finding "
+                         "coverage_skipped_no_lane)\n")
+        text, calls, _findings = self._night({"lane-a": not_up}, lane_on=True)
+        self.assertEqual(self._lanes(calls), ["lane-a", self.LOCAL])
+        line = [ln for ln in text.splitlines() if "lane-a is not up" in ln][0]
+        self.assertIn("skipped on lane lane-a (exit 3)", line)   # both places in one line
+        self.assertIn("built on lane %s (local" % self.LOCAL, line)
+        # without a local lane the night says what the lane said, as before
+        text, calls, _findings = self._night({"lane-a": not_up}, lane_on=True, local=False)
+        self.assertEqual(self._lanes(calls), ["lane-a"])
+        self.assertIn("skipped on lane lane-a (exit 3)", text)
+
+    def test_night_reports_no_skipped_no_lane_when_the_local_lane_takes_over(self):
+        # d59-2 fix round (review M5): the build lane's own `coverage build` journals
+        # coverage_skipped_no_lane on exit 3; the local lane built, so it is no open finding
+        not_up = (3, "", "coverage: lane lane-a is not up -- skipped (process_finding "
+                         "coverage_skipped_no_lane)\n")
+        text, calls, _findings = self._night({"lane-a": not_up}, lane_on=True,
+                                             journal_not_up=True)
+        self.assertEqual(self._lanes(calls), ["lane-a", self.LOCAL])
+        self.assertIn("built on lane %s (local" % self.LOCAL, text)
+        self.assertNotIn("coverage_skipped_no_lane", self._open_rules)
+        # without a local lane the finding of the lane stays open, as before
+        self._night({"lane-a": not_up}, lane_on=True, local=False, journal_not_up=True)
+        self.assertIn("coverage_skipped_no_lane", self._open_rules)
+        # d59-2 fix round 2 (delta review I1): the local build fails too (cargo lock
+        # busy, exit 3) -- nobody built, so the finding stays open and no note claims a take-over
+        busy = (3, "", "coverage: lock-wait 3600s\ncoverage: lock busy after 3600s\n")
+        text, calls, _findings = self._night({"lane-a": not_up, self.LOCAL: busy},
+                                             lane_on=True, journal_not_up=True)
+        self.assertEqual(self._lanes(calls), ["lane-a", self.LOCAL])
+        self.assertIn("skipped, cargo lock busy on lane %s (local, exit 3)" % self.LOCAL, text)
+        self.assertIn("coverage_skipped_no_lane", self._open_rules)
+        self.assertNotIn("the local lane took over the coverage build", self._notes)
+
+    def test_night_reports_a_busy_cargo_lock_as_skipped(self):
+        busy = (3, "", "coverage: lock-wait 3600s\ncoverage: lock busy after 3600s\n")
+        text, calls, findings = self._night({self.LOCAL: busy})
+        self.assertEqual(self._lanes(calls), [self.LOCAL])
+        self.assertIn("skipped, cargo lock busy on lane %s (local, exit 3): "
+                      "coverage: lock busy after 3600s" % self.LOCAL, text)
+        self.assertNotIn("built on lane", text)
+        self.assertNotIn("coverage_skipped_no_lane", findings)   # a lane was there
+
+    def test_night_report_names_place_and_minutes_of_a_local_build(self):
+        db_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(db_tmp.cleanup)
+        maps = pathlib.Path(db_tmp.name)
+        cov = {"rev": "r1", "runner": self.LOCAL, "secs": 2461.0, "parts": [],
+               "host": {"threads": 4, "lock_wait_s": 312}}
+        (maps / "coverage-r1.json").write_text(json.dumps(cov))
+        built = json.dumps({"rev": "r1", "runner": self.LOCAL, "secs": 2461.0, "tests": 3,
+                            "files": 0, "edges": 0, "granularity": "binary"})
+        text, _calls, _findings = self._night({self.LOCAL: (0, built + "\n", "")}, maps=maps)
+        self.assertIn("built on lane %s (local, 41 min, lock-wait 5 min)" % self.LOCAL, text)
+
+
 def _meta(*test_names):
     targets = [{"kind": ["lib"], "name": "alpha"}] + [{"kind": ["test"], "name": n}
                                                       for n in test_names]
@@ -578,6 +727,21 @@ class CoverageBinariesTest(unittest.TestCase):
     def test_a_folded_harness_is_a_change(self):
         self.assertEqual((True, ["alpha::a1"], ["alpha::misc"]),
                          night.binaries_changed(self.MAP, _meta("misc")))
+
+    def test_a_binary_without_runnable_tests_is_no_changed_binary_list(self):
+        # d59-2 V8 (#1487): a `*_measure` binary has ignored tests only, stands in no
+        # map and made the night due every night (Dossier 59 section 7a)
+        cov = dict(self.MAP, binaries_without_tests=["alpha::m1"])
+        self.assertEqual((False, [], []), night.binaries_changed(cov, _meta("a1", "m1")))
+        # a map without the field behaves as before
+        self.assertEqual((True, [], ["alpha::m1"]),
+                         night.binaries_changed(self.MAP, _meta("a1", "m1")))
+
+    def test_a_new_harness_beside_the_binaries_without_tests_is_still_new(self):
+        # d59-2 fix round (review M4): only the listed binaries leave `new`
+        cov = dict(self.MAP, binaries_without_tests=["alpha::m1"])
+        self.assertEqual((True, [], ["alpha::misc"]),
+                         night.binaries_changed(cov, _meta("a1", "m1", "misc")))
 
     def test_without_map_or_metadata_nothing_is_claimed(self):
         self.assertEqual((False, [], []), night.binaries_changed(None, _meta("a1")))

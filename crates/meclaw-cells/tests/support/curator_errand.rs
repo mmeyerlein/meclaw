@@ -220,6 +220,19 @@ pub fn outcome_rows(h: &Hive, e: &Errand) -> Vec<String> {
     .collect()
 }
 
+/// The sessions the wall rows of kind `outcome` under the turn of `e` stand
+/// in, oldest first: `outcome_rows` reads the turn alone, and a row filed
+/// under the wrong session would pass it (review errand m2).
+pub fn outcome_sessions(h: &Hive, e: &Errand) -> Vec<String> {
+    h.rows(&format!(
+        "SELECT session_id FROM wall WHERE kind = 'outcome' AND turn_id = '{}' ORDER BY seq",
+        e.inner
+    ))
+    .into_iter()
+    .map(|r| r[0].as_str().unwrap_or("").to_string())
+    .collect()
+}
+
 /// Every wall row of kind `outcome` the ledger holds.
 pub fn all_outcome_rows(h: &Hive) -> usize {
     h.rows("SELECT seq FROM wall WHERE kind = 'outcome'").len()

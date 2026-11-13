@@ -401,9 +401,37 @@ def _git_clean_env():
     return env
 
 
-def check_end_tip_coverage(root, out, map_dir=None):
+def _build_hint(db_path):
+    """The command that builds the end-tip map: on a build lane that is on, else
+    on the local lane of the host file (d59-2 V7, the night's order)."""
+    from . import night  # noqa: PLC0415
+    lane = None
+    try:
+        db = store.open_ro(db_path)
+    except Exception:  # noqa: BLE001 -- no store: the local lane, or a placeholder
+        db = None
+    if db is not None:
+        try:
+            lane = night.lane_name(db)
+        except Exception:  # noqa: BLE001
+            lane = None
+        finally:
+            store.close(db)
+    return "pipeline coverage build --lane %s --rev master" % (
+        lane or night.local_lane() or "<lane>")
+
+
+def check_end_tip_coverage(root, out, map_dir=None, db_path=None, dry_run=False):
     """`(ok, verdict)` of the coverage map on the end tip (`master` of `root`).
-    Fail-closed: only a GREEN map of exactly that rev passes."""
+    Fail-closed: only a GREEN map of exactly that rev passes.
+
+    No map on the end tip: the close tries `coverage.carry` once (d59-2 V7,
+    #1487) -- every plans-only commit after the map start left the close
+    without one (kit trap d53-2 K3 (2)). Carried, the check goes on with that
+    map; `dry_run` only judges ("would carry", nothing written). Not carried,
+    the verdict stays MISSING and the line names why and the command that
+    builds. The carry writes into `map_dir` and journals into `db_path`, the
+    close's own -- never into the tree."""
     from . import coverage, narrow  # noqa: PLC0415
     res = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
                           "master^{commit}"], capture_output=True, text=True,
@@ -414,14 +442,24 @@ def check_end_tip_coverage(root, out, map_dir=None):
         return False, "MISSING"
     path = pathlib.Path(map_dir or narrow.coverage_dir()) / ("coverage-%s.json" % tip)
     cov, why = coverage.load_map(path)
+    carried = None
     if cov is None:
-        out("COVERAGE end-tip=%s verdict=MISSING -- %s; build it: pipeline coverage build"
-            " --lane <lane> on the end tip" % (tip[:9], why))
-        return False, "MISSING"
+        try:
+            cov, carried = coverage.carry(str(root), map_dir=map_dir, db_path=db_path,
+                                          branch="master", write=not dry_run)
+        except Exception as exc:  # noqa: BLE001 -- a broken carry is a reason, never a stop
+            cov, carried = None, "carry failed: %s" % exc
+        if cov is None:
+            out("COVERAGE end-tip=%s verdict=MISSING -- %s; not carried: %s; build it: %s"
+                % (tip[:9], why, carried, _build_hint(db_path)))
+            return False, "MISSING"
     verdict = coverage.verdict_of(cov) if cov.get("rev") == tip else "MISSING"
     detail = "; ".join(cov.get("incomplete") or []) or "complete"
+    if carried and dry_run:
+        detail += "; %s" % carried
     origin = cov.get("carried_from")
-    if isinstance(origin, dict):  # GH #1461 review M4: carried, not measured -- said so
+    # d59-2 fix round: a dry run carried nothing yet -- it says "would carry" only
+    if isinstance(origin, dict) and not (carried and dry_run):  # GH #1461 review M4
         detail += "; carried from %s (measured %s on %s)" % (
             str(origin.get("rev"))[:9], origin.get("built_at"), origin.get("runner"))
     out("COVERAGE end-tip=%s verdict=%s map=%s -- %s" % (tip[:9], verdict, path, detail))
@@ -455,7 +493,7 @@ def close(wave, root=None, db_path=None, issues=(), dry_run=False, bump=False,
                                          if edt_ok != edt_total else balance_refused))
         out(f"{head} retro=skipped bump=skipped export=skipped")
         return 1
-    cov_ok, verdict = check_end_tip_coverage(root, out)
+    cov_ok, verdict = check_end_tip_coverage(root, out, db_path=db_path, dry_run=dry_run)
     if not cov_ok:
         out(f"wave close: refused -- the coverage build on the end tip is {verdict}"
             " (the full suite of the wave; red is a finding, not a closed wave)")

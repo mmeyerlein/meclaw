@@ -2086,7 +2086,7 @@ mod tests {
     fn gh98_an_import_racing_another_writer_waits_for_the_write_lock() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("cell.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let mut conn = rusqlite::Connection::open(&path).unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
         conn.execute_batch("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);")
             .unwrap();
@@ -2137,7 +2137,7 @@ mod tests {
     fn gh98_a_single_part_import_racing_another_writer_waits_for_the_write_lock() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("cell.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let mut conn = rusqlite::Connection::open(&path).unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
         conn.execute_batch("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);")
             .unwrap();

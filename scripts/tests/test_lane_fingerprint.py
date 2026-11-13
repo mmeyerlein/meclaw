@@ -607,6 +607,21 @@ module.exports = { chromium: engine("chromium"), webkit: engine("webkit") };
 """
 
 
+# `timeout` that runs its command and watches nothing: options and the duration
+# dropped (`-k 2 3`, `--foreground -s USR1 -k 5 30`), then exec.
+FAKE_TIMEOUT_WITHOUT_WATCH = r"""#!/bin/sh
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -k|-s) shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+shift
+exec "$@"
+"""
+
+
 # The headless shell the CDP drivers' findBrowser picks, started directly the way the
 # gh766 units start it: FAKE_NO_SANDBOX plays Ubuntu 24.04 without the userns profile.
 FAKE_SANDBOX_SHELL = r"""#!/bin/sh
@@ -735,6 +750,20 @@ class TestBrowserStartProbe(BrowserLaneCase):
         # The budget is the hanging engine's; the other engine's "ok" is its kept one.
         # A fresh chromium start under the 1-s budget was a wall-clock verdict: red at
         # mm-os01 load 15 / 8 vCPU ("no answer within 1s", fix round 2 v2-r3-kit).
+        #
+        # Two watches see the hang: the probe's own timer (`secs` after node has
+        # booted, names the stage -- what this case pins) and the shell's
+        # `timeout -k 2 <secs + 2>` around sh + node, counted from before the boot.
+        # A boot slower than 2 s let the outer one end the probe first, and the
+        # reason read "no answer within 1s from the start probe (launch, ...)"
+        # (OR-58-85: three times in the wave, moveout 4/5 at 16 loops on 8 vCPU;
+        # the same text with node booting 3 s late, close-b1 report Nr. 8). Which
+        # watch is quicker is a race of two clocks, no verdict: here `timeout`
+        # runs its command without a watch, so only the probe's timer can answer,
+        # however slowly node boots. The outer watch is
+        # `test_a_start_that_hangs_is_a_reason_after_the_timeout`'s case.
+        (self.fakes / "timeout").write_text(FAKE_TIMEOUT_WITHOUT_WATCH)
+        (self.fakes / "timeout").chmod(0o755)
         self.env["FAKE_PW_WEBKIT"] = "launch"
         self.assertEqual("ok", self.lane()["chromium"])
         before = len(self.launches())

@@ -75,3 +75,55 @@ fn gh_d58_cold_an_expired_cache_collects_under_the_aim() {
         "the result of the last tool round is sent whole"
     );
 }
+
+/// The other way to a cold cache (review coldgc M2, contract point 2): the
+/// clock refuses the order of the cache (`at_in_past`, or an `add` that ran
+/// out of `query_timeout`) and the refusal rebuilds now. With `gc_on_cold`
+/// "1" that rebuild is the same cold collection as the stroke: no model,
+/// the older result collected, one `gc` mark and one mark `cold`.
+#[test]
+fn gh_d58_cold_a_refused_order_of_the_cache_collects_too() {
+    if !shipped() {
+        return;
+    }
+    for code in ["at_in_past", "query_timeout"] {
+        let (mut t, old, young) = garbage_talk("talky", &cold_knobs(Some("1")));
+        let order =
+            t.h.clock_order_for(ROUND_E)
+                .unwrap_or_else(|| panic!("the last answer left an order: {:?}", t.h.stderr));
+        assert_eq!(
+            order.body["emit_body"]["reason"], "cache",
+            "check of the setup: the order of the cache"
+        );
+        let refusal = Msg {
+            context: order.context.clone(),
+            hop: obj(json!({"msg_type": "timer_op_error", "error_code": code,
+                            "schedule_id": order.body["schedule_id"]})),
+            body: Default::default(),
+            reply_to: String::new(),
+        };
+        t.h.from_clock(refusal);
+
+        assert!(
+            t.h.summ.is_empty(),
+            "{code}: a cold collection asks no model: {:?}",
+            t.h.stderr
+        );
+        assert_eq!(
+            shrunk(&t),
+            vec![short_id(&old)],
+            "{code}: the result of the older tool round is collected: {:?}",
+            t.h.stderr
+        );
+        assert!(!shrunk(&t).contains(&short_id(&young)), "{code}");
+        let gc = marks_of(&t.h, "gc");
+        assert_eq!(gc.len(), 1, "{code}: one `gc` mark: {gc:?}");
+        assert_eq!(gc[0]["classes"]["shrunk_tools"], json!(1), "{code}: {gc:?}");
+        assert_eq!(
+            cold_marks(&t.h).len(),
+            1,
+            "{code}: one mark of the trigger `cold`: {:?}",
+            marks_of(&t.h, "curate")
+        );
+    }
+}

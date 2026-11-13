@@ -71,6 +71,13 @@ fn gh_d58_form_a_call_that_leaves_between_check_and_plan_keeps_its_round() {
         c0.messages()
     );
     t.answer(&c0, "tool_calls", json!([tool_call(id, "read_file")]));
+    // Roundpin review M-6: the plan of the rebuild stands before the second
+    // call -- without it the round would keep its window for nothing.
+    assert!(
+        cover(&t) > 0,
+        "check of the setup: the rebuild wrote its plan before the second call: {:?}",
+        t.h.stderr
+    );
     let c1 = t.call(
         "t7",
         1,

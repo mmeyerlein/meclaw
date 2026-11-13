@@ -359,9 +359,9 @@ fn the_roles_compress_for_cost_under_soft_below_their_window_target() {
         assert_eq!(got[2]["mark"], "soft", "{role}: {got}");
         assert_eq!(got[2]["rebuild_to"], soft_aim, "{role}: {got}");
     }
-    // The role without an aim never rebuilds for cost.
+    // The shipped curator, no profile and no aim, never rebuilds for cost.
     let (got, _) = policy_scope(
-        json!({"role": ""}),
+        json!({}),
         &format!("curate_mark(90000, {pkg})"),
         Value::Null,
     );

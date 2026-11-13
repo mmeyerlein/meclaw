@@ -89,10 +89,10 @@ fn prose_is_rejected_and_the_old_summary_stays() {
     let mut h = hive("brief");
     first_rebuild(&mut h);
     let q1 = short_id(&user("q1"));
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     h.answer(
-        &format!(
-            "- person (2026-11-05) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"
-        ),
+        &format!("- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"),
         "stop",
     );
     assert_eq!(
@@ -136,9 +136,10 @@ fn a_mixed_answer_keeps_its_lines_and_says_the_rest() {
     let mut h = hive("brief");
     first_rebuild(&mut h);
     let q1 = short_id(&user("q1"));
-    let line = format!(
-        "- person (2026-11-05) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"
-    );
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
+    let line =
+        format!("- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]");
     h.answer(&format!("Here is the brief:\n{line}"), "stop");
     assert_eq!(h.rows("SELECT COUNT(*) FROM summaries")[0][0], json!(1));
     assert_eq!(stored_text(&h), line, "only the line of the form is kept");

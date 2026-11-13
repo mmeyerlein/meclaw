@@ -21,7 +21,7 @@
 //! `./talky-chat`, anything else `./talky` (edges 0 and 1 of `assistant`).
 //!
 //! The hold is per surface, not per session (ruling OR-d58-2.followup.29):
-//! channels that share a surface -- today Telegram and a call, both on
+//! channels that share a surface -- every channel but `chat`, e.g. Telegram and a call, both on
 //! `./talky` -- see a concern heard there only after the hearing session has
 //! ended; only the other surface, `./talky-chat`, sees it at once. Holding
 //! per session would need the curator to exclude one session from a note,

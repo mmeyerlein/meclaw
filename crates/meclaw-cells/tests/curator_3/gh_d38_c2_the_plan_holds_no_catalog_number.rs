@@ -118,8 +118,10 @@ fn rebuilt_under(row: Value) -> (Vec<Value>, Value) {
         .clock_order_for(ROUND_E)
         .expect("the new day orders a rebuild");
     h.fire(&order);
+    // GH #1496: the line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     h.answer(
-        "- person (2026-03-01) garden/state: in bloom [asserted]",
+        &format!("- person ({day}) garden/state: in bloom [asserted]"),
         "stop",
     );
     (plan_blocks(&h, ROUND_E), h.plan_in(ROUND_E))

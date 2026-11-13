@@ -66,10 +66,12 @@ fn the_summary_is_itemised_and_attributed() {
         short_id(&said("a1")),
         short_id(&user("q2")),
     );
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     let brief = format!(
-        "- person (2026-11-05) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
-         - agent:self (2026-11-05) offer/visit: The companion offered to plan a visit. [#{a1}]\n\
-         - peer:anna (2026-11-05) anna/mood: Anna said she was tired. [hedged] [#{q2}]"
+        "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
+         - agent:self ({day}) offer/visit: The companion offered to plan a visit. [#{a1}]\n\
+         - peer:anna ({day}) anna/mood: Anna said she was tired. [hedged] [#{q2}]"
     );
     let req = h.answer(&brief, "stop");
 
@@ -96,7 +98,7 @@ fn the_summary_is_itemised_and_attributed() {
         .to_string();
     assert_eq!(
         transcript.lines().next(),
-        Some(format!("[#{q1}] user: q1").as_str()),
+        Some(format!("[#{q1}] ({day}) user: q1").as_str()),
         "every transcript line carries the short id of its block: {transcript}"
     );
     for line in transcript.lines().filter(|l| !l.is_empty()) {

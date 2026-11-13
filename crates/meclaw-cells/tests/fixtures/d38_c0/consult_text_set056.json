@@ -235,7 +235,7 @@
           "kind": "notes",
           "session_id": "s1",
           "turn_id": "t2",
-          "value": "{\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"notes_dropped\":[],\"notes_in\":[{\"id\":\"state\",\"scope\":\"turn\",\"source\":\"curator\"}]}"
+          "value": "{\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"notes_dropped\":[],\"notes_in\":[{\"id\":\"state\",\"scope\":\"turn\",\"source\":\"curator\"},{\"id\":\"consult.pending\",\"scope\":\"turn\",\"source\":\"curator\"}]}"
         }
       ],
       "out": [
@@ -276,16 +276,13 @@
               },
               {
                 "origin": "user",
-                "text": "[notes for this turn -- from curator; guidance, not something the person said]\n- [state -- open: a consult]\n\n[#c2602215fb43] [the person, now -- their own words to you]\nAnd what about tomorrow?",
+                "text": "[notes for this turn -- from curator; guidance, not something the person said]\n- [state -- open: a consult]\n- A consult is pending (id k-00064c07-a6f7-4e80-8000-0000000001c0, since 2026-03-02T10:00:10.000026Z): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked.\n\n[#c2602215fb43] [the person, now -- their own words to you]\nAnd what about tomorrow?",
                 "type": "text"
               }
             ],
             "system": {
               "consult": {
-                "$replace": true,
-                "pending": {
-                  "text": "A consult is pending (id k-00064c07-a6f7-4e80-8000-0000000001c0, since 2026-03-02T10:00:10.000026Z): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked."
-                }
+                "$replace": true
               },
               "history": {
                 "$replace": true
@@ -305,11 +302,6 @@
               "roster": {
                 "$replace": true
               }
-            },
-            "tool_scope": {
-              "deny": [
-                "consult_cogny"
-              ]
             }
           },
           "hop": {
@@ -334,7 +326,7 @@
           "kind": "curate",
           "session_id": "s1",
           "turn_id": "t2",
-          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":3,\"raw_tokens\":21,\"window_estimate\":229,\"window_tokens\":229}"
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a744-49c0-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":3,\"raw_tokens\":21,\"window_estimate\":225,\"window_tokens\":225}"
         }
       ],
       "out": [

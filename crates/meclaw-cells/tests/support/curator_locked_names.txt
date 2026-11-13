@@ -1,0 +1,65 @@
+# The names no script of the curator, no edge and no contract of its hive may
+# name (D58 target, contract point 14). One name per line, a line that starts
+# with `#` is a comment. Every strand of the stage appends its own names at
+# the end, under a comment line of its own; there are no exceptions.
+# `.gitattributes` merges this file by `union`, so two strands that each add
+# a name merge without a conflict; `gh_d58_close_no_locked_name_twice` holds
+# what a union can bring (a name twice, an empty line). Read by
+# `support/curator_target.rs` (`LOCKED_NAMES`).
+# D58 target (GH #1483): the names of the compositions and their ways.
+brain
+quick
+quick_spec
+quick_bridge
+strong
+consult
+research
+talky
+coding
+cogny
+consult_cogny
+sa_stage
+# D58 lead (GH #1474): the switch and its store left the curator.
+lead_state
+curator-lead
+# D58 live (GH #1482): the curator knows a running session only by its
+# handle `live`; the voice's engine and its lanes' names stay outside.
+duplex
+in_call_end
+call_facts
+# D58 judge (GH #1480): the judge is a model like any other, its window a
+# view of a target the caller names; a screen, a wind-down line and the
+# person's hints are contributions and seed lines without a kind.
+judge
+screen
+wind_down
+hints
+# D58 note (GH #1477): the compositions that hand `note_receipt` out at
+# their rim (talky and cogny stand above); where it goes is theirs.
+simple-agent
+figure
+# D58 frame (GH #1478): what a turn of a stamp class gets is the
+# composition's `class_notes`; the curator names no class of its own.
+# The lead hive (`templates/lead`) is not read by this lock.
+clarify
+# D58 feed (GH #1481): the curator sends a feed on its own route
+# `live_feed` and passes the section on uninterpreted; the receiving
+# cell and the lane its composition translates the feed into stay
+# outside.
+voice
+in_advise
+# D58 moveout (GH #1476): the bridge, the waiting-time advise and the
+# early interrupt left the curator -- it offers a conditional side call
+# and a conditional feed; what they say and when is the lead's.
+bridge
+horizon_advise
+interrupt
+# D58 proof (GH #1475): the name simple-agent carries its target under.
+sa_target
+# D58 followup (GH #1479): the person's wellbeing is the hive
+# `assistant`'s; the curator carries a registered class unnamed.
+wellbeing
+# D58 sections (GH #1473), added by D58 close (GH #1494): the objects hive's
+# section is one a composition registers on `in_section`; the curator passes
+# it on unnamed (until curator 1.25 it was the curator's own).
+things

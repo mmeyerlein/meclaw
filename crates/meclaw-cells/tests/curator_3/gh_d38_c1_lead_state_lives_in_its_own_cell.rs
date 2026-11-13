@@ -186,16 +186,27 @@ fn a_pending_consult_is_kept_by_the_lead_across_turns() {
         json!({}),
     );
     let brain = one(&h, "brain");
+    // GH #1497: refused at the call (`hop.tools_refused`, the composite's
+    // dispatcher answers it unsent); the menu keeps the tool.
     let deny = brain
-        .body
-        .get("tool_scope")
-        .and_then(|s| s.get("deny"))
-        .cloned()
-        .unwrap_or(json!([]));
+        .hop
+        .get("tools_refused")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     assert!(
-        deny.as_array()
-            .is_some_and(|d| d.contains(&json!("consult_cogny"))),
+        deny.split(',').any(|n| n == "consult_cogny"),
         "while the lead holds the mark, the consult tool is taken away: {deny}"
+    );
+    assert!(
+        !brain
+            .body
+            .get("tool_scope")
+            .and_then(|s| s.get("deny"))
+            .and_then(Value::as_array)
+            .is_some_and(|d| d.contains(&json!("consult_cogny"))),
+        "the menu keeps the consult tool: {:?}",
+        brain.body.get("tool_scope")
     );
     // The advice comes under the errand's id: the mark goes, in the lead.
     curate(
@@ -306,7 +317,9 @@ fn the_summary_names_the_consult_the_lead_waits_for() {
         json!({"cache_expires_at": "2099-01-01T00:00:00Z"}),
     );
     h.fire(&last_add(&h));
-    let req = h.answer("- person (2026-11-05) garden/state: In bloom.", "stop");
+    // GH #1496: the line is dated with a day its transcript shows.
+    let day = h.transcript_day();
+    let req = h.answer(&format!("- person ({day}) garden/state: In bloom."), "stop");
     let transcript = req.messages()[0]["text"]
         .as_str()
         .expect("a transcript")

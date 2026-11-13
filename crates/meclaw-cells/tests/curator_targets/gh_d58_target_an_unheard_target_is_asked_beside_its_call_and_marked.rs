@@ -84,17 +84,33 @@ fn gh_d58_target_an_unheard_target_is_asked_beside_its_call_and_marked() {
         "the ask is the empty params slot"
     );
 
-    // The answer of the cell: from now on the target is heard.
+    // The answer of the cell: from now on the target is heard. GH #1497: on
+    // the plan that stands the target keeps the rows its window was first
+    // cut by -- none, so the call is still cut on the instance's values and
+    // marked; it orders the change of plan, and the call after it is cut by
+    // the row and unmarked.
     announce_profile(&mut h, "stranger", json!({}));
-    say(&mut h, Some("stranger"), "t4", "Good.");
+    let c4 = say(&mut h, Some("stranger"), "t4", "Good.");
     assert!(
         h.routed("catalog_ask").is_empty(),
         "a heard target asks nothing: {:?}",
         h.out
     );
+    answer(&mut h, &c4, "stop", warm_usage(), json!([said("Fine.")]));
+    let order = last_add(&h);
+    assert_eq!(
+        order.body["emit_body"]["reason"],
+        json!("catalog"),
+        "the row that came home orders the change of plan: {:?}",
+        order.body
+    );
+    h.fire(&order);
+    say(&mut h, Some("stranger"), "t5", "Very good.");
+    assert!(h.routed("catalog_ask").is_empty(), "{:?}", h.out);
     assert_eq!(
         marks_of_kind(&h, TARGET_MARK).len(),
-        3,
-        "the three calls before a report are marked, the one after is not"
+        4,
+        "the three calls before a report and the one on the plan that stood are marked, \
+         the one after the change of plan is not"
     );
 }

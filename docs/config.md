@@ -93,7 +93,7 @@ The whole file of a `ref` directory, with a default for the referenced template'
 {
   "cell": {
     "type": "ref",
-    "template": "dispatcher@1.6.3"
+    "template": "dispatcher@1.6.4"
   },
   "override_params": {
     "": { "external_timeout_ms": 30000 }
@@ -205,6 +205,8 @@ Recommended baseline for a template that has to write, where `<cell-workspace>` 
 ```
 
 The runtime set (`filesystem.runtime: true`) grants read and execute on `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/proc`, `/sys` and read/write on `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`. Without it no interpreter starts, because even the dynamic loader would be unreachable. It is a convenience and **not a security statement**: it contains `/etc` (hence `/etc/passwd`) and `/proc` (hence `/proc/<pid>/cmdline` of other processes of the same user). Set `runtime: false` and enumerate the paths yourself if that is not acceptable.
+
+What the sandbox does not fence (GH #1491), three limits that lie outside its axes. First, `connect()` on a pathname Unix socket is not governed (measured 2026-11-11 on Linux 6.8 with Landlock ABI 4): a child under the same Unix user as other services reaches their sockets, for example a terminal multiplexer's or the init system's user bus, even where it may not read the directory the socket lives in. Pinned in `crates/meclaw-cells/tests/code/sandbox_harness_child.rs` (`a_sandboxed_child_still_reaches_a_unix_socket_outside_its_view`). Second, under the same user `/proc` of other processes stays readable (the runtime set above). Third, `network: "allow"` means the daemon's whole network, loopback included; there is no list of destinations. Whoever runs a child on a foreign errand draws the boundary around the daemon, with a Unix user of its own (systemd offers the unit option `DynamicUser=yes`), a mount view of its own and network rules in the unit, and takes the sandbox as the inner ring. The unit shape documented here is `Delegate=yes`, for a user unit and for a system unit (below).
 
 `network: "allow"` additionally grants name resolution (GH #144). `/etc/resolv.conf` is inside the runtime set, but on a systemd-resolved host it is a symlink into `/run/systemd/resolve/`, and `/run` was in no set at all. An `allow` therefore opened the sockets and let every lookup die in `getaddrinfo`. Measured: 953 of 953 embedding calls "endpoint unreachable" at `exit_code: 0`. Under `network: "allow"` Landlock now also grants read access to the target of `/etc/resolv.conf`, the resolved directory (`/run/systemd/resolve`, `/run/resolvconf`, depending on the host), or the file itself when it sits directly in `/etc`.
 

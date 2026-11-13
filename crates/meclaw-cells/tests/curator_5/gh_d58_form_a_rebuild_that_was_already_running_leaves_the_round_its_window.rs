@@ -60,6 +60,13 @@ fn gh_d58_form_a_rebuild_that_was_already_running_leaves_the_round_its_window() 
     t.answer(&c0, "tool_calls", json!([tool_call(id, "read_file")]));
     // The summary comes home in the middle of the round.
     t.h.answer("- The person told items 1 to 4.", "stop");
+    // Roundpin review M-6: the plan of the rebuild stands before the second
+    // call -- without it the round would keep its window for nothing.
+    assert!(
+        cover(&t) > 0,
+        "check of the setup: the rebuild wrote its plan before the second call: {:?}",
+        t.h.stderr
+    );
     let c1 = t.call(
         "t7",
         1,

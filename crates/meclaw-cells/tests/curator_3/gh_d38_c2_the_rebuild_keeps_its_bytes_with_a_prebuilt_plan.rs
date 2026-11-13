@@ -210,8 +210,10 @@ fn after_the_rebuild_the_blocks_follow_the_cover() {
     );
     h.fire(&last_add(&h));
     let q1 = short_id(&user("q1"));
+    // GH #1496: the line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     h.answer(
-        &format!("- person (2026-03-02) garden/state: The garden is in bloom. [asserted] [#{q1}]"),
+        &format!("- person ({day}) garden/state: The garden is in bloom. [asserted] [#{q1}]"),
         "stop",
     );
     let plan = h.plan_in(ROUND_E);

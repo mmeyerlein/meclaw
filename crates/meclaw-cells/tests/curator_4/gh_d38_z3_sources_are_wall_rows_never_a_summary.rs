@@ -63,10 +63,10 @@ fn sources_are_wall_rows_never_a_summary() {
     );
     h.fire(&last_add(&h));
     let q1 = short_id(&user("q1"));
+    // GH #1496: each line is dated with a day its transcript shows.
+    let d1 = h.transcript_day();
     h.answer(
-        &format!(
-            "- person (2026-11-04) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"
-        ),
+        &format!("- person ({d1}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"),
         "stop",
     );
     turn(
@@ -79,8 +79,9 @@ fn sources_are_wall_rows_never_a_summary() {
     );
     h.fire(&last_add(&h));
     let q3 = short_id(&user("q3"));
+    let d2 = h.transcript_day();
     h.answer(
-        &format!("- person (2026-11-05) garden/state: The garden is in bloom. [asserted] [#{q3}]"),
+        &format!("- person ({d2}) garden/state: The garden is in bloom. [asserted] [#{q3}]"),
         "stop",
     );
 

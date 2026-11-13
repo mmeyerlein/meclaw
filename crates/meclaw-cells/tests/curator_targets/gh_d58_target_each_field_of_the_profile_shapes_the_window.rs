@@ -55,12 +55,8 @@ fn system_with_slot() -> Value {
     s
 }
 
-/// What one run shows of the call it ends with.
-fn observed(profile: Value) -> Value {
-    observed_in(profile, system_tree())
-}
-
-/// [`observed`] with the system part `system` on the call it ends with.
+/// What one run shows of the call it ends with, the system part `system`
+/// on that call.
 ///
 /// The instance sets a place: the leaf `frame` needs both, the target's
 /// word (`frame` in its profile) and a moment to tell (`place` or `timezone`
@@ -152,11 +148,73 @@ fn with(base: &Value, field: &str, v: &Value) -> Value {
     p
 }
 
+/// Every run in `runs`, each on one of a few threads, keyed by its input.
+/// A run is a hive of its own (its own store, its own warm python children,
+/// which `support/warm_python.rs` keeps per thread), so the runs share
+/// nothing.
+fn observe_all(runs: &[(Value, Value)]) -> Vec<((Value, Value), Value)> {
+    let n = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 6);
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                sc.spawn(move || {
+                    runs.iter()
+                        .skip(i)
+                        .step_by(n)
+                        .map(|(p, s)| ((p.clone(), s.clone()), observed_in(p.clone(), s.clone())))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("a run of the table"))
+            .collect()
+    })
+}
+
+/// WHY two passes (D58 close, GH #1494): the checks below read 38 runs, 11
+/// of them twice, one after the other -- 88 s under the strand gate's load
+/// (SLOW-LOCK, gate a5d99377 of the target strand), 40 s alone on a lane.
+/// A first pass over the checks only names the runs they read; each
+/// distinct run then goes once, on several threads, and the second pass
+/// reads the same checks over the results. Every claim and every run stays.
 #[test]
 fn gh_d58_target_each_field_of_the_profile_shapes_the_window() {
     if !shipped() {
         return;
     }
+    let mut wanted: Vec<(Value, Value)> = Vec::new();
+    checks(&mut |p, s| {
+        if !wanted.contains(&(p.clone(), s.clone())) {
+            wanted.push((p, s));
+        }
+        Value::Null
+    });
+    let seen = observe_all(&wanted);
+    assert_eq!(
+        seen.len(),
+        wanted.len(),
+        "check of the setup: every run ran"
+    );
+    let failures = checks(&mut |p, s| {
+        let key = (p, s);
+        seen.iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("check of the setup: the run {key:?} was named"))
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The claims of the test over the runs `obs` gives for a profile and a
+/// system part; the failures, one line each.
+fn checks(obs: &mut dyn FnMut(Value, Value) -> Value) -> Vec<String> {
+    let obs = std::cell::RefCell::new(obs);
+    let observed = |p: Value| (*obs.borrow_mut())(p, system_tree());
+    let observed_in = |p: Value, s: Value| (*obs.borrow_mut())(p, s);
     let none = json!({});
     // (field, one value, the other (null: unset), base of both, the part
     // of the observation the field moves)
@@ -432,5 +490,5 @@ fn gh_d58_target_each_field_of_the_profile_shapes_the_window() {
             unnamed["system"]
         ));
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    failures
 }

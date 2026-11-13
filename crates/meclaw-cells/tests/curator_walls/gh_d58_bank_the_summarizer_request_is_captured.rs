@@ -88,9 +88,10 @@ const TALK_RUNS: [RoleRun; 2] = [("talky", &[]), ("consult", &[("window_target",
 /// The roles the wall of a task is captured with.
 const TASK_RUNS: [RoleRun; 1] = [("coding", &[])];
 
-/// What the stub answers a request for a brief with: one line of a brief.
-const BRIEF_STUB: &str =
-    "- topic (2026-03-02): what came before, condensed by the stub of the bank";
+/// What the stub answers a request for a brief with: one line of a brief,
+/// dated with a day its transcript shows (`{day}`, filled in by `condense`,
+/// GH #1496).
+const BRIEF_STUB: &str = "- topic ({day}): what came before, condensed by the stub of the bank";
 
 /// One planted point of a wall: a row known by its keyword.
 #[derive(Clone)]
@@ -380,17 +381,30 @@ fn the_summarizer_request_is_captured() {
             }),
         })
         .collect();
-    // D58 plant: the capture carries both new kinds, each with its fields.
+    // D58 plant: the capture carries both new kinds, each with its own
+    // field (review plant m5: either field for either kind let a
+    // `third_party` with an old row and no subject pass): a `third_party`
+    // names its subject and carries no old row, a `superseded` carries its
+    // old row.
     for kind in ["third_party", "superseded"] {
-        let fields = talk_points
-            .iter()
-            .filter(|p| p.kind == kind)
-            .filter(|p| p.subject.is_some() || p.old.is_some())
-            .count();
-        if fields == 0 {
-            found.note(format!(
-                "over_aim: the capture holds no planted {kind} with its fields"
-            ));
+        let of_kind: Vec<&Point> = talk_points.iter().filter(|p| p.kind == kind).collect();
+        if of_kind.is_empty() {
+            found.note(format!("over_aim: the capture holds no planted {kind}"));
+        }
+        for p in of_kind {
+            let own_field = match kind {
+                "third_party" => p.subject.is_some() && p.old.is_none(),
+                _ => p.old.is_some(),
+            };
+            if !own_field {
+                found.note(format!(
+                    "over_aim: the captured {kind} {} carries the field of its kind \
+                     (subject {:?}, old row {})",
+                    p.key,
+                    p.subject,
+                    p.old.is_some()
+                ));
+            }
         }
     }
     let task = bank.named("coding").clone();

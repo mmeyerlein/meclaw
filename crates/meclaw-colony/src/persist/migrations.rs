@@ -370,7 +370,7 @@ mod tests {
     fn a_migration_racing_another_writer_waits_for_the_write_lock() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("colony.db");
-        let conn = Connection::open(&path).unwrap();
+        let mut conn = Connection::open(&path).unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
         open_v1(&conn);
         let other = Connection::open(&path).unwrap();

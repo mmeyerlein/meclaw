@@ -1,24 +1,14 @@
 //! Test harness `curator_5` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-#[path = "../support/assistant_followup.rs"]
-pub mod assistant_followup;
 #[path = "../support/composite_colony.rs"]
 pub mod composite_colony;
-#[path = "../support/curator_cold.rs"]
-pub mod curator_cold;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
-pub mod gh_d58_cold_the_collection_never_touches_words_answers_errors;
-pub mod gh_d58_cold_the_rebuild_is_priced_at_the_cache_write_without_a_ladder;
-pub mod gh_d58_cold_without_a_cold_aim_the_inherited_aim_stands;
-pub mod gh_d58_f1_a_mark_keeps_the_class_only_with_fact_mark_kind_on;
-pub mod gh_d58_f1_the_wellbeing_line_keys_on_the_class_not_the_predicate;
-pub mod gh_d58_form_a_call_sent_while_a_rebuild_ran_is_no_prefix_break;
 pub mod gh_d58_form_a_call_that_leaves_between_check_and_plan_keeps_its_round;
 pub mod gh_d58_form_a_clock_stroke_during_the_first_call_leaves_the_round_its_window;
 pub mod gh_d58_form_a_multiline_quote_that_differs_from_the_wall_stays;
@@ -29,6 +19,7 @@ pub mod gh_d58_form_a_tool_round_never_changes_its_prefix;
 pub mod gh_d58_form_a_warm_call_only_appends;
 pub mod gh_d58_form_after_a_round_without_an_answer_the_rebuild_is_applied;
 pub mod gh_d58_form_an_older_recall_block_goes_only_in_a_rebuild;
+pub mod gh_d58_form_left_out_ends_where_the_summary_covers_the_pair;
 pub mod gh_d58_form_mutant_a_cut_per_call_trips_the_watch;
 pub mod gh_d58_form_mutant_a_dropped_answer_trips_window_lost;
 pub mod gh_d58_form_recall_in_wall_off_is_byte_identical;
@@ -37,6 +28,14 @@ pub mod gh_d58_form_the_guard_at_the_hard_limit_cuts_in_an_open_round;
 pub mod gh_d58_form_the_plan_keeps_no_orphan_answer;
 pub mod gh_d58_form_the_stats_count_prefix_breaks;
 pub mod gh_d58_form_the_stats_count_what_the_window_lost;
+pub mod gh_d58_form_the_watch_finds_its_window_behind_rows_of_other_targets;
+pub mod gh_d58_form_the_watch_finds_the_round_by_place_not_by_content;
+pub mod gh_d58_intake_a_delegated_turn_checks_the_persons_line;
+pub mod gh_d58_once_note_until_is_read_on_the_lab_clock_in_the_next_session;
+pub mod gh_d58_prefix_a_consult_between_two_calls_keeps_the_prefix;
+pub mod gh_d58_prefix_a_profile_that_arrives_between_two_calls_keeps_the_prefix;
+pub mod gh_d58_prefix_an_ambient_recall_in_the_wall_is_never_sent;
+pub mod gh_d58_recall_a_decision_that_was_not_kept_is_made_again;
 pub mod gh_d58_recall_a_fallback_stamp_keeps_the_recall;
 pub mod gh_d58_recall_a_late_stamp_keeps_the_recall;
 pub mod gh_d58_recall_a_set_override_of_the_new_params_passes_the_door;
@@ -50,9 +49,12 @@ pub mod gh_d58_roundpin_a_call_without_an_answer_holds_no_rebuild_back;
 pub mod gh_d58_roundpin_a_later_call_costs_no_extra_store_step;
 pub mod gh_d58_roundpin_a_rebuild_in_a_running_round_shows_in_the_next_round;
 pub mod gh_d58_roundpin_a_round_is_cut_by_the_plan_of_its_first_call;
+pub mod gh_d58_roundpin_a_turn_on_a_side_way_lays_its_row_after_it;
+pub mod gh_d58_roundpin_after_the_handover_the_row_names_the_new_leaf;
 pub mod gh_d58_roundpin_an_abandoned_round_plan_is_swept;
 pub mod gh_d58_roundpin_prefix_breaks_excuses_only_a_change_of_plan;
 pub mod gh_d58_roundpin_the_guard_at_the_hard_bound_still_cuts;
+pub mod gh_d58_roundpin_the_turn_cut_row_ends_with_the_answer_that_ends_the_turn;
 pub mod gh_d58_roundpin_two_rounds_out_at_once_keep_their_own_plans;
 pub mod gh_d58_rv5_a_recall_of_an_answer_with_a_sidecar_is_sent_once;
 pub mod gh_d58_snap_a_cut_element_names_its_form;
@@ -66,3 +68,5 @@ pub mod gh_d58_snap_the_state_line_and_the_notes_block_are_listed;
 pub mod gh_d58_v5_a_recall_of_a_multiline_answer_is_sent_once;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
+#[path = "../support/note_once.rs"]
+pub mod note_once;

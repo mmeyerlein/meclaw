@@ -56,6 +56,35 @@ fn the_block_of_an_outcome_is_watched_and_never_shrunk() {
         json!(true),
         "`window_lost` watches it"
     );
+    // The watch itself, not only its table (review errand M2): the window
+    // before sent a raw element of the kind `block_kind` gives an outcome,
+    // the wall row lies above the cover and no form of it is sent now -- one
+    // element lost. The same element sent again, or one of a kind the watch
+    // does not name, loses nothing.
+    let watch = |kind: &str, now: &str| {
+        policy(&format!(
+            r#"window_watch([{{"hash": "h1", "kind": {kind}, "form": "raw"}}], ("s", "t1"),
+                            {now}, ("s", "t1"), {{"h1": [(5, ("s", "t0"))]}}, set(), 0,
+                            lambda h: False, False)["window_lost"]"#
+        ))
+    };
+    let outcome = format!(r#"block_kind({el}, "outcome")"#);
+    let sent_again = r#"[{"hash": "h1", "kind": "outcome", "form": "raw"}]"#;
+    assert_eq!(
+        watch(&outcome, "[]"),
+        json!(1),
+        "a raw outcome the window before sent and this one drops is lost"
+    );
+    assert_eq!(
+        watch(&outcome, sent_again),
+        json!(0),
+        "an outcome sent again is not lost"
+    );
+    assert_eq!(
+        watch(r#""note""#, "[]"),
+        json!(0),
+        "a kind the watch does not name is never counted"
+    );
     assert_eq!(
         policy(&format!(r#"shrinkable({{"kind": "outcome"}}, {el})"#)),
         json!(false),

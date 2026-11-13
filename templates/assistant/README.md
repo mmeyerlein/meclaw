@@ -1,4 +1,4 @@
-# `assistant@4.0.0`
+# `assistant@4.0.1`
 
 One generation of one person's agent.
 **Four refs at three templates, one cell with its own store, no container at all,** and one hundred and forty-four edges.
@@ -224,7 +224,7 @@ channel node of the session that consulted it). The other surface gets the note 
 (`in_note` with `hop.channel_node`, which the edges into the two surfaces read and clear): a
 chat session on `./talky-chat` ends only after the keeper's idle threshold (two hours as shipped)
 or at night, and a call in between knows the concern in its start window. The hold is per
-surface, not per session: channels that share a surface -- today Telegram and a call, both on
+surface, not per session: channels that share a surface -- every channel but `chat`, e.g. Telegram and a call, both on
 `./talky` -- see a concern heard there only after the hearing session has ended; holding per
 session would need the curator to leave one session out of a note. For the hearing surface the cell
 holds it (state `held`, with the hearing session's `context.session_id` and its channel node)
@@ -276,7 +276,7 @@ curator needs `note_once` "1" on `./intake`, `./policy` and `./history` to take 
 
 ## Lanes
 
-Forty-three, all at the assistant's own path (`in_pin` is the twenty-first, #916; `in_stats` and its answer `stats` the next two, #926; `in_candidate`, `in_read` and `thing_seen` the next three, #949; `answer_check` the next, #1255; `in_note` the next, #1303; `stamp` the next, #1304; `opened`, `closed` and `inner_silent` the next three, #1305; `in_delta`, `in_screen_topics`, `in_seed_ask`, `in_seed_line`, `seed`, `live_feed`, `verdict` and `propose` the next eight, #1279; `in_call_end` and `call_facts` the next two, #1369; `partial` the last, #1411) — plus **thirteen that name
+Forty-three, all at the assistant's own path (`in_pin` is the twenty-first, #916; `in_stats` and its answer `stats` the next two, #926; `in_candidate`, `in_read` and `thing_seen` the next three, #949; `answer_check` the next, #1255; `in_note` the next, #1303; `stamp` the next, #1304; `opened`, `closed` and `inner_silent` the next three, #1305; `in_delta`, `in_part` (D58 judge #1480, formerly `in_screen_topics`), `in_seed_ask`, `in_seed_line`, `seed`, `live_feed`, `verdict` and `propose` the next eight, #1279; `in_call_end` and `call_facts` the next two, #1369; `partial` the last, #1411) — plus **thirteen that name
 a connect point**, three more than before 2.5.1, two more than before 2.9.0, two more since #949 (`candidate_ack` and `read`, which dock at the three brains) and two more since #981 (`run_answer` at `./cogny`, `run_tool_result` at `./tools`). Eleven of the
 thirteen never reach this rim at all, the two run lanes among them (§ *A run*): `brief` and `in_briefing`
 ([#834](https://github.com/mmeyerlein/meclaw/issues/834)), both
@@ -338,7 +338,7 @@ door `. -> <generation>` every growth recipe draws.
 | `closed` | a conversation of a talky surface ended, right behind its `write` (GH #1305): only when the surface's curator writer knob `conversation_events` is `"1"`; hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text |
 | `inner_silent` | an inner turn a talky surface answered with silence -- nothing went to the channel (GH #1305): hop `inner_source`, `turn_id`, no text; only when that surface's dispatcher knob `conversation_events` is `"1"` |
 | `turn_write` | one finished turn per message, after every stored turn and every stored answer — never a batch (GH #298, ruling Q11) |
-| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@7.0.0` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
+| `sidecar` | **one section** of the block the answer carried, one message per section, since 2.6.0 ([#607](https://github.com/mmeyerlein/meclaw/issues/607)). It is `extraction` grown a dimension: the same fence, opened with ```` ```sidecar ```` rather than ```` ```memory ````, holding ONE object with one key per section, cut up by the splitter inside `./talky` and stamped with `hop.section`. This level neither reads a section nor knows which ones exist — the sections a turn may carry are the OFFERS its answerers made, and an answerer may sit outside this generation entirely — so the lane leaves undivided and the MEMBER sorts it. It REPLACES `extraction`, which `talky@7.0.1` no longer has; the member still carries an `extraction` edge for a generation grown against an older surface |
 | `answer_check` | the **sent answer** for the checker the member binds, since [#1255](https://github.com/mmeyerlein/meclaw/issues/1255): one message per section the splitter inside `./talky` or `./talky-chat` names in its knob `answer_check`, after the answer -- hop `{route, section, turn_id, section_written}`, body `{"messages": [], "section", "verify_answer"}`. Carried out of both surfaces unchanged, on the same terms as `sidecar` and never sorted with it: it holds the answer text, and a section on `sidecar` reaches every app of the member. Without the knob nothing travels; `./cogny` raises none |
 | `stamp` | the **route stamp** of every turn for a reader the member binds, since [#1304](https://github.com/mmeyerlein/meclaw/issues/1304): one message per turn when the route cell inside `./talky` or `./talky-chat` has its knob `stamp_out` `"1"` -- body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes. Carried out of both surfaces unchanged. Without the knob nothing travels; `./cogny` has no route cell |
 | `seed` | the answer to one `in_seed_ask` (`{messages: [{role, text}], est_tokens, judge}`, `hop.live`, `hop.session_id`, `hop.renewal_n` back, `context.call_id` set by the surface from the handle), for the voice channel's `in_seed`. Since [#1279](https://github.com/mmeyerlein/meclaw/issues/1279) |
@@ -910,7 +910,7 @@ comes afterwards.**
  "ctx": {"model": "<the reasoning core's model>",
          "model_surface": "<the conversation surface's model>"},
  "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@4.0.0",
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@4.0.1",
                  "override_params": {"cogny/brain": {"temperature": 0.2}}}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",

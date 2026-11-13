@@ -57,7 +57,7 @@ fn another_ways_window_never_cuts_the_row() {
 /// cuts its own row -- the answer names its target (`curator_target`), so
 /// no two targets share a window.
 #[test]
-fn the_cells_of_one_way_share_its_window() {
+fn each_target_has_its_own_window() {
     if !shipped() {
         return;
     }

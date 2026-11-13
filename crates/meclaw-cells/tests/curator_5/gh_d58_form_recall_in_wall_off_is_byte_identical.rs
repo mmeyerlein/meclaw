@@ -6,8 +6,19 @@
 //! no call says a `recall_in_wall` cut, the snapshot lists no element left
 //! out, the plan keeps the block, and the rows of a recall result hash as
 //! they did (the garbage collection's `dup_recall` reads them with `gc` on,
-//! whatever this knob says). The arm with the knob on is the control:
-//! without it the comparison would pass on a tree that knows no such knob.
+//! whatever this knob says).
+//!
+//! Three arms of the same run. `plain` sets no knob, so it runs the shipped
+//! default -- since the form was built that is the knob at "0", no longer a
+//! tree that knows no such knob (this pin was written red before the build,
+//! when it was). `off` sets "0" by hand: the byte-for-byte comparison with
+//! `plain` (calls, cuts, `sent`, plan, row counts, ledger operations) holds
+//! that the explicit value and the default are one and the same, not that
+//! the window equals the one of a tree before the form. That "before" is
+//! held by what the window of `off` shows: the pair on every call, no cut of
+//! this kind on the hop or in the snapshot, no element left out, the plan
+//! keeps the recall block. The arm `on` is the control: without it every
+//! statement on `off` would pass on a tree where the knob does nothing.
 //!
 //! Runs the shipped curator hive (`support/curator_hive.rs`); no model.
 
@@ -85,7 +96,7 @@ fn off_is_the_window_of_before() {
     let (on, n) = run(&[("policy", "recall_in_wall", json!("1"))]);
 
     for (i, name) in ["t2", "t3", "t4"].iter().enumerate() {
-        // Off is the hive that never heard of the knob, byte for byte.
+        // Off set by hand is the shipped default, byte for byte.
         assert_eq!(o[i].body, p[i].body, "the call of {name}");
         assert_eq!(cuts(&o[i]), cuts(&p[i]), "the cuts of {name}");
         assert_eq!(

@@ -27,6 +27,13 @@ harness = "curator_walls"
 match = "^gh_d58_plant_"
 harness = "curator_walls"
 
+# D58 brief (GH #1496): the pins of the dated transcript and the dropped
+# invented dates sit beside the bank's pins that measure the brief; in
+# `curator` the file would shift every later file one part further.
+[[rule]]
+match = "^gh_d58_brief_"
+harness = "curator_walls"
+
 # The pins of an errand that ends without an answer (GH #1469), for the same
 # reason: `curator_4` holds 57 files, nine more would open a fifth part and
 # move files of other strands into it.
@@ -88,6 +95,13 @@ harness = "curator_followup"
 # binary of their own, so no curator part moves.
 [[rule]]
 match = "^gh_d58_note_"
+harness = "curator_notes"
+
+# GH #1512: the pins of a turn note that reaches the target that speaks (a
+# spec call writes no turn row, the row is bound to its target) sit beside
+# the note pins, so no curator part moves.
+[[rule]]
+match = "^gh1512_"
 harness = "curator_notes"
 
 # D58 lead (GH #1474): the pins of the switch as a hive of its own, one

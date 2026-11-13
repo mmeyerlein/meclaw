@@ -606,6 +606,15 @@ class TestClassMode(HeavyCase):
         self.assertEqual([], sorted(mods - set(table)),
                          "modules without an entry in %s" % selftest_shard.DURATIONS)
 
+    def test_the_committed_table_is_in_the_writers_form(self):
+        # d58-2 bank re-check 5: entries added by hand stood out of order, so the
+        # next `durations --write` moved them -- a diff nobody made. The file is
+        # what `write_table` writes, sorted keys, one entry per line.
+        with open(selftest_shard.DURATIONS, encoding="utf-8") as fh:
+            committed = fh.read()
+        table = selftest_shard.load_durations(selftest_shard.DURATIONS)
+        self.assertEqual(json.dumps(table, indent=1, sort_keys=True) + "\n", committed)
+
     def test_the_tree_guards_of_test_gate_plan_are_units_of_their_own(self):
         # tb-s1c (#1177): TemplateReadersInTheTree and RuleEightReadersInTheTree
         # plan every reader of the real tree (~110 s each). Under the old entry

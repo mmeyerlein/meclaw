@@ -2035,20 +2035,36 @@ async fn a_consult_asks_back_under_its_id(surface: Surface) {
         &["reply_to_consult"],
         &["ask_requester"],
     );
-    // GH #1280: while the consult the voice started runs -- the question back
-    // (1) and the reply's turn (2) -- the curator takes `consult_cogny` off the
-    // menu; the core's answers (3, 5) end the mark, and the follow-up (4)
-    // consults again under the same id.
+    // GH #1280, since GH #1497 (review I2, K OR-58-197): while the consult the
+    // voice started runs -- the question back (1) and the reply's turn (2) --
+    // `consult_cogny` stays on the menu (a menu that changes breaks the cached
+    // prefix) and is refused at the call instead: exactly those two model
+    // calls carry the refusal; the core's answers (3, 5) end the mark, and the
+    // follow-up (4) consults again under the same id.
     for (i, r) in voice_reqs.iter().enumerate() {
         let offered = tools_offered(r).iter().any(|o| o == "consult_cogny");
-        assert_eq!(
+        assert!(
             offered,
-            !matches!(i, 1 | 2),
-            "{} request {i}: consult_cogny offered = {offered}: {:?}",
+            "{} request {i}: the menu keeps consult_cogny while a consult runs: {:?}",
             surface.node(),
             tools_offered(r)
         );
     }
+    let surface_prefix = format!("/assistant/{}/", surface.node());
+    let mut refusing: Vec<String> = log
+        .iter()
+        .filter(|r| r.to.starts_with(&surface_prefix))
+        .filter(|r| text_of(&r.context, "tools_refused") == "consult_cogny")
+        .map(|r| text_of(&r.context, "curator_call"))
+        .filter(|c| !c.is_empty())
+        .collect();
+    refusing.sort();
+    refusing.dedup();
+    assert_eq!(
+        refusing.len(),
+        2,
+        "the question back and the reply's turn refuse consult_cogny, no other call: {refusing:?}"
+    );
     assert_offers(
         &core_reqs,
         "cogny",
@@ -2130,6 +2146,111 @@ async fn a_consult_asks_back_under_its_id_on_the_chat_surface() {
         return;
     }
     a_consult_asks_back_under_its_id(Surface::Chat).await;
+}
+
+/// GH #1497 (K OR-58-207, never silence): a turn whose only call is
+/// `consult_cogny` while the conversation's consult runs. The refusal stays
+/// hard -- no second consult reaches the core -- but it comes back to the
+/// surface's model as a tool error (`tool_refused`), the model gets one call
+/// more, and what it says reaches the person in that turn. Before, the
+/// refused call was a handoff that was never sent: the turn ended without a
+/// word until the running consult answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_whose_only_call_is_refused_while_a_consult_runs_still_answers_the_person() {
+    if !shipped() {
+        eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    const AGAIN: &str = "Are you still on my trip?";
+    const AGAIN_ID: &str = "call-c9";
+    const AGAIN_ARGS: &str = r#"{"question": "Is the trip plan ready?", "context": "Goal: the same trip. Facts: none new. Constraints: none. Form: one line. Length: one sentence."}"#;
+    const STILL: &str = "Still on it -- my core is working on your trip.";
+    let voice = MockOpenAI::start(vec![
+        canned_content_and_tool_calls(INTERIM_1, vec![(CONSULT_ID, "consult_cogny", CONSULT_ARGS)]),
+        canned_chat_completion(QUESTION_BACK, "stop"),
+        // The person speaks while the core waits for the answer to its
+        // question; the model's ONLY call is another consult.
+        canned_tool_calls(vec![(AGAIN_ID, "consult_cogny", AGAIN_ARGS)]),
+        // The refusal comes back; the model speaks.
+        canned_chat_completion(STILL, "stop"),
+    ])
+    .await;
+    let core = MockOpenAI::start(vec![
+        canned_tool_calls(vec![(ASK_ID, "ask_requester", ASK_ARGS)]),
+        canned_chat_completion(BUDGET, "stop"),
+    ])
+    .await;
+    let background = MockOpenAI::start(
+        (0..16)
+            .map(|_| canned_chat_completion(BACKGROUND_REPLY, "stop"))
+            .collect(),
+    )
+    .await;
+    let stubs = Stubs {
+        surface: voice.base_url.clone(),
+        core: core.base_url.clone(),
+        background: background.base_url.clone(),
+    };
+    let td = tempfile::TempDir::new().expect("tempdir");
+    build(&td, Surface::Spoken, &stubs);
+    let root = td.path().to_path_buf();
+    let (h, mut ports) = boot(&td).await;
+    h.send(menu_tick()).await;
+    wait_for_menus(&root, Surface::Spoken).await;
+
+    let mut seen = Vec::new();
+    h.send(person(Surface::Spoken, "t-1", T1)).await;
+    answer_saying(&mut ports, &root, INTERIM_1, &mut seen).await;
+    answer_saying(&mut ports, &root, QUESTION_BACK, &mut seen).await;
+
+    h.send(person(Surface::Spoken, "t-2", AGAIN)).await;
+    let still = answer_saying(&mut ports, &root, STILL, &mut seen).await;
+    // Quiescence, not a guess at a time (TV-S2): every message that follows
+    // from the delivered ones is through, and the log writer committed it.
+    h.quiesce().await;
+    let log = message_log(&root);
+    let dead = dead_letters(&root);
+    let mut parked = Vec::new();
+    while let Ok(m) = ports.park.try_recv() {
+        parked.push(Value::Object(m.headers.hop.clone()));
+    }
+    let voice_reqs = voice.recorded_requests().await;
+    let core_reqs = core.recorded_requests().await;
+    h.shutdown().await;
+
+    assert_eq!(
+        still.headers.hop.get("turn_id").and_then(Value::as_str),
+        Some("t-2"),
+        "the person hears it in the turn whose call was refused: {:?}",
+        still.headers.hop
+    );
+    assert_eq!(
+        voice_reqs.len(),
+        4,
+        "T1, the question back, the refused turn, the call after the refusal"
+    );
+    let after = wire(&voice_reqs[3]);
+    assert!(
+        after.contains(AGAIN_ID) && after.contains("refused"),
+        "the model's call after the refusal carries the tool error under its id: {after}"
+    );
+    // The refusal is hard: no second consult.
+    assert_eq!(core_reqs.len(), 1, "the core saw only the first errand");
+    let consults = log
+        .iter()
+        .filter(|r| r.to == "/assistant/cogny" && r.route() == "in_turn")
+        .filter(|r| text_of(&r.hop, "tool_name") == "consult_cogny")
+        .count();
+    assert_eq!(
+        consults, 1,
+        "one consult left the surface, the refused one did not"
+    );
+    let errors: Vec<&Value> = parked
+        .iter()
+        .filter(|hop| hop["route"].as_str() == Some("error"))
+        .collect();
+    assert!(errors.is_empty(), "an error left the level: {errors:#?}");
+    assert!(dead.is_empty(), "dead letters in the run: {dead:#?}");
 }
 
 /// 4. No consult answer is cut: 20 000 characters from the core reach the asking
@@ -2287,8 +2408,9 @@ async fn a_reply_under_an_unknown_consult_id_comes_back_under_it() {
 /// core's collector ships `defer_turns` "0": such a turn opens its own round beside
 /// the open one.
 ///
-/// The run: c1 asks back; the person gives the surface a second errand, c2, and the
-/// core's c2 round calls a tool that takes its time; while that round is open the
+/// The run: c1 asks back; a second errand, c2, reaches the core -- fed in below the
+/// surface's tool gate, which refuses a second `consult_cogny` while c1 runs (GH
+/// #1497, K OR-58-208) -- and the core's c2 round calls a tool that takes its time; while that round is open the
 /// person answers c1's question and the reply reaches the core. What must hold, at
 /// the receivers: the reply does not wait for good -- a core request carries it, beside
 /// the first errand -- and the core's answer to it comes back under c1, never under c2
@@ -2304,17 +2426,14 @@ async fn a_reply_that_waits_behind_another_consult_is_answered_under_its_own_id(
         eprintln!("a template of this road did not travel into this tree -- skipped (GH #49)");
         return;
     }
-    const SECOND: &str = "And find me a place to eat tonight.";
     const C2: &str = "call-c2";
     const C2_ARGS: &str = r#"{"question": "Find a place to eat tonight.", "context": "Goal: dinner tonight. Facts: none. Constraints: none. Form: one place. Length: one sentence."}"#;
-    const SAID_2: &str = "I will ask about that too.";
     const PASSED: &str = "Passed on.";
     /// Long enough for the person's reply to reach the core inside the tool round.
     const TOOL_DELAY_MS: u64 = 4000;
     let voice = MockOpenAI::start(vec![
         canned_content_and_tool_calls(INTERIM_1, vec![(CONSULT_ID, "consult_cogny", CONSULT_ARGS)]),
         canned_chat_completion(QUESTION_BACK, "stop"),
-        canned_content_and_tool_calls(SAID_2, vec![(C2, "consult_cogny", C2_ARGS)]),
         canned_content_and_tool_calls(INTERIM_2, vec![(REPLY_ID, "reply_to_consult", REPLY_ARGS)]),
         // The two advices, in whichever order they come: the surface says the same.
         canned_chat_completion(PASSED, "stop"),
@@ -2361,8 +2480,35 @@ async fn a_reply_that_waits_behind_another_consult_is_answered_under_its_own_id(
     answer_saying(&mut ports, &root, QUESTION_BACK, &mut seen).await;
 
     // The second errand, and its round's tool call out at the (slow) tool hive.
-    h.send(person(Surface::Spoken, "t-2", SECOND)).await;
-    answer_saying(&mut ports, &root, SAID_2, &mut seen).await;
+    // GH #1497 (K OR-58-208): the surface's tool gate refuses a second
+    // `consult_cogny` while c1 runs, so the second consultation is fed in
+    // below that gate -- straight to the core, in the form the level's
+    // consult edge gives the first one (its hop and context, logged), under
+    // its own id. What this lock pins is the correlation inside the core.
+    let first = message_log(&root)
+        .into_iter()
+        .find(|r| {
+            r.to == "/assistant/cogny"
+                && r.route() == "in_turn"
+                && text_of(&r.hop, "tool_name") == "consult_cogny"
+        })
+        .expect("the first consult reached the core");
+    let mut hop = first.hop.as_object().cloned().unwrap_or_default();
+    hop.insert("tool_call_id".into(), json!(C2));
+    hop.insert("consult_id".into(), json!(C2));
+    let mut ctx = first.context.as_object().cloned().unwrap_or_default();
+    ctx.insert("consult_id".into(), json!(C2));
+    h.send(
+        MessageBuilder::new(Path::new("/assistant/cogny"))
+            .hop(hop)
+            .context(ctx)
+            .body(Body::Inline(json!({"messages": [
+                {"origin": "assistant", "type": "tool_call", "id": C2, "text": C2_ARGS}
+            ]})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
     let deadline = Instant::now() + DEADLINE;
     while !message_log(&root)
         .iter()

@@ -101,6 +101,58 @@ fn every_role_runs_its_walls_over_the_bank() {
                 wall.name
             ));
         }
+        // The exception says what it claims (review bank minor 3): a wall of
+        // one role runs exactly one role, its runs differ by a knob or the
+        // way, so every run shows something the first does not, and the
+        // reason names every knob its runs differ by -- a reason that holds
+        // any text no longer passes.
+        if !wall.one_role.is_empty() {
+            let mut keys: Vec<&str> = wall
+                .runs
+                .iter()
+                .flat_map(|r| r.knobs.iter().map(|(k, _)| *k))
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            for key in keys {
+                let value = |r: &Run| {
+                    r.knobs
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, v)| v.clone())
+                };
+                let first = value(&wall.runs[0]);
+                let varies = wall.runs.iter().any(|r| value(r) != first);
+                let named = wall
+                    .one_role
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == key);
+                if varies && !named {
+                    found.note(format!(
+                        "roles: {}: the runs of a wall of one role differ by {key}, and its \
+                         reason does not name it: {:?}",
+                        wall.name, wall.one_role
+                    ));
+                }
+            }
+            if roles.len() != 1 {
+                found.note(format!(
+                    "roles: {}: a wall of one role runs as {roles:?}",
+                    wall.name
+                ));
+            }
+            let mut labels: Vec<String> = wall.runs.iter().map(|r| r.label()).collect();
+            let all = labels.len();
+            labels.sort_unstable();
+            labels.dedup();
+            if labels.len() != all {
+                found.note(format!(
+                    "roles: {}: the runs of a wall of one role differ by a knob: {labels:?}",
+                    wall.name
+                ));
+            }
+        }
     }
     if bank.pending.is_empty() {
         for role in &known {
@@ -126,5 +178,23 @@ fn the_wall_list_is_the_bank() {
         WALLS.to_vec(),
         registered,
         "the list of `bank_walls!` names every wall of the bank, in its order"
+    );
+}
+
+/// Every test of the bank returns green at once when `shipped()` is false
+/// (the skip of a tree without the template, R2b) -- silent, whatever the
+/// curator does (review bank minor 4). The curator template travels with
+/// every tree the bank runs in, the public one too (`PUBLIC_TEMPLATES` of the
+/// export), so a false `shipped()` is a broken path, never an export: this
+/// test says it aloud.
+#[test]
+fn the_bank_runs_on_the_shipped_curator() {
+    assert!(
+        shipped(),
+        "templates/curator/config.json is found: without it every test of the bank skips green"
+    );
+    assert!(
+        !bank().walls.is_empty(),
+        "the bank holds a wall to run the curator over"
     );
 }

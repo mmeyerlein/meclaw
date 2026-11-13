@@ -829,6 +829,55 @@ def release_tree(db, repo, holder, at=None):
     return True
 
 
+# d58-2 Z (#1500, OR-58-187): the close-kit merge died on `database is locked`
+# in its `finally`; the tree lease stood for TTL_S and the next run read
+# `already_merging` from it. The release outlasts a locked store this long.
+RELEASE_WAIT_S = "120"
+
+
+def release_tree_surely(db, repo, holder, err, who="merge", clock=time):
+    """The `finally` of a run that took the tree lease (`merge`, `revert`):
+    `release_tree`, retried while the store answers locked or busy
+    (`schedule.while_locked`) up to `MECLAW_TREE_RELEASE_WAIT_SECS`
+    (RELEASE_WAIT_S). Gives up loudly: the lease stands, `err` names the
+    command that frees it by hand; `who` starts each line. A refusal after
+    the commit (an event of the release) leaves the lease free; the retry
+    then finds it gone and still rings the waiters. `clock` (`monotonic()`,
+    `sleep()`) is the clock of the wait limit, injected by the tests."""
+    try:
+        limit = schedule.wait_secs(os.environ, "MECLAW_TREE_RELEASE_WAIT_SECS", RELEASE_WAIT_S)
+    except schedule.ScheduleError as exc:
+        err.write("%s: %s -- the release waits %ss\n" % (who, exc, RELEASE_WAIT_S))
+        limit = float(RELEASE_WAIT_S)
+    refused = []
+
+    def once():
+        try:
+            return release_tree(db, repo, holder)
+        except (sqlite3.OperationalError, store.StoreWriteError) as exc:
+            if schedule.store_locked(exc):
+                refused.append(exc)
+            raise
+    try:
+        released = schedule.while_locked(once, end=clock.monotonic() + limit,
+                                         reset=lambda: schedule._rollback(db), clock=clock)
+    except (sqlite3.OperationalError, store.StoreWriteError) as exc:
+        if not schedule.store_locked(exc):
+            raise
+        scripts = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = ("import sys; sys.path.insert(0, %r); from pipeline import merge, store; "
+                "print(merge.release_tree(store.open(%r), %r, %r))"
+                % (scripts, schedule._db_path(db) or str(store.default_path()), repo, holder))
+        err.write("%s: the tree lease NOT RELEASED -- %s stays with %s until its TTL "
+                  "(%d s): the store answered locked for %.0f s (%s). Free it by hand:\n"
+                  "  python3 -c %s\n"
+                  % (who, resource(repo), holder, TTL_S, limit, exc, shlex.quote(code)))
+        return False
+    if refused and not released:
+        _ring(db)
+    return released
+
+
 def _ring(db):
     """Wake every `merge --wait` (and every other waiter of the pool) after
     the commit: the tree lease is free or offered now (V2-P1196-3)."""
@@ -2518,7 +2567,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
         return REFUSE_EXIT
     finally:
         if taken:
-            release_tree(db, repo, holder)
+            release_tree_surely(db, repo, holder, err)
         untrap_term(term)
         if own_db:
             store.close(db)
@@ -2725,26 +2774,46 @@ def close_info(root, report, archive, name):
 def wave_issues(root, wdir, name, parents=(), mine=None, err=None):
     """`{issue: other strand}` of the issues another strand file of the wave
     carries too -- the wave's (acceptance) issue, which no strand closes
-    (Z-I 2c (5)). Read from the main tree's `plans/<wave>/straenge/`.
+    (Z-I 2c (5)). Read from two places: the main tree's
+    `plans/<wave>/straenge/`, and every branch `<wave>/<strand>` (one level)
+    whose strand file the main tree does not hold and whose head is not in
+    master -- that branch carries what its own strand file names (`git show`;
+    with `plans/` tracked a strand file reaches the main tree only with its
+    merge, d58-2 Z #1500). A branch without its own strand file carries
+    nothing; a branch head already in master is read from the main tree or
+    not at all.
 
     `parents` are those of the merge commit of `name` (`merge_parents`). A
     strand whose branch head came with that merge (`came_with`) -- a component
     of a batch, whose strand file lands on master with it -- carries nothing
     foreign: its issues close with this merge (OR-TM-13, T2B left six open).
     The branch is the one `strand.sh new` named (`default_branch`). `mine`
-    limits the answer, and the git look-ups, to these issues; `err` gets the
-    line of a git check without an answer (`came_with`).
+    limits the answer to these issues, and the `came_with` look-ups to the
+    strands that carry one of them; an empty `mine` answers `{}` without a
+    look-up. The branch scan (`for-each-ref`, `merge-base`, `git show`) runs
+    for every branch of the wave otherwise. `err` gets the line of a git
+    check without an answer (`came_with`).
 
     The limit: a component that landed in the batch as a copy (rebase,
     cherry-pick) instead of a merge of its head stays a foreign carrier and
     its issues stay open -- fail-safe; the standard batch form is merge
     commits of the heads (OR-V2.v2-r3-close.2)."""
-    sdir = os.path.join(root, "plans", os.path.basename(wdir.rstrip("/")), "straenge")
+    if mine is not None and not mine:
+        return {}
+    rel_dir = os.path.join("plans", os.path.basename(wdir.rstrip("/")), "straenge")
+    sdir = os.path.join(root, rel_dir)
     found = {}
     try:
         files = sorted(f for f in os.listdir(sdir) if f.endswith(".json"))
     except OSError:
-        return found
+        files = []
+
+    def carrier(other, doc):
+        if isinstance(doc, dict):
+            carried = [i for i in versions.issues_of(doc) if mine is None or i in mine]
+            if carried and not came_with(root, parents, default_branch(wdir, other), err):
+                for issue in carried:
+                    found.setdefault(issue, other)
     for fn in files:
         other = fn[:-len(".json")]
         if other == name:
@@ -2754,11 +2823,31 @@ def wave_issues(root, wdir, name, parents=(), mine=None, err=None):
                 doc = json.load(fh)
         except (OSError, ValueError):
             continue
-        if isinstance(doc, dict):
-            carried = [i for i in versions.issues_of(doc) if mine is None or i in mine]
-            if carried and not came_with(root, parents, default_branch(wdir, other), err):
-                for issue in carried:
-                    found.setdefault(issue, other)
+        carrier(other, doc)
+    # d58-2 Z (#1500): with `plans/` tracked a strand commits its strand file on
+    # its branch, and the main tree holds it only after the merge -- close-kit
+    # closed #1494 while the open strand `close` carried it. An open branch of
+    # the wave (`default_branch`, head not in master) carries what its own
+    # strand file names.
+    seen = {fn[:-len(".json")] for fn in files} | {name}
+    prefix = default_branch(wdir, "")
+    master = main_branch(root)
+    for branch in out(root, "for-each-ref", "--format=%(refname:short)",
+                      "refs/heads/%s" % prefix.rstrip("/")).split():
+        other = branch[len(prefix):]
+        if not branch.startswith(prefix) or not other or "/" in other or other in seen:
+            continue
+        if master and git(root, "merge-base", "--is-ancestor", "refs/heads/%s" % branch,
+                          master).returncode == 0:
+            continue
+        res = git(root, "show", "refs/heads/%s:%s/%s.json" % (branch, rel_dir, other))
+        if res.returncode != 0:
+            continue
+        try:
+            doc = json.loads(res.stdout)
+        except ValueError:
+            continue
+        carrier(other, doc)
     return found
 
 

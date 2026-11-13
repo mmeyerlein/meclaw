@@ -208,10 +208,13 @@ deleted_tracked() { git diff --no-renames --name-only -z --diff-filter=D HEAD --
 untracked() { git ls-files -z -o --exclude-standard; }
 
 # Tracked secrets: in the commit (they would leave by the push) or changed
-# against it (they would leave by the overlay). One path per line.
+# against it (they would leave by the overlay). One path per line. With a
+# commit `$1` (the commit way of the coverage run, d59-2 local V1) only that
+# commit leaves, so only its files are judged.
 collisions() {
     local f
-    { git ls-tree -r -z --name-only HEAD; changed_tracked; } | while IFS= read -r -d '' f; do
+    if [ -n "${1:-}" ]; then git ls-tree -r -z --name-only "$1"
+    else git ls-tree -r -z --name-only HEAD; changed_tracked; fi | while IFS= read -r -d '' f; do
         secret_name "$f" && printf '%s\n' "$f"
     done | LC_ALL=C sort -u
 }
@@ -436,6 +439,22 @@ require_browsers_default() {
     fi
 }
 
+# The width of a class `egon` run, `<jobs> <threads>` -- the ONE place that
+# computes it (d59-2 local V3 c: the local coverage run takes it from here,
+# no second number). Class egon is always THIS machine (`local`): its cores
+# count here -- half of them, never over 4 (the executor's EGON_MAX_THREADS,
+# which admission books with, `schedule._runner_cpu`): the lane runs exactly
+# the threads it books. Half the cores alone gave nproc 12 a width and a
+# booking of 6 while every station ran 4, and nproc 6 a booking of 3 beside 4
+# test threads. `jobs=` of the host file (MECLAW_LANE_JOBS) lowers the jobs.
+egon_width() {
+    local j t
+    t=$(( $(nproc) / 2 )); [ "$t" -ge 1 ] || t=1; [ "$t" -le 4 ] || t=4
+    j=$t
+    if posint "${MECLAW_LANE_JOBS:-}" && [ "$MECLAW_LANE_JOBS" -lt "$j" ]; then j=$MECLAW_LANE_JOBS; fi
+    printf '%s %s\n' "$j" "$t"
+}
+
 # shellcheck disable=SC2016
 lane_env() {   # <mode>
     local mode="$1" w="" j t
@@ -446,15 +465,7 @@ lane_env() {   # <mode>
         main-pass|m0) w+="CARGO_INCREMENTAL=0 " ;;
     esac
     if [ "$(lane_class)" = egon ]; then
-        # class egon is always THIS machine (`local`): its cores count here --
-        # half of them, never over 4 (the executor's EGON_MAX_THREADS, which
-        # admission books with, `schedule._runner_cpu`): the lane runs exactly
-        # the threads it books. Half the cores alone gave nproc 12 a width and
-        # a booking of 6 while every station ran 4, and nproc 6 a booking of 3
-        # beside 4 test threads.
-        t=$(( $(nproc) / 2 )); [ "$t" -ge 1 ] || t=1; [ "$t" -le 4 ] || t=4
-        j=$t
-        if posint "${MECLAW_LANE_JOBS:-}" && [ "$MECLAW_LANE_JOBS" -lt "$j" ]; then j=$MECLAW_LANE_JOBS; fi
+        read -r j t < <(egon_width)
         w+="CARGO_BUILD_JOBS=$j NEXTEST_TEST_THREADS=$t "
     else
         w+=$(lane_width)
@@ -829,18 +840,27 @@ push_unlock() {
     wait "$pid" 2>/dev/null || true
 }
 
+# `cmd_push <target> <strand> [<sha>]`: with <sha> (the commit way of the
+# coverage run, d59-2 local V1, O6) the host's tree becomes exactly that commit
+# -- no overlay, no deletions of this tree, which is never checked out -- and
+# the closing check is "HEAD = <sha> and nothing else in the tree".
 cmd_push() {
-    local target="$1" strand="$2" sha wt top
+    local target="$1" strand="$2" commit="${3:-}" sha wt top
     top=$(git rev-parse --show-toplevel 2>/dev/null) || die "not a git repository"
     cd "$top" || die "cannot enter $top"
-    sha=$(git rev-parse HEAD) || die "no HEAD to push"
+    if [ -n "$commit" ]; then
+        sha=$(git rev-parse --verify --quiet "$commit^{commit}") \
+            || die "the repository does not have commit $commit"
+    else
+        sha=$(git rev-parse HEAD) || die "no HEAD to push"
+    fi
     wt=$(build_path "$strand") || exit 5
     push_lock "$target" "$wt"
 
     # Before anything reaches the host: no tracked secret (exit 5, with the
     # paths). Fail closed -- never send it, never gate without it.
     local hits
-    hits=$(collisions)
+    hits=$(collisions ${commit:+"$sha"})
     if [ -n "$hits" ]; then
         echo "lane_sync: refused -- tracked secret file(s), they would leave this machine:" >&2
         printf '  %s\n' "$hits" >&2
@@ -885,9 +905,12 @@ cmd_push() {
     list=$(mktemp) || die "no temp file"
     pre=$(mktemp) || die "no temp file"
     post=$(mktemp) || die "no temp file"
-    overlay_files >"$list"
-    remote "$target" "cd $(q "$wt") 2>/dev/null && bash -c $(q "$HASHES") || true" <"$list" >"$pre" \
-        || { rm -f "$list" "$pre" "$post"; die "the host $target did not answer"; }
+    # the commit way sends no overlay: the list stays empty, nothing is hashed
+    [ -n "$commit" ] || overlay_files >"$list"
+    if [ -s "$list" ]; then
+        remote "$target" "cd $(q "$wt") 2>/dev/null && bash -c $(q "$HASHES") || true" <"$list" >"$pre" \
+            || { rm -f "$list" "$pre" "$post"; die "the host $target did not answer"; }
+    fi
 
     # The worktree: checked out at the commit, cleaned of the last overlay.
     # `git clean` without -x keeps the ignored files a run left behind; the
@@ -927,7 +950,7 @@ cmd_push() {
             || { rm -f "$list" "$pre" "$post"; die "the stamp on $target failed"; }
     fi
     rm -f "$pre" "$post"
-    deleted_files >"$list"
+    if [ -n "$commit" ]; then : >"$list"; else deleted_files >"$list"; fi
     if [ -s "$list" ]; then
         remote "$target" "cd $(q "$wt") && xargs -0 rm -f --" <"$list" \
             || { rm -f "$list"; die "the deletions on $target failed"; }
@@ -941,6 +964,23 @@ cmd_push() {
     local browser
     browser=$(remote "$target" "bash -c $(q "$BROWSER_DEPS") _ $(q "$wt") $(q "$ROOT")") \
         || { rm -f "$list"; die "the browser drivers on $target failed"; }
+    # The commit way: the host's tree is exactly the commit -- HEAD and an
+    # empty status (the `.env` and the browser drivers above are ignored by
+    # git), or no run (exit 5).
+    if [ -n "$commit" ]; then
+        rm -f "$list"
+        local state
+        state=$(remote "$target" "cd $(q "$wt") && git rev-parse HEAD && git status --porcelain --untracked-files=all") \
+            || die "the tree check on $target failed"
+        if [ "$state" != "$sha" ]; then
+            echo "lane_sync: refused -- the tree on $target is not commit $sha:" >&2
+            printf '  %s\n' "$state" >&2
+            exit 5
+        fi
+        push_unlock
+        printf '%s %s %s\n' "$sha" commit "${browser:-none}"
+        return 0
+    fi
     # The same tree on both sides, or no remote gate (exit 5).
     local here there
     digest_list >"$list"
@@ -963,8 +1003,10 @@ cmd_push() {
 run_guards() {   # <target> <build path> <target dir>
     local_needs_egon "$1"
     # Until the gate on the owner's machine is proven (M0-A13, accepted in
-    # Z), a class `egon` lane runs single tests only.
-    if [ "$(lane_class)" = egon ] && [ -z "${MECLAW_LANE_EGON_GATE_OK:-}" ]; then
+    # Z), a class `egon` lane runs single tests only. The coverage run is no
+    # gate: on `local` it runs under its own limits (d59-2 local V2/V3, R-59-2).
+    if [ "$(lane_class)" = egon ] && [ "$LANE_COVERAGE" != 1 ] \
+        && [ -z "${MECLAW_LANE_EGON_GATE_OK:-}" ]; then
         echo "lane_sync: a class egon lane runs 'test' only -- no gate there" \
              "(MECLAW_LANE_EGON_GATE_OK=<reason> overrides)" >&2
         exit 2
@@ -1115,16 +1157,26 @@ cmd_hygiene() {
 # to 0), and the check aborts only below it -- reserve + expected is how far it
 # clears, not a second, higher floor. Floor 0 (off) and `MECLAW_LANE_WIPE_OK`
 # are mirrored as `lane_floor` treats them: then the check never aborts.
+#
+# The local coverage run (d59-2 local V4, OR-59-9) starts only when the floor
+# stays free AFTER it: its need is 12 G with a warm `coverage/target` (at
+# least 20 G there), 47 G with a cold one, and the check aborts below floor +
+# need -- on the owner's machine nobody else clears room for a 35 G target.
 hygiene_before() {
     local target="$1" wt="$2" tdir="$3" hrc own=() floor="${MECLAW_LANE_FLOOR_G:-60}" abort
+    local expected="${MECLAW_LANE_EXPECTED_G:-35}"
     [ "${MECLAW_HYGIENE:-1}" != 0 ] || return 0
     [ -n "${MECLAW_LANE_WIPE_OK:-}" ] || own=(--own-target "$tdir")
     [ "$floor" = 0 ] || posint "$floor" || floor=60
     abort="$floor"
     [ -z "${MECLAW_LANE_WIPE_OK:-}" ] || abort=0
+    if [ "$LANE_COVERAGE" = 1 ] && [ "$target" = local ]; then
+        expected=$(cov_local_need_g "$tdir")
+        [ "$abort" = 0 ] || abort=$(( floor + expected ))
+    fi
     cmd_hygiene "$target" check \
         --reserve-g "$floor" \
-        --expected-g "${MECLAW_LANE_EXPECTED_G:-35}" \
+        --expected-g "$expected" \
         --own-tree "$wt" "${own[@]}" --abort-below-g "$abort" \
         --runner "${MECLAW_LANE_NAME:-${target#*@}}" >&2
     hrc=$?
@@ -1408,9 +1460,140 @@ not_this_machine() {   # <target>
     there_id=${BASH_REMATCH[1]}; there_name=${BASH_REMATCH[2]%%.*}
     if [ "$there_id" = "$here_id" ] || [ "${there_name,,}" = "${here_name,,}" ]; then
         echo "lane_sync: refused -- $1 is this machine (machine-id or host name" \
-             "'$there_name' equal); the coverage run never runs on the owner's machine" >&2
+             "'$there_name' equal); the owner's machine takes the coverage run only" \
+             "as transport 'local', inside its limits (R-59-2)" >&2
         exit 5
     fi
+}
+
+# --- the coverage run on the owner's machine (d59-2 local V3, O7, R-59-2) ---
+# The limits of the machine are set by the CALLER around the host call, never
+# by the host part: that runs from `coverage/tree`, i.e. in the version of the
+# MEASURED commit, and `--rev <a commit before this wave>` would run without
+# lock and unthrottled (REVIEW-fable B1). The wrapping, outside in: a systemd
+# user scope with a fixed name per lane (a second run fails at systemd while
+# the first lives; the scope is the abort watchdog: its end ends cargo,
+# nextest and every child) -> `nice -n 19 ionice -c3` -> the lock wrapper
+# below (a process IN the scope: a scope that outlived a dead lock holder
+# would run cargo without the lock) -> the env words -> coverage_host.sh.
+
+# The lock wrapper (`bash -c`, args: <lock> <wait cap s> <stats file>
+# <cgroup root> <command...>): takes the machine's cargo lock (the one of
+# `executor._take_lock` and `test-tier.sh`) before the first cargo call and
+# holds it past `aggregate`; waits at most the cap (exit 3, one line), says a
+# wait of 1 s or more; the command never inherits the descriptor (fd 9 closed
+# for it, as in test-tier.sh). Before it returns it reads its own cgroup --
+# the scope's: `memory.peak` exists only while the scope lives -- into
+# <stats file>, `key value` per line. A lock taken at once waited 0 s; only a
+# busy lock is timed, in whole elapsed seconds (nanoseconds, truncated) -- two
+# `date +%s` around a free lock read 1 s whenever a second ticked between
+# them (d59-2 local, export selftest under load: 9 of 40 runs).
+# shellcheck disable=SC2016
+COV_LOCK_SH='lock=$1 cap=$2 stats=$3 cgroot=$4; shift 4
+: >"$stats.started"
+exec 9>>"$lock" || { echo "coverage: cannot open the cargo lock $lock" >&2; exit 2; }
+waited=0
+if ! flock -n 9; then
+    t0=$(date +%s%N)
+    flock -w "$cap" 9 || { echo "coverage: lock busy after $(( ($(date +%s%N) - t0) / 1000000000 ))s" >&2; exit 3; }
+    waited=$(( ($(date +%s%N) - t0) / 1000000000 ))
+fi
+[ "$waited" -lt 1 ] || echo "coverage: lock-wait ${waited}s" >&2
+"$@" 9>&-
+rc=$?
+cg=$cgroot$(sed -n "s/^0:://p" /proc/self/cgroup)
+{ echo "lock_wait_s $waited"
+  [ ! -r "$cg/memory.peak" ] || echo "mem_peak_b $(cat "$cg/memory.peak")"
+  [ ! -r "$cg/memory.events" ] || sed -n "s/^max /mem_events_max /p; s/^oom_kill /mem_oom_kill /p" "$cg/memory.events"
+  [ ! -r "$cg/memory.pressure" ] || sed -n "s/^full .*total=\([0-9]*\).*/mem_pressure_full_us \1/p" "$cg/memory.pressure"
+} >"$stats"
+exit "$rc"'
+
+# The need of a local coverage run in G (V4): 12 with a warm `coverage/target`
+# (at least 20 G there), else 47 (cold: the target is built from nothing).
+cov_local_need_g() {   # <target dir>
+    local g=0
+    [ ! -d "$1" ] || g=$(du -s -BG "$1" 2>/dev/null | awk '{ gsub(/G/, "", $1); print $1 }')
+    if posint "${g:-0}" && [ "$g" -ge 20 ]; then echo 12; else echo 47; fi
+}
+
+# MemoryMax of the scope in G: `mem=<n>G` of the host file (MECLAW_LANE_MEM_G),
+# else the smaller of MemTotal / 2 and MemAvailable - 4 G at the start.
+cov_mem_max_g() {
+    if posint "${MECLAW_LANE_MEM_G:-}"; then echo "$MECLAW_LANE_MEM_G"; return 0; fi
+    awk '/^MemTotal:/ { t = int($2 / 2 / 1048576) } /^MemAvailable:/ { a = int($2 / 1048576) - 4 }
+         END { m = (a < t) ? a : t; if (m < 1) m = 1; print m }' /proc/meminfo
+}
+
+# `cov_scope_clear`: the scope name of the local run, judged before the
+# hygiene and the push (review M1): a live scope is a run that lives --
+# possibly one whose caller died while cargo still compiles in coverage/tree --
+# so the run is refused, exit 5, before a new commit is checked out under it.
+cov_scope_clear() {
+    local unit="pipe-cov-${MECLAW_LANE_NAME:-local}"
+    if systemctl --user is-active --quiet "$unit.scope"; then
+        echo "lane_sync: refused -- the scope $unit lives: another coverage run of this" \
+             "lane (judged before the push; an orphaned one ends with" \
+             "'systemctl --user stop $unit.scope')" >&2
+        return 5
+    fi
+    return 0
+}
+
+# `cov_scope_reset`: a failed or inactive unit of that name is a dead run's
+# remnant (ended at a cap, its caller gone before the reset); reset it, else
+# systemd-run would refuse every later run. Called only under the tree hold
+# (delta review D1): before it, a live run may still be about to read the
+# result of its own just-ended scope.
+cov_scope_reset() {
+    systemctl --user reset-failed "pipe-cov-${MECLAW_LANE_NAME:-local}.scope" >/dev/null 2>&1
+    return 0
+}
+
+# `cov_local_run <host command> <deadline>`: the host command of a coverage
+# run on `local`, inside the limits above; afterwards the scope is stopped (no
+# stray process stays) and its end judged: at the memory or the runtime cap
+# the run is an ABORT (one line, exit 1, no map -- REVIEW-fable I2). A scope
+# that never started (its name lives: another run of this lane) is a refusal,
+# exit 5, and the other run's scope is left alone. Sets COV_HOST_STATS (the
+# stats file) and COV_LIMITS (`threads jobs mem_max_g`) for the map (V5).
+cov_local_run() {
+    local cmd="$1" deadline="$2" unit cap j t mem stats rc res oom
+    remote_words_known "$cmd"
+    unit="pipe-cov-${MECLAW_LANE_NAME:-local}"
+    cap="${MECLAW_COVERAGE_LOCK_WAIT_S:-3600}"
+    posint "$cap" || die "coverage: the lock wait cap '$cap' is not a number of seconds"
+    read -r j t < <(egon_width)
+    mem=$(cov_mem_max_g)
+    stats="$ROOT/coverage/scope"
+    mkdir -p "$ROOT/coverage" || die "cannot create $ROOT/coverage"
+    rm -f "$stats" "$stats.started"
+    systemd-run --user --scope --quiet --unit="$unit" -p "MemoryMax=${mem}G" -p MemorySwapMax=0 \
+        -p OOMPolicy=kill -p "RuntimeMaxSec=$(( cap + deadline + 120 ))" -- \
+        nice -n 19 ionice -c3 bash -c "$COV_LOCK_SH" cov-lock \
+        "${MECLAW_GATE_LOCK:-/tmp/meclaw-w26-cargo.lock}" "$cap" "$stats" "${MECLAW_CGROUP_ROOT:-/sys/fs/cgroup}" \
+        env MECLAW_CARGO_LOCK_HELD=1 CARGO_BUILD_JOBS="$j" NEXTEST_TEST_THREADS="$t" bash -c "$cmd"
+    rc=$?
+    if [ ! -e "$stats.started" ]; then
+        echo "lane_sync: refused -- the scope $unit did not start (systemd-run exit $rc; a scope" \
+             "of that name lives: another coverage run of this lane)" >&2
+        return 5
+    fi
+    res=$(systemctl --user show -p Result --value "$unit.scope" 2>/dev/null)
+    systemctl --user stop "$unit.scope" >/dev/null 2>&1
+    systemctl --user reset-failed "$unit.scope" >/dev/null 2>&1
+    oom=$(sed -n 's/^mem_oom_kill //p' "$stats" 2>/dev/null)
+    if [ "$res" = oom-kill ] || { [ -n "$oom" ] && [ "$oom" != 0 ]; }; then
+        echo "coverage: aborted: memory cap (MemoryMax=${mem}G, scope $unit)" >&2
+        return 1
+    fi
+    if [ "$res" = timeout ]; then
+        echo "coverage: aborted: runtime cap (RuntimeMaxSec=$(( cap + deadline + 120 )), scope $unit)" >&2
+        return 1
+    fi
+    COV_HOST_STATS=$stats
+    COV_LIMITS="$t $j $mem"
+    return "$rc"
 }
 
 # `coverage`: the instrumented coverage run of the impact graph (W6, GH
@@ -1418,30 +1601,44 @@ not_this_machine() {   # <target>
 # `coverage/tree`, the hygiene check with that tree and `coverage/target` as
 # own, the fail-closed floor, the host part `scripts/pipeline/coverage_host.sh`
 # (cwd = the tree; it leaves the map in `coverage/coverage.json`), the sweep.
-# Never on the owner's machine: `local` and class `egon` are refused, exit 5
-# (review I2) -- before anything leaves this tree -- and so is a target whose
-# machine-id or host name is this machine's (`not_this_machine`). Exit = the
-# host part's, 255 when ssh lost the host. `coverage/tree.lock` is held from
-# before the push until the map is fetched into <out-dir> (GH #1133 M4, as a
-# gate holds from push to fetch); busy is exit 5.
+# R-59-2 (d59-2 local V2): the run may go to the owner's machine when the host
+# file names the lane with transport `local` (class egon, `local_needs_egon`)
+# -- then inside the machine's limits (`cov_local_run`, V3). An ssh lane of
+# class egon stays refused, exit 5 -- before anything leaves this tree -- and
+# so does an ssh target whose machine-id or host name is this machine's
+# (`not_this_machine`): either would reach the owner's machine past V3. Exit =
+# the host part's, 255 when ssh lost the host. `coverage/tree.lock` is held
+# from before the push until the map is fetched into <out-dir> (GH #1133 M4,
+# as a gate holds from push to fetch); busy is exit 5.
 cmd_coverage() {
-    local target="$1" strand="$2" deadline="$3" out="${4:-}" scope="${5:-full}" wt tdir sha rc word nonce
+    local target="$1" strand="$2" deadline="$3" out="${4:-}" scope="${5:-full}" rev="${6:-}" wt tdir sha rc word nonce host
     LANE_COVERAGE=1
+    COV_HOST_STATS="" COV_LIMITS=""
     require_browsers_default
-    if [ "$target" = local ] || [ "$(lane_class)" = egon ]; then
-        echo "lane_sync: refused -- the coverage run never runs on the owner's machine" \
-             "(local or class egon); a build lane of the wave only" >&2
+    if [ "$target" != local ] && [ "$(lane_class)" = egon ]; then
+        echo "lane_sync: refused -- a remote lane of class egon is the owner's machine past its" \
+             "limits; the coverage run goes there only as transport 'local' (R-59-2)" >&2
         exit 5
     fi
+    local_needs_egon "$target"
     posint "$deadline" || die "coverage: the deadline '$deadline' is not a number of seconds"
     # S1b (#1165): `browser` probes the browser locks alone; `full` keeps the host call as it was
     case "$scope" in full|browser) ;; *) die "coverage: the scope '$scope' is not full|browser" ;; esac
-    not_this_machine "$target"
+    # d59-2 local V1 (O6): scope `full` measures a commit (<rev>, default HEAD),
+    # never this tree; only the probe `browser` takes the tree with its overlay.
+    if [ "$scope" = full ]; then
+        sha=$(git rev-parse --verify --quiet "${rev:-HEAD}^{commit}") \
+            || die "coverage: the repository does not have commit ${rev:-HEAD}"
+    else
+        [ -z "$rev" ] || die "coverage: the probe 'browser' measures the tree, it takes no commit"
+        sha=$(git rev-parse HEAD) || die "no HEAD"
+    fi
+    [ "$target" = local ] || not_this_machine "$target"
     wt=$(build_path "$strand") || exit 5
     tdir=$(target_path) || exit 5
-    sha=$(git rev-parse HEAD) || die "no HEAD"
-    # The guards of a gate run (W3): hygiene, then the floor. The refusal of
-    # the owner's machine above stays first and is not overridable.
+    # The guards of a gate run (W3): hygiene, then the floor. The refusals
+    # above stay first and are not overridable.
+    if [ "$target" = local ]; then cov_scope_clear || exit 5; fi
     run_guards "$target" "$wt" "$tdir" || return $?
     nonce=$(hold_nonce)
     coproc COV_HOLD { remote_hold "$target" "bash -c $(q "$HOLD_SH") hold $(q "$wt.lock") $(q "$nonce")"; }
@@ -1451,9 +1648,18 @@ cmd_coverage() {
         echo "lane_sync: refused -- the build path $wt on $target is in use" >&2
         exit 5
     fi
-    MECLAW_LANE_HOLD=$nonce cmd_push "$target" "$strand" >&2
-    remote_long "$target" \
-        "export PATH=\"\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH\" && cd $(q "$wt") && $(verdict_words)scripts/pipeline/coverage_host.sh $(q "$tdir") $(q "$deadline") $(q "$sha")$([ "$scope" = full ] || printf ' %s' "$(q "$scope")")"
+    if [ "$target" = local ]; then cov_scope_reset; fi
+    if [ "$scope" = full ]; then
+        MECLAW_LANE_HOLD=$nonce cmd_push "$target" "$strand" "$sha" >&2
+    else
+        MECLAW_LANE_HOLD=$nonce cmd_push "$target" "$strand" >&2
+    fi
+    host="export PATH=\"\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH\" && cd $(q "$wt") && $(verdict_words)scripts/pipeline/coverage_host.sh $(q "$tdir") $(q "$deadline") $(q "$sha")$([ "$scope" = full ] || printf ' %s' "$(q "$scope")")"
+    if [ "$target" = local ]; then
+        cov_local_run "$host" "$deadline"
+    else
+        remote_long "$target" "$host"
+    fi
     rc=$?
     if [ "$rc" = 0 ] && [ -n "$out" ]; then
         if ! { mkdir -p "$out" && lane_rsync "$target" -a "%LANE%$ROOT/coverage/coverage.json" \
@@ -1470,6 +1676,27 @@ p, v = sys.argv[1], sys.argv[2]
 cov = json.load(open(p, encoding="utf-8"))
 cov["browsers_opt_out"] = v
 json.dump(cov, open(p, "w", encoding="utf-8"), sort_keys=True)' "$out/coverage.json" "$MECLAW_REQUIRE_BROWSERS" || rc=1
+        fi
+        # V5: the map of a local run names the limits it ran under; whether
+        # memory was short show the events and the pressure, not the peak
+        # (it counts the page cache and sits at the cap with a 35 G target)
+        if [ "$rc" = 0 ] && [ -n "$COV_LIMITS" ]; then
+            # shellcheck disable=SC2086 # COV_LIMITS is three words
+            "${KIT_PY[@]}" -c 'import json, sys
+p, stats, threads, jobs, mem = sys.argv[1:6]
+got = dict(l.split(" ", 1) for l in open(stats, encoding="utf-8").read().splitlines() if " " in l)
+def num(k):
+    v = got.get(k, "").strip()
+    return int(v) if v.isdigit() else None
+peak, full = num("mem_peak_b"), num("mem_pressure_full_us")
+host = {"threads": int(threads), "jobs": int(jobs), "mem_max_g": int(mem),
+        "mem_peak_g": None if peak is None else round(peak / 2 ** 30, 1),
+        "mem_events_max": num("mem_events_max"), "mem_oom_kill": num("mem_oom_kill"),
+        "mem_pressure_full_s": None if full is None else round(full / 1e6, 1),
+        "lock_wait_s": num("lock_wait_s")}
+cov = json.load(open(p, encoding="utf-8"))
+cov["host"] = host
+json.dump(cov, open(p, "w", encoding="utf-8"), sort_keys=True)' "$out/coverage.json" "$COV_HOST_STATS" $COV_LIMITS || rc=1
         fi
     fi
     # A hold that ended early is already reaped and its variables gone (as in
@@ -1692,7 +1919,7 @@ case "$sub" in
     push)   [ $# -eq 2 ] || die "push <ssh-target> <strand>"; cmd_push "$@" ;;
     hold)   [ $# -eq 2 ] || die "hold <ssh-target> <strand>"; cmd_hold "$@" ;;
     check)  [ $# -ge 2 ] || die "check <ssh-target> <strand> [cargo check args]"; cmd_check "$@" ;;
-    coverage) { [ $# -ge 3 ] && [ $# -le 5 ]; } || die "coverage <ssh-target> <strand> <deadline-s> [<out-dir> [full|browser]]"
+    coverage) { [ $# -ge 3 ] && [ $# -le 6 ]; } || die "coverage <ssh-target> <strand> <deadline-s> [<out-dir> [full [<sha>]|browser]]"
               cmd_coverage "$@" ;;
     test)   [ $# -ge 3 ] || die "test <ssh-target> <strand> <filterset> [nextest args]"; cmd_test "$@" ;;
     fetch)  [ $# -eq 3 ] || die "fetch <ssh-target> <strand> <dir>"; cmd_fetch "$@" ;;

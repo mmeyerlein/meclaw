@@ -814,7 +814,7 @@ def store_locked(exc):
     return isinstance(exc, store.StoreWriteError) or store._busy(exc)
 
 
-def while_locked(fn, *, end, reset=None):
+def while_locked(fn, *, end, reset=None, clock=time):
     """`fn()` for a waiter (`take --wait`, `gate --wait-admission`, `merge
     --wait`): a store that answers locked or busy never ends the wait; `fn`
     runs again after a growing pause (`LOCKED_PAUSE_S`) until the monotonic
@@ -822,17 +822,19 @@ def while_locked(fn, *, end, reset=None):
     other error passes at once; a caller that does not wait never gets here.
     `reset()` runs after each refusal (a transaction a refused COMMIT left
     open must not swallow the next round). The pause runs outside the
-    `except`, as in `store.retry_write`. `fn` must be safe to repeat."""
+    `except`, as in `store.retry_write`. `fn` must be safe to repeat.
+    `clock` gives `monotonic()` and `sleep()` (the `time` module; a test
+    hands a `kit_time.FakeClock`, so `end` counts on that clock)."""
     pause = LOCKED_PAUSE_S[0]
     while True:
         try:
             return fn()
         except (sqlite3.OperationalError, store.StoreWriteError) as exc:
-            if not store_locked(exc) or time.monotonic() >= end:
+            if not store_locked(exc) or clock.monotonic() >= end:
                 raise
         if reset:
             reset()
-        time.sleep(max(0.0, min(pause, end - time.monotonic())))
+        clock.sleep(max(0.0, min(pause, end - clock.monotonic())))
         pause = min(pause * 2, LOCKED_PAUSE_S[1])
 
 

@@ -85,8 +85,12 @@ fn gh_d58_target_a_reported_row_beats_the_fallback_knobs() {
         json!([said("A fine walk.")]),
     );
 
-    // The unheard target reports its row: its next window is cut by the
-    // row, the fallbacks no longer count for it either.
+    // The unheard target reports its row. Its window is cut by the rows it
+    // was first cut by on the state of the plan that stands (GH #1497,
+    // `form_view`, budget included since review M1 of the prefix strand):
+    // the call after the report still stands under the fallbacks -- the
+    // prefix holds -- and orders the change of plan that takes the row on.
+    // From that change on the row counts, the fallbacks no longer do.
     announce(
         &mut h,
         "unheard",
@@ -107,8 +111,47 @@ fn gh_d58_target_a_reported_row_beats_the_fallback_knobs() {
         later.hop
     );
     assert!(
-        !has_overflow_cut(&later),
-        "after its report the row counts, the fallbacks do not: {:?}",
+        has_overflow_cut(&later),
+        "inside the plan that stands the window keeps the rows it was cut by: {:?}",
         later.hop
+    );
+    answer(
+        &mut h,
+        &later,
+        "stop",
+        json!({}),
+        json!([said("A fine walk.")]),
+    );
+    let order = h
+        .clock_order_for(ROUND_E)
+        .unwrap_or_else(|| panic!("the reported row orders a change of plan: {:?}", h.clock));
+    // t3 stands over the hard line of the fallbacks: that excess gives the
+    // order the reason `hard`, which goes before `catalog` -- the rebuild that
+    // takes the reported row on is the same one. The reason `catalog` itself
+    // is pinned in `gh_d58_prefix_a_profile_that_arrives_between_two_calls_
+    // keeps_the_prefix`.
+    assert_eq!(
+        order.body["emit_body"]["reason"],
+        json!("hard"),
+        "{:?}",
+        order.body
+    );
+    h.fire(&order);
+    let after = say(
+        &mut h,
+        Some("unheard"),
+        "t4",
+        "Tell me about the river walk.",
+    );
+    assert_eq!(
+        after.hop.get("target"),
+        Some(&json!("unheard")),
+        "{:?}",
+        after.hop
+    );
+    assert!(
+        !has_overflow_cut(&after),
+        "after its report and the change of plan the row counts, the fallbacks do not: {:?}",
+        after.hop
     );
 }

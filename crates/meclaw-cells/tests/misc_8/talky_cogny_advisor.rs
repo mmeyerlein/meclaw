@@ -524,6 +524,50 @@ async fn recv_bounded(rx: &mut mpsc::Receiver<Message>) -> Option<Message> {
         .flatten()
 }
 
+/// GH #1497 (setup): the talky brain's package line reaches its curator before
+/// the first turn, the way the registry's push does in a running colony -- a
+/// params-only message on the composite's `in_model` lane, which the brain
+/// answers with its row on `package` and the curator keeps (`in_catalog`,
+/// state `catalog:brain`). A round is cut from the rows of its first cut (D58
+/// form, GH #1497); with the row in place before that cut, the talky's window
+/// (short ids) holds from the first call on. The ledger is read read-only and
+/// never created here; the hang mark is the abort, never a verdict.
+async fn await_catalog(h: &ColonyHandle, root: &std::path::Path) {
+    h.send(
+        MessageBuilder::new(Path::new("/talky"))
+            .hop(
+                json!({"route": "in_model"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .body(Body::Inline(json!({"params": {}})))
+            .ttl(400)
+            .build(),
+    )
+    .await;
+    let db = root.join("main/talky/curator/ledger/cell.db");
+    meclaw_testing::wait::until("talky: the curator holds the brain's catalogue row", || {
+        let held = db.is_file()
+            && rusqlite::Connection::open_with_flags(
+                &db,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .ok()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT value FROM state WHERE key = 'catalog:brain'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+            .is_some_and(|v| !v.is_empty());
+        async move { held }
+    })
+    .await
+}
+
 /// The whole wire conversation of one provider call, as one string.
 fn wire_of(req: &mock_openai::OpenAiRequestSnapshot) -> String {
     meclaw_core::serde_json::to_string(req.messages().expect("wire messages")).unwrap_or_default()
@@ -552,6 +596,7 @@ async fn a_consult_answers_the_channel_at_once_and_the_advice_follows_later() {
     let td = tempfile::TempDir::new().unwrap();
     build_tree(&td, &mock.base_url, false, "120000");
     let (h, mut sink_rx, mut park_rx) = boot(&td).await;
+    await_catalog(&h, td.path()).await;
 
     h.send(turn("what is the weather in berlin?")).await;
 

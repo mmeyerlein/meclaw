@@ -152,6 +152,27 @@ class WaveClose(unittest.TestCase):
                                     red_tests=red)
         (self.maps / ("coverage-%s.json" % rev)).write_text(json.dumps(cov), encoding="utf-8")
 
+    def terms(self, terms):
+        """The resolver's answer for the carry of the close (the tree here is no workspace)."""
+        from scripts.pipeline import coverage  # noqa: F401 -- puts scripts/ on the path
+        return mock.patch("gate_plan.test_terms", lambda paths, repo=None: terms)
+
+    def move_master(self):
+        """A plans-only commit after the map (kit trap d53-2 K3 (2)): the end tip has no map."""
+        (self.root / "plans" / "note.md").write_text("# note\n", encoding="utf-8")
+        _git(self.root, "add", "plans/note.md")
+        _git(self.root, "commit", "-q", "-m", "plans only")
+        old, self.tip = self.tip, _git(self.root, "rev-parse", "HEAD")
+        return old
+
+    def built_rows(self):
+        db = store.open_ro(self.db_path)
+        try:
+            return [json.loads(r[0]) for r in db.execute(
+                "SELECT data FROM journal WHERE event='coverage_built'")]
+        finally:
+            store.close(db)
+
     def close(self, gh, **kw):
         self.lines = []
         kw.setdefault("dry_run", True)
@@ -246,7 +267,9 @@ class WaveClose(unittest.TestCase):
         self.write_map(old, "GREEN")
         _git(self.root, "commit", "-q", "--allow-empty", "-m", "merge after the map")
         self.tip = _git(self.root, "rev-parse", "HEAD")
-        self.assertEqual(1, self.close(gh))
+        # d59-2 V7: the close carries a map whose diff selects no test; this one selects
+        with self.terms({"all()": ["rule:12 file:Cargo.lock"]}):
+            self.assertEqual(1, self.close(gh))
         self.assertIn("COVERAGE end-tip=%s verdict=MISSING" % self.tip[:9], "\n".join(self.lines))
         # a GREEN map on the end tip lets the close go on
         self.write_map(self.tip, "GREEN")
@@ -268,6 +291,65 @@ class WaveClose(unittest.TestCase):
         self.assertIn("verdict=GREEN", line)
         self.assertIn("carried from aaaaaaaaa (measured 2026-11-09T01:56:24Z on lane-a)", line)
         self.assertEqual(coverage.verdict_of(cov), "GREEN")
+
+    def test_wave_close_carries_a_missing_end_tip_map_when_the_diff_selects_no_test(self):
+        # d59-2 V7 (#1487): every plans-only commit after the map start left `wave close`
+        # without a map; a diff that selects no test is carried by the close itself
+        gh = FakeGh({11: ("CLOSED", []), 12: ("CLOSED", []), 13: ("CLOSED", [])})
+        old = self.move_master()
+        with self.terms({}):
+            self.assertEqual(0, self.close(gh, dry_run=False), self.lines)
+        line = [ln for ln in self.lines if ln.startswith("COVERAGE end-tip=")][0]
+        self.assertIn("COVERAGE end-tip=%s verdict=GREEN" % self.tip[:9], line)
+        self.assertIn("carried from %s" % old[:9], line)
+        self.assertTrue((self.maps / ("coverage-%s.json" % self.tip)).is_file())
+        # the carry journals into the close's store, never the default one
+        self.assertEqual([b["rev"] for b in self.built_rows()], [self.tip])
+
+    def test_wave_close_dry_run_carries_nothing(self):
+        gh = FakeGh({11: ("CLOSED", []), 12: ("CLOSED", []), 13: ("CLOSED", [])})
+        old = self.move_master()
+        with self.terms({}):
+            self.assertEqual(0, self.close(gh, dry_run=True), self.lines)
+        line = [ln for ln in self.lines if ln.startswith("COVERAGE end-tip=")][0]
+        self.assertIn("verdict=GREEN", line)
+        self.assertIn("would carry from %s" % old[:9], line)
+        self.assertFalse((self.maps / ("coverage-%s.json" % self.tip)).exists())
+        self.assertEqual(self.built_rows(), [])
+
+    def test_wave_close_dry_run_says_only_would_carry(self):
+        # d59-2 fix round (review M1): nothing was carried yet -- no "carried from"
+        gh = FakeGh({11: ("CLOSED", []), 12: ("CLOSED", []), 13: ("CLOSED", [])})
+        old = self.move_master()
+        with self.terms({}):
+            self.assertEqual(0, self.close(gh, dry_run=True), self.lines)
+        line = [ln for ln in self.lines if ln.startswith("COVERAGE end-tip=")][0]
+        self.assertIn("would carry from %s" % old[:9], line)
+        self.assertNotIn("carried from", line.replace("would carry from", ""))
+
+    def test_wave_close_names_the_build_without_a_lane_when_it_cannot_carry(self):
+        gh = FakeGh({11: ("CLOSED", []), 12: ("CLOSED", []), 13: ("CLOSED", [])})
+        self.move_master()
+        hosts = self.root.parent / (self.root.name + "-lanes")
+        self.addCleanup(lambda: hosts.unlink(missing_ok=True))
+        hosts.write_text("mm-local local class=egon\nlane-a lane-a.example\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts)}), \
+                self.terms({"all()": ["rule:12 file:Cargo.lock"]}):
+            self.assertEqual(1, self.close(gh, dry_run=False))
+            line = [ln for ln in self.lines if ln.startswith("COVERAGE end-tip=")][0]
+            self.assertIn("verdict=MISSING", line)
+            self.assertIn("not carried: the diff", line)
+            self.assertIn("selects tests: all()", line)
+            self.assertIn("pipeline coverage build --lane mm-local --rev master", line)
+            # a build lane that is on goes first
+            db = store.open(self.db_path)
+            db.execute("INSERT INTO runners (name, state) VALUES ('lane-a', 'on')")
+            db.commit()
+            store.close(db)
+            self.assertEqual(1, self.close(gh, dry_run=True))
+            line = [ln for ln in self.lines if ln.startswith("COVERAGE end-tip=")][0]
+            self.assertIn("pipeline coverage build --lane lane-a --rev master", line)
+        self.assertFalse((self.maps / ("coverage-%s.json" % self.tip)).exists())
 
     def test_wave_close_refuses_a_report_without_orga_inputs(self):
         (self.wdir / "berichte" / "s3.md").write_text(report("s3", [], "nothing about Orga"),

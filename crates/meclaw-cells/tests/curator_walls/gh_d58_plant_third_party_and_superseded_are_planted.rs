@@ -13,7 +13,7 @@
 //! Pinned: at least two points of each kind; every keyword is carried by its
 //! row alone; both kinds are the person's words; a `third_party` row names its
 //! subject; the old row of a `superseded` point stands at least two planting
-//! beats (sixteen rows) before the new one. Nothing here counts what a
+//! beats (thirty-two rows) before the new one. Nothing here counts what a
 //! summary keeps -- that is the bank's reader's (B1).
 
 // harness_fold: #[path = "support/curator_bank.rs"]

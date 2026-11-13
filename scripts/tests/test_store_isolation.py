@@ -94,6 +94,26 @@ class StoreIsolationGuard(unittest.TestCase):
         self.assertEqual(os.environ.get(store_isolation.DB_ENV), before)
         self.assertFalse(path.parent.exists())
 
+    def test_isolate_points_the_host_file_away_from_the_machine(self):
+        # d59-2 fix round (review M3): `night.local_lane` and `wave._build_hint` read
+        # the host file; a test never reads the machine's `~/.config/meclaw/lanes`
+        name = "MECLAW_LANES_FILE"   # = coverage.lanes_file
+        before = os.environ.get(name)
+        os.environ[name] = "/nonexistent/machine-lanes"
+        try:
+            path = store_isolation.isolate()
+            try:
+                self.assertEqual(pathlib.Path(os.environ[name]).parent, path.parent)
+                self.assertFalse(pathlib.Path(os.environ[name]).exists())
+            finally:
+                store_isolation.restore()
+            self.assertEqual(os.environ.get(name), "/nonexistent/machine-lanes")
+        finally:
+            if before is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = before
+
     def test_isolate_drops_the_outbound_metric_and_grafana_targets(self):
         names = ("MECLAW_PIPELINE_METRICS_URL", "MECLAW_GRAFANA_URL", "GRAFANA_ADMIN_PASS")
         before = {n: os.environ.get(n) for n in names}

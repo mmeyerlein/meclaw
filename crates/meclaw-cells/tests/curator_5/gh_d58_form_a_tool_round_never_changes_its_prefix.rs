@@ -70,6 +70,15 @@ fn a_round_under_strikes(preset: &str, calls: u32, chars: usize) {
         t.answer(&c, "tool_calls", json!([tool_call(&tid(j), "read_file")]));
         // The clock strikes while the round waits for its tool.
         strike(&mut t);
+        // Roundpin review M-6: the first stroke in the round writes a plan
+        // -- without it the later calls would keep their prefix for nothing.
+        if j == 1 {
+            assert!(
+                rebuilt(&t),
+                "{preset}: check of the setup: a plan was written in the round: {:?}",
+                t.h.stderr
+            );
+        }
         let result = if j == 2 {
             "{\"error\": \"exit status 1\"}".to_string()
         } else {

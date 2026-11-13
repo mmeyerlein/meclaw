@@ -7,6 +7,15 @@
 //! ledger operation more. The arm with the knob on is the control: without
 //! it the comparison would pass on a tree that knows no such knob.
 //!
+//! What this file compares (review coldgc M3): the knob unset against "0",
+//! both on the code at hand -- "0" is the default and writes nothing of its
+//! own. That the default is the curator before the strand is held by the
+//! corpus `gh_d38_c0_policy_corpus_is_byte_identical` (its fixtures drive
+//! strokes of the clock and stayed untouched by the strand) and by the
+//! reading of the code: every new branch hangs on `GC_ON_COLD`. Not byte
+//! identical by the plan: `amortise_after` (contract point 6, whatever the
+//! knob) and `"cold": 0` in `rebuild.by_mark` of the stats.
+//!
 //! Runs the shipped curator hive (`support/curator_cold.rs`); no model.
 
 // harness_fold: #[path = "support/curator_cold.rs"]

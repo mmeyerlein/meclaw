@@ -1535,7 +1535,9 @@ class TestExecutorNextest(ExecutorCase):
         (pipe / "browser_cover.py").write_text(
             "import sys\nprint({'select': '-p c1 --test l1', 'filter': 'binary_id(=c1::l1)'}"
             "[sys.argv[1]])\n")
-        (self.tree / "scripts" / "pipeline.py").write_text("")
+        # aggregate writes the map (d59-2 local V4: without it the profiles stay, exit 1)
+        (self.tree / "scripts" / "pipeline.py").write_text(
+            "import sys\nopen(sys.argv[sys.argv.index('--out') + 1], 'w').write('{}')\n")
         sysroot = self.root / "sysroot"
         self.write_exe(sysroot / "lib" / "rustlib" / "x86_64-unknown-linux-gnu" / "bin"
                        / "llvm-profdata", "#!/bin/sh\n")
@@ -1543,9 +1545,18 @@ class TestExecutorNextest(ExecutorCase):
         self.write_exe(self.bin / "cargo", "#!/bin/sh\nprintf 'cargo %s\\n' \"$*\" >> \"$CALLS\"\n")
         env = dict(os.environ, PATH="%s:%s" % (self.bin, os.environ.get("PATH", "")),
                    CALLS=str(self.calls))
+        # d59-2 local V1: scope `full` refuses a tree that is not the commit it
+        # was handed -- the tree is a repository whose HEAD is that commit
+        git = ["git", "-C", str(self.tree), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        clean = {k: v for k, v in env.items() if not k.startswith("GIT_")}
+        subprocess.run(git + ["init", "-q"], check=True, env=clean, capture_output=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "c"], check=True, env=clean,
+                       capture_output=True)
+        rev = subprocess.run(git + ["rev-parse", "HEAD"], check=True, env=clean,
+                             capture_output=True, text=True).stdout.strip()
         for scope in ("full", "browser"):
             p = subprocess.run(["bash", str(pipe / "coverage_host.sh"), str(self.root / "cov" / "target"),
-                                "600", REV, scope], cwd=self.tree, env=env,
+                                "600", rev, scope], cwd=self.tree, env=env,
                                capture_output=True, text=True, timeout=2 * kit_time.HANG)
             self.assertEqual(0, p.returncode, p.stdout + p.stderr)
         feat = "--features meclaw-colony/test-hooks"

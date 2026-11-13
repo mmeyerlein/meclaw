@@ -1197,6 +1197,15 @@ fn sow(wall: &Wall, run: &Run) -> (Hive, Vec<i64>) {
     (h, seqs)
 }
 
+/// The day the oldest pending summarizer request shows, None for a
+/// transcript without a dated row line (the prose form).
+fn summary_day(h: &Hive) -> Option<String> {
+    h.summ
+        .front()
+        .and_then(|r| r.messages().last().cloned())
+        .and_then(|m| m["text"].as_str().and_then(transcript_day_of))
+}
+
 /// Every request of the summarizer a rebuild left open, answered by the stub
 /// of the wall: on the way of the summarizer, and -- a run that has its own
 /// model condense (`summarizer_self`) asks as a model call instead (D58
@@ -1204,8 +1213,15 @@ fn sow(wall: &Wall, run: &Run) -> (Hive, Vec<i64>) {
 /// on `in_summary_self`. Returns the requests, in order.
 fn condense(h: &mut Hive, wall: &Wall) -> Vec<Msg> {
     let mut requests = Vec::new();
+    // GH #1496: a stub brief names its day as `{day}` and is dated with a day
+    // its transcript shows -- the policy drops a line dated with another.
+    let dated = |summary: &str, transcript: Option<String>| match transcript {
+        Some(day) if summary.contains("{day}") => summary.replace("{day}", &day),
+        _ => summary.to_string(),
+    };
     while !h.summ.is_empty() {
-        requests.push(h.answer(&wall.summary, "stop"));
+        let day = summary_day(h);
+        requests.push(h.answer(&dated(&wall.summary, day), "stop"));
     }
     let own: Vec<Msg> = h
         .routed("model_call")
@@ -1219,7 +1235,11 @@ fn condense(h: &mut Hive, wall: &Wall) -> Vec<Msg> {
             json!({"finish_reason": "stop", "model": "role-model", "summarize": "1",
                    "summary_call": call.hop.get("summary_call").cloned().unwrap_or_default(),
                    "summary_token": call.hop.get("summary_token").cloned().unwrap_or_default()}),
-            json!({"messages": [said(&wall.summary)]}),
+            json!({"messages": [said(&dated(&wall.summary, call
+                .messages()
+                .last()
+                .and_then(|m| m["text"].as_str())
+                .and_then(transcript_day_of)))]}),
         );
         requests.push(call);
     }
@@ -1297,6 +1317,14 @@ fn run_sown(
         .unwrap_or_else(|_| panic!("{who}: the hive names the aim of the rebuild"));
     h.fire(&order);
     let requests = condense(&mut h, wall);
+    // The way through the cache is the collection, not a rebuild with the
+    // summarizer (review coldgc M4): a wall that took the other branch would
+    // have its statements `through the cache` read a summary instead.
+    assert!(
+        run.trigger != Trigger::Cache || requests.is_empty(),
+        "{who}: the strike of the cache collects and asks the summarizer nothing: {} requests",
+        requests.len()
+    );
     let plan = h.plan_in(ROUND_E);
     // A cold collection that finds nothing writes no plan (GH #1464): the
     // window stays the one of before, and the statements read it so.
@@ -1919,6 +1947,19 @@ pub fn marks_count(bank: &Bank, wall: &Wall, o: &Outcome) {
             "{}: a collection that wrote no plan wrote no gc mark: {:?}",
             o.who(),
             o.gc
+        );
+        // Nor did it pass over an old tool result it would have shrunk
+        // (review coldgc M4): with nothing found, the wall holds none.
+        let missed = cold_tools(wall, o);
+        assert!(
+            missed.is_empty(),
+            "{}: the collection found nothing, yet the wall holds old tool results it shrinks: \
+             {:?}",
+            o.who(),
+            missed
+                .iter()
+                .map(|i| wall.pieces[*i].id())
+                .collect::<Vec<_>>()
         );
         for class in wall.classes() {
             if bank.collects(class, &o.knobs) != Collects::Always {

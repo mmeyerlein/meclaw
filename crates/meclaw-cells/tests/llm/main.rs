@@ -18,6 +18,7 @@ pub mod gh886_every_llm_cell_declares_hop_model;
 pub mod gh890_every_llm_cell_declares_what_output_writes;
 pub mod gh94_responses_attachments;
 pub mod gh_d38_k5_the_llm_tap_stamps_price_tiers_and_cache_write;
+pub mod gh_d58_form_a_timed_out_llm_call_answers_with_an_error;
 pub mod gh_d58_target_a_changed_profile_is_announced_again;
 pub mod gh_d58_target_a_set_override_of_the_profile_param_passes_the_door;
 pub mod gh_d58_target_a_twin_announces_its_package_after_the_handover;

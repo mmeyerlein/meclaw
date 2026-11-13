@@ -685,7 +685,7 @@ impl Hive {
     pub fn query(&self, sql: &str) -> Vec<Value> {
         use rusqlite::types::ValueRef;
         let mut st = self.db.prepare(sql).expect(sql);
-        let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        let names: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         st.query_map([], |r| {
             let mut o = Map::new();
             for (i, n) in names.iter().enumerate() {

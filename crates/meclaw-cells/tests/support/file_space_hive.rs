@@ -1036,7 +1036,7 @@ impl Space {
                     .db
                     .prepare(&format!("SELECT * FROM \"{t}\" LIMIT 0"))
                     .unwrap();
-                st.column_names().iter().map(|c| c.to_string()).collect()
+                st.column_names().map(|c| c.to_string()).collect()
             };
             let list = cols
                 .iter()

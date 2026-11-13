@@ -14,6 +14,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -207,7 +208,10 @@ class LaneOverlayTest(unittest.TestCase):
     from the local worktree five minutes later, and called a clean ab1f6fa11
     rev-dirty."""
 
-    def lane(self, before, during, delete=False):
+    def lane(self, before, during, delete=False, scope="browser"):
+        """`coverage_lane.sh` over a stub engine; `(rev of the map, stderr)`.
+        Scope `browser` (the probe) keeps the overlay; `full` hands the engine
+        the commit (d59-2 local V1), the stub's map then names that SHA."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = pathlib.Path(tmp.name)
@@ -217,6 +221,8 @@ class LaneOverlayTest(unittest.TestCase):
         (root / "kept.txt").write_text("x\n")
         subprocess.run(git + ["add", "kept.txt"], check=True, env=env)
         subprocess.run(git + ["commit", "-q", "-m", "c"], check=True, env=env)
+        self.sha = subprocess.run(git + ["rev-parse", "HEAD"], check=True, env=env,
+                                  capture_output=True, text=True).stdout.strip()
         if delete:
             (root / "kept.txt").unlink()
         (root / "scripts" / "pipeline").mkdir(parents=True)
@@ -229,12 +235,13 @@ class LaneOverlayTest(unittest.TestCase):
         # `coverage` writes the lane's map and, like a build or an edit during
         # the run, changes the overlay; `files` prints the overlay NUL-separated
         stub.write_text("#!/usr/bin/env bash\ncase \"$1\" in\n"
-                        "  coverage) printf '{\"rev\": \"abc\"}' > \"$5/coverage.json\"\n"
+                        "  coverage) printf '{\"rev\": \"%%s\"}' \"${7:-abc}\" > \"$5/coverage.json\"\n"
                         "            printf '%%s' '%s' > '%s' ;;\n"
                         "  files) tr '\\n' '\\0' < '%s' ;;\nesac\n" % (during, state, state))
         stub.chmod(0o755)
         out = root / "out"
-        res = subprocess.run(["bash", str(script), "tgt", "s1", str(out)], capture_output=True,
+        args = [scope] + ([self.sha] if scope == "full" else [])
+        res = subprocess.run(["bash", str(script), "tgt", "s1", str(out)] + args, capture_output=True,
                              text=True, env=env, cwd=str(root), timeout=2 * kit_time.HANG)
         self.assertEqual(0, res.returncode, res.stderr)
         return json.loads((out / "coverage.json").read_text())["rev"], res.stderr
@@ -253,6 +260,36 @@ class LaneOverlayTest(unittest.TestCase):
         # `lane_sync.sh files` lists what the overlay sends, never a deletion
         rev, err = self.lane("", "", delete=True)
         self.assertEqual("abc-dirty", rev, err)
+
+    def test_the_browser_probe_keeps_the_overlay_and_is_never_installed(self):
+        # d59-2 local V1: only the probe still measures the tree with its overlay
+        # -- its map says `-dirty` and `coverage build` never installs it
+        rev, err = self.lane("crates/a/src/lib.rs\n", "", scope="browser")
+        self.assertEqual("abc-dirty", rev, err)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        _rc, calls, maps, _db, _out = ProbeTest._build(
+            types.SimpleNamespace(root=pathlib.Path(tmp.name)),
+            {l: {"binary": _bid(l), "measured": True, "tests": 2}
+             for l in gate_plan.BROWSER_LOCKS}, rev="r9-dirty")
+        self.assertEqual("browser", [c for c in calls
+                                     if any("coverage_lane.sh" in str(x) for x in c)][0][-1])
+        self.assertFalse(maps.exists() and any(maps.iterdir()))
+
+    def test_build_from_a_dirty_tree_says_the_overlay_stays_behind(self):
+        # d59-2 local V1 (O6): scope `full` hands the engine the commit; an
+        # overlay of the calling tree (changed, untracked or deleted) stays
+        # here, the map names the commit and never `-dirty` -- one line says so
+        for before, delete in (("crates/a/src/lib.rs\n", False), ("", True)):
+            with self.subTest(delete=delete):
+                rev, err = self.lane(before, "", delete=delete, scope="full")
+                self.assertEqual(self.sha, rev, err)
+                self.assertNotIn("dirty", err)
+                self.assertIn("coverage: the tree carries an overlay -- the map measures "
+                              "commit %s without it" % self.sha[:9], err)
+        rev, err = self.lane("", "", scope="full")
+        self.assertEqual(self.sha, rev, err)
+        self.assertNotIn("overlay", err)
 
 
 class AggregateTest(Base):
@@ -293,12 +330,12 @@ class ProbeTest(Base):
     """`coverage build --scope browser`: the probe of the locks alone. It never
     installs its map where narrowing reads, never journals `coverage_built`."""
 
-    def _build(self, field):
+    def _build(self, field, rev="r9"):
         hosts = self.root / "lanes"
         hosts.write_text("lane-a user@lane-a.invalid\n")
         out, maps, db_path = self.root / "out", self.root / "maps", self.root / "p.db"
         out.mkdir()
-        cov = {"rev": "r9", "parts": [], "built_at": "2026-10-10T08:00:00Z",
+        cov = {"rev": rev, "parts": [], "built_at": "2026-10-10T08:00:00Z",
                browser_cover.FIELD: field}
         (out / "coverage.json").write_text(json.dumps(cov))
         parser = argparse.ArgumentParser()
@@ -378,6 +415,7 @@ def _full_build(root, cov):
     with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts),
                                       "MECLAW_PIPELINE_COVERAGE_DIR": str(maps)}), \
             mock.patch.object(coverage, "lane_up", return_value=True), \
+            mock.patch.object(coverage, "resolve_rev", return_value=cov["rev"]), \
             mock.patch.object(coverage.subprocess, "run",
                               side_effect=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0)), \
             mock.patch.object(sys, "stdout", so), \

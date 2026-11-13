@@ -302,7 +302,7 @@ mod tests {
     fn gh98_a_once_keyed_write_racing_another_writer_waits() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("cell.db");
-        let c = rusqlite::Connection::open(&path).unwrap();
+        let mut c = rusqlite::Connection::open(&path).unwrap();
         c.pragma_update(None, "journal_mode", "WAL").unwrap();
         c.execute_batch("CREATE TABLE items (id INTEGER, name TEXT);")
             .unwrap();
@@ -531,7 +531,7 @@ mod tests {
     fn gh98_a_once_keyed_write_that_cannot_open_answers_sql_error() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("cell.db");
-        let c = rusqlite::Connection::open(&path).unwrap();
+        let mut c = rusqlite::Connection::open(&path).unwrap();
         c.pragma_update(None, "journal_mode", "WAL").unwrap();
         c.execute_batch("CREATE TABLE items (id INTEGER, name TEXT);")
             .unwrap();
@@ -561,7 +561,7 @@ mod tests {
     fn gh98_a_once_keyed_write_that_cannot_create_the_book_answers_sql_error() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("cell.db");
-        let c = rusqlite::Connection::open(&path).unwrap();
+        let mut c = rusqlite::Connection::open(&path).unwrap();
         c.pragma_update(None, "journal_mode", "WAL").unwrap();
         c.execute_batch("CREATE TABLE items (id INTEGER, name TEXT);")
             .unwrap();
@@ -609,7 +609,7 @@ mod tests {
     fn gh98_a_once_keyed_write_whose_commit_fails_answers_sql_error() {
         let td = tempfile::TempDir::new().unwrap();
         let path = td.path().join("cell.db");
-        let c = rusqlite::Connection::open(&path).unwrap();
+        let mut c = rusqlite::Connection::open(&path).unwrap();
         c.pragma_update(None, "journal_mode", "DELETE").unwrap();
         c.execute_batch("CREATE TABLE items (id INTEGER, name TEXT);")
             .unwrap();

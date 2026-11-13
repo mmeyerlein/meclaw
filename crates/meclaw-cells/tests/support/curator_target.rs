@@ -338,63 +338,68 @@ pub fn fixed_window(
            "tool_scope": c.body.get("tool_scope").cloned().unwrap_or(Value::Null)})
 }
 
+/// The text of the lock's list, `support/curator_locked_names.txt`: one name
+/// per line, `#` lines are comments. WHY a data file and no array: the array
+/// `[&str; N]` carried a count, so every strand that added a name changed it
+/// and collided with every other strand that added one (D58 close, GH #1494);
+/// `.gitattributes` merges the file by `union` instead.
+pub const LOCKED_NAMES_TEXT: &str = include_str!("curator_locked_names.txt");
+
+/// The names of a list in the form of [`LOCKED_NAMES_TEXT`]: every line that
+/// is no comment, as written and in order (an empty line is an empty name,
+/// which [`locked_names_problems`] refuses).
+pub fn locked_names_of(text: &str) -> Vec<&str> {
+    text.lines().filter(|l| !l.starts_with('#')).collect()
+}
+
+/// What keeps a list in the form of [`LOCKED_NAMES_TEXT`] from being one,
+/// each with its line and name: an empty name, a name outside the alphabet
+/// of a cell, lane or hop value (`[a-z][a-z0-9_-]*`), a name twice -- the
+/// things a `union` merge can bring.
+pub fn locked_names_problems(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen: Vec<(&str, usize)> = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let n = i + 1;
+        if line.starts_with('#') {
+            continue;
+        }
+        if line.is_empty() {
+            out.push(format!("line {n}: an empty name"));
+            continue;
+        }
+        let mut chars = line.chars();
+        let first_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase());
+        if !first_ok
+            || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        {
+            out.push(format!(
+                "line {n}: `{line}` is no name of a cell, lane or hop value"
+            ));
+        }
+        match seen.iter().find(|(s, _)| *s == line) {
+            Some((_, first)) => out.push(format!(
+                "line {n}: `{line}` stands twice (first on line {first})"
+            )),
+            None => seen.push((line, n)),
+        }
+    }
+    out
+}
+
 /// The names no script of the curator, no edge and no contract of its hive
-/// may name (contract point 14). Every later strand of the stage adds its
-/// own names here; there are no exceptions.
-pub const LOCKED_NAMES: [&str; 31] = [
-    "brain",
-    "quick",
-    "quick_spec",
-    "quick_bridge",
-    "strong",
-    "consult",
-    "research",
-    "talky",
-    "coding",
-    "cogny",
-    "consult_cogny",
-    "sa_stage",
-    // D58 lead (GH #1474): the switch and its store left the curator.
-    "lead_state",
-    "curator-lead",
-    // D58 live (GH #1482): the curator knows a running session only by its
-    // handle `live`; the voice's engine and its lanes' names stay outside.
-    "duplex",
-    "in_call_end",
-    "call_facts",
-    // D58 judge (GH #1480): the judge is a model like any other, its window a
-    // view of a target the caller names; a screen, a wind-down line and the
-    // person's hints are contributions and seed lines without a kind.
-    "judge",
-    "screen",
-    "wind_down",
-    "hints",
-    // D58 note (GH #1477): the compositions that hand `note_receipt` out at
-    // their rim (talky and cogny stand above); where it goes is theirs.
-    "simple-agent",
-    "figure",
-    // D58 frame (GH #1478): what a turn of a stamp class gets is the
-    // composition's `class_notes`; the curator names no class of its own.
-    // The lead hive (`templates/lead`) is not read by this lock.
-    "clarify",
-    // D58 feed (GH #1481): the curator sends a feed on its own route
-    // `live_feed` and passes the section on uninterpreted; the receiving
-    // cell and the lane its composition translates the feed into stay
-    // outside.
-    "voice",
-    "in_advise",
-    // D58 moveout (GH #1476): the bridge, the waiting-time advise and the
-    // early interrupt left the curator -- it offers a conditional side call
-    // and a conditional feed; what they say and when is the lead's.
-    "bridge",
-    "horizon_advise",
-    "interrupt",
-    // D58 proof (GH #1475): the name simple-agent carries its target under.
-    "sa_target",
-    // D58 followup (GH #1479): the person's wellbeing is the hive
-    // `assistant`'s; the curator carries a registered class unnamed.
-    "wellbeing",
-];
+/// may name (contract point 14), read from [`LOCKED_NAMES_TEXT`]. A list
+/// with a problem of [`locked_names_problems`] stops every user of the lock
+/// with the problem, never a lock that silently reads a broken list.
+pub static LOCKED_NAMES: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    let problems = locked_names_problems(LOCKED_NAMES_TEXT);
+    assert!(
+        problems.is_empty(),
+        "the lock's list (support/curator_locked_names.txt):\n  {}",
+        problems.join("\n  ")
+    );
+    locked_names_of(LOCKED_NAMES_TEXT)
+});
 
 /// The lock's reader: a whole string literal of the code (a comment, a
 /// docstring or a bare string statement is no code; a part of a longer
@@ -405,6 +410,10 @@ pub const LOCKED_NAMES: [&str; 31] = [
 /// strand found the phase `judge-write` in new curator code, which the
 /// whole-literal reader let through. Other literals stay whole, so a param
 /// or key that only starts with a name (`judge_context`, `hints_of`) is none.
+/// In the edges and the contract every key is read as a name too, and in an
+/// edge a field name without quotes (`hop.<f>`, `context.<f>`, `body.<f>`):
+/// review 2 m8 of the target strand showed a field name in a condition
+/// (`context.sa_stage`) invisible to the reader (D58 close, GH #1494).
 const LOCK_READER: &str = r#"
 import ast, json, re, sys
 d = json.load(sys.stdin)
@@ -428,6 +437,7 @@ for src in d["sources"]:
                 out.append("%s:%d: %r" % (src["where"], n.lineno, h if h == n.value
                                           else "%s in %s" % (h, n.value)))
 QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+FIELD = re.compile(r"\b(?:hop|context|body)\.([A-Za-z_][A-Za-z0-9_]*)")
 def strings(v):
     if isinstance(v, str):
         yield v
@@ -435,17 +445,26 @@ def strings(v):
         for x in v:
             yield from strings(x)
     elif isinstance(v, dict):
-        for x in v.values():
+        for k, x in v.items():
+            # A key is a field name as it stands (`{"set_hop": {"<name>":
+            # ...}}`, `{"emits": {"hop": {"<name>": ...}}}`), read whole:
+            # marked, so no quoted part of it is searched.
+            yield ("key", k)
             yield from strings(x)
 for i, e in enumerate(d["edges"]):
     for s in strings({k: v for k, v in e.items() if k not in ("from", "to")}):
         hits = set()
-        for q in {s} | {a or b for a, b in QUOTED.findall(s)}:
-            hits.update(hits_of(q))
+        if isinstance(s, tuple):
+            hits.update(hits_of(s[1]))
+        else:
+            # A field name in a condition stands without quotes
+            # (`has(context.<name>)`): review 2 m8 of the target strand.
+            for q in {s} | {a or b for a, b in QUOTED.findall(s)} | set(FIELD.findall(s)):
+                hits.update(hits_of(q))
         for h in sorted(hits):
             out.append("edge %d (%s -> %s): %r" % (i, e.get("from"), e.get("to"), h))
 for s in strings(d["contract"]):
-    for h in hits_of(s):
+    for h in hits_of(s[1] if isinstance(s, tuple) else s):
         out.append("contract: %r" % h)
 print(json.dumps(out))
 "#;

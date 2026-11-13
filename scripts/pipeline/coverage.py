@@ -12,7 +12,8 @@ to the source files it executed (`llvm-cov export -format=lcov -summary-only`).
 
     {"schema": "meclaw.pipeline.coverage/1", "rev", "built_at", "runner",
      "granularity": "module"|"binary", "secs", "tests": <profiles>,
-     "parts": [{"binary", "module"|null, "files": {path: lines_hit}}]}
+     "parts": [{"binary", "module"|null, "files": {path: lines_hit}}],
+     "binaries_without_tests": [<binary ids of `nextest list` that run no test>]}
 
 The map counts red tests too (their path ran), but red tests make its verdict
 RED (welle-tb S1 C-Beleg, KR-TB-1 a): the build on the end tip of a wave is the
@@ -69,7 +70,14 @@ _TRY_LINE = re.compile(r"^\s*(?:TRY\s+\d+\s+(PASS|FAIL|TIMEOUT|SIGSEGV|SIGABRT|S
                        r"|(FLAKY)\s+\d+/\d+)"
                        r"\s+\[\s*[\d.]+s\]\s+(?:\[[^\]]*\]\s+)?(?:\(\s*\d+/\d+\)\s+)?"
                        r"(\S+)\s+(\S+)\s*$")
-DEADLINE_S = 7200
+DEADLINE_S = 7200   # the outer `timeout` of a lane run: LANE_DEADLINE_S + 200
+# d59-2 local V3 e: the host part's deadline per transport -- 7 000 s on a lane
+# as before, 4 h on `local` (`MECLAW_COVERAGE_DEADLINE_S` overrides both; no
+# measurement of a full local run yet, step `messung`); a local run waits at
+# most LOCK_WAIT_S for the machine's cargo lock (`MECLAW_COVERAGE_LOCK_WAIT_S`)
+LANE_DEADLINE_S = 7000
+LOCAL_DEADLINE_S = 4 * 3600
+LOCK_WAIT_S = 3600
 RUNNER = "scripts/pipeline/coverage_runner.sh"
 LANE_SCRIPT = "scripts/pipeline/coverage_lane.sh"
 
@@ -200,6 +208,15 @@ def expected_binaries(doc):
     return out
 
 
+def binaries_without_tests(doc):
+    """The test binaries of `nextest list` that run no test: the counterpart of
+    `expected_binaries`. Their ignored tests (the `*_measure` perf binaries, a
+    binary of browser locks only) leave them out of every map; the map names
+    them, so `night.binaries_changed` stops calling them new every night
+    (d59-2 V8, #1487; Dossier 59 section 7a)."""
+    return sorted(set(doc.get("rust-suites") or {}) - set(expected_binaries(doc)))
+
+
 def run_ok(rc):
     """Did nextest run to its end, green? Only exit 0 counts: red tests (100), a
     timeout (124), a kill (137, negative) or any other exit make the map incomplete."""
@@ -320,13 +337,15 @@ def incomplete_reasons(run_ok, nextest_exit, errors, measured, expected, expecte
 
 def coverage_map(rev, runner, parts, secs, tests, built_at=None, expected=None, errors=(),
                  run_ok=True, expected_ids=None, profiles=None, nextest_exit=None,
-                 red_tests=None):
+                 red_tests=None, without_tests=None):
     """The map. `complete` only when the run finished green (`run_ok`), no part
     had an error, every expected binary was measured and -- given `profiles`
     (`profiles_per_binary`) -- left >= 1 profile; `incomplete` names each
     reason. `impact` narrows by a complete map of the matching rev only (review C1).
     `red_tests` (`red_tests_from_log`; None = no log read) and nextest exit 100
-    make the `verdict` RED; a RED run without a name in the log says so."""
+    make the `verdict` RED; a RED run without a name in the log says so.
+    `without_tests` (`binaries_without_tests`; None = not known) becomes the
+    field `binaries_without_tests`; a map without it behaves as before."""
     mods = any(p["module"] for p in parts)
     measured_ids = {p["binary"] for p in parts}
     measured = len(measured_ids)
@@ -341,14 +360,17 @@ def coverage_map(rev, runner, parts, secs, tests, built_at=None, expected=None, 
         why.append("%d red tests: %s" % (len(reds), _shown(reds)))
     elif red and red_tests is not None:
         why.append("red tests (no name found in the nextest log)")
-    return {"schema": SCHEMA, "rev": rev,
-            "built_at": built_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "runner": runner, "granularity": "module" if mods else "binary",
-            "secs": round(secs, 1), "tests": tests, "parts": parts,
-            "binaries_expected": expected, "binaries_measured": measured,
-            "errors": len(errors), "error_list": errors[:50], "run_ok": bool(run_ok),
-            "incomplete": why, "complete": not why, "red_tests": reds,
-            "verdict": "RED" if red else ("INCOMPLETE" if why else "GREEN")}
+    cov = {"schema": SCHEMA, "rev": rev,
+           "built_at": built_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "runner": runner, "granularity": "module" if mods else "binary",
+           "secs": round(secs, 1), "tests": tests, "parts": parts,
+           "binaries_expected": expected, "binaries_measured": measured,
+           "errors": len(errors), "error_list": errors[:50], "run_ok": bool(run_ok),
+           "incomplete": why, "complete": not why, "red_tests": reds,
+           "verdict": "RED" if red else ("INCOMPLETE" if why else "GREEN")}
+    if without_tests is not None:
+        cov["binaries_without_tests"] = sorted(without_tests)
+    return cov
 
 
 def load_map(path):
@@ -431,6 +453,8 @@ def built(cov, db=None, db_path=None):
         data["browsers_opt_out"] = cov["browsers_opt_out"]
     if cov.get("carried_from"):  # GH #1461: a carried map names the run that measured it
         data["carried_from"] = cov["carried_from"]
+    if cov.get("host"):  # d59-2 local V5: the limits a local run ran under
+        data["host"] = cov["host"]
     try:
         with store.tx(db):
             events.emit(db, "coverage_built", "status", data)
@@ -469,7 +493,8 @@ def _tree_metadata(repo):
     return meta if isinstance(meta, dict) else None
 
 
-def carry(repo, map_dir=None, db=None, db_path=None, now=None, branch=None, metadata=None):
+def carry(repo, map_dir=None, db=None, db_path=None, now=None, branch=None, metadata=None,
+          write=True):
     """`(map, line)` of the map on HEAD of `repo`, carried from the newest clean
     GREEN map when the diff between them selects no test, or `(None, why)`.
 
@@ -479,7 +504,9 @@ def carry(repo, map_dir=None, db=None, db_path=None, now=None, branch=None, meta
     cached one); a binary list that no longer matches the base is measured.
     The carried map keeps the parts of its base, says `runner` "carry" and
     `secs` 0, names the measuring run in `carried_from` and is journaled
-    `coverage_built`; a map already on HEAD is returned as it is, nothing written."""
+    `coverage_built`; a map already on HEAD is returned as it is, nothing written.
+    `write=False` only judges (`wave close --dry-run`, d59-2 V7): the map it
+    would carry, a line that says "would carry", no file, no journal row."""
     from pipeline import narrow
     base, why = narrow.newest_map(map_dir)
     if base is None:
@@ -540,15 +567,18 @@ def carry(repo, map_dir=None, db=None, db_path=None, now=None, branch=None, meta
                                           "runner": base.get("runner"), "secs": base.get("secs")}
     cov = dict(base, rev=head, carried_from=origin, runner="carry", secs=0.0,
                built_at=now or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    line = ("carried from %s to %s without a run (%d files changed%s, the resolver selects "
+            "no test)" % (str(origin["rev"])[:9], head[:9], committed,
+                          " + %d in the tree" % len(overlay) if overlay else ""))
+    if not write:
+        return cov, "would carry" + line[len("carried"):]
     final = map_path(head, map_dir)
     final.parent.mkdir(parents=True, exist_ok=True)
     tmp = final.with_name(final.name + ".tmp")
     tmp.write_text(json.dumps(cov, sort_keys=True), encoding="utf-8")
     os.replace(tmp, final)
     built(cov, db=db, db_path=db_path)
-    return cov, ("carried from %s to %s without a run (%d files changed%s, the resolver selects "
-                 "no test)" % (str(origin["rev"])[:9], head[:9], committed,
-                               " + %d in the tree" % len(overlay) if overlay else ""))
+    return cov, line
 
 
 # --- lanes ------------------------------------------------------------------
@@ -578,19 +608,75 @@ def lane_ssh(name, hosts=None):
 
 
 def lane_refused(ssh, opts):
-    """Why the coverage run never goes to this lane, or None (review I2):
-    the owner's machine -- `local`, or class egon -- is no build lane."""
-    if ssh == "local":
-        return "the lane is the owner's machine (local)"
-    if opts.get("class") == "egon":
-        return "the lane is class egon (the owner's machine, beside the live colony)"
+    """Why the coverage run never goes to this lane, or None. R-59-2 (d59-2
+    local V2): the owner's machine is a place for the map when the host file
+    names it with transport `local` -- the engine then runs it inside the
+    machine's limits (V3). An ssh lane of class egon would reach the owner's
+    machine past them (review I2): refused."""
+    if ssh != "local" and opts.get("class") == "egon":
+        return "the lane is class egon over ssh (the owner's machine past its limits; transport local only)"
     return None
 
 
+def _posint_env(name, default):
+    v = os.environ.get(name, "")
+    return int(v) if v.isdigit() and int(v) > 0 else default
+
+
+def lane_deadlines(ssh):
+    """`(host deadline, outer timeout)` in seconds for transport `ssh` (V3 e):
+    the outer `timeout` carries the host deadline, on `local` also the wait
+    cap of the cargo lock and the scope's margin of 120 s -- the deadline of
+    the host part counts from the lock, never from the start of the wait."""
+    if ssh == "local":
+        host = _posint_env("MECLAW_COVERAGE_DEADLINE_S", LOCAL_DEADLINE_S)
+        return host, host + _posint_env("MECLAW_COVERAGE_LOCK_WAIT_S", LOCK_WAIT_S) + 120 + 200
+    host = _posint_env("MECLAW_COVERAGE_DEADLINE_S", LANE_DEADLINE_S)
+    return host, host + (DEADLINE_S - LANE_DEADLINE_S)
+
+
+def lane_env(name, opts):
+    """The environment of the engine for lane `name` (d59-2 local V2): the
+    settings of the host file as `strand.sh lane_settings` and `merge._lane`
+    hand them over -- root (transport local), class, name, jobs, threads --
+    plus `mem=<n>G` (the scope's MemoryMax, V3 d). Without them the engine's
+    root fell back to /srv/target and its class to `box`."""
+    from pipeline import merge
+    env = dict(os.environ)
+    env.pop("MECLAW_LANE_ROOT", None)   # the host file is the one truth
+    try:
+        env.update(merge._lane(name)[1])
+    except merge.Refused:
+        pass
+    mem = str(opts.get("mem", "")).upper().rstrip("G")
+    if mem.isdigit():
+        env["MECLAW_LANE_MEM_G"] = mem
+    return env
+
+
+def resolve_rev(rev, repo=None):
+    """The full SHA of commit `rev` in `repo` (default: this tree), or None when
+    the repository does not have it (d59-2 local V1, O6). Popen, not `run`: the
+    one resolution of a build, before anything leaves this tree."""
+    repo = repo or os.path.dirname(_SCRIPTS)
+    try:
+        proc = subprocess.Popen(["git", "-C", repo, "rev-parse", "--verify", "--quiet",
+                                 "%s^{commit}" % rev], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        out, _ = proc.communicate(timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = out.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
 def lane_up(ssh):
-    """True when `ssh` answers; `local` and an unknown lane never count as up."""
-    if ssh in (None, "local"):
+    """True when `ssh` answers; `local` is up without ssh (d59-2 local V2), an
+    unknown lane never."""
+    if ssh is None:
         return False
+    if ssh == "local":
+        return True
     try:
         from pipeline import lane  # the kit's narrow point (re-check tv-bn M7e B-M1)
         r = subprocess.run(lane.ssh_argv(ssh, "true", connect_timeout=5), capture_output=True, timeout=20)
@@ -632,18 +718,20 @@ def _cmd_coverage(args):
         t0 = time.monotonic()
         harness = [b for b in (args.harness or "").split(",") if b]
         with open(args.objects, encoding="utf-8") as fh:
-            expected = expected_binaries(json.load(fh))
+            listed = json.load(fh)
+        expected = expected_binaries(listed)
         parts, errors = aggregate(args.profiles, objects, args.root, jobs=args.jobs,
                                   profdata=args.profdata, llvm_cov=args.llvm_cov,
                                   harness_bins=harness)
-        cov = coverage_map(args.rev, args.runner, parts,
+        cov = coverage_map(args.rev or "worktree", args.runner, parts,
                            args.secs + (time.monotonic() - t0), count_profiles(args.profiles),
                            expected=len(expected), errors=errors,
                            run_ok=run_ok(args.nextest_exit), expected_ids=expected,
                            profiles=profiles_per_binary(args.profiles),
                            nextest_exit=args.nextest_exit,
                            red_tests=(red_tests_from_log(args.nextest_log)
-                                      if args.nextest_log else None))
+                                      if args.nextest_log else None),
+                           without_tests=binaries_without_tests(listed))
         # S1b (#1165): which spawned bins the map proves -- only the build sets it
         cov[spawn_closure.FIELD] = spawn_closure.marker(parts, objects["_bins"], args.root)
         if getattr(args, "browser_junit", None):   # S1b ruling 10.10.: only the build proves a lock
@@ -678,12 +766,27 @@ def _cmd_coverage(args):
     if args.op == "journal":
         print(json.dumps(built(cov, db_path=args.db)))
         return 0
-    # build: on a lane, never switching one on
+    # build: on a lane or the owner's machine (transport local, R-59-2), never
+    # switching a lane on
+    # d59-2 local V1 (O6): the map measures a commit, never the calling tree --
+    # 25 of 72 maps in the store were `-dirty` and no reader took them. `--rev`
+    # resolves ONCE to a full SHA here and travels down to the host part; the
+    # probe of the browser locks alone keeps the tree with its overlay.
+    rev = getattr(args, "rev", None)
+    sha = None
+    if args.scope == "browser":
+        if rev is not None:
+            return _refused(args, "--scope browser measures the tree with its overlay; "
+                                  "it takes no --rev", 2)
+    else:
+        sha = resolve_rev(rev or "HEAD", os.path.dirname(_SCRIPTS))
+        if sha is None:
+            return _refused(args, "rev %s: the repository does not have this commit -- "
+                                  "not built" % (rev or "HEAD"), 2)
     ssh, opts = lane_entry(args.lane)
     why = lane_refused(ssh, opts)
     if why:
-        return _refused(args, "lane refused: %s; the coverage run goes to a build lane of the wave "
-                              "only" % why, 5)
+        return _refused(args, "lane refused: %s" % why, 5)
     if not lane_up(ssh):
         _finding("coverage_skipped_no_lane", args.lane, 0, 1,
                  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), db_path=args.db)
@@ -696,12 +799,15 @@ def _cmd_coverage(args):
     if tok.returncode != 0:
         return _refused(args, "no cargo token for lane %s (strand.sh token check exit %d) -- not built"
                         % (args.lane, tok.returncode), _foreign_exit(tok.returncode))
-    cmd = ["timeout", "--kill-after=60", str(DEADLINE_S), "scripts/pipeline/coverage_lane.sh",
-           ssh, args.strand, args.out_dir] + (["browser"] if args.scope == "browser" else [])
+    host_s, outer_s = lane_deadlines(ssh)
+    env = lane_env(args.lane, opts)
+    env["MECLAW_COVERAGE_DEADLINE_S"] = str(host_s)
+    cmd = ["timeout", "--kill-after=60", str(outer_s), "scripts/pipeline/coverage_lane.sh",
+           ssh, args.strand, args.out_dir] + (["browser"] if args.scope == "browser" else ["full", sha])
     print("coverage: %s" % " ".join(shlex.quote(c) for c in cmd), file=sys.stderr)
     _pass(args, 0, 0)   # GH #1199: the one pass of a build, said before the lane runs
     try:
-        r = subprocess.run(cmd, cwd=os.path.dirname(_SCRIPTS))
+        r = subprocess.run(cmd, cwd=os.path.dirname(_SCRIPTS), env=env)
     finally:
         # K9 (welle-validierung-2): `seen` once more after the lane run, whatever
         # its exit -- checked in only before it, a long build left `seen` at its
@@ -730,6 +836,10 @@ def _cmd_coverage(args):
         rc, line = browser_cover.probe_report(cov)
         print(line)
         return rc
+    if cov["rev"] != sha:   # V1: only the commit the lane tree held is installed
+        print("coverage: the map names rev %s, the lane measured commit %s -- not installed"
+              % (cov["rev"], sha), file=sys.stderr)
+        return 2
     cov["runner"] = args.lane
     final = map_path(cov["rev"], getattr(args, "map_dir", None))
     final.parent.mkdir(parents=True, exist_ok=True)
@@ -774,7 +884,9 @@ def register(sub):
     p.add_argument("--profiles", help="aggregate: the runner's profile directory")
     p.add_argument("--objects", help="aggregate: `cargo nextest list --message-format json` output")
     p.add_argument("--root", help="aggregate: the tree root (paths become relative to it)")
-    p.add_argument("--rev", default="worktree")
+    p.add_argument("--rev", default=None,
+                   help="build: the commit the map measures (default HEAD; never with "
+                        "--scope browser); aggregate: the rev the map names")
     p.add_argument("--runner", default="local")
     p.add_argument("--secs", type=float, default=0.0, help="aggregate: seconds the run took")
     p.add_argument("--jobs", type=int, default=None)

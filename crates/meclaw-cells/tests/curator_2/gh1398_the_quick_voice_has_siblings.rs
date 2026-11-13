@@ -372,7 +372,8 @@ const CALL_END: &str = "has(hop.route) && hop.route == 'in_call_end'";
 /// its `context.call_id` back from the handle) -- a wanted edge change, old
 /// `aa2584f318f3ed280cc6a756ab8080917ef20ab9616518ddad2e2569199a9afe`.
 /// Live and note together (D58 live GH #1482 merged over note GH #1477, master
-/// e587bc0fd): both edge changes at once, old (note alone) `12aacde483a51a287123b0db558b477535ec931df488445ed738e9e263bdc720`.
+/// e587bc0fd): both edge changes at once, old (note alone) `12aacde483a51a287123b0db558b477535ec931df488445ed738e9e263bdc720`,
+/// old (live alone) `afc7f93ad0823a83a290a9c1b507f514ac3a02ecbd0dc7063cc2e1649a0b23af`.
 /// Re-blessed for D58 feed (GH #1481, contract point 7: talky hands an order
 /// to feed a running session from its rim to the curator, `. -> ./curator`
 /// `in_feed`) on top of live and note -- a wanted edge change, old
@@ -537,6 +538,36 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
         curate_target, 1,
         "talky's curate edge names `hop.target` 'brain'"
     );
+    // GH #1497 (review I2 of the prefix strand): the model call edges lift
+    // the curator's refusal (`hop.tools_refused`) into the context for the
+    // dispatcher; that one key is the refusal's, not this pin's.
+    let mut lifted = 0;
+    for e in old.iter_mut() {
+        if let Some(ctx) = e
+            .pointer_mut("/modifier/set_context")
+            .and_then(Value::as_object_mut)
+            && ctx.remove("tools_refused")
+                == Some(json!("has(hop.tools_refused) ? hop.tools_refused : ''"))
+        {
+            lifted += 1;
+        }
+    }
+    assert_eq!(lifted, 4, "the model call edges that lift the refusal");
+    // GH #494 (gate of bundle D): the refusal is talky's interior key, so
+    // every exit edge drops it beside `tools_hinted`; that entry is the
+    // refusal's, not this pin's.
+    let mut dropped = 0;
+    for e in old.iter_mut() {
+        if let Some(keys) = e
+            .pointer_mut("/modifier/delete_context")
+            .and_then(Value::as_array_mut)
+        {
+            let before = keys.len();
+            keys.retain(|k| k != "tools_refused");
+            dropped += before - keys.len();
+        }
+    }
+    assert_eq!(dropped, 35, "the exit edges that drop the refusal");
     let mut guarded = 0;
     for e in old.iter_mut() {
         let c = e["condition"].as_str().unwrap_or_default().to_string();

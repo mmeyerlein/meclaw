@@ -53,12 +53,14 @@ fn every_line_points_at_its_source_block() {
     let (q1, a2) = (short_id(&user("q1")), short_id(&said("a2")));
     // a3 is the raw turn the rebuild keeps: a real block, but no source.
     let a3 = short_id(&said("a3"));
+    // GH #1496: each line is dated with a day its transcript shows.
+    let day = h.transcript_day();
     h.answer(
         &format!(
-            "- person (2026-11-05) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
-             - person (2026-11-05) garden/size: The garden is small. [asserted]\n\
-             - agent:self (2026-11-05) offer/visit: A visit was offered. [#{a3}]\n\
-             - topic (2026-11-05): the garden [#ffffffffffff]"
+            "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
+             - person ({day}) garden/size: The garden is small. [asserted]\n\
+             - agent:self ({day}) offer/visit: A visit was offered. [#{a3}]\n\
+             - topic ({day}): the garden [#ffffffffffff]"
         ),
         "stop",
     );
@@ -66,10 +68,10 @@ fn every_line_points_at_its_source_block() {
     assert_eq!(
         text,
         format!(
-            "- person (2026-11-05) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
-             - person (2026-11-05) garden/size: The garden is small. [asserted] [#{a2}]\n\
-             - agent:self (2026-11-05) offer/visit: A visit was offered. [#{a2}]\n\
-             - topic (2026-11-05): the garden [#{a2}]"
+            "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
+             - person ({day}) garden/size: The garden is small. [asserted] [#{a2}]\n\
+             - agent:self ({day}) offer/visit: A visit was offered. [#{a2}]\n\
+             - topic ({day}): the garden [#{a2}]"
         ),
         "a cited source stays; none, a non-source and an unknown id point at the newest \
          row that went in"

@@ -19,7 +19,7 @@ sys.path.insert(0, str(SCRIPTS))
 from pipeline import merge, revert, store  # noqa: E402
 
 from . import test_pipeline_merge as fx  # noqa: E402
-from scripts.tests import store_isolation  # noqa: E402
+from scripts.tests import kit_time, store_isolation  # noqa: E402
 
 # gate-selftest loads every module into one process: no fixture event of this
 # module may reach the metrics target of the caller's environment.
@@ -144,6 +144,45 @@ class ReentrantRevertTest(RevertCase):
         self.assertIn("already_merging", err)
         self.assertEqual(store.lease_who(f.db, merge.resource("meclaw"))["holder"], "revert:S1")
         self.assertEqual(f.head(), self.merged)
+
+
+class LockedReleaseRevertTest(RevertCase):
+    """d58-2 Z fix round 1 (review I1): the revert takes the tree lease like a
+    merge, so its `finally` releases it like a merge's -- a locked store there
+    must not leave the lease standing until its TTL (OR-58-187)."""
+
+    def test_a_locked_store_at_the_end_still_releases_the_tree_lease(self):
+        f = self.f
+        db = fx.LeaseTest._LockedRelease(f.db, 2)
+        clock = kit_time.FakeClock()
+        real = merge.release_tree_surely
+        with mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.25, 0.25)), \
+                mock.patch.object(merge, "release_tree_surely",
+                                  lambda *a, **kw: real(*a, clock=clock, **kw)):
+            out, err = io.StringIO(), io.StringIO()
+            rc = revert.revert("S1", "test", start=f.root, wave=fx.WAVE, db=db, out_=out, err=err)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertEqual(2, db.refused)
+        self.assertIsNone(f.lease(), "the tree lease is released")
+        self.assertNotIn("NOT RELEASED", err.getvalue())
+
+    def test_a_store_locked_for_good_says_how_to_free_the_lease(self):
+        f = self.f
+        db = fx.LeaseTest._LockedRelease(f.db, None)
+        clock = kit_time.FakeClock()
+        real = merge.release_tree_surely
+        with mock.patch.object(merge.schedule, "LOCKED_PAUSE_S", (0.25, 0.25)), \
+                mock.patch.dict(os.environ, {"MECLAW_TREE_RELEASE_WAIT_SECS": "1"}), \
+                mock.patch.object(merge, "release_tree_surely",
+                                  lambda *a, **kw: real(*a, clock=clock, **kw)):
+            out, err = io.StringIO(), io.StringIO()
+            rc = revert.revert("S1", "test", start=f.root, wave=fx.WAVE, db=db, out_=out, err=err)
+        self.assertEqual(rc, 0, err.getvalue())
+        # Tries at 0, 0.25, 0.5, 0.75 and 1.0 s of the injected clock; the
+        # fifth reaches the limit and ends the wait.
+        self.assertEqual(5, db.refused)
+        self.assertEqual("revert:S1", f.lease()["holder"])
+        self.assertIn("revert: the tree lease NOT RELEASED", err.getvalue())
 
 
 class HookRevertTest(RevertCase):

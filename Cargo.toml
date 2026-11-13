@@ -12,10 +12,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.86.0"
+version = "0.86.1"
 edition = "2024"
 publish = true
-rust-version = "1.85"
+rust-version = "1.89"
 repository = "https://github.com/mmeyerlein/meclaw"
 license = "MIT OR Apache-2.0"
 
@@ -50,7 +50,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 hyper = { version = "1", default-features = false, features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
-rusqlite = { version = "0.39", features = ["bundled", "functions"] }
+rusqlite = { version = "0.41", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tempfile = "3"

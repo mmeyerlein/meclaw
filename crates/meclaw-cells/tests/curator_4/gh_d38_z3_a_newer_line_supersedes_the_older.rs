@@ -50,13 +50,25 @@ fn a_newer_line_supersedes_the_older() {
         "a3",
         json!({"cache_expires_at": "2099-01-01T00:00:00Z"}),
     );
+    // GH #1496: each line is dated with a day its transcript shows, and the
+    // days come from the rows. The rows of the first rebuild (t1, t2) are a
+    // day older than the one of the second (t3), so `[superseded <date>]`
+    // tells the older line's date from the newer one's.
+    let yesterday = days_ago(1, 12).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    for t in ["t1", "t2"] {
+        h.db.execute(
+            "UPDATE wall SET turn_at = ?1 WHERE turn_id = ?2",
+            [yesterday.clone(), t.to_string()],
+        )
+        .expect("the turn time of an earlier turn");
+    }
     h.fire(&last_add(&h));
     let (q1, q2) = (short_id(&user("q1")), short_id(&user("q2")));
-    let lisbon = format!(
-        "- person (2026-11-04) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]"
-    );
+    let d1 = h.transcript_day();
+    let lisbon =
+        format!("- person ({d1}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]");
     let tomatoes = format!(
-        "- person (2026-11-04) tomatoes/planted: The person planted tomatoes. [asserted] [#{q2}]"
+        "- person ({d1}) tomatoes/planted: The person planted tomatoes. [asserted] [#{q2}]"
     );
     h.answer(&format!("{lisbon}\n{tomatoes}"), "stop");
 
@@ -70,10 +82,15 @@ fn a_newer_line_supersedes_the_older() {
     );
     h.fire(&last_add(&h));
     let (q3, a3) = (short_id(&user("q3")), short_id(&said("a3")));
+    let d2 = h.transcript_day();
+    assert_ne!(
+        d1, d2,
+        "the two rebuilds read rows of two days, so the marked date is the older line's"
+    );
     let req = h.answer(
         &format!(
-            "- person (2026-11-05) hannah/lives_in: Hannah moved to Porto. [asserted] [#{q3}]\n\
-             - agent:self (2026-11-05) tomatoes/planted: The companion doubted the tomatoes were planted. [#{a3}]"
+            "- person ({d2}) hannah/lives_in: Hannah moved to Porto. [asserted] [#{q3}]\n\
+             - agent:self ({d2}) tomatoes/planted: The companion doubted the tomatoes were planted. [#{a3}]"
         ),
         "stop",
     );
@@ -94,10 +111,10 @@ fn a_newer_line_supersedes_the_older() {
     assert_eq!(
         text,
         format!(
-            "- person (2026-11-05) hannah/lives_in: Hannah moved to Porto. [asserted] \
-             [superseded 2026-11-04] [#{q3}]\n\
+            "- person ({d2}) hannah/lives_in: Hannah moved to Porto. [asserted] \
+             [superseded {d1}] [#{q3}]\n\
              {tomatoes}\n\
-             - agent:self (2026-11-05) tomatoes/planted: The companion doubted the tomatoes \
+             - agent:self ({d2}) tomatoes/planted: The companion doubted the tomatoes \
              were planted. [#{a3}]"
         ),
         "the newer line takes the older one's place, marked; the companion's line \
